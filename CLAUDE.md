@@ -19,7 +19,7 @@ In priority order. When two conflict, the earlier wins.
 3. **Types are the contract.** Pydantic schemas in `python/openral_core/` and IDL in `packages/openral_msgs/` are normative API. Everything else is implementation detail.
 4. **Explicit beats implicit.** No hidden retries, fallbacks, or magic globals. Replanning, dispatcher fallback, quantization, and license posture must show up in logs/traces.
 5. **The hot path is C++ and bounded.** Python touches motors only through a typed bridge to `ros2_control` with a watchdog. Anything >100 Hz is C++ unless proven otherwise.
-6. **Schemas evolve, but never silently.** Pre-publish, on-disk `schema_version` stays `"0.1"`; the surface evolves in place without bumps or migrators. Every change still needs (a) an ADR if it crosses a layer boundary, (b) a test loading a real fixture from `robots/`, `rskills/`, or `scenes/`.
+6. **Schemas evolve, but never silently.** Now the repo is published, on-disk `schema_version` is versioned for real: a backward-incompatible change bumps it and ships a migrator; backward-compatible additions may evolve in place. Every change still needs (a) an ADR if it crosses a layer boundary, (b) a test loading a real fixture from `robots/`, `rskills/`, or `scenes/`.
 7. **Tests are part of the change.** Every PR ships the tests that would have caught the bug or covered the feature. Untested actuation-path code is rejected.
 8. **Reproducibility over speed.** A skill execution must be replayable from the trace alone (weights revision pinned, prompts logged, sensor frames captured).
 9. **License lineage is enforced.** Weights stay governed by their upstream license — version-specific, not family-wide: GR00T N1/N1.5/N1.6 are non-commercial (loader refuses commercial deployment without `OPENRAL_ALLOW_NONCOMMERCIAL=1`), while GR00T N1.7+ ships under the commercially-permissive NVIDIA Open Model License ([ADR-0046](docs/adr/0046-nvidia-gr00t-backend.md)). Closed-SDK code is not bundled in open-core. Apache-2.0 default for open-core; commercial source-available tier ships under PolyForm SBL 1.0.0 + Academic Research Additional Permission per [ADR-0012](docs/adr/0012-open-core-licensing.md). Copy-left rejected without TSC review.
@@ -97,7 +97,7 @@ Re-read this file if >1 day or >1 PR since last; read relevant RFC/ADR sections;
 ### 4.4 PR checklist
 
 - [ ] Conventional commit title; description has "What changed", "Why", "How tested".
-- [ ] Schemas: real fixture validates; on-disk `schema_version` stays `"0.1"` (no migrators pre-publish).
+- [ ] Schemas: real fixture validates; on-disk `schema_version` bumped + migrator shipped for any backward-incompatible change (post-publish — no longer frozen at `"0.1"`).
 - [ ] Layer boundary crossed → ADR added.
 - [ ] Tests: unit + integration + sim where applicable; HIL if a HAL changed. No new mocks/stubs/smoke tests (§1.11).
 - [ ] The matching `docs/methods/` file updated for every added/renamed/removed/moved public symbol (signature + line number + layer section); `tools/refresh_methods_linenos.py --check` clean. Searched first.
