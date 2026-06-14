@@ -77,6 +77,7 @@ nav:
     - Selective testing: contributing/selective-testing.md
     - Test-suite audit: contributing/test-audit.md
   - ADRs:
+    - Index (clustered): adr/README.md
     - ADR-0001 Record decisions: adr/0001-record-architecture-decisions.md
     - ADR-0002 Eval & sim environments: adr/0002-eval-and-sim-environments.md
     - ADR-0003 Pydantic over dataclasses: adr/0003-pydantic-over-dataclasses.md
@@ -100,3 +101,38 @@ nav:
     - ADR-0021 Curl installer, CLI rename & PyPI: adr/0021-curl-installer-cli-rename-and-pypi-release.md
     - ADR-0022 rSkill action vocabulary: adr/0022-rskill-action-vocabulary.md
     - ADR-0023 Data-driven MuJoCo HAL: adr/0023-data-driven-mujoco-hal.md
+    - ADR-0024 ROS-wrapped rSkills: adr/0024-ros-wrapped-rskills.md
+    - ADR-0025 Reasoner-managed background services: adr/0025-reasoner-managed-background-services.md
+    - ADR-0026 rSkill structured goal parameters: adr/0026-rskill-structured-goal-parameters.md
+    - ADR-0027 rSkill state-contract bindings: adr/0027-rskill-state-contract-bindings.md
+    - ADR-0028 rSkill action-contract slots: adr/0028-rskill-action-contract-slots.md
+    - ADR-0028b Action-contract slot dispatch: adr/0028b-rskill-action-contract-slots-dispatch.md
+    - ADR-0028c panda_mobile cartesian/gripper handlers: adr/0028c-panda-mobile-hal-cartesian-gripper-handlers.md
+    - ADR-0028d panda_mobile joint-velocity/torso handlers: adr/0028d-panda-mobile-hal-joint-velocity-torso-handlers.md
+    - ADR-0029 Unified HAL lifecycle node: adr/0029-unified-hal-lifecycle-node.md
+    - ADR-0030 Geometric safety collision checking: adr/0030-geometric-safety-collision-checking.md
+    - ADR-0031 Sim/real HAL separation: adr/0031-sim-real-hal-separation.md
+    - ADR-0032 deploy run ROS graph: adr/0032-deploy-run-ros-graph.md
+    - ADR-0033 Robot-parameterized native scenes: adr/0033-robot-parameterized-native-scenes.md
+    - ADR-0034 Deploy-sim scene-attach for arms: adr/0034-deploy-sim-scene-attach-for-arms.md
+    - ADR-0035 Perception spatial-memory object lift: adr/0035-perception-spatial-memory-object-lift.md
+    - ADR-0036 OSC action contracts + deploy gate: adr/0036-osc-action-contracts-deploy-path-gate.md
+    - ADR-0037 GStreamer perception bus: adr/0037-gstreamer-perception-bus-object-detection.md
+    - ADR-0038 Persistent semantic spatial memory: adr/0038-persistent-semantic-spatial-memory.md
+    - ADR-0039 LLM task planning & active search: adr/0039-llm-task-planning-active-search.md
+    - ADR-0040 Geometric collision, all control modes: adr/0040-geometric-collision-all-control-modes.md
+    - ADR-0041 Scene three-tier hierarchy: adr/0041-scene-three-tier-hierarchy.md
+    - ADR-0042 Drop BenchmarkSpec: adr/0042-drop-benchmarkspec.md
+    - ADR-0043 locate_in_view reasoner tool: adr/0043-locate-in-view-reasoner-tool.md
+    - ADR-0044 look_at skill + grid-refined approach: adr/0044-look-at-skill-grid-refined-approach.md
+    - ADR-0045 Isaac Sim backend integration: adr/0045-isaac-sim-backend-integration.md
+    - ADR-0046 NVIDIA GR00T backend: adr/0046-nvidia-gr00t-backend.md
+    - ADR-0047 vlm rSkill kind: adr/0047-vlm-rskill-kind.md
+    - ADR-0048 Deploy-sim clock publisher: adr/0048-deploy-sim-clock-publisher.md
+    - ADR-0049 HAL multithreaded executor + proprio snapshot: adr/0049-hal-multithreaded-executor-proprio-snapshot.md
+    - ADR-0050 Single-resident-skill VRAM eviction: adr/0050-single-resident-skill-vram-eviction.md
+    - ADR-0051 Detector invocation mode: adr/0051-detector-invocation-mode.md
+    - ADR-0052 Cross-frame object-lift: adr/0052-cross-frame-object-lift.md
+    - ADR-0053 Collision-aware approach to pose: adr/0053-collision-aware-approach-to-pose.md
+    - ADR-0054 MoveIt goal-builder library: adr/0054-moveit-goal-builder-library.md
+    - ADR-0055 rSkill registry & discoverability: adr/0055-rskill-registry-model-and-discoverability.md

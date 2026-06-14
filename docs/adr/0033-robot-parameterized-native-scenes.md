@@ -6,6 +6,10 @@
   [ADR-0023](0023-data-driven-mujoco-hal.md) (`MujocoArmHAL.from_description`,
   `resolve_mjcf_uri`); CLAUDE.md §1.11 (real fixtures, no mocks).
 
+> **Forward-reference (2026-06-14):** the §Decision-4 parenthetical was later corrected and
+> superseded by [ADR-0034](0034-deploy-sim-scene-attach-for-arms.md) (deploy-sim scene-attach
+> for manifest-driven arms). Consult 0034 for the current behaviour.
+
 ## Context
 
 `openral sim run` drives a `SimRollout` scene; the scene owns physics + `step()` and the

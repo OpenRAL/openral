@@ -12,6 +12,11 @@
   C++ and bounded), §1.9 (license lineage), §3 Layer 0 / 2 / 6, §3 Safety
   (safety-WG review + hazard log).
 
+> **Forward-reference (2026-06-14):** this ADR's joint-position scope was later extended by
+> [ADR-0040](0040-geometric-collision-all-control-modes.md) (collision checking for every
+> control mode) and built upon by [ADR-0053](0053-collision-aware-approach-to-pose.md)
+> (collision-aware approach-to-pose). Those are the current state of the collision chain.
+
 ## Context
 
 The C++ safety kernel (`cpp/openral_safety_kernel/`, ADR-0020) is the single
