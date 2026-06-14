@@ -3,6 +3,14 @@ site_url: https://openral.github.io/openral
 repo_url: https://github.com/OpenRAL/openral
 edit_uri: edit/master/docs/
 
+# Files reachable by link rather than the nav tree. `docs/methods/*` is the
+# per-layer public-symbol inventory browsed via `METHODS.md`; `docs/audit/` holds
+# generated report artifacts linked from the Contributing pages. Listing them here
+# keeps `mkdocs build --strict` green without cluttering the top-level nav.
+not_in_nav: |
+  /methods/
+  /audit/
+
 theme:
   name: material
   features:
@@ -71,6 +79,10 @@ nav:
     - Glossary: reference/glossary.md
     - VLA × Robot × Sim compatibility: reference/vla_compatibility.md
     - Sensor catalog & roadmap: reference/sensors_landscape.md
+    - Robot descriptions: reference/robots.md
+    - rSkills: reference/rskills.md
+    - Sim environments: reference/sim-environments.md
+    - Safety hazard log: reference/hazard-log.md
   - Contributing:
     - Development: contributing/development.md
     - Toolchain cheatsheet: contributing/toolchain.md

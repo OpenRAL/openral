@@ -27,7 +27,7 @@
 > [ADR-0028c](0028c-panda-mobile-hal-cartesian-gripper-handlers.md) (cartesian/gripper
 > handlers), and [ADR-0028d](0028d-panda-mobile-hal-joint-velocity-torso-handlers.md)
 > (joint-velocity + composite-mode handlers). See the clustered
-> [ADR index](README.md#b--rskill-packaging-manifest--action-contracts) for the full family.
+> [ADR index](README.md#b-rskill-packaging-manifest-action-contracts) for the full family.
 
 ## Context
 
