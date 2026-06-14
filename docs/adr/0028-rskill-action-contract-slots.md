@@ -21,6 +21,14 @@
   CLAUDE.md §1.3 (types are the contract), §1.4 (explicit beats implicit),
   §3 (layer boundaries — Skill ↔ Safety ↔ HAL).
 
+> **Forward-reference (2026-06-14):** the Status line above predates the final split. This
+> decision was realised across four files — this one (the "0028a" foundation),
+> [ADR-0028b](0028b-rskill-action-contract-slots-dispatch.md) (slot dispatch),
+> [ADR-0028c](0028c-panda-mobile-hal-cartesian-gripper-handlers.md) (cartesian/gripper
+> handlers), and [ADR-0028d](0028d-panda-mobile-hal-joint-velocity-torso-handlers.md)
+> (joint-velocity + composite-mode handlers). See the clustered
+> [ADR index](README.md#b--rskill-packaging-manifest--action-contracts) for the full family.
+
 ## Context
 
 The trace below E-stops within 22 seconds of dispatch:
