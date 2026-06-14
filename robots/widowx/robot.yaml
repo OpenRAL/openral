@@ -1,0 +1,137 @@
+# RobotDescription — Trossen WidowX-250s (sim-only embodiment).
+#
+# ADR-0010. Per ADR-0007 (robot/sim split) every robot.yaml is supposed
+# to describe a *physical* embodiment; the WidowX-250s is a real
+# 5-DoF + gripper desktop arm (Trossen Robotics), but OpenRAL ships
+# no HAL adapter for it today — the manifest exists only so SimEnvironment
+# configs targeting SimplerEnv's `widowx_*` envs (Bridge-Data setup) can
+# round-trip through the schema. The sim-imposed observation/action
+# contract lives in the matching scene adapter at
+# python/sim/src/openral_sim/adapters/simpler_env.py — not here.
+#
+# Kinematic numbers come from the public Trossen Robotics WidowX-250s
+# data sheet (https://www.trossenrobotics.com/widowx-250). Joint limits
+# are placeholder for the simulated config; tighten them when a real-HW
+# adapter lands.
+
+name: "widowx"
+embodiment_kind: "manipulator"
+base_frame: "base_link"
+
+# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# Upstream xacro at github.com/Interbotix/interbotix_ros_manipulators/
+# blob/main/interbotix_ros_xsarms/interbotix_xsarm_descriptions/
+# urdf/wx250s.urdf.xacro requires the apt package
+# `ros-${ROS_DISTRO}-interbotix-xsarm-descriptions` + xacro
+# processing at launch time. `robot_descriptions` ships only
+# `mujoco_menagerie/trossen_wx250s` (MJCF, no URDF wrapper).
+# Wire when a wrapped-task-space VLA targets WidowX.
+
+joints:
+  - name: "waist"
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "shoulder_link"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 3.14
+    effort_limit: 8.0
+    actuator_kind: "servo"
+  - name: "shoulder"
+    joint_type: "revolute"
+    parent_link: "shoulder_link"
+    child_link: "upper_arm_link"
+    position_limits: [-1.88, 1.99]
+    velocity_limit: 3.14
+    effort_limit: 8.0
+    actuator_kind: "servo"
+  - name: "elbow"
+    joint_type: "revolute"
+    parent_link: "upper_arm_link"
+    child_link: "forearm_link"
+    position_limits: [-2.16, 1.6]
+    velocity_limit: 3.14
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "wrist_angle"
+    joint_type: "revolute"
+    parent_link: "forearm_link"
+    child_link: "wrist_link"
+    position_limits: [-1.74, 2.15]
+    velocity_limit: 3.14
+    effort_limit: 2.0
+    actuator_kind: "servo"
+  - name: "wrist_rotate"
+    joint_type: "revolute"
+    parent_link: "wrist_link"
+    child_link: "gripper_link"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 3.14
+    effort_limit: 2.0
+    actuator_kind: "servo"
+  - name: "gripper"
+    joint_type: "prismatic"
+    parent_link: "gripper_link"
+    child_link: "finger_pair"
+    position_limits: [0.0, 1.0]
+    velocity_limit: 0.1
+    effort_limit: 2.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "gripper"
+    kind: "parallel_gripper"
+    hand: "na"
+    n_dof: 1
+    max_grip_force_n: 2.0
+    max_payload_kg: 0.25
+    workspace_radius_m: 0.65
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.25
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "cartesian_pose"
+  supported_vla_embodiments: ["widowx", "bridge"]
+  embodiment_tags:
+    - "widowx"
+    - "widowx_250s"
+    - "bridge"
+    - "bridgedata_v2"
+    - "oxe"
+
+safety:
+  max_ee_speed_m_s: 0.5
+  max_joint_speed_factor: 0.5
+  max_force_n: 8.0
+  max_torque_nm: 8.0
+  deadman_required: true
+
+sensors:
+  - name: "overhead"
+    modality: "rgb"
+    frame_id: "overhead_camera"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 525.0
+      fy: 525.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "simpler_env_overhead"
+
+sdk_kind: "open"
+# observation_spec / action_spec deliberately omitted (ADR-0007). The
+# per-sim IO contracts live in the matching scene adapters.

@@ -1,0 +1,70 @@
+# SimplerEnv WidowX (Bridge Data V2) benchmark suite — real-to-sim correlator.
+#
+# ADR-0010. Opt-in via `uv sync --group simpler-env`; without the extra
+# `openral benchmark run` will fail at lazy import inside the scene
+# factory with a typed ROSConfigError pointing at the install command.
+#
+# The four canonical WidowX eval tasks from Li et al. CoRL 2024 — the
+# Bridge V2 fragment of OXE that RT-1 / RT-2 / Octo / OpenVLA are
+# typically benchmarked on. Designed as a real-to-sim correlator
+# (MMRV / Pearson vs the real-robot eval), not a stand-alone
+# leaderboard — OpenRAL reports per-task success rate and the user
+# computes MMRV against the matching real-robot run themselves.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("simpler_env_widowx"). The shared scene + metadata is anchored
+# on the first item via &simpler_scene; subsequent items merge it and
+# override only their task. Suite-level invariants are enforced by
+# :func:`openral_core.raise_on_invalid_suite`.
+#
+# Notes: the four atomic WidowX eval tasks from the SimplerEnv paper
+# that are wired end-to-end against ManiSkill3 v3.0.x today
+# (PutCarrotOnPlate / PutSpoonOnTablecloth / StackGreenOnYellow /
+# PutEggplantInBasket). Paired with the in-tree
+# `rldx1-ft-simpler-widowx-nf4` rSkill. Feed the per-task success
+# rate into the MMRV / Pearson computation against the matching
+# real-robot eval (the metric SimplerEnv is built around).
+#
+# Run:
+#   uv sync --group simpler-env
+#   openral benchmark run --suite simpler_env_widowx \
+#       --rskill rldx1-ft-simpler-widowx-nf4
+
+- &simpler_scene
+  scene:
+    id: simpler_env
+    backend: mujoco       # SAPIEN under the hood; we reuse the mujoco enum slot
+    observation_height: 480
+    observation_width: 640
+    cameras: ["camera1"]
+  task: &task_proto
+    id: simpler_env/widowx_carrot_on_plate
+    scene_id: simpler_env
+    instruction: "put the carrot on the plate"
+    max_steps: 60
+    success_key: success
+  robot_id: widowx
+  n_episodes: 5
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2405.05941"
+    display_name: "SimplerEnv (WidowX / Bridge V2)"
+    simulator: "SimplerEnv (SAPIEN via ManiSkill)"
+    honest_scope: >
+      5 seeds on each of the 4 atomic WidowX tasks (20 rollouts total).
+      Bump n_episodes to N=50 for the paper-equivalent protocol.
+- <<: *simpler_scene
+  task:
+    <<: *task_proto
+    id: simpler_env/widowx_spoon_on_towel
+    instruction: "put the spoon on the towel"
+- <<: *simpler_scene
+  task:
+    <<: *task_proto
+    id: simpler_env/widowx_stack_cube
+    instruction: "stack the green cube on the yellow cube"
+- <<: *simpler_scene
+  task:
+    <<: *task_proto
+    id: simpler_env/widowx_put_eggplant_in_basket
+    instruction: "put the eggplant in the basket"

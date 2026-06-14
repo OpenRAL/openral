@@ -1,0 +1,22 @@
+# SO-101 follower arm in a 100×61.5×75 cm tabletop box — deploy playground.
+#
+# Env-only DeployScene (no task, no eval) — boots the full OpenRAL stack
+# (HAL + reasoner + safety kernel) for the SO-101 follower arm. Robot is
+# auto-resolved via ``SCENES.fixed_robot("so101_box") == "so101_follower"``;
+# the same so100 lifecycle node serves both so100 and so101 manifests
+# (issue #191 Phase 3b — manifest-driven, bare twin).
+#
+# All ``BoxSceneOptions`` defaults apply (box geometry, camera poses, tube
+# and slotted-block dimensions). The reasoner picks the active rSkill at
+# runtime from ``rskills/`` — no scene-level task is prescribed.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/so101_box.yaml
+
+scene:
+  id: so101_box
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["oak_top", "wrist"]

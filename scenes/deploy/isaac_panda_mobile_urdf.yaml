@@ -1,0 +1,41 @@
+# panda_mobile in Isaac Sim, imported from the robot's URDF — robot-agnostic
+# deploy scene (ADR-0045 amendment, M3).
+#
+# Demonstrates the point of the robot-agnostic path: the SAME manifest-driven
+# scene that brings up franka_panda (scenes/deploy/isaac_franka_urdf.yaml) brings
+# up panda_mobile by swapping robot_id. The Panda arm is imported from the same
+# panda_description URDF; the 3-DOF holonomic base — which exists nowhere as an
+# Isaac-importable asset (robosuite composes it in MuJoCo only) — is synthesized
+# KINEMATICALLY: the arm is imported fix_base=True and its root is teleported
+# each step from a base_twist-integrated (x, y, yaw) pose, giving real base
+# motion + a base_pose for /odom without PhysX base joints.
+#
+# Action surface: 11-D = 7 arm joint-deltas + 1 gripper + 3 base twist
+# (vx, vy, wyaw, base frame) — matching robosuite's PandaMobile 11-D contract.
+#
+# Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar venv
+# (set OPENRAL_ISAAC_SIDECAR_PYTHON).
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_panda_mobile_urdf.yaml \
+#       --no-enable-octomap --hal viewer_enabled=false
+
+robot_id: "panda_mobile"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
+  backend_options:
+    layout: "manifest"
+    headless: true
+    host: "127.0.0.1"
+    # port omitted on purpose: the isaac backend derives a stable, DISTINCT
+    # per-scene port (_scene_default_port). A shared pin (was 5757) let a
+    # different Isaac scene adopt this scene's lingering sidecar and serve the
+    # wrong layout; the identity-checked ping handshake still guards reuse.
+    boot_timeout_s: 1200
+    timeout_ms: 120000

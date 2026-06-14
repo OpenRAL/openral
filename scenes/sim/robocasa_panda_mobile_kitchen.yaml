@@ -1,0 +1,34 @@
+# RoboCasa NavigateKitchen — PandaMobile robot.
+# Not an officially benchmarked scene.
+# Run: openral sim run --config scenes/sim/robocasa_panda_mobile_kitchen.yaml \
+#                      --rskill rskill://rskills/<navigation-rskill>
+# Setup: just sync --all-packages --group robocasa
+
+scene:
+  id: robocasa/NavigateKitchen
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2", "camera3"]
+  backend_options:
+    # NavigateKitchen is one of RoboCasa's prebuilt atomic tasks. The scene
+    # id resolves the env name, but RoboCasaBackendOptions still requires
+    # the matching prebuilt_task to be named explicitly (it validates the
+    # options dict in isolation, before the scene-id resolution runs) —
+    # mirrors every other shipped robocasa scene (e.g. robocasa_pnp.yaml).
+    mode: prebuilt
+    prebuilt_task: NavigateKitchen
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    horizon: 600
+
+task:
+  id: robocasa/NavigateKitchen/0
+  scene_id: robocasa/NavigateKitchen
+  instruction: >
+    navigate through the kitchen, opening and closing drawers
+    and cabinets as needed to reach the target location
+  success_key: is_success
+  # max_steps: not enforced
+
+seed: 42

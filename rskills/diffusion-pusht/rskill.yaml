@@ -1,0 +1,98 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/diffusion_pusht (Apache-2.0)
+# Paper: Chi et al., 2023 — Diffusion Policy.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-diffusion-pusht"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "diffusion"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# 2-D PushT pseudo-robot (single end-effector pushing a T block). Used by
+# tests/sim/test_pusht_2d_diffusion_pusht.py against gym_pusht/PushT-v0.
+embodiment_tags:
+  - "pusht"
+
+# PushT exposes a single 96×96 RGB top-down stream (named
+# observation.image, not images.cameraN — PushT predates the multi-cam
+# convention used by SmolVLA/ACT).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.image"
+    min_width: 96
+    min_height: 96
+
+# Output side (ADR-0013). The pusht_2d scene-pseudo-robot exposes a 2-D
+# (x, y) absolute position; robots/pusht_2d/robot.yaml advertises
+# `cartesian_pose` as its supported control mode (the codebase
+# convention for the PushT 2-D action regardless of dimensionality).
+# The loader auto-fills n_dof (2) + vla_action_key from the robot YAML.
+# PushT actions are absolute (x, y) targets in the world/scene frame.
+actuators_required:
+  - kind: "cartesian_pose"
+    control_mode_semantics:
+      mode: "absolute"
+      reference_frame: "world"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "hf://lerobot/diffusion_pusht"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://lerobot/diffusion_pusht/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/diffusion_pusht/policy_postprocessor.json"
+# PushT is a 2-DoF planar pushing benchmark; proprio state is 2-D
+# (x, y) of the end effector.
+state_contract:
+  dim: 2
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 8
+# n_action_steps omitted — equals chunk_size (Diffusion Policy default).
+latency_budget:
+  # Reference-host measurement (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10)
+  # of the warm full-chunk inference is 1756 ms — Diffusion Policy runs
+  # 100 DDPM denoising steps per chunk, the dominant cost in the suite.
+  # Pinning per_chunk_ms to 1250 ms with tolerance_pct=100 yields the
+  # previous 2.5 s ceiling (_WARM_CHUNK_CEILING_S in the sim test).
+  per_chunk_ms: 1250.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline success rate from skills/diffusion-pusht/eval/pusht.json.
+benchmarks:
+  pusht: 0.60
+
+paper_url: "https://arxiv.org/abs/2303.04137"
+source_repo: "hf://lerobot/diffusion_pusht"
+
+description: >
+  Diffusion Policy (~263M-param U-Net with 100-step DDPM denoiser) for
+  the PushT 2-DoF pushing benchmark. Action chunks of length 8 within a
+  horizon of 16. The chunk inference cost is dominated by the denoising
+  loop, so cached pops are essentially free — this is the extreme test
+  of the queue-drain contract.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "push"
+objects:
+  - "t_shape"
+scenes:
+  - "tabletop_2d"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 2

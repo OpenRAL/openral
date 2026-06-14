@@ -1,0 +1,98 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4).
+# Wraps Deepkar/libero-test-act (ACT, Zhao et al. 2023; Apache-2.0)
+# trained on HuggingFaceVLA/libero. See README.md for the full
+# description and run instructions.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-act-libero"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "act"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "franka_panda"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "hf://Deepkar/libero-test-act"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# Modern ACT path: this checkpoint ships lerobot policy_preprocessor.json /
+# policy_postprocessor.json sidecars. The ACT adapter dispatches on
+# manifest.processors is not None and downloads each file via hf_hub_download.
+processors:
+  preprocessor_uri: "hf://Deepkar/libero-test-act/policy_preprocessor.json"
+  postprocessor_uri: "hf://Deepkar/libero-test-act/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: true
+  aliases:
+    camera1: "image"
+    camera2: "image2"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 100
+# n_action_steps omitted — ACT's apply_chunk_replay default is 1 (per-step
+# re-inference + temporal ensembling, paper-faithful).
+latency_budget:
+  per_chunk_ms: 100.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+
+paper_url: "https://arxiv.org/abs/2304.13705"
+source_repo: "hf://Deepkar/libero-test-act"
+
+description: >
+  ACT (Zhao et al., 2023) on HuggingFaceVLA/libero. ResNet-18, 4+1
+  enc/dec, latent VAE, chunk_size=100. Two 256x256 RGB (image / image2)
+  + 8-D state + 7-D action; plain chunked replay. State layout matches
+  openral_sim's LIBERO backend.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  representation: "delta_ee_6d_plus_gripper"

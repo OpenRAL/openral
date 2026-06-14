@@ -1,0 +1,164 @@
+# RobotDescription — Google Everyday Robot (sim-only embodiment).
+#
+# ADR-0010. Per ADR-0007 (robot/sim split) every robot.yaml is supposed
+# to describe a *physical* embodiment, but Google Robot is the same
+# exception as pusht_2d: there is no openly available real-hardware
+# adapter — the robot was internal to Google. This manifest exists so
+# SimEnvironment configs targeting ManiSkill3's GoogleRobot envs and
+# SimplerEnv's google_robot_* envs can round-trip through the schema
+# (which requires a robot_id) — it is the canonical "sim embodiment"
+# of the RT-1 / RT-2 / Octo / OpenVLA real-to-sim correlator setups,
+# not a real-deploy target.
+#
+# Kinematics are a coarse 7-DoF arm + mobile-base approximation
+# matching what ManiSkill3 and SimplerEnv expose. Joint limits are
+# placeholder, not from a vendor data sheet (none is public). The
+# IO contract (state shape, action shape, camera resolution) lives in
+# the matching scene adapter under
+# python/sim/src/openral_sim/adapters/{maniskill3,simpler_env}.py,
+# not here.
+
+name: "google_robot"
+embodiment_kind: "mobile_manipulator"
+base_frame: "base_link"
+
+# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# The Google "Everyday Robot" (RT-1 platform) has no public URDF —
+# `awesome-robot-descriptions` and `robot_descriptions` both lack
+# one, and `google-research/robotics_transformer` ships training
+# code only, not robot description files. SimplerEnv / ManiSkill2
+# evaluate RT-1 against a MuJoCo MJCF embedded in those frameworks.
+# A community-rebuilt URDF would be required for RSP wiring; until
+# then this robot stays MJCF-only end-to-end.
+
+joints:
+  - name: "arm_j1"
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "arm_l1"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 1.5
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "arm_j2"
+    joint_type: "revolute"
+    parent_link: "arm_l1"
+    child_link: "arm_l2"
+    position_limits: [-2.0, 2.0]
+    velocity_limit: 1.5
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "arm_j3"
+    joint_type: "revolute"
+    parent_link: "arm_l2"
+    child_link: "arm_l3"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 1.5
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+  - name: "arm_j4"
+    joint_type: "revolute"
+    parent_link: "arm_l3"
+    child_link: "arm_l4"
+    position_limits: [-2.0, 2.0]
+    velocity_limit: 1.5
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+  - name: "arm_j5"
+    joint_type: "revolute"
+    parent_link: "arm_l4"
+    child_link: "arm_l5"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 2.0
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+  - name: "arm_j6"
+    joint_type: "revolute"
+    parent_link: "arm_l5"
+    child_link: "arm_l6"
+    position_limits: [-2.0, 2.0]
+    velocity_limit: 2.0
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+  - name: "arm_j7"
+    joint_type: "revolute"
+    parent_link: "arm_l6"
+    child_link: "arm_l7"
+    position_limits: [-3.14, 3.14]
+    velocity_limit: 2.5
+    effort_limit: 10.0
+    actuator_kind: "bldc"
+  - name: "gripper"
+    joint_type: "prismatic"
+    parent_link: "arm_l7"
+    child_link: "finger_pair"
+    position_limits: [0.0, 1.0]
+    velocity_limit: 0.1
+    effort_limit: 30.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "gripper"
+    kind: "parallel_gripper"
+    hand: "na"
+    n_dof: 1
+    max_grip_force_n: 30.0
+    max_payload_kg: 2.0
+    workspace_radius_m: 0.85
+
+capabilities:
+  locomotion: ["wheeled"]
+  can_lift_kg: 2.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "cartesian_pose"
+  supported_vla_embodiments: ["google_robot"]
+  embodiment_tags:
+    - "google_robot"
+    - "everyday_robot"
+    - "rt1"
+    - "rt2"
+    - "oxe"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 50.0
+  max_torque_nm: 50.0
+  deadman_required: true
+
+# Single head-mounted RGB stream — matches the SimplerEnv / ManiSkill3
+# GoogleRobot camera setup (`base_camera` in MS3, `overhead_camera` in
+# SimplerEnv). Resolution mirrors the SimplerEnv default of 640x480.
+sensors:
+  - name: "head"
+    modality: "rgb"
+    frame_id: "head_camera"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 525.0
+      fy: 525.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "google_robot_head_camera"
+
+# No public SDK; the original Everyday Robot platform was discontinued
+# in 2023 when Alphabet shut the project down. ManiSkill3 and SimplerEnv
+# ship MJCF/USD assets reverse-engineered from RT-1 / RT-2 paper figures.
+sdk_kind: "open"
+
+# observation_spec / action_spec deliberately omitted (ADR-0007). The
+# per-sim IO contracts live in the matching scene adapters.

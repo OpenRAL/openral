@@ -1,0 +1,27 @@
+# gym-aloha AlohaInsertion-v0 — ALOHA bimanual fixed.
+# Run: openral benchmark --config scenes/benchmark/aloha_insertion.yaml \
+#                        --rskill rskill://rskills/act-aloha-insertion
+# Note: set MUJOCO_GL=egl.
+
+robot_id: aloha_bimanual
+
+scene:
+  id: aloha_insertion
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top"]
+
+task:
+  id: aloha_insertion/0
+  scene_id: aloha_insertion
+  instruction: "insert the peg"
+  success_key: is_success
+  max_steps: 500
+
+n_episodes: 200
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2304.13705"
+  honest_scope: "AlohaInsertion-v0 — harder than transfer cube. ACT paper reports ~50%."

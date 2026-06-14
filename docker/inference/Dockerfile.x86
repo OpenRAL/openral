@@ -1,0 +1,498 @@
+# OpenRAL inference deploy image — x86_64 + CUDA 13 + ROS 2 Jazzy + GStreamer.
+#
+# **Single supported deployment surface.** ADR-0010 amendment
+# "Single-Dockerfile consolidation + CUDA-13/DeepStream-9 alignment"
+# (current-date) replaces the four-file matrix that PR #93 shipped
+# (`Dockerfile.x86`, `Dockerfile.x86-ros`, `Dockerfile.x86-deepstream`,
+# `Dockerfile.l4t`) with this single file. The dropped surface:
+#
+#   * L4T / Tegra / Jetson Orin — out of scope until lab runner pool
+#     is online (issue #89 PR 3/3 follow-up).
+#   * CPU-only — out of scope; the runtime always assumes an NVIDIA
+#     CUDA-13-capable host (driver ≥ 580).
+#   * No-ROS variant — out of scope; ROS 2 Jazzy is baked in because
+#     `openral_runner`'s ROS-tee branch (ADR-0010 PR I/4) is now
+#     part of the default deployment.
+#
+# DeepStream stays optional (EULA-gated) via the `WITH_DEEPSTREAM_STAGE`
+# build arg. Default `=off` → no DeepStream bytes in the image. When
+# `=on`, the user must supply the SDK tarball via a separate BuildKit
+# build context — see §"DeepStream" below.
+#
+# ── Bases ────────────────────────────────────────────────────────────
+#
+# The base is **CUDA 13** so the DeepStream 9 plugin ABI lands on the
+# same userspace CUDA stack as everything else (PR #93's side-by-side
+# CUDA-12.6 + CUDA-13 install via `cuda-cudart-13-0` is gone). torch
+# 2.10's cu126 wheels still work because they bundle their own
+# `libcudart.so.12` and the NVIDIA driver is forward-compatible
+# (CUDA-13-capable driver runs CUDA-12 apps).
+#
+# ── Build ────────────────────────────────────────────────────────────
+#
+# Default (no DeepStream):
+#   docker buildx build -f docker/inference/Dockerfile.x86 \
+#       -t openral:x86-latest .
+#
+# DeepStream variant (EULA-gated):
+#   1. Read + accept the EULA at
+#      https://developer.download.nvidia.com/assets/Deepstream/LicenseAgreement-NGC.pdf
+#   2. Download `deepstream_sdk_v9.0.0_x86_64.tbz2` (~1.5 GB) from
+#      https://developer.nvidia.com/deepstream-getting-started
+#   3. Place it at `docker/inference/deepstream/deepstream_sdk_v9.0.0_x86_64.tbz2`
+#      (gitignored).
+#   4. Build:
+#      docker buildx build -f docker/inference/Dockerfile.x86 \
+#          --build-arg WITH_DEEPSTREAM_STAGE=on \
+#          --build-context ds=docker/inference/deepstream/ \
+#          -t openral:x86-deepstream-latest .
+#
+# See `docker/inference/README.md` for the full EULA breakdown (§2.c
+# forbids public-registry push, §4.g forbids benchmark publication,
+# §4.h forbids life-critical use). The DeepStream variant is therefore
+# never pushed to GHCR by `docker-build.yml`.
+#
+# ── Run ──────────────────────────────────────────────────────────────
+#
+#   docker run --rm --gpus all \
+#       -v "$(pwd)/deployments:/workspace/deployments:ro" \
+#       -v "$(pwd)/rskills:/workspace/rskills:ro" \
+#       -v "$(pwd)/robots:/workspace/robots:ro" \
+#       openral:x86-latest \
+#       run --config deployments/<your-deployment>.yaml
+#
+# `deploy run` is real-hardware only (ADR-0031): a RobotEnvironment config
+# under `deployments/` + a connected robot are required.
+#
+# `--network host` is recommended when the workspace publishes on a DDS
+# bus the host needs to subscribe to. Inside the container ROS 2 Jazzy
+# is already sourced by the entrypoint (`docker/inference/entrypoint.sh`),
+# along with the local `/workspace/install/setup.bash` colcon overlay
+# that carries openral_msgs + every openral_* lifecycle node + the
+# C++ safety_kernel binary baked in by the builder stage.
+
+# ── Build-time args ──────────────────────────────────────────────────
+#
+# Declared at the top, BEFORE the first FROM, so they survive across
+# stages. `WITH_DEEPSTREAM_STAGE` is a string (`on` / `off`) rather
+# than a boolean (`1` / `0`) because BuildKit's `FROM stage-${ARG}`
+# expands literally — no truthiness. The Justfile presents the
+# natural flag externally.
+ARG WITH_DEEPSTREAM_STAGE=off
+
+# ── Stage 1: builder ─────────────────────────────────────────────────
+
+FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ROS_DISTRO=jazzy
+
+# Add the ROS 2 apt repo (Jazzy on Ubuntu 24.04 = noble).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg2 lsb-release software-properties-common \
+    && add-apt-repository universe \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        > /etc/apt/sources.list.d/ros2.list
+
+# System deps for: building Python wheels (build-essential), the
+# gst-plugin registry + nvcodec elements, pygobject (apt-managed to
+# share GLib with torch + rclpy), Python headers for source-built
+# transitive deps, curl for the uv installer, ROS 2 Jazzy ros-base
+# + sensor-msgs + rclpy + cyclonedds rmw, and the toolchain needed to
+# `colcon build` the in-tree ROS packages under `packages/` + the C++
+# safety kernel and opentelemetry vendor under `cpp/`. The
+# `colcon-common-extensions`, `python3-vcstool`, and `ament-cmake-*`
+# packages provide the build harness; `ros-${ROS_DISTRO}-lifecycle-msgs`
+# / `-lifecycle-action-server` / `-launch*` cover the lifecycle-node
+# dispatch + launch.py imports the in-tree nodes need.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        ninja-build \
+        git \
+        pkg-config \
+        # GStreamer + plugin tiers
+        gstreamer1.0-tools \
+        gir1.2-gstreamer-1.0 \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        gstreamer1.0-libav \
+        gstreamer1.0-rtsp \
+        # PyGObject (apt-managed; matches system GLib). PyGObject 3.51+
+        # links against girepository-2.0 — pull the dev pkg so the
+        # PyPI sdist would build if asked, even though we splice apt's
+        # gi into the venv below.
+        python3-gi \
+        python3-gi-cairo \
+        libgirepository-2.0-dev \
+        libcairo2-dev \
+        # Python headers for evdev + other source builds.
+        python3-dev \
+        # ROS 2 Jazzy ros-base (no -desktop; we don't need rviz / demos).
+        ros-${ROS_DISTRO}-ros-base \
+        ros-${ROS_DISTRO}-sensor-msgs \
+        ros-${ROS_DISTRO}-rclpy \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        # colcon + ament harness for building packages/ + cpp/ in-tree.
+        # `python3-colcon-common-extensions` pulls colcon + the metadata
+        # parser; `python3-vcstool` is a transitive expectation of some
+        # launch utilities. `ros-${ROS_DISTRO}-ament-cmake-*` covers the
+        # CMake macros the C++ safety kernel + opentelemetry vendor
+        # consume; `lifecycle-msgs` + `launch-testing` + `launch-ros`
+        # are runtime imports the openral_* lifecycle nodes pull at
+        # configure-time.
+        python3-colcon-common-extensions \
+        python3-vcstool \
+        ros-${ROS_DISTRO}-ament-cmake \
+        ros-${ROS_DISTRO}-ament-cmake-python \
+        ros-${ROS_DISTRO}-ament-lint-auto \
+        ros-${ROS_DISTRO}-ament-lint-common \
+        ros-${ROS_DISTRO}-lifecycle-msgs \
+        ros-${ROS_DISTRO}-launch-ros \
+        ros-${ROS_DISTRO}-launch-testing \
+        ros-${ROS_DISTRO}-launch-testing-ros \
+        ros-${ROS_DISTRO}-rosidl-default-generators \
+        ros-${ROS_DISTRO}-rosidl-default-runtime \
+        # ADR-0024 / ADR-0025 — wrapped-ROS rSkills + lifecycle peers.
+        # moveit + moveit-resources-panda: needed by the in-tree
+        # ``rskills/rskill-moveit-joints/`` ros_action skill plus its
+        # integration test (``tests/integration/test_moveit_joints_franka.py``)
+        # which spawns ``moveit_resources_panda_moveit_config``'s demo
+        # launch. moveit-msgs is the IDL the ROSActionRskill adapter
+        # imports lazily.
+        ros-${ROS_DISTRO}-moveit \
+        ros-${ROS_DISTRO}-moveit-msgs \
+        ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config \
+        # nav2 + nav2-msgs: the IDL for the
+        # ``rskills/openral-nav2-navigate-to-pose/`` ros_action skill,
+        # plus the full bringup so the panda_mobile-driven nav demo can
+        # actually plan when a /map exists.
+        ros-${ROS_DISTRO}-nav2-bringup \
+        ros-${ROS_DISTRO}-nav2-msgs \
+        # slam_toolbox: ADR-0025 first concrete Reasoner-managed
+        # background service. The ``openral_slam_bringup`` launcher in
+        # ``packages/openral_slam_bringup/`` brings up
+        # ``async_slam_toolbox_node`` as a LifecycleNode under
+        # ``/openral_slam_toolbox`` when the deploy CLI is invoked
+        # with ``--enable-slam``.
+        ros-${ROS_DISTRO}-slam-toolbox \
+        # Pulled by slam_toolbox's QoS + by the SlamMapBridge in
+        # ``openral_runner.slam_bridge`` which subscribes /map and
+        # emits the ``slam.occupancy_grid`` OTLP span.
+        ros-${ROS_DISTRO}-nav-msgs \
+        # ADR-0030 — geometric world-collision via OctoMap. Build deps for
+        # ``packages/openral_octomap_bridge/`` (octree→OccupancyVoxels
+        # node feeding the C++ safety kernel's allocation-free voxel
+        # check): octomap (liboctomap + ament cmake config),
+        # octomap-msgs (the Octomap IDL it deserializes), and
+        # tf2-geometry-msgs (the octree-frame ← base-frame TF crop).
+        ros-${ROS_DISTRO}-octomap \
+        ros-${ROS_DISTRO}-octomap-msgs \
+        ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        # C++ safety kernel + opentelemetry_cpp_vendor build deps. The
+        # vendor package downloads + builds opentelemetry-cpp from
+        # source; the kernel depends on its CMake targets. abseil is
+        # pulled transitively by protobuf, but pinning it explicitly
+        # keeps the build deterministic.
+        libprotobuf-dev \
+        protobuf-compiler \
+        libabsl-dev \
+        libssl-dev \
+        libcurl4-openssl-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv installs to /usr/local/bin so it's on the default PATH.
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+
+WORKDIR /workspace
+
+# Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
+COPY pyproject.toml uv.lock ./
+COPY python/ python/
+
+# Workspace install. We intentionally DROP `--extra gstreamer` here:
+# PyPI's PyGObject builds against the runtime glib it sees at build
+# time, but rclpy's bundled DDS rmw was compiled against apt's glib
+# and the two can mismatch at runtime → segfault on rclpy.init() after
+# gi is loaded. Instead we splice the apt-managed `python3-gi` into
+# the venv in the runtime stage so both gi and rclpy share the same
+# glib link.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --all-packages
+
+# Copy the colcon-buildable trees AFTER the venv resolve so a
+# packages/ tweak doesn't bust the (much larger) Python dep layer.
+# `cpp/` carries the C++ safety kernel + the opentelemetry_cpp_vendor
+# package the kernel links against.
+COPY packages/ packages/
+COPY cpp/ cpp/
+
+# Bake the manifest trees so `openral doctor` / `sim run` / `deploy
+# run` work out of the box (no host bind-mount required). These are
+# YAML / Markdown only — total ~1 MB — weights live on HF Hub.
+# Users can still bind-mount `-v $(pwd)/robots:/workspace/robots:ro`
+# at run-time to override with a checkout-local version.
+COPY robots/ robots/
+COPY rskills/ rskills/
+COPY benchmarks/ benchmarks/
+
+# Splice apt-managed python3-gi into the workspace venv BEFORE colcon
+# build runs, because some ament-python tests import `gi` at
+# configure-time. Same pattern as the runtime-base splice — keeps gi +
+# rclpy on one glib link. Idempotent (sourced from
+# /usr/lib/python3/dist-packages/gi which exists after the apt install
+# above).
+RUN ln -sfT /usr/lib/python3/dist-packages/gi \
+    /workspace/.venv/lib/python3.12/site-packages/gi
+
+# Build every ROS 2 + C++ package the deploy image needs in one shot.
+# The set mirrors `just ros2-build` (Justfile line 337-354 at the time
+# of this commit) so the on-host dev loop and the image are
+# bit-for-bit aligned. Critically:
+#
+#   - openral_msgs:                  IDL the rest of the graph consumes
+#   - opentelemetry_cpp_vendor:      builds opentelemetry-cpp from source;
+#                                    safety_kernel links against it
+#   - openral_safety_kernel:         C++ deny-by-default safety process
+#                                    (CLAUDE.md §1.1, §7.7) — the
+#                                    binary lands at
+#                                    /workspace/install/openral_safety_kernel/bin/safety_kernel
+#   - openral_hal_so100 / _openarm:  HAL lifecycle nodes
+#   - openral_world_state:           ADR-0018 F8 30 Hz snapshot node
+#   - openral_reasoner_ros:          ADR-0018 F4 LLM tool dispatch
+#   - openral_prompt_router:         ADR-0018 F10 prompt fan-in
+#   - openral_safety / _watchdog:    ADR-0018 F5 + deadman
+#   - openral_human_estop:           ADR-0018 F5 forwarder
+#   - openral_rskill_ros:            ADR-0018 F1 ExecuteSkill action
+#   - openral_octomap_bridge:        ADR-0030 octree→OccupancyVoxels
+#                                    bridge feeding the kernel voxel check
+#
+# `Python3_EXECUTABLE=/workspace/.venv/bin/python` is essential: the
+# ament-python packages bake the interpreter into their CTestTestfile
+# + activate scripts, so without this they'd try to resolve
+# `openral_*` + `structlog` against the system python (which is
+# unconfigured) instead of the venv.
+#
+# `--merge-install` collapses the per-package install trees into one
+# `/workspace/install/setup.bash` that the entrypoint can source.
+# We DROP `--symlink-install` because the runtime stage copies
+# `install/` over from the builder and symlinks pointing into the
+# (now-absent) `build/` tree would dangle.
+RUN bash -lc 'set -eo pipefail \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && set -u \
+    && colcon build --merge-install \
+        --base-paths packages cpp \
+        --packages-select openral_msgs \
+                          opentelemetry_cpp_vendor \
+                          openral_hal_so100 \
+                          openral_hal_openarm \
+                          openral_world_state \
+                          openral_reasoner_ros \
+                          openral_prompt_router \
+                          openral_safety \
+                          openral_safety_watchdog \
+                          openral_safety_kernel \
+                          openral_human_estop \
+                          openral_rskill_ros \
+                          openral_octomap_bridge \
+        --cmake-args -DPython3_EXECUTABLE=/workspace/.venv/bin/python \
+                     -DCMAKE_C_COMPILER=/usr/bin/gcc \
+                     -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+                     -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log'
+
+# ── Stage 2: runtime-base ────────────────────────────────────────────
+
+FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04 AS runtime-base
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG ROS_DISTRO=jazzy
+
+# Re-add the ROS apt repo for the runtime layer (only runtime libs).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg2 lsb-release software-properties-common \
+    && add-apt-repository universe \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        > /etc/apt/sources.list.d/ros2.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gstreamer1.0-tools \
+        gir1.2-gstreamer-1.0 \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-ugly \
+        gstreamer1.0-libav \
+        gstreamer1.0-rtsp \
+        python3-gi \
+        python3-gi-cairo \
+        libgirepository-1.0-1 \
+        libgirepository-2.0-0 \
+        libcairo2 \
+        ros-${ROS_DISTRO}-ros-base \
+        ros-${ROS_DISTRO}-sensor-msgs \
+        ros-${ROS_DISTRO}-rclpy \
+        ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        ros-${ROS_DISTRO}-lifecycle-msgs \
+        ros-${ROS_DISTRO}-launch-ros \
+        ros-${ROS_DISTRO}-rosidl-default-runtime \
+        # ADR-0024 / ADR-0025 runtime deps — see the matching block in
+        # the builder stage above for rationale.
+        ros-${ROS_DISTRO}-moveit \
+        ros-${ROS_DISTRO}-moveit-msgs \
+        ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config \
+        ros-${ROS_DISTRO}-nav2-bringup \
+        ros-${ROS_DISTRO}-nav2-msgs \
+        ros-${ROS_DISTRO}-slam-toolbox \
+        ros-${ROS_DISTRO}-nav-msgs \
+        # ADR-0030 — OctoMap runtime libs the openral_octomap_bridge node
+        # links at process start (liboctomap + octomap_msgs typesupport +
+        # tf2_geometry_msgs). octomap-server produces the upstream
+        # octomap_msgs/Octomap from a depth point cloud; bundled so the
+        # full octree→bridge→kernel chain runs in the deploy image.
+        ros-${ROS_DISTRO}-octomap \
+        ros-${ROS_DISTRO}-octomap-msgs \
+        ros-${ROS_DISTRO}-octomap-server \
+        ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        # Runtime libs the C++ safety kernel + opentelemetry-cpp pull
+        # at process start. abseil + protobuf are linked in by the
+        # opentelemetry_cpp_vendor build; libssl + libcurl handle the
+        # OTLP exporter's TLS / HTTP legs. Versioned package names on
+        # noble: libabsl20220623t64, libprotobuf32t64.
+        libabsl20220623t64 \
+        libprotobuf32t64 \
+        libssl3 \
+        libcurl4 \
+        lttng-tools python3-lttngust babeltrace2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Carry the resolved venv + workspace + colcon install/ from the
+# builder. The `install/` tree carries the colcon-built ROS packages
+# (openral_msgs IDL, all the lifecycle nodes, the C++ safety kernel
+# binary at install/openral_safety_kernel/bin/safety_kernel) and is
+# sourced by /entrypoint.sh after the system ROS distro.
+COPY --from=builder /workspace /workspace
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
+
+# Splice apt-managed gi into the venv site-packages so the workspace's
+# Python uses the SAME gi (and the same glib link) that ros-jazzy-rclpy
+# was built against. Mixing PyPI's PyGObject build with apt's rclpy
+# segfaults at rclpy.init() on the gi-then-rclpy import order — that's
+# why the builder stage was left without the `gstreamer` extra.
+RUN ln -sfT /usr/lib/python3/dist-packages/gi \
+    /workspace/.venv/lib/python3.12/site-packages/gi
+
+# F9 (ADR-0018 LTTng opt-in): splice the distro's python3-lttngust
+# (2.13.x, the only working Python 3.12 build — PyPI's 2.7.1 calls
+# the removed time.clock() at import time) into the venv site-packages.
+# Same pattern as the gi splice above; keeps the import path uv-resolves
+# pointing at the apt-managed binding so
+# openral_observability.tracing_lttng picks it up instead of falling
+# back to the JSONL tracer.
+RUN ln -sfT /usr/lib/python3/dist-packages/lttngust \
+    /workspace/.venv/lib/python3.12/site-packages/lttngust
+
+# Shared entrypoint — probes /opt/ros/*/setup.bash and sources the
+# first match before exec'ing the user command. Replaces the
+# hardcoded `source /opt/ros/${ROS_DISTRO}/setup.bash` of the deleted
+# `entrypoint-ros.sh`. Probe-style so a future arch (Humble on L4T,
+# none on a minimal variant) reuses this script unchanged.
+COPY docker/inference/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENV PATH=/workspace/.venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    GST_DEBUG=2 \
+    ROS_DISTRO=${ROS_DISTRO} \
+    # Cyclonedds is preferred over Fast DDS in this image because Fast
+    # DDS' SHM transport interacts badly with pydantic v2's Rust core +
+    # GStreamer's gst-cuda plugin load: `rclpy.init()` / `Node()`
+    # SIGSEGVs after pydantic + Gst.init() have run in the same
+    # process. cyclone uses its own DDS impl and is unaffected.
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    # Default ROS_DOMAIN_ID=0; override at run-time with -e ROS_DOMAIN_ID=N.
+    ROS_DOMAIN_ID=0
+
+# ── DeepStream stage selector ────────────────────────────────────────
+#
+# `WITH_DEEPSTREAM_STAGE=off` (default) lands on `ds-off`, a no-op
+# stage. `WITH_DEEPSTREAM_STAGE=on` lands on `ds-on`, which adds the
+# DeepStream SDK + GST_PLUGIN_PATH so `gst-inspect-1.0 nvvideoconvert`
+# resolves inside the image. Flipping this flag does NOT invalidate
+# the ROS apt layer or the gi splice — those live in `runtime-base`
+# whose hash is independent of the DS flag.
+
+FROM runtime-base AS ds-off
+# no-op — DeepStream is not bundled.
+
+FROM runtime-base AS ds-on
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# DeepStream installer runtime deps (no `build-essential` — DeepStream
+# ships prebuilt .so files). `bzip2` is required to extract the .tbz2
+# tarball with `tar -xvf`; missing it produces an opaque "Cannot exec:
+# No such file or directory" error.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bzip2 \
+        libyaml-cpp0.8 \
+        libssl3 \
+        libjansson4 \
+        libuuid1 \
+        gstreamer1.0-plugins-base-apps \
+    && rm -rf /var/lib/apt/lists/*
+
+# NO `cuda-cudart-13-0` / `libnpp-13-0` apt install — the base image
+# already ships CUDA 13 runtime + NPP. This is the single biggest
+# payoff of the CUDA-13 base bump (vs PR #93's side-by-side hack on
+# top of the CUDA-12.6 base).
+
+# COPY-from-build-context pattern mirrors NVIDIA's official
+# deepstream_dockers repo (https://github.com/NVIDIA-AI-IOT/deepstream_dockers).
+# The `ds` named context is supplied by the caller via
+# `docker buildx build --build-context ds=docker/inference/deepstream/`
+# and only required when WITH_DEEPSTREAM_STAGE=on. Keeps the 1.5 GB
+# tarball OUT of the default build context for non-DS builds (no
+# transfer to the daemon at all).
+COPY --from=ds deepstream_sdk_v9.0.0_x86_64.tbz2 /tmp/deepstream.tbz2
+
+RUN tar -xvf /tmp/deepstream.tbz2 -C / \
+    && /opt/nvidia/deepstream/deepstream/install.sh \
+    && ldconfig \
+    && rm /tmp/deepstream.tbz2 \
+    # Drop samples to shrink the image — keep only libs + gst-plugins.
+    && rm -rf /opt/nvidia/deepstream/deepstream-*/samples
+
+ENV LD_LIBRARY_PATH=/opt/nvidia/deepstream/deepstream/lib:${LD_LIBRARY_PATH} \
+    GST_PLUGIN_PATH=/opt/nvidia/deepstream/deepstream/lib/gst-plugins
+
+# ── Final stage ──────────────────────────────────────────────────────
+#
+# Picks `ds-off` or `ds-on` based on the build arg. The final image
+# carries everything the chosen stage installed plus the
+# `runtime-base` foundation (CUDA 13 runtime + GStreamer + ROS Jazzy
+# + workspace venv + gi splice + entrypoint).
+
+FROM ds-${WITH_DEEPSTREAM_STAGE} AS final
+
+WORKDIR /workspace
+
+# The entrypoint probes /opt/ros/*/setup.bash AND
+# /workspace/install/setup.bash, sources whichever exist (system
+# distro first, local overlay second), then exec's the CMD. Default
+# CMD runs `openral deploy run --help`; override with the desired
+# tool call, e.g. `docker run img python smoke_ros_tee.py` or
+# `docker run img openral deploy run --config /workspace/examples/...`.
+# Post-ADR-0021 the CLI ships as `openral`, no `ral` alias.
+ENTRYPOINT ["/entrypoint.sh", "openral", "deploy", "run"]
+CMD ["--help"]

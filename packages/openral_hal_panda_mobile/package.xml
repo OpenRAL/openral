@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_hal_panda_mobile</name>
+  <version>0.1.0</version>
+  <description>
+    OpenRAL HAL lifecycle node for the panda_mobile embodiment
+    (Franka 7-DoF arm on a holonomic 3-DoF planar base). Wraps
+    PandaMobileHAL (from openral-hal) as a ROS 2 managed lifecycle
+    node. Publishes /joint_states (10-DoF: 3 base + 7 arm),
+    /odom (nav_msgs/Odometry derived from the base pose), and
+    /scan (sensor_msgs/LaserScan — synthesised from the live
+    MJCF when a MuJoCo handle is bound at configure-time; an
+    all-max-range "no hit" fan otherwise). Broadcasts the
+    odom -> base_link TF so slam_toolbox and Nav2 can resolve
+    frames. Subscribes /openral/safe_action and /openral/estop.
+    ADR-0024 / ADR-0025.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>openral_msgs</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>rclpy_lifecycle</depend>
+
+  <!-- Python runtime: the OpenRAL Python workspace must be on PYTHONPATH -->
+  <exec_depend>python3-openral-hal</exec_depend>
+  <exec_depend>python3-openral-observability</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

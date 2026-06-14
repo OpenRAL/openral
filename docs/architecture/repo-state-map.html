@@ -1,0 +1,1813 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1280" />
+  <title>OpenRAL · repo state map</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --bg-2: #161a22;
+      --panel: #1c212c;
+      --panel-2: #232a37;
+      --line: #2b3242;
+      --line-strong: #3a4358;
+      --text: #e6edf3;
+      --text-dim: #9aa4b2;
+      --text-faint: #6b7382;
+      --accent: #8ab4ff;
+
+      --green: #1f6f3a;
+      --green-fg: #6ee7a4;
+      --green-edge: #2ea25a;
+      --yellow: #6e5b16;
+      --yellow-fg: #f7d35a;
+      --yellow-edge: #b48717;
+      --blue: #1e3a6e;
+      --blue-fg: #7aa9ff;
+      --blue-edge: #3a6cc8;
+      --red: #6c1f24;
+      --red-fg: #ff8c8c;
+      --red-edge: #b53236;
+
+      --schema: #6f3aa8;
+      --schema-fg: #c8a3ff;
+
+      --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", Segoe UI, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); }
+    body { line-height: 1.45; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, .mono { font-family: var(--mono); }
+
+    header {
+      padding: 22px 28px 16px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #11141b, #0f1115);
+      position: sticky; top: 0; z-index: 20;
+    }
+    header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
+    header .sub { color: var(--text-dim); font-size: 13px; }
+    .legend {
+      display: flex; gap: 14px; flex-wrap: wrap;
+      margin-top: 12px; align-items: center; font-size: 12px;
+    }
+    .swatch {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .swatch::before {
+      content: ""; width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+    }
+    .sw-green::before { background: var(--green-edge); }
+    .sw-yellow::before { background: var(--yellow-edge); }
+    .sw-blue::before { background: var(--blue-edge); }
+    .sw-red::before { background: var(--red-edge); }
+    .sw-schema::before { background: var(--schema); }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 0;
+      min-height: calc(100vh - 110px);
+    }
+    .canvas { padding: 22px 28px 60px; min-width: 0; }
+    aside.side {
+      border-left: 1px solid var(--line);
+      background: var(--bg-2);
+      padding: 18px 18px 60px;
+      position: sticky; top: 110px; align-self: start;
+      height: calc(100vh - 110px); overflow-y: auto;
+    }
+    aside.side h2 {
+      font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-dim); margin: 0 0 10px;
+    }
+    aside.side .empty { color: var(--text-faint); font-size: 13px; font-style: italic; }
+    aside.side .schema-list {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    aside.side .schema-list .item {
+      display: flex; align-items: center; gap: 8px; font-size: 12px;
+      padding: 4px 8px; border-radius: 6px;
+    }
+    aside.side .schema-list .item:hover { background: var(--panel); }
+    aside.side .schema-list .item .dot {
+      width: 8px; height: 8px; border-radius: 2px; background: var(--schema); flex: none;
+    }
+    aside.side .field {
+      font-family: var(--mono); font-size: 12px; color: var(--text);
+    }
+    aside.side .field .ty { color: var(--text-dim); }
+    aside.side .selected-block {
+      margin-bottom: 18px; padding: 12px; background: var(--panel);
+      border: 1px solid var(--line); border-radius: 10px;
+    }
+    aside.side .selected-block h3 {
+      margin: 0 0 6px; font-size: 14px;
+    }
+    aside.side .selected-block .meta {
+      color: var(--text-dim); font-size: 12px; margin-bottom: 8px;
+    }
+    aside.side .selected-block .pair {
+      display: grid; grid-template-columns: 56px 1fr; gap: 6px; font-size: 12px;
+      margin: 4px 0; align-items: start;
+    }
+    aside.side .selected-block .pair .k {
+      color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; padding-top: 2px;
+    }
+    aside.side .selected-block .pair .v {
+      font-family: var(--mono); color: var(--text);
+    }
+    aside.side .selected-block .pair .v code {
+      background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 11px;
+      display: inline-block; margin: 1px 2px 1px 0;
+    }
+
+    /* Section headers */
+    h2.section {
+      font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--text-dim); margin: 28px 0 12px;
+    }
+    h2.section:first-child { margin-top: 0; }
+
+    /* Flow strip */
+    .flow {
+      display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 0; align-items: stretch; padding: 14px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      position: relative;
+    }
+    .flow .step {
+      padding: 10px 8px; text-align: center; font-size: 12px;
+      border-right: 1px solid var(--line); position: relative;
+    }
+    .flow .step:last-child { border-right: 0; }
+    .flow .step .num {
+      font-family: var(--mono); color: var(--text-faint); font-size: 10px; letter-spacing: 0.1em;
+    }
+    .flow .step .nm { font-weight: 600; margin: 4px 0 2px; }
+    .flow .step .hz { color: var(--text-dim); font-size: 10px; }
+    .flow .step::after {
+      content: ""; position: absolute; right: -7px; top: 50%; transform: translateY(-50%);
+      width: 0; height: 0; border-left: 7px solid var(--line-strong);
+      border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+      z-index: 2;
+    }
+    .flow .step:last-child::after { display: none; }
+    .flow .step.dot-green { box-shadow: inset 0 -3px 0 var(--green-edge); }
+    .flow .step.dot-yellow { box-shadow: inset 0 -3px 0 var(--yellow-edge); }
+    .flow .step.dot-blue { box-shadow: inset 0 -3px 0 var(--blue-edge); }
+
+    /* Layer rows */
+    .layers {
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .layer {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 14px;
+      align-items: stretch;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      overflow: hidden;
+    }
+    .layer .head {
+      padding: 14px 14px;
+      background: var(--panel-2);
+      border-right: 1px solid var(--line);
+      display: flex; flex-direction: column; gap: 4px; justify-content: center;
+    }
+    .layer .head .ix {
+      font-family: var(--mono); color: var(--text-faint); font-size: 11px; letter-spacing: 0.12em;
+    }
+    .layer .head .nm { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+    .layer .head .desc { color: var(--text-dim); font-size: 11.5px; line-height: 1.35; }
+    .layer .head .pulse {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 10px;
+      color: var(--text-dim); margin-top: 4px;
+    }
+    .layer .head .pulse .bar {
+      flex: 1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden;
+      display: flex;
+    }
+    .layer .head .pulse .bar > span {
+      display: block; height: 100%;
+    }
+    .layer .head .pulse .bar > span.g { background: var(--green-edge); }
+    .layer .head .pulse .bar > span.y { background: var(--yellow-edge); }
+    .layer .head .pulse .bar > span.b { background: var(--blue-edge); }
+    .layer .head .pulse .bar > span.r { background: var(--red-edge); }
+
+    .blocks {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px; padding: 14px;
+    }
+    .block {
+      background: var(--bg-2); border: 1px solid var(--line);
+      border-radius: 10px; padding: 11px 12px;
+      cursor: pointer; transition: transform 0.05s, border-color 0.1s, background 0.1s;
+      position: relative; overflow: hidden;
+    }
+    .block:hover { border-color: var(--line-strong); background: #1a2030; }
+    .block.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 20px rgba(138,180,255,0.10);
+    }
+    .block .top {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;
+    }
+    .block h3 {
+      margin: 0; font-size: 13.5px; letter-spacing: -0.01em;
+    }
+    .block .pkg {
+      font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); margin-top: 2px;
+      word-break: break-all;
+    }
+    .block .desc {
+      color: var(--text-dim); font-size: 11.5px; margin-top: 6px; line-height: 1.4;
+    }
+    .block .tags {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+    }
+    .block .tag {
+      font-family: var(--mono); font-size: 10px; padding: 2px 6px;
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+      color: var(--text-dim);
+    }
+    .block .tag.io-in { color: #ffd28e; border-color: #4a3a18; background: #2a2114; }
+    .block .tag.io-out { color: #8eecff; border-color: #18404a; background: #14242a; }
+    .block .tag.schema { color: var(--schema-fg); border-color: #3a1d59; background: #221332; }
+
+    .pill {
+      font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 3px 8px; border-radius: 999px; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 5px; flex: none;
+    }
+    .pill.green { background: var(--green); color: var(--green-fg); }
+    .pill.yellow { background: var(--yellow); color: var(--yellow-fg); }
+    .pill.blue { background: var(--blue); color: var(--blue-fg); }
+    .pill.red { background: var(--red); color: var(--red-fg); }
+
+    /* Filter chips */
+    .filter-row {
+      display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 18px; align-items: center;
+    }
+    .filter-row .lbl {
+      font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .chip {
+      cursor: pointer; user-select: none;
+      font-size: 11.5px; padding: 5px 10px; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--panel); color: var(--text-dim);
+    }
+    .chip:hover { color: var(--text); }
+    .chip.on { background: var(--panel-2); color: var(--text); border-color: var(--line-strong); }
+
+    /* Cross-cutting */
+    .cross {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .cross .block { background: var(--panel); }
+
+    /* Cancelled (deliberately not built) */
+    .cancelled-row .block { opacity: 0.85; }
+    .cancelled-row .block .desc { color: var(--text-faint); }
+
+    /* SVG flow overlay */
+    .runtime-loop {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; position: relative; overflow-x: auto;
+    }
+
+    footer {
+      padding: 16px 28px 28px; color: var(--text-faint); font-size: 11px; border-top: 1px solid var(--line);
+      background: var(--bg-2);
+    }
+
+    /* Responsive */
+    @media (max-width: 1100px) {
+      main { grid-template-columns: 1fr; }
+      aside.side { position: static; height: auto; border-left: none; border-top: 1px solid var(--line); }
+      .flow { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .flow .step:nth-child(4)::after { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>OpenRAL · repo state map</h1>
+  <div class="sub">A canvas view of every module in the eight-layer runtime, what it produces, what it consumes, and whether it actually exists. Click a block to inspect its schemas.</div>
+  <div class="legend">
+    <span class="swatch sw-green">working</span>
+    <span class="swatch sw-yellow">in development</span>
+    <span class="swatch sw-blue">planned</span>
+    <span class="swatch sw-red">cancelled / out of scope</span>
+    <span class="swatch sw-schema">schema</span>
+    <span style="color: var(--text-faint); font-size: 11px; margin-left: auto;">
+      Generated from <span class="mono">CLAUDE.md</span> + actual filesystem state. Branch: <span class="mono">master</span> · 2026-06-11
+    </span>
+  </div>
+</header>
+
+<main>
+<section class="canvas">
+
+  <h2 class="section">Runtime data flow · the closed loop one Skill execution traverses</h2>
+  <div class="runtime-loop">
+    <div class="flow">
+      <div class="step dot-green">
+        <div class="num">L0</div>
+        <div class="nm">HAL</div>
+        <div class="hz">read_state @ ctrl Hz</div>
+      </div>
+      <div class="step dot-yellow">
+        <div class="num">L1</div>
+        <div class="nm">Sensors</div>
+        <div class="hz">RGB / depth / IMU</div>
+      </div>
+      <div class="step dot-green">
+        <div class="num">L2</div>
+        <div class="nm">World State</div>
+        <div class="hz">snapshot @ 30 Hz</div>
+      </div>
+      <div class="step dot-green">
+        <div class="num">L3</div>
+        <div class="nm">rSkill (S1)</div>
+        <div class="hz">VLA chunk @ 30–200 Hz</div>
+      </div>
+      <div class="step dot-yellow">
+        <div class="num">L4</div>
+        <div class="nm">Reasoner (S2)</div>
+        <div class="hz">LLM → BT @ 5–10 Hz</div>
+      </div>
+      <div class="step dot-yellow">
+        <div class="num">L5</div>
+        <div class="nm">WAM (opt.)</div>
+        <div class="hz">mental rollout</div>
+      </div>
+      <div class="step dot-yellow">
+        <div class="num">L6</div>
+        <div class="nm">Safety</div>
+        <div class="hz">C++, deny-by-default</div>
+      </div>
+      <div class="step dot-green">
+        <div class="num">L7</div>
+        <div class="nm">Observability</div>
+        <div class="hz">OTel + LeRobotDataset</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-faint);margin-top:8px;font-family:var(--mono);">
+      JointState, images, tf2 frames  →  WorldState  →  Action(chunk)  →  clamped Action  →  motors  ·  spans+frames forked to Observability the whole time
+    </div>
+  </div>
+
+  <div class="filter-row">
+    <span class="lbl">Filter:</span>
+    <span class="chip on" data-filter="all">all</span>
+    <span class="chip" data-filter="green">working</span>
+    <span class="chip" data-filter="yellow">in dev</span>
+    <span class="chip" data-filter="blue">planned</span>
+    <span class="chip" data-filter="red">cancelled</span>
+  </div>
+
+  <h2 class="section">The eight layers · per-module status, inputs, outputs, schemas</h2>
+  <div class="layers" id="layers"></div>
+
+  <h2 class="section">Cross-cutting · not a layer, but every layer touches them</h2>
+  <div class="cross" id="cross"></div>
+
+  <h2 class="section">Out of scope · never going to exist in this repo (per CLAUDE.md §0, §1)</h2>
+  <div class="cross cancelled-row" id="cancelled"></div>
+
+</section>
+
+<aside class="side">
+  <h2>Inspector</h2>
+  <div id="selected"></div>
+  <h2 style="margin-top: 22px;">Schemas registry</h2>
+  <div style="font-size: 11px; color: var(--text-faint); margin-bottom: 10px;">
+    Pydantic v2 contracts in <span class="mono">python/core/</span> · these are the layer-boundary types
+  </div>
+  <div class="schema-list" id="schemaList"></div>
+</aside>
+</main>
+
+<footer>
+  Sources: <span class="mono">CLAUDE.md §2 (repo map)</span>, <span class="mono">README.md</span>, <span class="mono">docs/architecture/overview.md</span>, and the actual contents of <span class="mono">python/</span>, <span class="mono">packages/</span>, <span class="mono">cpp/</span>, <span class="mono">tools/</span>, <span class="mono">examples/</span>, <span class="mono">rskills/</span>, <span class="mono">tests/</span> as of branch HEAD.
+  Status pills are evidence-based: a module is <b>working</b> only if it has source files <i>and</i> tests; <b>in dev</b> if source exists but the layer responsibility is partially covered; <b>planned</b> if the directory does not yet exist; <b>cancelled</b> if CLAUDE.md explicitly says we will not build it.
+</footer>
+
+<script>
+// ── DATA ──────────────────────────────────────────────────────────────────────
+// status: green | yellow | blue | red
+
+const SCHEMAS = [
+  // robot description / parts
+  { name: "RobotDescription",     where: "python/core/src/openral_core/schemas.py", kind: "manifest", note: "Top-level robot manifest (URDF, joints, sensors, capabilities, safety, obs/action specs). Carries an optional `scene_defaults` block so sim backends can read per-robot rendering defaults (top-camera POV today) instead of hard-coding dataset-specific constants. ADR-0031 replaces the overloaded `sdk_entry` with a `hal: HalEntrypoints{sim, real}` block, resolved by openral_hal.build_hal — deploy sim builds hal.sim, deploy run builds hal.real." },
+  { name: "ActionContract",       where: "core",  kind: "part",  note: "ADR-0019 — per-rSkill action-vector contract. ADR-0028b adds an optional `slots: list[ActionSlot]` field; when set, the skill_runner reads it and emits one typed ActionChunk per non-discard slot." },
+  { name: "ActionSlot",           where: "core",  kind: "part",  note: "ADR-0028b — one contiguous slice of an action vector with a typed ControlMode + per-mode ee/frame/joint_names. Validator enforces per-mode field requirements + coverage (no gaps, no overlaps)." },
+  { name: "JointSpec",            where: "core",  kind: "part",  note: "ADR-0028a — `role: JointRole` field for structural identification (arm/base/gripper/torso/...) replacing name-substring heuristics in the runner / safety / dataset bridge. Default `unknown`; fleet annotates incrementally." },
+  { name: "JointRole",            where: "core",  kind: "part",  note: "ADR-0028a — Literal['arm','base','gripper','torso','leg','head','neck','wheel','unknown'] tagged on each JointSpec." },
+  { name: "EndEffectorSpec",      where: "core",  kind: "part",  note: "ADR-0028a — `actuated: bool = True` formalised. Was previously silently ignored by Pydantic; now load-bearing for passive-tool safety routing." },
+  { name: "RobotCapabilities",    where: "core",  kind: "part",  note: "embodiment_tags + flags · used by skill loader to capability-check. v0.5: adds nvmm_available (ADR-0016)." },
+  { name: "SafetyEnvelope",       where: "core",  kind: "part",  note: "Workspace box, force/speed limits, e-stop topic. Enforced by Safety kernel (planned)." },
+  { name: "CollisionShape",       where: "core",  kind: "part",  note: "ADR-0030 — discriminated union CapsuleShape | SphereShape (discriminator `shape`). Convex analytic primitives the allocation-free safety kernel can collision-check; meshes excluded." },
+  { name: "LinkCollisionGeometry",where: "core",  kind: "part",  note: "ADR-0030 — per-link convex collision volume (link_name + CollisionShape + origin_xyz_rpy). Lowered kernel-facing form; RobotDescription.collision_geometry + allowed_collision_pairs + srdf_path carry the self-collision model. `joints` stays normative for kinematics." },
+  { name: "ObservationSpec",      where: "core",  kind: "part" },
+  { name: "ActionSpec",           where: "core",  kind: "part" },
+  { name: "SimDescription",       where: "core",  kind: "part",  note: "ADR-0023. Optional RobotDescription.sim block — MuJoCo wiring (mjcf_uri, joint_qpos_addr, actuator_index, gripper, floating_base) consumed by MujocoArmHAL.from_description so per-robot HAL classes carry no hardcoded constants." },
+  { name: "HalEntrypoints",       where: "core",  kind: "part",  note: "ADR-0031. RobotDescription.hal block — {sim, real} import strings resolved by openral_hal.build_hal. sim=null derives MujocoArmHAL.from_description from the sim: block; real=null marks a simulation-only robot. deploy sim builds hal.sim, deploy run builds hal.real — the manifest is the single source of truth for HAL type (never env config). ADR-0029 adds a parameters: HalParameters sub-block." },
+  { name: "HalParameters",        where: "core",  kind: "part",  note: "ADR-0029 (issue #191). RobotDescription.hal.parameters block — per-robot HAL construction defaults (serial port, robot_ip, …) merged into the constructor by build_hal underneath any explicit transport (override wins; unaccepted keys dropped). Lets a parameterised robot skip a bespoke ManifestHALLifecycleNode subclass; empty by default." },
+  { name: "SimGripperDescription",where: "core",  kind: "part",  note: "ADR-0023. Gripper joint name + ctrl_range + qpos_addrs + qpos_scale + GripperReadMode." },
+  { name: "GripperReadMode",      where: "core",  kind: "part",  note: "ADR-0023. SUM_OVER_SCALE (Franka) | AFFINE_LOW_HIGH (SO-100 Jaw). Controls how MujocoArmHAL normalises gripper qpos to [0, 1]." },
+  { name: "SceneDefaults",        where: "core",  kind: "part",  note: "Per-robot scene rendering defaults consulted when a scene YAML (DeployScene / SimScene / BenchmarkScene, ADR-0041) doesn't override them. Carries `top_camera: TopCameraDefaults | None` and `composition: SceneComposition | None` (issue #191 Phase 3b)." },
+  { name: "TopCameraDefaults",    where: "core",  kind: "part",  note: "Default placement for the scene-level top camera (pos, target, fovy). Replaces the dataset-specific `_DEFAULT_TOP_CAMERA_*` constants previously hard-coded in openral_sim.backends.openarm_robosuite._assets; backend YAML overrides still win." },
+  { name: "SceneComposition",     where: "core",  kind: "part",  note: "issue #191 Phase 3b. Declarative MJCF scene composition: `composer: 'module:fn'` returning (xml, meshdir) + `params`. ManifestHALLifecycleNode composes the MJCF and threads it in as the HAL's mjcf_path — replaced openarm's bespoke _create_hal tabletop splicing." },
+
+  // sensors
+  { name: "SensorSpec",           where: "core",  kind: "sensor", note: "One per sensor; modality + intrinsics + tf2 frame + ros2_topic + qos_profile. `sim_camera_name` (issue #191 Phase 3b) maps a sensor to a differently-named MJCF camera for MujocoArmHAL.read_images." },
+  { name: "SensorBundle",         where: "core",  kind: "sensor", note: "Multi-modal group, e.g. RealSense D455 = RGB+depth+IMU." },
+  { name: "IntrinsicsPinhole",    where: "core",  kind: "sensor" },
+
+  // runtime
+  { name: "JointState",           where: "core",  kind: "runtime", note: "Hot-path: HAL → WorldState. name + position + velocity + effort + stamp_ns." },
+  { name: "Pose6D",               where: "core",  kind: "runtime" },
+  { name: "DetectedObject",       where: "core",  kind: "runtime" },
+  { name: "WorldState",           where: "core",  kind: "runtime", note: "Snapshot consumed by Skills (S1) and Reasoner (S2). Backed by tf2 + sensor topics. ADR-0030 adds a bounded world surface (collision_primitives + occupancy_grid) for kernel world-collision checking." },
+  { name: "WorldCollisionPrimitive", where: "core", kind: "runtime", note: "ADR-0030 — placed convex obstacle (CollisionShape + Pose6D + object_id); world-frame analogue of LinkCollisionGeometry, checked against robot link capsules." },
+  { name: "OccupancyGridRef",     where: "core",  kind: "runtime", note: "ADR-0030 — 2D occupancy-grid reference (mirrors nav_msgs/OccupancyGrid metadata) for mobile-base footprint world-collision; stale/absent → fail-closed." },
+  { name: "SceneGraph",           where: "core",  kind: "runtime", note: "ADR-0038 — persistent, advisory spatial memory the S2 Reasoner queries to recall where objects/places/agents are (NOT a safety input; the kernel still gates only on the ADR-0030 geometric world). Nodes = SpatialNode (object/place/room/agent), edges = SpatialEdge (contains/at_place/traversable_to/on/near). Validators: unique node_id; edges reference existing nodes. Object foundation = OK-Robot/DynaMem/ReMEmbR lineage; hierarchy makes long-horizon household tasks ('bring me a cup of wine') expressible. Poses in tf2 map frame. Substrate (Phase 2+): networkx (BSD-3) + sqlite-vec (MIT/Apache); spark_dsg (BSD-2) interop path." },
+  { name: "SpatialNode",          where: "core",  kind: "runtime", note: "ADR-0038 — a scene-graph node; superset of DetectedObject for kind=object. node_id + kind + Pose6D(map) + label + confidence + bbox_3d + embedding_ref + is_container + occludes_contents (fridge/cabinet hide contents until opened) + first/last_seen_ns + observation_count." },
+  { name: "SpatialEdge",          where: "core",  kind: "runtime", note: "ADR-0038 — directed scene-graph relation: src/dst node_id + SpatialRelationKind (contains | at_place | traversable_to | on | near)." },
+  { name: "RecallObjectQuery / RecallObjectResult", where: "core", kind: "runtime", note: "ADR-0038 — read-only object recall by text(embedding)/label/proximity/recency; result carries the recalled Pose6D, a camera-facing ApproachViewpoint (standoff + camera_frame_id), and inside_container_id when the object is in an occluding container. Empty result → ROSObjectNotInMemory. Exposure to the reasoner palette is deferred to the planning ADR (ADR-0039)." },
+  { name: "ResolvePlaceQuery / ResolvePlaceResult", where: "core", kind: "runtime", note: "ADR-0038 — resolve a room/place/agent reference ('the kitchen', 'where I was standing') to a goal Pose6D + traversable_to path." },
+  { name: "Action",               where: "core",  kind: "runtime", note: "One step or chunk. control_mode + (joint_targets|cartesian_*|gripper|...) + horizon + frame_id." },
+
+  // skill packaging
+  { name: "RSkillManifest",       where: "core",  kind: "package", note: "On-disk rskill.yaml schema (V1, schema_version=\"1\"; ADR-0013 + ADR-0022 + ADR-0024 extended V1 in place — V1 has not been published, so no version bump). License posture + runtime + quantization + latency budget + fallback + actuators_required + typed benchmarks dict + min_vram_gb + custom-embodiment hatch. ADR-0022: `description` is now required; new `actions: list[RSkillAction]` (closed-vocabulary, min_length=1, required) + free-form `objects`/`scenes` discriminators surface to the reasoner LLM tool palette. ADR-0024: `kind: RSkillKind` discriminator is now required; `model_family` and `weights_uri` became optional and are gated on `kind == \"vla\"`; new optional `ros_integration: RosIntegration | None` for `kind: ros_action|ros_service`. `commercial_use_allowed` is derived from `license` (property)." },
+  { name: "RSkillKind",           where: "core",  kind: "package", note: "ADR-0024 + ADR-0037. Discriminator selecting the loader / runner branch — Literal[\"vla\",\"wam\",\"ros_action\",\"ros_service\",\"detector\"]. \"vla\" = today's learnable policy path; \"ros_action\"/\"ros_service\" route through ROSActionRskill against an upstream ROS 2 server (MoveIt, Nav2); \"wam\" is reserved (loader rejects at resolve time); \"detector\" (ADR-0037) is a perception producer that runs an exported ONNX/TRT detection model (RT-DETR/D-FINE) on the camera tee and publishes ObjectsMetadata — emits no Action." },
+  { name: "RosIntegration",       where: "core",  kind: "package", note: "ADR-0024. Wiring for a wrapped ROS 2 action / service: package, interface_type, interface_name, optional result_trajectory_field (dotted accessor into the action result; set → trajectory mode, omit → result-only mode), default_goal_json (validated JSON dict literal), ros_dependencies (apt/colcon hints surfaced by `ral skill check`), and goal_builder (ADR-0044/0054: Literal[joint, pose, look_at] | None — None sends default_goal_json verbatim; the named builders lower a typed block into MoveGroup constraints via the JointGoalRskill / PoseGoalRskill / LookAtRskill adapter subclasses). Required iff manifest.kind in {ros_action, ros_service}; forbidden otherwise (RSkillManifest._check_kind_consistency cross-validator)." },
+  { name: "DetectorContract",     where: "core",  kind: "package", note: "ADR-0037. Manifest contract for kind:detector rSkills: labels (class-label list indexed by model class-id, min_length=1), input_size (width × height, both > 0; default 640×640), score_threshold (0.0–1.0; default 0.5), engine (optional DetectorEngine backend selector — 2026-06-12 amendment), mode (DetectorMode continuous|on_demand, default continuous — ADR-0051). Frozen, extra=forbid. Required iff manifest.kind == \"detector\"; forbidden otherwise. The runtime detector reads this block at configure time to init the ONNX session / VLM sidecar / in-process zero-shot model + label map." },
+  { name: "DetectorEngine",       where: "core",  kind: "package", note: "ADR-0037 (2026-06-12 amendment). Backend selector on DetectorContract.engine: rtdetr_onnx / vlm_sidecar / zeroshot_hf. Disambiguates backends that share a runtime (the LocateAnything VLM sidecar and the in-process Transformers zero-shot detector are both runtime:pytorch). None → legacy runtime-keyed dispatch. zeroshot_hf selects OmDetTurboDetector (DetectorTier.ZEROSHOT_HF), an unprompted fixed-vocabulary open-vocab detector." },
+  { name: "DetectorMode",         where: "core",  kind: "package", note: "ADR-0051. Invocation mode on DetectorContract.mode (orthogonal to DetectorEngine): continuous (default — always-on background producer → WorldState.detected_objects; reasoner reads it passively, never prompts it; not ExecuteSkill-dispatchable; RT-DETR + OmDet-Turbo) vs on_demand (prompted open-vocab locator surfaced via the locate_in_view tool; LocateAnything). Cleanly separates open-vocabulary from prompting." },
+  { name: "RSkillAction",         where: "core",  kind: "package", note: "ADR-0022 + ADR-0037. Closed vocabulary of action verbs an rSkill can perform: PICK / PLACE / PICK_AND_PLACE / TRANSFER / GRASP / RELEASE / OPEN / CLOSE / PUSH / PULL / SLIDE / INSERT / POUR / WIPE / ROTATE / REACH / NAVIGATE / WAVE / SHAKE / GENERALIST / DETECT (ADR-0037, perception producer). Declared on RSkillManifest.actions; the reasoner palette surfaces these to the LLM as one tool per skill so it can pick by verb + objects + scenes rather than slug." },
+  { name: "RSkillLatencyBudget",  where: "core",  kind: "package" },
+  { name: "RSkillLicensePosture", where: "core",  kind: "package", note: "Apache / MIT / Permissive-Research / NVIDIA-NC (N1–N1.6) / NVIDIA-Open-Model (N1.7+, commercial) / RLWRLD-NC / Proprietary — gates installation (ADR-0046)." },
+  { name: "RSkillRuntime",        where: "core",  kind: "package" },
+  { name: "RSkillEvalResult",      where: "core",  kind: "package", note: "On-disk shape of rskills/<id>/eval/<benchmark>.json. Validated by rSkill loader; aggregated by openral benchmark report." },
+  { name: "RSkillEvalSource",      where: "core",  kind: "package" },
+  { name: "RSkillEvalBenchmark",   where: "core",  kind: "package" },
+  { name: "SensorRequirement",    where: "core",  kind: "package", note: "Items in RSkillManifest.sensors_required. Compat check matches each entry against RobotDescription.sensors by vla_feature_key, modality, and resolution." },
+  { name: "ActuatorRequirement",  where: "core",  kind: "package", note: "ADR-0013. Items in RSkillManifest.actuators_required. `kind` reuses ControlMode; `n_dof` / `vla_action_key` auto-fill from the robot YAML for canonical embodiments, required on the manifest for the `\"custom\"` hatch." },
+  { name: "EmbodimentExtra",      where: "core",  kind: "package", note: "ADR-0013. Required when `\"custom\"` is in RSkillManifest.embodiment_tags — declares the rig's sensor + actuator surface so the loader's compat check still has something to match against." },
+
+  // skill runtime state
+  { name: "RSkillInfo",            where: "core",  kind: "runtime", note: "Runtime snapshot of a live Skill node — published on /skill/<name>/info." },
+  { name: "RSkillState",           where: "core",  kind: "runtime" },
+
+  // compute
+  { name: "QuantizationConfig",   where: "core",  kind: "compute" },
+  { name: "QuantizationDtype",    where: "core",  kind: "compute" },
+  { name: "QuantizationBackend",  where: "core",  kind: "compute" },
+  { name: "DeviceInfo",           where: "core",  kind: "compute" },
+
+  // enums
+  { name: "EmbodimentKind",       where: "core",  kind: "enum" },
+  { name: "ControlMode",          where: "core",  kind: "enum" },
+  { name: "JointType",            where: "core",  kind: "enum" },
+  { name: "SensorModality",       where: "core",  kind: "enum" },
+  { name: "ActionRepresentation", where: "core",  kind: "enum" },
+  { name: "StateRepresentation",  where: "core",  kind: "enum" },
+  { name: "Hand",                 where: "core",  kind: "enum" },
+
+  // inference runner (ADR-0010)
+  { name: "RobotEnvironment",       where: "core",  kind: "manifest", note: "Sibling of SimScene for `openral deploy run` (hardware). Pins (robot × HAL × sensors × task × VLA × safety). from_yaml() loads `deployments/*.yaml`. Enforces unique sensor ids + rskill:// weights_uri. ADR-0010." },
+  { name: "HalConfig",              where: "core",  kind: "part", note: "Which HAL adapter to instantiate + transport (serial port / FCI URI / ROS namespace) + adapter-specific params. ADR-0010." },
+  { name: "SensorReaderConfig",     where: "core",  kind: "part", note: "Per-sensor backend (opencv_thread / ros2_image / gstreamer) + backend params + optional ROS-tee for observability. ADR-0010." },
+  { name: "SensorReaderBackend",    where: "core",  kind: "enum", note: "opencv_thread (default, lerobot-pattern), ros2_image, gstreamer. ADR-0010." },
+  { name: "DeadlineOverrunPolicy",  where: "core",  kind: "enum", note: "warn (lerobot-style), drop (skip action), raise (test). ADR-0010." },
+  { name: "SensorFrame",            where: "core",  kind: "runtime", note: "Single sensor frame — sensor_id + timestamps + encoding + dims + (data | topic | handle). Binary `data` round-trips as base64 in JSON via field_serializer / field_validator. Mutual-exclusion enforced. ADR-0010." },
+  { name: "FrameEncoding",          where: "core",  kind: "enum", note: "BGR8 / RGB8 / MONO8 / DEPTH16 / JPEG / PNG / CUDA_NV12 / RAW. ADR-0010." },
+  { name: "TickResult",             where: "core",  kind: "runtime", note: "One tick's per-stage timing breakdown + safety violations + chunk_index. Populated by InferenceRunner.tick. ADR-0010." },
+  { name: "RunResult",              where: "core",  kind: "runtime", note: "Aggregated InferenceRunner.run output — n_ticks, success, budget violations, p99 timings, trace_id. ADR-0010." },
+
+  // sim eval
+  { name: "DeployScene",            where: "core",  kind: "manifest", note: "ADR-0041 tier 1 (env-only). `openral deploy sim --config scenes/deploy/*.yaml` loads this to boot the full OpenRAL stack (HAL + reasoner + safety kernel) without a prescribed task. Fields: scene (+ optional robot_id, base_pose). Loader: load_scene_strict(..., expect=DeployScene)." },
+  { name: "SimScene",               where: "core",  kind: "manifest", note: "ADR-0041 tier 2 (single rollout). `openral sim run --config scenes/sim/*.yaml --rskill <name>` loads this for one-off rollouts; sibling of DeployScene with required task and optional seed / n_episodes / record_video. Loader: load_scene_strict(..., expect=SimScene). DeployScene ⊆ SimScene." },
+  { name: "BenchmarkScene",         where: "core",  kind: "manifest", note: "ADR-0041 tier 3 (paper-comparable single scene). `openral benchmark scene --config scenes/benchmark/*.yaml --rskill <name>` loads this and writes a RSkillEvalResult. SimScene + mandatory `metadata: BenchmarkMetadata` + n_episodes / seed. Loader: load_scene_strict(..., expect=BenchmarkScene). SimScene ⊆ BenchmarkScene." },
+  { name: "BenchmarkMetadata",      where: "core",  kind: "part", note: "Required block on BenchmarkScene — `paper: HttpUrl` + `honest_scope: str` (mandatory provenance) + optional `display_name` + `simulator` paper-comparison labels. ADR-0041 + ADR-0042. Suite invariant: every scene in a `benchmarks/<id>.yaml` shares the same BenchmarkMetadata block byte-for-byte (enforced by `raise_on_invalid_suite`)." },
+  { name: "ProtocolSpec",           where: "core",  kind: "manifest", note: "Free-standing legacy schema (kept exported for ADR drafts + report tooling). Never embedded in the suite shape — Task 10 of ADR-0041 flattened per-scene fields (n_episodes / seed / max_steps) onto BenchmarkScene; ADR-0042 then deleted the BenchmarkSpec wrapper entirely so a suite is now a bare `list[BenchmarkScene]` loaded via `load_benchmark_suite()` + `raise_on_invalid_suite()`." },
+  { name: "SceneSpec",              where: "core",  kind: "part" },
+  { name: "RoboCasaBackendOptions", where: "core",  kind: "part", note: "Typed validator for SceneSpec.backend_options under the RoboCasa backend (ADR-0015). Prebuilt-vs-procedural XOR. Consumed by python/sim/.../adapters/robocasa.py (planned, issue #88 PR B)." },
+  { name: "TaskSpec",               where: "core",  kind: "part" },
+  { name: "VLASpec",                where: "core",  kind: "part" },
+  { name: "PhysicsBackend",         where: "core",  kind: "enum", note: "libero | metaworld | mock | mujoco — picks which adapter make_env() uses." },
+
+  // ROS IDL (separate normative layer)
+  { name: "msg/ActionChunk",        where: "packages/msgs/msg",    kind: "ros-msg",    note: "Wire format for action chunks on ROS topics — mirrors core.Action." },
+  { name: "msg/PromptStamped",      where: "packages/msgs/msg",    kind: "ros-msg" },
+  { name: "msg/FailureTrigger",     where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0018 F3. Typed event on /openral/failure/{hal,sensor,rskill,safety,wam,critic} (the `rskill` suffix replaced `skill` on 2026-05-25 — ADR-0018 amendment §5 — for consistency with the carried rskill_id field). kind/severity are uint8 enum constants; evidence_json carries a Pydantic openral_core.FailureEvidence discriminated union. Published via openral_observability.FailureBusPublisher (token-bucket rate limit + 1 Hz KIND_SUPPRESSED_SUMMARY roll-up). Hard wire break vs string-shaped pre-F3 message." },
+  { name: "FailureEvidence",        where: "core",  kind: "runtime",   note: "ADR-0018 F3 discriminated union. Variants: TimeoutEvidence, ForceEvidence, WorkspaceEvidence, PerceptionStaleEvidence, CriticEvidence, ControllerEvidence, SelfVerifyEvidence, HumanEvidence, WamEvidence, ReasonerTimeoutEvidence, CollisionEvidence (ADR-0030, KIND_COLLISION=10), SuppressedSummaryEvidence. Discriminator field is `kind` (Literal). Decode via pydantic.TypeAdapter(FailureEvidence).validate_json(...)." },
+  { name: "PerceptionEventMetadata", where: "core", kind: "runtime",   note: "ADR-0018 F6 discriminated union backing PromptStamped.metadata_json on /openral/perception/<kind>. Variants: MotionMetadata, ObjectsMetadata (carries list[ObjectDetection2D] + frame_width + frame_height — ADR-0035), OcrMetadata, SceneChangeMetadata. Discriminator field is `kind` (Literal); each kind owns its own ROS topic so new kinds = new topics, not a schema bump. Published by openral_runner.backends.gstreamer.perception_tee.PerceptionEventPublisher." },
+  { name: "ReasonerToolCall",       where: "core",  kind: "runtime",   note: "ADR-0018 F4 discriminated union — the closed palette of typed tool calls the reasoner can emit each tick. Variants: ExecuteRskillTool (action goal on /openral/execute_skill), ReloadGstPipelineTool (service call on per-sensor /openral/sensors/<id>/reload_pipeline), LifecycleTransitionTool (configure/activate/deactivate/cleanup on a peer node — `shutdown` excluded by design, owned by safety supervisor; ADR-0025 makes this the canonical primitive for managing long-lived background services like slam_toolbox / RTAB-Map), EmitPromptTool (publish PromptStamped onto another topic). ADR-0039 adds two READ-ONLY query variants — RecallObjectTool / ResolvePlaceTool — that only read the ADR-0038 scene-graph memory (no actuation authority). ADR-0043 adds LocateInViewTool (read-only `locate_in_view` — ask a live VLM detector if an object is in the current frame; gated by ToolPalette.detector_available). ADR-0047 adds QuerySceneTool (read-only `query_scene` — ask a scene VLM, Qwen3.5-4B NF4, an open-ended question about the current view for task-progress / success verification; gated by ToolPalette.scene_query_available, independent of detector_available; dispatched via /openral/perception/query_scene → scene_vlm_node → QwenSceneVlm sidecar; answer re-prompted with frame_id 'scene_vlm'). Neither perception-query variant holds actuation authority. Phase 1: typed contract + decode. Phase 2 (done): ToolPalette.spatial_memory_available gates their provider-palette rendering, and openral_reasoner.spatial_query.run_spatial_query maps tool→ADR-0038 query→SpatialMemory and renders the result text for the prompt cascade. Phase 2b (done): reasoner_node accepts a spatial_memory backend, dispatches recall_object/resolve_place via _dispatch_spatial_query, and republishes the result as a PromptStamped (frame_id 'spatial_memory') — verified live on ROS 2 Jazzy. Deployment wiring (done): the `spatial_memory_path` ROS param loads a persisted SceneGraph at on_configure (preloaded-map mode); the `spatial_memory_ingest` ROS param (default false) auto-creates a backend and folds each /openral/world_state_slow WorldState.detected_objects snapshot into it on tick — the live dynamic-memory path now that the ADR-0035 producer (PR #229) fills detected_objects. Active search bound (done): openral_reasoner.active_search.plan_active_search builds a budget-bounded candidate frontier, _dispatch_spatial_query caps consecutive query re-prompts via SearchProgress/SearchBudget → human-handoff. Open-vocab matching (done): ADR-0038 Phase 4 OpenCLIP ViT-B/32. Discriminator field is `tool` (Literal). frozen=True + extra='forbid'. The reasoner holds no authority over actuation — ExecuteRskillTool is indirect via the F1 action server which gates through F5 safety. Selected by openral_reasoner.ToolUseClient (Anthropic / OpenAI-compatible / FakeToolUseClient)." },
+  { name: "ToolPalette",            where: "reasoner", kind: "runtime", note: "ADR-0018 F4 / ADR-0022 closed-set palette presented to the LLM each tick. Built from the installed-rSkill registry filtered by RobotCapabilities (embodiment_tags ∩ + capabilities_required ⊆ + license posture). Refreshed on /openral/skill_registry_changed. Frozen Pydantic model. ADR-0022: primary surface is `skills: tuple[RSkillToolEntry, ...]` carrying per-skill description + actions + objects + scenes; `execute_rskill_ids: frozenset[str]` is auto-derived for back-compat. Companion `RSkillToolEntry` records mirror RSkillManifest's ADR-0022 fields and feed `_tool_palette_to_anthropic_tools` to emit one `execute_rskill__<slug>` LLM tool per skill (the `skill_id` field is dropped from per-skill input_schema because the tool name is the authority)." },
+  { name: "msg/WorldStateStamped",  where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0018 F2. Typed WorldState wire format on /openral/world_state_{fast,slow}. Parallel arrays for ee_poses, image refs, diagnostics, staleness; DIAG_OK|WARN|STALE|ERROR uint8 enum constants. tf2 by reference (frame_ids[]). ADR-0035: also carries the spatial memory as detected_object_* parallel arrays (labels / confidences / geometry_msgs/Point[] positions / int32[] track_ids (-1=unset) / frame), serialised by _fill_detected_objects in build_world_state_stamped_msg and read back by world_state_from_idl — separate-process consumers of /openral/world_state_slow now see WorldState.detected_objects." },
+  { name: "msg/WorldCollision",     where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0030 world phase. Bounded set of world-obstacle capsules (radius/half_length/origin_xyzrpy parallel arrays + object_id labels) in the robot base frame (header.frame_id), published on /openral/world_collision. The C++ safety kernel ingests it into a pre-sized buffer and checks robot link capsules against it; over-capacity/stale → fail-closed (drop, no latch)." },
+  { name: "msg/OccupancyVoxels",    where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0030 voxel phase (octomap path). Dense fixed-capacity 3-D occupancy grid (origin + resolution + size_xyz + row-major occupancy[]) in the robot base frame, on /openral/world_voxels. A perception bridge lowers a 3-D map (OctoMap) into a bounded local volume; the kernel rasterizes robot link capsules against occupied cells (allocation-free). Over-capacity/stale → fail-closed." },
+  { name: "action/ExecuteRskill",   where: "packages/msgs/action", kind: "ros-action", note: "Goal: rskill_id + revision + prompt + deadline · Result: success + trace_id · Feedback: progress + state + chunk index." },
+  { name: "msg/Tick",               where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0019 PR3. Per-tick hardware-recording record consumed by openral_dataset.Rosbag2Sink — one observation/action/timestamp row appended to a rosbag2 episode. Paired with Episode.msg on the hardware dataset path." },
+  { name: "msg/Episode",            where: "packages/msgs/msg",    kind: "ros-msg",    note: "ADR-0019 PR3. Episode boundary record (episode index + success + task) framing a sequence of Tick records in the rosbag2 stream; Rosbag2ToLeRobotConverter reads it to slice episodes when materialising a LeRobotDataset v3." },
+  { name: "srv/ResetToPose",        where: "packages/msgs/srv",    kind: "ros-srv",    note: "HAL reset-to-pose service — drives the robot (or sim twin) to a named/explicit joint pose between episodes. Served by the manifest HAL lifecycle node; called from rskill_runner_node / reasoner_node and surfaced in the reasoner palette." },
+  { name: "srv/LocateInView",       where: "packages/msgs/srv",    kind: "ros-srv",    note: "ADR-0043 — one-shot open-vocabulary 'is this object visible right now?' query against the latest frame of a chosen camera. Served by openral_perception_ros.ros_image_detector_node; called by the reasoner's read-only locate_in_view tool dispatch (LocateInViewTool). Returns found + resolved camera id + ObjectsMetadata JSON. Read-only: no actuation." },
+];
+
+// LAYERS — reflects CLAUDE.md §6.1 plus what is actually on disk.
+const LAYERS = [
+  {
+    ix: "L0",
+    name: "Hardware Abstraction (HAL)",
+    desc: "Per-robot adapters that read joint state and forward actions. Hot path; Python proposes, C++ disposes (when Safety lands).",
+    blocks: [
+      {
+        title: "HAL Protocol",
+        pkg: "python/hal · openral_hal.protocol",
+        status: "green",
+        desc: "Structural runtime_checkable Protocol every adapter must satisfy. connect / disconnect / read_state / send_action / estop.",
+        inputs: ["RobotDescription"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "RosControlHAL",
+        pkg: "python/hal · ros_control.py",
+        status: "green",
+        desc: "ros2_control-backed adapter over an injectable transport. Tested with SimTransport; production transport pending real-hardware run.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["Action", "JointState"],
+      },
+      {
+        title: "SO100FollowerHAL · SO-100",
+        pkg: "python/hal · so100_follower.py",
+        status: "green",
+        desc: "USB-serial adapter for the SO-100 follower arm (LeRobot driver). Ships SO100_DESCRIPTION manifest.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "SO100 Digital Twin (kinematic)",
+        pkg: "python/hal · so100_sim.py",
+        status: "yellow",
+        desc: "In-process kinematic twin (no physics). Used by HAL unit tests; not wired through the strict eval runner — the sim runner only accepts rskill://-backed real-physics rollouts.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["JointState", "Action"],
+      },
+      {
+        title: "HAL · SO-100 follower (sim, MuJoCo)",
+        pkg: "python/hal · so100_mujoco.py",
+        status: "green",
+        desc: "SO100MujocoHAL: real-physics digital twin driving the mujoco_menagerie trs_so_arm100 MJCF via the shared MujocoArmHAL base — same 6-DoF action layout as SO100FollowerHAL, with the revolute Jaw range [-0.174, 1.75] rad normalised to [0, 1] on the public surface so the same Skill drives the twin and the real hardware identically. Post-ADR-0023, all wiring (MJCF URI, joint indices, Jaw read mode) lives in SO100_DESCRIPTION.sim — the class itself is a 5-line wrapper around MujocoArmHAL._sim_kwargs_for. Sim-tested in tests/sim/test_so100_follower_hal_mujoco.py + tests/sim/test_data_driven_mujoco_hal.py.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "SimTransport",
+        pkg: "python/hal · sim_transport.py",
+        status: "green",
+        desc: "Typed in-memory transport that lets RosControlHAL run without DDS. Used by tests/unit/test_hal.py.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["JointState", "Action"],
+      },
+      {
+        title: "ROS pkg · hal_so100",
+        pkg: "packages/openral_hal_so100",
+        status: "green",
+        desc: "ament_python package wrapping SO100FollowerHAL as a managed lifecycle node (configure/activate/deactivate/cleanup).",
+        inputs: ["/cmd · ActionChunk"],
+        outputs: ["/joint_states"],
+        schemas: ["msg/ActionChunk"],
+      },
+      {
+        title: "ROS pkg · hal_openarm",
+        pkg: "packages/openral_hal_openarm",
+        status: "green",
+        desc: "ament_python package wrapping OpenArmMujocoHAL (16-DoF bimanual) as a managed lifecycle node. Subscribes to /openral/safe_action + /openral/estop; publishes /joint_states. Sim path only — real-HW OpenArm driver (lerobot upstream) is a planned follow-up. Lifecycle integration coverage in tests/integration/test_openarm_hal_lifecycle.py (3 tests: 16-DoF publish, safe_action → twin actuation, estop latch).",
+        inputs: ["/openral/safe_action · ActionChunk", "/openral/estop"],
+        outputs: ["/joint_states"],
+        schemas: ["msg/ActionChunk"],
+      },
+      {
+        title: "HAL · Unitree G1 (sim, MuJoCo)",
+        pkg: "python/hal · g1.py",
+        status: "green",
+        desc: "G1MujocoHAL: 29-DoF humanoid digital twin driving the mujoco_menagerie unitree_g1 MJCF via the shared MujocoArmHAL base. Same action-contract validator role as the SO-100 / Franka / UR / ALOHA twins — the floating base falls under gravity without an S0 cerebellar controller, so the closed-loop sim tests run with gravity_enabled=False. Post-ADR-0023, all wiring (MJCF URI, floating-base offsets +7/+6) lives in G1_DESCRIPTION.sim. Exercises the 29-DoF joint-position action layout, lifecycle, and RobotDescription joint order; remaining failure surface is the unitree_sdk2 / S0 cerebellum layer (planned, M2). Sim-tested in tests/sim/test_g1_hal_mujoco.py (35 tests including the menagerie schema-drift guard + per-section convergence on legs / waist / left arm / right arm) plus tests/sim/test_data_driven_mujoco_hal.py.",
+        inputs: ["Action (29-D)"],
+        outputs: ["JointState (29-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Unitree H1 (sim, MuJoCo)",
+        pkg: "python/hal · h1.py",
+        status: "green",
+        desc: "H1MujocoHAL: 19-DoF humanoid digital twin driving the mujoco_menagerie unitree_h1 MJCF — the G1's coarser-DoF predecessor (5-DoF legs, 1-DoF torso, 4-DoF arms, no wrists). Same contract-validator scope as G1MujocoHAL; falls without gravity disabled. First MujocoArmHAL consumer whose underlying MJCF uses TORQUE (motor) actuators rather than position actuators, so H1MujocoHAL still overrides the _per_step_update hook on the base class to run a software PD position loop every mj_step (tau = kp*(target-q) - kv*dq, clamped to ctrlrange) — exactly how unitree_sdk2 wraps motor-level torque control in a position loop on real hardware. Post-ADR-0023, all MJCF wiring lives in H1_DESCRIPTION.sim; the H1-specific PD gains stay in the subclass. Sim-tested in tests/sim/test_h1_hal_mujoco.py (34 tests).",
+        inputs: ["Action (19-D)"],
+        outputs: ["JointState (19-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Flexiv Rizon 4 (sim, MuJoCo)",
+        pkg: "python/hal · flexiv_rizon4.py",
+        status: "green",
+        desc: "Rizon4MujocoHAL: 7-DoF cobot digital twin driving the mujoco_menagerie flexiv_rizon4 MJCF. Structurally identical to the UR / Franka sim HALs — position actuators, no gripper, no floating base — drops into MujocoArmHAL with zero base-class changes. Post-ADR-0023, all wiring lives in RIZON4_DESCRIPTION.sim. Real-HW Rizon 4 path (wrapping flexivrobotics/flexiv_rdk; closed-with-api per CLAUDE.md §7.4) is a planned follow-up. Sim-tested in tests/sim/test_rizon4_hal_mujoco.py (30 tests including the menagerie schema-drift guard and a position-actuator-mode check that fails loudly if a future menagerie update flips to torque mode).",
+        inputs: ["Action (7-D)"],
+        outputs: ["JointState (7-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Enactic OpenArm v2 (sim, MuJoCo)",
+        pkg: "python/hal · openarm.py",
+        status: "green",
+        desc: "OpenArmMujocoHAL: 16-DoF (7 arm + 1 gripper per side) bimanual digital twin driving the enactic/openarm_mujoco v2 bimanual MJCF. v2 ships native <position> actuators with per-class PD gains baked in (DM8009: kp=230 kv=2.7; DM4340: kp=190 kv=2.2; DM4310: kp=30 kv=1.5; fingers: kp=30 kv=0.2). Each gripper command drives one finger actuator; the follower finger tracks via the MJCF's <equality> constraint. Post-ADR-0023 (bimanual amendment), OpenArmMujocoHAL is a thin MujocoArmHAL subclass — all wiring (MJCF URI via openarm_v2:bimanual scheme, explicit joint_qpos_addr that skips the passive follower fingers, two PASSTHROUGH grippers, seed_ctrl_from_qpos: true) lives in OPENARM_DESCRIPTION.sim. v2 MJCF fetched lazily by openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf (the robot_descriptions package still pins to a pre-v2 commit; helper goes away when upstream bumps). Sim-tested in tests/sim/test_openarm_hal_mujoco.py + tests/sim/test_data_driven_mujoco_hal.py.",
+        inputs: ["Action (16-D)"],
+        outputs: ["JointState (16-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Unitree G1 (real-HW)",
+        pkg: "packages/hal_g1 (planned)",
+        status: "blue",
+        desc: "M2 target. Will wrap unitree_sdk2 (DDS topics) and add a cerebellar S0 controller for balance (CLAUDE.md §6.2). RobotDescription will derive from G1_DESCRIPTION via make_real_description, mirroring the UR / Franka / Sawyer / ALOHA real-HW pattern.",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Universal Robots (UR5e / UR10e, sim)",
+        pkg: "python/hal · ur.py",
+        status: "green",
+        desc: "MuJoCo-backed adapters with UR5e_DESCRIPTION + UR10e_DESCRIPTION sim manifests. Post-ADR-0023, both UR5eHAL and UR10eHAL are 5-line MujocoArmHAL._sim_kwargs_for wrappers — all wiring lives in their respective .sim block. Sim-tested in tests/sim/test_ur5e_hal_mujoco.py / test_ur10e_hal_mujoco.py + tests/sim/test_data_driven_mujoco_hal.py. Kinematics + safety + the hal entrypoints are shared with the real-HW siblings (UR{5,10}e_REAL_DESCRIPTION); only sdk_kind differs (ADR-0031).",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Universal Robots (UR5e / UR10e, real HW)",
+        pkg: "python/hal · ur_real.py",
+        status: "green",
+        desc: "Real-hardware adapters wrapping ros2_control + ur_robot_driver (URCap / RTDE; BSD-3-Clause driver). UR5eRealHAL + UR10eRealHAL extend a shared _URRealHAL(RosControlHAL) base with the scaled_joint_trajectory_controller / /joint_states / /io_and_status_controller/safety_mode defaults. Eval-layer YAMLs at robots/ur5e/robot.yaml and robots/ur10e/robot.yaml pin the real-HW sdk_kind: closed posture (drift guarded by tests/unit/test_robot_manifests_match_hal_constants.py). Conformance tests use SimTransport (see tests/unit/test_hal_protocol_conformance.py); HIL tests at tests/hil/test_ur5e.py and test_ur10e.py are gated by UR5E_HOST / UR10E_HOST + [self-hosted, lab-ur*] runner labels and drive a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport).",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Franka Panda (sim)",
+        pkg: "python/hal · franka_panda.py",
+        status: "green",
+        desc: "MuJoCo-backed adapter with FRANKA_PANDA_DESCRIPTION. Eval-layer manifest at robots/franka_panda/robot.yaml (post-ADR-0007 robot/sim split — replaces robots/libero_franka/) mirrors the in-code constant; drift guarded by tests/unit/test_robot_manifests_match_hal_constants.py. Post-ADR-0023, all MuJoCo wiring (joint→qpos/actuator maps, gripper config) lives in FRANKA_PANDA_DESCRIPTION.sim — the HAL class is a 5-line MujocoArmHAL._sim_kwargs_for wrapper. Sim-tested in tests/sim/test_franka_panda_hal_mujoco.py + tests/sim/test_data_driven_mujoco_hal.py + the LIBERO scene adapter. The MuJoCo HAL is constructed by build_hal(mode='sim') → hal.sim (FrankaPandaHAL); the manifest's hal.real resolves to FrankaPandaRealHAL for deploy run (ADR-0031).",
+        inputs: ["Action"],
+        outputs: ["JointState"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Franka Panda (real-HW)",
+        pkg: "python/hal · franka_panda_real.py",
+        status: "yellow",
+        desc: "FrankaPandaRealHAL wraps RosControlHAL for franka_ros2 / libfranka / FCI (closed-with-api per CLAUDE.md §7.4). Unit-tested in tests/unit/test_franka_panda_real.py against a real SimTransport (no mocks); HIL test at tests/hil/test_franka_panda.py is gated by [self-hosted, lab-franka] runner labels and drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport). Issues #56 / #62.",
+        inputs: ["Action", "/joint_states"],
+        outputs: ["JointTrajectory", "/error_recovery/goal"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Sawyer (real-HW)",
+        pkg: "python/hal · sawyer_real.py",
+        status: "yellow",
+        desc: "SawyerRealHAL wraps RosControlHAL for the community sawyer_robot fork (intera_sdk lineage; original Rethink Robotics dissolved in 2018). Eval-layer manifest at robots/sawyer/robot.yaml mirrors the in-code SAWYER_DESCRIPTION; the MetaWorld MuJoCo path is owned by openral_sim.backends.metaworld and is not affected. Unit + HIL tests at tests/unit/test_sawyer_real.py and tests/hil/test_sawyer.py; the HIL fixture drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport) pinned to /robot/joint_states. Issues #57 / #62.",
+        inputs: ["Action", "/robot/joint_states"],
+        outputs: ["JointTrajectory", "/robot/set_super_stop"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · ALOHA bimanual (real-HW)",
+        pkg: "python/hal · aloha.py",
+        status: "yellow",
+        desc: "AlohaHAL drives 2 × ViperX 300 + 2 grippers via 4 ros2_control controllers from the Trossen Interbotix XS SDK. Splits a single 14-D Action across left/right arm + left/right gripper controllers; 14-D state aggregated via /joint_states. Eval-layer manifest at robots/aloha_bimanual/robot.yaml mirrors ALOHA_DESCRIPTION. Unit + HIL tests at tests/unit/test_aloha.py and tests/hil/test_aloha.py; the HIL fixture drives a live rclpy bridge via tests/hil/_aloha_ros_transport.py (AlohaHILTransport — 4-way fan-out, all four publishers use trajectory_msgs/JointTrajectory). Issues #58 / #62.",
+        inputs: ["Action (14-D)", "/joint_states"],
+        outputs: ["4 × JointTrajectory", "/aloha/estop"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · ALOHA bimanual (sim, MuJoCo)",
+        pkg: "python/hal · aloha.py (AlohaMujocoHAL)",
+        status: "green",
+        desc: "AlohaMujocoHAL: real-physics digital twin loading gym-aloha's bimanual_viperx_transfer_cube.xml and driving its 16 position actuators (6 arm + 2 mirrored fingers per side) with the same 14-DoF action layout AlohaHAL forwards to the four Interbotix XS ros2_control controllers — 0:6 left arm, 6 left gripper (positive finger position in metres), 7:13 right arm, 13 right gripper. Post-ADR-0023 (bimanual amendment), AlohaMujocoHAL is a thin MujocoArmHAL subclass — all wiring (gym_aloha:bimanual_viperx_transfer_cube URI, explicit joint_qpos_addr / actuator_index skipping the negative-finger qpos slots, two PASSTHROUGH grippers with mirror_actuator_index, keyframe_index: 0) lives in ALOHA_DESCRIPTION.sim. Sim-tested in tests/sim/test_aloha_bimanual_hal_mujoco.py + tests/sim/test_data_driven_mujoco_hal.py.",
+        inputs: ["Action (14-D)"],
+        outputs: ["JointState (14-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
+        title: "HAL · Panda + holonomic mobile base (sim)",
+        pkg: "python/hal · panda_mobile.py · mobile_base_bridge.py · depth_cloud.py",
+        status: "green",
+        desc: "PandaMobileHAL: 10-DoF composite twin (7 Franka arm + 1 gripper + 3 planar base x/y/yaw) backing the RoboCasa kitchen tasks and the pi05-robocasa365-human300-nf4 family. Drives the whole ADR-0028 action-contract slot surface via per-ControlMode handlers: JOINT_POSITION (arm), GRIPPER_POSITION (ADR-0028c), CARTESIAN_DELTA (ADR-0028c OSC), BODY_TWIST (mobile base, integrated to a planar pose), JOINT_VELOCITY + COMPOSITE_MODE (ADR-0028d mux flag). mobile_base_bridge.py is the generic mobile-base ROS wiring (subscribes /cmd_vel → BODY_TWIST Action, publishes /odom) that lets Nav2's velocity output route into the HAL (see L4 Nav2 card); depth_cloud.py is the reusable robot-agnostic depth-camera → PointCloud2 plumbing (ADR-0030). Manifest is PANDA_MOBILE_DESCRIPTION / robots/panda_mobile/robot.yaml. Tested in tests/unit/test_panda_mobile_hal.py + the ADR-0028c/d handler unit tests + tests/sim/test_panda_mobile_pi05_robocasa.py; lifecycle path in tests/integration/test_panda_mobile_hal_lifecycle.py.",
+        inputs: ["Action (10-D)", "/cmd_vel (BODY_TWIST)"],
+        outputs: ["JointState (10-D)", "/odom", "PointCloud2"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action", "ActionSlot", "ControlMode"],
+      },
+      {
+        title: "HAL lifecycle base + sim-sensor bridge",
+        pkg: "python/hal · lifecycle.py · sim_sensor_bridge.py · sim_bringup.py · sim_attached.py",
+        status: "green",
+        desc: "Shared lifecycle scaffolding for adapters — make_lifecycle_main() builds a generic _HALLifecycleNode from a HAL factory, used by every ROS pkg under packages/openral_hal_*. Python-side connect/disconnect idempotency + state tracking is shared by the UR / Franka / Sawyer / ALOHA / SO100 adapters. ADR-0034: _ManifestHALLifecycleNode now constructs a SimAttachedHAL (via build_hal(sim_env_yaml=...)) and wires SimSensorBridge on activate — so all manifest-driven arms (franka / ur5e / ur10e / aloha / g1 / h1 / rizon4) get scene + /openral/cameras/* + MuJoCo viewer under deploy sim without per-package wiring (deploy sim injects the scene path as the sim_env_yaml ROS param). sim_sensor_bridge.py owns RGB camera publishers + viewer (Phase 2: /scan + PointCloud2); sim_bringup.py resolves a DeployScene / SimScene YAML to a live SimRollout (ADR-0041); sim_attached.py wraps SimRollout as the HAL Protocol with normalized joint-name resolution (native MJCF name + robosuite robot0_-strip fallback).",
+        outputs: ["/openral/cameras/*/image", "/joint_states"],
+        schemas: ["RobotDescription", "SensorSpec"],
+      },
+      {
+        title: "HAL shared helpers (_mujoco_arm · _real_description · _sensor_wiring)",
+        pkg: "python/hal · _mujoco_arm.py / _real_description.py / _sensor_wiring.py",
+        status: "green",
+        desc: "Internal infrastructure shared across HAL adapters — MujocoArmHAL is the simulation backbone behind UR{5,10}eHAL + FrankaPandaHAL + SO100MujocoHAL + G1MujocoHAL + H1MujocoHAL. G1 was the first humanoid consumer (introduced the joint_qvel_addr parameter to handle the qpos-vs-qvel offset on the floating base). H1 was the first torque-actuator consumer (introduced the _per_step_update hook so the base class can stay agnostic between position-actuator MJCFs — G1 / UR / Franka / SO-100 — and torque-actuator MJCFs that need a software PD loop). AlohaMujocoHAL is a deliberate fresh class because its 14-DoF / 16-actuator / mirrored-finger layout doesn't fit the single-arm + single-gripper-actuator base. make_real_description() derives a real-HW RobotDescription from a sim baseline (UR / Franka / Sawyer / ALOHA all funnel through it, G1 + H1 real-HW will too); with_sensors() resolves catalog ids into materialised SensorSpec / SensorBundle on a deep-copied description. Adding a sixth real-HW arm without going through these helpers is a review-blocker (CLAUDE.md §1.12 reuse rule).",
+        schemas: ["RobotDescription", "SensorSpec", "SensorBundle"],
+      },
+      {
+        title: "ROS pkgs · hal_franka / ur5e / ur10e / aloha / rizon4 / g1 / h1 / panda_mobile",
+        pkg: "packages/openral_hal_{franka,ur5e,ur10e,aloha,rizon4,g1,h1,panda_mobile}",
+        status: "yellow",
+        desc: "One ament_python package per embodiment, each a thin entry point that wires its Python HAL (FrankaPandaHAL / UR5eHAL / UR10eHAL / AlohaMujocoHAL / Rizon4MujocoHAL / G1MujocoHAL / H1MujocoHAL / PandaMobileHAL) into openral_hal.lifecycle.make_lifecycle_main (ADR-0029 unified base). Each of franka / ur5e / ur10e / aloha / rizon4 / g1 / h1 ships a test/test_lifecycle_node.py driving the real HAL through unconfigured → configure → activate → deactivate → cleanup with live joint-state publication (skipped cleanly when rclpy / mujoco / robot_descriptions are absent); panda_mobile instead ships test/test_lifecycle_helpers.py + test/test_sensor_bridge_regression.py, with its lifecycle path covered by tests/integration/test_panda_mobile_hal_lifecycle.py. ADR-0034: the manifest-driven nodes pick up scene + /openral/cameras/* + MuJoCo viewer under deploy sim with no per-package wiring. CLAUDE.md §2 still labels the real-arm ones 'skeleton' until the real-HW siblings (Franka FCI / ur_robot_driver bridges) are exercised from the lifecycle path; the MuJoCo-twin arms are sim-green.",
+        inputs: ["/cmd · ActionChunk"],
+        outputs: ["/joint_states"],
+        schemas: ["msg/ActionChunk", "RobotDescription"],
+      },
+      {
+        title: "rt_bridge (shm)",
+        pkg: "cpp/rt_bridge (planned)",
+        status: "blue",
+        desc: "Lock-free shared-memory ring buffer between Python and the C++ realtime layer. Required before any humanoid balance loop.",
+      },
+    ],
+  },
+
+  {
+    ix: "L1",
+    name: "Sensors",
+    desc: "SensorSpec / SensorBundle factories + a small vendor catalog limited to sensors actually wired into a HAL adapter. Launch generation works; no perception pipelines into WorldState yet.",
+    blocks: [
+      {
+        title: "SensorCatalog (6 entries)",
+        pkg: "python/sensors · catalog.py",
+        status: "green",
+        desc: "Global CATALOG populated by every vendor module on import. Powers openral sensor list / show. Per-vendor entries: realsense (D435/D435i/D415), usb_uvc (Logitech C920), force_torque (Robotiq FT 300-S), luxonis (OAK-D Pro). Speculative LiDAR / IMU / tactile / extra-SKU entries removed; reintroduce when a HAL adapter needs them.",
+        outputs: ["SensorCatalogEntry"],
+        schemas: ["SensorBundle", "SensorSpec"],
+      },
+      {
+        title: "Camera bundles · RealSense + UVC",
+        pkg: "python/sensors · realsense.py / usb_uvc.py",
+        status: "green",
+        desc: "RealSense D435/D435i/D415 · Logitech C920. Pure-Python factories with nominal intrinsics from each vendor's data sheet.",
+        inputs: ["frame_id, parent_frame"],
+        outputs: ["SensorBundle", "SensorSpec"],
+        schemas: ["SensorBundle", "SensorSpec", "IntrinsicsPinhole"],
+      },
+      {
+        title: "Camera bundle · Luxonis OAK-D Pro",
+        pkg: "python/sensors · luxonis.py",
+        status: "green",
+        desc: "OAK-D Pro RGB+depth+IMU SensorBundle factory with nominal intrinsics. Auto-registered into CATALOG as 'luxonis/oak_d_pro' at import. The `sim_camera_name` field maps the sensor to the matching MuJoCo camera in the SO-101 box scene.",
+        outputs: ["SensorBundle", "SensorSpec"],
+        schemas: ["SensorBundle", "SensorSpec"],
+      },
+      {
+        title: "SensorRosPublisher (ADR-0019 PR2)",
+        pkg: "python/sensors · ros_publisher.py",
+        status: "green",
+        desc: "Background-thread SensorReader → sensor_msgs/Image publisher. One publisher per SensorReaderConfig entry; runs a daemon thread on open() and stops on close(). Wires the hardware recording path so sensor frames captured by OpenCVThreadSensorReader / GStreamerSensorReader flow onto /openral/sensors/<id>/image for rosbag2 recording alongside ActionChunk + WorldStateStamped. Tested in test_sensor_ros_publisher.py (Protocol conformance, lifecycle, publish round-trip).",
+        inputs: ["SensorReaderConfig", "SensorFrame"],
+        outputs: ["sensor_msgs/Image on /openral/sensors/<id>/image"],
+        schemas: ["SensorReaderConfig", "SensorFrame"],
+      },
+      {
+        title: "Force-torque adapter",
+        pkg: "python/sensors · force_torque.py",
+        status: "green",
+        desc: "Robotiq FT 300-S 6-axis F-T sensor, UR-native; wired into ur5e_with_sensors / ur10e_with_sensors.",
+        schemas: ["SensorSpec"],
+      },
+      {
+        title: "Launch generator + calibration",
+        pkg: "python/sensors · realsense.py",
+        status: "green",
+        desc: "bundle_to_node_params + generate_launch_py emit a ROS 2 launch file so realsense2_camera comes up with the right topic / qos / encoding. calibrate_camera_cmd wires openral calibrate camera.",
+        inputs: ["SensorBundle"],
+        outputs: ["launch.py source"],
+        schemas: ["SensorBundle"],
+      },
+      {
+        title: "Sensors ROS pkg",
+        pkg: "packages/sensors (planned)",
+        status: "blue",
+        desc: "ROS 2 package that takes a SensorBundle YAML and brings up drivers + a synchronized perception head. Not yet on disk.",
+      },
+      {
+        title: "Object detection + 2D→3D lift (shipped, ADR-0035/0037)",
+        pkg: "python/detect · openral_perception_ros · python/world_state",
+        status: "yellow",
+        desc: "WorldState.detected_objects now HAS a producer chain (this card was 'planned, no producer' pre-ADR-0035). 2D detection: openral_runner GStreamer PerceptionEventPublisher + the GStreamer-free openral_perception_ros.ros_image_detector_node, both running an RT-DETR ONNX/TRT detector (rtdetr-coco-r18 / rtdetr-v2-r50vd detector rSkills) → ObjectsMetadata on /openral/perception/objects. 2D→3D lift: world_state VoxelFrustumLifter frustum-projects the occupancy voxels to recover map-frame object centres → DetectedObject (label + Pose6D centre + AABB). Yellow not green: only the object CENTRE (position) is recovered — full 6-DoF pose ORIENTATION estimation is still unimplemented (DetectedObject.pose orientation stays identity); also see the L2 lift card + L3 perception cards for the producers.",
+        outputs: ["DetectedObject", "ObjectsMetadata"],
+        schemas: ["DetectedObject", "Pose6D", "ObjectsMetadata"],
+      },
+    ],
+  },
+
+  {
+    ix: "L2",
+    name: "World State",
+    desc: "tf2-aware aggregator that fuses joint state + sensor topic refs + EE poses + diagnostics into a typed snapshot at 30 Hz. ADR-0035: lifts 2D object detections to 3D map-frame centres via voxel-frustum K-nearest and maintains a short-horizon spatial ObjectMemory — WorldState.detected_objects is populated for the first time. ADR-0038 adds the long-horizon, persistent, advisory scene-graph spatial memory (object/place/room/agent) the S2 Reasoner accumulates from those detected_objects and queries to recall where things are — never a safety input.",
+    blocks: [
+      {
+        title: "WorldStateAggregator",
+        pkg: "python/world_state · aggregator.py",
+        status: "green",
+        desc: "Pure-Python, injectable. Tracks staleness per component (latched), produces immutable WorldState on snapshot(). No ROS imports — unit-testable. ADR-0035: update_detected_objects(objects) replaces the in-memory detected-object set; snapshot() now returns a non-empty detected_objects list when the lift produces results.",
+        inputs: ["JointState updates", "EE poses", "image topic refs", "list[DetectedObject] (ADR-0035)"],
+        outputs: ["WorldState"],
+        schemas: ["WorldState", "JointState", "Pose6D", "DetectedObject"],
+      },
+      {
+        title: "ROS lifecycle node",
+        pkg: "packages/world_state · lifecycle_node.py",
+        status: "green",
+        desc: "Subscribes to /joint_states + configurable sensor topics. ADR-0018 F2: publishes typed openral_msgs/WorldStateStamped on /openral/world_state_fast (30 Hz) and /openral/world_state_slow (5 Hz) from one in-memory snapshot per fast tick. JSON /world_state topic deleted in a hard wire break (no migrator, openral_msgs still at 0.1.0 — the pre-F2 topic was never persisted on disk). configure/activate/deactivate/cleanup. ADR-0035: also subscribes /openral/perception/objects (PromptStamped, BEST_EFFORT) and /openral/world_voxels (OccupancyVoxels, RELIABLE), wires a tf2_ros.Buffer+TransformListener, and runs a memory tick timer (default 2 Hz) feeding ObjectMemory → aggregator.update_detected_objects(). Best-effort: stale/absent voxel grid → detected_objects == []; never fabricates a pose. ADR-0035 follow-up landed: the memory is now serialised onto WorldStateStamped's detected_object_* parallel arrays (via _fill_detected_objects in build_world_state_stamped_msg) and reconstructed by world_state_from_idl, so cross-process consumers of /openral/world_state_slow see it.",
+        inputs: ["/joint_states", "/openral/perception/objects (ADR-0035)", "/openral/world_voxels (ADR-0035)"],
+        outputs: ["/openral/world_state_fast", "/openral/world_state_slow"],
+        schemas: ["WorldState", "WorldStateStamped", "ObjectsMetadata", "msg/OccupancyVoxels"],
+      },
+      {
+        title: "tf2 integration",
+        pkg: "packages/world_state (in dev)",
+        status: "yellow",
+        desc: "Partial. A tf2_ros.Buffer + TransformListener and a _lookup_4x4 helper ARE wired in lifecycle_node.py, but only behind the ADR-0035 object-lift path (gated on lift_enabled) for the map↔camera lookups — see the '2D→3D object-center lift' card. The general world-state path still references EE/base frames by name: aggregator.update_ee_pose / update_base_pose exist but are not yet driven from a tf2 lookup in the node. Promoting EE/base poses to live tf2 lookups is the remaining work.",
+        schemas: ["WorldState", "Pose6D"],
+      },
+      {
+        title: "2D→3D object-center lift + spatial memory",
+        pkg: "python/world_state · object_lift.py, object_memory.py",
+        status: "green",
+        desc: "ADR-0035. VoxelFrustumLifter: frustum-projects /openral/world_voxels occupied centres into the RGB camera plane, selects K-nearest to each 2D box centre, mean+AABB in map frame → DetectedObject. ObjectMemory: IoU-gated freeze-on-match (≥0.3), in-FOV-guarded evict-on-miss (max_misses=1), out-of-FOV retain. aabb_iou_3d is the single 3D IoU helper in the repo. Pure Python, no ROS imports. Hosted in the world-state lifecycle node; feeds aggregator.update_detected_objects().",
+        inputs: ["msg/OccupancyVoxels (/openral/world_voxels)", "ObjectsMetadata (via lifecycle_node)", "TF2 transforms"],
+        outputs: ["WorldState.detected_objects (in-process)"],
+        schemas: ["DetectedObject", "Pose6D", "ObjectsMetadata", "IntrinsicsPinhole"],
+      },
+      {
+        title: "Persistent spatial memory (scene graph)",
+        pkg: "openral_core.schemas (contracts) · python/world_state · spatial_memory.py + embedder.py",
+        status: "yellow",
+        desc: "ADR-0038 — durable, advisory scene graph (object/place/room/agent nodes + contains/at_place/traversable_to edges) the S2 Reasoner queries to recall where things are and navigate/manipulate there ('find the mug'; 'bring me a cup of wine'). NEVER a safety input — the kernel still gates only on the ADR-0030 geometric world. Phase 1: Pydantic contracts + RecallObject/ResolvePlace query types + ROSObjectNotInMemory + real home fixture (tests/unit/fixtures/home_scene_graph.json). Phase 2 (done): SpatialMemory builder + query engine — ingest_detected_objects (instance association by track_id / label+proximity), recall_object (rank + camera-facing ApproachViewpoint + occluding-container flag), resolve_place (goal + traversable BFS path), JSON persistence; pure-Python (no graph-engine dep), mypy --strict, fuzz + builder tests over the real wine fixture. Phase 4 (done): open-vocab matching via OpenClipEmbedder (OpenCLIP ViT-B/32-quickgelu, MIT, `uv sync --group clip`) — object labels embedded on creation, free-text queries match by CLIP cosine ≥ min_text_similarity (in-memory brute-force; labels re-embedded on load); optional/compute-gated, GPU-verified on RTX 4070. Dashboard surfacing (done): object nodes published as a `world.scene_objects` OTel span (openral_world_state.emit_scene_objects_span) and rendered on the ADR-0017 dashboard as a `scene objects` table card + labelled markers on the SLAM 2D map; emitted by the Reasoner from its preloaded map today, World-State node post-producer. Pending: image-crop embeddings + sqlite-vec persistence, dynamics (Phase 5), and the ROS lifecycle node that feeds detected_objects (ADR-0035 / PR #229 producer). Reasoner-palette exposure + active search are ADR-0039.",
+        schemas: ["SceneGraph", "SpatialNode", "SpatialEdge", "RecallObjectQuery", "RecallObjectResult", "ResolvePlaceQuery", "ResolvePlaceResult", "DetectedObject"],
+      },
+      {
+        title: "State-contract layout-adapter registry",
+        pkg: "python/state_adapter · openral_state_adapter",
+        status: "green",
+        desc: "ADR-0027 — assembles per-checkpoint state vectors (e.g. human300_16d's 16-D Cartesian composite) from live /tf + /joint_states + manifest-declared StateContractBindings. Single source of truth for the closed StateLayout literal; reasoner palette filter consults registered_layouts() to admit wrapped-task-space rSkills. Shipped layouts today: human300_16d (Panda EE + base pose + 2 gripper fingers).",
+        schemas: ["StateContract", "StateContractBindings", "StateLayout"],
+        inputs: ["/tf", "/joint_states"],
+        outputs: ["observation.state (skill_runner-internal)"],
+      },
+    ],
+  },
+
+  {
+    ix: "L3",
+    name: "rSkill (S1) — fast policy",
+    desc: "VLA or scripted policy, action-chunked. Lifecycle states unconfigured → inactive → active → finalized. Hot path = step().",
+    blocks: [
+      {
+        title: "Skill ABC + state machine",
+        pkg: "python/rskill · base.py",
+        status: "green",
+        desc: "Final lifecycle methods, on_load_weights / on_quantize / on_warmup hooks, atomic RSkillInfo updates, transition validation. No ROS imports.",
+        inputs: ["WorldState"],
+        outputs: ["Action"],
+        schemas: ["RSkillInfo", "RSkillState", "WorldState", "Action"],
+      },
+      {
+        title: "rSkill loader",
+        pkg: "python/rskill · loader.py",
+        status: "green",
+        desc: "from_pretrained(hf://...) downloads + validates manifest, capability-checks against RobotCapabilities, license-gates non-commercial weights, registers locally.",
+        inputs: ["hf://repo_id", "RobotCapabilities"],
+        outputs: ["InstalledRSkillEntry"],
+        schemas: ["RSkillManifest", "RSkillAction", "RSkillLicensePosture", "RobotCapabilities"],
+      },
+      {
+        title: "Runtime Protocol + NullRuntime",
+        pkg: "python/rskill · runtime.py",
+        status: "green",
+        desc: "Structural protocol every backend satisfies: load / warmup / forward / unload + is_loaded / device. NullRuntime for tests.",
+        schemas: ["QuantizationConfig", "DeviceInfo"],
+      },
+      {
+        title: "PyTorchRuntime",
+        pkg: "python/rskill · runtime_pytorch.py",
+        status: "green",
+        desc: "torch.inference_mode-based backend. INT8 dynamic quant on Linear layers; other dtypes raise — use TRT / GGUF / MLX where appropriate.",
+        schemas: ["QuantizationConfig"],
+      },
+      {
+        title: "ONNXRuntime",
+        pkg: "python/rskill · runtime_onnx.py",
+        status: "green",
+        desc: "onnxruntime backend for CPU + CUDAExecutionProvider. Loads pre-quantized ONNX exports.",
+        schemas: ["QuantizationConfig"],
+      },
+      {
+        title: "Quantization presets",
+        pkg: "python/rskill · quantization.py",
+        status: "green",
+        desc: "QUANT_PRESETS + auto_select_quant(DeviceInfo) — picks BF16 on Ampere+, INT8 on CPU, FP4_NVFP4 on Hopper+.",
+        schemas: ["QuantizationConfig", "QuantizationDtype", "QuantizationBackend", "DeviceInfo"],
+      },
+      {
+        title: "EngineCache",
+        pkg: "python/rskill · engine_cache.py",
+        status: "green",
+        desc: "Filesystem cache for compiled engines (TRT plans, ONNX). Keyed by (weights_sha, device, dtype).",
+      },
+      {
+        title: "SmolVLA adapter",
+        pkg: "python/rskill · smolvla.py",
+        status: "green",
+        desc: "Full Skill subclass: loads SmolVLAPolicy, wires obs preprocessor, drives the async ChunkedExecutor (overlap chunk N+1 inference with chunk N execution). Inference goes through openral_rskill._vla_core.run_inference so foreground/prefetch chunks emit the same inference_span attributes as the eval-side adapters.",
+        inputs: ["WorldState"],
+        outputs: ["Action (chunk)"],
+        schemas: ["WorldState", "Action", "RSkillManifest"],
+      },
+      {
+        title: "ChunkedExecutor (shared, ADR-0010 PR B)",
+        pkg: "python/rskill · executor.py",
+        status: "green",
+        desc: "Promoted out of smolvla.py so every chunked VLA family (SmolVLA, π0/π0.5, ACT, Diffusion Policy, OpenVLA-OFT, …) reuses one implementation. Policy-agnostic: any lerobot-style policy with select_action(batch) + config.n_action_steps is supported. SmolVLA adapter re-exports `ChunkedExecutor` via `__all__` for back-compat. Tested in tests/unit/test_smolvla_adapter.py::TestChunkedExecutor.",
+        inputs: ["lerobot-style policy"],
+        outputs: ["Action chunks"],
+      },
+      {
+        title: "VLA adapter core (shared)",
+        pkg: "python/rskill · _vla_core.py",
+        status: "green",
+        desc: "Internal helpers shared across every VLA family on both the skill (ChunkedExecutor) and sim (`openral sim run` policy adapters) paths: resolve_device, resolve_rskill_repo_id (rskill:// → HF id), run_inference (single seam wrapping policy.select_action in inference_span + torch.no_grad), to_numpy_action, plus the perf knobs apply_chunk_replay (overrides policy.config.n_action_steps from vla.extra; per-family paper-faithful defaults — SmolVLA / π0.5 use chunk_size for synchronous mode, ACT uses 1 + temporal_ensemble_coeff for ensembling, Diffusion pins its own; ~25× speedup over the shipped lerobot n_action_steps=1) and maybe_compile_chunk_forward (best-effort torch.compile of the chunk forward with a runtime-fallback wrapper that latches into eager mode on backend errors; opt-in via vla.extra.compile, skipped on CPU). Adding a new VLA family without going through this module is a review-blocker — that's how the inference_span ended up dead on the eval path before this consolidation.",
+        schemas: ["VLASpec"],
+      },
+      {
+        title: "GpuPassthroughSkill (M8 PR I/10)",
+        pkg: "python/rskill · gpu_passthrough.py",
+        status: "green",
+        desc: "Weight-less Skill whose _step_impl uploads each SensorFrame to torch.cuda, runs per-channel mean reduction with explicit torch.cuda.synchronize, and emits the result as Action.confidence. configure() RAISES when device='cuda' is requested and torch.cuda.is_available() is False — no silent CPU fallback. Wired into SKILL_REGISTRY as 'gpu_passthrough'. Paired with deployments/so100_gpu_passthrough_h264.yaml (nvh264dec + this skill) for the literal 'decoded raw frame never on CPU + rSkill all on GPU' demonstration: p99 inference 3.85 ms (vs HelloSkill's 0.171 ms — the delta IS the cudaMemcpy + kernel + cudaSynchronize cost).",
+        inputs: ["WorldState.image_frames[sensor_id]"],
+        outputs: ["Action.confidence (GPU-reduced mean)"],
+        schemas: ["SensorFrame", "Action"],
+      },
+      {
+        title: "rskill_runner_node + ExecuteRskill action server (ADR-0018 F1)",
+        pkg: "packages/openral_rskill_ros",
+        status: "green",
+        desc: "Lifecycle node owning /openral/execute_skill (openral_msgs/action/ExecuteRskill) and the in-process HardwareRunner. This is the realized form of ADR-0010's planned `skill_executor` ROS wrapper — the thin ROS 2 lifecycle wrapper around HardwareRunner that subscribes to world state and ticks the runner now lives here (rskill_runner_node.py + compose.py), not in a separate packages/skill_executor. compose_so100_runtime shares one WorldStateAggregator with the colocated world_state_node per ADR-0018 §3 (single subscriber of /joint_states). Publishes openral_msgs/ActionChunk on /openral/candidate_action via openral_runner.ROSPublishingHAL; subscribes /openral/estop defense-in-depth (CLAUDE.md §1.5). One node per robot. ADR-0024: the resolver now goes through make_default_skill_resolver(self) which branches on manifest.kind — VLA via the legacy path, ros_action / ros_service via ROSActionRskill on the same node handle. The execute loop catches ROSRskillGoalSatisfied specifically and closes the goal with success=True.",
+        inputs: ["ExecuteRskill goals", "WorldStateAggregator.snapshot()", "/openral/estop"],
+        outputs: ["/openral/candidate_action (openral_msgs/ActionChunk)", "ExecuteRskill feedback/result", "/diagnostics"],
+        schemas: ["action/ExecuteRskill", "msg/ActionChunk"],
+      },
+      {
+        title: "ROSActionRskill (ADR-0024 — wrapped-ROS rSkill adapter)",
+        pkg: "python/rskill · ros_action_rskill.py",
+        status: "green",
+        desc: "rSkillBase shim wrapping an arbitrary ROS 2 action / service server (MoveIt MoveGroup, Nav2 NavigateToPose, …). Selected by make_default_skill_resolver when manifest.kind in {ros_action, ros_service}. Trajectory mode (result_trajectory_field set, e.g. MoveIt) sends the goal, awaits the result, reorders the returned JointTrajectory into the host RobotDescription.joints order via build_joint_permutation_from_names, then replays one waypoint per step() as a 1-row Action chunk so the safety supervisor's per-row envelope check sees every commanded position (chunk_size=1 is schema-enforced for these kinds). Result-only mode (Nav2 shape) awaits the wrapped action's result and raises ROSRskillGoalSatisfied without emitting any Action chunk — Nav2 publishes /cmd_vel directly. ROS imports deferred to _configure_impl so the module imports cleanly without ROS sourced. Reference rSkills land alongside in rskills/rskill-moveit-joints/, rskills/rskill-nav2-navigate-to-pose/, and rskills/rskill-moveit-look-at/. ADR-0044/0052 — ros_integration.goal_builder selects a goal-lowering subclass over this one engine: look_at (LookAtRskill — resolves the named camera from RobotDescription.sensors, reads its TF pose, lowers a gaze pose), pose (PoseGoalRskill — a generic Cartesian-EEF target via build_pose_constraints, the shared pose→constraints lowering), joint (JointGoalRskill — joint_names+positions → joint_constraints). The skills stay distinct reasoner capabilities; only the builders unify.",
+        inputs: ["WorldState (logging only — wrapped server consumes its own observations)", "RosIntegration.default_goal_json"],
+        outputs: ["per-waypoint Action chunks on /openral/candidate_action (trajectory mode)", "ROSRskillGoalSatisfied on completion"],
+        schemas: ["RSkillManifest", "RosIntegration", "Action"],
+      },
+      {
+        title: "ROSPublishingHAL (ADR-0018 F1)",
+        pkg: "python/runner · openral_runner.ros_publishing_hal",
+        status: "green",
+        desc: "HAL Protocol adapter that publishes ActionChunk on /openral/candidate_action instead of driving motors. read_state caches /joint_states. trace_id sourced from the active OTel context (ADR-0018 §6); skill_id / skill_revision injected via getter callables so skill_runner_node can swap them per goal.",
+        inputs: ["Action", "/joint_states"],
+        outputs: ["/openral/candidate_action (openral_msgs/ActionChunk)"],
+        schemas: ["msg/ActionChunk"],
+      },
+      {
+        title: "InferenceRunner Protocol + Base (ADR-0010 PR C)",
+        pkg: "python/runner · openral_runner.{protocol,base}",
+        status: "green",
+        desc: "InferenceRunner @runtime_checkable Protocol (rate_hz, activate, tick, run, deactivate) and InferenceRunnerBase abstract class. Base owns the rate-limited run() loop, the skill.tick OTel parent span (lifts per-stage timings as attributes), the RunResult mean/p99 aggregation, the latency-budget violation counter, and the DeadlineOverrunPolicy (warn / drop / raise). Subclasses implement _tick_impl(tick_idx) → TickResult. Tested in tests/unit/test_runner_base.py against a real FixedLatencyRunner subclass (no mocks): 30 Hz cadence within ±10 ms over 10 ticks, Protocol isinstance check, all three policies.",
+        inputs: ["TickResult (from subclass)"],
+        outputs: ["RunResult", "OTel skill.tick spans"],
+        schemas: ["TickResult", "RunResult", "DeadlineOverrunPolicy"],
+      },
+      {
+        title: "HardwareRunner (ADR-0010 PR F)",
+        pkg: "python/runner · openral_runner.hardware",
+        status: "green",
+        desc: "First concrete InferenceRunnerBase subclass; the inference loop now closes end-to-end on real hardware / a digital twin. Composes a HAL adapter, a Skill (caller pre-configures + activates), a WorldStateAggregator, a list of SensorReaders, and a SafetyClient. Runner is the safety-supervisor boundary per CLAUDE.md §10: catches ROSSafetyViolation, records on TickResult, withholds HAL.send_action. Tested in tests/unit/test_hardware_runner.py against a real SO100FollowerHAL(robot=SO100DigitalTwin) + WorldStateAggregator + a deterministic test Skill + NullSafetyClient — 8 tests including 30 Hz cadence assertion (±15 ms over 10 ticks) and supervisor-boundary semantics.",
+        inputs: ["HAL", "Skill", "WorldStateAggregator", "SensorReader[]", "SafetyClient"],
+        outputs: ["Action", "TickResult", "RunResult"],
+        schemas: ["RobotEnvironment", "TickResult", "RunResult", "WorldState", "Action"],
+      },
+      {
+        title: "SimRunner (ADR-0010 amendment 1)",
+        pkg: "python/sim · openral_sim.SimRunner",
+        status: "green",
+        desc: "InferenceRunnerBase subclass that ticks at one inference step per tick(): reset-ticks call env.reset + policy.reset and finalise the prior EpisodeResult; step-ticks call policy.step + env.step and populate TickResult.step_idx/episode_idx/reward/terminated/truncated. _should_terminate() stops the run() loop once n_episodes EpisodeResults have been emitted. `openral sim run` and `openral benchmark run` both drive this; run_episode + run_evaluation + python/eval-shim/ were removed in the same PR. Tested in tests/unit/test_sim_runner.py (12 tests against the mock scene + zero/random policies) and tests/sim/test_*_simrunner.py (real LIBERO / gym-aloha / gym-pusht rollouts).",
+        inputs: ["SimScene", "BenchmarkScene", "RSkillManifest"],
+        outputs: ["TickResult", "RunResult", "EpisodeResult"],
+        schemas: ["SimScene", "BenchmarkScene", "TickResult", "RunResult"],
+      },
+      {
+        title: "precise_sleep / sleep_until (ADR-0010 PR B)",
+        pkg: "python/runner · openral_runner.clock",
+        status: "green",
+        desc: "Hybrid time.sleep + busy-wait helpers for the 30 Hz cadence; mirrors lerobot/scripts/lerobot_record.py:precise_sleep. Used by InferenceRunnerBase.run to enforce the foreground tick rate. Tested in tests/unit/test_runner_clock.py (14 tests including a real 30 Hz cadence assertion).",
+      },
+      {
+        title: "SensorReader Protocol (ADR-0010 PR D)",
+        pkg: "python/runner · openral_runner.sensor_reader",
+        status: "green",
+        desc: "@runtime_checkable Protocol with `open / close / read_latest`. The seam between per-sensor capture backends and the inference runner; the OpenCVThreadSensorReader below satisfies it today. Tested via the backend's isinstance check.",
+        inputs: ["SensorReaderConfig"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorReaderConfig", "SensorReaderBackend", "SensorFrame", "FrameEncoding"],
+      },
+      {
+        title: "OpenCVThreadSensorReader (ADR-0010 PR D)",
+        pkg: "python/runner · openral_runner.backends.opencv_thread",
+        status: "green",
+        desc: "Default backend: per-camera daemon Thread on top of cv2.VideoCapture, mirroring lerobot/cameras/opencv/camera_opencv.py. Captures into a single latest-frame slot under Lock; foreground read_latest returns a SensorFrame with inlined raw bytes or raises ROSPerceptionStale. Opens against int (camera index) / str (file / RTSP URL). opencv-python is gated behind the `opencv` optional-extra. Tested in tests/unit/test_opencv_thread_sensor_reader.py with real cv2.VideoWriter-generated MJPG/AVI fixtures (no v4l2loopback / camera needed): 12 tests covering Protocol conformance, ctor guards, lifecycle idempotency, frame shape, staleness, context-manager, and failed-open.",
+        inputs: ["cv2.VideoCapture"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorFrame", "FrameEncoding"],
+      },
+      {
+        title: "GStreamerSensorReader (ADR-0010 PR I, M8)",
+        pkg: "python/runner · openral_runner.backends.gstreamer",
+        status: "green",
+        desc: "GStreamer-backed SensorReader with two paths under one Protocol surface. CPU appsink path: pipeline ends in `appsink name=bh_sink`, `new-sample` callback latches bytes into a Lock-guarded slot, encoding ∈ {BGR8 / RGB8 / MONO8}. NVMM zero-copy path (Tegra / Spark / Thor): caps carry `memory:NVMM`, the callback casts the mapped buffer to NvBufSurface via ctypes, populates SensorFrame.handle with the GPU dataPtr and encoding=CUDA_NV12 — no per-frame pixel copy. PipelineSpec builder auto-picks v4l2src / nvarguscamerasrc / rtspsrc / videotestsrc + nvh264dec / nvv4l2decoder / avdec_h264 + nvvidconv / nvvideoconvert / videoconvert per the detected Platform (TEGRA / NVIDIA_DESKTOP / CPU_ONLY). Optional `tee` branch for a downsampled ROS publish path (rosbag2 / rqt_image_view; CPU-side caps so the ROS sink and ral sink don't share NVMM buffer ownership). ADR-0018 F6 (2026-05-19) extends the `tee` to a THIRD branch (`event_sink`) for the perception event leg — shares the same upstream pipeline and `get_shared_cuda_context()` singleton; each optional leg is fed via a `queue leaky=downstream max-size-buffers=2` so a stalled observability or detector branch never backpressures the policy leg. Live publish/subscribe round-trip validated end-to-end inside the consolidated x86 image (cyclonedds rmw, PR I/8): `just docker-smoke-x86-ros` receives a real sensor_msgs/Image, exits 0. `Gst.init()` is called at reader module load and the ROS publisher is created BEFORE the pipeline transitions to PLAYING (rclpy.Node() segfaults on the reverse ordering with pydantic-v2's Rust core + gst-cuda's plugin scan in the same process). NvBufSurfaceHandle + shared CUDA context glue live alongside in `nvbufsurface.py` / `cuda_context.py`. Opt-in via `gstreamer` / `gstreamer-nvmm` extras; deploy path in the consolidated `docker/inference/Dockerfile.x86` (CUDA 13 + ROS Jazzy + optional DeepStream stage, see ADR-0010 Amendment 2026-05-14). Cross-platform support contract pinned by ADR-0016: the same `Platform` enum is endorsed as final for x86 + L4T (Orin / Xavier / Maxwell-Nano best-effort); SoC-level distinctions live in `JetsonInfo.cuda_compute_capability`, not in `Platform`.",
+        inputs: ["SensorReaderConfig", "PipelineSpec", "NvBufSurface", "PyCUDA Context"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorReaderConfig", "SensorReaderBackend", "SensorFrame", "FrameEncoding"],
+      },
+      {
+        title: "PerceptionEventPublisher (ADR-0018 F6)",
+        pkg: "python/runner · openral_runner.backends.gstreamer.perception_tee",
+        status: "green",
+        desc: "Third leg of the GStreamerSensorReader `tee` (alongside the policy NVMM leg and the ROS observability leg). Owns the `event_sink` appsink for a single sensor, runs a pluggable list of `EventDetector`s (MotionDetector + SceneChangeDetector ship in-tree; ObjectsDetector / OcrDetector hooks are downstream / model-specific), and publishes `openral_msgs/PromptStamped` on the per-kind topic `/openral/perception/<kind>` per ADR-0018 §1 (topology symmetric with the `/openral/failure/<source>` bus). QoS BEST_EFFORT + VOLATILE + KEEP_LAST=10; per-detector token-bucket rate-limit (default 5 Hz) caps the topic rate so a noisy motion source can't storm the reasoner. `metadata_json` carries a serialised PerceptionEventMetadata variant (frozen, extra='forbid', discriminator `kind`); consumers decode via `TypeAdapter(PerceptionEventMetadata).validate_json(...)`. The event leg lifts NVMM to system memory before the appsink and pins `format=BGR + framerate=<event_rate_hz>/1` upstream — Python (CPU-tier) detectors consume numpy arrays, never NVMM handles. The zero-copy NVMM detector tier (ADR-0037 PR5b) is wired end-to-end (C1–C4 complete, 2026-06-03): `trt_nvmm.TrtNvmmExecutor` runs a TRT engine directly on the `NvBufSurface.dataPtr` via the CUDA primary context (nvrtc-compiled kernel + cuda-python `cuda.bindings`, no pycuda/nvcc — deployable in the lean ds-on image; no GPU->CPU copy); `nvmm_detector.NvmmObjectsDetector` wraps it and emits `ObjectsMetadata`; `DetectorRunner` (tier=NVMM_AGGREGATOR) attaches a `nvmm_convert_element() ! video/x-raw(memory:NVMM),format=RGBA ! appsink` branch to the named tee — `nvmm_convert_element()` resolves to `nvvideoconvert` in the ds-on (DS9) container or `nvvidconv` on Tegra. Both `tests/integration/test_nvmm_aggregator_ds.py` tests pass in the `ds-on` container (skipped on hosts without the DeepStream stack). The `nvinfer` tier is deferred (its plugin does not register in the built ds-on image; the nvrtc aggregator is the working tier). Numpy + rclpy + openral_msgs lazy-imported (numpy inside `detect()`, the ROS stack inside `start()`) so the module stays import-safe on hosts without a sourced ROS env. New kinds = new topics, not an IDL bump.",
+        inputs: ["event_sink appsink", "PerceptionEventMetadata"],
+        outputs: ["PromptStamped on /openral/perception/<kind>"],
+        schemas: ["PerceptionEventMetadata", "MotionMetadata", "ObjectsMetadata", "OcrMetadata", "SceneChangeMetadata", "ObjectDetection2D"],
+      },
+      {
+        title: "openral_perception_ros (ADR-0035)",
+        pkg: "packages/openral_perception_ros · ros_image_detector_node",
+        status: "yellow",
+        desc: "Standalone ament_cmake ROS package (Python node) — the GStreamer-free deploy-sim path for the ADR-0035 object lift. ros_image_detector_node.py (RosImageObjectDetectorNode) subscribes a camera sensor_msgs/Image (image_convert.image_to_bgr_bytes → BGR bytes, no cv_bridge), runs the reused openral_runner ObjectsDetector (RT-DETR ONNX, rtdetr-coco-r18), and publishes openral_msgs/PromptStamped (metadata_json = ObjectsMetadata) on /openral/perception/objects with header.frame_id = sensor_id (default front_depth, the depth camera the lift projects through). Best-effort producer: unconvertible Image / detect error logged at debug and skipped. Wired into sim_e2e.launch.py behind enable_object_detector (openral deploy sim --enable-object-detector, auto-on when rskills/rtdetr-coco-r18/model.onnx is present). Params: image_topic (default /openral/cameras/agentview_left/image), output_topic, sensor_id, onnx_path (req), model_id, score_threshold (0.3), input_size (640), max_rate_hz (5.0), labels (COCO-80, req). Yellow not green: image_convert + the reused ObjectsDetector are unit-tested (tests/unit/test_image_convert.py, test_objects_detector.py, test_rtdetr_onnx_detects.py) but the node spin path has no dedicated launch_testing coverage yet.",
+        inputs: ["sensor_msgs/Image (image_topic)", "RT-DETR ONNX (rtdetr-coco-r18)"],
+        outputs: ["PromptStamped on /openral/perception/objects"],
+        schemas: ["ObjectsMetadata", "ObjectDetection2D", "msg/PromptStamped"],
+      },
+      {
+        title: "Ros2ImageSensorReader (planned, ADR-0010)",
+        pkg: "python/runner/backends (planned)",
+        status: "blue",
+        desc: "Subscribes to a ROS 2 image topic published by a vendor driver (rclpy + cv_bridge). Lighter weight than GStreamer; appropriate when frames already flow on the ROS bus from a separate camera node.",
+        inputs: ["SensorReaderConfig", "rclpy"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorReaderConfig", "SensorFrame", "FrameEncoding"],
+      },
+      {
+        title: "HoloscanSensorReader (reserved, ADR-0010 Amendment / ADR-0011)",
+        pkg: "python/runner/backends (planned — Thor follow-up)",
+        status: "blue",
+        desc: "Reserved-but-unimplemented Holoscan backend. SensorReaderBackend.HOLOSCAN enum value exists so a future PR can register it additively without bumping the schema. ADR-0010 Amendment 2026-05-12 evaluated Holoscan against lean GStreamer + custom NvBufSurface glue and deferred: Holoscan's set_dynamic_flows() can't add/remove operators at runtime, the core operator catalog is missing RTSP and Argus / MIPI CSI, and adoption today would force a 50–70% rewrite of the NVMM handoff. Revisit when Thor HIL becomes routine. ADR-0016 (Multi-platform support) endorses this deferral and explicitly scopes Thor / Spark / NVFP4 / Blackwell-Tegra out of the current support contract.",
+        inputs: ["SensorReaderConfig"],
+        outputs: ["SensorFrame"],
+        schemas: ["SensorReaderConfig", "SensorReaderBackend", "SensorFrame", "FrameEncoding"],
+      },
+      {
+        title: "OpenVLA / OFT adapter",
+        pkg: "python/rskill (planned)",
+        status: "blue",
+        desc: "M2 target — MIT-licensed, parallel-decode + L1 regression on continuous actions.",
+      },
+      {
+        title: "π0.5 adapter (shipped)",
+        pkg: "python/sim · policies/pi05.py",
+        status: "green",
+        desc: "Flow-matching PaliGemma + action-expert policy, shipped on the eval/runtime path (NOT planned — this card was 'M2 target' pre-landing). Loads via rskill:// through the generic loader; NF4-quantized by default (from_pretrained → quantize_nf4_in_place → optional prequant overlay → device; compile_model forced False to keep the nf4 path stable). Drives the largest rSkill family on disk: pi05-libero-nf4, pi05-so100, pi05-so101-pickplace-nf4, pi05-openarm-vision-nf4, pi05-robocasa365-human300-nf4. Apache code, permissive-research weights. Shares _vla_core inference seam. Tested via tests/sim/test_franka_panda_smolvla_libero.py-style rollouts + the panda_mobile/robocasa CLI benchmark tests.",
+        inputs: ["WorldState"],
+        outputs: ["Action (chunk)"],
+        schemas: ["WorldState", "Action", "RSkillManifest", "VLASpec"],
+      },
+      {
+        title: "ACT / Diffusion Policy / xVLA / MolmoAct2 adapters (shipped)",
+        pkg: "python/sim · policies/{act,diffusion,xvla,molmoact2}.py",
+        status: "green",
+        desc: "Eval/runtime policy adapters, each registered in openral_sim.POLICIES at import and driven via rskill://. ACT (Zhao et al. 2023; act-aloha / act-aloha-insertion / act-libero rSkills; temporal-ensemble chunk replay). Diffusion Policy (diffusion-pusht). xVLA (xvla-libero). MolmoAct2 (Ai2 Molmo2-ER VLM + flow-matching action expert, NF4; molmoact2-libero-nf4 / molmoact2-so101-nf4). All route inference through _vla_core (apply_chunk_replay + maybe_compile_chunk_forward) so they emit the same inference_span attributes. Apache-2.0 / MIT / permissive-research weights.",
+        inputs: ["WorldState"],
+        outputs: ["Action (chunk)"],
+        schemas: ["WorldState", "Action", "RSkillManifest", "VLASpec"],
+      },
+      {
+        title: "RLDX-1 sidecar adapter (shipped)",
+        pkg: "python/sim · policies/rldx.py · tools/rldx_sidecar.py",
+        status: "green",
+        desc: "RLWRLD RLDX-1 family (Qwen3-VL backbone) integrated out-of-process via a ZMQ + msgpack sidecar in an isolated Py3.10 venv with NF4 quant — the architecturally-distinct adapter (everything else loads in-process). Manifest-driven dispatch picks the obs/action contract per checkpoint (LIBERO vs GR1 humanoid_everyday_g1). Drives the 8-skill rldx1-* family (pt / mt-droid / ft-libero / ft-gr1 / ft-robocasa / ft-rc365 / ft-simpler-google / ft-simpler-widowx). RLWRLD Model License v1.0 (non-commercial).",
+        inputs: ["WorldState (via ZMQ)"],
+        outputs: ["Action (chunk, via ZMQ)"],
+        schemas: ["RSkillManifest", "VLASpec"],
+      },
+      {
+        title: "GR00T N1.x / N2 adapter",
+        pkg: "rskills/gr00t-n17-libero · policies/gr00t.py · tools/gr00t_sidecar.py",
+        status: "yellow",
+        desc: "ADR-0046. PR1: model_family 'gr00t', version-aware license posture (N1–N1.6 NVIDIA-NC vs N1.7+ NVIDIA Open Model / commercial), gr00t extras group, and the gr00t-n17-libero rSkill (publish-ready). PR2: out-of-process ZMQ sidecar reusing the rldx adapter (RLDX-1 is a GR00T-N1.5 finetune) — policies/gr00t.py factory + tools/gr00t_sidecar.py boot helper (clones Isaac-GR00T, run_gr00t_server + NF4), openral side unit-tested with a real socket. Status yellow: the live LIBERO sim eval is operator-run on a Py3.10 GPU host (3B + Cosmos-Reason doesn't fit 8 GB without NF4); paper numbers not faked.",
+        schemas: ["RSkillLicensePosture", "RSkillManifest", "ModelFamily"],
+      },
+      {
+        title: "TensorRTRuntime",
+        pkg: "python/rskill · runtime_tensorrt.py",
+        status: "yellow",
+        desc: "TRT engine load / build / serialize / forward backend (~530 lines). Handles ONNX→TRT compilation, int8/fp16/fp32 precision, CUDA engine plan cache; trt_nvmm_executor runs a TRT engine directly on NvBufSurface.dataPtr via CUDA primary context for the zero-copy NVMM detector path (ADR-0037 PR5b). Tested in test_runtime_tensorrt.py + test_trt_nvmm_executor.py. Status yellow: GPU / TRT integration tests skip on hosts without the DS stack. GGUF and MLX backends remain unimplemented (QuantizationBackend enum values are reserved placeholders).",
+        schemas: ["QuantizationConfig", "QuantizationBackend"],
+      },
+      {
+        title: "Sigstore signing",
+        pkg: "python/rskill (planned)",
+        status: "blue",
+        desc: "Out-of-scope until lerobot's verification story stabilises. The V0 stub field (`RSkillManifest.signature`) was removed when V1 of the manifest landed; future PR will reintroduce it under an ADR alongside a real verifier.",
+      },
+    ],
+  },
+
+  {
+    ix: "L4",
+    name: "Reasoning (S2) — slow planner",
+    desc: "LLM emits typed tool calls at 5–10 Hz (ADR-0018 F4 amendment to CLAUDE.md §6.2 / §7.6; BT v4 XML is a future option behind a separate bt_executor_node). Tool palette generated from local skill registry filtered by RobotCapabilities. Bounded replanning ladder.",
+    blocks: [
+      {
+        title: "Reasoner package (direct tool dispatch)",
+        pkg: "python/reasoner · openral_reasoner",
+        status: "green",
+        desc: "ADR-0018 F4 direct-dispatch surface landed: ContextRenderer (no-pixels structured text, priority-ordered prompt drain per ADR-0018 §3.F10 — human-source prompts overtake queued auto-cascades), ToolPalette + build_tool_palette (closed-set filter against installed rSkills + RobotCapabilities + license posture), ReasonerCore (100 ms min-interval, per-kind retry cap, palette-empty short-circuit, wraps the LLM call in an OTel `reasoner.tick` span per ADR-0018 §6 — captures the active W3C traceparent on the ReasonerTickResult so outbound EmitPromptTool messages can be joined back to the producing span), ToolUseClient Protocol with AnthropicToolUseClient + OpenAICompatibleToolUseClient concrete impls and a build_tool_use_client_from_env factory (OPENRAL_REASONER_LLM_{PROVIDER, MODEL, API_KEY, BASE_URL}). FakeToolUseClient (tests/integration/fakes/) is the only test double — explicit, named, gated by CLAUDE.md §1.11. The legacy Plan / ToolCall / LLMClient / Reasoner / NullReasoner Protocols (BT-XML-oriented per ADR-0005) ship alongside but are unused by F4's direct-dispatch surface — retained for the future bt_executor_node migration path.",
+        inputs: ["WorldStateStamped", "FailureTrigger", "PromptStamped (perception+operator)"],
+        outputs: ["ReasonerToolCall (one of: ExecuteRskillTool / ReloadGstPipelineTool / LifecycleTransitionTool / EmitPromptTool)"],
+        schemas: ["ReasonerToolCall", "ToolPalette", "RSkillToolEntry", "ContinuousDetectorEntry", "RSkillAction"],
+      },
+      {
+        title: "reasoner_node (ROS lifecycle wrapper)",
+        pkg: "packages/openral_reasoner_ros",
+        status: "green",
+        desc: "ADR-0018 F4 + F4-follow-up (GH-126) + 2026-05-25 amendment (event-driven tick model). Lifecycle node that wraps ReasonerCore with rclpy subscribers (/openral/world_state_slow + 6 /openral/failure/* + 4 /openral/perception/* + /openral/prompt + /openral/skill_registry_changed), a 0.2 Hz heartbeat timer (one tick every 5 s; was 5 Hz pre-2026-05-25), and event preemption — Tier A (/openral/failure/safety) preempts on severity≥WARN, Tier B/C (/openral/failure/{hal,sensor,rskill,wam,critic}) preempts on severity≥FAIL, Tier D (/openral/prompt) always preempts; subject to the 100 ms min-interval. Heartbeat ticks that see no new event since the last successful tick are short-circuited inside ReasonerCore with suppressed_reason=\"heartbeat_idle\". EmitPromptTool fully wired (publish on /openral/prompt, stamps the W3C `traceparent` captured by the active reasoner.tick span into metadata_json per ADR-0018 §6). ExecuteRskillTool fully wired — rclpy_action.ActionClient on /openral/execute_skill sends a goal with `deadline_s`, streams feedback to the warning channel, emits a FailureTrigger on /openral/failure/rskill with KIND_CONTROLLER (rejection/abort/server-unavailable) or KIND_TIMEOUT (deadline_s elapsed; goal is cancel_goal_async'd). LifecycleTransitionTool fully wired — per-peer-node lifecycle_msgs/srv/ChangeState client cache; `configure`/`activate`/`deactivate`/`cleanup` only (`shutdown` reserved for the safety supervisor). The /openral/skill_registry_changed (RELIABLE+TRANSIENT_LOCAL+KL=1) subscriber rebuilds the palette via rSkill.list_installed() → RSkillManifest → build_tool_palette → set_palette whenever the CLI fires the invalidation. Constructor takes robot_capabilities + commercial_deployment kwargs (without them the refresh logs a warning and leaves the palette alone). ReloadGstPipelineTool remains a log-and-acknowledge stub — F6 sensor-package service IDL not yet on disk. Spatial-memory dispatch is wired (ADR-0038 Phase 2b / ADR-0039): the node accepts a spatial_memory backend, routes the read-only RecallObjectTool / ResolvePlaceTool via openral_reasoner.spatial_query.run_spatial_query (_dispatch_spatial_query) and republishes the result as a PromptStamped (frame_id 'spatial_memory'); the spatial_memory_path ROS param loads a persisted SceneGraph at on_configure and spatial_memory_ingest (default false) folds each /openral/world_state_slow WorldState.detected_objects snapshot into the memory on tick — verified live on ROS 2 Jazzy. The reasoner never publishes ActionChunk (ADR-0018 §4 'no authority over actuation').",
+        inputs: ["WorldStateStamped", "FailureTrigger × 6", "PromptStamped × 5"],
+        outputs: ["PromptStamped on /openral/prompt (EmitPromptTool)", "action goal ExecuteRskill on /openral/execute_skill", "lifecycle_msgs/srv/ChangeState calls on <node>/change_state", "FailureTrigger on /openral/failure/rskill (KIND_CONTROLLER / KIND_TIMEOUT)"],
+        schemas: ["msg/PromptStamped", "msg/WorldStateStamped", "msg/FailureTrigger", "action/ExecuteRskill", "ReasonerToolCall", "ControllerEvidence", "TimeoutEvidence"],
+      },
+      {
+        title: "prompt_router_node (F10)",
+        pkg: "packages/openral_prompt_router",
+        status: "green",
+        desc: "ADR-0018 F10. Single lifecycle node that fans in operator prompts from any external source (CLI via `openral prompt`; dashboard via the live pane's POST /api/prompt; voice / Slack adapters are post-v1) onto /openral/prompt with normalised source + priority tags merged into metadata_json. CLI and dashboard sources both have priority 100 (human), auto cascade source has priority 10. RELIABLE + VOLATILE + KEEP_LAST=10 on every per-source input and on the fan-out topic. No silent drops — saturated subscribers surface as structlog warnings.",
+        inputs: ["/openral/prompt_in/cli", "/openral/prompt_in/dashboard", "/openral/prompt_in/auto"],
+        outputs: ["/openral/prompt (PromptStamped, RELIABLE+VOLATILE+KL=10)"],
+        schemas: ["msg/PromptStamped"],
+      },
+      {
+        title: "BT v4 emitter (deferred)",
+        pkg: "python/reasoner (planned bt_executor_node)",
+        status: "blue",
+        desc: "ADR-0018 §4 leaves BehaviorTree.CPP v4 XML output as a future option behind a separate bt_executor_node that would consume BehaviorTreeXml plans alongside the direct ReasonerToolCall surface. ROSBTValidationError is defined in core. Not in v1.",
+      },
+      {
+        title: "Replanning ladder",
+        pkg: "python/reasoner (in-progress)",
+        status: "yellow",
+        desc: "retry → param-tweak → substitute-skill → goal-replan → human-handoff. Only the bounded-retry leg is real control logic today: ReasonerCore.retry_cap_per_kind (default 3) + min_interval_s (100 ms) with a per-tool-kind streak counter that suppresses once the cap is exceeded (core.py _kind_streak). substitute-skill / goal-replan are NOT yet escalation logic — they exist only as LLM prompt guidance (tool_use.py), so the model may choose them but the core doesn't sequence them. human-handoff has separately landed for the active-search path via ADR-0039: active_search.SearchBudget / SearchProgress.exhausted terminates a bounded object search into handoff (not via the F4 action-client follow-up).",
+        schemas: ["msg/FailureTrigger", "ReasonerToolCall"],
+      },
+      {
+        title: "ADR-0025 — slam_toolbox bringup wrapper",
+        pkg: "packages/openral_slam_bringup",
+        status: "green",
+        desc: "Stand-alone launch + tuned config for upstream slam_toolbox as a Reasoner-managed background service (the canonical first ADR-0025 instance). Brings up slam_toolbox/async_slam_toolbox_node as a LifecycleNode named `/openral_slam_toolbox`; the launch leaves it in UNCONFIGURED to dodge slam_toolbox 2.8.4's Jazzy lifecycle race. The Reasoner promotes through CONFIGURE → ACTIVATE via LifecycleTransitionTool. SlamMapBridge subscribes /map at 1 Hz and emits a `slam.occupancy_grid` OTel span the dashboard's SLAM Map card renders; the span also carries the robot's map-frame pose (`robot_x`/`robot_y`/`robot_yaw`, plus `base_frame`, `footprint_radius_m` and `footprint_polygon_xy`) from a tf2 `map→base_frame` lookup so the card overlays the robot (oriented footprint polygon, or footprint circle, + heading wedge) on the map, degrading to no marker when TF is unavailable. Opted in by `sim_e2e.launch.py enable_slam:=true` (auto-on when robot.capabilities.has_lidar).",
+        inputs: ["/scan (sensor_msgs/LaserScan)", "/tf (odom→base_link)"],
+        outputs: ["/map (nav_msgs/OccupancyGrid)", "OTel slam.occupancy_grid spans"],
+      },
+      {
+        title: "ADR-0025 — Nav2 bringup wrapper (cmd_vel bridge to HAL)",
+        pkg: "packages/openral_nav2_bringup",
+        status: "green",
+        desc: "Second ADR-0025 instance: wraps upstream nav2_bringup/navigation_launch.py with a panda_mobile-tuned config (MPPI motion_model=Omni for the holonomic base; robot_radius=0.35; symmetric vy_min=-0.5). Unlike slam_toolbox, Nav2 auto-activates: its in-stack lifecycle_manager_navigation drives sub-nodes to ACTIVE. The Reasoner triggers Nav2 by dispatching OpenRAL/rskill-nav2-navigate-to-pose (kind: ros_action, result-only mode); Nav2 publishes /cmd_vel which the panda_mobile HAL subscribes to and routes into a 6-vec BODY_TWIST Action via the HAL's integrator (bypassing the safety supervisor — Nav2's velocity_smoother enforces caps, see ADR-0024 §Out-of-scope). Opted in by `sim_e2e.launch.py enable_nav2:=true` (default tracks enable_slam).",
+        inputs: ["/map (from slam_toolbox)", "/scan", "/odom", "/tf", "NavigateToPose goal on /navigate_to_pose"],
+        outputs: ["/cmd_vel (geometry_msgs/Twist) → panda_mobile HAL", "/plan, /local_costmap, /global_costmap"],
+      },
+    ],
+  },
+
+  {
+    ix: "L5",
+    name: "World Action Model (optional)",
+    desc: "Generative simulator for mental rollouts, failure anticipation, replanning. Cosmos / IRASim / UnifoLM-WMA. Needs Thor-class compute.",
+    blocks: [
+      {
+        title: "WorldModel Protocol + nullop",
+        pkg: "python/wam · openral_wam",
+        status: "yellow",
+        desc: "v0.2 ships only the Protocol and a no-op default — landed (2026-05-18). WorldModel Protocol with rollout(world_state, action_chunk, horizon) → Rollout; Rollout Pydantic schema (predicted states + horizon + latency + confidence); NullWorldModel identity stub replaying input state for `horizon` steps. Three integration patterns from CLAUDE.md §6.3 (gating, failure anticipation, replanning) all consume this same surface; concrete adapters land in v0.3+.",
+        inputs: ["WorldState", "Action chunk", "horizon"],
+        outputs: ["Rollout"],
+        schemas: ["Rollout"],
+      },
+      {
+        title: "Cosmos Predict adapter",
+        pkg: "python/wam (planned)",
+        status: "blue",
+        desc: "v0.3 target. NVIDIA Cosmos Predict 2.5 / Reason 2.",
+      },
+      {
+        title: "UnifoLM-WMA-0 adapter",
+        pkg: "python/wam (planned)",
+        status: "blue",
+        desc: "v0.3 target. Apache-2.0; pairs naturally with the Unitree G1 HAL.",
+      },
+      {
+        title: "IRASim adapter",
+        pkg: "python/wam (planned)",
+        status: "blue",
+        desc: "v0.3 target.",
+      },
+    ],
+  },
+
+  {
+    ix: "L6",
+    name: "Safety",
+    desc: "Separate C++ process, deny-by-default, certifiable. Python proposes, C++ disposes. ROSSafetyViolation never silently caught.",
+    blocks: [
+      {
+        title: "SafetyEnvelope schema",
+        pkg: "python/core · schemas.py",
+        status: "green",
+        desc: "Workspace box, no-go zones, max_ee_speed/accel, max_force_n, deadman_required, e_stop_topic, contact_force_threshold_n. Already loaded into RobotDescription.",
+        schemas: ["SafetyEnvelope"],
+      },
+      {
+        title: "Exception hierarchy",
+        pkg: "python/core · exceptions.py",
+        status: "green",
+        desc: "ROSSafetyViolation + ROSWorkspaceViolation + ROSForceLimitExceeded + ROSEStopRequested. Defined and never silently caught — but no enforcer raises them yet.",
+      },
+      {
+        title: "Safety pass-through (ADR-0018 F5 Day-1)",
+        pkg: "packages/openral_safety",
+        status: "green",
+        desc: "ADR-0018 F5 Day-1 chunk-rate safety boundary: subscribes /openral/candidate_action, gates on stubbed-but-real envelope checks (n_dof, per-joint position limits), republishes valid chunks on /openral/safe_action; fires /openral/estop on violation. /openral/estop_reset (std_srvs/Trigger) is the only recovery path (ROSEStopRequested never auto-clears). Topic shape is the contract; C++ kernel replaces internals later (separate ADR per CLAUDE.md §7.7).",
+        inputs: ["/openral/candidate_action (openral_msgs/ActionChunk)"],
+        outputs: ["/openral/safe_action (openral_msgs/ActionChunk)", "/openral/estop (std_msgs/Empty)", "/openral/estop_reset (std_srvs/Trigger)", "/diagnostics"],
+        schemas: ["ActionChunk"],
+      },
+      {
+        title: "SafetyClient Protocol + NullSafetyClient (ADR-0010 PR E)",
+        pkg: "python/runner · openral_runner.safety",
+        status: "green",
+        desc: "Python-side seam between the inference runner and the future C++ safety kernel. SafetyClient @runtime_checkable Protocol with check_action(action) → None | raises ROSSafetyViolation (CLAUDE.md §10: never silently caught). NullSafetyClient is the no-op stub that always allows + opens a safety.check span at info severity carrying control_mode / horizon / envelope_max_ee_speed_m_s / envelope_max_force_n — lets digital-twin runs trace the seam before the real kernel lands. Tested in tests/unit/test_runner_safety.py (9 tests) with a real OTel InMemorySpanExporter (no mocks).",
+        inputs: ["Action", "SafetyEnvelope"],
+        outputs: ["OTel safety.check spans", "ROSSafetyViolation"],
+        schemas: ["Action", "SafetyEnvelope"],
+      },
+      {
+        title: "C++ safety kernel",
+        pkg: "cpp/openral_safety_kernel",
+        status: "yellow",
+        desc: "ADR-0020 — separate-process safety kernel owning /openral/{candidate_action,safe_action,estop,failure/safety,estop_reset}. Real allocation-free validator (test_no_alloc.cpp pins) covering n_dof / position / velocity / torque / cartesian-AABB / ee-speed; FailureTrigger publication with typed evidence_json; 1 Hz /diagnostics; fault-latch + cooldown-gated reset. PR-F: emits OTel safety.check spans (safety.kernel=\"cpp\") over OTLP/HTTP to the dashboard receiver on port 4318, parented to the runner's rskill.tick via the W3C traceparent on ActionChunk.trace_id. The external /openral/estop subscription is already wired in the kernel (lifecycle_kernel.cpp on_external_estop); PR-G's separate defense-in-depth forwarder nodes have landed (deadman + hardware-estop in packages/openral_safety_watchdog, human-estop in packages/openral_human_estop — all green, see the L6 watchdog card). The kernel itself stays yellow on sim/HIL tests (PR-H/I) and LTTng tracepoints (PR-F2, comment-only in package.xml today).",
+        inputs: ["ActionChunk (candidate)", "Empty (external estop)", "Trigger (estop_reset)", "EnvelopeIntersection"],
+        outputs: ["ActionChunk (safe)", "Empty (estop)", "FailureTrigger", "DiagnosticArray", "OTel safety.check spans"],
+        schemas: ["SafetyEnvelope", "ActionChunk", "FailureTrigger", "FailureEvidence", "msg/WorldCollision", "msg/OccupancyVoxels"],
+        note: "ADR-0030 — also runs allocation-free geometric collision (KIND_COLLISION): self-collision (hand-rolled FK + capsule-capsule distance, multi-capsule per link), world-collision vs bounded obstacle capsules (/openral/world_collision), and grid-native voxel-collision vs a dense occupancy grid (/openral/world_voxels). Robot collision model lowered from the manifest or MJCF (openral_safety.envelope_loader / mjcf_lowering). World availability is fail-closed (drop, no latch).",
+      },
+      {
+        title: "OctoMap → voxel bridge",
+        pkg: "packages/openral_octomap_bridge",
+        status: "yellow",
+        desc: "ADR-0030 voxel phase — perception-side C++ node lowering a 3-D OctoMap into the kernel's dense base-frame OccupancyVoxels grid (keeps the octomap dependency out of the real-time safety kernel). octomap_msgs::msgToMap deserializes the octree; tf2 looks up octomap_frame ← base_frame; a bounded local volume is cropped + rasterized per-voxel and published on /openral/world_voxels. Testable core rasterize_octree_to_grid (gtest vs a real octree); full octomap→bridge→kernel chain is HIL (no octomap python bindings in CI).",
+        inputs: ["octomap_msgs/Octomap", "tf2 (base ← map)"],
+        outputs: ["msg/OccupancyVoxels (/openral/world_voxels)", "OTel world.pointcloud spans (ADR-0030 read-only viz leg: openral_runner WorldCloudBridge renders octomap_server's /octomap_point_cloud_centers into the dashboard robot-view pointcloud card, beside the SLAM 2D map)"],
+        schemas: ["msg/OccupancyVoxels"],
+      },
+      {
+        title: "opentelemetry-cpp vendor",
+        pkg: "cpp/opentelemetry_cpp_vendor",
+        status: "yellow",
+        desc: "ROS 2 vendor package — fetches opentelemetry-cpp v1.16.1 at colcon build time and re-exports its CMake config. Trace + OTLP-HTTP only (no gRPC / Prometheus / Jaeger / metrics SDK) to keep build cost bounded; depended on by cpp/openral_safety_kernel for ADR-0020 PR-F. Ubuntu 24.04 (Noble) has no apt opentelemetry-cpp, so the in-tree vendor is the canonical way to bring the dep into the workspace.",
+      },
+      {
+        title: "E-stop forwarders + deadman watchdog",
+        pkg: "packages/openral_safety_watchdog · openral_human_estop",
+        status: "green",
+        desc: "ADR-0018 §5 defense-in-depth E-stop fan-in (RELIABLE, VOLATILE, KEEP_LAST=10 per CLAUDE.md §3). openral_safety_watchdog: deadman node that fires /openral/estop (+ /openral/failure) when /openral/safe_action goes silent past a deadline; /openral/estop_reset is the only recovery. openral_human_estop: forwards a human-driven /openral/human_estop onto /openral/estop. Both are independent of the in-band safety_node so a Python crash can't leave motors energised.",
+        inputs: ["/openral/safe_action · ActionChunk", "/openral/human_estop"],
+        outputs: ["/openral/estop", "/openral/failure"],
+      },
+    ],
+  },
+
+  {
+    ix: "L7",
+    name: "Observability",
+    desc: "OpenTelemetry traces + metrics + structlog→OTLP log bridge + W3C TraceContext propagation. Every motor command is parented to a single cli.command root span and replayable from the trace alone.",
+    blocks: [
+      {
+        title: "structlog logging",
+        pkg: "all packages",
+        status: "green",
+        desc: "structlog used everywhere; configure_observability() attaches an OTel LoggingHandler that ships logs over OTLP and a processor that stamps trace_id/span_id on every record.",
+      },
+      {
+        title: "OTel SDK + OTLP exporter",
+        pkg: "python/observability",
+        status: "green",
+        desc: "configure_observability(service_name, endpoint, sample_ratio) installs TracerProvider + MeterProvider + LoggerProvider with OTLP/gRPC exporters. Honors OTEL_EXPORTER_OTLP_ENDPOINT / OPENRAL_OTEL_METRIC_INTERVAL_MS / OPENRAL_OTEL_SAMPLE_RATIO; no-op when the endpoint is unset. Wired from the CLI @app.callback with a per-mode sampler (hardware → 10% ratio, others → always-on) per ADR-0010.",
+      },
+      {
+        title: "Span helpers",
+        pkg: "python/observability",
+        status: "green",
+        desc: "rskill_span (configure / activate / execute), inference_span (foreground + prefetch + single chunk inference, with engine/device/chunk_index), safety_span, traced() decorator. cli_command_span opens the root cli.command span around every `openral` invocation; world_state.snapshot + hal.read_state + hal.send_action + sensors.read_latest + physics.step spans land via the world-state aggregator, the hardware runner, and the sim runner. Every attribute key sourced from openral_observability.semconv (Final[str] constants).",
+      },
+      {
+        title: "Metric instruments",
+        pkg: "python/observability",
+        status: "green",
+        desc: "Cached accessors for openral.tick.duration / openral.inference.duration / openral.hal.{read_state,send_action}.duration / openral.sensors.age_ms / openral.world_state.staleness_ms histograms, openral.{tick.budget_violations,tick.deadline_misses,inference.timeouts,safety.violations,safety.clamps,hal.estop.count,sensors.stale_reads,sim.episode.count,sim.episode.success} counters, and openral.world_state.components_stale up-down counter. Labels restricted to the closed-set whitelist in design §9.",
+      },
+      {
+        title: "W3C TraceContext propagation",
+        pkg: "python/observability",
+        status: "green",
+        desc: "current_traceparent / inject_traceparent / extract_traceparent wrap opentelemetry's stock TraceContextTextMapPropagator so the trace_id field on ActionChunk.msg / ExecuteSkill.action / FailureTrigger.msg can carry the full W3C traceparent value (Option B from the OTel design doc — no IDL break). C++ safety kernel consumer wiring lands with packages/safety/.",
+      },
+      {
+        title: "FailureBusPublisher (ADR-0018 F3)",
+        pkg: "python/observability · failure_bus.py",
+        status: "green",
+        desc: "Cross-layer publisher helper for the namespaced /openral/failure/{hal,sensor,rskill,safety,wam,critic} bus (the `rskill` suffix replaced `skill` on 2026-05-25 — ADR-0018 amendment §5). Owns a RELIABLE+VOLATILE+KL=50 publisher, per-(kind, severity) token-bucket rate limiting (WARN/INFO 10/s, FAIL/ABORT unlimited by default), and a 1 Hz KIND_SUPPRESSED_SUMMARY roll-up that carries dropped counts as a SuppressedSummaryEvidence payload. IDL constants mirrored on the module (KIND_* / SEVERITY_* / TOPIC_PREFIX) so callers don't need rclpy for unit tests.",
+        inputs: ["FailureEvidence (Pydantic)"],
+        outputs: ["/openral/failure/{hal,sensor,rskill,safety,wam,critic}"],
+        schemas: ["msg/FailureTrigger", "FailureEvidence", "msg/WorldCollision", "msg/OccupancyVoxels"],
+      },
+      {
+        title: "Live dashboard (openral dashboard)",
+        pkg: "python/observability + python/cli",
+        status: "green",
+        desc: "FastAPI ASGI app served by uvicorn: single page (vanilla JS + SSE) plus an embedded OTLP/HTTP receiver on /v1/{traces,metrics,logs} (ADR-0017, issue #44). Any workload pointed at OTEL_EXPORTER_OTLP_ENDPOINT=http://<host>:<port> + OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf lights up the pane live. Works without Jaeger/Tempo running. Cards include robot-state / commands / world-state / cameras / SLAM 2D map / world pointcloud / reasoner / system / safety-ledger, and (ADR-0038) a `scene objects` memory card — durable spatial-memory objects as a table (label · map-frame position · confidence · last-seen) plus labelled markers overlaid on the SLAM map (worldToPixel transform, shared map frame), fed by the `world.scene_objects` span. The page also exposes an operator prompt input that POSTs to /api/prompt; the endpoint shells out to `openral prompt --topic /openral/prompt_in/dashboard` so the wire shape matches the CLI exactly (ADR-0018 F10, dashboard source).",
+      },
+      {
+        title: "OTel Collector + Prometheus (dev stack)",
+        pkg: "docker/otelcol",
+        status: "green",
+        desc: "docker-compose.dev.yml fans out OTLP through otel/opentelemetry-collector-contrib: traces -> jaeger, metrics -> prometheus exporter at :8889, logs -> debug. Jaeger alone returns UNIMPLEMENTED on /v1/metrics; otelcol fixes the end-to-end metric path.",
+      },
+      {
+        title: "rosbag2 ↔ LeRobotDataset bridge (ADR-0019)",
+        pkg: "python/dataset · python/cli · openral_dataset.{recorder,sinks,bag,converter,schema_map,frame_trace}",
+        status: "green",
+        desc: "All five ADR-0019 PRs landed (this card was yellow with PR3–5 'planned'). PR1: RolloutRecorder + DatasetSink Protocol + LeRobotDatasetSink (sim path; real lerobot v3.0 round-trip, persist-all-with-flag, dataset_success_rate in meta/info.json). PR2: SensorRosPublisher (python/sensors · ros_publisher.py, see L1). PR3: Rosbag2Sink (hardware path; Tick.msg / Episode.msg IDL). PR4: Rosbag2ToLeRobotConverter (slices rosbag2 episodes → LeRobotDataset v3). PR5: `openral dataset push` consent flow + `openral dataset from-bag`. Driven by `openral sim run --dataset-out PATH` (sim) and the HardwareRunner recording path. Per-frame OTel correlation (issue #109, amendment 2026-06-09): RolloutRecorder captures the active rskill.tick span's (trace_id, span_id) onto each DatasetFrame; LeRobotDatasetSink persists them as `string` parquet columns and Rosbag2Sink into the Tick record; the converter re-injects the bag's original ids; `openral_dataset.frame_trace.read_frame_trace` reads a row's ids back off parquet for the `openral replay --frame` pivot. The sink also writes coarser pointers: dataset-level distinct `trace_ids` in meta/info.json + a per-episode `episode_index→trace_id` map in the `meta/openral_traces.json` sidecar (v3 drops string features from meta/episodes stats). Tested: tests/unit/test_dataset_emission.py, test_cli_dataset_from_bag.py, test_cli_dataset_push.py, test_hardware_runner_dataset_recording.py, test_cli_replay_record_profile.py + python/dataset/tests/{test_recorder,test_bag,test_converter,test_frame_trace}.py + tests/sim/test_dataset_emission.py.",
+        inputs: ["EpisodeResult", "TickResult", "rosbag2 mcap"],
+        outputs: ["LeRobotDataset v3", "HF Hub dataset repo"],
+        schemas: ["msg/Tick", "msg/Episode"],
+      },
+      {
+        title: "bag↔OTel correlator + openral replay (ADR-0018 F7)",
+        pkg: "python/observability/openral_observability/replay + python/cli",
+        status: "green",
+        desc: "Query-time joiner — mcap stays the canonical message log, the dashboard receiver stays the canonical span log; `openral replay BAG [--trace] [--dashboard]` opens both and merges by trace_id. The reader extracts the W3C `traceparent` from jsonschema-encoded payloads (a packed traceparent in the `trace_id` field, OR — for the `openral_msgs/Tick` schema — a raw 32-hex `trace_id` + raw 16-hex `span_id` pair, issue #109) and from CDR/ros2msg payloads (regex over the message body) without depending on rosbag2_py. `openral replay --frame <repo>/<ep>/<frame> --dataset-root <dir>` pivots from a written LeRobotDataset frame: `openral_dataset.read_frame_trace` reads that row's trace_id off parquet and uses it as the join key (issue #109). The dashboard store grows a bounded per-trace_id span index (64 traces × 2048 spans, FIFO eviction) and serves it on `GET /api/traces` + `GET /api/spans/{trace_id}`. `openral record --profile slim|full` wraps `ros2 bag record` with ADR-0018 §F7's slim default (action chunks + failure bus + slow world state + one compressed image stream + diagnostics) and full opt-in (adds fast world state + every camera + every perception topic). `--dry-run` lets tests assert on the composed argv without a sourced ROS 2 install.",
+        inputs: ["mcap files (rosbag2)", "LeRobotDataset parquet (--frame)", "/api/traces", "/api/spans/{trace_id}"],
+        outputs: ["timeline JSON (kind=bag|span × ts × trace_id × attrs)"],
+        schemas: ["trace_id (W3C traceparent)"],
+      },
+      {
+        title: "LTTng opt-in tracepoints (ADR-0018 F9)",
+        pkg: "python/observability + python/cli",
+        status: "green",
+        desc: "Kernel-correlated profiling layered on top of OTel for the realtime hot path. `OPENRAL_ROS2_TRACING=1` flips the gate; off, every `lttng_tracepoint(...)` call is a no-op (single env-var read + generator dance, <300 ns). On, events flow through `lttngust` when available or to a per-process JSONL fallback file under `$OPENRAL_ROS2_TRACING_FALLBACK_DIR`. Tracepoints currently bracket: the runner tick (openral:runner_tick), HAL state read + action write (openral:hal_read_state / openral:hal_send_action), and the safety boundary (openral:safety_validate). `openral profile session {start|stop|view}` wraps `lttng create/enable-event openral:*/start/stop/destroy` and surfaces a clean LttngSessionError when lttng-tools is missing. The active OTel trace_id is attached as `otel_trace_id` on every tracepoint so CTF dumps join back to F7's timeline.",
+        inputs: ["OPENRAL_ROS2_TRACING env var", "active OTel context"],
+        outputs: ["CTF trace (lttngust)", "JSONL fallback"],
+      },
+    ],
+  },
+];
+
+// CROSS-CUTTING — not a layer, but every layer touches them
+const CROSS = [
+  {
+    title: "openral_core schemas",
+    pkg: "python/core · schemas.py",
+    status: "green",
+    desc: "Pydantic v2 contracts for every layer boundary. ~45 models · property-based tested with hypothesis · 42 JSON Schemas exported. On-disk schemas pinned at `schema_version: \"0.1\"` (pre-publish; surface evolves in place — no migrators while we are pre-1.0).",
+    schemas: ["RobotDescription","WorldState","Action","SensorSpec","RSkillInfo","RSkillManifest","SafetyEnvelope","JointState","Pose6D","DetectedObject","SceneDefaults","TopCameraDefaults"],
+  },
+  {
+    title: "openral_core exceptions",
+    pkg: "python/core · exceptions.py",
+    status: "green",
+    desc: "Single ROSError tree. ROSSafetyViolation and subclasses — never silently caught. ROSConfigError, ROSCapabilityMismatch, ROSInferenceTimeout, etc.",
+  },
+  {
+    title: "openral_msgs (ROS 2 IDL)",
+    pkg: "packages/msgs",
+    status: "green",
+    desc: "Wire formats — 8 msgs + 1 action + 2 srvs (the card previously listed only 4): msg/ActionChunk, msg/PromptStamped, msg/FailureTrigger, msg/WorldStateStamped (ADR-0018 F2), msg/WorldCollision + msg/OccupancyVoxels (ADR-0030 geometric safety), msg/Tick + msg/Episode (ADR-0019 hardware dataset recording); action/ExecuteRskill; srv/ResetToPose (HAL reset-to-pose); srv/LocateInView (ADR-0043 on-demand open-vocab visibility query). CMakeLists + package.xml ready for colcon build.",
+    schemas: ["msg/ActionChunk","msg/PromptStamped","msg/FailureTrigger","msg/WorldStateStamped","msg/WorldCollision","msg/OccupancyVoxels","msg/Tick","msg/Episode","action/ExecuteRskill","srv/ResetToPose","srv/LocateInView"],
+  },
+  {
+    title: "openral CLI",
+    pkg: "python/cli · main.py",
+    status: "green",
+    desc: "Canonical entry point is `openral` (ADR-0021). Bare `openral` (no args) drops into an interactive REPL where subcommands run bare (`sim run --config …`); with args it runs one-shot for scripts/CI. doctor (env diagnose), detect (autodetect + write robot.yaml + optional DetectionReport JSON dump), connect (open HAL + verify), calibrate camera, install (sim/libero/metaworld/maniskill3/simpler-env/robocasa/rldx/ros — opt-in dep groups for the curl-bash installer), rskill install/list/check/new (the app was renamed skill→rskill), sensor list/show, benchmark run/report, sim run (mounted from openral_sim.cli.sim_app), dataset from-bag/push (ADR-0019), deploy run/sim (own card), prompt (publishes onto the F10 prompt_router), plus dashboard / replay / record / profile (own L7 cards). Typer + Rich; @app.callback wires openral_observability so every invocation is traced. `rskill new` scaffolds from rskills/template/ via python/cli/_rskill_scaffolder.py + tools/rskill_scaffolder.py (interactive prompts; --yes for scripting).",
+    inputs: ["robot.yaml","hf://skill-id","rskills/<id>/eval/*.json","scenes/{deploy,sim,benchmark}/*.yaml","scripts/install.sh"],
+    outputs: ["table reports","robot.yaml","registry entries","benchmark roll-ups","episode result","uv tool venv (~/.local/bin/openral)"],
+    schemas: ["RobotDescription","RSkillManifest","RSkillEvalResult","DetectionReport","CompatibilityReport","DeployScene","SimScene","BenchmarkScene","BenchmarkMetadata","RobotEnvironment"],
+  },
+  {
+    title: "openral sim run subcommand",
+    pkg: "python/sim · cli.py",
+    status: "green",
+    desc: "Typer group `sim_app` mounted on the ral tree as `openral sim`; the leaf `openral sim run` accepts --config scenes/sim/*.yaml (rejects DeployScene + BenchmarkScene via load_scene_strict, ADR-0041) plus --rskill rskill://rskills/<id> (and --task / --instruction / --max-steps / --n-episodes / --robot overrides). Composes the SimScene + rSkill manifest into the runtime bundle, then drives openral_sim.SimRunner.activate / run / deactivate to roll one or more episodes and print success / steps / latency. --view/--no-view opens a passive mujoco.viewer in real time; tri-state default auto-enables on a display and auto-disables under MUJOCO_GL=egl or with no DISPLAY (_resolve_view). OTel service name: `ral-sim`.",
+    inputs: ["SimScene yaml", "RSkillManifest"],
+    outputs: ["episode result", "live mujoco.viewer window"],
+    schemas: ["SimScene", "RSkillManifest"],
+  },
+  {
+    title: "openral deploy subcommand (ADR-0010 PR G)",
+    pkg: "python/cli · main.py + deploy_sim.py + python/runner · factory.py",
+    status: "green",
+    desc: "Real-hardware sibling of `openral deploy sim`. ADR-0032: `openral deploy run` loads a `RobotEnvironment` YAML for its `robot_id` + `hal.transport`, then shells the SAME `sim_e2e.launch.py` graph with `hal_mode:=real` (via `resolve_launch_invocation(hal_mode='real')` + `run_launch_invocation`) — the HAL lifecycle node builds the real HAL through `build_hal(mode='real')`, alongside the C++ safety kernel + reasoner + world state (+ SLAM/Nav2 when the robot declares a lidar). The HAL's `connect()` fails loudly with no hardware attached; a simulation-only robot (`hal.real` null) raises `ROSCapabilityMismatch` before the launch (use `deploy sim`). This supersedes the former in-process `HardwareRunner` CLI path (the `openral_runner` library lives on, wrapped by `runtime_node`); `transport.digital_twin` is gone (ADR-0031). Resolution + error paths unit-tested in tests/unit/test_cli_deploy.py + test_deploy_run_real_resolution.py; the live launch + real connect() are HIL-verified. **`openral deploy sim`** (added 2026-05-24) is the ROS-graph sibling: loads a `DeployScene` YAML (scenes/deploy/*.yaml; ADR-0041), picks the HAL spawn from `_ROBOT_HAL_REGISTRY[robot_id]`, asserts the HAL's `supported_robot_names` matches the manifest, and shells `ros2 launch openral_rskill_ros sim_e2e.launch.py` — ONE generic launch for every robot. The launch's `OpaqueFunction` loads `robots/<robot_id>/robot.yaml`, calls `openral_safety.envelope_loader.compute_intersection(robot, None)`, and forwards each field as a ROS parameter on the C++ safety_kernel node (which grew a parameter-based loader in ADR-0020 PR-K). **Zero envelope YAML files** — neither committed nor ephemeral (the per-robot `openarm_e2e.launch.py` / `so100_e2e.launch.py` were deleted in the same change). No `--rskill` flag: the reasoner picks the active rSkill dynamically from `rskills/` at on_configure. `--hal key=value` (repeatable) overrides per-robot HAL defaults. Before launch, an ADVISORY policy-extras preflight (`_preflight_palette_deps`) probes the capability-matched rSkills: it warn-and-drops the ones whose extras are missing and boots the rest (the reasoner already drops them at on_configure), hard-failing only when the palette would be empty; `OPENRAL_AUTO_INSTALL_DEPS=1` auto-installs the missing `just sync --all-packages --group …` groups, else a TTY prompts. Each HAL lifecycle transition is bounded by `tools/lifecycle_autostart.py --transition-timeout-s` (default 300 s) so a slow robocasa `on_configure` (MuJoCo + robosuite import + env.reset + a possible uv build of the editable robocasa pkg, all synchronous on the HAL executor) can't false-fail the boot with `did not advance the FSM`. Tested in tests/unit/test_cli_deploy_sim.py (openarm config) + tests/unit/test_lifecycle_autostart.py, plus an opt-in live-launch smoke gated on OPENRAL_DEPLOY_SIM_SMOKE=1. Heavy deps (lerobot, opencv) load lazily; `openral --help` stays sub-second.",
+    inputs: ["RobotEnvironment yaml", "DeployScene yaml"],
+    outputs: ["RunResult", "Rich summary table", "ros2 launch graph"],
+    schemas: ["RobotEnvironment", "DeployScene", "RobotDescription", "RunResult", "TickResult"],
+  },
+  {
+    title: "USB autodetect",
+    pkg: "python/cli · autodetect.py",
+    status: "green",
+    desc: "Matches connected USB serial devices to known robot signatures (e.g. SO-100 Feetech). Used by openral detect.",
+  },
+  {
+    title: "Auto-provisioning (openral detect)",
+    pkg: "python/detect · openral_detect",
+    status: "yellow",
+    desc: "Identify-then-enrich pipeline: probes USB / DDS / GPU / V4L2 / RealSense / network, identifies known rigs (SO-100, ALOHA, Unitree G1) to load canonical robots/<name>/robot.yaml directly, reverse-looks up sensor catalog signatures so each detected camera carries real intrinsics, promotes GPU caps onto RobotCapabilities so rSkill.check_capabilities can match RSkillManifest.runtime / quantization.dtype. Jetson classification uses the explicit `_JETSON_CC_BY_BOARD_KEYWORD` table (Orin → 8.7, Xavier → 7.2, Maxwell Nano → 5.3, unknown → None + warning) per ADR-0016 §3.1; `_probe_nvmm_available` populates `RobotCapabilities.nvmm_available` so skills requiring the NVMM zero-copy path can be refused on hosts that lack `libnvbufsurface.so`. Drives `openral detect` and `openral rskill check`. Status yellow until live RealSense / Jetson HIL coverage lands; covered by hermetic unit tests including six recorded-fixture Jetson boards (`tests/unit/fixtures/jetson/`).",
+    inputs: ["pyrealsense2 (optional)", "pynvml (optional)", "jetson-stats (optional)", "v4l2-ctl"],
+    outputs: ["robot.yaml (full RobotDescription)", "CompatibilityReport"],
+    schemas: ["DetectionReport", "CompatibilityReport", "RobotDescription", "RobotCapabilities", "SensorSignature"],
+  },
+  {
+    title: "tools/schema_export.py",
+    pkg: "tools",
+    status: "green",
+    desc: "Regenerates docs/reference/schemas/*.json. CI compares; drift fails the build.",
+    outputs: ["docs/reference/schemas/*.json"],
+  },
+  {
+    title: "tools/rskill_publisher.py",
+    pkg: "tools · python/cli",
+    status: "green",
+    desc: "Validates an rskill.yaml, pins a HF Hub revision, and pushes the skill repo. Used to package smolvla-libero / pi05-libero-nf4 / xvla-libero / smolvla-metaworld. Publishing is hard-gated by python/cli `_rskill_doc_validator.validate_rskill_docs`: refuses upload when the README is missing / too short / missing canonical sections / contains template sentinels, or when the manifest still has the scaffold-default description, lacks both `paper_url` and `source_repo`, or carries a `TEMPLATE` substring in `name` / `weights_uri` / `source_repo`. The same report prints in dry-run mode (no --publish) so authors see what to fix without attempting an upload.",
+    schemas: ["RSkillManifest"],
+  },
+  {
+    title: "tools/rskill_scaffolder.py",
+    pkg: "tools · python/cli",
+    status: "green",
+    desc: "Standalone argparse wrapper around python/cli `_rskill_scaffolder.scaffold_rskill` — copies rskills/template/ into a new rskills/<id>/ and rewrites name / license / embodiment_tags / weights_uri / source_repo. Re-validates the result through RSkillManifest.from_yaml + rSkill.from_yaml so a malformed scaffold fails at scaffold-time. Wired into `openral rskill new` (interactive prompts by default; --yes for scripting).",
+    schemas: ["RSkillManifest"],
+  },
+  {
+    title: "rskills/template/",
+    pkg: "rskills/template",
+    status: "green",
+    desc: "Schema-valid rSkill skeleton consumed by `openral rskill new` / tools/rskill_scaffolder.py. Real, loadable manifest (modeled on rskills/pi05-libero-nf4/) with TEMPLATE_ORG / TEMPLATE_ID sentinels for the rewriter. `rSkill.from_yaml('rskills/template/rskill.yaml')` succeeds as-is per §1.11 (real fixtures, no placeholder strings). The README is a full sectioned scaffold (Upstream model / Supported robots / Sensors required / Manifest summary / License / …) that mirrors what python/cli `_rskill_doc_validator` enforces at publish time — the validator deliberately rejects the bare scaffold so a fresh `openral rskill new` cannot be published without editing.",
+    schemas: ["RSkillManifest"],
+  },
+  {
+    title: "Tests · unit",
+    pkg: "tests/unit",
+    status: "green",
+    desc: "190 files. Covers schemas (hypothesis fuzz), HAL protocol conformance, every adapter (so100 / ur / franka_panda{,_real} / sawyer_real / aloha / mujoco_arm), sensors + catalog + signatures, skill lifecycle, rSkill loader + manifest + eval validation, runtime + quantization, smolvla adapter, _vla_core, autodetect, doctor, eval CLI + registry + runner + factory + adapter helpers + view overrides (test_eval_cli_view_overrides.py — 11 cases for the --view tri-state resolver + --config flag-conflict guard from PR #65), sim environment schemas, robot manifests vs HAL constants, robots autodiscover, sim test collection guardrails, CLI commands (connect / calibrate / skill / detect — `openral detect` superseded `ral init`), schema fuzz, capability GPU fields, sensor wiring on RobotDescription, doctest runner, skill publisher, rskill benchmarks writeback, image convert + objects detector, runner safety, hardware runner, clock, benchmark runner, world state aggregator, state adapter, reasoner core + tool palette + tool use client, deploy CLI, lifecycle autostart, perception tee, nvmm aggregator, spatial memory query, SO-101 box scene, tabletop push scene, sim list rskills, fixed-robot guard.",
+  },
+  {
+    title: "Tests · integration",
+    pkg: "tests/integration",
+    status: "yellow",
+    desc: "18 files. Require a ROS-sourced host. Original 5: doctor, autodetect DDS, detect ros2 topology, world_state lifecycle, HIL transport. Added since: test_dashboard_end_to_end (OTLP receiver + SSE push), test_failure_bus (FailureBusPublisher rate-limit + suppression), test_manifest_hal_lifecycle_live (configure→activate→deactivate lifecycle via real rclpy), test_manifest_hal_reset_to_pose (HAL reset-to-pose under ROS), test_moveit_plan_arm_franka (ROSActionRskill wrapping MoveIt MoveGroup — skipped without moveit2), test_nvmm_aggregator_ds (TRT/NVMM detector end-to-end — skipped without DeepStream stack), test_object_lift_world_state (VoxelFrustumLifter + ObjectMemory → WorldState round-trip), test_openarm_hal_lifecycle (OpenArm MuJoCo lifecycle), test_panda_mobile_hal_lifecycle (PandaMobile HAL), test_reasoner_node_end_to_end (ReasonerCore + rclpy action dispatch), test_sim_idle_stepper_wiring (deploy-sim idle stepper), test_so100_digital_twin_e2e (SO-100 digital-twin end-to-end), test_world_state_stamped_objects (detected_objects serialisation round-trip on WorldStateStamped).",
+  },
+  {
+    title: "Tests · sim",
+    pkg: "tests/sim",
+    status: "yellow",
+    desc: "26 files. Real MuJoCo physics — no kinematic mocks. HAL sim tests: test_data_driven_mujoco_hal (parametric, every manifest-driven arm), test_{so100,so101_box,openarm,aloha_bimanual,franka_panda,g1,h1,rizon4,ur5e,ur10e}_hal_mujoco. Policy rollout tests (test_<robot>_<vla>_<sim>.py convention): franka_panda_smolvla_libero, aloha_bimanual_act_aloha, pusht_2d_diffusion_pusht, panda_mobile_pi05_{robocasa,cli_benchmark_robocasa}, franka_panda_smolvla_cli_benchmark, franka_panda_maniskill3_adapter, widowx_simpler_env_adapter. Scene tests: test_so100_robosuite_lift, test_so101_box_tube_insertion, test_openarm_scene_pnp, test_tabletop_push_scene. Infrastructure: test_all_hals_via_runner, test_hal_protocol_contracts, test_dataset_emission, test_franka_libero_deploy_sim_cameras. Module-level CUDA / lerobot skips carry explicit reasons surfaced by pyproject `addopts = -ra`; tests/unit/test_sim_collection.py asserts none silently disappear.",
+  },
+  {
+    title: "Tests · HIL",
+    pkg: "tests/hil",
+    status: "yellow",
+    desc: "10 files: test_so100, test_realsense, test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), plus test_detect_so100_full_assemble, test_detect_realsense_live, test_detect_jetson_live for the auto-provisioning probes. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online. No lab runners registered yet — surface exists, hardware does not.",
+  },
+  {
+    title: "CI · Docker image build",
+    pkg: ".github/workflows/docker-build.yml + docker/inference/",
+    status: "yellow",
+    desc: "ADR-0010 Amendment 2026-05-14 (Single-Dockerfile consolidation + CUDA-13 / DeepStream-9 alignment). Builds one deploy image on workflow_dispatch (auto-triggers commented out — out of GH Actions credits): `openral:x86-latest` from `docker/inference/Dockerfile.x86`. The image bakes in Ubuntu 24.04 + Py 3.12 + CUDA 13 + ROS 2 Jazzy + GStreamer 1.24 + an apt-managed-gi splice into the workspace venv. Pushes to GHCR. The optional DeepStream variant (`openral:x86-deepstream-latest`) is gated by the `WITH_DEEPSTREAM_STAGE=on` build arg + a BuildKit `--build-context ds=docker/inference/deepstream/` named context for the EULA-gated SDK tarball; it is intentionally NOT in this CI matrix — EULA §2.c forbids relicensing the bundled image as Apache-2.0 and so it cannot be pushed to a public registry. The dropped surface (PR #93's `x86-cpu`, `x86-ros`, `l4t` images + `hil-l4t.yml`) is out of scope until user demand returns. Default image was locally smoke-verified end-to-end (30 ticks, 0 budget violations, ROS_DISTRO=jazzy auto-sourced) on 2026-05-14; DeepStream variant verified for `nvvideoconvert / nvstreammux / nvtracker / nvjpegdec / nvv4l2decoder` registration. Promotion to green is gated on the same signal in CI.",
+    inputs: ["Dockerfile.x86", "entrypoint.sh", "pyproject.toml", "uv.lock"],
+    outputs: ["ghcr.io/<owner>/openral:x86-{latest,<sha>}"],
+  },
+  {
+    title: "Examples",
+    pkg: "examples/",
+    status: "green",
+    desc: "scenes/ ships three-tier scene YAMLs (ADR-0041): scenes/deploy/ (DeployScene, env-only, consumed by `openral deploy sim`), scenes/sim/ (SimScene, single rollout, consumed by `openral sim run --rskill <name>`), scenes/benchmark/ (BenchmarkScene, paper-comparable, consumed by `openral benchmark scene --rskill <name>` and aggregated into benchmarks/<id>.yaml suites by `openral benchmark run --suite <id> --rskill <name>`). Each YAML carries scene + task (and optional robot_id for free-axis scenes); policy is supplied at the CLI as --rskill rskills/<id>. Loaders: load_scene_strict(..., expect=DeployScene/SimScene/BenchmarkScene) (rejects legacy vla: blocks and wrong-tier YAMLs). Per-policy perf knobs (n_action_steps, compile, compile_mode for lerobot-style smolvla/act/pi05) live in the rSkill manifest's policy_extras, not the YAML. All Justfile sim-* recipes invoke `openral sim run --config scenes/sim/<yaml> --rskill rskills/<id>` (SimScene-tier) or `openral benchmark scene --config scenes/benchmark/<yaml>` (BenchmarkScene-tier); no per-example run.py scripts. The 3-panel debug-video helper lives at python/sim/src/openral_sim/_video.py (re-exported as openral_sim.save_episode_mp4). Direct lerobot.<Family>Policy.from_pretrained is forbidden — every config loads weights via the rSkill manifest so the runner's compat check fires.",
+  },
+  {
+    title: "Skills (rSkill manifests)",
+    pkg: "rskills/",
+    status: "green",
+    desc: "30 manifests: VLA skills — smolvla-libero, smolvla-metaworld, smolvla-maniskill-franka (wraps Calvert0921/smolvla_franka_liftcube_1000; full end-to-end rollout against ManiSkill3 PickCube-v1 with SAPIEN viewer via `openral sim run --view`, rebuilds processors from `meta/episodes_stats.jsonl` when the upstream `policy_*processor.json` is missing), molmoact2-libero-nf4 (Ai2 MolmoAct2 NF4 — Molmo2-ER VLM + flow-matching action expert, ~5.5 B, Apache-2.0; 97.2 % LIBERO; wraps allenai/MolmoAct2-LIBERO), molmoact2-so101-nf4 (MolmoAct2 NF4 for SO-100/SO-101; norm_tag=so100_so101_molmoact2; ~6 GiB resident / ~7.63 GiB peak on an 8 GiB card — the adapter auto-enables the CUDA expandable-segments allocator (_enable_expandable_segments), the actual 8 GiB enabler; image_max_crops=4 is a secondary vision lever; wraps allenai/MolmoAct2-SO100_101), pi05-libero-nf4, pi05-so101-pickplace-nf4 (community SO-101 pick-place π0.5 finetune NF4, 4.14 B, absolute joint-position action), pi05-openarm-vision-nf4 (π0.5 OpenArm v2 bimanual vision finetune NF4; 16-D absolute joint-position action, LEFT-FIRST order; wraps mddoai/pi05_openarm_vision), pi05-robocasa365-human300-nf4, act-aloha, act-aloha-insertion, act-libero (ACT policy on LIBERO Franka; wraps Deepkar/libero-test-act), diffusion-pusht, xvla-libero, plus the RLDX-1 family (rldx1-pt, rldx1-ft-libero, rldx1-ft-gr1, rldx1-ft-rc365, rldx1-ft-simpler-widowx — all RLWRLD Model License v1.0, non-commercial), plus gr00t-n17-libero (GR00T N1.7 LIBERO; NVIDIA Open Model License, commercial OK; loads upstream nvidia/GR00T-N1.7-LIBERO out-of-process via a ZMQ sidecar reusing the rldx adapter — see the dedicated GR00T backend block, ADR-0046); detector skills (kind:detector) — rtdetr-coco-r18 (RT-DETR R18, COCO-80), rtdetr-v2-r50vd (RT-DETRv2 R50vd; Apache-2.0), locateanything-3b-nf4 (NVIDIA LocateAnything-3B NF4; private, non-commercial; open-vocab VLM detector wired via the DetectorTier.VLM_SIDECAR tier — runs out-of-process in a transformers==4.57.1 sidecar, tools/locateanything_sidecar.py + LocateAnythingDetector over ZMQ, NF4 on 8 GB; static-labels query default, dynamic reasoner-driven query pending; ADR-0037 2026-06-09 amendment), omdet-turbo-indoor (omlab/omdet-turbo-swin-tiny-hf; Apache-2.0, commercial-OK; in-process Transformers open-vocab detector wired via DetectorTier.ZEROSHOT_HF — engine:zeroshot_hf, OmDetTurboDetector runs under the runtime's own transformers>=5, no sidecar; fixed ~266-class curated indoor vocabulary, mode:continuous background producer; ADR-0037 2026-06-12 amendment), omdet-turbo-locator (same OmDet-Turbo weights/engine, mode:on_demand — prompted locator surfaced via locate_in_view; OmDetTurboDetector exposes set_query/detect_with_query, a lightweight real-time Apache-2.0 alternative to the 3B LocateAnything VLM; ADR-0051); scene-VLM skills (kind:vlm) — qwen35-4b-nf4 (Qwen3.5-4B NF4 scene-understanding VLM, Apache-2.0, role:s2; powers the reasoner's read-only query_scene tool for task-progress / success verification — runs out-of-process in a sidecar, tools/qwen_vlm_sidecar.py + QwenSceneVlm over ZMQ, NF4 ~2.5 GB on 8 GB, served by openral_perception_ros.scene_vlm_node; ADR-0047); ROS-wrapped skills (kind:ros_action/ros_service) — rskill-nav2-navigate-to-pose, rskill-moveit-joints, rskill-moveit-eef-pose, rskill-moveit-look-at (ADR-0044/0054: ros_integration.goal_builder selects joint / pose / look_at builders over one MoveGroup engine — e.g. look_at lowers a {target_xyz, camera} block into MoveGroup pose constraints that aim the named camera at the point; plan_only so OpenRAL's waypoint replay stays the only actuation path). Apache-2.0 / MIT / permissive-research / NVIDIA non-commercial / RLWRLD non-commercial. Each sim test that loads a skill asserts warm-chunk latency against the manifest's RSkillLatencyBudget. Every benchmarked skill ships rskills/<id>/eval/<benchmark>.json — validated against RSkillEvalResult by the rSkill loader and aggregated by openral benchmark report. act-aloha-insertion is the hand-built custom-example sibling of act-aloha (wraps lerobot/act_aloha_sim_insertion_human; intentionally unbenchmarked — see its README). The RLDX-1 family runs out-of-process via the `rldx` sidecar adapter — see openral_sim.policies.rldx + tools/rldx_sidecar.py.",
+    schemas: ["RSkillManifest", "RSkillEvalResult"],
+  },
+  {
+    title: "ADRs",
+    pkg: "docs/adr/",
+    status: "yellow",
+    desc: "42 files on disk — 39 numbered ADRs (0001–0039) + 3 sub-variants (0028b/c/d). Selected highlights: ADR-0001 (record decisions), ADR-0002 (eval + sim environments), ADR-0003 (Pydantic over dataclasses), ADR-0004 (monorepo), ADR-0005 (BT+LLM, not LangGraph), ADR-0006 (HF Hub skill packaging), ADR-0007 (robot/sim split), ADR-0008 (auto-provisioning / detect package), ADR-0009 (sim + benchmarking), ADR-0010 (inference runner), ADR-0011 (NVMM handoff), ADR-0012 (open-core licensing), ADR-0013 (rSkill manifest actuators), ADR-0014 (ManiSkill3 + SimplerEnv), ADR-0015 (RoboCasa), ADR-0016 (multi-platform), ADR-0017 (dashboard OTLP receiver), ADR-0018 (ROS 2 reasoner + supervisor), ADR-0019 (rosbag2 ↔ LeRobot dataset), ADR-0020 (C++ safety kernel), ADR-0021 (curl installer + CLI rename), ADR-0022 (rSkill action vocabulary), ADR-0023 (data-driven MuJoCo HAL), ADR-0024 (ROS-wrapped rSkills), ADR-0025 (reasoner-managed background services — slam_toolbox/Nav2), ADR-0026 (rSkill structured goal parameters), ADR-0027 (state-contract bindings), ADR-0028 (action-contract slots + dispatch), ADR-0029 (unified HAL lifecycle node), ADR-0030 (geometric safety collision checking), ADR-0031 (sim/real HAL separation), ADR-0032 (deploy run ROS graph), ADR-0033 (robot-parameterised native scenes), ADR-0034 (deploy-sim scene-attach for arms), ADR-0035 (perception + spatial memory object lift), ADR-0036 (OSC action contracts + deploy path gate), ADR-0037 (GStreamer perception bus object detection), ADR-0038 (persistent semantic spatial memory), ADR-0039 (LLM task planning + active search). Every layer-boundary change is supposed to land an ADR — there is still a backlog.",
+  },
+  {
+    title: "Bootstrap scripts",
+    pkg: "scripts/",
+    status: "green",
+    desc: "bootstrap_ubuntu.sh + bootstrap_macos.sh. Installs uv, ROS 2, just, system deps. Driven by just bootstrap.",
+  },
+  {
+    title: "Justfile",
+    pkg: "Justfile",
+    status: "green",
+    desc: "Canonical task runner: bootstrap / test / lint / docs / sim / hil / ros2-build / ros2-test / schema-export.",
+  },
+  {
+    title: "Dispatcher (edge / cloud / split)",
+    pkg: "python/dispatcher (planned)",
+    status: "blue",
+    desc: "EdgeDispatcher + SplitDispatcher Protocol. Deadline fallback if cloud RTT > deadline_s. Cloud-only autoscaling lives in the separate cloud repo.",
+    schemas: ["RSkillManifest","action/ExecuteRskill"],
+  },
+  {
+    title: "Sim runner",
+    pkg: "python/sim · openral_sim",
+    status: "green",
+    desc: "Strict-by-construction (robot × scene × task × VLA) sim runner. vla.weights_uri MUST be rskill:// — there is no warn-and-proceed path. _check_rskill_compatibility resolves the manifest, looks up the registered RobotDescription, and runs rSkill.check_compatibility before make_env / make_policy; misconfiguration fails with ROSConfigError before any GPU time is spent. GH-134: make_env (MuJoCo XML compile / dataset prefetch) and make_policy (PaliGemma + NF4 quantization on π0.5, weights load on SmolVLA) run concurrently on a 2-worker ThreadPoolExecutor by default so SimRunner.activate() wall-clock collapses to max(env_ms, policy_ms); set OPENRAL_SIM_SEQUENTIAL_INIT=1 for the legacy sequential path. Scenes that hard-wire a physics robot (LIBERO → franka_panda, MetaWorld → sawyer, PushT → pusht_2d, gym-aloha → aloha_bimanual) declare it via SCENES.register(..., fixed_robot=...); the CLI raises a typed ROSConfigError on any --robot mismatch before adapter import, so misauthored YAMLs / typos fail loud instead of silently swapping the robot. The manifest's latency_budget.per_chunk_ms is plumbed into EpisodeResult.latency_budget_ms / budget_violations. Scene adapters: libero, metaworld, aloha (gym-aloha), franka_libero_custom_bddl (robosuite-backed adapter that accepts any user-authored BDDL — delegates control + rendering to OffScreenRenderEnv so pi0.5-LIBERO stays in-distribution), pusht (gym-pusht), maniskill3 (SAPIEN, opt-in via --group maniskill3, ADR-0010; default obs_mode=state_dict+rgb so the adapter's agent.qpos/qvel state extraction wires through cleanly — overridable via scene.backend_options.obs_mode), simpler_env (real-to-sim correlator on top of ManiSkill, opt-in via --group simpler-env + manual pip install of the upstream git URL, ADR-0010; the adapter calls gym.make directly bypassing the broken upstream simpler_env.make() and auto-bumps the upstream -v0 env ids to MS3 v3.0.x's -v1, shares the MS3 obs-extraction helpers — covered by tests/sim/test_franka_panda_maniskill3_adapter.py + tests/sim/test_widowx_simpler_env_adapter.py; example configs scenes/benchmark/maniskill_pick_cube.yaml + scenes/benchmark/widowx_carrot_on_plate.yaml), isaac_sim (NVIDIA Isaac Sim — Omniverse Kit + PhysX + RTX — driven by an out-of-process py3.11 ZMQ sidecar since Isaac ships per-interpreter wheels; opt-in via --group isaacsim + an externally-provisioned sidecar venv, ADR-0045; Isaac Sim CORE scene — no Isaac Lab — in tools/isaac_sidecar.py with two --layout scenes: lift_cube (tools/isaac_scene.py, 8-D joint-delta PoC) and bowl_plate (tools/isaac_bowl_plate_scene.py, table+YCB-bowl+plate Franka, LIBERO obs/action, end-effector control via the core Lula kinematics solver — NOT Isaac Lab's OSC term — verified driving act-libero through `openral sim run`); examples scenes/sim/isaac_franka_lift.yaml + isaac_franka_bowl_plate.yaml, tested by tests/sim/test_franka_random_isaac.py + tests/unit/test_isaac_sim_sidecar_wire.py), mock (unit-test only) — libero / metaworld / aloha expose a duck-typed mujoco_handles() (NOT part of the SimRollout Protocol) so SimRunner can open a passive mujoco.viewer via _open_viewer AFTER env.reset (LIBERO + robosuite reallocate MjModel/MjData per reset). Policy adapters: smolvla, xvla, pi05, molmoact2, act, diffusion, zero, random. smolvla / act / pi05 / molmoact2 plumb _vla_core.apply_chunk_replay + maybe_compile_chunk_forward (pi05 forces compile_model=False to keep the nf4 path stable; molmoact2 mirrors pi05's NF4 path — `from_pretrained` → quantize_nf4_in_place → optional prequant overlay → device, no meta-init micro-opt). Robots adapter scans robots/*/robot.yaml at import time and auto-registers each (no _BUILTIN_ROBOTS tuple — drop a new manifest in and it's registered). Override the search path with $OPENRAL_ROBOTS_DIR for out-of-tree manifests. `openral sim list` walks rskills/<dir>/rskill.yaml to print paste-able `<adapter_id>:rskill://rskills/<name>` --vla strings, replacing the legacy `policies:` line. Tested in tests/unit/test_eval_registry_and_runner.py, tests/unit/test_robots_autodiscover.py, tests/unit/test_sim_run_fixed_robot_guard.py, and tests/unit/test_sim_list_rskills.py. RLDX-1 (RLWRLD/RLDX-1 family) integrates as the `rldx` policy_id via ZMQ + msgpack sidecar — Qwen3-VL backbone in an isolated Py3.10 venv with NF4 quant; manifest-driven dispatch for LIBERO vs GR1 humanoid_everyday_g1 obs/action contracts; see python/sim/src/openral_sim/policies/rldx.py + tools/rldx_sidecar.py.",
+    inputs: ["SimScene", "BenchmarkScene", "RSkillManifest", "RobotDescription"],
+    outputs: ["EpisodeResult", "passive mujoco.viewer (optional)", "openral sim list rskill: lines"],
+    schemas: ["SimScene", "BenchmarkScene", "SceneSpec", "TaskSpec", "PhysicsBackend", "RSkillManifest", "RobotDescription"],
+  },
+  {
+    title: "RoboCasa MuJoCo kitchen backend",
+    pkg: "python/sim · openral_sim.backends.robocasa",
+    status: "green",
+    desc: "ADR-0015. Opt-in `--group robocasa` MuJoCo backend covering 19 curated prebuilt RoboCasa kitchen tasks (`robocasa/<task>`) plus one procedural scene id (`robocasa`) authored via SceneSpec.backend_options validated through RoboCasaBackendOptions. Mutually exclusive with the `libero` extras group via uv solver (robosuite==1.4 vs robosuite>=1.5); the two groups cannot coexist in a single venv. ~10 GB CC-BY-4.0 asset bundle fetched lazily on first-use under $OPENRAL_CACHE_HOME/robocasa/, gated by a Rich license banner + typer.confirm() prompt or OPENRAL_ALLOW_ROBOCASA_ASSETS=1 CI bypass. All five PRs (A–E) from issue #88 are on disk now: the backend module, the panda_mobile RobotDescription, the pi05-robocasa365-human300-nf4 rSkill, the openral sim run example, and the benchmarks/robocasa_pnp.yaml suite consumed by `openral benchmark run --suite robocasa_pnp --rskill rskill://pi05-robocasa365-human300-nf4`.",
+    inputs: ["SimScene", "BenchmarkScene", "RoboCasaBackendOptions", "RSkillManifest"],
+    outputs: ["EpisodeResult"],
+    schemas: ["SimScene", "BenchmarkScene", "SceneSpec", "RoboCasaBackendOptions", "TaskSpec"],
+  },
+  {
+    title: "SO-100 robosuite integration",
+    pkg: "python/sim · openral_sim.backends.so100_robosuite",
+    status: "green",
+    desc: "Registers the Hugging Face SO-100 follower as a first-class robosuite robot model (SO100 / ManipulatorModel) + gripper (SO100Gripper) so any robosuite env can use it via robots=['SO100']. The arm + jaw XMLs are rewritten at import time from the upstream DeepMind mujoco_menagerie SO-100 MJCF (split into arm + gripper, nested defaults flattened, motor actuators with ±200 N·m headroom for OSC's mass-matrix-amplified output, absolute mesh paths, jaw range tightened to keep the moving finger clear of the table); cached under $OPENRAL_CACHE_DIR/so100_robosuite/<menagerie-fingerprint>/. make_so100_lift_env composes the registered robot with robosuite's stock Lift env on the standard TableArena (table_offset = (0, 0, 0.8) so the shipped agentview / frontview cameras frame the scene correctly), bolts the SO-100 onto the table top, and wires robosuite's stock parts/osc_position.json composite controller — only output_max (5 cm/step → 1 cm/step), kp (150 → 1500 for the SO-100's 30-50× smaller mass matrix) and input_ref_frame (base → world, to avoid silently re-rotating commands through the SO-100's 90°-z base orientation) are overridden. No custom controller class. The ScriptedPickPolicy is correspondingly tiny: ~150 lines, four-phase Cartesian state machine (approach / descend / close / lift) emitting clip((target - eef) / cartesian_step_m, -1, 1) — OSC owns the IK. End-to-end test at tests/sim/test_so100_robosuite_lift.py exercises registration + env basics + the policy's grasp attempt (eef within 3 cm of the cube, jaw qpos sweeps a > 0.4 rad range) against real MuJoCo physics with no mocks. Runnable demo at examples/so100_robosuite_lift.py (optional --video MP4 output). NOT a SCENES.register(...) adapter — no VLA-driven benchmark suite yet; the integration exists as a standalone subpackage for closed-loop testing of the SO-100 against robosuite envs.",
+    inputs: ["mujoco_menagerie SO-100 MJCF (via robot_descriptions)"],
+    outputs: ["robosuite SO100 + SO100Gripper (registered)", "_So100Lift env", "OSC_POSITION action_dim=4"],
+    schemas: [],
+  },
+  {
+    title: "SO-101 box scene + tube-insertion task",
+    pkg: "python/sim · openral_sim.backends.so101_box",
+    status: "green",
+    desc: "Parameterised raw-MuJoCo scene: SO-101 follower in a configurable box arena (100 × 61.5 × 75 cm by default), with an OAK-D Pro RGB-D camera on the ceiling and a wrist camera parented to the gripper body. Registered as @SCENES.register('so101_box', fixed_robot='so101_follower'). All geometry — box dimensions, robot mount, both cameras, slotted block + tube dimensions, spawn ranges, insertion thresholds — lives in a typed BoxSceneOptions dataclass fed from scene.backend_options, so future 'SO-101 in a box' variants are pure YAML edits with no Python changes. Each reset() randomises both the 44.5 × 44.5 × 20 mm slotted block (Ø 23 mm hole + 5 mm slot to one edge) AND the Ø 21.9 × 90 mm cylindrical tube (0.55 mm radial clearance) on the floor at independent (x, y, yaw) draws within their configured spawn ranges, with a minimum centre-to-centre separation. Observation dict: oak_top (HxWx3 uint8 — keyed by the bare MuJoCo camera name so it matches scene.cameras / resolve_camera_keys), oak_top_depth (HxW float32 metres) from the same overhead camera via two MuJoCo Renderer passes (RGB + enable_depth_rendering); wrist (HxWx3 uint8); state (6,) joint qpos; task. Success — written to info[task.success_key] — fires when the tube's body-Z axis is within insertion_axis_tol_deg of vertical, the lower tip is within insertion_xy_tol_m of the hole centre, and the tip is below the block top face by at least insertion_depth_m. Example: scenes/sim/so101_tube_insertion.yaml (SimScene-tier) + scenes/deploy/so101_box.yaml (DeployScene-tier env-only playground; ADR-0041). Tested by tests/sim/test_so101_box_tube_insertion.py (MJCF compile, observation shape, step lifecycle, seed-driven spawn variation, four synthetic insertion-pose cases). No mocks; real composed MJCF, real mj_step.",
+    inputs: ["robot_descriptions:so_arm101_mj_description", "BoxSceneOptions (from scene.backend_options)"],
+    outputs: ["SimRollout (so101_box)", "info[is_success] (geometric insertion check)"],
+    schemas: ["DeployScene", "SimScene", "SceneSpec", "TaskSpec"],
+  },
+  {
+    title: "Benchmark runner",
+    pkg: "python/sim · openral_sim.benchmark · openral benchmark run",
+    status: "green",
+    desc: "ADR-0009 PR D + ADR-0042. Loops a bare `list[BenchmarkScene]` (loaded via `openral_core.load_benchmark_suite` + validated by `raise_on_invalid_suite`; suite id = filename stem) over scenes × seeds[:n_episodes], delegating each rollout to openral_sim.SimRunner so the rSkill compatibility check, OTel spans, and latency-budget reporting are identical to `openral sim run`. Emits a validated RSkillEvalResult with reproduced_locally=true and a reproduction_cli string that points back at the exact `openral benchmark run --suite … --vla …` invocation that produced it. Suite-level `name` + `simulator` come from the (uniform) first scene's `BenchmarkMetadata.display_name` / `.simulator` (falling back to suite_id / scene.id); `arxiv` is auto-derived from `metadata.paper` when the URL contains `arxiv.org/`. Default output: rskills/<vla-dir>/eval/<suite_id>.json (overridable via --out). The CLI sub-command is mounted under `openral benchmark run`; the existing `openral benchmark report` aggregator continues to read the JSONs this writes. On success the runner also writes the headline avg_success_rate back into the manifest's `benchmarks.<suite_id>` field via update_rskill_benchmarks_from_uri — a surgical edit that preserves every other comment in rskill.yaml; disable with --no-update-manifest. Tested by tests/unit/test_benchmark_runner.py (real schemas + zero policy, 2 scenes × 3 episodes = 6 episodes end-to-end without GPU), tests/unit/test_rskill_benchmarks_writeback.py (9 cases covering the manifest writeback against the real pi05-robocasa365-human300-nf4 rskill.yaml), tests/sim/test_franka_panda_smolvla_cli_benchmark.py (real LIBERO + SmolVLA CLI invocation, gated on CUDA + transformers), and tests/sim/test_panda_mobile_pi05_cli_benchmark_robocasa.py (real RoboCasa + pi05 CLI invocation, including the rskill.yaml writeback assertion). The catalogue of built-in suite YAMLs lives in benchmarks/: libero_spatial / libero_object / libero_goal / libero_10 (10×10 each), metaworld_mt50 (50×5), aloha_transfer_cube / aloha_insertion / pusht (1×50 each), maniskill3_franka_pick_cube (1×10), simpler_env_widowx (4×5), robocasa_pnp (1×10), gr1_tabletop (1×10), plus the opt-in maniskill3_pick_place (2×5) added by ADR-0010.",
+    inputs: ["benchmarks/<id>.yaml (bare list[BenchmarkScene])", "VLASpec (CLI)", "RSkillManifest"],
+    outputs: ["RSkillEvalResult JSON", "list[EpisodeResult]", "rskill.yaml (benchmarks.<suite_id> writeback)"],
+    schemas: ["BenchmarkScene", "BenchmarkMetadata", "RSkillEvalResult", "RSkillEvalSource", "RSkillEvalBenchmark", "RSkillManifest"],
+  },
+];
+
+// CANCELLED — explicit non-goals from CLAUDE.md
+const CANCELLED = [
+  {
+    title: "Reinvented ROS 2 / tf2 / ros2_control",
+    pkg: "(intentionally unbuilt)",
+    status: "red",
+    desc: "CLAUDE.md §0: we compose ROS 2, tf2, MoveIt 2, Nav2, ros2_control. Any PR that wraps or replaces them is rejected.",
+  },
+  {
+    title: "Foundation VLA training",
+    pkg: "(intentionally unbuilt)",
+    status: "red",
+    desc: "CLAUDE.md §0: we load VLAs, we do not train them. Training pipelines live upstream (LeRobot, openpi, Isaac GR00T).",
+  },
+  {
+    title: "Robot hardware",
+    pkg: "(intentionally unbuilt)",
+    status: "red",
+    desc: "CLAUDE.md §0: we target robots, we do not build them.",
+  },
+  {
+    title: "Bundled closed-source weights",
+    pkg: "contrib-closed-shims (separate, NDA)",
+    status: "red",
+    desc: "CLAUDE.md §1.9: closed weights live behind a license guard and an env var. Never in this repo.",
+  },
+  {
+    title: "Cloud control plane",
+    pkg: "openral/cloud (separate repo, BSL)",
+    status: "red",
+    desc: "CLAUDE.md §2: BSL-licensed cloud lives in its own repo. Open core ships only the dispatcher Protocol.",
+  },
+  {
+    title: "JS / TS dashboard",
+    pkg: "(separate repo)",
+    status: "red",
+    desc: "CLAUDE.md §3: no JavaScript/TypeScript in this repo. The hosted dashboard is in openral/cloud.",
+  },
+  {
+    title: "Hidden retries / fallbacks",
+    pkg: "(banned)",
+    status: "red",
+    desc: "CLAUDE.md §1.4 + §9: no implicit retries in dispatcher or skill executor. Every fallback is logged + traced.",
+  },
+  {
+    title: "Feature flags that disable safety",
+    pkg: "(banned)",
+    status: "red",
+    desc: "CLAUDE.md §9 + §12: any toggle that bypasses E-stop or weakens SafetyEnvelope is rejected on sight.",
+  },
+];
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+
+const PILL_LABEL = { green: "working", yellow: "in dev", blue: "planned", red: "out of scope" };
+
+function renderBlock(b) {
+  const tags = [];
+  (b.inputs || []).forEach(s => tags.push(`<span class="tag io-in" title="input">↘ ${s}</span>`));
+  (b.outputs || []).forEach(s => tags.push(`<span class="tag io-out" title="output">↗ ${s}</span>`));
+  (b.schemas || []).forEach(s => tags.push(`<span class="tag schema" data-schema="${s}" title="schema">◇ ${s}</span>`));
+  return `
+    <div class="block" data-status="${b.status}" data-payload='${encodeURIComponent(JSON.stringify(b))}'>
+      <div class="top">
+        <div>
+          <h3>${b.title}</h3>
+          <div class="pkg">${b.pkg}</div>
+        </div>
+        <span class="pill ${b.status}">${PILL_LABEL[b.status]}</span>
+      </div>
+      <div class="desc">${b.desc || ""}</div>
+      ${tags.length ? `<div class="tags">${tags.join("")}</div>` : ""}
+    </div>
+  `;
+}
+
+function renderLayer(l) {
+  const counts = { green: 0, yellow: 0, blue: 0, red: 0 };
+  l.blocks.forEach(b => counts[b.status]++);
+  const total = l.blocks.length;
+  const seg = (k) => counts[k] ? `<span class="${k[0]}" style="width:${(counts[k]/total*100).toFixed(0)}%"></span>` : "";
+  return `
+    <div class="layer" data-layer="${l.ix}">
+      <div class="head">
+        <div class="ix">${l.ix}</div>
+        <div class="nm">${l.name}</div>
+        <div class="desc">${l.desc}</div>
+        <div class="pulse">
+          <div class="bar">${seg("green")}${seg("yellow")}${seg("blue")}${seg("red")}</div>
+          <span>${counts.green}/${total} done</span>
+        </div>
+      </div>
+      <div class="blocks">${l.blocks.map(renderBlock).join("")}</div>
+    </div>
+  `;
+}
+
+document.getElementById("layers").innerHTML  = LAYERS.map(renderLayer).join("");
+document.getElementById("cross").innerHTML    = CROSS.map(renderBlock).join("");
+document.getElementById("cancelled").innerHTML = CANCELLED.map(renderBlock).join("");
+
+// Schemas list
+document.getElementById("schemaList").innerHTML = SCHEMAS
+  .map(s => `<div class="item" data-schema-name="${s.name}"><span class="dot"></span><span class="field">${s.name}</span><span style="margin-left:auto;color:var(--text-faint);font-size:10px">${s.kind}</span></div>`)
+  .join("");
+
+// ── INTERACTION ───────────────────────────────────────────────────────────────
+
+const sel = document.getElementById("selected");
+function showEmpty() {
+  sel.innerHTML = `<div style="color:var(--text-faint);font-size:12.5px;line-height:1.5;">
+    Click any block to see what it consumes, produces, and which schemas live on its boundary.<br><br>
+    Hover a <span class="mono">◇ schema</span> tag to find every block that touches it.
+  </div>`;
+}
+showEmpty();
+
+function showBlock(b) {
+  const inputs  = (b.inputs  || []).map(x => `<code>${x}</code>`).join(" ") || `<span style="color:var(--text-faint)">—</span>`;
+  const outputs = (b.outputs || []).map(x => `<code>${x}</code>`).join(" ") || `<span style="color:var(--text-faint)">—</span>`;
+  const schemas = (b.schemas || []).map(x => `<code>${x}</code>`).join(" ") || `<span style="color:var(--text-faint)">—</span>`;
+  sel.innerHTML = `
+    <div class="selected-block">
+      <h3>${b.title} <span class="pill ${b.status}" style="margin-left:6px;font-size:9px;">${PILL_LABEL[b.status]}</span></h3>
+      <div class="meta mono">${b.pkg}</div>
+      <div style="font-size:12px; color:var(--text); margin-bottom:10px;">${b.desc || ""}</div>
+      <div class="pair"><span class="k">input</span><span class="v">${inputs}</span></div>
+      <div class="pair"><span class="k">output</span><span class="v">${outputs}</span></div>
+      <div class="pair"><span class="k">schemas</span><span class="v">${schemas}</span></div>
+    </div>
+  `;
+}
+
+document.querySelectorAll(".block").forEach(el => {
+  el.addEventListener("click", e => {
+    if (e.target.classList.contains("tag")) return;
+    document.querySelectorAll(".block.active").forEach(x => x.classList.remove("active"));
+    el.classList.add("active");
+    const b = JSON.parse(decodeURIComponent(el.dataset.payload));
+    showBlock(b);
+  });
+});
+
+// Schema cross-highlight
+function highlightSchema(name) {
+  document.querySelectorAll(".tag.schema").forEach(t => {
+    if (t.dataset.schema === name) {
+      t.style.outline = "1px solid var(--schema-fg)";
+    } else {
+      t.style.outline = "";
+    }
+  });
+  document.querySelectorAll(".block").forEach(b => {
+    const has = b.querySelector(`.tag.schema[data-schema="${name}"]`);
+    b.style.opacity = has ? "1" : "0.35";
+  });
+}
+function clearSchemaHighlight() {
+  document.querySelectorAll(".tag.schema").forEach(t => t.style.outline = "");
+  document.querySelectorAll(".block").forEach(b => b.style.opacity = "");
+}
+document.querySelectorAll(".tag.schema").forEach(t => {
+  t.addEventListener("mouseenter", () => highlightSchema(t.dataset.schema));
+  t.addEventListener("mouseleave", clearSchemaHighlight);
+});
+document.querySelectorAll("#schemaList .item").forEach(it => {
+  it.addEventListener("mouseenter", () => highlightSchema(it.dataset.schemaName));
+  it.addEventListener("mouseleave", clearSchemaHighlight);
+});
+
+// Filter chips
+document.querySelectorAll(".chip").forEach(chip => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".chip").forEach(c => c.classList.remove("on"));
+    chip.classList.add("on");
+    const f = chip.dataset.filter;
+    document.querySelectorAll(".block").forEach(b => {
+      if (f === "all" || b.dataset.status === f) {
+        b.style.display = "";
+      } else {
+        b.style.display = "none";
+      }
+    });
+  });
+});
+</script>
+
+</body>
+</html>

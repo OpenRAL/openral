@@ -1,0 +1,232 @@
+# RobotDescription -- Fourier GR-1 humanoid (arms + waist + Fourier dex hands).
+#
+# Embodiment used by NVIDIA's GR00T-N1 / N1.5 tabletop tasks (RoboCasa
+# GR1 Tabletop Tasks, https://github.com/robocasa/robocasa-gr1-tabletop-tasks).
+# The "ArmsAndWaistFourierHands" composition disables leg and head
+# actuation -- the robot stands fixed and only the waist (3-DoF), the
+# two 7-DoF arms, and the two 6-DoF Fourier dex hands are controlled.
+#
+# Sim-only today; the matching sim adapter is
+# python/sim/src/openral_sim/backends/robocasa.py (ADR-0011 / GR1
+# extension). There is no real-HW HAL adapter -- the consumer right now
+# is `openral benchmark run --suite gr1_tabletop`. `sdk_kind: open` and
+# `hal` (sim+real) is null for the same reason as panda_mobile.
+
+name: "gr1"
+embodiment_kind: "humanoid"
+base_frame: "base_link"
+
+# ADR-0027 — robot_state_publisher wiring. The Wiki-GRx-Models GR1
+# URDF declares ``base_link`` as the root (verified
+# /home/<user>/.cache/robot_descriptions/Wiki-GRx-Models/GRX/GR1/
+# GR1T1/urdf/GR1T1_nohand.urdf), matching our base_frame.
+urdf_path: "python:robot_descriptions.gr1_description:URDF_PATH"
+
+# Joints: 3-DoF waist + 7-DoF right arm + 7-DoF left arm. Limits mirror
+# the GR1 MJCF shipped by robosuite
+# (.venv/.../robosuite/models/assets/robots/gr1/robot.xml). Fourier
+# hand finger joints are owned by the gripper model and not enumerated
+# here -- the eval-layer contract treats them as part of the
+# end-effector spec below.
+joints:
+  - name: "waist_yaw"
+    joint_type: "revolute"
+    parent_link: "world"
+    child_link: "waist_yaw_link"
+    position_limits: [-1.05, 1.05]
+    velocity_limit: 2.0
+    effort_limit: 80.0
+    actuator_kind: "bldc"
+  - name: "waist_pitch"
+    joint_type: "revolute"
+    parent_link: "waist_yaw_link"
+    child_link: "waist_pitch_link"
+    position_limits: [-0.52, 1.22]
+    velocity_limit: 2.0
+    effort_limit: 80.0
+    actuator_kind: "bldc"
+  - name: "waist_roll"
+    joint_type: "revolute"
+    parent_link: "waist_pitch_link"
+    child_link: "waist_roll_link"
+    position_limits: [-0.7, 0.7]
+    velocity_limit: 2.0
+    effort_limit: 80.0
+    actuator_kind: "bldc"
+  - name: "right_shoulder_pitch"
+    joint_type: "revolute"
+    parent_link: "waist_roll_link"
+    child_link: "right_shoulder_pitch_link"
+    position_limits: [-2.79, 2.79]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "right_shoulder_roll"
+    joint_type: "revolute"
+    parent_link: "right_shoulder_pitch_link"
+    child_link: "right_shoulder_roll_link"
+    position_limits: [-2.79, 0.0]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "right_shoulder_yaw"
+    joint_type: "revolute"
+    parent_link: "right_shoulder_roll_link"
+    child_link: "right_shoulder_yaw_link"
+    position_limits: [-2.79, 2.79]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "right_elbow"
+    joint_type: "revolute"
+    parent_link: "right_shoulder_yaw_link"
+    child_link: "right_elbow_link"
+    position_limits: [-2.27, 0.0]
+    velocity_limit: 2.0
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+  - name: "right_wrist_yaw"
+    joint_type: "revolute"
+    parent_link: "right_elbow_link"
+    child_link: "right_wrist_yaw_link"
+    position_limits: [-2.97, 2.97]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+  - name: "right_wrist_roll"
+    joint_type: "revolute"
+    parent_link: "right_wrist_yaw_link"
+    child_link: "right_wrist_roll_link"
+    position_limits: [-0.61, 0.61]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+  - name: "right_wrist_pitch"
+    joint_type: "revolute"
+    parent_link: "right_wrist_roll_link"
+    child_link: "right_wrist_pitch_link"
+    position_limits: [-0.61, 0.61]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+  - name: "left_shoulder_pitch"
+    joint_type: "revolute"
+    parent_link: "waist_roll_link"
+    child_link: "left_shoulder_pitch_link"
+    position_limits: [-2.79, 2.79]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "left_shoulder_roll"
+    joint_type: "revolute"
+    parent_link: "left_shoulder_pitch_link"
+    child_link: "left_shoulder_roll_link"
+    position_limits: [0.0, 2.79]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "left_shoulder_yaw"
+    joint_type: "revolute"
+    parent_link: "left_shoulder_roll_link"
+    child_link: "left_shoulder_yaw_link"
+    position_limits: [-2.79, 2.79]
+    velocity_limit: 2.0
+    effort_limit: 50.0
+    actuator_kind: "bldc"
+  - name: "left_elbow"
+    joint_type: "revolute"
+    parent_link: "left_shoulder_yaw_link"
+    child_link: "left_elbow_link"
+    position_limits: [-2.27, 0.0]
+    velocity_limit: 2.0
+    effort_limit: 30.0
+    actuator_kind: "bldc"
+  - name: "left_wrist_yaw"
+    joint_type: "revolute"
+    parent_link: "left_elbow_link"
+    child_link: "left_wrist_yaw_link"
+    position_limits: [-2.97, 2.97]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+  - name: "left_wrist_roll"
+    joint_type: "revolute"
+    parent_link: "left_wrist_yaw_link"
+    child_link: "left_wrist_roll_link"
+    position_limits: [-0.61, 0.61]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+  - name: "left_wrist_pitch"
+    joint_type: "revolute"
+    parent_link: "left_wrist_roll_link"
+    child_link: "left_wrist_pitch_link"
+    position_limits: [-0.61, 0.61]
+    velocity_limit: 2.0
+    effort_limit: 15.0
+    actuator_kind: "bldc"
+
+end_effectors:
+  - name: "right_hand"
+    kind: "dexterous_hand"
+    parent_link: "right_wrist_pitch_link"
+    actuated: true
+    grasp_force_n: 40.0
+  - name: "left_hand"
+    kind: "dexterous_hand"
+    parent_link: "left_wrist_pitch_link"
+    actuated: true
+    grasp_force_n: 40.0
+
+capabilities:
+  # GR1 has legs in the full body, but the ArmsAndWaist composition
+  # disables leg actuation -- the eval contract treats this as a
+  # fixed-base humanoid for benchmarking. Use "bipedal" anyway to
+  # carry the fact that the underlying robot has legs.
+  locomotion:
+    - "bipedal"
+  can_lift_kg: 3.0
+  has_dexterous_hands: true
+  has_tactile: false
+  has_force_control: true
+  has_vision: true
+  has_lidar: false
+  has_humanoid_balance: true
+  embodiment_tags:
+    - "gr1"
+    - "fourier_gr1"
+    - "humanoid"
+    - "robocasa"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 100.0
+  max_torque_nm: 80.0
+  deadman_required: true
+
+# Single egocentric camera mounted at the head. The RoboCasa GR1
+# tabletop envs render this at 1280x800 by default but the
+# `openral sim run` adapter downsizes to the SceneSpec
+# observation_height/width before handing the frame to a policy.
+sensors:
+  - name: "head"
+    modality: "rgb"
+    frame_id: "head_link"
+    rate_hz: 20.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "robocasa_egoview"
+
+# No real-HW HAL adapter -- robosuite owns the physics.
+sdk_kind: "open"
+# ADR-0031 — no HAL: gr1 is scene-only (benchmark/sim run), so hal.sim and
+# hal.real both default to null. build_hal raises ROSCapabilityMismatch if called.

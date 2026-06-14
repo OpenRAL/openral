@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>opentelemetry_cpp_vendor</name>
+  <version>0.1.0</version>
+  <description>
+    ROS 2 vendor package for opentelemetry-cpp (Apache-2.0). Fetches and
+    builds the upstream library at colcon-build time, installing its
+    CMake config into the workspace prefix so dependents can call
+    ``find_package(opentelemetry-cpp CONFIG REQUIRED)`` without each
+    package re-implementing ExternalProject.
+
+    Built with trace + OTLP/HTTP only (no gRPC, no Prometheus, no
+    Jaeger, no logs/metrics SDK) — that is what the C++ safety kernel
+    needs to emit ``safety.check`` spans to the dashboard's OTLP/HTTP
+    receiver on port 4318. See ADR-0020 §9 (PR-F).
+  </description>
+
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Toolchain prereqs for ExternalProject_Add. cmake/git ride in via
+       ament_cmake / the base ROS 2 image; curl-dev is the OTLP HTTP
+       exporter's runtime dep. -->
+  <depend>curl</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

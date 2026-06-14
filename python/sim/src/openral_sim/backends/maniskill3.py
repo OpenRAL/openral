@@ -1,0 +1,305 @@
+"""ManiSkill3 scene adapter — wraps SAPIEN-backed GPU manipulation envs.
+
+ADR-0014. ManiSkill3 is opt-in via the ``maniskill3`` dependency group
+(``just sync --all-packages --group maniskill3``); without it this module still imports
+fine but the scene factory raises a typed :class:`ROSConfigError` with
+the install hint.
+
+Task ID convention
+------------------
+``"maniskill3/<env_id>"`` e.g. ``"maniskill3/PickCube-v1"``,
+``"maniskill3/StackCube-v1"``. The ``<env_id>`` is passed through to
+``gymnasium.make`` so the full ManiSkill3 task catalogue is reachable
+without a per-task adapter edit (any future MS3 release adds new tasks
+transparently). The ``scene.id`` MUST be ``"maniskill3"`` for
+cross-field validation to succeed.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+from numpy.typing import NDArray
+from openral_core.exceptions import ROSConfigError
+
+from openral_sim.registry import SCENES
+from openral_sim.rollout import StepResult
+
+if TYPE_CHECKING:
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec
+
+    from openral_sim.rollout import Observation
+
+
+_MANISKILL3_SCENE_ID = "maniskill3"
+# Mirrors the constant in :mod:`openral_sim.sim_runner` and
+# :mod:`openral_sim.backends.simpler_env`. :meth:`SimRunner.activate`
+# sets it to ``"1"`` for the duration of the scene-build window when
+# ``openral sim run --view`` is on; we read it here to decide whether to
+# build with deferred SAPIEN viewer plumbing.
+_VIEW_ENV = "OPENRAL_SIM_VIEW"
+
+
+def _parse_task_id(task_id: str) -> str:
+    """Parse ``"maniskill3/<env_id>"`` and return ``<env_id>``."""
+    parts = task_id.split("/", maxsplit=1)
+    expected_parts = 2
+    if len(parts) != expected_parts or parts[0] != _MANISKILL3_SCENE_ID:
+        raise ROSConfigError(f"maniskill3 task id must be 'maniskill3/<env_id>', got {task_id!r}")
+    return parts[1]
+
+
+@dataclass
+class _ManiSkill3Sim:
+    """Thin :class:`SimRollout` wrapper around a ManiSkill3 gym env.
+
+    ManiSkill3 envs default to vectorised GPU rollouts; the eval-layer
+    contract is single-env so we pass ``num_envs=1`` at construction and
+    unwrap the leading batch dim on every observation / step.
+    """
+
+    scene: SceneSpec
+    task: TaskSpec
+    _env: Any  # mani_skill env (lazy-imported)
+    _last_image: NDArray[np.uint8] | None = None
+    # Deferred-window mode for ``openral sim run --view`` (mirrors the
+    # simpler_env backend in PR #160). When True the env was constructed
+    # with ``render_mode=None`` and the SAPIEN viewer hasn't been opened
+    # yet; the first :meth:`viewer_render` call promotes
+    # ``env.unwrapped.render_mode`` to ``"human"`` so the window opens
+    # *after* the slow policy build, not during it.
+    _view_pending: bool = False
+
+    def reset(self, seed: int | None = None) -> Observation:
+        obs, _info = self._env.reset(seed=seed)
+        return self._wrap_obs(obs)
+
+    def step(self, action: NDArray[np.float32]) -> StepResult:
+        action_np = np.asarray(action, dtype=np.float32).reshape(1, -1)
+        obs, reward, terminated, truncated, info = self._env.step(action_np)
+        reward_f = float(_unbatch(reward))
+        return StepResult(
+            observation=self._wrap_obs(obs),
+            reward=reward_f,
+            terminated=bool(_unbatch(terminated)),
+            truncated=bool(_unbatch(truncated)),
+            info=_unbatch_info(info),
+        )
+
+    def render(self) -> NDArray[np.uint8] | None:
+        return None if self._last_image is None else self._last_image.copy()
+
+    def viewer_render(self) -> None:
+        """Pump the SAPIEN live viewer; promotes to ``human`` mode on first call.
+
+        Picked up by :func:`openral_sim.sim_runner._open_viewer_and_pacing`
+        as the engine-owns-the-viewer hook (returns a
+        ``_SapienViewerProxy`` that the runner ``.sync()``-s after each
+        applied step). The first call lazily promotes
+        ``env.unwrapped.render_mode`` from ``None`` to ``"human"`` —
+        MS3's ``render_human`` (``sapien_env.py``) then creates the
+        SAPIEN viewer + runs ``_setup_viewer`` against the
+        already-populated scene. Deferring window creation until the
+        first ``viewer_render()`` call (i.e. after the runner has built
+        the policy and started ticking) prevents the WM from marking an
+        empty unresponsive window "Not Responding" during the multi-
+        second policy load. Mirrors the simpler_env backend.
+        """
+        if self._view_pending:
+            self._env.unwrapped.render_mode = "human"
+            self._view_pending = False
+        self._env.render()
+
+    def close(self) -> None:
+        self._env.close()
+
+    def _wrap_obs(self, obs: Any) -> Observation:
+        """Translate ManiSkill3's nested dict obs into the eval Observation.
+
+        ManiSkill3's ``sensor_data`` sub-dict carries one entry per
+        registered camera (e.g. ``base_camera`` + ``hand_camera`` on
+        ``panda_wristcam``). We surface them in declaration order as
+        ``camera1`` / ``camera2`` / ... to match the scene-side names
+        the franka_panda RobotDescription declares and that
+        ``image_preprocessing.aliases`` in an rSkill manifest then
+        renames to model-side keys (``up`` / ``wrist`` / ...).
+        """
+        flat = _unbatch_obs(obs)
+        images = _extract_rgb_streams(flat)
+        state = _extract_state(flat)
+        if images:
+            self._last_image = next(iter(images.values()))
+        h = self.scene.observation_height
+        w = self.scene.observation_width
+        if not images:
+            images = {"camera1": np.zeros((h, w, 3), dtype=np.uint8)}
+        return {
+            "images": images,
+            "state": state,
+            "task": self.task.instruction,
+            "raw": flat,
+        }
+
+
+def _unbatch(value: Any) -> Any:
+    """Strip a leading ``num_envs=1`` dim from a tensor / array / scalar."""
+    if hasattr(value, "cpu"):  # torch tensor
+        value = value.cpu().numpy()
+    arr = np.asarray(value)
+    return arr.reshape(-1)[0] if arr.size else arr
+
+
+def _unbatch_info(info: dict[str, Any]) -> dict[str, Any]:
+    """Recursively unbatch a ManiSkill3 info dict — preserves nested keys."""
+    out: dict[str, Any] = {}
+    for k, v in info.items():
+        if isinstance(v, dict):
+            out[k] = _unbatch_info(v)
+        elif hasattr(v, "shape") or isinstance(v, (list, tuple)):
+            try:
+                out[k] = _unbatch(v)
+            except (ValueError, IndexError):
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+def _unbatch_obs(obs: Any) -> Any:
+    """Recursively unbatch a ManiSkill3 obs dict.
+
+    Returns ``Any`` (not ``dict[str, Any]``) because the recursion bottoms
+    out on numpy arrays — the eval-layer callers (``_extract_rgb`` /
+    ``_extract_state``) ``isinstance(flat, dict)`` before indexing into it.
+    """
+    if isinstance(obs, dict):
+        return {k: _unbatch_obs(v) for k, v in obs.items()}
+    if hasattr(obs, "cpu"):
+        obs = obs.cpu().numpy()
+    arr = np.asarray(obs)
+    if arr.ndim >= 1 and arr.shape[0] == 1:
+        return arr[0]
+    return arr
+
+
+def _extract_rgb(flat: Any) -> NDArray[np.uint8] | None:
+    """Pull the first RGB camera stream out of a ManiSkill3 obs dict.
+
+    Kept for backwards-compatibility / tests that probe a single stream;
+    the multi-camera surface used at runtime is :func:`_extract_rgb_streams`.
+    """
+    streams = _extract_rgb_streams(flat)
+    if not streams:
+        return None
+    return next(iter(streams.values()))
+
+
+def _extract_rgb_streams(flat: Any) -> dict[str, NDArray[np.uint8]]:
+    """Pull every RGB camera stream from a ManiSkill3 obs dict.
+
+    Returns an ordered ``{"camera1": rgb1, "camera2": rgb2, ...}`` map
+    that mirrors the declaration order in ``sensor_data``. The keys are
+    the scene-side names the franka_panda RobotDescription declares;
+    an rSkill manifest's ``image_preprocessing.aliases`` block renames
+    them to model-side keys before preprocessing.
+    """
+    if not isinstance(flat, dict):
+        return {}
+    sensor_data = flat.get("sensor_data")
+    if not isinstance(sensor_data, dict):
+        return {}
+    out: dict[str, NDArray[np.uint8]] = {}
+    for idx, cam_obs in enumerate(sensor_data.values(), start=1):
+        if isinstance(cam_obs, dict):
+            rgb = cam_obs.get("rgb")
+            if rgb is not None:
+                out[f"camera{idx}"] = np.asarray(rgb, dtype=np.uint8)
+    return out
+
+
+def _extract_state(flat: Any) -> NDArray[np.float32]:
+    """Concatenate ``agent.qpos`` + ``agent.qvel`` into a 1-D state vector."""
+    if not isinstance(flat, dict):
+        return np.zeros(0, dtype=np.float32)
+    agent = flat.get("agent")
+    if not isinstance(agent, dict):
+        return np.zeros(0, dtype=np.float32)
+    parts: list[NDArray[np.float32]] = []
+    for key in ("qpos", "qvel"):
+        value = agent.get(key)
+        if value is not None:
+            parts.append(np.asarray(value, dtype=np.float32).reshape(-1))
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
+
+
+@SCENES.register(_MANISKILL3_SCENE_ID)
+def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
+    """Lazily import ``mani_skill`` and build a :class:`_ManiSkill3Sim`."""
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("maniskill3")
+
+    try:
+        import gymnasium as gym
+        import mani_skill.envs  # type: ignore[import-not-found,import-untyped,unused-ignore]  # noqa: F401  reason: opt-in via --group maniskill3, registers gym envs
+    except ImportError as exc:  # pragma: no cover — tested via runtime error path
+        # ensure_backend_deps re-probes after running its plan; this
+        # branch is only reached when the install ran but mani_skill
+        # still refuses to import (e.g. SAPIEN wheel mismatch).
+        raise ROSConfigError(
+            "ManiSkill3 backend installed but `mani_skill` still refuses to "
+            "import. Inspect the auto-install output above and re-run: "
+            "uv sync --all-packages --group maniskill3 --inexact"
+        ) from exc
+
+    env_id = _parse_task_id(env_cfg.task.id)
+    # Single-env eval — the harness expects one Observation per step, and
+    # the per-(task, seed) outer loop in run_benchmark is the right place
+    # to parallelise (clear semantics, OTel spans per episode).
+    # ``state_dict+rgb`` exposes ``agent.qpos`` / ``agent.qvel`` as nested
+    # dicts (what :func:`_extract_state` reads). The flat ``rgb+state``
+    # mode collapses those into a single top-level tensor, which the
+    # adapter would surface as an empty state vector — see ADR-0014.
+    # robot_uids selects the MS3 agent variant — the default `panda` agent
+    # carries a single `base_camera`; multi-camera rSkills (e.g. SmolVLA
+    # with wrist + overhead views) need `panda_wristcam`, which adds the
+    # `hand_camera` mount. Passed through only when set so the default
+    # PickCube behaviour for single-camera configs is preserved.
+    #
+    # Deferred-window mode: when ``OPENRAL_SIM_VIEW=1`` (set by
+    # :meth:`SimRunner.activate` for ``openral sim run --view``) we still
+    # construct with ``render_mode=None`` and stash a ``_view_pending``
+    # flag on the adapter. The first :meth:`viewer_render` call promotes
+    # ``env.unwrapped.render_mode`` to ``"human"`` and lazily opens the
+    # SAPIEN window — after the policy has loaded, so the WM never sees
+    # an empty unresponsive window. Mirrors PR #160's simpler_env path.
+    view_pending = os.environ.get(_VIEW_ENV) == "1"
+    make_kwargs: dict[str, Any] = {
+        "num_envs": 1,
+        "obs_mode": env_cfg.scene.backend_options.get("obs_mode", "state_dict+rgb"),
+        "control_mode": env_cfg.scene.backend_options.get("control_mode", "pd_ee_delta_pose"),
+        "render_mode": None,
+        # MS3's gym.register pins PickCube-v1 (and most tabletop tasks)
+        # to max_episode_steps=50, which truncates rollouts at step 50
+        # regardless of the YAML's task.max_steps. Forward the YAML's
+        # value so long-horizon configs aren't silently clipped. Same
+        # pattern as PR #160 for simpler_env.
+        "max_episode_steps": env_cfg.task.max_steps,
+        "sensor_configs": {
+            "width": env_cfg.scene.observation_width,
+            "height": env_cfg.scene.observation_height,
+        },
+    }
+    robot_uids = env_cfg.scene.backend_options.get("robot_uids")
+    if robot_uids is not None:
+        make_kwargs["robot_uids"] = robot_uids
+    env = gym.make(env_id, **make_kwargs)
+    return _ManiSkill3Sim(
+        scene=env_cfg.scene,
+        task=env_cfg.task,
+        _env=env,
+        _view_pending=view_pending,
+    )

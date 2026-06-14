@@ -1,0 +1,400 @@
+[project]
+name = "openral-workspace"
+version = "0.1.0"
+description = "OpenRAL — open-source robot agent harness for VLA models"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OpenRAL Contributors" }]
+dependencies = [
+    "matplotlib>=3.10.9",
+    "pillow>=12.2.0",
+]
+
+[tool.uv.workspace]
+members = ["python/*"]
+
+[tool.uv]
+# egl-probe is a transitive dep of robomimic→hf-libero→lerobot[libero].
+# It probes EGL at *build* time and fails on systems without EGL headers
+# during `uv sync`. The sim-* recipes set MUJOCO_GL=egl at *runtime* (which
+# uses libEGL.so directly, not egl-probe), so excluding the build-time probe
+# does not affect rendering.
+override-dependencies = [
+    "egl-probe; python_version == '3.99'",  # impossible marker → never installed
+]
+# torchcodec ships per-torch-minor builds (0.9.x ↔ torch 2.9, 0.10.x ↔
+# torch 2.10). The workspace resolves torch 2.9.1 on linux/x86_64, but an
+# unconstrained torchcodec resolves to 0.10.0 whose libtorchcodec_core*.so
+# link against torch 2.10's c10 ABI — every lerobot dataset codec call then
+# dies with ``undefined symbol: _ZN3c1013MessageLogger6streamB5cxx11Ev``
+# even with FFmpeg correctly installed (CI test-selective, python/dataset
+# round-trip tests). Marker mirrors the lockfile's torch==2.9.1 resolution
+# split so the platforms that resolve torch 2.10 keep the matching 0.10.
+constraint-dependencies = [
+    "torchcodec<0.10; platform_machine != 's390x' and sys_platform == 'linux'",
+]
+# ADR-0011 — RoboCasa pins robosuite>=1.5 while LIBERO (`lerobot[libero]`)
+# pins robosuite==1.4. The two extras groups cannot coexist in a single
+# resolved environment. Telling uv up-front lets `uv sync --group libero`
+# and `uv sync --group robocasa` each resolve cleanly and produces a
+# better error than the default solver-conflict message when both are
+# requested together.
+conflicts = [
+    [
+        { group = "libero" },
+        { group = "robocasa" },
+    ],
+]
+
+[tool.uv.sources]
+# Only declare workspace sources for packages that actually exist under python/.
+# Future packages (re-add when directories land under python/):
+#   openral-dispatcher
+openral-core = { workspace = true }
+openral-hal = { workspace = true }
+openral-sensors = { workspace = true }
+openral-rskill = { workspace = true }
+openral-world-state = { workspace = true }
+openral-cli = { workspace = true }
+openral-detect = { workspace = true }
+openral-sim = { workspace = true }
+openral-observability = { workspace = true }
+openral-runner = { workspace = true } # reason: ADR-0010 inference runner — InferenceRunner + SensorReader + clock
+openral-reasoner = { workspace = true } # reason: ADR-0005 S2 reasoner — LLMClient + Reasoner Protocols + Plan/ToolCall schemas
+openral-wam = { workspace = true } # reason: CLAUDE.md §6.3 World Action Model layer — WorldModel Protocol + Rollout schema
+openral-dataset = { workspace = true } # reason: ADR-0019 rosbag2 ↔ LeRobotDataset v3 bridge — RolloutRecorder + LeRobotDatasetSink + Rosbag2Sink + Rosbag2ToLeRobotConverter
+openral-state-adapter = { workspace = true } # reason: ADR-0027 layout adapter registry — per-checkpoint state-vector assemblers
+
+# robosuite is pinned to the ARISE-Initiative master branch at commit
+# 232ce7d ("synchronize rendering context for envs", 2026-01-07).
+# This commit is 1 commit ahead of the v1.5.2 PyPI tag and is what
+# `_robocasa_kitchen_plan` already installs editable at runtime.
+# Putting the pin here so the lockfile honestly reflects what we ship,
+# and so `uv sync --group robocasa` lands directly on the right tree
+# (no version mismatch to swap). See the explanatory comment on the
+# `robosuite` line in `[dependency-groups] robocasa = [...]` for the
+# mink/numpy resolution reasoning.
+#
+# Bumping the rev: pick the latest stable upstream master commit
+# (https://github.com/ARISE-Initiative/robosuite/commits/master) that
+# still has `mink` under `extras_require` (NOT in `install_requires`),
+# update both this rev and the explanatory comment in
+# `[dependency-groups] robocasa = [...]`, regenerate the lockfile,
+# and re-run `just sim-audit robocasa_pnp` to confirm no regression.
+robosuite = { git = "https://github.com/ARISE-Initiative/robosuite.git", rev = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" }
+
+# The NVIDIA `tensorrt*` distributions are wheel_stub sdists whose build
+# backend downloads the real wheel from pypi.nvidia.com at METADATA time, so
+# any `uv lock` re-resolution needs that index reachable just to read their
+# requires-dist. Declare the (version-pinned) metadata statically — copied
+# from the dependency edges the lockfile already records — so locking works
+# on sandboxed / air-gapped hosts. Installing the `tensorrt` group still
+# downloads from pypi.nvidia.com as before. Re-pin when bumping tensorrt.
+[[tool.uv.dependency-metadata]]
+name = "tensorrt"
+version = "10.16.1.11"
+requires-dist = ["tensorrt-cu13==10.16.1.11"]
+
+[[tool.uv.dependency-metadata]]
+name = "tensorrt-cu13"
+version = "10.16.1.11"
+requires-dist = [
+    "tensorrt-cu13-bindings==10.16.1.11",
+    "tensorrt-cu13-libs==10.16.1.11",
+]
+
+[[tool.uv.dependency-metadata]]
+name = "tensorrt-cu13-libs"
+version = "10.16.1.11"
+requires-dist = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9", # reason: test runner. Pin <9: pytest 9.0.3 has a collection regression where multiple modules with module-level pytest.importorskip / pytest.skip(allow_module_level=True) emit "ERROR: found no collectors" and conflate every SKIPPED entry under the first module — silently hides skip reasons in tests/sim/ (breaks tests/unit/test_sim_collection.py).
+    "pytest-asyncio>=0.23", # reason: async test support
+    "pytest-cov>=5", # reason: coverage reports
+    "hypothesis>=6.100", # reason: schema fuzz testing
+    "ruff>=0.6", # reason: linting and formatting
+    "mypy>=1.11", # reason: strict type checking
+    "pyright>=1.1", # reason: secondary type checker
+    "pre-commit>=3.7", # reason: git hooks
+    "mkdocs-material>=9.5", # reason: documentation site
+    "mkdocstrings[python]>=0.25", # reason: API reference generation
+    "jsonschema>=4.23",
+    "lark>=1.3.1",
+    "catkin-pkg>=1.0", # reason: ament_cmake_core invokes the build-time interpreter (the workspace venv when `just ros2-build` is run) with `catkin_pkg.*` during configure. Provided by apt's python3-catkin-pkg on the *system* Python, but the venv interpreter can't see it — install into the venv so colcon resolves it through the same Python that runs the lifecycle nodes.
+    "empy<4", # reason: ament_cmake_core's template substitutions import the `em` module (provided by empy 3.x, NOT 4.x — 4.x renamed the module to `empy` and dropped `em`). Same rationale as `catkin-pkg`: needed by the configure step under the workspace venv.
+    "onnxscript>=0.1.0", # reason: required by torch.onnx new exporter (torch>=2.1), tested in test_runtime.py
+    "onnxruntime>=1.17", # reason: ONNXRuntime backend tested in tests/unit/test_runtime.py::TestONNXRuntime
+    "types-pyyaml>=6", # reason: type stubs for PyYAML (consumed by openral_core.schemas under mypy --strict)
+    "opentelemetry-exporter-otlp-proto-http>=1.27", # reason: integration test for `openral dashboard` ships a real OTLP/HTTP exporter against the embedded receiver
+    "mujoco>=3.8.0",
+    "robot-descriptions>=2.0.0",
+    "types-protobuf>=7.34.1.20260518",
+]
+clip = [
+    # ADR-0038 §5 — open-vocabulary object matching via OpenCLIP ViT-B/32 (MIT
+    # code + weights). Optional / compute-gated: SpatialMemory works on label +
+    # pose + recency without it. torch is already pulled by dev/sim.
+    "open-clip-torch>=2.24",
+]
+sim = [
+    "gym-aloha>=0.1.3",  # reason: real MuJoCo ALOHA physics env for ACT closed-loop test
+    "accelerate>=1.13.0",
+    "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 / pi05-robocasa365-human300-nf4 — the pi05 adapter raises ROSConfigError without bnb on `quantization.dtype: nf4` manifests, regardless of which scene group (libero / robocasa / aloha) is active.
+    "gym-pusht>=0.1.6",
+    "gymnasium[mujoco]>=1.3.0",
+    "mujoco>=3.8.0",
+    "num2words>=0.5.14",
+    "pymunk<7",
+    "robot-descriptions>=1.12.0",  # reason: SO-100 MJCF from DeepMind mujoco_menagerie for offscreen render
+    "transformers==5.3.0",
+]
+libero = [
+    "lerobot[libero]",  # reason: pulls hf-libero (linux-only) + LIBERO bddl task files + robosuite
+    "transformers==5.3.0",  # reason: lerobot 0.5.1 hard-pins transformers==5.3.0 via its `transformers-dep` extra (smolvla / pi / xvla / libero all alias it). Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version and the pin survives even if a future lerobot loosens its own bound.
+    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
+    "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 — 3.4 B PaliGemma backbone needs ≤8 GiB VRAM in nf4
+]
+metaworld = [
+    # The MetaWorld benchmark package itself (metaworld==3.0.0) is NOT listed here
+    # because its transitive deps conflict with the workspace lock; install it
+    # manually with `uv run pip install metaworld==3.0.0 --no-deps` (the
+    # MetaWorld scene adapter raises ROSConfigError with this exact hint).
+    "lerobot",  # reason: provides lerobot.envs.metaworld used by the MetaWorld scene adapter
+    "gymnasium[mujoco]>=1.3.0",  # reason: gym backend MetaWorldEnv is built on
+    "mujoco>=3.8.0",  # reason: physics engine for MetaWorld scenes
+    "transformers==5.3.0",  # reason: SmolVLA backbone (pinned to match the sim group)
+    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA
+    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
+]
+maniskill3 = [
+    # ADR-0010 — opt-in ManiSkill3 sim backend.
+    # mani-skill is the PyPI distribution name; it pulls SAPIEN (Vulkan-backed
+    # GPU physics, ~200 MB wheel) transitively. Bound at >=3.0.0b9 so SemVer-compatible
+    # pre-release patches flow in; tighten to a >=3.0.0 pin when MS3 ships its stable release.
+    "mani-skill>=3.0.0b9",
+    "gymnasium>=1.0.0",  # reason: gym backend ManiSkill envs are built on
+    "lerobot",  # reason: every non-RLDX policy adapter (smolvla / pi05 / xvla / act / diffusion) imports lerobot.policies.* at load time. Pulled bare (no `[libero]`) to keep robosuite unconstrained — `mani-skill` carries SAPIEN, not robosuite, so there is no robosuite version pin to clash with. Once an MS3-specific rSkill ships in-tree this becomes load-bearing; today it future-proofs the group + matches the metaworld group's convention.
+    "transformers==5.3.0",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
+    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 (matches metaworld group convention)
+    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization (matches metaworld group)
+]
+simpler-env = [
+    # ADR-0010 — opt-in SimplerEnv real-to-sim correlator backend.
+    #
+    # The `simpler-env` package itself is NOT listed here — it has no PyPI
+    # release and the upstream git URL slows every `uv run` invocation. Install
+    # it manually once the workspace is synced:
+    #
+    #   uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
+    #
+    # The SimplerEnv scene adapter raises ROSConfigError with this exact hint.
+    # Rides on top of ManiSkill3 — this group pulls the same SAPIEN backend so
+    # users can opt into both with `uv sync --group simpler-env`.
+    "mani-skill>=3.0.0b9",
+    "gymnasium>=1.0.0",
+]
+robocasa = [
+    # ADR-0011 — opt-in RoboCasa MuJoCo kitchen backend.
+    #
+    # The `robocasa` package itself is NOT listed here — it has no PyPI
+    # release and the upstream git URL slows every `uv run` invocation
+    # (same precedent as the `simpler-env` group above). Install it
+    # manually once the workspace is synced (pick ONE -- the two
+    # variants share the package name `robocasa`):
+    #
+    #   # Kitchen tasks (~100 atomic PnP / door / drawer envs,
+    #   # panda_mobile robot):
+    #   uv pip install --no-deps "robocasa @ git+https://github.com/robocasa/robocasa.git"
+    #
+    #   # GR1 tabletop tasks (24 envs from NVIDIA's GR00T-N1 release,
+    #   # gr1 robot). Editable install is required -- the
+    #   # fork's setup.py uses find_packages() which misses
+    #   # robocasa.utils because that directory lacks __init__.py:
+    #   git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git /tmp/rg1
+    #   uv pip install --no-deps -e /tmp/rg1
+    #
+    # The RoboCasa scene adapter registers both task families
+    # (`robocasa/<task>` for kitchen, `robocasa/gr1/<task>` for GR1
+    # tabletop); the unavailable one fails at `robosuite.make()` with
+    # a clean "unknown env_name" rather than at import time. See
+    # ADR-0011 / the GR1 fork README for the full set up.
+    #
+    # RoboCasa pins robosuite>=1.5 while LIBERO (`lerobot[libero]`) pins
+    # robosuite==1.4; the two extras groups are **mutually exclusive** in
+    # a single venv. uv's solver enforces this — there is no Python-side
+    # check. Users running both LIBERO and RoboCasa swap venvs:
+    #   uv sync --group libero   # for LIBERO suites
+    #   uv sync --group robocasa # for RoboCasa kitchens
+    #
+    # The ~10 GB CC-BY-4.0 kitchen-asset bundle is NOT pulled here. The
+    # scene adapter (PR B of issue #88) fetches it lazily on first use,
+    # gated by a Rich license banner + typer.confirm() prompt or the
+    # OPENRAL_ALLOW_ROBOCASA_ASSETS=1 env-var CI bypass. See
+    # ADR-0011 for the full rationale.
+    # robosuite is sourced from the ARISE-Initiative master branch at a
+    # pinned commit (see `[tool.uv.sources] robosuite = { git = ... }`
+    # below). We pin `>=1.5.2` here so the resolver still satisfies the
+    # RoboCasa constraint, but the `tool.uv.sources` override is what
+    # actually selects the install target: commit `232ce7d`, which is
+    # one commit beyond the v1.5.2 PyPI tag.
+    #
+    # Why the git pin (not just `robosuite==1.5.2` from PyPI):
+    #   1. PyPI 1.5.2 was cut with a `setup.py` that hard-pins
+    #      `mink==0.0.5` as a *core* dependency. mink 0.0.5 declares
+    #      `numpy<2.0`, which is incompatible with the workspace-wide
+    #      `numpy>=2.0.0,<2.3.0` pulled by `lerobot>=0.5.1`. uv refuses
+    #      to lock that combination.
+    #   2. The master-branch `setup.py` (commit 232ce7d, "synchronize
+    #      rendering context for envs") moved mink to `extras_require`,
+    #      so a workspace that doesn't request the `mink` extra
+    #      resolves cleanly with the rest of the numpy>=2 ecosystem.
+    #      `_robocasa_kitchen_plan` then installs `mink==0.0.5
+    #      --no-deps` out-of-band at runtime — which is exactly what
+    #      we already do today.
+    #   3. The same commit adds `robosuite/utils/binding_utils.py`
+    #      (rendering-context sync) that fixes a stale frame issue
+    #      observed under multi-env RoboCasa rollouts.
+    #
+    # Bumping the rev: pick the latest stable upstream master commit
+    # (https://github.com/ARISE-Initiative/robosuite), update both
+    # this comment and the `tool.uv.sources` rev together, regenerate
+    # the lockfile, and re-run `just sim-audit robocasa_pnp` to
+    # confirm no regression.
+    "robosuite>=1.5.2",
+    # Policy-adapter deps mirror the `metaworld` / `maniskill3` groups so
+    # RoboCasa scenes can drive any in-tree lerobot policy (SmolVLA / π0.5 /
+    # xVLA — all transformers-backbone-backed). lerobot soft-imports
+    # `transformers` via ``_transformers_available``; absent transformers the
+    # PaliGemma / Florence-2 / SmolVLM ``__init__`` hits
+    # ``CONFIG_MAPPING = None`` and raises the cryptic
+    # ``'NoneType' object is not subscriptable``. Pulling these here means
+    # ``uv sync --group robocasa`` is sufficient for the openarm tabletop
+    # pi05-vision-nf4 scene (and any future transformers-backed adapter on a
+    # robosuite>=1.5 task).
+    "lerobot",  # reason: policy adapters (smolvla / pi05 / xvla / act / diffusion) import lerobot.policies.* at load time. Pulled bare (no `[libero]`) — robosuite>=1.5 above is the RoboCasa pin and conflicts with libero's robosuite==1.4.
+    "transformers==5.3.0",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
+    "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 init_empty_weights fast meta-init path.
+    "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 / openarm-vision-nf4 — the pi05 adapter raises ROSConfigError without bnb on `quantization.dtype: nf4` manifests.
+    "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization.
+]
+rldx = [
+    # ADR-0010 — opt-in RLDX-1 sidecar adapter.
+    #
+    # The RLDX-1 inference server (`tools/rldx_sidecar.py`) runs in its
+    # OWN Python 3.10 venv that this group does NOT touch; what we
+    # install here is the bot-harness-side ZMQ + msgpack client used by
+    # `bot_harness_sim.policies.rldx`. pyzmq carries the CPython ZMQ
+    # binding (~3 MB wheel); msgpack handles the framing.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+gr00t = [
+    # ADR-0046 — opt-in NVIDIA Isaac GR00T sidecar adapter.
+    #
+    # Same shape as the `rldx` group: the GR00T inference server
+    # (`tools/gr00t_sidecar.py`, landing in ADR-0046 PR2) runs in its OWN
+    # Python 3.10 venv that this group does NOT touch — GR00T pins
+    # transformers / flash-attn / CUDA against Python 3.10, incompatible
+    # with this repo's Python 3.12. What we install here is only the
+    # openral-side ZMQ + msgpack client used by `openral_sim.policies.gr00t`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+isaacsim = [
+    # ADR-0045 — opt-in NVIDIA Isaac Sim scene backend.
+    #
+    # The Isaac Lab env (`tools/isaac_sidecar.py`) runs in its OWN Python 3.11
+    # venv that this group does NOT touch — Isaac Sim ships per-interpreter
+    # wheels (5.x→py3.11) and its Omniverse Kit components are proprietary /
+    # non-redistributable (CLAUDE.md §1.9), so they are externally provisioned,
+    # never pinned here. What we install on the openral (py3.12) side is just
+    # the ZMQ + msgpack client used by `openral_sim.backends.isaac_sim`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+locateanything = [
+    # ADR-0037 — opt-in LocateAnything-3B open-vocab VLM detector.
+    #
+    # The model itself runs in its OWN transformers==4.57.1 venv
+    # (`tools/locateanything_sidecar.py`, provisioned separately); what we
+    # install here is the detector-node-side ZMQ + msgpack client that
+    # `openral_runner.backends.gstreamer.locateanything_detector` uses to
+    # talk to that sidecar — the same wire transport as `rldx`. Required
+    # by the `deploy sim --object-detector-manifest <…locateanything…>`
+    # leg; without it the detector fails per-request with
+    # "No module named 'zmq'".
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+qwen-vlm = [
+    # ADR-0047 — opt-in Qwen3.5-4B scene VLM for the reasoner's query_scene tool.
+    #
+    # The model itself runs in its OWN sidecar venv
+    # (`tools/qwen_vlm_sidecar.py`, provisioned separately); what we install
+    # here is the node-side ZMQ + msgpack client that
+    # `openral_runner.backends.gstreamer.qwen_scene_vlm` uses to talk to that
+    # sidecar — the same wire transport as locateanything / rldx. Required by
+    # the scene_vlm_node's query_scene service; without it the backend fails
+    # on first query with "No module named 'zmq'".
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+omdet = [
+    # ADR-0037 (2026-06-12 amendment) — opt-in OmDet-Turbo in-process
+    # open-vocabulary detector (rskills/omdet-turbo-indoor, engine: zeroshot_hf).
+    #
+    # Unlike locateanything, OmDet-Turbo is a first-class transformers
+    # architecture (AutoModelForZeroShotObjectDetection), so it loads under the
+    # workspace's own transformers and runs IN PROCESS — no sidecar venv. The
+    # backend (openral_runner.backends.gstreamer.omdet_turbo_detector) lazily
+    # imports torch + transformers; this group provides them. Required by the
+    # `deploy sim --object-detector-manifest <…omdet-turbo-indoor…>` leg.
+    "transformers==5.3.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
+    "torch>=2.2",           # reason: OmDet-Turbo forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts / deploy sim.
+    "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for the processor.
+    "timm>=1.0",            # reason: OmDet-Turbo's Swin backbone loads via TimmBackbone under transformers 5.3; also used to rebuild the backbone at the processor's 640² input (the pretrained checkpoint is pinned to 224² — see _fit_timm_backbone_to_processor).
+]
+tensorrt = [
+    "tensorrt>=10.0,<11",      # reason: ONNX->TRT build-on-load for rSkill runtime_tensorrt; engines are arch/version-specific so rSkills ship ONNX and build here. Match the CUDA-suffixed wheel (tensorrt-cu13 / -cu12) to the host toolkit if the meta-wheel mis-resolves.
+    "cuda-python>=12.0",       # reason: device malloc/memcpy/stream for TensorRTRuntime.infer via the cuda.bindings API (new-style import: `from cuda.bindings import runtime as cudart`).
+    "torch>=2.1",              # reason: ONNX fixture export in test_runtime_tensorrt.py — keeps `uv sync --group tensorrt` a self-contained test env (torch.onnx.export authors the tiny model the ONNX->TRT build/infer tests parse).
+]
+onnx-export = [
+    "transformers>=4.45",  # reason: RTDetrForObjectDetection for ONNX export (one-time, ADR-0037)
+    "torch>=2.2",          # reason: torch.onnx.export
+]
+lowering = [
+    "yourdfpy>=0.0.56",   # reason: URDF parse + FK for the offline collision-lowering tool (ADR-0030)
+    "trimesh>=4.0.0",     # reason: load URDF collision meshes to fit conservative bounding capsules
+    "numpy>=2.0.0,<2.3.0",  # reason: PCA capsule fitting + pose sampling; pin matches workspace-wide numpy constraint from lerobot>=0.5.1
+    "xacrodoc>=0.3.0",    # reason: process xacro-only URDFs (UR / Flexiv) for onboarding via robot_descriptions:<module>
+    "mujoco>=3.8.0",      # reason: lower FK + ACM from MJCF-native robots (openarm) whose mesh collision the URDF path can't read
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+# `-ra` surfaces every skip / xfail / error reason in the short summary so
+# module-level skips (e.g. CUDA not available, lerobot missing) cannot
+# silently disappear during collection — see tests/sim/conftest.py.
+# `--strict-markers` rejects typos in @pytest.mark.<name> decorators.
+# `-p no:launch_testing*` / `-p no:launch_ros` disable the ROS 2 pytest
+# entry-points (`launch_testing`, `launch_testing_ros_pytest_entrypoint`,
+# `launch_ros`) that get auto-discovered when /opt/ros/<distro>/lib/python3.12/
+# site-packages is on PYTHONPATH (any dev host that sourced setup.bash). Their
+# `pytest_launch_collect_makemodule` hook silently swallows collection of
+# normal `test_*.py` files ("found no collectors for …" → 0 tests collected)
+# so a bare `pytest tests/unit/test_X.py` invocation reports success while
+# running nothing. None of the in-tree tests use `launch_testing` (the
+# integration tests under tests/integration/ drive rclpy directly; the real
+# ROS launch-tests run under `colcon test` via `just ros2-test`, which has
+# its own pytest config), so it is safe to disable globally for the venv
+# pytest. This makes `just test` and `pytest <single-file>` agree.
+# --import-mode=importlib: avoids sys.path injection, eliminates ImportPathMismatchError
+# when python/*/tests/ sub-packages share the name "tests" with tests/ at repo root.
+addopts = "-ra --strict-markers --import-mode=importlib -p no:launch_testing -p no:launch_testing_ros -p no:launch_testing_ros_pytest_entrypoint -p no:launch_ros"
+markers = [
+    "sim: integration tests that load real HF weights and/or run a simulated robot (slow; opt-in via `pytest -m sim`)",
+    "slow: tests that take >5s on the reference host",
+]

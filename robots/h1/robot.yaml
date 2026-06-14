@@ -1,0 +1,413 @@
+# RobotDescription — Unitree H1 humanoid (physical embodiment, sim baseline).
+#
+# This manifest mirrors `H1_DESCRIPTION` in
+# python/hal/src/openral_hal/h1.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py).  Joint
+# limits + effort caps come from the upstream Unitree H1 URDF /
+# mujoco_menagerie verbatim.
+#
+# The MuJoCo digital twin (`H1MujocoHAL`) is the only execution path
+# available today.  A real-HW HAL over `unitree_sdk2` is the M2
+# milestone (CLAUDE.md §6.2) and requires a C++ S0 cerebellar
+# controller before a Python HAL becomes useful.
+#
+# Without an S0 balance controller the digital twin is a contract
+# validator only — it falls over under gravity.  The closed-loop
+# sim tests in tests/sim/test_h1_hal_mujoco.py run with
+# gravity_enabled=False for that reason.
+#
+# Joint inventory (19 actuated joints — H1 is coarser-DoF than the G1):
+#   - left leg  : hip_yaw, hip_roll, hip_pitch, knee, ankle
+#   - right leg : same
+#   - torso     : yaw only (no waist roll / pitch)
+#   - left arm  : shoulder_pitch, shoulder_roll, shoulder_yaw, elbow
+#   - right arm : same
+# Total: 5 + 5 + 1 + 4 + 4 = 19.
+#
+# The floating-base joint at qpos[0..6] is implicit world state and is
+# NOT enumerated here — the HAL contract surface is the 19 actuated
+# joints only.
+#
+# Joint names follow the menagerie's H1 convention (no `_joint` suffix),
+# distinct from the G1 menagerie's naming.
+
+name: "h1"
+embodiment_kind: "humanoid"
+base_frame: "pelvis"
+
+# ADR-0027 — robot_state_publisher wiring. URDF root link is ``pelvis``,
+# matching base_frame; no static transform needed.
+urdf_path: "python:robot_descriptions.h1_description:URDF_PATH"
+
+joints:
+  # ── Left leg (5) ──────────────────────────────────────────────────
+  - name: "left_hip_yaw"
+    origin_xyz: [0, 0.0875, -0.1742]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "pelvis"
+    child_link: "left_hip_yaw_link"
+    position_limits: [-0.43, 0.43]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_hip_roll"
+    origin_xyz: [0.039468, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "left_hip_yaw_link"
+    child_link: "left_hip_roll_link"
+    position_limits: [-0.43, 0.43]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_hip_pitch"
+    origin_xyz: [0, 0.11536, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_hip_roll_link"
+    child_link: "left_hip_pitch_link"
+    position_limits: [-1.57, 1.57]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_knee"
+    origin_xyz: [0, 0, -0.4]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_hip_pitch_link"
+    child_link: "left_knee_link"
+    position_limits: [-0.26, 2.05]
+    velocity_limit: 6.0
+    effort_limit: 300.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_ankle"
+    origin_xyz: [0, 0, -0.4]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_knee_link"
+    child_link: "left_ankle_link"
+    position_limits: [-0.87, 0.52]
+    velocity_limit: 6.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Right leg (5) ─────────────────────────────────────────────────
+  - name: "right_hip_yaw"
+    origin_xyz: [0, -0.0875, -0.1742]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "pelvis"
+    child_link: "right_hip_yaw_link"
+    position_limits: [-0.43, 0.43]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_hip_roll"
+    origin_xyz: [0.039468, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "right_hip_yaw_link"
+    child_link: "right_hip_roll_link"
+    position_limits: [-0.43, 0.43]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_hip_pitch"
+    origin_xyz: [0, -0.11536, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_hip_roll_link"
+    child_link: "right_hip_pitch_link"
+    position_limits: [-1.57, 1.57]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_knee"
+    origin_xyz: [0, 0, -0.4]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_hip_pitch_link"
+    child_link: "right_knee_link"
+    position_limits: [-0.26, 2.05]
+    velocity_limit: 6.0
+    effort_limit: 300.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_ankle"
+    origin_xyz: [0, 0, -0.4]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_knee_link"
+    child_link: "right_ankle_link"
+    position_limits: [-0.87, 0.52]
+    velocity_limit: 6.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Torso (1) ─────────────────────────────────────────────────────
+  - name: "torso"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "pelvis"
+    child_link: "torso_link"
+    position_limits: [-2.35, 2.35]
+    velocity_limit: 6.0
+    effort_limit: 200.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Left arm (4) ─────────────────────────────────────────────────
+  - name: "left_shoulder_pitch"
+    origin_xyz: [0.0055, 0.15535, 0.42999]
+    origin_rpy: [0.43633, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "torso_link"
+    child_link: "left_shoulder_pitch_link"
+    position_limits: [-2.87, 2.87]
+    velocity_limit: 10.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_shoulder_roll"
+    origin_xyz: [-0.0055, 0.0565, -0.0165]
+    origin_rpy: [-0.43633, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "left_shoulder_pitch_link"
+    child_link: "left_shoulder_roll_link"
+    position_limits: [-0.34, 3.11]
+    velocity_limit: 10.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_shoulder_yaw"
+    origin_xyz: [0, 0, -0.1343]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "left_shoulder_roll_link"
+    child_link: "left_shoulder_yaw_link"
+    position_limits: [-1.3, 4.45]
+    velocity_limit: 10.0
+    effort_limit: 18.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "left_elbow"
+    origin_xyz: [0.0185, 0, -0.198]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "left_shoulder_yaw_link"
+    child_link: "left_elbow_link"
+    position_limits: [-1.25, 2.61]
+    velocity_limit: 10.0
+    effort_limit: 18.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  # ── Right arm (4) ────────────────────────────────────────────────
+  - name: "right_shoulder_pitch"
+    origin_xyz: [0.0055, -0.15535, 0.42999]
+    origin_rpy: [-0.43633, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "torso_link"
+    child_link: "right_shoulder_pitch_link"
+    position_limits: [-2.87, 2.87]
+    velocity_limit: 10.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_shoulder_roll"
+    origin_xyz: [-0.0055, -0.0565, -0.0165]
+    origin_rpy: [0.43633, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "right_shoulder_pitch_link"
+    child_link: "right_shoulder_roll_link"
+    position_limits: [-3.11, 0.34]
+    velocity_limit: 10.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_shoulder_yaw"
+    origin_xyz: [0, 0, -0.1343]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "right_shoulder_roll_link"
+    child_link: "right_shoulder_yaw_link"
+    position_limits: [-4.45, 1.3]
+    velocity_limit: 10.0
+    effort_limit: 18.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "right_elbow"
+    origin_xyz: [0.0185, 0, -0.198]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "right_shoulder_yaw_link"
+    child_link: "right_elbow_link"
+    position_limits: [-1.25, 2.61]
+    velocity_limit: 10.0
+    effort_limit: 18.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+
+# No end-effector on this menagerie variant — wrists aren't actuated.
+end_effectors: []
+
+capabilities:
+  locomotion: ["bipedal"]
+  can_lift_kg: 3.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: true
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments:
+    - "h1"
+    - "humanoid_everyday_h1"
+  embodiment_tags:
+    - "h1"
+    - "unitree_h1"
+    - "humanoid"
+
+safety:
+  max_ee_speed_m_s: 1.5
+  max_joint_speed_factor: 0.5
+  max_force_n: 150.0
+  max_torque_nm: 300.0   # H1 knee peak
+  deadman_required: true
+
+# `sdk_kind: open` because the menagerie MJCF + the `mujoco` Python
+# package are both Apache-2.0.  A future `H1RealHAL` over
+# `unitree_sdk2` (BSD-3, closed-with-api per CLAUDE.md §7.4) will
+# derive its `RobotDescription` from this sim baseline via
+# `make_real_description` and flip the sdk_kind (hal is shared); that's
+# tracked under the M2 milestone (CLAUDE.md §6.2).
+sdk_kind: "open"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Sim-only → real: null until the M2 C++ S0 cerebellum (CLAUDE.md §6.2).
+hal:
+  sim: "openral_hal.h1:H1MujocoHAL"
+  real: null
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
+# Source: ``unitree_h1/h1.xml`` in mujoco_menagerie.  Floating-base
+# bipedal — qpos starts at 7 (free joint), qvel at 6.  H1MujocoHAL adds
+# a per-step torque hook for the menagerie ``motor`` actuators on top of
+# what ``MujocoArmHAL`` provides; the data block here is otherwise
+# default. See ADR-0023.
+sim:
+  mjcf_uri: "robot_descriptions:h1_mj_description"
+  floating_base: true
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "pelvis"
+    shape: { shape: "sphere", radius_m: 0.0500 }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000]
+  - link_name: "left_hip_yaw_link"
+    shape: { shape: "capsule", radius_m: 0.0100, length_m: 0.0200 }
+    origin_xyz_rpy: [0.0200, -0.0000, 0.0000, -0.0000, -1.5708, 0.0000]
+  - link_name: "left_hip_roll_link"
+    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0400 }
+    origin_xyz_rpy: [-0.0000, 0.0600, -0.0000, 3.1416, -0.0000, 0.0000]
+  - link_name: "left_hip_pitch_link"
+    shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.2000, 0.0000, -0.0000, 0.0000]
+  - link_name: "left_knee_link"
+    shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.2000, 0.0000, -0.0000, 0.0000]
+  - link_name: "left_ankle_link"
+    shape: { shape: "capsule", radius_m: 0.0192, length_m: 0.2800 }
+    origin_xyz_rpy: [0.0500, 0.0000, -0.0500, -0.0000, 1.5708, 0.0000]
+  - link_name: "right_hip_yaw_link"
+    shape: { shape: "capsule", radius_m: 0.0100, length_m: 0.0200 }
+    origin_xyz_rpy: [0.0200, -0.0000, 0.0000, -0.0000, -1.5708, 0.0000]
+  - link_name: "right_hip_roll_link"
+    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0400 }
+    origin_xyz_rpy: [-0.0000, -0.0600, -0.0000, 3.1416, -0.0000, 0.0000]
+  - link_name: "right_hip_pitch_link"
+    shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.2000, 0.0000, -0.0000, 0.0000]
+  - link_name: "right_knee_link"
+    shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.2000, 0.0000, -0.0000, 0.0000]
+  - link_name: "right_ankle_link"
+    shape: { shape: "capsule", radius_m: 0.0192, length_m: 0.2800 }
+    origin_xyz_rpy: [0.0500, 0.0000, -0.0500, -0.0000, 1.5708, 0.0000]
+  - link_name: "torso_link"
+    shape: { shape: "capsule", radius_m: 0.0640, length_m: 0.1600 }
+    origin_xyz_rpy: [0.0000, 0.0000, 0.1500, -1.5708, -0.0000, 0.0000]
+  - link_name: "left_shoulder_pitch_link"
+    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0600 }
+    origin_xyz_rpy: [-0.0000, -0.0500, 0.0000, 0.0000, -0.0000, 0.0000]
+  - link_name: "left_shoulder_roll_link"
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.0400, 1.5708, -0.0000, 0.0000]
+  - link_name: "left_shoulder_yaw_link"
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
+  - link_name: "left_elbow_link"
+    shape: { shape: "capsule", radius_m: 0.0300, length_m: 0.0900 }
+    origin_xyz_rpy: [0.1250, 0.0000, 0.0000, 3.1416, -1.5700, -3.1416]
+  - link_name: "right_shoulder_pitch_link"
+    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0600 }
+    origin_xyz_rpy: [-0.0000, 0.0500, -0.0000, 3.1416, -0.0000, 0.0000]
+  - link_name: "right_shoulder_roll_link"
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.0400, 1.5708, -0.0000, 0.0000]
+  - link_name: "right_shoulder_yaw_link"
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    origin_xyz_rpy: [-0.0000, -0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
+  - link_name: "right_elbow_link"
+    shape: { shape: "capsule", radius_m: 0.0300, length_m: 0.0900 }
+    origin_xyz_rpy: [0.1250, 0.0000, 0.0000, 3.1416, -1.5700, -3.1416]
+
+# GENERATED by `openral collision lower` (source: sampling) — do not hand-edit.
+allowed_collision_pairs:
+  - [left_ankle_link, left_knee_link]
+  - [left_elbow_link, left_shoulder_yaw_link]
+  - [left_hip_pitch_link, left_hip_roll_link]
+  - [left_hip_pitch_link, left_knee_link]
+  - [left_hip_roll_link, left_hip_yaw_link]
+  - [left_hip_yaw_link, pelvis]
+  - [left_shoulder_pitch_link, left_shoulder_roll_link]
+  - [left_shoulder_pitch_link, torso_link]
+  - [left_shoulder_roll_link, left_shoulder_yaw_link]
+  - [pelvis, right_hip_yaw_link]
+  - [pelvis, torso_link]
+  - [right_ankle_link, right_knee_link]
+  - [right_elbow_link, right_shoulder_yaw_link]
+  - [right_hip_pitch_link, right_hip_roll_link]
+  - [right_hip_pitch_link, right_knee_link]
+  - [right_hip_roll_link, right_hip_yaw_link]
+  - [right_shoulder_pitch_link, right_shoulder_roll_link]
+  - [right_shoulder_pitch_link, torso_link]
+  - [right_shoulder_roll_link, right_shoulder_yaw_link]

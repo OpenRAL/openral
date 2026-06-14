@@ -1,0 +1,45 @@
+{
+  "_comment": "MetaWorld MT50 eval results for lerobot/smolvla_metaworld. Status: pending local verification. Numbers from the SmolVLA paper (arxiv:2506.01844 Table 2) will be filled in once a reproduction run is completed. Do NOT add numbers here without a locally-verified eval run or a precise paper citation with table reference.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "SmolVLA: A vision-language-action model for affordable and efficient robotics",
+    "arxiv": "https://arxiv.org/abs/2506.01844",
+    "table": "Table 2 \u2014 Simulation benchmarks (LIBERO and Meta-World)",
+    "model_variant": "SmolVLA (0.45B)",
+    "evaluated_by": "upstream authors",
+    "reproduced_locally": false,
+    "reproduction_planned": "Pending \u2014 MetaWorld MT50 environment setup not yet validated in OpenRAL. Requires uv sync --group metaworld (TBD) and checkpoint inspection for camera/state spec.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite metaworld_mt50 --rskill smolvla-metaworld",
+      "status": "catalogue YAML benchmarks/metaworld_mt50.yaml has not yet landed (ADR-0009 PR E follow-up)",
+      "notes": [
+        "The 'results' block on this file is still the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",
+        "MetaWorld MT50 covers 50 tasks; confirm --env.task argument format before running.",
+        "State dim and camera names must be inspected from the checkpoint before this CLI is valid."
+      ]
+    },
+    "status": "pending"
+  },
+  "benchmark": {
+    "name": "MetaWorld MT50",
+    "dataset": "lerobot/metaworld_mt50",
+    "protocol": "TBD \u2014 success rate per task, multi-task training",
+    "n_tasks": 50,
+    "robot": "Franka Panda (7-DOF)",
+    "simulator": "MetaWorld (MuJoCo-based)"
+  },
+  "eval_config": {
+    "action_chunk_size": "TBD",
+    "image_size": "TBD",
+    "cameras": "TBD",
+    "state_dim": "TBD",
+    "inference_mode": "TBD"
+  },
+  "results": {
+    "status": "pending",
+    "source": "upstream_paper_pending",
+    "metaworld_mt50_avg_success_rate": null,
+    "note": "Fill in after running lerobot-eval against MetaWorld MT50 or after extracting the exact value from arxiv:2506.01844 Table 2 with task-level breakdown."
+  }
+}

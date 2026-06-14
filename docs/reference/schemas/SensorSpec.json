@@ -1,0 +1,395 @@
+{
+  "$defs": {
+    "IntrinsicsPinhole": {
+      "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+      "properties": {
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "fx": {
+          "title": "Fx",
+          "type": "number"
+        },
+        "fy": {
+          "title": "Fy",
+          "type": "number"
+        },
+        "cx": {
+          "title": "Cx",
+          "type": "number"
+        },
+        "cy": {
+          "title": "Cy",
+          "type": "number"
+        },
+        "distortion_model": {
+          "default": "plumb_bob",
+          "enum": [
+            "plumb_bob",
+            "equidistant",
+            "none"
+          ],
+          "title": "Distortion Model",
+          "type": "string"
+        },
+        "distortion_coeffs": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Distortion Coeffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy"
+      ],
+      "title": "IntrinsicsPinhole",
+      "type": "object"
+    },
+    "SensorModality": {
+      "description": "Physical sensing modality.",
+      "enum": [
+        "rgb",
+        "depth",
+        "stereo",
+        "ir",
+        "point_cloud",
+        "lidar_2d",
+        "imu",
+        "force_torque",
+        "joint_state",
+        "tactile_vision",
+        "tactile_array",
+        "audio",
+        "gps",
+        "battery"
+      ],
+      "title": "SensorModality",
+      "type": "string"
+    }
+  },
+  "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "modality": {
+      "$ref": "#/$defs/SensorModality"
+    },
+    "frame_id": {
+      "title": "Frame Id",
+      "type": "string"
+    },
+    "parent_frame": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Frame"
+    },
+    "static_transform_xyz_rpy": {
+      "anyOf": [
+        {
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Static Transform Xyz Rpy"
+    },
+    "rate_hz": {
+      "title": "Rate Hz",
+      "type": "number"
+    },
+    "intrinsics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntrinsicsPinhole"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "encoding": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Encoding"
+    },
+    "fov_h_deg": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fov H Deg"
+    },
+    "fov_v_deg": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fov V Deg"
+    },
+    "sim_camera_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sim Camera Name"
+    },
+    "n_channels": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "N Channels"
+    },
+    "range_min_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Range Min M"
+    },
+    "range_max_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Range Max M"
+    },
+    "accel_noise_density": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Accel Noise Density"
+    },
+    "gyro_noise_density": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gyro Noise Density"
+    },
+    "n_axes": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "N Axes"
+    },
+    "tactile_grid": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tactile Grid"
+    },
+    "vla_feature_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Vla Feature Key"
+    },
+    "ros2_topic": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ros2 Topic"
+    },
+    "ros2_msg_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ros2 Msg Type"
+    },
+    "qos_profile": {
+      "default": "sensor_data",
+      "enum": [
+        "sensor_data",
+        "reliable",
+        "transient_local",
+        "parameters"
+      ],
+      "title": "Qos Profile",
+      "type": "string"
+    },
+    "vendor": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Vendor"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "driver_pkg": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Driver Pkg"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "modality",
+    "frame_id",
+    "rate_hz"
+  ],
+  "title": "SensorSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

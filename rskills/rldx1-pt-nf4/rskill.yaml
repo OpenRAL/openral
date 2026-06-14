@@ -1,0 +1,99 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: RLWRLD/RLDX-1-PT  — RLDX-1 foundation pretrain (7 B, cross-embodiment)
+#
+# NOTE: This is the FOUNDATION checkpoint, not a deployable s1 policy on its
+# own. It is the parent of every FT-* / MT-* rskill in this collection.
+# Listed here so `bh skill list` can surface it and so contributors who
+# want to finetune RLDX-1 on a new embodiment can `rSkill.from_yaml` to
+# pin the upstream revision. The runtime path is identical to
+# rskills/rldx1-ft-libero-nf4 (out-of-process sidecar + ZMQ + NF4 backbone).
+#
+# LICENSE: RLWRLD Model License v1.0 (non-commercial). See
+# rskills/rldx1-ft-libero-nf4/README.md § "License — read this first".
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rldx1-pt-nf4"
+version: "0.1.0"
+license: "rlwrld_non_commercial"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "rldx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# The PT checkpoint is cross-embodiment; we surface the franka_panda
+# tag because (a) every benchmark target in this tree that we can
+# evaluate against is franka-shaped and (b) the loader's compat check
+# requires at least one canonical embodiment. Finetune for a different
+# rig and bump the manifest on the resulting fork.
+embodiment_tags:
+  - "franka_panda"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+min_vram_gb:
+  bf16: 18.0
+  int4: 7.0
+weights_uri: "hf://RLWRLD/RLDX-1-PT"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://RLWRLD/RLDX-1-PT/policy_preprocessor.json"
+  postprocessor_uri: "hf://RLWRLD/RLDX-1-PT/policy_postprocessor.json"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# Half-chunk replay (closed-loop replanning every 8 env steps).
+n_action_steps: 8
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Pretrain checkpoint — no published task-suite numbers. Finetunes
+# (FT-LIBERO, FT-ROBOCASA, …) carry their own rskill packages.
+
+paper_url: "https://huggingface.co/RLWRLD/RLDX-1-PT"
+source_repo: "hf://RLWRLD/RLDX-1-PT"
+
+description: >
+  RLDX-1 foundation pretrain (~6.9 B params, Qwen3-VL-8B + MSAT). Parent
+  checkpoint of every RLDX-1 finetune; not a deployable policy on its
+  own. Use via the rldx sidecar adapter or as a base for further
+  finetuning. Non-commercial license — see rldx1-ft-libero-nf4/README.md.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "generalist"
+objects: []
+scenes: []
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — RLDX-1 is a generalist 6-D OSC end-effector delta + gripper policy.
+  representation: "delta_ee_6d_plus_gripper"

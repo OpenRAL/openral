@@ -1,0 +1,108 @@
+# SO-101 tube-insertion — single-scene benchmark.
+#
+# Mirrors scenes/sim/so101_tube_insertion.yaml (the so101_box scene
+# registers with fixed_robot="so101_follower", so no top-level robot_id
+# is needed) and adds the BenchmarkScene block (n_episodes, seed, typed
+# metadata, task.success_key, task.max_steps) that the
+# `openral benchmark scene` producer requires.
+#
+# This is a demo-grade, single-episode rollout of the inference +
+# SO-101 MuJoCo-insertion path, NOT a paper-comparable task-success
+# claim. Success is the geometric criterion the so101_box env emits as
+# info["is_success"] (tube vertical and inserted >= 10 mm into the hole).
+#
+# Setup: just sync --all-packages --group sim
+# Run: openral benchmark scene --config scenes/benchmark/so101_tube_insertion.yaml \
+#                              --rskill rskills/pi05-so101-pickplace-nf4
+
+# The so101_box scene registers with fixed_robot="so101_follower", so
+# `openral sim run` infers the embodiment — but the benchmark runner
+# (run_benchmark_scene) requires an explicit robot_id to build the
+# SimEnvironment, so we name it here. It matches the scene's fixed_robot.
+robot_id: so101_follower
+
+scene:
+  id: so101_box                  # @SCENES.register("so101_box", fixed_robot="so101_follower")
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["oak_top", "wrist"]
+  backend_options:
+    # Proprio state + action units. LeRobot-trained SO-100/101 checkpoints
+    # (MolmoAct2-SO100_101, pi05-so101) were recorded in degrees; the env
+    # converts MuJoCo-native radians <-> degrees at the policy boundary so the
+    # checkpoint's norm_stats line up. Use "radians" for a sim-native policy.
+    joint_units: degrees
+
+    # Per-joint calibration affine: lerobot_deg = sign*mujoco_deg + offset.
+    # These offsets align the sim home with the training median AND map the
+    # model's q01-q99 operating range into the reachable joint limits.
+    joint_offsets_deg: [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+
+    # Arena (metres). 1.00 x 0.615 x 0.75 m matches the user-supplied
+    # sketch (100 x 61.5 x 75 cm).
+    box_size_xyz: [1.00, 0.615, 0.75]
+    wall_thickness: 0.010
+
+    # Robot mount: SO-101 base sits at back-centre of the floor.
+    robot_base_xyz: [0.50, 0.50, 0.00]
+    robot_base_yaw_deg: 0.0
+
+    # Wrist camera — parented to the gripper body, aimed along the gripper
+    # approach axis so the jaw + grasped object stay in frame.
+    wrist_camera_pos_local: [0.03, -0.02, -0.06]
+    wrist_camera_target_local: [-0.25, -0.02, -0.06]
+    wrist_camera_fovy: 75.0
+
+    # OAK-D Pro overhead — centred horizontally over the box, mounted at
+    # the ceiling (z = box_height - 1 mm), looking down.
+    oak_top_camera_pos: [0.50, 0.3075, 0.749]
+    oak_top_camera_target: [0.50, 0.3075, 0.0]
+    oak_top_camera_fovy: 54.0
+
+    # Slotted block — 44.5 x 44.5 x 20 mm with a O23 mm hole + a 5 mm slot.
+    slot_block_size: [0.0445, 0.0445, 0.020]
+    slot_block_hole_diameter: 0.023
+    slot_block_slot_width: 0.005
+    slot_block_mass: 0.05
+
+    # Tube — O21.9 mm x 90 mm long, lying on its side at reset.
+    tube_radius: 0.01095
+    tube_length: 0.090
+    tube_mass: 0.020
+
+    # Random spawn ranges (world frame).
+    block_spawn_xy_range: [[0.25, 0.75], [0.10, 0.40]]
+    tube_spawn_xy_range:  [[0.25, 0.75], [0.10, 0.40]]
+    spawn_min_separation: 0.10
+
+    # Success thresholds — see BoxSceneOptions docstring.
+    insertion_depth_m: 0.010
+    insertion_axis_tol_deg: 10.0
+    insertion_xy_tol_m: 0.003
+
+task:
+  id: so101_box/tube_insertion
+  scene_id: so101_box
+  instruction: "insert the orange tube into the slotted block"
+  max_steps: 500
+  success_key: is_success
+
+n_episodes: 1
+seed: 42
+record_video: false
+
+metadata:
+  paper: "https://arxiv.org/abs/2410.24164"
+  honest_scope: >
+    1 episode of so101_box/tube_insertion (SO-101 follower, 6-D absolute
+    joint-position control, max_steps=500) with the NF4-quantized
+    pi05_so101_pick_place checkpoint
+    (OpenRAL/rskill-pi05-so101-pickplace-nf4, mirror of the community
+    HollyTan pi05 SO-101 finetune, 100 episodes). Success is the
+    geometric so101_box criterion exposed as info["is_success"] (tube
+    vertical and inserted >= 10 mm into the hole). This is an OpenRAL
+    local single-episode rollout exercising the pi05 vision-VLA inference
+    + SO-101 MuJoCo-insertion path, NOT a paper-comparable task-success
+    claim — the checkpoint was trained on pick-place, not insertion.

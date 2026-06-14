@@ -1,0 +1,141 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# uv
+.venv/
+.venv-*/  # isolated sidecar dev venvs (e.g. .venv-la for the LocateAnything sidecar)
+# uv.lock is committed for reproducibility (uv convention for monorepos)
+
+# ROS 2 / colcon
+install/
+log/
+build/
+
+# MuJoCo
+*.mjb
+mjx_tmp/
+
+# Docker
+.dockerignore
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.env
+.env.*
+!.env.example
+
+# HF Hub cache
+.cache/huggingface/
+
+# Generated schemas (committed as canonical reference — do NOT ignore)
+# docs/reference/schemas/ is tracked in git; CI fails on drift.
+
+# Docs build output (mkdocs)
+site/
+
+# Temp
+*.tmp
+*.bak
+tmp/
+.claude/
+.worktrees/
+
+# Locally-generated example videos (each example writes here when --save-video
+# is used; not a checked-in artefact).
+example_videos/
+outputs/
+
+# Optional project-local LIBERO config dir — useful when overriding
+# LIBERO_CONFIG_PATH to bypass ~/.libero (see tools/fix_libero_config.py
+# + docs/reference/vla_compatibility.md). The auto-fix targets ~/.libero
+# by default; this directory only appears when a contributor opts in.
+.libero/
+
+# NVIDIA DeepStream SDK tarball — must be downloaded locally by the user
+# after accepting the NVIDIA EULA. Never committed (ADR-0010 Amendment
+# 2026-05-14 / docker/inference/README.md). The tarball is loaded into
+# the build via `docker buildx build --build-context ds=docker/inference/deepstream/`
+# rather than the default build context, so it never inflates non-DS
+# builds.
+docker/inference/deepstream/*.tbz2
+# Backward-compat for users who still have a tarball at the old PR #93
+# path; harmless to keep ignored after the consolidation lands.
+docker/inference/deepstream_sdk_v*.tbz2
+.cache/
+
+# rSkill ONNX weights — binary artefacts reproduced locally via tools/export_rtdetr_onnx.py
+# (ADR-0037); provenance (sha256 + export command) recorded in rskills/*/README.md.
+# model.onnx.data is the external-data companion produced by the torch 2.9 new exporter
+# (weights split out from the graph file when the model exceeds 2 GB threshold).
+rskills/rtdetr-coco-r18/model.onnx
+rskills/rtdetr-coco-r18/model.onnx.data
+rskills/rtdetr-coco-r18/onnx_tmp/
+rskills/rtdetr-v2-r50vd/model.onnx
+rskills/rtdetr-v2-r50vd/model.onnx.data
+rskills/rtdetr-v2-r50vd/onnx_tmp/
+
+# rSkill NF4 weights and upstream custom-code sidecars generated locally for
+# private HF publication. The committed package records provenance and
+# reproduction commands; binary/code artefacts are uploaded to the HF repo.
+rskills/locateanything-3b-nf4/model.safetensors
+rskills/locateanything-3b-nf4/quantization_metadata.json
+rskills/locateanything-3b-nf4/.gitattributes
+rskills/locateanything-3b-nf4/LICENSE
+rskills/locateanything-3b-nf4/*.json
+rskills/locateanything-3b-nf4/*.py
+rskills/locateanything-3b-nf4/*.bin
+rskills/locateanything-3b-nf4/*.txt
+!rskills/locateanything-3b-nf4/rskill.yaml
+!rskills/locateanything-3b-nf4/README.md
+
+# --- Internal / historical docs kept local but excluded from the public repo ---
+# Removed from tracking for public release (still present in your working tree).
+# Agentic-development plan/spec artifacts, one-off research surveys, a dated
+# internal security audit, and superseded historical roadmaps. The living
+# roadmap (docs/roadmap/index.md) and the repo-state map stay tracked.
+docs/superpowers/
+docs/research/
+docs/security/
+docs/roadmap/30-day-kickoff.md
+docs/roadmap/repo-bootstrap-historical.md
+# Forward-looking architecture docs kept local but excluded from the public
+# repo: the long-form research RFC, the pre-implementation ROS 2 capability
+# review, and the rSkill strategy brief. The public architecture surface stays:
+# overview.md, repo-map.md, and the repo-state-map.html canvas.
+docs/architecture/technical-rfc.md
+docs/architecture/ros2-capability-review.md
+docs/architecture/rskills-strategy.html
+
+# Local colcon build artifacts (non-standard base dirs)
+build_py312/
+install_py312/

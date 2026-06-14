@@ -1,0 +1,25 @@
+# LIBERO-Spatial — SimScene-tier fixture (no paper-claim metadata).
+#
+# Sibling of scenes/benchmark/libero_spatial.yaml — same scene + task config,
+# minus the BenchmarkMetadata + canonical-eval seed/n_episodes. Use this for
+#
+#   * sim-only smoke rollouts (`openral sim run --config scenes/sim/libero_spatial.yaml`)
+#   * CLI flag-override unit tests (--task / --max-steps / --n-episodes / --robot)
+#
+# When you want to make a paper-comparable claim, switch to
+# scenes/benchmark/libero_spatial.yaml + `openral benchmark scene`.
+#
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+
+scene:
+  id: libero_spatial
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+
+task:
+  id: libero_spatial/0
+  scene_id: libero_spatial
+  instruction: ""        # env.task_description from the LIBERO suite overrides this
+  success_key: is_success
+  max_steps: 100         # canonical LIBERO eval budget

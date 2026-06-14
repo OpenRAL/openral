@@ -1,0 +1,165 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Wraps: OpenRAL/rskill-molmoact2-so101-nf4 (NF4-quantized from
+#        allenai/MolmoAct2-SO100_101 via tools/quantize_rskill.py)
+# Base:  allenai/MolmoAct2 (Ai2 action reasoning model, Molmo2-ER VLM +
+#        flow-matching action expert) — arXiv:2605.02881
+#
+# Why NF4: bf16 MolmoAct2 (~5.5 B params, ~11 GiB) OOMs an 8 GiB consumer
+# GPU. NF4 quantization of every Linear with >=4M weight elements brings
+# the working set to ~3.5 GiB, comfortably under the 8 GiB ceiling while
+# preserving paper-faithful behaviour (Molmo2-ER backbone + DiT-style
+# action expert). The OpenRAL molmoact2 adapter detects the upstream
+# repo's quantization_metadata.json sentinel and loads the pre-quantized
+# weights via load_prequantized_state_for_rskill (no on-the-fly
+# quantization cost at startup).
+#
+# norm_tag: this checkpoint requires norm_tag="so100_so101_molmoact2" (the
+# adapter's bare default is "libero", which this checkpoint rejects). It is
+# declared below under image_preprocessing.norm_tag and propagated to the
+# adapter by resolve_image_preprocessing, so SimEnvironment configs need NOT
+# set it — a SimEnvironment YAML may still override it via vla.extra.norm_tag.
+#
+# UNITS — degrees: this checkpoint was trained on LeRobot SO-100/101 teleop
+# recorded in joint DEGREES (norm_stats.json spans ±270, control_mode
+# "absolute joint pose"). MuJoCo scenes are radian-native, so a sim config
+# driving this rSkill MUST select the degree convention, e.g. the so101_box
+# scene's `scene.backend_options.joint_units: degrees`. The env then converts
+# its proprio state (rad→deg) and the returned action (deg→rad) at the policy
+# boundary. NOTE: the LeRobot SO-101 servo-degree calibration does not share a
+# zero with the MuJoCo `so101_new_calib` URDF (e.g. trained shoulder_lift sits
+# ~45–186°, the MJCF joint maxes at 100°), so a units conversion alone aligns
+# magnitudes but not the per-joint zero reference; full task fidelity needs the
+# dataset's calibration offsets. See scenes/sim/so101_tube_insertion.yaml.
+#
+# LICENSE (CLAUDE.md §7.4): Apache-2.0 (code + weights). MolmoAct2 is a
+# fully open release from Ai2 — weights, training code, and data are all
+# Apache-2.0. Commercial use is permitted.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-molmoact2-so101-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "molmoact2"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# MolmoAct2-SO100_101 was finetuned on a mixture of SO-100 and SO-101
+# teleop data with identical 6-DoF kinematics (Feetech STS3215 servo chain).
+# Both embodiment tags are claimed because the training distribution covers
+# both and the 6-DoF absolute joint-position contract is identical.
+embodiment_tags:
+  - "so100_follower"
+  - "so101_follower"
+
+# MolmoAct2-SO100_101 consumes two RGB camera streams. The training data
+# used overhead ("top") and side-mounted ("side") Realsense views; the
+# aliases below map from the canonical SO101 scene camera names to the
+# model's expected feature keys.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side (ADR-0013). For the canonical so101_follower embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/so101_follower/robot.yaml.
+# The checkpoint emits absolute joint-position targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # ``int4`` is the OpenRAL ``QuantizationDtype`` enum value that matches
+  # bitsandbytes NF4. The exact bnb scheme (nf4 + compute_dtype bf16, applied
+  # to every Linear with >=4M weight elements) is recorded in the upstream
+  # ``quantization_metadata.json`` sentinel that the molmoact2 adapter probes
+  # via ``detect_prequantized_nf4`` and loads via ``install_prequantized_linears``.
+  dtype: "int4"
+  backend: "pytorch"
+# Informational VRAM ceilings, used by `openral rskill check` / `openral doctor`.
+# The NF4 packed weights are ~3.5 GiB and fit comfortably under the 8 GiB
+# consumer-GPU ceiling. bf16 ceiling matches the base Molmo2-ER model (~5.5B
+# params × 2 bytes = ~11 GiB weights only; peak inference higher).
+min_vram_gb:
+  fp32: 22.0
+  bf16: 11.0
+  int4: 4.0
+weights_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4/policy_postprocessor.json"
+# SO-100/101 teleop data is recorded upright — no rotation applied.
+# Aliases map from canonical SO101 scene camera keys (so101_box scene emits
+# ``oak_top`` + ``wrist``) to the model's training feature keys (``top`` /
+# ``side``). Adjust per-scene in vla.extra if your camera names differ.
+image_preprocessing:
+  flip_180: false
+  norm_tag: "so100_so101_molmoact2"
+  # Secondary activation lever: caps the image processor's tile count (each extra
+  # 378px crop adds ~182 pooled image tokens with quadratic attention cost).
+  # MEASURED on an 8 GiB RTX 4070 (transformers 5.x): this does NOT by itself
+  # decide the 8 GiB fit — the inference peak (~7.63 GiB) is set by the LM token
+  # embedding, not the vision crops, and transformers 5.x's fast image processor
+  # does not honour max_crops the way the slow one did. The actual 8 GiB enabler
+  # is the CUDA expandable-segments allocator, which the molmoact2 adapter turns
+  # on automatically (see policies/molmoact2.py::_enable_expandable_segments).
+  # The pin is kept conservative for the slow-processor path / larger frames;
+  # raise it via vla.extra.image_max_crops if you have VRAM headroom.
+  image_max_crops: 4
+  aliases:
+    oak_top: "top"
+    wrist: "side"
+state_contract:
+  dim: 6
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 10
+# n_action_steps omitted — equals chunk_size (full chunk replay, MolmoAct2 default).
+latency_budget:
+  # MolmoAct2's adaptive-depth reasoning runs a single action call in ~180 ms
+  # (base) to ~790 ms (with depth reasoning); a half-chunk replan budget of
+  # 1000 ms leaves headroom for the flow-matching sampling (10 steps default).
+  per_chunk_ms: 1000.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2605.02881"
+source_repo: "hf://allenai/MolmoAct2-SO100_101"
+
+description: >
+  MolmoAct2 (Ai2) finetuned on the SO-100/SO-101 teleop mixture, NF4-quantized
+  for 8 GB GPUs. Emits 6-DoF absolute joint-position chunks (size 10) for the
+  SO-100/SO-101 follower arm. Flow-matching action expert on Molmo2-ER VLM.
+  Apache-2.0. norm_tag="so100_so101_molmoact2" travels in the manifest's
+  image_preprocessing block (overridable via vla.extra.norm_tag).
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool palette so it
+# can pick this skill by what it does (action verb + object + scene), not just
+# by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+  - "grasp"
+objects: []
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge to
+# bind the LeRobot v3 `action` feature shape). SO-100/101 uses a 6-D absolute
+# joint-position action (5 arm joints + 1 gripper).
+action_contract:
+  dim: 6

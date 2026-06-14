@@ -1,0 +1,54 @@
+{
+  "_comment": "LIBERO eval results for allenai/MolmoAct2-LIBERO (MolmoAct2). The results block carries the paper-cited LIBERO success rate (reproduced_locally=false); do NOT change reproduced_locally to true without a locally-verified eval run. Re-run via the reproduction_cli command to overwrite with measured numbers.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "MolmoAct2: Action Reasoning Models for Real-world Deployment",
+    "arxiv": "https://arxiv.org/abs/2605.02881",
+    "model_variant": "MolmoAct2-LIBERO (Molmo2-ER VLM + flow-matching action expert, ~5.49B)",
+    "checkpoint": "allenai/MolmoAct2-LIBERO",
+    "evaluated_by": "Ai2 (paper, Table — LIBERO success rate)",
+    "reproduced_locally": false,
+    "reproduction_planned": "Requires a CUDA host; ~hours per LIBERO suite. Paper numbers stay until a full repro run lands.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite libero_spatial --rskill molmoact2-libero",
+      "status": "in-tree (libero_spatial); MolmoAct2 is ~5.5B params so a full LIBERO sweep needs a GPU host",
+      "notes": [
+        "The 'results' block is the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",
+        "MolmoAct2 uses flow-matching inference (four flow samples per action chunk); confirm the adaptive-depth reasoning setting matches the paper's eval protocol.",
+        "Weights are Apache-2.0 — no non-commercial gate."
+      ]
+    },
+    "status": "pending"
+  },
+  "benchmark": {
+    "name": "LIBERO",
+    "dataset": "physical-intelligence/libero",
+    "protocol": "binary success over the LIBERO suites, multi-task training",
+    "tasks_per_suite": 10,
+    "suites": [
+      "spatial",
+      "object",
+      "goal",
+      "long"
+    ],
+    "total_tasks": 40,
+    "robot": "Franka Panda (7-DOF)",
+    "simulator": "LIBERO (MuJoCo-based)"
+  },
+  "eval_config": {
+    "action_chunk_size": 10,
+    "n_action_steps": 10,
+    "image_size": "224x224",
+    "cameras": "camera1 (agentview), camera2 (eye-in-hand)",
+    "state_dim": 8,
+    "inference_mode": "flow-matching action expert (adaptive-depth reasoning)"
+  },
+  "results": {
+    "status": "paper_cited",
+    "source": "arxiv:2605.02881",
+    "libero_avg": 0.972,
+    "libero_avg_think": 0.981,
+    "note": "97.2% LIBERO success after post-training (98.1% for the -Think depth-reasoning variant), per the MolmoAct2 paper. Per-suite breakdown not transcribed; reproduce locally to populate spatial/object/goal/long."
+  }
+}

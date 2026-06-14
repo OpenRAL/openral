@@ -1,0 +1,571 @@
+{
+  "$defs": {
+    "CapsuleShape": {
+      "additionalProperties": false,
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (:attr:`LinkCollisionGeometry.origin_xyz_rpy`\nfor a link, :attr:`WorldCollisionPrimitive.pose` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative (ADR-0030 \u00a72).\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "properties": {
+        "shape": {
+          "const": "capsule",
+          "default": "capsule",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "length_m": {
+          "minimum": 0.0,
+          "title": "Length M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m",
+        "length_m"
+      ],
+      "title": "CapsuleShape",
+      "type": "object"
+    },
+    "DetectedObject": {
+      "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.",
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "confidence": {
+          "title": "Confidence",
+          "type": "number"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "bbox_3d": {
+          "anyOf": [
+            {
+              "maxItems": 6,
+              "minItems": 6,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bbox 3D"
+        },
+        "track_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Track Id"
+        }
+      },
+      "required": [
+        "label",
+        "confidence",
+        "pose"
+      ],
+      "title": "DetectedObject",
+      "type": "object"
+    },
+    "FrameEncoding": {
+      "description": "How the bytes inside a :class:`SensorFrame` are interpreted.\n\nThe first four values are raw per-pixel layouts. ``JPEG`` / ``PNG`` are\ncompressed forms; the runner decodes lazily. ``CUDA_NV12`` and ``RAW``\nmark frames whose payload is an opaque handle (NVMM pointer, DMA-BUF fd)\n\u2014 the ``data`` field is empty and the consumer must read via ``handle``.",
+      "enum": [
+        "bgr8",
+        "rgb8",
+        "mono8",
+        "depth16",
+        "jpeg",
+        "png",
+        "cuda_nv12",
+        "raw"
+      ],
+      "title": "FrameEncoding",
+      "type": "string"
+    },
+    "JointState": {
+      "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
+      "properties": {
+        "name": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Name",
+          "type": "array"
+        },
+        "position": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Position",
+          "type": "array"
+        },
+        "velocity": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Velocity",
+          "type": "array"
+        },
+        "effort": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Effort",
+          "type": "array"
+        },
+        "stamp_ns": {
+          "title": "Stamp Ns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "position",
+        "stamp_ns"
+      ],
+      "title": "JointState",
+      "type": "object"
+    },
+    "OccupancyGridRef": {
+      "additionalProperties": false,
+      "description": "Reference to a 2D occupancy grid for mobile-base world-collision (ADR-0030).\n\nMirrors the ``nav_msgs/OccupancyGrid`` metadata that\n:mod:`openral_runner.slam_bridge` already decodes. The kernel consumes a\nbounded, fixed-capacity copy; a grid exceeding the configured capacity or\nolder than the staleness deadline is treated as unavailable\n(fail-closed). The occupancy bytes are referenced by topic, not inlined.\n\nAttributes:\n    frame_id: tf2 frame the grid origin is expressed in (e.g. ``\"map\"``).\n    resolution_m: Edge length of one cell, in metres.\n    width: Grid width in cells.\n    height: Grid height in cells.\n    origin: Pose of cell ``(0, 0)``'s lower-left corner.\n    data_topic: ROS 2 topic carrying the ``nav_msgs/OccupancyGrid``.",
+      "properties": {
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "resolution_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Resolution M",
+          "type": "number"
+        },
+        "width": {
+          "minimum": 0,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "minimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "origin": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "data_topic": {
+          "title": "Data Topic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "frame_id",
+        "resolution_m",
+        "width",
+        "height",
+        "origin",
+        "data_topic"
+      ],
+      "title": "OccupancyGridRef",
+      "type": "object"
+    },
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    },
+    "SensorFrame": {
+      "additionalProperties": false,
+      "description": "A single sensor frame \u2014 metadata plus an optional inline payload.\n\nA :class:`SensorFrame` is the carrier passed from a ``SensorReader`` into\n:class:`WorldState.image_frames`. Exactly one of ``data``,\n``topic``, or ``handle`` is populated:\n\n* ``data`` carries the pixel bytes for in-process delivery and for trace\n  capture. JSON-serialized as base64 by Pydantic, so payloads round-trip\n  through ``model_dump_json`` / ``model_validate_json``.\n* ``topic`` points at a ROS 2 topic \u2014 the bytes live on the ROS 2 bus and\n  the consumer subscribes for them. This is the path the\n  ``Ros2ImageSensorReader`` uses and what :attr:`WorldState.images`\n  already carries.\n* ``handle`` is an opaque integer (e.g. CUDA NVMM pointer, DMA-BUF file\n  descriptor) \u2014 in-process only, never serialized. Set by the\n  ``GStreamerSensorReader`` when frames stay on the GPU.\n\nAttributes:\n    sensor_id: Sensor name; matches :attr:`SensorSpec.name`.\n    stamp_monotonic_ns: Capture-time monotonic timestamp in nanoseconds.\n    stamp_wall_ns: Capture-time wall-clock timestamp in nanoseconds.\n    encoding: How to interpret the bytes.\n    width: Image width in pixels.\n    height: Image height in pixels.\n    channels: Number of channels (3 for RGB/BGR, 1 for MONO/DEPTH).\n    data: Optional inline pixel payload (or compressed bytes for\n        ``JPEG`` / ``PNG``). Mutually exclusive with ``topic`` /\n        ``handle``.\n    topic: Optional ROS 2 topic reference. Mutually exclusive with\n        ``data`` / ``handle``.\n    handle: Optional opaque in-process handle (NVMM / DMA-BUF). Mutually\n        exclusive with ``data`` / ``topic``.\n    metadata: Free-form per-frame metadata (gain, exposure, \u2026).\n\nExample:\n    >>> SensorFrame(\n    ...     sensor_id=\"wrist_rgb\",\n    ...     stamp_monotonic_ns=1,\n    ...     stamp_wall_ns=2,\n    ...     encoding=FrameEncoding.RGB8,\n    ...     width=640,\n    ...     height=480,\n    ...     topic=\"/cameras/wrist_rgb/image_raw\",\n    ... ).channels\n    3",
+      "properties": {
+        "sensor_id": {
+          "title": "Sensor Id",
+          "type": "string"
+        },
+        "stamp_monotonic_ns": {
+          "minimum": 0,
+          "title": "Stamp Monotonic Ns",
+          "type": "integer"
+        },
+        "stamp_wall_ns": {
+          "minimum": 0,
+          "title": "Stamp Wall Ns",
+          "type": "integer"
+        },
+        "encoding": {
+          "$ref": "#/$defs/FrameEncoding"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "channels": {
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "format": "binary",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topic"
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Handle"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "sensor_id",
+        "stamp_monotonic_ns",
+        "stamp_wall_ns",
+        "encoding",
+        "width",
+        "height"
+      ],
+      "title": "SensorFrame",
+      "type": "object"
+    },
+    "SphereShape": {
+      "additionalProperties": false,
+      "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+      "properties": {
+        "shape": {
+          "const": "sphere",
+          "default": "sphere",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m"
+      ],
+      "title": "SphereShape",
+      "type": "object"
+    },
+    "WorldCollisionPrimitive": {
+      "additionalProperties": false,
+      "description": "A placed convex obstacle volume in the world (ADR-0030).\n\nThe world-frame analogue of :class:`LinkCollisionGeometry`: a convex\nprimitive plus the pose that places it. Populated by perception / SLAM and\nconsumed by the kernel's world-collision phase against the robot's link\ncapsules. A bounded, capped set is the kernel's world model (mesh\nobstacles are out of scope for the allocation-free check).\n\nAttributes:\n    shape: The convex primitive (capsule or sphere).\n    pose: Pose of the primitive's local origin in the world frame.\n    object_id: Optional stable identifier (e.g. a\n        :attr:`DetectedObject.track_id` rendered as text) surfaced in\n        :attr:`CollisionEvidence.link_b_or_object`.",
+      "properties": {
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Object Id"
+        }
+      },
+      "required": [
+        "shape",
+        "pose"
+      ],
+      "title": "WorldCollisionPrimitive",
+      "type": "object"
+    }
+  },
+  "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor :class:`SensorFrame` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via :attr:`images` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    collision_primitives: Bounded set of placed convex obstacle volumes\n        the kernel checks robot links against (world-collision). Empty\n        until a perception / SLAM source populates it. ADR-0030.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed). ADR-0030.",
+  "properties": {
+    "stamp_ns": {
+      "title": "Stamp Ns",
+      "type": "integer"
+    },
+    "joint_state": {
+      "$ref": "#/$defs/JointState"
+    },
+    "base_pose": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Pose6D"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "base_twist": {
+      "anyOf": [
+        {
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Base Twist"
+    },
+    "ee_poses": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Pose6D"
+      },
+      "title": "Ee Poses",
+      "type": "object"
+    },
+    "contact_forces": {
+      "additionalProperties": {
+        "items": {
+          "type": "number"
+        },
+        "type": "array"
+      },
+      "title": "Contact Forces",
+      "type": "object"
+    },
+    "images": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Images",
+      "type": "object"
+    },
+    "image_frames": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/SensorFrame"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Image Frames"
+    },
+    "point_clouds": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Point Clouds",
+      "type": "object"
+    },
+    "tactile": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Tactile",
+      "type": "object"
+    },
+    "detected_objects": {
+      "items": {
+        "$ref": "#/$defs/DetectedObject"
+      },
+      "title": "Detected Objects",
+      "type": "array"
+    },
+    "battery_pct": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Battery Pct"
+    },
+    "diagnostics": {
+      "additionalProperties": {
+        "enum": [
+          "ok",
+          "warn",
+          "error",
+          "stale"
+        ],
+        "type": "string"
+      },
+      "title": "Diagnostics",
+      "type": "object"
+    },
+    "collision_primitives": {
+      "items": {
+        "$ref": "#/$defs/WorldCollisionPrimitive"
+      },
+      "title": "Collision Primitives",
+      "type": "array"
+    },
+    "occupancy_grid": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OccupancyGridRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "stamp_ns",
+    "joint_state"
+  ],
+  "title": "WorldState",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

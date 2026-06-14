@@ -1,0 +1,37 @@
+name: test-python
+# Auto-triggers disabled: out of GitHub Actions credits.
+# Re-enable PR/push triggers once billing is restored. See issue tracker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        # ADR-0013 §5 — `ubuntu-24.04-arm` is GitHub's free aarch64 hosted
+        # runner (GA since 2025). No GPU, but it catches aarch64-only import
+        # bugs (e.g. the `tegra` library paths in `nvbufsurface.py`) that the
+        # x86 lanes can't see.
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+        python: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    # PR 3/3 onboarding: keep aarch64 non-blocking for two weeks of warm-up,
+    # then promote to required (drop continue-on-error and tighten branch
+    # protection). Tracked in the ADR-0013 amendment.
+    continue-on-error: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run pytest -q --cov=python --cov-branch --cov-report=xml
+      - name: Upload coverage reports to Codecov
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.12'
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml

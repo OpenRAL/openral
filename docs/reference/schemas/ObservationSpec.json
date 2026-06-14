@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "StateRepresentation": {
+      "description": "State vector representation format.",
+      "enum": [
+        "joint_positions",
+        "eef_pos_axisangle",
+        "eef_pos_euler",
+        "eef_pos_quat",
+        "eef_pos_axisangle_gripper"
+      ],
+      "title": "StateRepresentation",
+      "type": "string"
+    }
+  },
+  "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: Whether camera images need 180\u00b0 rotation before\n        feeding to the VLA (common for wrist-mounted cameras).",
+  "properties": {
+    "state_key": {
+      "default": "observation.state",
+      "title": "State Key",
+      "type": "string"
+    },
+    "state_shape": {
+      "default": [],
+      "items": {
+        "type": "integer"
+      },
+      "title": "State Shape",
+      "type": "array"
+    },
+    "state_representation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StateRepresentation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "image_flip_180": {
+      "default": false,
+      "title": "Image Flip 180",
+      "type": "boolean"
+    }
+  },
+  "title": "ObservationSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

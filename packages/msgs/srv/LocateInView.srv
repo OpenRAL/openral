@@ -1,0 +1,28 @@
+# ADR-0043 — ask a live camera-mounted VLM detector (e.g. LocateAnything,
+# ADR-0037) whether an object is visible in the CURRENT frame, on demand.
+#
+# Called by the reasoner's read-only `locate_in_view` tool dispatch
+# (openral_reasoner_ros.reasoner_node._dispatch_locate_in_view). The detector
+# node (openral_perception_ros.ros_image_detector_node) runs a one-shot
+# open-vocabulary detection on the latest frame of the requested camera and
+# returns whether the queried object is in view. Read-only: no actuation.
+#
+# Request:
+#   query  — free-text / label naming the object to look for (e.g. "red mug").
+#            Sent verbatim as the detector's open-vocabulary query.
+#   camera — optional camera selector. Empty = the detector's primary/default
+#            camera; otherwise one of the detector's configured camera ids so
+#            the reasoner can choose a viewpoint. NOT a hardcoded name.
+#
+# Response:
+#   found          — true iff the detector grounded the object in the frame.
+#   camera         — the camera id actually queried (echoes the resolved default).
+#   metadata_json  — ObjectsMetadata JSON (boxes/labels/confidence) when found;
+#                    empty string when not found or no frame was available.
+
+string query
+string camera
+---
+bool found
+string camera
+string metadata_json

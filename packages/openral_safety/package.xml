@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_safety</name>
+  <version>0.1.0</version>
+  <description>
+    OpenRAL safety supervisor — ROS 2 managed lifecycle node skeleton.
+
+    Skeleton only: declares the lifecycle node and the package layout the
+    real C++ safety kernel (cpp/openral_safety_kernel/, planned) drops
+    into. Carries no enforcement logic; PRs that add enforcement require
+    safety working group review per CLAUDE.md §7.7.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>rclpy_lifecycle</depend>
+  <!-- ADR-0018 F5 — chunk-rate safety boundary topics + diagnostics. -->
+  <depend>openral_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>diagnostic_msgs</depend>
+
+  <exec_depend>python3-openral-observability</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

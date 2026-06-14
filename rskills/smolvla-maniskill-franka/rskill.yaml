@@ -1,0 +1,152 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: Calvert0921/smolvla_franka_liftcube_1000
+# Base:  lerobot/smolvla_base   (arxiv:2506.01844)
+#
+# Community SmolVLA finetune on a ManiSkill-style Franka LiftCube task,
+# trained on the paired dataset Calvert0921/SmolVLA_LiftCube_Franka_1000
+# (1000 demos). The upstream model card is empty so this rSkill is
+# wired strictly from the checkpoint's `config.json`:
+#
+#   type: smolvla           → routed via the in-tree `smolvla` adapter.
+#   input_features:
+#     observation.state              shape (9,)        — Franka qpos
+#                                                       (7 arm + 2 fingers)
+#     observation.images.up          shape (3,256,256) — top / overhead view
+#     observation.images.wrist       shape (3,256,256) — eye-in-hand view
+#   output_features:
+#     action                          shape (8,)        — 7 joint pos + 1 gripper
+#   chunk_size: 50  n_action_steps: 50  flow-matching steps: 10
+#
+# Camera-name mapping
+# -------------------
+# The ManiSkill3 backend surfaces cameras under `camera1` / `camera2`
+# (matching the franka_panda RobotDescription's `sensors` block); the
+# `image_preprocessing.aliases` map below renames those to the model's
+# `up` / `wrist` keys so the SmolVLA preprocessor finds them.
+#
+# End-to-end wiring
+# -----------------
+# The companion ManiSkill3 backend changes (this PR) surface every
+# entry in `sensor_data` as `camera1` / `camera2` / ... in declaration
+# order, plumb `backend_options.robot_uids` through to `gym.make` so
+# the YAML's `panda_wristcam` brings in the wrist camera, and forward
+# `task.max_steps` to MS3's `max_episode_steps` so the rollout isn't
+# silently truncated at MS3's default 50 steps.
+#
+# The upstream model repo doesn't ship `policy_*processor.json`. The
+# SmolVLA adapter (also this PR) detects that and rebuilds the
+# lerobot processors from `dataset_uri`'s `meta/episodes_stats.jsonl`
+# — same path applies to any community finetune uploaded without
+# processors.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-maniskill-franka"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# ManiSkill3 PickCube / LiftCube run on the Franka Panda agent — same
+# embodiment as the LIBERO / RoboCasa Panda rSkills.
+embodiment_tags:
+  - "franka_panda"
+
+# Two RGB camera streams matching the checkpoint's input_features. The
+# franka_panda RobotDescription declares matching `camera1` (agentview /
+# base_camera) and `camera2` (eye_in_hand / hand_camera) sensors so the
+# compatibility check resolves cleanly.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+
+# Output side (ADR-0013). 7 arm joints + 1 gripper command. For
+# franka_panda the loader auto-fills n_dof + vla_action_key from
+# robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+weights_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# Per-file URIs for the lerobot PolicyProcessorPipeline. The upstream
+# repo only ships the safetensors + config.json + train_config.json (no
+# stored `policy_*processor.json`); the SmolVLA adapter falls back to
+# building processors from `policy.config` via `make_pre_post_processors`
+# at load time. These URIs are left pointing at the canonical filenames
+# so a future re-upload that includes them is picked up automatically.
+processors:
+  preprocessor_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000/policy_preprocessor.json"
+  postprocessor_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000/policy_postprocessor.json"
+# Per-checkpoint knobs the processor JSONs don't encode. The model was
+# trained on raw SAPIEN renders (no 180° flip); cameras need an alias
+# remap from the in-tree scene-side keys (camera1 / camera2) to the
+# checkpoint's `up` / `wrist`.
+image_preprocessing:
+  flip_180: false
+  aliases:
+    camera1: "up"
+    camera2: "wrist"
+state_contract:
+  dim: 9
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# Matches the checkpoint's config.json (chunk_size=50, n_action_steps=50).
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  per_chunk_ms: 200.0   # SmolVLA bf16 on a desktop GPU ≈ 80–150 ms; SAPIEN
+                        # step adds another ~10–20 ms — generous headroom
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# No benchmarks shipped yet — see eval/.gitkeep. The headline LiftCube
+# success rate will be populated by `openral benchmark run` once the MS3
+# backend supports the wrist-camera surface (see header comment).
+paper_url: "https://arxiv.org/abs/2506.01844"
+dataset_uri: "hf://Calvert0921/SmolVLA_LiftCube_Franka_1000"
+source_repo: "hf://Calvert0921/smolvla_franka_liftcube_1000"
+
+description: >
+  SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on
+  Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka
+  Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length
+  50 across overhead + wrist RGB views and a 9-D Franka qpos state.
+  Runs end-to-end on ManiSkill3 PickCube-v1 with a live SAPIEN viewer
+  via `openral sim run --view`.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool palette.
+# "lift" is not in the RSkillAction enum; the lift motion is expressed
+# as a pick (the post-grasp upward motion is implicit in the policy's
+# closed-loop control).
+actions:
+  - "pick"
+  - "grasp"
+objects:
+  - "cube"
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 8
+
+benchmarks:
+  maniskill3_franka_pick_cube: 0.1

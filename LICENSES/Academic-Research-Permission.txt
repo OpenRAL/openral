@@ -1,0 +1,30 @@
+# OpenRAL Academic Research Additional Permission
+
+This Additional Permission applies to every file in the OpenRAL
+monorepo that is distributed under the PolyForm Small Business
+License 1.0.0 (see LICENSES/PolyForm-Small-Business-1.0.0.txt).
+It does not apply to files distributed under the Apache License,
+Version 2.0, which remain governed solely by that license.
+
+## Additional Permission — Academic and Non-Commercial Research Use
+
+Notwithstanding the size and revenue limits in the "Small Business"
+section of the PolyForm Small Business License 1.0.0, the licensor
+grants any natural person affiliated with a degree-granting academic
+institution, or any registered non-profit research organisation, the
+right to use, modify, and distribute this software for non-commercial
+research and teaching purposes, regardless of the size or revenue of
+that institution.
+
+Publication of research results — including pre-prints, peer-reviewed
+journal articles, conference papers, open datasets, and theses — is
+permitted.
+
+Productisation, commercial deployment, paid services built on the
+software, and any use that primarily benefits a for-profit entity
+remain subject to the underlying PolyForm Small Business License
+1.0.0 and its size and revenue limits.
+
+This Additional Permission does not waive the *Notices*, *Patent
+Defense*, *Violations*, or *No Liability* terms of the PolyForm
+Small Business License 1.0.0, all of which continue to apply.

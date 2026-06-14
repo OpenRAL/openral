@@ -1,0 +1,2033 @@
+{
+  "$defs": {
+    "ActionRepresentation": {
+      "description": "Action vector representation format.",
+      "enum": [
+        "joint_positions",
+        "joint_velocities",
+        "delta_ee_6d_plus_gripper",
+        "delta_ee_6d",
+        "cartesian_pose"
+      ],
+      "title": "ActionRepresentation",
+      "type": "string"
+    },
+    "ActionSpec": {
+      "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector.\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at.\n    chunk_size: Number of action steps per inference call (chunk size H).",
+      "properties": {
+        "dim": {
+          "title": "Dim",
+          "type": "integer"
+        },
+        "representation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionRepresentation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "control_freq_hz": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Control Freq Hz"
+        },
+        "chunk_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Size"
+        }
+      },
+      "required": [
+        "dim"
+      ],
+      "title": "ActionSpec",
+      "type": "object"
+    },
+    "CapsuleShape": {
+      "additionalProperties": false,
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (:attr:`LinkCollisionGeometry.origin_xyz_rpy`\nfor a link, :attr:`WorldCollisionPrimitive.pose` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative (ADR-0030 \u00a72).\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "properties": {
+        "shape": {
+          "const": "capsule",
+          "default": "capsule",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        },
+        "length_m": {
+          "minimum": 0.0,
+          "title": "Length M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m",
+        "length_m"
+      ],
+      "title": "CapsuleShape",
+      "type": "object"
+    },
+    "ControlMode": {
+      "description": "Action space / control interface exposed by a robot or skill.",
+      "enum": [
+        "joint_position",
+        "joint_velocity",
+        "joint_torque",
+        "joint_trajectory",
+        "cartesian_pose",
+        "cartesian_delta",
+        "cartesian_twist",
+        "body_twist",
+        "foot_placement",
+        "gripper_binary",
+        "gripper_position",
+        "dex_hand_joint",
+        "composite_mode"
+      ],
+      "title": "ControlMode",
+      "type": "string"
+    },
+    "EmbodimentKind": {
+      "description": "Top-level kinematic class of a robot body.",
+      "enum": [
+        "humanoid",
+        "manipulator",
+        "bimanual",
+        "quadruped",
+        "mobile_base",
+        "mobile_manipulator",
+        "drone"
+      ],
+      "title": "EmbodimentKind",
+      "type": "string"
+    },
+    "EndEffectorSpec": {
+      "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator\n        (ADR-0028a). False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "parallel_gripper",
+            "suction",
+            "dexterous_hand",
+            "tool",
+            "none"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "hand": {
+          "$ref": "#/$defs/Hand",
+          "default": "na"
+        },
+        "n_dof": {
+          "default": 1,
+          "title": "N Dof",
+          "type": "integer"
+        },
+        "max_grip_force_n": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Grip Force N"
+        },
+        "max_payload_kg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Payload Kg"
+        },
+        "workspace_radius_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Radius M"
+        },
+        "tactile_sensors": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tactile Sensors",
+          "type": "array"
+        },
+        "actuated": {
+          "default": true,
+          "title": "Actuated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "EndEffectorSpec",
+      "type": "object"
+    },
+    "GripperReadMode": {
+      "description": "How :class:`openral_hal.MujocoArmHAL` reports the gripper qpos.\n\n``SUM_OVER_SCALE`` (default) \u2014 ``clip(sum(qpos[addrs]) / scale, 0, 1)``.\n  Matches the Franka parallel gripper where two finger qpos are summed\n  and divided by ``2 * max_finger_extent`` (=0.08 m for Panda).  Public\n  surface is normalised ``[0, 1]``.\n``AFFINE_LOW_HIGH`` \u2014 ``(qpos[addrs[0]] - ctrl_range[0]) / (ctrl_range[1] - ctrl_range[0])``.\n  Used by the SO-100 menagerie ``Jaw`` joint, a 1-DoF revolute with a\n  non-zero closed position (``-0.174`` rad).  Public surface is\n  normalised ``[0, 1]``.\n``PASSTHROUGH`` \u2014 ``qpos[addrs[0]]`` reported verbatim, in the same\n  physical units as the MJCF (metres for Aloha prismatic fingers,\n  radians for OpenArm revolute jaws).  The public surface is **not**\n  ``[0, 1]`` \u2014 Skills must accept the raw range.",
+      "enum": [
+        "sum_over_scale",
+        "affine_low_high",
+        "passthrough"
+      ],
+      "title": "GripperReadMode",
+      "type": "string"
+    },
+    "GripperWriteMode": {
+      "description": "How :class:`openral_hal.MujocoArmHAL` maps an Action's gripper value to ``ctrl``.\n\n``NORMALISED`` (default) \u2014 input is ``[0, 1]``, mapped affinely to\n  ``ctrl_range``.  ``low`` \u2194 closed (Action.gripper = 0), ``high`` \u2194\n  open (Action.gripper = 1).\n``PASSTHROUGH`` \u2014 input is in the same physical units as ``ctrl_range``\n  (metres / radians), written directly to ``ctrl``.  MuJoCo's actuator\n  ``ctrlrange`` does the clipping.  Used by Aloha (positive-finger\n  metres) and OpenArm (jaw radians).",
+      "enum": [
+        "normalised",
+        "passthrough"
+      ],
+      "title": "GripperWriteMode",
+      "type": "string"
+    },
+    "HalEntrypoints": {
+      "additionalProperties": false,
+      "description": "Per-robot simulation and real-hardware HAL import strings.\n\nThe two HALs a robot can expose, declared independently so the choice of\nHAL *type* lives in the manifest (never in environment config or runtime\nparams). Each value is a ``\"module:Attr\"`` import string resolved by\n:func:`openral_hal.build_hal`, or ``None`` when the robot has no HAL of\nthat kind (sim-only / real-only / scene-only). ADR-0031.\n\nAttributes:\n    sim: Import string for the simulation HAL. When ``None`` **and**\n        :attr:`RobotDescription.sim` is populated, the resolver derives\n        ``MujocoArmHAL.from_description`` (ADR-0023) \u2014 so every plain arm\n        leaves this null. Set it explicitly only for a non-generic sim\n        HAL (e.g. ``\"openral_hal.panda_mobile:PandaMobileHAL\"``, which has\n        no ``sim:`` block to derive from).\n    real: Import string for the real-hardware HAL (e.g.\n        ``\"openral_hal.ur_real:UR5eRealHAL\"``). ``None`` for sim-only\n        robots; the resolver raises ``ROSCapabilityMismatch`` if\n        ``mode=\"real\"`` is requested on a robot whose ``real`` is ``None``.\n    parameters: Per-robot HAL construction defaults (serial ``port``,\n        ``robot_ip``, \u2026) merged into the constructor by\n        :func:`openral_hal.build_hal`. ADR-0029. Empty by default.\n\nExample:\n    >>> HalEntrypoints(real=\"openral_hal.ur_real:UR5eRealHAL\").sim is None\n    True",
+      "properties": {
+        "sim": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim"
+        },
+        "real": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Real"
+        },
+        "parameters": {
+          "$ref": "#/$defs/HalParameters"
+        }
+      },
+      "title": "HalEntrypoints",
+      "type": "object"
+    },
+    "HalParameters": {
+      "additionalProperties": false,
+      "description": "Per-robot HAL construction defaults declared in the manifest (ADR-0029).\n\nCarries the transport / constructor keyword arguments a robot's HAL needs\n\u2014 the SO-100's serial ``port`` + ``baud``, a ros2_control arm's\n``robot_ip`` / ``fci_ip`` \u2014 so the manifest is the single source of those\ndefaults instead of a per-robot lifecycle-node subclass. This is the\nschema seam that lets the unified, ``robot.yaml``-driven\n``ManifestHALLifecycleNode`` (ADR-0032) serve a parameterised HAL without\na bespoke ``_create_hal``.\n\n:func:`openral_hal.build_hal` merges :attr:`defaults` **underneath** any\nexplicit ``transport`` kwargs (so a ``deploy run`` override wins) and then\ndrops every key the target HAL constructor does not accept \u2014 exactly the\nfiltering it already applies to ``transport``. Empty by default, so robots\nthat need no construction kwargs (the derived ``MujocoArmHAL`` arms) are\nunaffected.\n\nAttributes:\n    defaults: HAL constructor / transport keyword defaults, e.g.\n        ``{\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000}`` for the SO-100 or\n        ``{\"robot_ip\": \"192.168.1.10\"}`` for a real UR arm.\n\nExample:\n    >>> HalParameters(defaults={\"port\": \"/dev/ttyACM0\"}).defaults[\"port\"]\n    '/dev/ttyACM0'",
+      "properties": {
+        "defaults": {
+          "additionalProperties": true,
+          "title": "Defaults",
+          "type": "object"
+        }
+      },
+      "title": "HalParameters",
+      "type": "object"
+    },
+    "Hand": {
+      "description": "Laterality of an end-effector.",
+      "enum": [
+        "left",
+        "right",
+        "na"
+      ],
+      "title": "Hand",
+      "type": "string"
+    },
+    "IntrinsicsPinhole": {
+      "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+      "properties": {
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "fx": {
+          "title": "Fx",
+          "type": "number"
+        },
+        "fy": {
+          "title": "Fy",
+          "type": "number"
+        },
+        "cx": {
+          "title": "Cx",
+          "type": "number"
+        },
+        "cy": {
+          "title": "Cy",
+          "type": "number"
+        },
+        "distortion_model": {
+          "default": "plumb_bob",
+          "enum": [
+            "plumb_bob",
+            "equidistant",
+            "none"
+          ],
+          "title": "Distortion Model",
+          "type": "string"
+        },
+        "distortion_coeffs": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Distortion Coeffs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "fx",
+        "fy",
+        "cx",
+        "cy"
+      ],
+      "title": "IntrinsicsPinhole",
+      "type": "object"
+    },
+    "JointSpec": {
+      "description": "URDF-derived joint specification.\n\nAttributes:\n    name: Joint name matching the URDF.\n    joint_type: Kinematic joint type.\n    parent_link: Parent link name.\n    child_link: Child link name.\n    axis_xyz: Rotation/translation axis unit vector.\n    position_limits: (min, max) in radians or meters.\n    velocity_limit: Maximum velocity.\n    effort_limit: Maximum effort (N or Nm).\n    has_position_sensor: Whether position feedback is available.\n    has_velocity_sensor: Whether velocity feedback is available.\n    has_torque_sensor: Whether torque feedback is available.\n    backlash_estimate: Estimated backlash in radians.\n    actuator_kind: Type of actuator.\n    sim_joint_name: Optional override carrying the **MJCF/MuJoCo\n        joint name** as it appears in the simulator's compiled\n        model when that name differs from :attr:`name`. The HAL\n        uses :attr:`name` for the world-state contract (it's the\n        URDF-shaped logical identifier the safety supervisor sees\n        on every chunk); a separate ``sim_joint_name`` lets a\n        sim-adapter look up ``mj_name2id`` without hardcoding\n        robosuite / robocasa / MuJoCo naming conventions in\n        backend modules. ``None`` means \"the MJCF joint name\n        matches :attr:`name`\" \u2014 true for every fixed-base\n        manipulator we ship; only mobile bases and humanoids\n        whose MJCF auto-prefixes joints (robosuite's\n        ``mobilebase0_\u2026`` namespace, GR-1's ``robot0_\u2026``) need\n        it. See ADR-0025.\n    role: Structural classification (ADR-0028a). The downstream\n        runner / safety / dataset-bridge code identifies grippers\n        and base DoFs by this tag instead of substring-matching the\n        joint name (which silently misclassifies any joint\n        containing ``\"gripper\"``, e.g. ``\"gripper_pose\"``). Default\n        ``\"unknown\"`` keeps legacy manifests loadable; the fleet\n        annotates incrementally per ADR-0028a.\n    origin_xyz: Fixed translation (metres) of this joint's frame in\n        its ``parent_link`` frame \u2014 the URDF ``<joint><origin xyz>``.\n        With :attr:`origin_rpy` and :attr:`axis_xyz` it gives the\n        kernel everything it needs for forward kinematics (ADR-0030).\n        Default ``(0, 0, 0)``; populated by the offline lowering tool\n        (from MJCF/URDF) only for robots that enable self-collision\n        checking \u2014 legacy manifests are unaffected.\n    origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this\n        joint's frame in its ``parent_link`` frame \u2014 the URDF\n        ``<joint><origin rpy>``. Default ``(0, 0, 0)``. ADR-0030.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "joint_type": {
+          "$ref": "#/$defs/JointType"
+        },
+        "parent_link": {
+          "title": "Parent Link",
+          "type": "string"
+        },
+        "child_link": {
+          "title": "Child Link",
+          "type": "string"
+        },
+        "axis_xyz": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Axis Xyz",
+          "type": "array"
+        },
+        "origin_xyz": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Origin Xyz",
+          "type": "array"
+        },
+        "origin_rpy": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Origin Rpy",
+          "type": "array"
+        },
+        "position_limits": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Position Limits"
+        },
+        "velocity_limit": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Velocity Limit"
+        },
+        "effort_limit": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort Limit"
+        },
+        "has_position_sensor": {
+          "default": true,
+          "title": "Has Position Sensor",
+          "type": "boolean"
+        },
+        "has_velocity_sensor": {
+          "default": true,
+          "title": "Has Velocity Sensor",
+          "type": "boolean"
+        },
+        "has_torque_sensor": {
+          "default": false,
+          "title": "Has Torque Sensor",
+          "type": "boolean"
+        },
+        "backlash_estimate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backlash Estimate"
+        },
+        "actuator_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "dc",
+                "bldc",
+                "stepper",
+                "servo",
+                "tendon",
+                "hydraulic",
+                "pneumatic"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actuator Kind"
+        },
+        "sim_joint_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim Joint Name"
+        },
+        "role": {
+          "default": "unknown",
+          "enum": [
+            "arm",
+            "base",
+            "gripper",
+            "torso",
+            "leg",
+            "head",
+            "neck",
+            "wheel",
+            "unknown"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "joint_type",
+        "parent_link",
+        "child_link"
+      ],
+      "title": "JointSpec",
+      "type": "object"
+    },
+    "JointType": {
+      "description": "Kinematic joint type following URDF conventions.",
+      "enum": [
+        "revolute",
+        "prismatic",
+        "continuous",
+        "fixed",
+        "floating",
+        "planar"
+      ],
+      "title": "JointType",
+      "type": "string"
+    },
+    "LinkCollisionGeometry": {
+      "additionalProperties": false,
+      "description": "One convex collision volume rigidly attached to a robot link (ADR-0030).\n\nThe lowered, kernel-facing form of a link's collision geometry. Authored\nby hand, or emitted by the offline lowering tool from a robot's MJCF or\nURDF + SRDF source; the kernel loads these into pre-sized buffers at\n``on_configure`` and never parses the source geometry on the hot path.\n``link_name`` is a :class:`JointSpec` link (``joints`` stays normative for\nthe kinematic chain \u2014 this adds geometry only).\n\nAttributes:\n    link_name: The :attr:`JointSpec.child_link` (or\n        :attr:`JointSpec.parent_link`) this volume is attached to.\n    shape: The convex primitive (capsule or sphere).\n    origin_xyz_rpy: Pose of the primitive in the link frame \u2014\n        ``(x, y, z, roll, pitch, yaw)`` in metres and radians.\n\nExample:\n    >>> g = LinkCollisionGeometry(\n    ...     link_name=\"link_1\",\n    ...     shape=CapsuleShape(radius_m=0.04, length_m=0.3),\n    ... )\n    >>> g.origin_xyz_rpy\n    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)",
+      "properties": {
+        "link_name": {
+          "title": "Link Name",
+          "type": "string"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "origin_xyz_rpy": {
+          "default": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Origin Xyz Rpy",
+          "type": "array"
+        }
+      },
+      "required": [
+        "link_name",
+        "shape"
+      ],
+      "title": "LinkCollisionGeometry",
+      "type": "object"
+    },
+    "ObservationSpec": {
+      "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: Whether camera images need 180\u00b0 rotation before\n        feeding to the VLA (common for wrist-mounted cameras).",
+      "properties": {
+        "state_key": {
+          "default": "observation.state",
+          "title": "State Key",
+          "type": "string"
+        },
+        "state_shape": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "State Shape",
+          "type": "array"
+        },
+        "state_representation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateRepresentation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "image_flip_180": {
+          "default": false,
+          "title": "Image Flip 180",
+          "type": "boolean"
+        }
+      },
+      "title": "ObservationSpec",
+      "type": "object"
+    },
+    "QuantizationDtype": {
+      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "fp4_nvfp4"
+      ],
+      "title": "QuantizationDtype",
+      "type": "string"
+    },
+    "RSkillRuntime": {
+      "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
+      "enum": [
+        "pytorch",
+        "onnx",
+        "tensorrt",
+        "trt_llm",
+        "vllm",
+        "gguf",
+        "mlx",
+        "jax"
+      ],
+      "title": "RSkillRuntime",
+      "type": "string"
+    },
+    "RobotCapabilities": {
+      "description": "Capability flags used for skill compatibility checking.\n\nAttributes:\n    locomotion: Locomotion types available.\n    can_lift_kg: Maximum payload in kg.\n    has_dexterous_hands: Whether dexterous hands are present.\n    has_tactile: Whether tactile sensing is available.\n    has_force_control: Whether force/impedance control is supported.\n    has_vision: Whether camera(s) are present.\n    has_lidar: Whether LiDAR is present.\n    has_audio: Whether audio I/O is present.\n    bimanual: Whether the robot has two arms.\n    onboard_compute_tops: Peak onboard compute in TOPS.\n    onboard_memory_gb: Onboard RAM in GB.\n    gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).\n    cuda_compute_capability: Highest CUDA compute capability (major, minor),\n        e.g. (8, 9) for Ada Lovelace, (10, 0) for Blackwell.  ``None`` on\n        non-CUDA hosts.\n    cuda_toolkit_version: ``nvcc`` version string when present.\n    tensorrt_version: TensorRT runtime version string when importable.\n    gpu_supported_runtimes: Inference runtimes the host can execute, used\n        by ``rSkill.check_capabilities`` to match ``RSkillManifest.runtime``.\n    gpu_supported_dtypes: Quantization dtypes the host accelerator\n        supports (derived from CUDA compute capability or platform).\n    supported_control_modes: List of supported ControlMode values.\n    supported_vla_embodiments: VLA embodiment IDs this robot can run.\n    embodiment_tags: Short tags mapping to VLA heads / dataset splits.\n    nvmm_available: Whether ``libnvbufsurface.so`` is present on the host\n        (Tegra L4T multimedia stack).  ``True`` enables the NVMM\n        zero-copy sensor-ingest path on Jetson; always ``False`` on x86\n        and on stripped L4T images.  Populated by\n        :func:`openral_detect.probes.gpu._probe_nvmm_available`.\n        Added in v0.5 per ADR-0013.",
+      "properties": {
+        "locomotion": {
+          "items": {
+            "enum": [
+              "bipedal",
+              "quadruped",
+              "wheeled",
+              "tracked",
+              "none"
+            ],
+            "type": "string"
+          },
+          "title": "Locomotion",
+          "type": "array"
+        },
+        "can_lift_kg": {
+          "default": 0.0,
+          "title": "Can Lift Kg",
+          "type": "number"
+        },
+        "has_dexterous_hands": {
+          "default": false,
+          "title": "Has Dexterous Hands",
+          "type": "boolean"
+        },
+        "has_tactile": {
+          "default": false,
+          "title": "Has Tactile",
+          "type": "boolean"
+        },
+        "has_force_control": {
+          "default": false,
+          "title": "Has Force Control",
+          "type": "boolean"
+        },
+        "has_vision": {
+          "default": true,
+          "title": "Has Vision",
+          "type": "boolean"
+        },
+        "has_lidar": {
+          "default": false,
+          "title": "Has Lidar",
+          "type": "boolean"
+        },
+        "has_audio": {
+          "default": false,
+          "title": "Has Audio",
+          "type": "boolean"
+        },
+        "bimanual": {
+          "default": false,
+          "title": "Bimanual",
+          "type": "boolean"
+        },
+        "onboard_compute_tops": {
+          "default": 0.0,
+          "title": "Onboard Compute Tops",
+          "type": "number"
+        },
+        "onboard_memory_gb": {
+          "default": 0.0,
+          "title": "Onboard Memory Gb",
+          "type": "number"
+        },
+        "gpu_vram_gb": {
+          "default": 0.0,
+          "title": "Gpu Vram Gb",
+          "type": "number"
+        },
+        "cuda_compute_capability": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cuda Compute Capability"
+        },
+        "cuda_toolkit_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cuda Toolkit Version"
+        },
+        "tensorrt_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tensorrt Version"
+        },
+        "gpu_supported_runtimes": {
+          "items": {
+            "$ref": "#/$defs/RSkillRuntime"
+          },
+          "title": "Gpu Supported Runtimes",
+          "type": "array"
+        },
+        "gpu_supported_dtypes": {
+          "items": {
+            "$ref": "#/$defs/QuantizationDtype"
+          },
+          "title": "Gpu Supported Dtypes",
+          "type": "array"
+        },
+        "supported_control_modes": {
+          "items": {
+            "$ref": "#/$defs/ControlMode"
+          },
+          "title": "Supported Control Modes",
+          "type": "array"
+        },
+        "supported_vla_embodiments": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Vla Embodiments",
+          "type": "array"
+        },
+        "embodiment_tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Embodiment Tags",
+          "type": "array"
+        },
+        "nvmm_available": {
+          "default": false,
+          "title": "Nvmm Available",
+          "type": "boolean"
+        }
+      },
+      "title": "RobotCapabilities",
+      "type": "object"
+    },
+    "SafetyEnvelope": {
+      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by ADR-0028b's per-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: ADR-0028b \u2014 angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        :attr:`max_ee_speed_m_s`). ``None`` skips the check.\n    max_base_linear_speed_m_s: ADR-0028b \u2014 BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: ADR-0028b \u2014 BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.",
+      "properties": {
+        "workspace_box_min_xyz": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Box Min Xyz"
+        },
+        "workspace_box_max_xyz": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workspace Box Max Xyz"
+        },
+        "no_go_zones": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "No Go Zones",
+          "type": "array"
+        },
+        "max_ee_speed_m_s": {
+          "default": 0.5,
+          "title": "Max Ee Speed M S",
+          "type": "number"
+        },
+        "max_ee_accel_m_s2": {
+          "default": 1.0,
+          "title": "Max Ee Accel M S2",
+          "type": "number"
+        },
+        "max_joint_speed_factor": {
+          "default": 0.7,
+          "title": "Max Joint Speed Factor",
+          "type": "number"
+        },
+        "max_force_n": {
+          "default": 50.0,
+          "title": "Max Force N",
+          "type": "number"
+        },
+        "max_torque_nm": {
+          "default": 10.0,
+          "title": "Max Torque Nm",
+          "type": "number"
+        },
+        "deadman_required": {
+          "default": true,
+          "title": "Deadman Required",
+          "type": "boolean"
+        },
+        "e_stop_topic": {
+          "default": "/safety/e_stop",
+          "title": "E Stop Topic",
+          "type": "string"
+        },
+        "e_stop_qos": {
+          "const": "reliable",
+          "default": "reliable",
+          "title": "E Stop Qos",
+          "type": "string"
+        },
+        "contact_force_threshold_n": {
+          "default": 30.0,
+          "title": "Contact Force Threshold N",
+          "type": "number"
+        },
+        "cycle_time_violation_threshold_ms": {
+          "default": 5.0,
+          "title": "Cycle Time Violation Threshold Ms",
+          "type": "number"
+        },
+        "human_in_loop_required": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Human In Loop Required",
+          "type": "array"
+        },
+        "max_cartesian_step_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cartesian Step M"
+        },
+        "max_cartesian_step_rad": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cartesian Step Rad"
+        },
+        "max_ee_angular_speed_rad_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Ee Angular Speed Rad S"
+        },
+        "max_base_linear_speed_m_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Base Linear Speed M S"
+        },
+        "max_base_angular_speed_rad_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Base Angular Speed Rad S"
+        }
+      },
+      "title": "SafetyEnvelope",
+      "type": "object"
+    },
+    "SceneComposition": {
+      "additionalProperties": false,
+      "description": "Declarative MJCF scene composition for a manifest-driven HAL (ADR-0029).\n\nLets a robot whose sim HAL needs a *composed* MJCF (a bare arm spliced onto\na tabletop + props) declare the composer in its manifest instead of a\nbespoke ``_create_hal`` lifecycle subclass (issue #191 Phase 3b). The\nmanifest-driven node calls :attr:`composer` before constructing the HAL and\nthreads the resulting MJCF path in as the HAL's ``mjcf_path``.\n\nThe composer is a ``\"module.path:function\"`` import string. The function is\ncalled with ``**params`` and MUST return ``(xml: str, meshdir: Path)`` \u2014 the\ncomposed MJCF XML and the mesh directory it references (the node writes the\nXML next to ``meshdir`` so relative mesh paths resolve). Today's only\ncomposer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.\n\nAttributes:\n    composer: ``\"module.path:function\"`` returning ``(xml, meshdir)``.\n    params: Keyword arguments for the composer (e.g. ``robot_lift_z``,\n        ``white_background``).\n\nExample:\n    >>> sc = SceneComposition(\n    ...     composer=\"pkg.scenes:compose_tabletop\",\n    ...     params={\"robot_lift_z\": 0.36, \"white_background\": True},\n    ... )\n    >>> sc.params[\"robot_lift_z\"]\n    0.36",
+      "properties": {
+        "composer": {
+          "title": "Composer",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "composer"
+      ],
+      "title": "SceneComposition",
+      "type": "object"
+    },
+    "SceneDefaults": {
+      "additionalProperties": false,
+      "description": "Per-robot scene rendering defaults.\n\nThese are values that scene composers may consult when the\n:class:`SimScene` YAML does not override them. Today the\nonly field is :attr:`top_camera`, which the\n``openarm_tabletop_pnp`` backend consumes; future scenes can extend\nthis submodel as new defaults are pulled out of backend hardcodes.\n\nAttributes:\n    top_camera: Default placement for the scene-overview camera.\n\nExample:\n    >>> sd = SceneDefaults(\n    ...     top_camera=TopCameraDefaults(\n    ...         pos=(0.2, 0.0, 0.95),\n    ...         target=(0.65, 0.0, 0.05),\n    ...         fovy=65.0,\n    ...     ),\n    ... )\n    >>> sd.top_camera.pos\n    (0.2, 0.0, 0.95)",
+      "properties": {
+        "top_camera": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TopCameraDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "composition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneComposition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "SceneDefaults",
+      "type": "object"
+    },
+    "SensorBundle": {
+      "description": "Multi-modal sensor group, e.g. RealSense D455 = (RGB, depth, IMU).\n\nAttributes:\n    bundle_name: Unique name for this bundle.\n    sensors: List of constituent sensor specs.\n    sync: Synchronization strategy.\n    sync_tolerance_ms: Tolerance for approximate synchronization.",
+      "properties": {
+        "bundle_name": {
+          "title": "Bundle Name",
+          "type": "string"
+        },
+        "sensors": {
+          "items": {
+            "$ref": "#/$defs/SensorSpec"
+          },
+          "title": "Sensors",
+          "type": "array"
+        },
+        "sync": {
+          "default": "approximate",
+          "enum": [
+            "hardware",
+            "approximate",
+            "none"
+          ],
+          "title": "Sync",
+          "type": "string"
+        },
+        "sync_tolerance_ms": {
+          "default": 30.0,
+          "title": "Sync Tolerance Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bundle_name",
+        "sensors"
+      ],
+      "title": "SensorBundle",
+      "type": "object"
+    },
+    "SensorModality": {
+      "description": "Physical sensing modality.",
+      "enum": [
+        "rgb",
+        "depth",
+        "stereo",
+        "ir",
+        "point_cloud",
+        "lidar_2d",
+        "imu",
+        "force_torque",
+        "joint_state",
+        "tactile_vision",
+        "tactile_array",
+        "audio",
+        "gps",
+        "battery"
+      ],
+      "title": "SensorModality",
+      "type": "string"
+    },
+    "SensorSpec": {
+      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "modality": {
+          "$ref": "#/$defs/SensorModality"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        },
+        "parent_frame": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Frame"
+        },
+        "static_transform_xyz_rpy": {
+          "anyOf": [
+            {
+              "maxItems": 6,
+              "minItems": 6,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Static Transform Xyz Rpy"
+        },
+        "rate_hz": {
+          "title": "Rate Hz",
+          "type": "number"
+        },
+        "intrinsics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IntrinsicsPinhole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "encoding": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Encoding"
+        },
+        "fov_h_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fov H Deg"
+        },
+        "fov_v_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fov V Deg"
+        },
+        "sim_camera_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim Camera Name"
+        },
+        "n_channels": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Channels"
+        },
+        "range_min_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Range Min M"
+        },
+        "range_max_m": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Range Max M"
+        },
+        "accel_noise_density": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accel Noise Density"
+        },
+        "gyro_noise_density": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gyro Noise Density"
+        },
+        "n_axes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Axes"
+        },
+        "tactile_grid": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tactile Grid"
+        },
+        "vla_feature_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vla Feature Key"
+        },
+        "ros2_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ros2 Topic"
+        },
+        "ros2_msg_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ros2 Msg Type"
+        },
+        "qos_profile": {
+          "default": "sensor_data",
+          "enum": [
+            "sensor_data",
+            "reliable",
+            "transient_local",
+            "parameters"
+          ],
+          "title": "Qos Profile",
+          "type": "string"
+        },
+        "vendor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Vendor"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "driver_pkg": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Driver Pkg"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "modality",
+        "frame_id",
+        "rate_hz"
+      ],
+      "title": "SensorSpec",
+      "type": "object"
+    },
+    "SimDescription": {
+      "additionalProperties": false,
+      "description": "MuJoCo wiring for a single-arm robot, consumed by ``MujocoArmHAL``.\n\nAll fields except ``mjcf_uri`` are optional with defaults derived from\n:attr:`RobotDescription.joints`.  The default mapping is \"1:1 in joint\norder, offset by 7 (qpos) / 6 (qvel) if ``floating_base`` is True\" \u2014\nwhich is correct for every robot in the open core today bar minor\ngripper bookkeeping.\n\nAttributes:\n    mjcf_uri: One of:\n\n        * ``\"file:/abs/path/to.xml\"`` \u2014 explicit filesystem path\n          (the leading ``file:`` is optional and a bare absolute path\n          is also accepted for backwards compatibility).\n        * ``\"robot_descriptions:<module>\"`` \u2014 defer to the\n          ``robot_descriptions`` Python package; ``<module>`` is the\n          module name whose ``MJCF_PATH`` attribute is read at\n          ``connect()`` time.\n\n    floating_base: If True, the robot's MJCF has a 6-DoF free joint\n        before the actuated joints (humanoids).  In that case the\n        default ``joint_qpos_addr[joints[i].name] = 7 + i`` and\n        ``joint_qvel_addr[joints[i].name] = 6 + i``.\n    joint_qpos_addr: Optional override of the joint\u2192qpos-index map.\n        When omitted, the default 1:1 mapping is used.\n    joint_qvel_addr: Optional override of the joint\u2192qvel-index map.\n        When omitted, defaults to ``joint_qpos_addr`` (or its default).\n    actuator_index: Optional override of the joint\u2192actuator-index map.\n        When omitted, defaults to the 1:1 mapping ``joints[i].name \u2192 i``.\n    grippers: Optional list of :class:`SimGripperDescription` entries.\n        Each must reference a joint by name that is also present in\n        :attr:`RobotDescription.joints`.  Single-arm robots have one\n        entry (or none); bimanual robots have two (left + right).\n    settle_steps_default: Default number of ``mj_step`` calls executed\n        per :meth:`MujocoArmHAL.send_action`.  Defaults to 1.\n    keyframe_index: When set, :meth:`MujocoArmHAL.connect` calls\n        ``mj_resetDataKeyframe(model, data, keyframe_index)`` before\n        ``mj_forward``.  Required for MJCFs whose default\n        ``MjData.qpos`` (zeros) sits outside the actuator\n        ``ctrlrange`` \u2014 e.g. the gym-aloha parallel jaws, whose\n        fingers have ``ctrlrange=[0.021, 0.057]`` and never recover\n        from qpos = 0.\n    seed_ctrl_from_qpos: When True, :meth:`MujocoArmHAL.connect`\n        seeds ``data.ctrl[actuator] = data.qpos[joint_qpos_addr]``\n        for every controllable joint so position actuators hold the\n        initial pose on the first ``mj_step``.  Required by the\n        OpenArm v2 MJCF (its position actuators with per-class PD\n        gains will drive ``qpos`` to ``ctrl == 0`` otherwise).\n\nExample:\n    >>> sim = SimDescription(\n    ...     mjcf_uri=\"robot_descriptions:ur5e_mj_description\",\n    ... )\n    >>> sim.mjcf_uri\n    'robot_descriptions:ur5e_mj_description'",
+      "properties": {
+        "mjcf_uri": {
+          "title": "Mjcf Uri",
+          "type": "string"
+        },
+        "floating_base": {
+          "default": false,
+          "title": "Floating Base",
+          "type": "boolean"
+        },
+        "joint_qpos_addr": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint Qpos Addr"
+        },
+        "joint_qvel_addr": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint Qvel Addr"
+        },
+        "actuator_index": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actuator Index"
+        },
+        "grippers": {
+          "items": {
+            "$ref": "#/$defs/SimGripperDescription"
+          },
+          "title": "Grippers",
+          "type": "array"
+        },
+        "settle_steps_default": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Settle Steps Default",
+          "type": "integer"
+        },
+        "keyframe_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Keyframe Index"
+        },
+        "seed_ctrl_from_qpos": {
+          "default": false,
+          "title": "Seed Ctrl From Qpos",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mjcf_uri"
+      ],
+      "title": "SimDescription",
+      "type": "object"
+    },
+    "SimGripperDescription": {
+      "additionalProperties": false,
+      "description": "Gripper wiring inside a MuJoCo MJCF.\n\nAttributes:\n    joint: Name of the gripper joint as it appears in\n        :attr:`RobotDescription.joints` (the public, lerobot-style name \u2014\n        not the menagerie MJCF name).\n    ctrl_range: ``(low, high)`` raw control range for the gripper\n        actuator.  In ``NORMALISED`` write mode, ``low`` \u2194 closed\n        (Action.gripper = 0), ``high`` \u2194 open (Action.gripper = 1).  In\n        ``PASSTHROUGH`` write mode this is informational \u2014 MuJoCo clips\n        on its own.\n    qpos_addrs: ``qpos`` indices used to compute the reported gripper\n        position.  When the gripper has multiple finger joints (Franka),\n        list every finger's qpos index.\n    qpos_scale: Span used to normalise the summed/raw gripper qpos to\n        ``[0, 1]``.  For Franka with two fingers each in ``[0, 0.04]`` m,\n        ``qpos_scale = 0.08``.  Ignored by ``AFFINE_LOW_HIGH`` and\n        ``PASSTHROUGH`` read modes but kept for symmetry with the\n        base-class invariant.\n    read_mode: How to report the qpos \u2014 see :class:`GripperReadMode`.\n    write_mode: How to map an Action's gripper value to ``ctrl`` \u2014 see\n        :class:`GripperWriteMode`.\n    actuator_index: Explicit MJCF actuator index that receives the\n        (mapped) gripper command.  When omitted, defaults to the\n        position of ``joint`` in :attr:`RobotDescription.joints`\n        (i.e. the 1:1 mapping derived by ``SimDescription`` for arm\n        joints).\n    mirror_actuator_index: Optional second actuator that receives the\n        **negation** of the (mapped) gripper command.  Models the\n        Aloha parallel jaws where one motor drives ``+x`` and the\n        other ``-x`` to keep the fingers symmetric.  ``None`` for\n        single-actuator grippers.",
+      "properties": {
+        "joint": {
+          "title": "Joint",
+          "type": "string"
+        },
+        "ctrl_range": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Ctrl Range",
+          "type": "array"
+        },
+        "qpos_addrs": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Qpos Addrs",
+          "type": "array"
+        },
+        "qpos_scale": {
+          "title": "Qpos Scale",
+          "type": "number"
+        },
+        "read_mode": {
+          "$ref": "#/$defs/GripperReadMode",
+          "default": "sum_over_scale"
+        },
+        "write_mode": {
+          "$ref": "#/$defs/GripperWriteMode",
+          "default": "normalised"
+        },
+        "actuator_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actuator Index"
+        },
+        "mirror_actuator_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mirror Actuator Index"
+        }
+      },
+      "required": [
+        "joint",
+        "ctrl_range",
+        "qpos_addrs",
+        "qpos_scale"
+      ],
+      "title": "SimGripperDescription",
+      "type": "object"
+    },
+    "SphereShape": {
+      "additionalProperties": false,
+      "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+      "properties": {
+        "shape": {
+          "const": "sphere",
+          "default": "sphere",
+          "title": "Shape",
+          "type": "string"
+        },
+        "radius_m": {
+          "exclusiveMinimum": 0.0,
+          "title": "Radius M",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius_m"
+      ],
+      "title": "SphereShape",
+      "type": "object"
+    },
+    "StateRepresentation": {
+      "description": "State vector representation format.",
+      "enum": [
+        "joint_positions",
+        "eef_pos_axisangle",
+        "eef_pos_euler",
+        "eef_pos_quat",
+        "eef_pos_axisangle_gripper"
+      ],
+      "title": "StateRepresentation",
+      "type": "string"
+    },
+    "TopCameraDefaults": {
+      "additionalProperties": false,
+      "description": "Default placement for the scene-level \"top\" (a.k.a. \"base\") camera.\n\nPer-robot scene defaults consumed by sim backends that render an\noverview camera (today: the ``openarm_tabletop_pnp`` scene). The\nvalues describe a look-at camera pointed from ``pos`` toward\n``target`` with vertical field-of-view ``fovy`` in degrees.\n\nBackend YAML overrides (``scene.backend_options.top_camera_*``) still\nwin \u2014 this submodel is the *default* fed to the composer when no\noverride is set, replacing the previous module-level constants in\n``openral_sim.backends.openarm_robosuite._assets``.\n\nAttributes:\n    pos: ``(x, y, z)`` world-frame camera position in metres.\n    target: ``(x, y, z)`` world-frame look-at point in metres.\n    fovy: Vertical field-of-view in degrees.\n\nExample:\n    >>> TopCameraDefaults(pos=(0.2, 0.0, 0.95), target=(0.65, 0.0, 0.05), fovy=65.0).fovy\n    65.0",
+      "properties": {
+        "pos": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Pos",
+          "type": "array"
+        },
+        "target": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Target",
+          "type": "array"
+        },
+        "fovy": {
+          "exclusiveMaximum": 180.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Fovy",
+          "type": "number"
+        }
+      },
+      "required": [
+        "pos",
+        "target",
+        "fovy"
+      ],
+      "title": "TopCameraDefaults",
+      "type": "object"
+    }
+  },
+  "description": "Top-level robot manifest \u2014 one per robot, published to HuggingFace Hub.\n\nAttributes:\n    name: Robot name, e.g. \"so100_follower\".\n    embodiment_kind: Top-level kinematic class.\n    urdf_path: Path or URL to the URDF file.\n    base_frame: Base link tf2 frame name.\n    odom_frame: Odometry tf2 frame name.\n    map_frame: Map tf2 frame name.\n    joints: List of joint specifications.\n    end_effectors: List of end-effector specifications.\n    sensors: List of individual sensor specs.\n    sensor_bundles: List of multi-modal sensor bundles.\n    capabilities: Capability flags for skill matching.\n    safety: Safety envelope constraints.\n    ros2_namespace: ROS 2 namespace prefix.\n    middleware: ROS 2 middleware selection.\n    onboard_compute: Onboard compute descriptors.\n    sdk_kind: Whether the SDK is open or closed.\n    hal: Simulation + real-hardware HAL import strings. ``deploy sim``\n        constructs ``hal.sim`` (or derives ``MujocoArmHAL`` from\n        :attr:`sim`); ``deploy run`` constructs ``hal.real``. ADR-0031.\n    observation_spec: VLA observation configuration.\n    action_spec: VLA action configuration.\n    sim: Optional MuJoCo wiring consumed by\n        :class:`openral_hal.MujocoArmHAL`.  When set, the HAL can be\n        constructed entirely from the manifest via\n        :meth:`MujocoArmHAL.from_description`; no per-robot Python\n        subclass is required.\n    scene_defaults: Optional per-robot scene rendering defaults.\n        Today carries :class:`TopCameraDefaults` consumed by the\n        ``openarm_tabletop_pnp`` MJCF composer (see\n        :mod:`openral_sim.backends.openarm_robosuite._assets`).\n        Added in openral-core 0.6.0 to replace the dataset-specific\n        module-level constants that previously lived in the sim\n        backend.\n    base_joints: Optional ordered list of :attr:`JointSpec.name`\n        references identifying the **planar mobile base** joints.\n        When the robot has a holonomic / differential / omnidirectional\n        base, the three entries are conventionally ``[forward_axis,\n        side_axis, yaw_axis]``. Consumed by the generic ray-cast\n        helpers in :mod:`openral_sim.backends.robocasa` and the\n        ROS HAL lifecycle nodes to resolve MJCF joint names without\n        hardcoding robot-specific conventions. ``None`` for\n        fixed-base manipulators. ADR-0025.\n    collision_geometry: Per-link convex collision primitives\n        (capsules / spheres) the safety kernel uses for self- and\n        world-collision checking. Empty by default. ADR-0030.\n    allowed_collision_pairs: Link-name pairs excluded from\n        self-collision (adjacent links touch by design); the\n        allowed-collision matrix. On real robots this is sourced from\n        the SRDF ``disable_collisions`` block. ADR-0030.\n    srdf_path: Optional path / URL to an SRDF whose\n        ``disable_collisions`` block seeds\n        :attr:`allowed_collision_pairs`. ADR-0030.\n\nExample:\n    >>> desc = RobotDescription(\n    ...     name=\"smoke_robot\",\n    ...     embodiment_kind=EmbodimentKind.MANIPULATOR,\n    ...     joints=[\n    ...         JointSpec(\n    ...             name=\"j1\",\n    ...             joint_type=JointType.REVOLUTE,\n    ...             parent_link=\"base_link\",\n    ...             child_link=\"link_1\",\n    ...         )\n    ...     ],\n    ...     capabilities=RobotCapabilities(\n    ...         supported_control_modes=[ControlMode.JOINT_POSITION],\n    ...         embodiment_tags=[\"smoke\"],\n    ...     ),\n    ...     safety=SafetyEnvelope(),\n    ... )\n    >>> assert desc.name == \"smoke_robot\"",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "embodiment_kind": {
+      "$ref": "#/$defs/EmbodimentKind"
+    },
+    "urdf_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Urdf Path"
+    },
+    "base_frame": {
+      "default": "base_link",
+      "title": "Base Frame",
+      "type": "string"
+    },
+    "odom_frame": {
+      "default": "odom",
+      "title": "Odom Frame",
+      "type": "string"
+    },
+    "map_frame": {
+      "default": "map",
+      "title": "Map Frame",
+      "type": "string"
+    },
+    "joints": {
+      "items": {
+        "$ref": "#/$defs/JointSpec"
+      },
+      "title": "Joints",
+      "type": "array"
+    },
+    "end_effectors": {
+      "items": {
+        "$ref": "#/$defs/EndEffectorSpec"
+      },
+      "title": "End Effectors",
+      "type": "array"
+    },
+    "sensors": {
+      "items": {
+        "$ref": "#/$defs/SensorSpec"
+      },
+      "title": "Sensors",
+      "type": "array"
+    },
+    "sensor_bundles": {
+      "items": {
+        "$ref": "#/$defs/SensorBundle"
+      },
+      "title": "Sensor Bundles",
+      "type": "array"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/RobotCapabilities"
+    },
+    "safety": {
+      "$ref": "#/$defs/SafetyEnvelope"
+    },
+    "ros2_namespace": {
+      "default": "",
+      "title": "Ros2 Namespace",
+      "type": "string"
+    },
+    "middleware": {
+      "default": "cyclonedds",
+      "enum": [
+        "fastdds",
+        "cyclonedds",
+        "zenoh"
+      ],
+      "title": "Middleware",
+      "type": "string"
+    },
+    "onboard_compute": {
+      "additionalProperties": true,
+      "title": "Onboard Compute",
+      "type": "object"
+    },
+    "sdk_kind": {
+      "default": "open",
+      "enum": [
+        "open",
+        "closed_with_api",
+        "closed"
+      ],
+      "title": "Sdk Kind",
+      "type": "string"
+    },
+    "hal": {
+      "$ref": "#/$defs/HalEntrypoints"
+    },
+    "observation_spec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ObservationSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "action_spec": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ActionSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "sim": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SimDescription"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "scene_defaults": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SceneDefaults"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "base_joints": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Base Joints"
+    },
+    "urdf_root_frame": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Urdf Root Frame"
+    },
+    "static_base_to_urdf_root_xyz_rpy": {
+      "anyOf": [
+        {
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Static Base To Urdf Root Xyz Rpy"
+    },
+    "footprint_radius": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Footprint Radius"
+    },
+    "base_kinematics": {
+      "anyOf": [
+        {
+          "enum": [
+            "differential",
+            "holonomic",
+            "omni",
+            "ackermann"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Base Kinematics"
+    },
+    "collision_geometry": {
+      "items": {
+        "$ref": "#/$defs/LinkCollisionGeometry"
+      },
+      "title": "Collision Geometry",
+      "type": "array"
+    },
+    "allowed_collision_pairs": {
+      "items": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "type": "array"
+      },
+      "title": "Allowed Collision Pairs",
+      "type": "array"
+    },
+    "srdf_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Srdf Path"
+    },
+    "footprint_polygon": {
+      "anyOf": [
+        {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Footprint Polygon"
+    }
+  },
+  "required": [
+    "name",
+    "embodiment_kind",
+    "joints",
+    "capabilities",
+    "safety"
+  ],
+  "title": "RobotDescription",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

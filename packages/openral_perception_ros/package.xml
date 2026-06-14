@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_perception_ros</name>
+  <version>0.1.0</version>
+  <description>
+    ADR-0037/0035 — ROS-Image object-detection producer. Subscribes a camera
+    sensor_msgs/Image, runs the GStreamer-free openral_runner ObjectsDetector
+    (RT-DETR ONNX), and publishes ObjectsMetadata (as openral_msgs/PromptStamped)
+    on /openral/perception/objects for the world-state object lift.
+  </description>
+  <maintainer email="contributors@openral.org">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>openral_msgs</depend>
+
+  <!-- Python runtime: the OpenRAL Python workspace (openral_runner,
+       providing ObjectsDetector) must be on PYTHONPATH. -->
+  <exec_depend>python3-openral-runner</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

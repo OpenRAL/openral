@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "ActionRepresentation": {
+      "description": "Action vector representation format.",
+      "enum": [
+        "joint_positions",
+        "joint_velocities",
+        "delta_ee_6d_plus_gripper",
+        "delta_ee_6d",
+        "cartesian_pose"
+      ],
+      "title": "ActionRepresentation",
+      "type": "string"
+    }
+  },
+  "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector.\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at.\n    chunk_size: Number of action steps per inference call (chunk size H).",
+  "properties": {
+    "dim": {
+      "title": "Dim",
+      "type": "integer"
+    },
+    "representation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ActionRepresentation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "control_freq_hz": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Control Freq Hz"
+    },
+    "chunk_size": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chunk Size"
+    }
+  },
+  "required": [
+    "dim"
+  ],
+  "title": "ActionSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

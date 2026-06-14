@@ -1,0 +1,320 @@
+# RobotDescription — Franka Emika Panda (sim today; real-HW HAL planned).
+#
+# Mirrors FRANKA_PANDA_DESCRIPTION in
+# python/hal/src/openral_hal/franka_panda.py:168 — the YAML form is
+# the source of truth for eval-layer robot resolution
+# (openral_sim.adapters.robots) and for downstream tools that consume
+# RobotDescription via from_yaml(). The HAL constant remains the source of
+# truth for the runtime adapter; this file is kept aligned (drift fails the
+# regression test in tests/unit/test_robot_manifests_match_hal_constants.py).
+#
+# This manifest describes the *physical* Panda only — kinematic chain,
+# actuator limits, end-effector, capabilities, safety envelope.
+# Sim-imposed observation/action contracts (LIBERO's 8-D state, 7-D
+# delta-EEF action, 180° image flip; RoboCasa's 4-D agent_pos; etc.) live
+# in the matching scene adapter under
+# python/eval/src/openral_sim/adapters/<sim>.py — not here. See
+# docs/adr/0007-robot-sim-split.md.
+#
+# Joint / EE limits taken from the Franka FR3 / Panda data sheet:
+# https://frankaemika.github.io/docs/control_parameters.html
+# The MJCF used for sim (mujoco_menagerie franka_emika_panda/panda.xml)
+# mirrors the same numbers.
+
+name: "franka_panda"
+embodiment_kind: "manipulator"
+base_frame: "panda_link0"
+
+# ADR-0027 — robot_state_publisher wiring. The Franka URDF's root link
+# matches our base_frame (``panda_link0``), so no static transform is
+# needed; sim_e2e.launch.py launches RSP directly with this URDF.
+urdf_path: "python:robot_descriptions.panda_description:URDF_PATH"
+# Self-collision ACM source for the offline lowering tool (ADR-0030): the Franka
+# MoveIt SRDF. Regenerate via
+# `openral collision lower --robot robots/franka_panda/robot.yaml --acm-only`.
+srdf_path: "robots/franka_panda/franka_panda.srdf"
+
+joints:
+  - name: "panda_joint1"
+    origin_xyz: [0, 0, 0.333]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link0"
+    child_link: "panda_link1"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint1"
+  - name: "panda_joint2"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [-1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link1"
+    child_link: "panda_link2"
+    position_limits: [-1.7628, 1.7628]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint2"
+  - name: "panda_joint3"
+    origin_xyz: [0, -0.316, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link2"
+    child_link: "panda_link3"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint3"
+  - name: "panda_joint4"
+    origin_xyz: [0.0825, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link3"
+    child_link: "panda_link4"
+    position_limits: [-3.0718, -0.0698]
+    velocity_limit: 2.175
+    effort_limit: 87.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint4"
+  - name: "panda_joint5"
+    origin_xyz: [-0.0825, 0.384, 0]
+    origin_rpy: [-1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link4"
+    child_link: "panda_link5"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint5"
+  - name: "panda_joint6"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link5"
+    child_link: "panda_link6"
+    position_limits: [-0.0175, 3.7525]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint6"
+  - name: "panda_joint7"
+    origin_xyz: [0.088, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "panda_link6"
+    child_link: "panda_link7"
+    position_limits: [-2.8973, 2.8973]
+    velocity_limit: 2.610
+    effort_limit: 12.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "joint7"
+  # Synthetic normalised gripper channel (0 = closed, 1 = fully open)
+  # mapped to the MJCF tendon actuator inside MujocoArmHAL.
+  - name: "panda_gripper"
+    joint_type: "prismatic"
+    parent_link: "panda_hand"
+    child_link: "panda_finger_pair"
+    position_limits: [0.0, 1.0]
+    velocity_limit: 0.1
+    effort_limit: 70.0
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+    sim_joint_name: "finger_joint1"
+
+end_effectors:
+  - name: "panda_hand"
+    kind: "parallel_gripper"
+    hand: "na"
+    n_dof: 1
+    max_grip_force_n: 70.0
+    max_payload_kg: 3.0
+    workspace_radius_m: 0.855
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 3.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["franka_panda"]
+  embodiment_tags:
+    - "franka_panda"
+    - "franka"
+    - "panda"
+    # `libero` mirrors the LIBERO benchmark's canonical Franka-Panda
+    # embodiment so smolvla-libero / pi05-libero-nf4 / xvla-libero rSkills
+    # accept this manifest under `openral sim run`. See ADR-0007: physical-only
+    # invariants stay; sim-canonical tags / sensors map 1:1 to a known
+    # benchmark configuration on the same physical arm.
+    - "libero"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 100.0
+  max_torque_nm: 87.0
+  deadman_required: true
+
+# Two RGB camera streams that mirror LIBERO's `agentview` and
+# `eye_in_hand` observations (renamed to `image` / `image2` by the
+# stored SmolVLA preprocessor and surfaced as `camera1` / `camera2` by
+# the openral_sim LIBERO scene adapter). Declared here so the
+# rSkill compatibility check on a `openral sim run --config <libero>.yaml`
+# rollout matches `observation.images.camera{1,2}` against a real
+# SensorSpec on the robot — same pattern as aloha_bimanual's `top`.
+# Drift-guard intentionally does not assert sensors against the HAL
+# constant (see tests/unit/test_robot_manifests_match_hal_constants.py
+# header — sim-side sensor wiring is owned by the eval adapter).
+sensors:
+  - name: "agentview"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 20.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "libero_agentview"
+  - name: "wrist"
+    modality: "rgb"
+    frame_id: "panda_hand"
+    rate_hz: 20.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera2"
+    vendor: "sim"
+    model: "libero_eye_in_hand"
+
+# Franka FCI / libfranka is closed-but-permissive (vendor-licensed binaries,
+# free for research and commercial). franka_ros2 is Apache-2.0. Per
+# CLAUDE.md §7.4 the manifest therefore declares closed_with_api, and
+# `hal.real` points to the real-hardware HAL adapter (issue #56).
+#
+# This YAML mirrors `FRANKA_PANDA_REAL_DESCRIPTION` in
+# python/hal/src/openral_hal/franka_panda_real.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py). The sim
+# baseline `FRANKA_PANDA_DESCRIPTION` in franka_panda.py keeps
+# sdk_kind: open / hal.sim: openral_hal.franka_panda:FrankaPandaHAL
+# and is constructed directly by the eval layer for MuJoCo runs.
+sdk_kind: "closed_with_api"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+hal:
+  sim: "openral_hal.franka_panda:FrankaPandaHAL"
+  real: "openral_hal.franka_panda_real:FrankaPandaRealHAL"
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
+# for the sim baseline.  Source: ``franka_emika_panda/panda.xml`` in
+# mujoco_menagerie.  Default 1:1 joint→qpos/actuator mapping applies; the
+# gripper has two prismatic finger qpos (7, 8) and an actuator at index 7
+# whose ``ctrlrange`` is the Panda gripper finger force command (0..255).
+# See ADR-0023.
+sim:
+  mjcf_uri: "robot_descriptions:panda_mj_description"
+  grippers:
+    - joint: "panda_gripper"
+      ctrl_range: [0.0, 255.0]
+      qpos_addrs: [7, 8]
+      qpos_scale: 0.08  # 2 * 0.04 m max finger extent
+      read_mode: "sum_over_scale"
+
+onboard_compute:
+  driver_license: "Apache-2.0"               # franka_ros2 ROS 2 wrapper
+  driver_runtime_license: "Vendor-permissive (libfranka, FCI binaries)"
+  driver_repo: "https://github.com/frankarobotics/franka_ros2"
+  controller_name: "franka_arm_controller"
+  command_topic: "/franka_arm_controller/joint_trajectory"
+  joint_state_topic: "/joint_states"
+  error_recovery_topic: "/error_recovery/goal"
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "panda_link0"
+    shape: { shape: "capsule", radius_m: 0.1206, length_m: 0.2489 }
+    origin_xyz_rpy: [-0.0443, -0.0012, 0.0590, -3.1288, -1.1235, 3.1212]
+  - link_name: "panda_link1"
+    shape: { shape: "capsule", radius_m: 0.1002, length_m: 0.2884 }
+    origin_xyz_rpy: [-0.0007, -0.0333, -0.0775, -2.5629, -0.0111, 0.0372]
+  - link_name: "panda_link2"
+    shape: { shape: "capsule", radius_m: 0.0995, length_m: 0.2899 }
+    origin_xyz_rpy: [-0.0004, -0.0789, 0.0344, -1.0165, 0.0014, -0.0008]
+  - link_name: "panda_link3"
+    shape: { shape: "capsule", radius_m: 0.0854, length_m: 0.2528 }
+    origin_xyz_rpy: [0.0314, 0.0253, -0.0341, 2.3431, -0.7441, -1.4929]
+  - link_name: "panda_link4"
+    shape: { shape: "capsule", radius_m: 0.0858, length_m: 0.2552 }
+    origin_xyz_rpy: [-0.0515, 0.0362, 0.0264, -2.3488, -0.7443, 1.5011]
+  - link_name: "panda_link5"
+    shape: { shape: "capsule", radius_m: 0.0944, length_m: 0.3465 }
+    origin_xyz_rpy: [-0.0007, 0.0439, -0.1139, 2.7057, -0.0099, -0.0447]
+  - link_name: "panda_link6"
+    shape: { shape: "capsule", radius_m: 0.0950, length_m: 0.1882 }
+    origin_xyz_rpy: [0.0423, 0.0155, 0.0118, -2.1204, 1.1690, -1.7365]
+  - link_name: "panda_link7"
+    shape: { shape: "capsule", radius_m: 0.0533, length_m: 0.1419 }
+    origin_xyz_rpy: [0.0121, 0.0122, 0.0826, -1.5221, 0.7738, -0.7403]
+  - link_name: "panda_hand"
+    shape: { shape: "capsule", radius_m: 0.0484, length_m: 0.2052 }
+    origin_xyz_rpy: [0.0002, -0.0016, 0.0231, -1.5545, 0.0043, -0.0042]
+
+# GENERATED by `openral collision lower` (source: srdf) — do not hand-edit.
+allowed_collision_pairs:
+  - [panda_hand, panda_link3]
+  - [panda_hand, panda_link4]
+  - [panda_hand, panda_link6]
+  - [panda_hand, panda_link7]
+  - [panda_link0, panda_link1]
+  - [panda_link0, panda_link2]
+  - [panda_link0, panda_link3]
+  - [panda_link0, panda_link4]
+  - [panda_link1, panda_link2]
+  - [panda_link1, panda_link3]
+  - [panda_link1, panda_link4]
+  - [panda_link2, panda_link3]
+  - [panda_link2, panda_link4]
+  - [panda_link2, panda_link6]
+  - [panda_link3, panda_link4]
+  - [panda_link3, panda_link5]
+  - [panda_link3, panda_link6]
+  - [panda_link3, panda_link7]
+  - [panda_link4, panda_link5]
+  - [panda_link4, panda_link6]
+  - [panda_link4, panda_link7]
+  - [panda_link5, panda_link6]
+  - [panda_link6, panda_link7]

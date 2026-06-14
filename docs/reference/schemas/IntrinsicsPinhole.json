@@ -1,0 +1,57 @@
+{
+  "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+  "properties": {
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "fx": {
+      "title": "Fx",
+      "type": "number"
+    },
+    "fy": {
+      "title": "Fy",
+      "type": "number"
+    },
+    "cx": {
+      "title": "Cx",
+      "type": "number"
+    },
+    "cy": {
+      "title": "Cy",
+      "type": "number"
+    },
+    "distortion_model": {
+      "default": "plumb_bob",
+      "enum": [
+        "plumb_bob",
+        "equidistant",
+        "none"
+      ],
+      "title": "Distortion Model",
+      "type": "string"
+    },
+    "distortion_coeffs": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Distortion Coeffs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "width",
+    "height",
+    "fx",
+    "fy",
+    "cx",
+    "cy"
+  ],
+  "title": "IntrinsicsPinhole",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

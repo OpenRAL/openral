@@ -1,0 +1,42 @@
+# ALOHA cube-transfer benchmark suite — single bimanual task.
+#
+# Mirrors the ACT paper's protocol on the gym-aloha cube-transfer env:
+# 50 evaluation rollouts with binary success.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("aloha_transfer_cube"). Single-task suite — one BenchmarkScene
+# replayed across 50 seeds (the runner derives
+# ``range(seed, seed + n_episodes)``). Suite-level invariants are
+# enforced by :func:`openral_core.raise_on_invalid_suite`.
+#
+# Notes: gym_aloha/AlohaTransferCube-v0. The ACT chunk-size=100
+# reference rollout takes ~400 sim steps to succeed; the upstream
+# gym-aloha TimeLimit caps at 300 by default so the scene adapter
+# honours task.max_steps to lift that ceiling.
+#
+# Run:
+#   openral benchmark run --suite aloha_transfer_cube \
+#       --rskill act-aloha
+
+- scene:
+    id: aloha_transfer_cube
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top"]
+  task:
+    id: aloha_transfer_cube/0
+    scene_id: aloha_transfer_cube
+    instruction: "transfer the cube from the left arm to the right arm"
+    max_steps: 400
+    success_key: is_success
+  robot_id: aloha_bimanual
+  n_episodes: 50
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2304.13705"
+    display_name: "ALOHA bimanual cube transfer (gym-aloha)"
+    simulator: "gym-aloha (MuJoCo)"
+    honest_scope: >
+      50 evaluation rollouts on the single AlohaTransferCube-v0 task,
+      matching the ACT paper's protocol.

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>openral_octomap_bridge</name>
+  <version>0.1.0</version>
+  <description>
+    ADR-0030 — lower an OctoMap into the C++ safety kernel's dense base-frame
+    OccupancyVoxels grid. Keeps the octomap dependency OUT of the safety kernel:
+    this perception-side node does the octree deserialization + TF crop, the
+    kernel does the allocation-free rasterized capsule-vs-voxel check.
+  </description>
+  <maintainer email="contributors@openral.org">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>octomap_msgs</depend>
+  <depend>octomap</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>openral_msgs</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,55 @@
+# ADR-0025 — default parameter set for upstream slam_toolbox running
+# under OpenRAL's `/openral/slam_toolbox` namespace as a LifecycleNode.
+#
+# Only fields the Reasoner / deployment commonly cares about are
+# tracked here. The rest fall back to slam_toolbox's own defaults
+# (matches the upstream `mapper_params_online_async.yaml` shape).
+#
+# The Reasoner drives INACTIVE → ACTIVE via LifecycleTransitionTool;
+# the launcher only auto-transitions UNCONFIGURED → INACTIVE.
+
+/**:
+  ros__parameters:
+    use_lifecycle_manager: false
+    # Wall-clock default: deploy-sim has no /clock publisher, so sim-time
+    # pins slam_toolbox's pose-graph at 0 → empty map → Nav2 plans through
+    # obstacles. The composed graph (sim_e2e.launch.py) overrides this via
+    # the enable_sim_clock flag; a standalone launch with a real /clock
+    # should pass use_sim_time:=true explicitly.
+    use_sim_time: false
+
+    # ── Frame contract (matches the OpenRAL convention) ─────────────
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+
+    # ── Solver / mapper knobs ──────────────────────────────────────
+    mode: mapping
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ── Update cadence (kept sane for the dashboard's 1 Hz bridge) ─
+    map_update_interval: 1.0
+    transform_publish_period: 0.05
+    resolution: 0.05
+    max_laser_range: 12.0
+    minimum_time_interval: 0.5
+
+    # ── Operating ranges ───────────────────────────────────────────
+    minimum_travel_distance: 0.5
+    minimum_travel_heading: 0.5
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45

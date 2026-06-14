@@ -1,0 +1,312 @@
+# RobotDescription — Trossen ALOHA bimanual (real + sim).
+#
+# This describes the *physical* Trossen ALOHA: two 7-DoF ViperX 300 arms
+# with parallel grippers (14-DoF action space), one top-down RGB camera.
+# gym-aloha's MuJoCo scene mirrors the real robot one-to-one, so the
+# same manifest covers both — no robot/sim conflation here (see
+# docs/adr/0007-robot-sim-split.md). Used by tests/sim/test_aloha_bimanual_act_aloha*.py.
+#
+# Joint kinematic detail is approximate — gym-aloha does not expose the
+# URDF through its gym API. Sufficient for capability matching and
+# SafetyEnvelope authoring; if a HAL adapter ever drives a real ALOHA
+# the URDF wins.
+
+name: "aloha_bimanual"
+embodiment_kind: "bimanual"
+
+base_frame: "world"
+
+# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# The ALOHA arms (Trossen ViperX-300) have an upstream xacro at
+# github.com/Interbotix/interbotix_ros_manipulators/blob/main/
+# interbotix_ros_xsarms/interbotix_xsarm_descriptions/urdf/vx300s.urdf.xacro
+# but it requires the upstream apt package
+# (`ros-${ROS_DISTRO}-interbotix-xsarm-descriptions`) + xacro
+# processing at launch time — neither is wired here yet. The
+# `robot_descriptions` Python package ships an MJCF (`aloha_mj_description`)
+# only. Wire one of these once a wrapped-task-space VLA targets aloha.
+
+joints:
+  # 14-DoF: 2 arms × (6 revolute joints + 1 gripper)
+  - name: "left_waist"
+    joint_type: "revolute"
+    parent_link: "world"
+    child_link: "left_link1"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_shoulder"
+    joint_type: "revolute"
+    parent_link: "left_link1"
+    child_link: "left_link2"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.85, 1.25]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_elbow"
+    joint_type: "revolute"
+    parent_link: "left_link2"
+    child_link: "left_link3"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.76, 1.6]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_forearm_roll"
+    joint_type: "revolute"
+    parent_link: "left_link3"
+    child_link: "left_link4"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_wrist_angle"
+    joint_type: "revolute"
+    parent_link: "left_link4"
+    child_link: "left_link5"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.8, 2.2]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_wrist_rotate"
+    joint_type: "revolute"
+    parent_link: "left_link5"
+    child_link: "left_link6"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "left_gripper"
+    joint_type: "prismatic"
+    parent_link: "left_link6"
+    child_link: "left_finger"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [0.0, 0.041]
+    velocity_limit: 0.5
+    effort_limit: 4.0
+    actuator_kind: "servo"
+    role: "gripper"
+  - name: "right_waist"
+    joint_type: "revolute"
+    parent_link: "world"
+    child_link: "right_link1"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_shoulder"
+    joint_type: "revolute"
+    parent_link: "right_link1"
+    child_link: "right_link2"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.85, 1.25]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_elbow"
+    joint_type: "revolute"
+    parent_link: "right_link2"
+    child_link: "right_link3"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.76, 1.6]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_forearm_roll"
+    joint_type: "revolute"
+    parent_link: "right_link3"
+    child_link: "right_link4"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_wrist_angle"
+    joint_type: "revolute"
+    parent_link: "right_link4"
+    child_link: "right_link5"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.8, 2.2]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_wrist_rotate"
+    joint_type: "revolute"
+    parent_link: "right_link5"
+    child_link: "right_link6"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 4.0
+    actuator_kind: "servo"
+  - name: "right_gripper"
+    joint_type: "prismatic"
+    parent_link: "right_link6"
+    child_link: "right_finger"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [0.0, 0.041]
+    velocity_limit: 0.5
+    effort_limit: 4.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "left_gripper"
+    kind: "parallel_gripper"
+    hand: "left"
+    n_dof: 1
+    max_grip_force_n: 4.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.6
+  - name: "right_gripper"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 4.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.6
+
+# Single 480x640 top-down RGB camera matching gym-aloha's
+# ``obs["pixels"]["top"]`` stream.
+sensors:
+  - name: "top"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 50.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 480.0
+      fy: 480.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.top"
+    vendor: "sim"
+    model: "gym_aloha_top"
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: true
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["aloha", "lerobot"]
+  embodiment_tags:
+    - "aloha"
+    - "lerobot"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  deadman_required: false
+
+# Trossen Interbotix XS SDK + interbotix_ros_manipulators ROS 2 driver are
+# BSD-3 / Apache-2.0 (compatible per CLAUDE.md §7.4) but ship as
+# vendor-distributed packages, so the manifest declares closed_with_api
+# and sets hal.real to the real-hardware HAL adapter (issue #58).
+#
+# This YAML mirrors `ALOHA_REAL_DESCRIPTION` in
+# python/hal/src/openral_hal/aloha.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py). The sim
+# baseline `ALOHA_DESCRIPTION` in the same file keeps sdk_kind: open and
+# the same `hal` block; gym-aloha is constructed directly by
+# openral_sim.adapters.aloha.
+sdk_kind: "closed_with_api"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+hal:
+  sim: "openral_hal.aloha:AlohaMujocoHAL"
+  real: "openral_hal.aloha:AlohaHAL"
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
+# for the gym-aloha sim twin.  Source:
+# ``gym_aloha/assets/bimanual_viperx_transfer_cube.xml``.  Each gripper
+# is a parallel jaw driven by two finger actuators (positive +
+# mirror_actuator_index=positive+1).  The MJCF's keyframe 0 seeds the
+# fingers inside ``ctrlrange=[0.021, 0.057]`` — without it, ``qpos=0``
+# (the MjData default) sits below the joint limit and the position
+# actuator can't recover in a finite number of steps.  See ADR-0023.
+sim:
+  mjcf_uri: "gym_aloha:bimanual_viperx_transfer_cube"
+  joint_qpos_addr:
+    left_waist: 0
+    left_shoulder: 1
+    left_elbow: 2
+    left_forearm_roll: 3
+    left_wrist_angle: 4
+    left_wrist_rotate: 5
+    left_gripper: 6        # positive finger; negative finger at qpos 7
+    right_waist: 8
+    right_shoulder: 9
+    right_elbow: 10
+    right_forearm_roll: 11
+    right_wrist_angle: 12
+    right_wrist_rotate: 13
+    right_gripper: 14       # positive finger; negative finger at qpos 15
+  actuator_index:
+    left_waist: 0
+    left_shoulder: 1
+    left_elbow: 2
+    left_forearm_roll: 3
+    left_wrist_angle: 4
+    left_wrist_rotate: 5
+    left_gripper: 6
+    right_waist: 8
+    right_shoulder: 9
+    right_elbow: 10
+    right_forearm_roll: 11
+    right_wrist_angle: 12
+    right_wrist_rotate: 13
+    right_gripper: 14
+  grippers:
+    - joint: "left_gripper"
+      ctrl_range: [0.021, 0.057]
+      qpos_addrs: [6]
+      qpos_scale: 0.036   # 0.057 - 0.021; unused by passthrough but kept for symmetry
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+      actuator_index: 6
+      mirror_actuator_index: 7
+    - joint: "right_gripper"
+      ctrl_range: [0.021, 0.057]
+      qpos_addrs: [14]
+      qpos_scale: 0.036
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+      actuator_index: 14
+      mirror_actuator_index: 15
+  keyframe_index: 0
+
+onboard_compute:
+  driver_license: "BSD-3-Clause"             # interbotix_ros_manipulators
+  driver_repo: "https://github.com/Interbotix/interbotix_ros_manipulators"
+  left_arm_controller: "left_arm/arm_controller"
+  right_arm_controller: "right_arm/arm_controller"
+  left_gripper_controller: "left_arm/gripper_controller"
+  right_gripper_controller: "right_arm/gripper_controller"
+  joint_state_topic: "/joint_states"
+  estop_topic: "/aloha/estop"
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [14]
+  state_representation: "joint_positions"
+  image_flip_180: false
+
+action_spec:
+  dim: 14
+  representation: "joint_positions"
+  control_freq_hz: 50.0

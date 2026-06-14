@@ -1,0 +1,109 @@
+name: test-selective
+# Selective test execution — runs only the pytest targets a diff can actually
+# observe, via tools/select_tests.py (see docs/contributing/selective-testing.md).
+#
+# Selective test execution — runs only the pytest targets a diff can actually observe.
+# This is the CHEAPEST suite and runs on every PR, selecting ~5–20% of the ~2.9k-test suite.
+# Full `tests/sim/` and `tests/integration/` remain manual (via sim-mujoco.yml and hal.yml).
+# See tools/select_tests.py and tools/test_selection.toml for selection logic.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "diff base ref"
+        required: false
+        default: "origin/master"
+      head:
+        description: "diff head ref"
+        required: false
+        default: "HEAD"
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  select-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history so `git diff <base>...<head>` (merge-base) resolves.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # torchcodec (pulled in by the lerobot dataset codec path) dlopen()s
+      # FFmpeg's libavutil/libavcodec at runtime. The ubuntu-24.04 image does
+      # not ship them, so dataset round-trip tests (python/dataset/tests,
+      # test_cli_dataset_from_bag, …) fail with "Could not load libtorchcodec
+      # … libavutil.so.* cannot open shared object file" whenever a broad diff
+      # selects them. Install FFmpeg (provides libavutil.so.58 → core6).
+      - name: Install FFmpeg runtime libs (torchcodec)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - run: uv python install 3.12
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+
+      - name: Resolve diff range
+        id: range
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "base=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=${{ github.event.inputs.base }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.inputs.head }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select tests for the diff
+        id: select
+        run: |
+          uv run python tools/select_tests.py \
+            --base "${{ steps.range.outputs.base }}" \
+            --head "${{ steps.range.outputs.head }}" \
+            --github-output
+
+      - name: Run full suite (blast-radius change)
+        if: steps.select.outputs.full_run == 'true'
+        run: uv run pytest tests/unit/ -q -p no:launch_testing -p no:launch_ros
+
+      - name: Run selected targets
+        if: steps.select.outputs.full_run != 'true' && steps.select.outputs.any == 'true'
+        run: |
+          # Partition targets by their nearest `test`/`tests` directory and run
+          # each partition in its OWN pytest process. Two directories named
+          # `tests` (e.g. root `tests/` and `python/observability/tests/`) both
+          # register their conftest.py under the plugin name `tests.conftest`,
+          # so collecting them in a single session aborts with
+          # "Plugin already registered under a different name". One invocation
+          # per test-root keeps every session collision-free. (--import-mode is
+          # already importlib via pyproject addopts; consider_namespace_packages
+          # is NOT usable here — it breaks the `from tests.integration...`
+          # imports several unit tests rely on.)
+          declare -A groups
+          for t in ${{ steps.select.outputs.targets }}; do
+            root=$(printf '%s\n' "$t" | grep -oE '^.*/tests?(/|$)|^tests?(/|$)' | head -1 | sed 's#/$##')
+            [ -z "$root" ] && root="$t"  # no test-root segment → its own group
+            groups["$root"]="${groups["$root"]} $t"
+          done
+          rc=0
+          for root in "${!groups[@]}"; do
+            echo "::group::pytest ${root}"
+            # shellcheck disable=SC2086 -- intentional word-splitting of the
+            # space-separated per-group target list.
+            uv run pytest ${groups["$root"]} \
+              -q -p no:launch_testing -p no:launch_ros || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      - name: No affected tests
+        if: steps.select.outputs.any != 'true'
+        run: echo "::notice::No code paths affected by this diff — no tests selected."

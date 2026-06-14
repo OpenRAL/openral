@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_slam_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    ADR-0025 — bringup wrapper for upstream slam_toolbox as an OpenRAL
+    Reasoner-managed background service. Ships a per-deployment launch
+    file + a default 2D mapping parameter set + an opt-in hook into
+    `sim_e2e.launch.py`. The slam_toolbox node runs as a LifecycleNode
+    under `/openral/slam_toolbox`; the Reasoner drives its
+    INACTIVE → ACTIVE transition via `LifecycleTransitionTool`.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <!-- The upstream slam_toolbox is the workhorse this package wraps.
+       Declared as an exec_depend so `rosdep install` picks it up but it
+       isn't required to BUILD this bringup wrapper. -->
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

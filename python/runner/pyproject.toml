@@ -1,0 +1,48 @@
+[project]
+name = "openral-runner"
+version = "0.1.0"
+description = "OpenRAL inference runner — closes WorldState → Skill → HAL at a cadence"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openral-core",            # reason: RobotEnvironment / TickResult / RunResult / SensorFrame schemas
+    "openral-hal",             # reason: HardwareRunner depends on the HAL Protocol
+    "openral-observability",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
+    "openral-rskill",           # reason: HardwareRunner accepts a Skill and calls Skill.step
+    "openral-world-state",     # reason: WorldStateAggregator is the runner's WorldState producer
+    "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
+]
+
+[project.optional-dependencies]
+# Default SensorReader backend uses OpenCV's VideoCapture in a per-camera
+# background thread (mirrors lerobot's pattern). Optional so headless
+# deployments without a camera can install openral_runner without pulling
+# the ~70 MB opencv-python wheel.
+opencv = [
+    "opencv-python>=4.8",
+]
+# GStreamer backend for SensorReader (Jetson NVDEC, RTSP, multi-cam sync).
+# System deps: gstreamer1.0-plugins-{base,bad,good,ugly}; on Jetson also
+# nvidia-l4t-gstreamer. Installed via `just bootstrap-jetson`.
+gstreamer = [
+    "PyGObject>=3.42",
+]
+# NVMM zero-copy path on Jetson / Spark / Thor. Adds PyCUDA for the
+# shared CUDA context that the NvBufSurface handle is published into
+# (reader.py / cuda_context.py). ADR-0010 PR I/3 + ADR-0011. Pulled by
+# `docker/inference/Dockerfile.l4t` by default; on x86 it lets the same
+# image carry the codepath inert.
+# NOTE: the detector NVMM tier (trt_nvmm.py / nvmm_detector.py) does NOT use
+# pycuda — it uses cuda-python (the `tensorrt` group) + nvrtc, so it deploys in
+# the lean ds-on runtime image that has no nvcc / g++ / CUDA dev headers.
+gstreamer-nvmm = [
+    "PyGObject>=3.42",
+    "pycuda>=2024.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_runner"]

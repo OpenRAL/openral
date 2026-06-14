@@ -1,0 +1,34 @@
+name: release
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# Least-privilege default for the workflow; the release job opts up to the
+# specific scopes it needs (security audit 2026-06, L3).
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write   # PyPI trusted publishing (OIDC)
+      contents: write   # create the GitHub release / upload assets
+      packages: write   # push the runtime image to ghcr.io
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          file: Dockerfile.runtime
+          tags: ghcr.io/openral/openral/runtime:${{ github.ref_name }}
+          push: true
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac  # v3.9.1
+      - run: cosign sign --yes ghcr.io/openral/openral/runtime:${{ github.ref_name }}

@@ -1,0 +1,26 @@
+name: quality
+# Quality gate on every PR: ruff + mypy --strict + schema drift check. Fast (<3 min) and high signal.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy --strict -p openral_core -p openral_cli -p openral_hal
+      - run: uv run mypy --strict tools/
+      - name: Check schema drift
+        run: uv run python tools/schema_export.py --check

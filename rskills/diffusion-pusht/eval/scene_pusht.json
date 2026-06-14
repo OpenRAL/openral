@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2303.04137",
+    "arxiv": "https://arxiv.org/abs/2303.04137",
+    "model_variant": "diffusion",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/pusht.yaml --rskill rskills/diffusion-pusht",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "pusht",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=300",
+    "robot": "pusht_2d",
+    "simulator": "pusht"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 300,
+    "vla_id": "diffusion",
+    "weights_uri": "rskills/diffusion-pusht"
+  },
+  "results": {
+    "pusht/0_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 227.90637141656285,
+    "mean_coverage_iou": 0.9863256559332937
+  },
+  "baselines": {},
+  "trace_id": null
+}

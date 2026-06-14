@@ -1,0 +1,135 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/smolvla_libero (Apache-2.0)  — the paper-matching ckpt
+# Base:  lerobot/smolvla_base   (arxiv:2506.01844)
+#
+# We previously wrapped HuggingFaceVLA/smolvla_libero, but its config
+# does not match the paper: num_vlm_layers=0/32 (paper says 16),
+# vlm_model_name=SmolVLM2-500M-Instruct (paper: -Video-Instruct),
+# expert_width_multiplier=0.5 (paper: 0.75), pad_language_to=longest
+# (paper: max_length). The lerobot/smolvla_libero checkpoint matches
+# all five fields exactly. The HuggingFaceVLA checkpoint reproduces at
+# ~0.48 on libero_10 (community baseline 0.43–0.56); the lerobot one
+# is the artifact behind the paper's 0.71 claim.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-libero"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO benchmark targets table-top manipulation with a Franka Panda
+# arm — the canonical embodiment used under
+# `openral sim run --config smolvla_libero_spatial.yaml` (matches the
+# pi05-libero-nf4 / xvla-libero manifests).
+embodiment_tags:
+  - "franka_panda"
+
+# LIBERO-finetuned SmolVLA expects two RGB camera streams at 224x224 minimum
+# (training used 256x256). The runner matches each entry against the robot's
+# SensorSpec.vla_feature_key declared in robots/<robot_id>/robot.yaml.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side (ADR-0013). For the canonical franka_panda embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
+# Update by re-running: tools/rskill_publisher.py --bump-revision
+weights_uri: "hf://lerobot/smolvla_libero"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# Per-file URIs for the lerobot PolicyProcessorPipeline — closes Gap 1 + Gap 3
+# of the rSkill self-containment audit. The SmolVLA adapter downloads
+# exactly these files via hf_hub_download rather than snapshot_download.
+processors:
+  preprocessor_uri: "hf://lerobot/smolvla_libero/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_libero/policy_postprocessor.json"
+# Per-checkpoint knobs the processor JSONs don't encode. SmolVLA on
+# LIBERO uses the same 180° H/W flip + camera1/2 alias remap as the pi05
+# LIBERO checkpoint, and the same 8-D proprio state contract.
+image_preprocessing:
+  flip_180: true
+  aliases:
+    camera1: "image"
+    camera2: "image2"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# Half-chunk replan — closed-loop replanning every 25 env steps; paper-faithful
+# for the validated 3/3 success run on libero_10/4. Clamped to chunk_size at
+# apply_chunk_replay (effective replay length = min(25, 16) = 16).
+n_action_steps: 25
+latency_budget:
+  per_chunk_ms: 150.0   # SmolVLA inference at bf16 on a desktop GPU ≈ 80–120 ms
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline success rates from skills/smolvla-libero/eval/*.json. The
+# per-task breakdown lives in those JSONs; this dict is what
+# `ral skill list` renders.
+benchmarks:
+  libero_spatial: 0.80
+  libero_object: 0.78
+  libero_goal: 0.67
+  libero_10: 0.59
+
+paper_url: "https://arxiv.org/abs/2506.01844"
+dataset_uri: "hf://HuggingFaceVLA/libero"
+source_repo: "hf://lerobot/smolvla_libero"
+
+description: >
+  SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks
+  of length 16 across two RGB camera views (wrist + overhead) matching
+  the original LIBERO dataset convention. The lerobot checkpoint wrapped
+  here matches the paper's reported configuration on all five
+  architecture fields — see header comment for the rejected sibling.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  # Declaring the representation makes deploy-sim dispatch cartesian_delta +
+  # gripper (via canonical_slots_for_representation) instead of defaulting the
+  # whole vector to JOINT_POSITION, which the joint-space envelope rejects.
+  representation: "delta_ee_6d_plus_gripper"

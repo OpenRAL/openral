@@ -1,0 +1,145 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: OpenRAL/rskill-pi05-libero-nf4 (NF4-quantized from
+#        lerobot/pi05_libero_finetuned_v044 via tools/quantize_rskill.py)
+# Base:  lerobot/pi05_base (Physical Intelligence π0.5)
+#
+# Why NF4: bf16 π0.5 (~7 GB) OOMs on an 8 GB consumer GPU partway through
+# the LIBERO rollout (peak observed ~6.8 GiB before allocator spike →
+# fail-oom in `just sim-audit`). NF4 quantization of every Linear with
+# ≥4M weight elements brings the working set to ~3.5 GiB, comfortably
+# under the 8 GB ceiling while preserving paper-faithful behaviour
+# (PaliGemma + SmolVLA-paper threshold). The OpenRAL pi05 adapter
+# detects the upstream repo's quantization_metadata.json sentinel and
+# loads pre-quantized weights via `install_prequantized_linears` —
+# no on-the-fly quantization cost at startup.
+#
+# LICENSE WARNING (CLAUDE.md §7.4):
+#   Code: Apache-2.0
+#   Weights: Physical Intelligence "permissive research" license — NOT full Apache-2.0.
+#   Commercial deployment is prohibited without a separate agreement with Physical Intelligence.
+#   The OpenRAL loader derives is_commercial_use_allowed=False from
+#   license=permissive_research; activating commercially still requires
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 plus a vendor agreement.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-libero-nf4"
+version: "0.1.0"
+license: "permissive_research"   # non-standard; weights are NOT apache-2.0
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO benchmark targets table-top manipulation with a Franka Panda arm.
+embodiment_tags:
+  - "franka_panda"
+
+# π0.5 LIBERO consumes the same two-RGB-camera + 8-D state contract as
+# smolvla_libero (LiberoEnv ``image`` and ``image2`` streams renamed to
+# ``camera1`` / ``camera2`` by the stored preprocessor).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side (ADR-0013). For the canonical franka_panda embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # ``int4`` is the OpenRAL ``QuantizationDtype`` enum value that
+  # matches bitsandbytes NF4. The exact bnb scheme (nf4 + compute_dtype
+  # bf16, applied to every Linear with ≥4M weight elements) is recorded
+  # in the upstream ``quantization_metadata.json`` sentinel that the
+  # pi05 adapter probes via ``detect_prequantized_nf4`` and loads via
+  # ``install_prequantized_linears``.
+  dtype: "int4"
+  backend: "pytorch"
+# Informational VRAM ceilings, used by `ral skill check` / `openral doctor`.
+# The NF4 packed weights are ~3.5 GiB and fit comfortably under the
+# 8 GiB consumer-GPU ceiling. CLAUDE.md §11 still forbids silent
+# downcast — the actually-applied dtype stays pinned by
+# quantization.dtype above.
+min_vram_gb:
+  fp32: 14.0
+  bf16: 7.0
+  int4: 4.0
+weights_uri: "hf://OpenRAL/rskill-pi05-libero-nf4"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-nf4/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-nf4/policy_postprocessor.json"
+# The pi05 LIBERO finetune wants the default LIBERO image preprocessing
+# (180° rotation + camera1/2 alias remap to image/image2) and the canonical
+# LIBERO 8-D proprio state.
+image_preprocessing:
+  flip_180: true
+  aliases:
+    camera1: "image"
+    camera2: "image2"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 50
+# Half-chunk replan — closed-loop replanning every 25 env steps.
+n_action_steps: 25
+latency_budget:
+  per_chunk_ms: 200.0   # π0.5 (3B PaliGemma backbone) is heavier than SmolVLA
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline benchmark dict. The skills/pi05-libero/eval/libero.json
+# fixture is still status=pending (no measured number); leave the dict
+# empty until a real value lands.
+
+paper_url: "https://arxiv.org/abs/2410.24164"
+source_repo: "hf://lerobot/pi05_libero_finetuned_v044"
+
+description: >
+  π0.5 fine-tuned on LIBERO (v0.44), NF4-quantized via
+  tools/quantize_rskill.py and re-hosted at
+  OpenRAL/rskill-pi05-libero-nf4 so 8 GB GPUs can run the
+  rollout without OOM. π0.5 uses a PaliGemma 3B backbone with a
+  flow-matching head. Weights are PI permissive-research — commercial
+  use needs a vendor agreement. See eval/libero.json (pending).
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  # Declaring the representation makes deploy-sim dispatch cartesian_delta +
+  # gripper (via canonical_slots_for_representation) instead of defaulting the
+  # whole vector to JOINT_POSITION, which the joint-space envelope rejects.
+  representation: "delta_ee_6d_plus_gripper"

@@ -1,0 +1,24 @@
+[project]
+name = "openral-sim"
+version = "0.1.0"
+description = "OpenRAL sim eval — robot × scene × task × VLA factory and runner for rSkill validation before hardware deployment"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openral-core",   # reason: SimEnvironment / SceneSpec / TaskSpec / VLASpec schemas
+    "openral-runner", # reason: InferenceRunnerBase for SimRunner
+    "openral-rskill",  # reason: rSkill loader
+    "openral-observability",  # reason: configure_observability / shutdown_observability bracketing
+    "openral-dataset",        # reason: ADR-0019 RolloutRecorder + LeRobotDatasetSink for --dataset-out
+    "openral-world-state",    # reason: ADR-0044 shared look-at gaze geometry for scene-camera placement
+    "structlog>=24.1",    # reason: structured logging per CLAUDE.md §5.1
+    "PyYAML>=6.0",        # reason: SimEnvironment YAML config loader
+    "typer>=0.12",        # reason: CLI framework — exposes eval_app for mounting into ral
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_sim"]

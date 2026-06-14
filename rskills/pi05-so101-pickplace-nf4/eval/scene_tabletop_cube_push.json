@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2410.24164",
+    "arxiv": "https://arxiv.org/abs/2410.24164",
+    "model_variant": "pi05",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/tabletop_cube_push.yaml --rskill rskills/pi05-so101-pickplace-nf4",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "tabletop_push",
+    "dataset": null,
+    "protocol": "1 episodes, seed=42, success_key=is_success, max_steps=300",
+    "robot": "so101_follower",
+    "simulator": "tabletop_push"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      42
+    ],
+    "success_key": "is_success",
+    "max_steps": 300,
+    "vla_id": "pi05",
+    "weights_uri": "rskills/pi05-so101-pickplace-nf4"
+  },
+  "results": {
+    "tabletop_push/push_to_goal_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 24.482092483352364
+  },
+  "baselines": {},
+  "trace_id": null
+}

@@ -1,0 +1,124 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: RLWRLD/RLDX-1-FT-GR1  — RLDX-1 finetuned on GR-1 humanoid tabletop tasks
+# Base:  RLWRLD/RLDX-1-PT
+#
+# LICENSE: RLWRLD Model License v1.0 (non-commercial). See
+# rskills/rldx1-ft-libero-nf4/README.md for the full posture.
+#
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack). Shared
+# with the rest of the rldx1-ft-* family. The openral adapter forks
+# tools/rldx_sidecar.py transparently on first observation; user
+# workflow is one command:
+#
+#   openral sim run --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
+#               --rskill rskills/rldx1-ft-gr1-nf4 \
+#               --rskill rskills/rldx1-ft-gr1-nf4
+#
+# The adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (the model
+# card's own inference example) which exposes the Fourier-native 5-key
+# state contract (right_arm 7 + left_arm 7 + waist 3 + right_hand 6 +
+# left_hand 6 = 29-D) — override via vla.extra.embodiment_tag or
+# OPENRAL_RLDX_EMBODIMENT_TAG if needed.
+#
+# Manual boot (debug / shared host) — set OPENRAL_RLDX_AUTO_SPAWN=0
+# and start the sidecar yourself:
+#   python tools/rldx_sidecar.py --model RLWRLD/RLDX-1-FT-GR1 \
+#       --port 5555 --quantization nf4 \
+#       --embodiment-tag GENERAL_EMBODIMENT
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rldx1-ft-gr1-nf4"
+version: "0.1.0"
+license: "rlwrld_non_commercial"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "rldx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# Fourier GR-1 humanoid (ArmsAndWaistFourierHands) — matches the
+# robots/gr1/robot.yaml shipped with the GR1 tabletop tasks branch.
+embodiment_tags:
+  - "gr1"
+
+# RoboCasa GR1 tabletop tasks emit a single head-mounted `camera1`
+# egoview stream at 256x256 (see scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+
+# GR-1 ArmsAndWaistFourierHands BASIC composite action: 29-D
+# (right arm 7 + left arm 7 + waist 3 + right hand 6 + left hand 6).
+# The loader auto-fills n_dof + vla_action_key from robots/gr1/robot.yaml
+# for joint_position actuators.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+min_vram_gb:
+  bf16: 18.0
+  int4: 7.0
+weights_uri: "hf://RLWRLD/RLDX-1-FT-GR1"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-GR1/policy_preprocessor.json"
+  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-GR1/policy_postprocessor.json"
+# image_preprocessing omitted — GR-1 RoboCasa scenes emit upright frames
+# (the LIBERO rotate-180 hack is LIBERO-specific). Schema default
+# (flip_180=False, empty aliases) applies.
+state_contract:
+  # 29-D Fourier GR-1 BASIC composite state, emitted by
+  # openral_sim.backends.robocasa._wrap_obs_gr1 in the order
+  # [waist(3) | right_arm(7) | left_arm(7) | right_hand(6) | left_hand(6)].
+  layout: "gr1"
+  dim: 29
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# n_action_steps omitted — equals chunk_size (full chunk replay). The
+# upstream MSAT head emits 16 actions per inference; replaying the
+# whole chunk halves the visible viewer stalls (vs the half-chunk
+# default of 8). Trade-off: 16 env steps of open-loop control between
+# observations, fine for slow-evolution PnP tasks. Override via
+# vla.extra.replan_steps in the YAML or --n-action-steps on the CLI.
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+
+paper_url: "https://huggingface.co/RLWRLD/RLDX-1-FT-GR1"
+source_repo: "hf://RLWRLD/RLDX-1-FT-GR1"
+
+description: >
+  RLDX-1 fine-tuned on the Fourier GR-1 humanoid tabletop tasks (RoboCasa
+  GR1 fork, 24-task suite). 29-D action space (per-arm joint deltas +
+  waist + Fourier dexhand grasps); 39-D proprio (joint_pos + per-hand
+  gripper_qpos). Shares the out-of-process rldx sidecar runtime with the
+  LIBERO finetune. Non-commercial license.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+objects: []
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 29

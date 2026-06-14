@@ -1,0 +1,96 @@
+# rSkill manifest — OmDet-Turbo on-demand open-vocabulary locator (kind: detector,
+# ADR-0051).
+#
+# The on-demand sibling of rskills/omdet-turbo-indoor: SAME Apache-2.0 weights
+# (omlab/omdet-turbo-swin-tiny-hf), SAME in-process zeroshot_hf engine, but
+# mode: on_demand. The reasoner invokes it via the read-only locate_in_view tool
+# (ADR-0043) — "is object X in view right now?" — when it needs a specific object
+# that the continuous detector bank (rtdetr / omdet-turbo-indoor) does not cover.
+#
+# A lightweight (~115M, real-time, in-process) alternative to the 3B NVIDIA
+# LocateAnything VLM (locateanything-3b-nf4) for simple "find X" queries: fully
+# commercial-safe (Apache-2.0) and no sidecar. LocateAnything remains the
+# higher-quality option for complex referring expressions.
+#
+# `labels` is the STATIC DEFAULT query (a few common manipulation objects); the
+# reasoner overrides it per call via locate_in_view / the detector_query topic.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-omdet-turbo-locator"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "detector"  # ADR-0037: perception producer; emits ObjectsMetadata, no Action
+
+# embodiment-agnostic: a perception rSkill (detector/vlm) needs only an RGB
+# camera, not a specific robot. The rSkill<->robot gate exempts these kinds
+# (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
+# it matches any robot/scene.
+embodiment_tags: []
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 640
+    min_height: 480
+
+actuators_required: []
+
+runtime: "pytorch"
+quantization:
+  dtype: "fp16"
+  backend: "pytorch"
+min_vram_gb:
+  fp32: 1.0
+  fp16: 0.6
+
+weights_uri: "hf://omlab/omdet-turbo-swin-tiny-hf"
+
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 200.0
+
+detector:
+  engine: "zeroshot_hf"
+  # ADR-0051: on-demand prompted locator. The reasoner drives it via the
+  # locate_in_view tool (one-shot detect_with_query) or the detector_query topic
+  # (set_query) — `labels` is only the static default when no query is supplied.
+  mode: "on_demand"
+  labels:
+    - "cup"
+    - "mug"
+    - "bottle"
+    - "bowl"
+    - "plate"
+    - "box"
+    - "remote control"
+    - "scissors"
+    - "stapler"
+    - "spoon"
+    - "fork"
+    - "knife"
+  input_size: [640, 640]
+  score_threshold: 0.3
+
+paper_url: "https://arxiv.org/abs/2403.06892"
+source_repo: "hf://omlab/omdet-turbo-swin-tiny-hf"
+
+description: >
+  OmDet-Turbo (Swin-tiny) on-demand open-vocabulary locator. The reasoner
+  prompts it via the read-only locate_in_view tool to find a specific object in
+  the current frame — a lightweight, real-time, Apache-2.0 in-process
+  alternative to the 3B LocateAnything VLM for simple "find X" queries. Wraps
+  omlab/omdet-turbo-swin-tiny-hf. See ADR-0051 for the continuous-vs-on_demand
+  detector mode split.
+
+actions:
+  - "detect"
+
+objects:
+  - "open-vocabulary queried object"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "household"
+  - "office"

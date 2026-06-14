@@ -1,0 +1,157 @@
+{
+  "additionalProperties": false,
+  "description": "One tick's record returned by :meth:`InferenceRunner.tick`.\n\nCarries the timing breakdown so the parent OTel span can attach exact\nsub-stage durations and the latency budget enforcement can flag\nviolations without re-instrumenting.\n\nThe hardware fields (``sensors_ms``..``hal_ms``, ``safety_violations``,\n``action_applied``) are the original (v1) surface used by\n:class:`HardwareRunner`. The sim-specific fields\n(``step_idx``..``truncated``) were added by ADR-0010 amendment 1 when\n:class:`SimRunner` adopted per-step tick semantics; hardware leaves\nthem at their defaults (``None``), so a hardware tick serialises\nidentically to v1 under ``model_dump(exclude_none=True)``.\n\nAttributes:\n    stamp_ns: Tick wall-clock timestamp in nanoseconds (tick start).\n    tick_idx: 0-indexed tick counter within a run.\n    sensors_ms: ``SensorReader.read_latest`` total wall-time.\n    world_state_ms: ``WorldStateAggregator.snapshot`` wall-time.\n    inference_ms: ``Skill.step`` wall-time (the chunk dispatch cost,\n        not the full chunked inference \u2014 see :class:`ChunkedExecutor`).\n    safety_ms: Safety check wall-time.\n    hal_ms: ``HAL.send_action`` wall-time.\n    tick_ms: End-to-end tick wall-time including the rate-limiter\n        overhead.\n    chunk_index: Index of the action played out from a chunked\n        executor. ``None`` for non-chunked skills.\n    safety_violations: List of safety-violation reason strings emitted\n        during this tick. Non-empty implies the action was either\n        clamped or dropped per the safety policy.\n    action_applied: ``False`` when the\n        :class:`DeadlineOverrunPolicy` was ``drop`` and the runner\n        elected not to publish this tick's action, **or** when a sim\n        tick is the reset-tick between episodes (no inference / env\n        step happened).\n    step_idx: 0-indexed step within the current episode. Set by\n        :class:`SimRunner` on step-ticks; ``None`` on hardware ticks\n        and on sim reset-ticks.\n    episode_idx: 0-indexed episode within the current run. Set by\n        :class:`SimRunner` on every tick (including reset-ticks);\n        ``None`` on hardware ticks.\n    reward: Env step reward for this tick. Set by :class:`SimRunner`\n        on step-ticks; ``None`` on hardware ticks and reset-ticks.\n    terminated: Whether the env signalled natural termination this\n        tick. Set by :class:`SimRunner`; ``None`` elsewhere.\n    truncated: Whether the env hit its step budget this tick. Set by\n        :class:`SimRunner`; ``None`` elsewhere.\n    trace_context: Full W3C ``traceparent`` for this tick's\n        ``rskill.tick`` span, in the form\n        ``00-<trace_id_hex>-<span_id_hex>-<flags_hex>``. Optional \u2014\n        set by the runner when an OTel context is active so offline\n        consumers (dataset writers, post-hoc analysers) can resume\n        the trace without re-deriving it from the live span. Default\n        ``None`` for byte-identical v1 JSON under\n        ``model_dump(exclude_none=True)``.",
+  "properties": {
+    "stamp_ns": {
+      "minimum": 0,
+      "title": "Stamp Ns",
+      "type": "integer"
+    },
+    "tick_idx": {
+      "minimum": 0,
+      "title": "Tick Idx",
+      "type": "integer"
+    },
+    "sensors_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Sensors Ms",
+      "type": "number"
+    },
+    "world_state_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "World State Ms",
+      "type": "number"
+    },
+    "inference_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Inference Ms",
+      "type": "number"
+    },
+    "safety_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Safety Ms",
+      "type": "number"
+    },
+    "hal_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Hal Ms",
+      "type": "number"
+    },
+    "tick_ms": {
+      "minimum": 0,
+      "title": "Tick Ms",
+      "type": "number"
+    },
+    "chunk_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Chunk Index"
+    },
+    "safety_violations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Safety Violations",
+      "type": "array"
+    },
+    "action_applied": {
+      "default": true,
+      "title": "Action Applied",
+      "type": "boolean"
+    },
+    "step_idx": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Step Idx"
+    },
+    "episode_idx": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Episode Idx"
+    },
+    "reward": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reward"
+    },
+    "terminated": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Terminated"
+    },
+    "truncated": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Truncated"
+    },
+    "trace_context": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Context"
+    }
+  },
+  "required": [
+    "stamp_ns",
+    "tick_idx",
+    "tick_ms"
+  ],
+  "title": "TickResult",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

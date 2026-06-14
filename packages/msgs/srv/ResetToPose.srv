@@ -1,0 +1,24 @@
+# Snap a HAL-managed simulator (or, in the future, a real robot's
+# zero-gravity init) to a specific joint-position pose.
+#
+# Used by the skill_runner_node F1 server before the first inference
+# tick of an ExecuteSkill goal: the runner reads the active rSkill's
+# manifest.starting_pose and calls this service so the simulator's
+# qpos matches the policy's training-distribution home pose. Without
+# the call, a pi0.5 checkpoint trained from a specific teleop home
+# sees an out-of-distribution state and drifts joints into their
+# mechanical stops within a few seconds.
+#
+# Request:
+#   pose — joint positions in the HAL's robot.yaml joint order,
+#          radians for arm joints. The HAL validates the length
+#          against its declared DoF count and clips per joint limit.
+#
+# Response:
+#   success         — true iff every joint was set without violation.
+#   failure_reason  — typed string ('ROSConfigError: …', empty on success).
+
+float64[] pose
+---
+bool success
+string failure_reason

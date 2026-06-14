@@ -1,0 +1,102 @@
+site_name: OpenRAL
+site_url: https://openral.github.io/openral
+repo_url: https://github.com/OpenRAL/openral
+edit_uri: edit/master/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - python/core/src
+            - python/cli/src
+            - python/hal/src
+            - python/sensors/src
+            - python/world_state/src
+            - python/rskill/src
+            - python/runner/src
+            - python/observability/src
+            - python/sim/src
+            - python/reasoner/src
+            - python/wam/src
+            - python/dataset/src
+            - python/detect/src
+          options:
+            merge_init_into_class: true
+            show_docstring_attributes: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Quickstart:
+    - quickstart/index.md
+    - Dashboard: quickstart/dashboard.md
+  - Tutorials:
+    - Create a sim environment: tutorials/sim/create-a-sim-environment.md
+    - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
+    - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Repo map: architecture/repo-map.md
+    - Methods inventory: METHODS.md
+    # The repo state map ships as a static .html under docs/architecture/ —
+    # mkdocs nav only renders Markdown, so it is linked from
+    # architecture/overview.md instead of listed here. mkdocs copies it to
+    # the output verbatim.
+  - Roadmap:
+    - roadmap/index.md
+  - Reference:
+    - API: reference/api.md
+    - Glossary: reference/glossary.md
+    - VLA × Robot × Sim compatibility: reference/vla_compatibility.md
+    - Sensor catalog & roadmap: reference/sensors_landscape.md
+  - Contributing:
+    - Development: contributing/development.md
+    - Toolchain cheatsheet: contributing/toolchain.md
+    - Selective testing: contributing/selective-testing.md
+    - Test-suite audit: contributing/test-audit.md
+  - ADRs:
+    - ADR-0001 Record decisions: adr/0001-record-architecture-decisions.md
+    - ADR-0002 Eval & sim environments: adr/0002-eval-and-sim-environments.md
+    - ADR-0003 Pydantic over dataclasses: adr/0003-pydantic-over-dataclasses.md
+    - ADR-0004 Monorepo over poly-repo: adr/0004-monorepo-over-polyrepo.md
+    - ADR-0005 BT + LLM, not LangGraph: adr/0005-bt-llm-not-langgraph.md
+    - ADR-0006 HF Hub skill packaging: adr/0006-hf-hub-skill-packaging.md
+    - ADR-0007 Robot/sim manifest split: adr/0007-robot-sim-split.md
+    - ADR-0008 Auto-provisioning detect package: adr/0008-auto-provisioning-detect-package.md
+    - ADR-0009 Separate sim & benchmarking: adr/0009-separate-sim-and-benchmarking.md
+    - ADR-0010 Inference runner: adr/0010-inference-runner.md
+    - ADR-0011 NVMM handoff: adr/0011-nvmm-handoff.md
+    - ADR-0012 Open-core licensing: adr/0012-open-core-licensing.md
+    - ADR-0013 rSkill manifest actuators & processors: adr/0013-rskill-manifest-actuators-and-processors.md
+    - ADR-0014 ManiSkill3 & SimplerEnv backends: adr/0014-maniskill3-simpler-env-backends.md
+    - ADR-0015 RoboCasa isolated backend: adr/0015-robocasa-isolated-backend-lazy-assets.md
+    - ADR-0016 Multi-platform support: adr/0016-multi-platform-support.md
+    - ADR-0017 Dashboard OTLP receiver: adr/0017-dashboard-otlp-receiver.md
+    - ADR-0018 ROS 2 reasoner & supervisor: adr/0018-ros2-reasoner-supervisor.md
+    - ADR-0019 rosbag2 ↔ LeRobotDataset bridge: adr/0019-rosbag2-lerobot-dataset-bridge.md
+    - ADR-0020 C++ safety kernel: adr/0020-cpp-safety-kernel.md
+    - ADR-0021 Curl installer, CLI rename & PyPI: adr/0021-curl-installer-cli-rename-and-pypi-release.md
+    - ADR-0022 rSkill action vocabulary: adr/0022-rskill-action-vocabulary.md
+    - ADR-0023 Data-driven MuJoCo HAL: adr/0023-data-driven-mujoco-hal.md

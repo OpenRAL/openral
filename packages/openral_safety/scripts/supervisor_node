@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Entry point for ``ros2 run openral_safety supervisor_node``."""
+
+from openral_safety.supervisor_node import main
+
+raise SystemExit(main())

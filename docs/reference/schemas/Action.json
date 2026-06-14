@@ -1,0 +1,339 @@
+{
+  "$defs": {
+    "ControlMode": {
+      "description": "Action space / control interface exposed by a robot or skill.",
+      "enum": [
+        "joint_position",
+        "joint_velocity",
+        "joint_torque",
+        "joint_trajectory",
+        "cartesian_pose",
+        "cartesian_delta",
+        "cartesian_twist",
+        "body_twist",
+        "foot_placement",
+        "gripper_binary",
+        "gripper_position",
+        "dex_hand_joint",
+        "composite_mode"
+      ],
+      "title": "ControlMode",
+      "type": "string"
+    },
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    }
+  },
+  "description": "A single action step or chunk produced by a Skill.\n\nAttributes:\n    control_mode: Target action space.\n    horizon: Number of steps (1 = single step, H = chunk).\n    joint_targets: Joint position targets, shape ``(H, N)``.\n    joint_velocities: Joint velocity targets, shape ``(H, N)``.\n    joint_torques: Joint torque targets, shape ``(H, N)``.\n    cartesian_pose: EE pose targets.\n    cartesian_delta: EE pose deltas.\n    cartesian_twist: EE velocity targets.\n    body_twist: Base twist targets.\n    foot_placements: Discrete footstep targets.\n    gripper: Gripper commands in [0, 1].\n    dex_hand_joints: Dexterous hand joint targets.\n    confidence: rSkill confidence in [0, 1].\n    stamp_ns: Action timestamp in nanoseconds.\n    ee_name: Target end-effector name.\n    frame_id: Reference frame for Cartesian actions.\n    safety_overrides: Operator-approved safety override tokens.",
+  "properties": {
+    "control_mode": {
+      "$ref": "#/$defs/ControlMode"
+    },
+    "horizon": {
+      "default": 1,
+      "title": "Horizon",
+      "type": "integer"
+    },
+    "joint_targets": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Joint Targets"
+    },
+    "joint_velocities": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Joint Velocities"
+    },
+    "joint_torques": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Joint Torques"
+    },
+    "cartesian_pose": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/Pose6D"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cartesian Pose"
+    },
+    "cartesian_delta": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cartesian Delta"
+    },
+    "cartesian_twist": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cartesian Twist"
+    },
+    "body_twist": {
+      "anyOf": [
+        {
+          "items": {
+            "maxItems": 6,
+            "minItems": 6,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Body Twist"
+    },
+    "foot_placements": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Foot Placements"
+    },
+    "gripper": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gripper"
+    },
+    "dex_hand_joints": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dex Hand Joints"
+    },
+    "composite_mode": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Composite Mode"
+    },
+    "confidence": {
+      "default": 1.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "stamp_ns": {
+      "default": 0,
+      "title": "Stamp Ns",
+      "type": "integer"
+    },
+    "ee_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ee Name"
+    },
+    "frame_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Frame Id"
+    },
+    "safety_overrides": {
+      "additionalProperties": true,
+      "title": "Safety Overrides",
+      "type": "object"
+    }
+  },
+  "required": [
+    "control_mode"
+  ],
+  "title": "Action",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

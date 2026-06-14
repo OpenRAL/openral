@@ -1,0 +1,50 @@
+# OpenArm v2 bimanual — tabletop pick-and-place scene.
+#
+# Scene layout: LEFT-FIRST action layout, RADIANS units — both
+# match robots/openarm/robot.yaml, so the env defaults
+# (action_layout=left_first, joint_units=radians) apply with no
+# overrides. The default top-camera placement matches the
+# mddoai dataset POV (between the two robot bases, looking forward +
+# down at the tabletop).
+#
+# Policy travels on the CLI: ``--rskill rskills/<your-skill>``.
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/openarm_tabletop.yaml \
+#                 --view
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_tabletop_pnp
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "left_wrist", "right_wrist"]
+  backend_options:
+    render_width: 640
+    render_height: 480
+    max_steps: 500
+    # action_layout / joint_units default to left_first / radians — correct
+    # for this checkpoint, so we leave them implicit.
+    # top_camera_* default to the mddoai POV (between the bases,
+    # facing the tabletop). Override here to dial it if needed.
+
+task:
+  id: openarm/pnp_cube_to_drawer
+  scene_id: openarm_tabletop_pnp
+  instruction: "pick the red cube and place it in the drawer"
+  max_steps: 500
+
+# ADR-0002 Amendment 3 — mandatory mounting pose for the
+# openarm_tabletop_pnp scene. Lift bases above the table top + shift
+# forward into the workspace so the 0.6 m arm reach can sweep the
+# picking targets (mirrors the openral deploy sim HAL params for openarm).
+base_pose:
+  xyz: [0.20, 0.0, 0.55]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+  frame_id: world
+
+seed: 0
+n_episodes: 1

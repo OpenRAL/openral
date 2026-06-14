@@ -1,0 +1,201 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: RLWRLD/RLDX-1-FT-RC365  — RoboCasa-365 cross-task finetune
+# Base:  RLWRLD/RLDX-1-PT
+#
+# LICENSE: RLWRLD Model License v1.0 (non-commercial). See
+# rskills/rldx1-ft-libero-nf4/README.md for the full posture.
+#
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack). Shared
+# with the rest of the RLDX-1 family. The openral adapter forks
+# tools/rldx_sidecar.py transparently on first observation; user
+# workflow is one command:
+#
+#   openral sim run --config scenes/sim/robocasa_pnp.yaml \
+#               --rskill rskills/rldx1-ft-rc365-nf4 \
+#               --rskill rskills/rldx1-ft-rc365-nf4
+#
+# The adapter passes `--embodiment-tag GENERAL_EMBODIMENT` (matches the
+# upstream model card's inference example). The general_embodiment slot
+# in this checkpoint is the PandaMobile / RoboCasa-365 contract (NOT
+# the cross-embodiment pretrain slot).
+#
+# Manual boot (debug / shared host) — set OPENRAL_RLDX_AUTO_SPAWN=0
+# and start the sidecar yourself:
+#   python tools/rldx_sidecar.py --model RLWRLD/RLDX-1-FT-RC365 \
+#       --port 5555 --quantization nf4 \
+#       --embodiment-tag GENERAL_EMBODIMENT
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rldx1-ft-rc365-nf4"
+version: "0.1.0"
+license: "rlwrld_non_commercial"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "rldx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# RoboCasa-365 runs on PandaMobile — same embodiment we already wire
+# for pi05-robocasa365-human300-nf4.
+embodiment_tags:
+  - "panda_mobile"
+
+# Three RGB streams: agentview_left / right (256x256) + eye_in_hand.
+# RoboCasa's RoboCasaGymEnv emits these as
+# `robot0_agentview_left_image` / `..right_image` / `eye_in_hand_image`,
+# aliased to camera1/2/3 inside our scene adapter. RC365's general_
+# embodiment video keys are `video.robot0_agentview_left` /
+# `..agentview_right` / `..eye_in_hand`; the rldx adapter handles the
+# rename via _RC365_VIDEO_KEYS in openral_sim.policies.rldx.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 128
+    min_height: 128
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 128
+    min_height: 128
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 128
+    min_height: 128
+
+# RoboCasa-365 emits per-step deltas on the mobile-Franka arm — not absolute targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "delta"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+min_vram_gb:
+  bf16: 18.0
+  int4: 7.0
+weights_uri: "hf://RLWRLD/RLDX-1-FT-RC365"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_preprocessor.json"
+  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-RC365/policy_postprocessor.json"
+# RC365 was trained against the standard robocasa pipeline
+# (``gymnasium_basic.RoboCasaEnv.get_basic_observation``), whose
+# ``process_img`` does ``np.copy(img[::-1, :, :])`` — a vertical-only
+# flip — before passing every ``*_image`` field to the policy. The
+# openral RoboCasa scene adapter (``openral_sim.backends.robocasa.
+# _RoboCasaSim._wrap_obs``) now mirrors that flip at the source so
+# EVERY consumer (dashboard, /openral/cameras/<name>/image publisher,
+# this rldx adapter) sees the standard top-down orientation. No
+# additional flip needed in the rldx adapter — schema defaults apply.
+# image_preprocessing omitted intentionally.
+# RC365's general_embodiment state is 16-D laid out as
+# eef_pos_rel(3) + eef_rot_rel_quat(4) + gripper_qpos(2) + base_pos(3)
+# + base_rot_quat(4). The openral RoboCasa scene emits a 16-D
+# human300_16d state — same total dim but with gripper at the END;
+# the rldx adapter re-slices it into the RC365 5-key obs dict.
+state_contract:
+  layout: "rc365"
+  dim: 16
+  # ADR-0027 — same panda_mobile bindings as the pi05 / robocasa-nf4
+  # manifests. The rldx adapter re-slices the assembled vector into
+  # the RC365 5-key obs dict downstream of this binding.
+  bindings:
+    # ``panda_hand_tcp`` (URDF fixed-frame, 0.1034 m along panda_hand's
+    # local z) matches MJCF's ``gripper0_right_grip_site`` -- the
+    # eef site robosuite uses to compute ``robot0_base_to_eef_pos``,
+    # which is what the policy was trained on. ``panda_hand`` alone
+    # is the wrist body, ~9 cm above the actual grasp point in world,
+    # which left the assembled base_to_eef.z 9 cm higher than sim_run.
+    eef_frame: "panda_hand_tcp"
+    base_frame: "base_link"
+    # ``odom`` (HAL-published, mirrors MJCF base qpos in deploy_sim
+    # and wheel-odometry on real hardware) rather than ``map``
+    # (SLAM-mediated). On a fresh ``openral deploy sim`` launch the
+    # ``map`` frame is initialised by SLAM at an arbitrary pose so
+    # ``tf(map, base_link)`` returned coordinates ~14 m off MJCF
+    # ground truth, and the human300_16d assembler fed the policy
+    # a state vector that far from the training distribution.
+    # The training data lives in robocasa's world frame (no SLAM);
+    # ``odom`` is the matching authoritative source post-ADR-0027.
+    world_frame: "odom"
+    # openral's panda_mobile robot.yaml exposes the franka gripper as
+    # one parallel_gripper joint (per ADR-0028a, the MJCF two-finger
+    # mimic is collapsed to a single 1-DoF abstraction). The
+    # ``human300_16d`` assembler mirrors a single binding to ``[v, -v]``
+    # to reconstruct the 2-D training-distribution shape.
+    gripper_qpos_joints: ["panda_gripper"]
+    quaternion_convention: "xyzw"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# n_action_steps omitted — equals chunk_size (full chunk replay).
+# Half-chunk replay (8) bought tighter closed-loop reactivity at the
+# cost of 2× round-trips per episode; for the slow PandaMobile PnP
+# tasks the open-loop trade is worth halving the visible viewer
+# stalls. Override via vla.extra.replan_steps or --n-action-steps.
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline benchmark from the model card. RC365 deliberately probes
+# broad task generalization, so absolute success is lower than the
+# focused 24-task RoboCasa Kitchen finetune (FT-ROBOCASA).
+
+paper_url: "https://huggingface.co/RLWRLD/RLDX-1-FT-RC365"
+source_repo: "hf://RLWRLD/RLDX-1-FT-RC365"
+
+description: >
+  RLDX-1 fine-tuned on RoboCasa-365 (365-task cross-skill suite,
+  PandaMobile). Shares the out-of-process rldx sidecar runtime with the
+  other RLDX-1 finetunes. The general_embodiment slot in this checkpoint
+  is the PandaMobile contract: 3 camera streams, 16-D state
+  (eef_rel + gripper + base), 12-D action (eef_delta + gripper + base
+  + control_mode); the rldx adapter trims to 11-D for the openral
+  RoboCasa env. Non-commercial license.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+  - "pour"
+  - "wipe"
+  - "push"
+objects: []
+scenes:
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+# ADR-0028b — RLDX-1 general_embodiment 12-D layout, cross-referenced
+# against the live ``robosuite.controllers.composite.HybridMobileBase
+# ._action_split_indexes`` for PandaOmron:
+#   [0:5]  end_effector_position+rotation  (6, delta, OSC_POSE arm)   → composite 'right'
+#   [6]    gripper_close                   (1, absolute, [-1, +1])    → composite 'right_gripper'
+#   [7:9]  base_motion[0:3]                (3, JOINT_VELOCITY base)   → composite 'base'
+#                                                                       (forward, side, yaw)
+#   [10]   base_motion[3]                  (1, padding — torso slot)  → composite 'torso'
+#                                                                       (std=0 in training; discarded)
+#   [11]   control_mode                    (1, composite mode flag)   → HAL hardcodes -1
+# ADR-0028d resolves the prior "4-D non-standard-base" workaround:
+# the trailing 4 dims of the policy's ``base_motion`` group are
+# 3 active base-velocity channels + 1 always-zero torso channel,
+# both of which map onto already-existing openral ControlModes
+# (JOINT_VELOCITY for the base, discard for the unused torso).
+action_contract:
+  dim: 12
+  slots:
+    - {range: [0, 5],   control_mode: "cartesian_delta",  ee: "panda_hand",    frame: "panda_link0"}
+    - {range: [6, 6],   control_mode: "gripper_position", ee: "panda_gripper"}
+    - {range: [7, 9],   control_mode: "joint_velocity",   joint_names: ["base_x", "base_y", "base_yaw"]}
+    - {range: [10, 10], discard: true}   # torso — std=0 in training; out[10]=0 ⇒ "hold torso position"
+    - {range: [11, 11], control_mode: "composite_mode"}   # HybridMobileBase mux flag (ADR-0028d)

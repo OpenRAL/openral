@@ -1,0 +1,128 @@
+# rSkill manifest — moveit-joints: plan to a joint configuration (ADR-0024/0052)
+#
+# Wraps `moveit_msgs/action/MoveGroup`. `ros_integration.goal_builder: joint`
+# selects the `JointGoalRskill` adapter, which consumes a `joint` block
+# (`joint_names` + `positions`) and lowers it into a MoveGroup
+# `joint_constraints` goal — the clean, LLM-facing form (positions, not
+# hand-written constraint dicts). Renamed from `openral/rskill-moveit-plan-arm`
+# under ADR-0054 (the `rskill-moveit-*` family: -joints / -eef-pose / -look-at
+# over one ROSActionRskill engine).
+#
+# Collision posture: MoveIt's internal FCL planner does self + planning-scene
+# (world) collision checking at plan time. `plan_only: true` so OpenRAL's
+# per-waypoint replay through /openral/candidate_action stays the only
+# actuation path (the safety kernel checks every step); move_group never drives
+# its own controllers. `chunk_size: 1` so the supervisor sees every waypoint.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-moveit-joints"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "ros_action"
+
+# Every arm embodiment OpenRAL ships a robot.yaml for. Whether a deployment can
+# resolve this skill depends on whether a matching MoveIt config is running and
+# whether the `joint` block below is correct for that robot's planning group.
+# The Franka `panda_arm` group is the canonical example; for other embodiments
+# copy this manifest and edit `joint.joint_names` + `request.group_name`.
+embodiment_tags:
+  - "franka_panda"
+  - "ur5e"
+  - "ur10e"
+  - "so100_follower"
+  - "openarm"
+  - "rizon4"
+  - "sawyer"
+  - "widowx"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# REQUIRED for kind: ros_action — one waypoint per Action chunk so the safety
+# supervisor's per-row envelope check sees every commanded position.
+chunk_size: 1
+
+# Planning is slow on the first call (MoveIt typically 0.5–2 s on a clean
+# scene); subsequent step() calls just dequeue cached waypoints.
+latency_budget:
+  per_chunk_ms: 2000.0
+
+# ADR-0022 — surfaced to the Reasoner LLM tool palette.
+description: >
+  Plan and execute a collision-free motion to a target JOINT configuration via
+  MoveIt's MoveGroup (self + planning-scene collision checked). Provide one
+  target angle per planning-group joint. Defaults target the Franka Panda home
+  pose; override the manifest to retarget. Use when you have a joint-space goal
+  (e.g. a policy's in-distribution starting pose); for a Cartesian end-effector
+  target use rskill-moveit-eef-pose instead.
+actions:
+  - "reach"
+objects: []
+scenes: []
+
+# Provenance — ROS-wrapped rSkill; paper_url carries the upstream link.
+paper_url: "https://moveit.picknik.ai/"
+
+ros_integration:
+  package: "moveit_msgs"
+  interface_type: "MoveGroup"
+  interface_name: "/move_action"
+  # `MoveGroup.Result.planned_trajectory.joint_trajectory` is reordered into the
+  # host RobotDescription.joints order before per-waypoint chunk emission.
+  result_trajectory_field: "planned_trajectory.joint_trajectory"
+  # ADR-0054 — selects the JointGoalRskill goal-lowering adapter: the `joint`
+  # block below (joint_names + positions) is lowered into
+  # `request.goal_constraints[0].joint_constraints` at configure time.
+  goal_builder: "joint"
+  # Franka Panda home pose (panda_arm group). For other embodiments override
+  # `joint.joint_names` + `request.group_name`.
+  default_goal_json: |
+    {
+      "joint": {
+        "joint_names": ["panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4", "panda_joint5", "panda_joint6", "panda_joint7"],
+        "positions": [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785],
+        "position_tolerance_rad": 0.001
+      },
+      "request": {
+        "group_name": "panda_arm",
+        "num_planning_attempts": 5,
+        "allowed_planning_time": 5.0,
+        "max_velocity_scaling_factor": 0.3,
+        "max_acceleration_scaling_factor": 0.3,
+        "goal_constraints": []
+      },
+      "planning_options": {
+        "plan_only": true,
+        "replan": false
+      }
+    }
+  ros_dependencies:
+    - "ros-${ROS_DISTRO}-moveit"
+    - "ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config"
+
+# ADR-0026 — per-skill JSON Schema surfaced to the Reasoner LLM tool palette.
+# The LLM overrides only `joint.positions` (one per planning-group joint, in
+# the manifest's joint_names order); planner / tolerance defaults are inherited.
+goal_params_schema:
+  type: object
+  description: >
+    Target joint positions for MoveIt's MoveGroup against the planning group.
+    Provide one entry per joint in the manifest's joint_names order.
+  properties:
+    joint:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            type: number
+          minItems: 7
+          maxItems: 7
+          description: "Target joint angle (rad) per planning-group joint."
+      required:
+        - positions
+  required:
+    - joint

@@ -1,0 +1,78 @@
+# LIBERO-10 (LIBERO-Long) benchmark suite — long-horizon manipulation.
+#
+# The SmolVLA / pi0.5 papers report this suite as "LIBERO-Long". In
+# lerobot the suite id is libero_10 (10 long-horizon tasks). Max steps
+# raised to 520 to match the upstream lerobot LiberoEnv default for the
+# long suite (src/lerobot/envs/libero.py).
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("libero_10"). See libero_spatial.yaml for the canonical
+# commentary on the anchor pattern and suite invariants.
+#
+# Notes: the SmolVLA / pi0 / xVLA papers call this suite "LIBERO-Long";
+# the lerobot bundle calls it libero_10. Same 10 long-horizon tasks.
+# Per-task instructions are baked into the LIBERO suite itself
+# (env.task_description) and override TaskSpec.instruction at runtime.
+#
+# Run:
+#   openral benchmark run --suite libero_10 \
+#       --rskill smolvla-libero
+
+- &libero_scene
+  scene:
+    id: libero_10
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+  task: &task_proto
+    id: libero_10/0
+    scene_id: libero_10
+    instruction: ""
+    max_steps: 520
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 10
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2306.03310"
+    display_name: "LIBERO-Long"
+    simulator: "LIBERO (MuJoCo)"
+    honest_scope: >
+      10 episodes per task across all 10 LIBERO-Long tasks (100 rollouts
+      total). Matches the SmolVLA / pi0.5 / xVLA published protocols.
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/1
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/2
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/3
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/4
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/5
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/6
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/7
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/8
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_10/9

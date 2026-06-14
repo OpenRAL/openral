@@ -1,0 +1,21 @@
+name: Safety report
+description: Report a safety concern (deny-by-default issue, missing E-stop, etc.)
+labels: ["safety", "needs-triage"]
+assignees: ["openral/safety"]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+      description: Describe the unsafe behavior. Do not include actuation logs with PII.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: How to reproduce in sim
+      description: Sim repro is required before any code change.
+  - type: dropdown
+    attributes:
+      label: Severity
+      options: [low, medium, high, critical]
+    validations:
+      required: true

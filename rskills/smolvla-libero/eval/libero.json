@@ -1,0 +1,125 @@
+{
+  "_comment": "Upstream paper results for SmolVLA (0.45B) on LIBERO benchmark. NOT locally reproduced \u2014 numbers sourced from arxiv:2506.01844 Table 2. Reproduction is achievable via lerobot-eval (see reproduction_cli below); deferred to a dedicated benchmark session due to ~8h GPU time per full run.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "SmolVLA: A vision-language-action model for affordable and efficient robotics",
+    "arxiv": "https://arxiv.org/abs/2506.01844",
+    "table": "Table 2 \u2014 Simulation benchmarks (LIBERO and Meta-World)",
+    "model_variant": "SmolVLA (0.45B)",
+    "evaluated_by": "upstream authors",
+    "reproduced_locally": false,
+    "reproduction_planned": "Deferred \u2014 use lerobot-eval CLI (see reproduction_cli). Requires ~8h GPU on A100-class hardware.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite libero_spatial --rskill smolvla-libero",
+      "status": "in-tree (libero_spatial); libero_object / libero_goal / libero_10 catalogue YAMLs land in a follow-up to ADR-0009 PR E",
+      "notes": [
+        "The 'results' block on this file is still the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",
+        "libero_10 is the lerobot/upstream name for LIBERO-Long (what the SmolVLA paper calls 'Long').",
+        "lerobot.envs.LiberoEnv auto-injects LiberoProcessorStep to remap LIBERO obs keys to observation.images.* / observation.state.*.",
+        "No separate LIBERO gym install needed \u2014 lerobot bundles the adapter. Only lerobot + its sim extras required.",
+        "For LIBERO-plus (robustness, ~10k variants): --env.type=libero_plus"
+      ]
+    }
+  },
+  "benchmark": {
+    "name": "LIBERO",
+    "dataset": "physical-intelligence/libero",
+    "dataset_episodes": 1693,
+    "protocol": "10 trials per task, binary success (task fully completed or not), multi-task training",
+    "tasks_per_suite": 10,
+    "suites": [
+      "spatial",
+      "object",
+      "goal",
+      "long"
+    ],
+    "total_tasks": 40,
+    "robot": "Franka Panda (7-DOF)",
+    "simulator": "LIBERO (MuJoCo-based)"
+  },
+  "eval_config": {
+    "action_chunk_size": 50,
+    "flow_matching_steps": 10,
+    "image_size": [
+      512,
+      512
+    ],
+    "cameras": [
+      "OBS_IMAGE_1",
+      "OBS_IMAGE_2"
+    ],
+    "inference_mode": "synchronous",
+    "vla_pretraining": false,
+    "training_steps": 100000,
+    "batch_size": 64
+  },
+  "results": {
+    "libero_spatial": {
+      "success_rate": 0.9,
+      "n_tasks": 10,
+      "n_trials_per_task": 10
+    },
+    "libero_object": {
+      "success_rate": 0.96,
+      "n_tasks": 10,
+      "n_trials_per_task": 10
+    },
+    "libero_goal": {
+      "success_rate": 0.92,
+      "n_tasks": 10,
+      "n_trials_per_task": 10
+    },
+    "libero_long": {
+      "success_rate": 0.71,
+      "n_tasks": 10,
+      "n_trials_per_task": 10
+    },
+    "libero_avg": {
+      "success_rate": 0.873,
+      "note": "Average across all four LIBERO suites"
+    }
+  },
+  "baselines": {
+    "diffusion_policy": {
+      "libero_spatial": 0.783,
+      "libero_object": 0.925,
+      "libero_goal": 0.683,
+      "libero_long": 0.505,
+      "avg": 0.724,
+      "vla_pretraining": false
+    },
+    "octo_90M": {
+      "libero_spatial": 0.789,
+      "libero_object": 0.857,
+      "libero_goal": 0.846,
+      "libero_long": 0.511,
+      "avg": 0.751,
+      "vla_pretraining": true
+    },
+    "openvla_7b": {
+      "libero_spatial": 0.847,
+      "libero_object": 0.884,
+      "libero_goal": 0.792,
+      "libero_long": 0.537,
+      "avg": 0.765,
+      "vla_pretraining": true
+    },
+    "pi0_paligemma_3b": {
+      "libero_spatial": 0.87,
+      "libero_object": 0.63,
+      "libero_goal": 0.89,
+      "libero_long": 0.48,
+      "avg": 0.718,
+      "vla_pretraining": false
+    },
+    "pi0_3b_robotics_pretrained": {
+      "libero_spatial": 0.9,
+      "libero_object": 0.86,
+      "libero_goal": 0.95,
+      "libero_long": 0.73,
+      "avg": 0.86,
+      "vla_pretraining": true
+    }
+  }
+}

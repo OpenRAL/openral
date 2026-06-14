@@ -1,0 +1,44 @@
+# Franka in an Isaac Sim (Omniverse + PhysX + RTX) world — deploy playground
+# (ADR-0045).
+#
+# Env-only DeployScene (no task, no eval) — boots the full OpenRAL stack
+# (HAL + reasoner + safety kernel) with the scene driven by an out-of-process
+# Isaac Sim py3.11 sidecar.
+#
+# Uses the lift_cube layout: its 8-D action (7 Franka arm joints + gripper)
+# matches the franka_panda manifest's 8 joints and JOINT_POSITION control mode,
+# so a HAL action packs cleanly to env_action_dim=8 — no n_dof gap (cf. the 7-D
+# LIBERO/OSC path, ADR-0036). This is the minimal deploy-sim bring-up (ADR-0045):
+# the HAL activates, cameras + stepping work.
+#
+# Known limitation (minimal bring-up): /joint_states publishes zeros —
+# SimAttachedHAL reads real joint angles from a MuJoCo handle, which a non-MuJoCo
+# (Isaac) backend has none of; generalizing that is a tracked follow-up. Driving
+# a LIBERO camera-VLA here also needs action-contract alignment (the bowl_plate
+# layout's 7-D EE-delta vs the manifest's JOINT_POSITION) — also a follow-up.
+#
+# Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar venv
+# (set OPENRAL_ISAAC_SIDECAR_PYTHON). See scenes/sim/isaac_franka_lift.yaml.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_franka.yaml
+
+robot_id: "franka_panda"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
+  backend_options:
+    layout: "lift_cube"
+    headless: true
+    host: "127.0.0.1"
+    # port omitted on purpose: the isaac backend derives a stable, DISTINCT
+    # per-scene port (_scene_default_port). A shared pin (was 5757) let a
+    # different Isaac scene adopt this scene's lingering sidecar and serve the
+    # wrong layout; the identity-checked ping handshake still guards reuse.
+    boot_timeout_s: 1200
+    timeout_ms: 120000

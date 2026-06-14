@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "SensorReaderBackend": {
+      "description": "Which :class:`SensorReader` implementation to instantiate.\n\nADR-0010 \u00a7SensorReader \u2014 four backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: ADR-0010 Amendment\n2026-05-12 evaluated NVIDIA Holoscan SDK as a parallel ingest backbone\nand deferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+      "enum": [
+        "opencv_thread",
+        "ros2_image",
+        "gstreamer",
+        "holoscan"
+      ],
+      "title": "SensorReaderBackend",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Per-sensor backend configuration for the inference runner.\n\nPicks which :class:`SensorReader` backend services a sensor and how the\npipeline is parameterised. The optional ``publish_to_ros`` tee lets a\nGStreamer pipeline publish a downsampled stream to a ROS 2 topic for\nobservability (rosbag2 / rqt_image_view) without putting the hot path\nthrough ROS.\n\nAttributes:\n    sensor_id: Sensor name; MUST match a :attr:`SensorSpec.name` in the\n        target :class:`RobotDescription`.\n    backend: Which :class:`SensorReaderBackend` to instantiate.\n    backend_params: Backend-specific keyword arguments forwarded to the\n        reader constructor. For ``gstreamer`` typically a single\n        ``\"pipeline\"`` string. For ``opencv_thread`` typically\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}``.\n    max_age_ms: How stale a frame may be before\n        ``SensorReader.read_latest`` raises. Defaults to ~3 frames at\n        30 Hz.\n    publish_to_ros: If True, the reader tees a downsampled stream to\n        ``publish_topic`` at ``publish_rate_hz``.\n    publish_topic: ROS 2 topic to publish to when ``publish_to_ros`` is\n        True. Required iff ``publish_to_ros``.\n    publish_rate_hz: Downsample rate for the ROS tee.\n\nExample:\n    >>> SensorReaderConfig(\n    ...     sensor_id=\"wrist_rgb\",\n    ...     backend=SensorReaderBackend.GSTREAMER,\n    ...     backend_params={\n    ...         \"pipeline\": \"v4l2src device=/dev/video0 ! \"\n    ...         \"nvv4l2decoder ! nvvideoconvert ! appsink\"\n    ...     },\n    ...     publish_to_ros=True,\n    ...     publish_topic=\"/cameras/wrist_rgb/image_raw\",\n    ...     publish_rate_hz=5.0,\n    ... ).backend.value\n    'gstreamer'",
+  "properties": {
+    "sensor_id": {
+      "title": "Sensor Id",
+      "type": "string"
+    },
+    "backend": {
+      "$ref": "#/$defs/SensorReaderBackend",
+      "default": "opencv_thread"
+    },
+    "backend_params": {
+      "additionalProperties": true,
+      "title": "Backend Params",
+      "type": "object"
+    },
+    "max_age_ms": {
+      "default": 100,
+      "exclusiveMinimum": 0,
+      "title": "Max Age Ms",
+      "type": "integer"
+    },
+    "publish_to_ros": {
+      "default": false,
+      "title": "Publish To Ros",
+      "type": "boolean"
+    },
+    "publish_topic": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Publish Topic"
+    },
+    "publish_rate_hz": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Publish Rate Hz"
+    }
+  },
+  "required": [
+    "sensor_id"
+  ],
+  "title": "SensorReaderConfig",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

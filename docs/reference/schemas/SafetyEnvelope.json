@@ -1,0 +1,184 @@
+{
+  "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by ADR-0028b's per-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: ADR-0028b \u2014 angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        :attr:`max_ee_speed_m_s`). ``None`` skips the check.\n    max_base_linear_speed_m_s: ADR-0028b \u2014 BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: ADR-0028b \u2014 BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.",
+  "properties": {
+    "workspace_box_min_xyz": {
+      "anyOf": [
+        {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace Box Min Xyz"
+    },
+    "workspace_box_max_xyz": {
+      "anyOf": [
+        {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace Box Max Xyz"
+    },
+    "no_go_zones": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "No Go Zones",
+      "type": "array"
+    },
+    "max_ee_speed_m_s": {
+      "default": 0.5,
+      "title": "Max Ee Speed M S",
+      "type": "number"
+    },
+    "max_ee_accel_m_s2": {
+      "default": 1.0,
+      "title": "Max Ee Accel M S2",
+      "type": "number"
+    },
+    "max_joint_speed_factor": {
+      "default": 0.7,
+      "title": "Max Joint Speed Factor",
+      "type": "number"
+    },
+    "max_force_n": {
+      "default": 50.0,
+      "title": "Max Force N",
+      "type": "number"
+    },
+    "max_torque_nm": {
+      "default": 10.0,
+      "title": "Max Torque Nm",
+      "type": "number"
+    },
+    "deadman_required": {
+      "default": true,
+      "title": "Deadman Required",
+      "type": "boolean"
+    },
+    "e_stop_topic": {
+      "default": "/safety/e_stop",
+      "title": "E Stop Topic",
+      "type": "string"
+    },
+    "e_stop_qos": {
+      "const": "reliable",
+      "default": "reliable",
+      "title": "E Stop Qos",
+      "type": "string"
+    },
+    "contact_force_threshold_n": {
+      "default": 30.0,
+      "title": "Contact Force Threshold N",
+      "type": "number"
+    },
+    "cycle_time_violation_threshold_ms": {
+      "default": 5.0,
+      "title": "Cycle Time Violation Threshold Ms",
+      "type": "number"
+    },
+    "human_in_loop_required": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Human In Loop Required",
+      "type": "array"
+    },
+    "max_cartesian_step_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Cartesian Step M"
+    },
+    "max_cartesian_step_rad": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Cartesian Step Rad"
+    },
+    "max_ee_angular_speed_rad_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Ee Angular Speed Rad S"
+    },
+    "max_base_linear_speed_m_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Base Linear Speed M S"
+    },
+    "max_base_angular_speed_rad_s": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Base Angular Speed Rad S"
+    }
+  },
+  "title": "SafetyEnvelope",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

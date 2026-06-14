@@ -1,0 +1,140 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Wraps: OpenRAL/rskill-molmoact2-libero-nf4 (NF4-quantized from
+#        allenai/MolmoAct2-LIBERO via tools/quantize_rskill.py)
+# Base:  allenai/MolmoAct2 (Ai2 action reasoning model, Molmo2-ER VLM +
+#        flow-matching action expert) — arXiv:2605.02881
+#
+# Why NF4: bf16 MolmoAct2 (~5.5 B params, ~11 GiB) OOMs an 8 GiB consumer
+# GPU. NF4 quantization of every Linear with >=4M weight elements brings
+# the working set to ~3.5 GiB, comfortably under the 8 GiB ceiling while
+# preserving paper-faithful behaviour (Molmo2-ER backbone + DiT-style
+# action expert). The OpenRAL molmoact2 adapter detects the upstream
+# repo's quantization_metadata.json sentinel and loads the pre-quantized
+# weights via load_prequantized_state_for_rskill (no on-the-fly
+# quantization cost at startup).
+#
+# LICENSE (CLAUDE.md §7.4): Apache-2.0 (code + weights). MolmoAct2 is a
+# fully open release from Ai2 — weights, training code, and data are all
+# Apache-2.0. Commercial use is permitted.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-molmoact2-libero-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "molmoact2"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO benchmark targets table-top manipulation with a Franka Panda arm.
+embodiment_tags:
+  - "franka_panda"
+
+# MolmoAct2 LIBERO consumes the same two-RGB-camera + 8-D state contract as
+# the other LIBERO finetunes (LiberoEnv ``image`` / ``image2`` streams
+# renamed to ``camera1`` / ``camera2`` by the stored preprocessor).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side (ADR-0013). For the canonical franka_panda embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # ``int4`` is the OpenRAL ``QuantizationDtype`` enum value that matches
+  # bitsandbytes NF4. The exact bnb scheme (nf4 + compute_dtype bf16, applied
+  # to every Linear with >=4M weight elements) is recorded in the upstream
+  # ``quantization_metadata.json`` sentinel that the molmoact2 adapter probes
+  # via ``detect_prequantized_nf4`` and loads via ``install_prequantized_linears``.
+  dtype: "int4"
+  backend: "pytorch"
+# Informational VRAM ceilings, used by `openral rskill check` / `openral doctor`.
+# The NF4 packed weights are ~3.5 GiB and fit comfortably under the 8 GiB
+# consumer-GPU ceiling.
+min_vram_gb:
+  fp32: 22.0
+  bf16: 11.0
+  int4: 4.0
+weights_uri: "hf://OpenRAL/rskill-molmoact2-libero-nf4"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-libero-nf4/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-libero-nf4/policy_postprocessor.json"
+# Default LIBERO image preprocessing (180° rotation + camera1/2 alias remap
+# to image/image2) and the canonical LIBERO 8-D proprio state.
+image_preprocessing:
+  flip_180: true
+  aliases:
+    camera1: "image"
+    camera2: "image2"
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 10
+# Full-chunk replan: the LIBERO checkpoint's action_horizon is 10
+# (config.max_action_horizon = norm_stats libero.action_horizon = 10), so the
+# chunk is 10 and we replay all of it before re-inferring. The adapter clamps
+# any larger value to the checkpoint horizon.
+n_action_steps: 10
+latency_budget:
+  # MolmoAct2's adaptive-depth reasoning runs a single action call in ~180 ms
+  # (base) to ~790 ms (with depth reasoning); a half-chunk replan budget of
+  # 1000 ms leaves headroom for the flow-matching sampling.
+  per_chunk_ms: 1000.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2605.02881"
+source_repo: "hf://allenai/MolmoAct2-LIBERO"
+
+description: >
+  MolmoAct2 (Ai2) finetuned on the full LIBERO training mixture, NF4-quantized
+  via tools/quantize_rskill.py and re-hosted at
+  OpenRAL/rskill-molmoact2-libero-nf4 so 8 GB GPUs can run the rollout
+  without OOM. MolmoAct2 grafts a flow-matching continuous-action expert onto
+  the Molmo2-ER embodied-reasoning VLM via per-layer KV-cache conditioning.
+  Reported LIBERO success: 97.2% (98.1% for the -Think depth-reasoning
+  variant). Weights are Apache-2.0 — commercial use permitted. See
+  eval/libero.json.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool palette so it
+# can pick this skill by what it does (action verb + object + scene), not just
+# by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge to
+# bind the LeRobot v3 `action` feature shape). LIBERO Franka uses a 7-D
+# end-effector action (6-DoF delta pose + gripper).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  representation: "delta_ee_6d_plus_gripper"

@@ -1,0 +1,37 @@
+[project]
+name = "openral-dataset"
+version = "0.1.0"
+description = "OpenRAL dataset bridge — RolloutRecorder + LeRobotDataset v3 / rosbag2 sinks for every skill execution (ADR-0019)"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openral-core",                  # reason: RobotDescription / ObservationSpec / ActionSpec / SensorSpec schemas (normative bind targets)
+    "openral-observability",         # reason: semconv constants (DATASET_REPO_ID / DATASET_EPISODE_IDX / DATASET_FRAME_IDX) + rskill_span helpers
+    "numpy>=1.26",                   # reason: per-frame state / action / image arrays
+    "structlog>=24.1",               # reason: structured logging per CLAUDE.md §5.1
+    "mcap>=1.2",                     # reason: Rosbag2Sink mcap writer (PR3); also read by Rosbag2ToLeRobotConverter (PR4)
+]
+
+[project.optional-dependencies]
+# lerobot is heavy (transformers, torch, MuJoCo). It is a hard dep of the
+# LeRobotDatasetSink, but kept out of the base install so consumers can use
+# RolloutRecorder + Rosbag2Sink (PR3) without paying the lerobot tax. The
+# sink raises ROSConfigError with this install hint when lerobot is absent.
+lerobot = [
+    "lerobot>=0.5.1",                # reason: LeRobotDataset v3.0 writer (codebase_version="3.0")
+    "pyarrow>=17",                   # reason: meta/episodes/*.parquet writes (lerobot dep but explicit per CLAUDE.md §5.1)
+]
+# PR3 ROS-side deps (mcap is PyPI; rosbag2_py + rclpy are system-installed
+# via apt — same convention as elsewhere in the workspace, lazy-imported
+# by Rosbag2Sink with a typed install hint if missing).
+ros = [
+    "mcap>=1.2",                     # reason: mcap storage backend — Foxglove-native, Humble+ default
+    "mcap-ros2-support>=0.5",        # reason: ROS 2 msg serdes inside mcap
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_dataset"]

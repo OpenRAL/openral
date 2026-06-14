@@ -1,0 +1,42 @@
+# Franka in Isaac Sim, imported from the robot's URDF — robot-agnostic deploy
+# scene (ADR-0045 amendment).
+#
+# Unlike scenes/deploy/isaac_franka.yaml (which uses the `lift_cube` layout's
+# hardcoded Isaac built-in Franka example asset), this scene uses the
+# `manifest` layout: the sidecar imports the franka_panda manifest's URDF
+# (python:robot_descriptions.panda_description:URDF_PATH) via Isaac's URDF
+# importer, maps DOFs to the manifest joint order by name, and drives the arm
+# with a JOINT_POSITION controller. Swap `robot_id` to any manifest robot whose
+# urdf_path resolves — that is the point: the robot is pluggable, the backend is
+# the environment.
+#
+# M1 scope: fixed-base arm, one RGB camera, /joint_states from the imported
+# articulation. Generic depth/lidar (M2) and the mobile base (M3) extend the
+# same `manifest` path; see ADR-0045 §"Robot-agnostic, URDF-driven scenes".
+#
+# Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar
+# venv (set OPENRAL_ISAAC_SIDECAR_PYTHON).
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_franka_urdf.yaml \
+#       --no-enable-octomap --hal viewer_enabled=false
+
+robot_id: "franka_panda"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
+  backend_options:
+    layout: "manifest"
+    headless: true
+    host: "127.0.0.1"
+    # port omitted on purpose: the isaac backend derives a stable, DISTINCT
+    # per-scene port (_scene_default_port). A shared pin (was 5757) let a
+    # different Isaac scene adopt this scene's lingering sidecar and serve the
+    # wrong layout; the identity-checked ping handshake still guards reuse.
+    boot_timeout_s: 1200
+    timeout_ms: 120000

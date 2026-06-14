@@ -1,0 +1,16 @@
+# RoboCasa kitchen environment — deploy playground (sim digital twin).
+# Spins up the full OpenRAL stack with no predefined task or success criterion;
+# robot auto-resolves via ``SCENES.fixed_robot()`` (panda_mobile manipulator).
+# Run: openral deploy sim --config scenes/deploy/robocasa_pnp.yaml
+# Setup: just sync --all-packages --group robocasa
+
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  observation_height: 128
+  observation_width: 128
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE

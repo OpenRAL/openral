@@ -1,0 +1,46 @@
+# Selective test-execution config — consumed by tools/select_tests.py.
+#
+# CLAUDE.md §1.4 (explicit beats implicit): the blast-radius list and the
+# non-code fixture triggers live here as data, not buried in code. The
+# package dependency graph itself is *derived* from each
+# python/<pkg>/pyproject.toml at runtime — it is never hand-maintained here,
+# so it cannot drift from the real workspace.
+
+# Changed paths whose blast radius is the whole suite. A match here forces a
+# full run (select_tests.py emits `full_run = true`) — we never try to be
+# clever about a root config, the lockfile, a shared conftest, or the
+# selector's own inputs, because a wrong *negative* here silently skips a
+# real regression.
+full_run_globs = [
+  "pyproject.toml",
+  "uv.lock",
+  "Justfile",
+  "conftest.py",
+  "tests/conftest.py",
+  "tests/sim/conftest.py",
+  "python/*/conftest.py",
+  "python/*/tests/conftest.py",
+  ".github/workflows/test-selective.yml",
+  ".github/workflows/test-python.yml",
+  ".github/workflows/test-ros2.yml",
+  "tools/select_tests.py",
+  "tools/test_selection.toml",
+]
+
+# Source domains the *Python* suite legitimately does not cover, so a change
+# confined to them selects nothing here rather than forcing a wasteful full
+# Python run. They are covered by their own workflows: cpp/ by `test-ros2`
+# (colcon) and the safety-kernel ctest, packages/**/*.cpp likewise.
+ignore_globs = [
+  "cpp/**",
+]
+
+# Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
+# scan can attribute to a package, mapped to the tests that load them. Keys
+# are globs (matched against the repo-relative changed path); values are
+# pytest targets. CLAUDE.md §1.11 — these fixtures are loaded for real by the
+# listed tests, so a fixture edit must re-run them.
+[extra_triggers]
+"scenes/**" = ["tests/unit/test_examples_sim_configs_load.py"]
+"robots/**" = ["tests/unit"]
+"rskills/**" = ["tests/unit"]

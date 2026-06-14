@@ -1,0 +1,39 @@
+OpenRAL — Open-Source Robot Agent Harness for Vision-Language-Action Models
+Copyright 2025-2026 OpenRAL Contributors
+
+This product is distributed under a two-tier licensing model
+established by ADR-0012 (docs/adr/0012-open-core-licensing.md):
+
+  Tier 1 — Open Core
+    Contracts, runtime substrate, simulators, HAL/sensors,
+    observability primitives, safety code, examples, tests, docs,
+    tools, scripts, robot manifests, and rSkill manifests.
+    Licensed under the Apache License, Version 2.0 (see LICENSE and
+    LICENSES/Apache-2.0.txt).
+
+  Tier 2 — Commercial Source-Available  (no Tier 2 packages exist
+    on disk today; this notice pre-declares the posture for future
+    packages: reasoner, wam, dispatcher, skill_catalog, fleet).
+    Licensed under the PolyForm Small Business License 1.0.0 (see
+    LICENSES/PolyForm-Small-Business-1.0.0.txt) together with the
+    OpenRAL Academic Research Additional Permission (see
+    LICENSES/Academic-Research-Permission.txt). Each Tier 2 package
+    will ship its own LICENSE file when it lands.
+
+Skill weights distributed via Hugging Face Hub remain governed by
+their upstream licenses (SmolVLA Apache-2.0, π0 research-permissive,
+GR00T NVIDIA AI Foundation non-commercial, OpenVLA MIT, ACT MIT,
+Diffusion Policy MIT, etc.). The license-lineage code in
+python/skill/ surfaces the posture per skill at install time.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing
+permissions and limitations under the License.

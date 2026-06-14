@@ -1,0 +1,56 @@
+# Free-axis tabletop cube-push scene (NOT gym PushT — this is a 3-D robot arm task).
+# The robot is a flag: swap with --robot franka_panda (retune backend_options for reach).
+# Run: openral sim run --config scenes/sim/tabletop_cube_push.yaml \
+#                      --rskill rskill://rskills/<your-skill>
+
+robot_id: so101_follower          # the flag — any arm with a `sim.mjcf_uri` works
+
+scene:
+  id: tabletop_push
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["overhead", "wrist"]
+  backend_options:
+    # Table: 80 × 80 cm slab, top surface at z = 0 (robot base height).
+    table_size_xy: [0.80, 0.80]
+    table_top_z: 0.0
+    table_center_xy: [0.0, 0.30]
+
+    # SO-101 sits at the world origin (the manifest MJCF's home orientation
+    # faces the table). base_pose: in the YAML would override this with a full
+    # 6-DOF mount; the yaw-only fallback is enough for a single tabletop arm.
+    robot_base_xyz: [0.0, 0.0, 0.0]
+    robot_base_yaw_deg: 0.0
+
+    # 5 cm red cube, ~0.05 kg.
+    cube_size: [0.025, 0.025, 0.025]
+    cube_mass: 0.05
+    cube_spawn_xy_range: [[-0.12, 0.12], [0.16, 0.26]]
+    goal_spawn_xy_range: [[-0.12, 0.12], [0.30, 0.42]]
+    goal_radius: 0.05
+    goal_min_separation: 0.12
+    off_table_z_tol: 0.04
+
+    # Wrist camera parented to the SO-101 end-effector body. This body name is
+    # robot-specific (so101/so100 → "gripper", Franka → "hand"); drop this key
+    # to run with only the two world cameras (works for any robot).
+    wrist_camera_mount_body: "gripper"
+    wrist_camera_pos_local: [0.03, -0.02, -0.06]
+    wrist_camera_fovy: 75.0
+
+    settle_steps: 5
+
+task:
+  id: tabletop_push/push_to_goal
+  scene_id: tabletop_push
+  instruction: "push the red cube onto the green goal marker"
+  max_steps: 300
+  success_key: is_success
+
+seed: 42
+n_episodes: 1
+record_video: false
+
+metadata:
+  honest_scope: "single-episode result; success criterion is geometric (cube centre within 5 cm of the goal disc and still resting on the table)"

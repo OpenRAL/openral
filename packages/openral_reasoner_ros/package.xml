@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_reasoner_ros</name>
+  <version>0.1.0</version>
+  <description>
+    OpenRAL S2 reasoner lifecycle node (ADR-0018 F4) — direct typed
+    LLM tool-call dispatch. Subscribes to /openral/world_state_slow,
+    /openral/failure/*, /openral/perception/*, /openral/prompt; ticks
+    at 5-10 Hz with event preemption; dispatches one of four
+    openral_core.ReasonerToolCall variants per tick (ExecuteSkill,
+    ReloadGstPipeline, LifecycleTransition, EmitPrompt). The reasoner
+    holds no authority over actuation — it never publishes
+    openral_msgs/ActionChunk.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>rclpy_action</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>rclpy_lifecycle</depend>
+  <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>openral_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

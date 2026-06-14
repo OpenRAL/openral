@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "QuantizationBackend": {
+      "description": "Inference backend that will execute the quantized model.\n\nAttributes:\n    PYTORCH: ``torch.quantization`` / ``bitsandbytes`` / ``torchao``.\n    ONNX: ``onnxruntime`` with quantization pre-applied at export.\n    TENSORRT: NVIDIA TensorRT engine (INT8 / FP8 calibrated).\n    GGUF: llama.cpp / ggml GGUF format (CPU and Metal).\n    MLX: Apple MLX framework (Apple Silicon only).\n\nExample:\n    >>> QuantizationBackend.PYTORCH.value\n    'pytorch'",
+      "enum": [
+        "pytorch",
+        "onnx",
+        "tensorrt",
+        "gguf",
+        "mlx"
+      ],
+      "title": "QuantizationBackend",
+      "type": "string"
+    },
+    "QuantizationConfig": {
+      "description": "Full specification of how to quantize a skill's model weights.\n\nAttributes:\n    dtype: Target numeric format.\n    backend: Inference backend that will execute the model.\n    per_channel: Use per-channel (vs per-tensor) quantization.\n    calibration_dataset: HuggingFace dataset ID or local path used for\n        post-training calibration (INT8 / TensorRT only).\n    extra: Backend-specific overrides (e.g. ``{\"calibration_steps\": 128}``).\n\nExample:\n    >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)\n    >>> cfg.backend\n    <QuantizationBackend.PYTORCH: 'pytorch'>",
+      "properties": {
+        "dtype": {
+          "$ref": "#/$defs/QuantizationDtype",
+          "default": "fp32"
+        },
+        "backend": {
+          "$ref": "#/$defs/QuantizationBackend",
+          "default": "pytorch"
+        },
+        "per_channel": {
+          "default": false,
+          "title": "Per Channel",
+          "type": "boolean"
+        },
+        "calibration_dataset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Dataset"
+        },
+        "extra": {
+          "additionalProperties": true,
+          "title": "Extra",
+          "type": "object"
+        }
+      },
+      "title": "QuantizationConfig",
+      "type": "object"
+    },
+    "QuantizationDtype": {
+      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "fp4_nvfp4"
+      ],
+      "title": "QuantizationDtype",
+      "type": "string"
+    },
+    "RSkillRuntime": {
+      "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
+      "enum": [
+        "pytorch",
+        "onnx",
+        "tensorrt",
+        "trt_llm",
+        "vllm",
+        "gguf",
+        "mlx",
+        "jax"
+      ],
+      "title": "RSkillRuntime",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-libero``). The\n        :class:`openral_sim.SimRunner` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    runtime: Optional runtime override; ``None`` means \"use whatever the\n        policy/manifest declares\".\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "weights_uri": {
+      "title": "Weights Uri",
+      "type": "string"
+    },
+    "device": {
+      "default": "auto",
+      "title": "Device",
+      "type": "string"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RSkillRuntime"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "quantization": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuantizationConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "deterministic": {
+      "default": false,
+      "title": "Deterministic",
+      "type": "boolean"
+    },
+    "extra": {
+      "additionalProperties": true,
+      "title": "Extra",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "weights_uri"
+  ],
+  "title": "VLASpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

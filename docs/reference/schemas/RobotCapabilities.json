@@ -1,0 +1,213 @@
+{
+  "$defs": {
+    "ControlMode": {
+      "description": "Action space / control interface exposed by a robot or skill.",
+      "enum": [
+        "joint_position",
+        "joint_velocity",
+        "joint_torque",
+        "joint_trajectory",
+        "cartesian_pose",
+        "cartesian_delta",
+        "cartesian_twist",
+        "body_twist",
+        "foot_placement",
+        "gripper_binary",
+        "gripper_position",
+        "dex_hand_joint",
+        "composite_mode"
+      ],
+      "title": "ControlMode",
+      "type": "string"
+    },
+    "QuantizationDtype": {
+      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "fp4_nvfp4"
+      ],
+      "title": "QuantizationDtype",
+      "type": "string"
+    },
+    "RSkillRuntime": {
+      "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
+      "enum": [
+        "pytorch",
+        "onnx",
+        "tensorrt",
+        "trt_llm",
+        "vllm",
+        "gguf",
+        "mlx",
+        "jax"
+      ],
+      "title": "RSkillRuntime",
+      "type": "string"
+    }
+  },
+  "description": "Capability flags used for skill compatibility checking.\n\nAttributes:\n    locomotion: Locomotion types available.\n    can_lift_kg: Maximum payload in kg.\n    has_dexterous_hands: Whether dexterous hands are present.\n    has_tactile: Whether tactile sensing is available.\n    has_force_control: Whether force/impedance control is supported.\n    has_vision: Whether camera(s) are present.\n    has_lidar: Whether LiDAR is present.\n    has_audio: Whether audio I/O is present.\n    bimanual: Whether the robot has two arms.\n    onboard_compute_tops: Peak onboard compute in TOPS.\n    onboard_memory_gb: Onboard RAM in GB.\n    gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).\n    cuda_compute_capability: Highest CUDA compute capability (major, minor),\n        e.g. (8, 9) for Ada Lovelace, (10, 0) for Blackwell.  ``None`` on\n        non-CUDA hosts.\n    cuda_toolkit_version: ``nvcc`` version string when present.\n    tensorrt_version: TensorRT runtime version string when importable.\n    gpu_supported_runtimes: Inference runtimes the host can execute, used\n        by ``rSkill.check_capabilities`` to match ``RSkillManifest.runtime``.\n    gpu_supported_dtypes: Quantization dtypes the host accelerator\n        supports (derived from CUDA compute capability or platform).\n    supported_control_modes: List of supported ControlMode values.\n    supported_vla_embodiments: VLA embodiment IDs this robot can run.\n    embodiment_tags: Short tags mapping to VLA heads / dataset splits.\n    nvmm_available: Whether ``libnvbufsurface.so`` is present on the host\n        (Tegra L4T multimedia stack).  ``True`` enables the NVMM\n        zero-copy sensor-ingest path on Jetson; always ``False`` on x86\n        and on stripped L4T images.  Populated by\n        :func:`openral_detect.probes.gpu._probe_nvmm_available`.\n        Added in v0.5 per ADR-0013.",
+  "properties": {
+    "locomotion": {
+      "items": {
+        "enum": [
+          "bipedal",
+          "quadruped",
+          "wheeled",
+          "tracked",
+          "none"
+        ],
+        "type": "string"
+      },
+      "title": "Locomotion",
+      "type": "array"
+    },
+    "can_lift_kg": {
+      "default": 0.0,
+      "title": "Can Lift Kg",
+      "type": "number"
+    },
+    "has_dexterous_hands": {
+      "default": false,
+      "title": "Has Dexterous Hands",
+      "type": "boolean"
+    },
+    "has_tactile": {
+      "default": false,
+      "title": "Has Tactile",
+      "type": "boolean"
+    },
+    "has_force_control": {
+      "default": false,
+      "title": "Has Force Control",
+      "type": "boolean"
+    },
+    "has_vision": {
+      "default": true,
+      "title": "Has Vision",
+      "type": "boolean"
+    },
+    "has_lidar": {
+      "default": false,
+      "title": "Has Lidar",
+      "type": "boolean"
+    },
+    "has_audio": {
+      "default": false,
+      "title": "Has Audio",
+      "type": "boolean"
+    },
+    "bimanual": {
+      "default": false,
+      "title": "Bimanual",
+      "type": "boolean"
+    },
+    "onboard_compute_tops": {
+      "default": 0.0,
+      "title": "Onboard Compute Tops",
+      "type": "number"
+    },
+    "onboard_memory_gb": {
+      "default": 0.0,
+      "title": "Onboard Memory Gb",
+      "type": "number"
+    },
+    "gpu_vram_gb": {
+      "default": 0.0,
+      "title": "Gpu Vram Gb",
+      "type": "number"
+    },
+    "cuda_compute_capability": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cuda Compute Capability"
+    },
+    "cuda_toolkit_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cuda Toolkit Version"
+    },
+    "tensorrt_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tensorrt Version"
+    },
+    "gpu_supported_runtimes": {
+      "items": {
+        "$ref": "#/$defs/RSkillRuntime"
+      },
+      "title": "Gpu Supported Runtimes",
+      "type": "array"
+    },
+    "gpu_supported_dtypes": {
+      "items": {
+        "$ref": "#/$defs/QuantizationDtype"
+      },
+      "title": "Gpu Supported Dtypes",
+      "type": "array"
+    },
+    "supported_control_modes": {
+      "items": {
+        "$ref": "#/$defs/ControlMode"
+      },
+      "title": "Supported Control Modes",
+      "type": "array"
+    },
+    "supported_vla_embodiments": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Vla Embodiments",
+      "type": "array"
+    },
+    "embodiment_tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Embodiment Tags",
+      "type": "array"
+    },
+    "nvmm_available": {
+      "default": false,
+      "title": "Nvmm Available",
+      "type": "boolean"
+    }
+  },
+  "title": "RobotCapabilities",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,70 @@
+# OpenRAL inference deploy — docker-compose reference.
+#
+# Single supported deployment surface after ADR-0010 amendment
+# "Single-Dockerfile consolidation + CUDA-13/DeepStream-9 alignment".
+# `inference-x86` is built from the consolidated `Dockerfile.x86` (CUDA 13
+# + ROS 2 Jazzy + GStreamer). `inference-x86-deepstream` selects the
+# opt-in DeepStream stage (EULA-gated; tarball must be present at
+# `docker/inference/deepstream/`).
+#
+# Usage:
+#   docker compose -f docker/inference/docker-compose.yaml up inference-x86
+#   docker compose -f docker/inference/docker-compose.yaml up inference-x86-deepstream
+
+services:
+  inference-x86:
+    image: openral:x86-latest
+    build:
+      context: ../..  # workspace root, so the COPY directives find python/
+      dockerfile: docker/inference/Dockerfile.x86
+    runtime: nvidia    # docker engine GPU integration
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      OPENRAL_CUDA_DEVICE_INDEX: "0"
+    devices:
+      # Uncomment if you have a USB camera; not required for videotestsrc.
+      # - /dev/video0:/dev/video0
+      []
+    volumes:
+      - ../../examples:/workspace/examples:ro
+      - ../../skills:/workspace/skills:ro
+      - ../../robots:/workspace/robots:ro
+      - ../../deployments:/workspace/deployments:ro
+    # `deploy run` is real-hardware only (ADR-0031): append your own
+    # `command: ["run", "--config", "deployments/<your-deployment>.yaml"]`
+    # once a RobotEnvironment config exists and a robot is connected. With no
+    # command the image runs its `openral deploy` entrypoint (prints help).
+
+  # Opt-in DeepStream variant — bundles NVIDIA DeepStream SDK 9.0 for
+  # `nvvideoconvert`, `nvstreammux`, NVMM caps on x86, `nvinfer`. The
+  # build requires the user to:
+  #   1. Accept the NVIDIA DeepStream EULA at
+  #      https://developer.download.nvidia.com/assets/Deepstream/LicenseAgreement-NGC.pdf
+  #   2. Download deepstream_sdk_v9.0.0_x86_64.tbz2 from
+  #      https://developer.nvidia.com/deepstream-getting-started
+  #   3. Place it at `docker/inference/deepstream/` (gitignored).
+  # See `docker/inference/README.md` for the full clause-by-clause
+  # EULA breakdown. The resulting image is NOT redistributable as
+  # Apache-2.0 (EULA §2.c).
+  inference-x86-deepstream:
+    image: openral:x86-deepstream-latest
+    build:
+      context: ../..
+      dockerfile: docker/inference/Dockerfile.x86
+      args:
+        WITH_DEEPSTREAM_STAGE: on
+      additional_contexts:
+        ds: ./deepstream
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      OPENRAL_CUDA_DEVICE_INDEX: "0"
+    volumes:
+      - ../../examples:/workspace/examples:ro
+      - ../../skills:/workspace/skills:ro
+      - ../../robots:/workspace/robots:ro
+      - ../../deployments:/workspace/deployments:ro
+    # See `inference-x86` above: append a real `command:` against a
+    # `deployments/*.yaml` once you have one + connected hardware (ADR-0031).

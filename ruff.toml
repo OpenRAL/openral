@@ -1,0 +1,60 @@
+line-length = 100
+target-version = "py310"
+exclude = ["build", "install", "log", ".venv", "**/_generated/**"]
+
+[lint]
+select = ["E","F","W","I","B","UP","N","SIM","PL","RUF","ASYNC","ANN","D"]
+ignore = [
+    "D203", "D213",       # incompatible docstring rules
+    "PLR0913",            # too many args (Pydantic models)
+]
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+"tests/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003"]  # PLC0415/PLR0915/PLR0912: ROS-gated test functions have deferred imports and are naturally long with many setup branches; SIM105/SIM115: try-except-pass and bare open() are idiomatic in test teardown / subprocess wiring; RUF001-3: Unicode math symbols in docstrings are intentional
+"packages/**/test/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003", "E402"]  # ROS package `test/` directories follow the same conventions as `tests/`; E402: launch_testing tests defer rclpy imports until after the launch_descriptor builder
+"cpp/**/test/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003", "E402"]  # C++ packages' launch_testing tests use the same Python conventions as ROS package tests
+"**/__init__.py" = ["F401", "D104"]
+"python/core/src/openral_core/exceptions.py" = ["N818"]  # canonical names from CLAUDE.md §10
+"python/cli/src/openral_cli/main.py" = ["B008", "PLR0912", "PLC0415"]  # typer.Option() in defaults is the typer pattern; CLI commands have many display branches; deferred imports keep `openral --help` fast
+"python/cli/src/openral_cli/dataset.py" = ["B008", "PLC0415"]  # ADR-0019 PR5: typer.Option() in defaults; huggingface_hub is a heavy dep deferred until the user actually publishes
+"python/cli/src/openral_cli/deploy_sim.py" = ["B008", "PLC0415"]  # typer.Option() in defaults; SceneEnvironment + openral_rskill.loader are deferred so `openral --help` stays sub-second
+"python/cli/src/openral_cli/collision.py" = ["B008", "PLC0415"]  # ADR-0030: typer.Option() in defaults; lower_robot (yourdfpy/trimesh) is deferred inside the commands so `openral --help` stays fast
+"python/sensors/**" = ["RUF001", "RUF002", "RUF003"]  # Unicode FOV / range symbols (×, –, °) in docstrings are intentional and match vendor data sheets
+"python/sensors/src/openral_sensors/ros_publisher.py" = ["PLC0415", "ANN401", "BLE001"]  # ADR-0019 PR2: rclpy / sensor_msgs are deferred to the lifecycle node owner (matches ros_tee.py pattern); BLE001 in the pump-loop's never-kill-the-thread guard is intentional defensive code
+"packages/**" = ["PLC0415", "ANN401", "PLR2004", "RUF001", "RUF002", "RUF003"]  # ROS 2 lifecycle nodes defer imports + duck-type rclpy IDL messages (`msg: Any`) + IDL severity/kind constants are compared inline against uint8 literals from openral_msgs/FailureTrigger; Unicode em/en-dash and special quote glyphs in prose docstrings are intentional and match the convention in python/sim, python/sensors, etc.
+"packages/**/launch/**" = ["PLC0415", "ANN401", "PLR2004", "PLR0912", "RUF001", "RUF002", "RUF003", "E402"]  # launch files legitimately configure `site.addsitedir(...)` (workspace venv bootstrap) before the launch_ros / lifecycle_msgs imports — E402's "imports at top" rule does not fit; PLR0912: the compose_runtime_graph OpaqueFunction has one branch per opt-in feature (slam/nav2/octomap/dashboard/urdf) by design.
+"python/rskill/src/openral_rskill/base.py" = ["B027"]  # on_load_weights/on_quantize/on_warmup are intentional no-op defaults; subclasses may override
+"python/rskill/src/openral_rskill/smolvla.py" = ["PLC0415", "ANN401"]  # lerobot/torch/hf are optional heavy deps deferred until use; Any is correct for untyped lerobot API
+"python/rskill/src/openral_rskill/_vla_core.py" = ["PLC0415", "ANN401"]  # torch/loader imports are deferred; Any is correct for untyped lerobot policy + tensor
+"python/rskill/src/openral_rskill/executor.py" = ["PLC0415", "ANN401", "RUF002"]  # torch is deferred; Any is correct for untyped lerobot policy + tensor; Unicode math symbols (× / —) intentional in architecture doc (ADR-0010)
+"python/runner/src/openral_runner/backends/opencv_thread.py" = ["PLC0415", "ANN401"]  # cv2 is the `opencv` optional-extra and imported lazily; Any types VideoCapture / ndarray frames before lerobot-style narrowing
+"python/runner/src/openral_runner/factory.py" = ["PLC0415"]  # SO100DigitalTwin defers lerobot import — only loaded when transport.digital_twin=true
+"python/runner/src/openral_runner/backends/__init__.py" = ["F401"]  # __init__ re-exports
+"python/runner/src/openral_runner/base.py" = ["S101"]  # internal-invariant asserts on subclass contract are intentional
+"python/runner/src/openral_runner/ros_publishing_hal.py" = ["PLC0415"]  # ADR-0018 F1: rclpy / openral_msgs / sensor_msgs imports are deferred inside connect() / _action_to_chunk so the module stays import-safe without a sourced ROS 2 install
+"python/sim/**" = ["PLC0415", "ANN401", "RUF001", "RUF002", "RUF003", "PLR0912", "B008"]  # adapters defer heavy backend imports (lerobot/torch); Any is correct for untyped lerobot API; Unicode math symbols (× / —) are intentional in docs; CLI override-merging has many branches by design; B008 is the typer.Option idiom
+"python/sim/src/openral_sim/backends/so100_robosuite/**" = ["PLC0415", "ANN401", "RUF001", "RUF002", "RUF003", "PLR0912", "PLR0915", "B008", "D102", "D107", "D417", "RUF012"]  # robosuite manipulator/gripper subclasses override well-documented base properties with one-liners; MJCF rewriters are long by design; mutable class default on the SCENES-style registry pattern is intentional
+"python/sim/src/openral_sim/backends/openarm_robosuite/**" = ["PLC0415", "ANN401", "RUF001", "RUF002", "RUF003", "PLR0912", "PLR0915", "B008", "D102", "D107", "D417", "RUF012", "PLR2004", "E501"]  # mirrors so100_robosuite plus PLR2004/E501: the composed MJCF embeds long XML lines as Python string literals, and the 16-D state / 2-base / 3-vector counts are scene invariants that read more clearly as inline integers than as named constants
+"python/eval-shim/**" = ["PLC0415", "ANN401"]  # one-release deprecation shim (ADR-0009); deferred submodule imports keep the warning at first import only
+"python/observability/src/**" = ["ANN401", "PLC0415", "PLW0603"]  # **attrs accepts arbitrary OTel span attribute values (Any is correct); the structlog bridge import is deliberately lazy to avoid a circular SDK init dep; module-level _INSTALLED guard is the simplest idempotency pattern
+"python/core/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror tests/** ignore set (ADR-0030 urdf_resolve test dir)
+"python/hal/tests/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003"]  # mirror the repo-wide tests/** ignore set (new package test dir, ADR-0034)
+"python/observability/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
+"python/reasoner/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
+"python/wam/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
+"python/state_adapter/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set (ADR-0027 layout-adapter package)
+"python/dataset/src/**" = ["ANN401", "PLC0415", "PLR0912"]  # ADR-0019: lerobot is a heavy optional dep deferred inside LeRobotDatasetSink; Any types come from untyped lerobot API (no py.typed); features_from_robot's branch count is intentional (state/action/camera resolution paths)
+"python/dataset/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
+"python/hal/src/openral_hal/lifecycle.py" = ["PLC0415"]  # ROS 2 / sensor_msgs / trajectory_msgs are deferred to avoid requiring rclpy at parse time
+"python/hal/src/openral_hal/_mujoco_arm.py" = ["PLC0415"]  # mujoco is an optional sim-only dep deferred to keep the module importable without it
+"python/hal/src/openral_hal/resolver.py" = ["PLC0415"]  # openral_sim / sim_attached / sim_bringup are deferred so openral_hal stays import-safe without the sim group (ADR-0034)
+"python/hal/src/openral_hal/depth_cloud.py" = ["PLC0415", "ANN401"]  # ADR-0030: sensor_msgs / mujoco deferred to keep the module import-safe without a sourced ROS 2 / sim install; Any duck-types the untyped SensorSpec + MjModel/MjData handles (matches lifecycle.py + python/sim backends)
+"python/hal/src/openral_hal/sim_sensor_bridge.py" = ["PLC0415", "ANN401"]  # ADR-0034: rclpy / sensor_msgs / mujoco deferred to keep the module import-safe without a sourced ROS 2 / sim install; Any duck-types the node + HAL (mirrors depth_cloud.py / lifecycle.py)
+"python/hal/src/openral_hal/mobile_base_bridge.py" = ["PLC0415", "ANN401"]  # issue #191 Phase 3: rclpy / nav_msgs / geometry_msgs / tf2 deferred to keep the module import-safe without a sourced ROS 2 install; Any duck-types the node + HAL (mirrors sim_sensor_bridge.py)
+"examples/**" = ["ANN401", "PLC0415", "PLR0912", "PLR0915", "N806", "B905", "RUF001", "RUF002", "RUF003", "E501"]  # examples are runnable scripts: deferred imports, Any for untyped APIs, long main(), flexible formatting
+"tools/**" = ["D", "ANN401", "PLC0415", "PLR0912", "PLR0915", "PLR2004", "N806", "N814", "B905", "F841", "RUF001", "RUF002", "RUF003", "RUF046", "RUF059", "E501"]  # tools/ are one-shot conversion / debug scripts (cf. examples/**): deferred imports, Any for untyped APIs, lax docstrings, magic numbers, flexible formatting
+
+[format]
+docstring-code-format = true

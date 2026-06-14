@@ -1,0 +1,55 @@
+# LIBERO-Object benchmark suite — sibling of libero_spatial.yaml; the
+# only differences are the suite name and the per-task scene_id. Same
+# Franka, same protocol, same paper.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("libero_object"). See libero_spatial.yaml for the canonical
+# commentary on the anchor pattern and suite invariants.
+#
+# Notes: per-task instructions are baked into the LIBERO suite itself
+# (env.task_description) and override TaskSpec.instruction at runtime.
+#
+# Run:
+#   openral benchmark run --suite libero_object \
+#       --rskill smolvla-libero
+
+- &libero_scene
+  scene:
+    id: libero_object
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+  task: &task_proto
+    id: libero_object/0
+    scene_id: libero_object
+    instruction: ""
+    max_steps: 280
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 10
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2306.03310"
+    display_name: "LIBERO-Object"
+    simulator: "LIBERO (MuJoCo)"
+    honest_scope: >
+      10 episodes per task across all 10 LIBERO-Object tasks (100 rollouts
+      total). Matches the SmolVLA / pi0.5 / xVLA published protocols.
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/1 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/2 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/3 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/4 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/5 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/6 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/7 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/8 }
+- <<: *libero_scene
+  task: { <<: *task_proto, id: libero_object/9 }

@@ -1,0 +1,133 @@
+# rSkill manifest — moveit-eef-pose: plan to a Cartesian end-effector pose (ADR-0054)
+#
+# Wraps `moveit_msgs/action/MoveGroup`. `ros_integration.goal_builder: pose`
+# selects the `PoseGoalRskill` adapter, which consumes a `pose` block (target
+# position + quaternion orientation for a constrained link) and lowers it into
+# MoveGroup position + orientation constraints. The generic Cartesian sibling
+# of rskill-moveit-look-at (gaze is a computed-pose specialisation); new under
+# ADR-0054's rskill-moveit-* family.
+#
+# Collision posture: MoveIt's internal FCL planner does self + planning-scene
+# (world) collision checking at plan time. `plan_only: true` so OpenRAL's
+# per-waypoint replay through /openral/candidate_action stays the only
+# actuation path (the safety kernel checks every step). `chunk_size: 1` so the
+# supervisor sees every waypoint.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-moveit-eef-pose"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "ros_action"
+
+# Any arm embodiment with a MoveIt configuration. The default goal targets the
+# Franka demo (panda_arm group, panda_hand link); other embodiments override
+# `request.group_name` + `pose.link_name` / `pose.frame_id`.
+embodiment_tags:
+  - "franka_panda"
+  - "ur5e"
+  - "ur10e"
+  - "so100_follower"
+  - "openarm"
+  - "rizon4"
+  - "sawyer"
+  - "widowx"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# REQUIRED for kind: ros_action — one waypoint per Action chunk so the safety
+# supervisor's per-row envelope check sees every commanded position.
+chunk_size: 1
+
+latency_budget:
+  per_chunk_ms: 2000.0
+
+# ADR-0022 — surfaced to the Reasoner LLM tool palette.
+description: >
+  Plan and execute a collision-free motion that brings the end-effector link to
+  a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup
+  (self + planning-scene collision checked). Use when you have a Cartesian
+  end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use
+  rskill-moveit-joints, and to aim a camera at a point use rskill-moveit-look-at.
+actions:
+  - "reach"
+objects: []
+scenes: []
+
+# Provenance — ROS-wrapped rSkill; paper_url carries the upstream link.
+paper_url: "https://moveit.picknik.ai/"
+
+ros_integration:
+  package: "moveit_msgs"
+  interface_type: "MoveGroup"
+  interface_name: "/move_action"
+  result_trajectory_field: "planned_trajectory.joint_trajectory"
+  # ADR-0054 — selects the PoseGoalRskill goal-lowering adapter: the `pose`
+  # block below is lowered into `request.goal_constraints[0]` (position +
+  # orientation constraints) on the first step. Set `pose.tool_frame` to express
+  # the target for a TCP/tool frame (TF-looked-up link←tool offset); omit it to
+  # constrain `pose.link_name` directly.
+  goal_builder: "pose"
+  default_goal_json: |
+    {
+      "pose": {
+        "frame_id": "panda_link0",
+        "link_name": "panda_hand",
+        "position": [0.4, 0.0, 0.5],
+        "orientation": [0.0, 0.0, 0.0, 1.0],
+        "quaternion_order": "xyzw",
+        "position_tolerance_m": 0.01,
+        "orientation_tolerance_rad": 0.05
+      },
+      "request": {
+        "group_name": "panda_arm",
+        "num_planning_attempts": 5,
+        "allowed_planning_time": 5.0,
+        "max_velocity_scaling_factor": 0.3,
+        "max_acceleration_scaling_factor": 0.3,
+        "goal_constraints": []
+      },
+      "planning_options": {
+        "plan_only": true,
+        "replan": false
+      }
+    }
+  ros_dependencies:
+    - "ros-${ROS_DISTRO}-moveit"
+    - "ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config"
+
+# ADR-0026 — per-skill JSON Schema surfaced to the Reasoner LLM tool palette.
+# The LLM overrides the pose block's position/orientation; planner settings are
+# inherited. orientation is a quaternion in pose.quaternion_order (default xyzw).
+goal_params_schema:
+  type: object
+  description: >
+    Target 6-DOF Cartesian pose for the end-effector link. position is
+    [x, y, z] metres in pose.frame_id; orientation is a unit quaternion whose
+    component order is pose.quaternion_order (default "xyzw").
+  properties:
+    pose:
+      type: object
+      properties:
+        position:
+          type: array
+          items:
+            type: number
+          minItems: 3
+          maxItems: 3
+          description: "Target [x, y, z] metres in pose.frame_id."
+        orientation:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: "Unit quaternion in pose.quaternion_order (default xyzw)."
+      required:
+        - position
+        - orientation
+  required:
+    - pose

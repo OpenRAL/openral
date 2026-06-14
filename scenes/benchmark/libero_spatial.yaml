@@ -1,0 +1,31 @@
+# LIBERO-Spatial benchmark — franka_panda fixed by the scene registry.
+# Run with any LIBERO-compatible rSkill:
+#
+#   openral benchmark --config scenes/benchmark/libero_spatial.yaml \
+#                     --rskill rskill://rskills/smolvla-libero
+#
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+
+robot_id: franka_panda
+
+scene:
+  id: libero_spatial
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+
+task:
+  id: libero_spatial/0
+  scene_id: libero_spatial
+  instruction: ""        # env.task_description from the LIBERO suite overrides this
+  success_key: is_success
+  max_steps: 100         # canonical LIBERO eval budget
+
+n_episodes: 500
+seed: 42
+
+metadata:
+  paper: "https://arxiv.org/abs/2309.11500"
+  honest_scope: >
+    Task 0 of LIBERO-Spatial. The paper evaluates 10 tasks × 500 episodes each.
+    Pass --task libero_spatial/N (N=0–9) and --n-episodes 500 to reproduce per-task numbers.

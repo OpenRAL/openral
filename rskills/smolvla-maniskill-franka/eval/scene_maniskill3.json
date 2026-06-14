@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2410.00425",
+    "arxiv": "https://arxiv.org/abs/2410.00425",
+    "model_variant": "smolvla",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml --rskill rskills/smolvla-maniskill-franka",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "maniskill3",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=200",
+    "robot": "franka_panda",
+    "simulator": "maniskill3"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 200,
+    "vla_id": "smolvla",
+    "weights_uri": "rskills/smolvla-maniskill-franka"
+  },
+  "results": {
+    "maniskill3/PickCube-v1_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 10.071403429792554
+  },
+  "baselines": {},
+  "trace_id": null
+}

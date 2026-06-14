@@ -1,0 +1,67 @@
+# RoboCasa atomic pick-and-place benchmark suite.
+#
+# Mirrors the pick-and-place axis of the RoboCasa kitchen suite
+# (Nasiriany et al., 2024 — arXiv:2406.02523). Picks the canonical
+# counter→cabinet pick-and-place task (`PickPlaceCounterToCabinet` in
+# robosuite's robocasa env catalogue, registered as scene id
+# `robocasa/PickPlaceCounterToCabinet` by
+# python/sim/src/openral_sim/backends/robocasa.py) and sweeps it across
+# multiple seeds.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("robocasa_pnp"). Only the VLA (rSkill) varies across runs.
+# Consumed by `openral benchmark run` (PR D of ADR-0009); writes a
+# RSkillEvalResult JSON to rskills/<vla>/eval/robocasa_pnp.json with
+# reproduced_locally=true AND updates `benchmarks.robocasa_pnp` in the
+# matching rskill.yaml with the headline avg_success_rate. Suite-level
+# invariants are enforced by :func:`openral_core.raise_on_invalid_suite`.
+#
+# Protocol: 1 task × 10 episodes. Lighter than the 50-ep paper protocol
+# so the suite finishes in ~30 min on a single GPU; raise n_episodes for
+# a paper-equivalent reproduction.
+#
+# Robot: panda_mobile — the Franka Panda mounted on a wheeled base, the
+# canonical RoboCasa embodiment. The scene factory pins
+# `fixed_robot="panda_mobile"` so any other robot_id is rejected at
+# adapter build time.
+#
+# Success key: `is_success` — the RoboCasa adapter writes
+# `info["is_success"] = env._check_success()` at every step (see
+# backends/robocasa.py L201).
+#
+# Run:
+#   openral benchmark run --suite robocasa_pnp \
+#       --rskill pi05-robocasa365-human300-nf4
+
+- scene:
+    id: robocasa/PickPlaceCounterToCabinet
+    backend: mujoco
+    observation_height: 128
+    observation_width: 128
+    cameras: ["camera1", "camera2", "camera3"]
+    backend_options:
+      mode: prebuilt
+      prebuilt_task: PickPlaceCounterToCabinet
+      robots: ["PandaMobile"]
+      controller: OSC_POSE
+      horizon: 500
+  task:
+    id: robocasa_pnp/counter_to_cabinet
+    scene_id: robocasa/PickPlaceCounterToCabinet
+    instruction: "pick the object from the counter and place it into the cabinet"
+    max_steps: 500
+    success_key: is_success
+  robot_id: panda_mobile
+  n_episodes: 10
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2406.02523"
+    display_name: "RoboCasa Atomic PickPlace (counter→cabinet)"
+    simulator: "RoboCasa 1.0.1 (robosuite + MuJoCo)"
+    honest_scope: >
+      10 seeds on PickPlaceCounterToCabinet. Lighter than the RoboCasa
+      paper protocol (10 seeds vs 50) so the suite completes in
+      ~30 min on a single GPU; bump n_episodes for a paper-equivalent
+      reproduction. Counter→cabinet pick-and-place on the panda_mobile
+      (Franka on a wheeled base) embodiment. Success comes from
+      env._check_success() surfaced as info["is_success"].

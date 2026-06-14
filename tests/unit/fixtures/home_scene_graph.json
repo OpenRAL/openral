@@ -1,0 +1,133 @@
+{
+  "schema_version": "0.1",
+  "nodes": [
+    {
+      "node_id": "kitchen",
+      "kind": "room",
+      "pose": {"xyz": [3.0, 1.5, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "kitchen",
+      "first_seen_ns": 1000000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 12
+    },
+    {
+      "node_id": "living_room",
+      "kind": "room",
+      "pose": {"xyz": [-2.0, 0.5, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "living room",
+      "first_seen_ns": 1000000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 9
+    },
+    {
+      "node_id": "front_of_fridge",
+      "kind": "place",
+      "pose": {"xyz": [3.2, 0.9, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "in front of the fridge",
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 6
+    },
+    {
+      "node_id": "cabinet_shelf",
+      "kind": "place",
+      "pose": {"xyz": [4.1, 2.0, 0.0], "quat_xyzw": [0.0, 0.0, 0.7071, 0.7071], "frame_id": "map"},
+      "label": "by the upper cabinet",
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 5
+    },
+    {
+      "node_id": "kitchen_table",
+      "kind": "place",
+      "pose": {"xyz": [2.4, 2.2, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "at the kitchen table",
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 7
+    },
+    {
+      "node_id": "living_room_sofa",
+      "kind": "place",
+      "pose": {"xyz": [-2.2, 0.2, 0.0], "quat_xyzw": [0.0, 0.0, 1.0, 0.0], "frame_id": "map"},
+      "label": "by the living-room sofa",
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 4
+    },
+    {
+      "node_id": "fridge",
+      "kind": "object",
+      "pose": {"xyz": [3.4, 0.4, 0.9], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "fridge",
+      "confidence": 0.97,
+      "bbox_3d": [3.1, 0.1, 0.0, 3.7, 0.7, 1.8],
+      "is_container": true,
+      "occludes_contents": true,
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1790000000000,
+      "observation_count": 6
+    },
+    {
+      "node_id": "cabinet",
+      "kind": "object",
+      "pose": {"xyz": [4.3, 2.2, 1.5], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "kitchen cabinet",
+      "confidence": 0.95,
+      "bbox_3d": [4.0, 2.0, 1.2, 4.6, 2.4, 1.9],
+      "is_container": true,
+      "occludes_contents": true,
+      "first_seen_ns": 1200000000,
+      "last_seen_ns": 1700000000000,
+      "observation_count": 5
+    },
+    {
+      "node_id": "wine_bottle",
+      "kind": "object",
+      "pose": {"xyz": [3.42, 0.38, 1.05], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "bottle of wine",
+      "confidence": 0.88,
+      "bbox_3d": [3.39, 0.35, 0.95, 3.45, 0.41, 1.25],
+      "embedding_ref": "vec://objects/wine_bottle",
+      "first_seen_ns": 1500000000000,
+      "last_seen_ns": 1500000000000,
+      "observation_count": 1
+    },
+    {
+      "node_id": "wine_glass",
+      "kind": "object",
+      "pose": {"xyz": [4.32, 2.2, 1.45], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "wine glass",
+      "confidence": 0.82,
+      "bbox_3d": [4.30, 2.18, 1.35, 4.34, 2.22, 1.55],
+      "embedding_ref": "vec://objects/wine_glass",
+      "first_seen_ns": 1400000000000,
+      "last_seen_ns": 1400000000000,
+      "observation_count": 1
+    },
+    {
+      "node_id": "requester",
+      "kind": "agent",
+      "pose": {"xyz": [-2.0, 0.3, 0.0], "quat_xyzw": [0.0, 0.0, 0.0, 1.0], "frame_id": "map"},
+      "label": "the person who asked",
+      "first_seen_ns": 1800000000000,
+      "last_seen_ns": 1800000000000,
+      "observation_count": 1
+    }
+  ],
+  "edges": [
+    {"src": "kitchen", "dst": "fridge", "kind": "contains"},
+    {"src": "kitchen", "dst": "cabinet", "kind": "contains"},
+    {"src": "fridge", "dst": "wine_bottle", "kind": "contains"},
+    {"src": "cabinet", "dst": "wine_glass", "kind": "contains"},
+    {"src": "fridge", "dst": "front_of_fridge", "kind": "at_place"},
+    {"src": "cabinet", "dst": "cabinet_shelf", "kind": "at_place"},
+    {"src": "requester", "dst": "living_room_sofa", "kind": "at_place"},
+    {"src": "living_room_sofa", "dst": "kitchen_table", "kind": "traversable_to"},
+    {"src": "kitchen_table", "dst": "living_room_sofa", "kind": "traversable_to"},
+    {"src": "kitchen_table", "dst": "front_of_fridge", "kind": "traversable_to"},
+    {"src": "front_of_fridge", "dst": "kitchen_table", "kind": "traversable_to"},
+    {"src": "kitchen_table", "dst": "cabinet_shelf", "kind": "traversable_to"},
+    {"src": "cabinet_shelf", "dst": "kitchen_table", "kind": "traversable_to"}
+  ]
+}

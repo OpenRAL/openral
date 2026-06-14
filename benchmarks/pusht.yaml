@@ -1,0 +1,46 @@
+# PushT benchmark suite — single 2-D pymunk task.
+#
+# Mirrors the Diffusion Policy paper's protocol on the gym-pusht env
+# (Chi et al., 2023): 50 evaluation rollouts, mean coverage as the
+# reward signal.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("pusht"). Single-task suite — one BenchmarkScene replayed
+# across 50 seeds. Suite-level invariants are enforced by
+# :func:`openral_core.raise_on_invalid_suite`.
+#
+# Notes: gym_pusht/PushT-v0. The paper's headline metric is mean
+# coverage (IoU between the T block and its target), not a binary
+# success flag; the runner reports both via EpisodeResult.success
+# (gym-pusht's info.is_success) and EpisodeResult.total_reward (the
+# cumulative coverage signal). Existing skills/diffusion-pusht/eval/pusht.json
+# snapshot reports the paper's 0.91 mean IoU.
+#
+# Run:
+#   openral benchmark run --suite pusht --rskill diffusion-pusht
+
+- scene:
+    id: pusht
+    # pymunk 2-D under the hood; we reuse the mujoco enum slot (matches
+    # scenes/benchmark/diffusion_pusht.yaml).
+    backend: mujoco
+    observation_height: 96
+    observation_width: 96
+    cameras: ["camera1"]
+  task:
+    id: pusht/0
+    scene_id: pusht
+    instruction: "push the T-block to its target pose"
+    max_steps: 300
+    success_key: is_success
+  robot_id: pusht_2d
+  n_episodes: 50
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2303.04137"
+    display_name: "PushT (gym-pusht)"
+    simulator: "gym-pusht (pymunk 2-D)"
+    honest_scope: >
+      50 evaluation rollouts on the single PushT-v0 task, matching the
+      Diffusion Policy paper's protocol. The aggregator also surfaces
+      mean coverage IoU alongside binary success.

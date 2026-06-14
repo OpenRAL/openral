@@ -1,0 +1,76 @@
+# GR1 tabletop atomic pick-and-place benchmark suite.
+#
+# Mirrors the RoboCasa GR1 Tabletop Tasks suite released by NVIDIA with
+# "GR00T N1: An Open Foundation Model for Generalist Humanoid Robots"
+# (arXiv:2503.14734, https://github.com/robocasa/robocasa-gr1-tabletop-tasks).
+# Picks the canonical PnPCupToDrawerClose tabletop task and sweeps it
+# across multiple seeds. The other 23 task envs (Posttrain* variants
+# plus the six PnPXxxToYyyClose verbs) are registered by the
+# RoboCasa scene adapter — swap the BenchmarkScene's ``scene.id`` /
+# ``task.scene_id`` to point at any of them once a checkpoint exists,
+# the suite structure is unchanged.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("gr1_tabletop"). Only the VLA (rSkill) varies across runs.
+# Consumed by `openral benchmark run` (PR D of ADR-0009); writes a
+# RSkillEvalResult JSON to rskills/<vla>/eval/gr1_tabletop.json with
+# reproduced_locally=true AND updates `benchmarks.gr1_tabletop` in the
+# matching rskill.yaml with the headline avg_success_rate. Suite-level
+# invariants are enforced by :func:`openral_core.raise_on_invalid_suite`.
+#
+# Protocol: 1 task × 10 episodes. Lighter than the 50-ep paper protocol
+# so the suite finishes in ~30 min on a single GPU; raise n_episodes for
+# a paper-equivalent reproduction.
+#
+# Robot: gr1 — a Fourier GR-1 humanoid with leg + head actuation
+# disabled. The scene factory pins ``fixed_robot="gr1"`` so any other
+# robot_id is rejected at adapter build time.
+#
+# Run (smoketest with the random policy, no GPU needed):
+#   openral benchmark run --suite gr1_tabletop \
+#       --rskill rskills/random-mock
+# Run (real VLA — substitute the GR00T-N1 rSkill once a checkpoint
+# ships):
+#   openral benchmark run --suite gr1_tabletop \
+#       --rskill rskills/groot-n1-gr1-tabletop
+
+- scene:
+    id: robocasa/gr1/PnPCupToDrawerClose
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+    cameras: ["camera1"]
+    backend_options:
+      mode: prebuilt
+      prebuilt_task: PnPCupToDrawerClose
+      robots: ["GR1ArmsAndWaistFourierHands"]
+      # The GR1 fork's RoboCasaEnv overrides the chosen composite to
+      # BASIC with control_delta=False — the adapter applies that
+      # patch automatically when it detects a GR1 robot, so the YAML
+      # value here is descriptive only.
+      controller: BASIC
+      horizon: 720
+      state_layout: gr1
+  task:
+    id: gr1_tabletop/pnp_cup_to_drawer_close
+    scene_id: robocasa/gr1/PnPCupToDrawerClose
+    instruction: "pick the cup from the table and place it into the drawer, then close the drawer"
+    max_steps: 720
+    success_key: is_success
+  robot_id: gr1
+  n_episodes: 10
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2503.14734"
+    display_name: "RoboCasa GR1 Tabletop Tasks (PnPCupToDrawerClose)"
+    simulator: "robocasa-gr1-tabletop-tasks 0.2.0 (robosuite + MuJoCo)"
+    honest_scope: >
+      10 seeds on PnPCupToDrawerClose. Lighter than the GR00T-N1
+      paper protocol (10 seeds vs 50) so the suite completes in
+      ~30 min on a single GPU; bump n_episodes for a paper-equivalent
+      reproduction. PnPCupToDrawerClose on the Fourier GR-1
+      (arms + waist) embodiment. Success comes from
+      env._check_success() surfaced as info["is_success"]. Action
+      space is 29-D (right arm 7 + left arm 7 + waist 3 + right
+      Fourier hand 6 + left Fourier hand 6); proprioception is 39-D
+      (`robot0_joint_pos` 17 + each gripper qpos 11).

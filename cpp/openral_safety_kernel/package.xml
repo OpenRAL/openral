@@ -1,0 +1,57 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_safety_kernel</name>
+  <version>0.1.0</version>
+  <description>
+    ADR-0020 — C++ safety kernel. Separate process owning the chunk-rate
+    safety boundary on the OpenRAL ROS 2 graph. Replaces F5's Python
+    pass-through (packages/openral_safety/SafetyPassthroughNode) behind
+    the same topic contract (CLAUDE.md §1.5: "Python proposes, C++
+    disposes").
+
+    Subscribes /openral/candidate_action, validates against the
+    intersection of the robot ceiling (RobotDescription.safety) and the
+    optional rSkill envelope, republishes the chunk verbatim on
+    /openral/safe_action when validated, or drops + publishes
+    FailureTrigger on /openral/failure/safety and /openral/estop on
+    violation. Recovery via /openral/estop_reset
+    (std_srvs/Trigger). Defense-in-depth: subscribes to /openral/estop
+    itself so external estop sources latch the kernel.
+
+    Real-time contract: validator allocation-free; SCHED_FIFO best-
+    effort; LTTng tracepoints openral:safety_check_{begin,end}
+    correlated with the active OTel trace_id (PR #131 / F9).
+  </description>
+
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>openral_msgs</depend>
+  <depend>nlohmann-json-dev</depend>
+  <!-- ADR-0020 PR-F — opentelemetry-cpp for safety.check span emission.
+       Provided by the in-tree vendor package (cpp/opentelemetry_cpp_vendor)
+       since Noble has no apt opentelemetry-cpp. -->
+  <depend>opentelemetry_cpp_vendor</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <!-- ament_lint_auto / ament_lint_common are intentionally NOT declared
+       — see the matching comment in CMakeLists.txt's BUILD_TESTING block.
+       The workspace runs ruff + clang-tidy + mypy via `just lint`; the
+       ament defaults disagree with that style and produce ~259 spurious
+       failures in `just ros2-test` that no other package enforces. The
+       Python launch tests under test/launch/ are exercised via
+       `uv run pytest`, same as openral_safety's test_supervisor_node.py. -->
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

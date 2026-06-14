@@ -1,0 +1,71 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-qwen35-4b-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s2"
+kind: "vlm"
+
+# embodiment-agnostic: a perception rSkill (detector/vlm) needs only an RGB
+# camera, not a specific robot. The rSkill<->robot gate exempts these kinds
+# (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
+# it matches any robot/scene.
+embodiment_tags: []
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 336
+    min_height: 336
+
+actuators_required: []
+
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+  extra:
+    scheme: "nf4"
+    quantizer: "bitsandbytes"
+    compute_dtype: "bfloat16"
+    min_params_to_quantize: 4000000
+    loader: "transformers.AutoModelForImageTextToText"
+
+min_vram_gb:
+  fp32: 16.0
+  bf16: 8.0
+  int4: 2.5
+
+# Deployable checkpoint: the pre-quantized NF4 weights (model.safetensors with
+# an embedded bitsandbytes quantization_config). Loads directly as 4-bit
+# (~3.3 GB) with no bf16 load spike — see tools/build_qwen_vlm_nf4_checkpoint.py.
+weights_uri: "hf://OpenRAL/rskill-qwen35-4b-nf4"
+
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 3000.0
+
+# Provenance: the upstream Apache-2.0 model the NF4 checkpoint was quantized
+# from, SHA-pinned for reproducibility (§8).
+source_repo: "hf://Qwen/Qwen3.5-4B@851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+
+description: >
+  Qwen3.5-4B natively-multimodal video-language model packaged as an NF4
+  bitsandbytes vlm rSkill. Accepts RGB image or video frames plus a
+  natural-language query; returns a text answer. Embodiment-agnostic. No
+  actuators. Apache-2.0. ADR-0047.
+
+actions:
+  - "query"
+
+objects:
+  - "open-vocabulary object"
+  - "text"
+  - "scene region"
+  - "spatial relation"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "outdoor"
+  - "warehouse"
+  - "driving"

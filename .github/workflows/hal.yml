@@ -1,0 +1,34 @@
+name: hal
+
+# HAL unit tests without ROS 2 (injected mock transports).
+# hal-integration (ROS 2 container tests) removed — requires Docker runner infra.
+
+# Auto-triggers disabled: out of GitHub Actions credits.
+# Re-enable PR/push triggers once billing is restored. See issue tracker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hal-unit:
+    name: "HAL unit tests — ${{ matrix.ros2_distro }} (Python ${{ matrix.python }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            python: "3.12"
+            ros2_distro: Jazzy
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - name: Run HAL unit tests
+        run: uv run pytest tests/unit/test_hal.py -v --tb=short

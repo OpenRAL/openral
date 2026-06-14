@@ -1,0 +1,140 @@
+# rSkill manifest — moveit-look-at: aim a robot camera at a 3-D point (ADR-0044/0052)
+#
+# Wraps `moveit_msgs/action/MoveGroup`; the goal is authored as a `look_at`
+# block (target point + camera name) instead of raw constraints:
+# `ros_integration.goal_builder: look_at` selects the `LookAtRskill` adapter,
+# which resolves the camera from the robot manifest (default "wrist";
+# ROSConfigError listing available sensors when absent), reads the camera's
+# current pose over TF2, computes the gaze pose (camera +Z hits the target,
+# roll about the optical axis left free for reachability), and lowers it into
+# MoveGroup position + orientation constraints for the camera's mount link.
+#
+# Renamed from `openral/rskill-look-at` under ADR-0054 (the `rskill-moveit-*`
+# family: -joints / -eef-pose / -look-at over one ROSActionRskill engine).
+#
+# `plan_only: true` deliberately: OpenRAL's actuation path is the per-waypoint
+# replay through /openral/candidate_action (safety kernel checks every step,
+# HAL actuates). Letting move_group ALSO execute on its own controllers would
+# bypass the kernel and double-drive the arm.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-moveit-look-at"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "ros_action"
+
+# Any arm embodiment with a MoveIt configuration AND a body-mounted camera
+# declared in its robot.yaml. The default goal targets the Franka demo
+# (panda_arm group, LIBERO eye-in-hand on panda_hand); other embodiments
+# override `request.group_name` + `look_at.camera` / `look_at.frame_id`.
+embodiment_tags:
+  - "franka_panda"
+  - "ur5e"
+  - "ur10e"
+  - "so100_follower"
+  - "openarm"
+  - "rizon4"
+  - "sawyer"
+  - "widowx"
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# REQUIRED for kind: ros_action — one waypoint per Action chunk so the safety
+# supervisor's per-row envelope check sees every commanded position.
+chunk_size: 1
+
+latency_budget:
+  per_chunk_ms: 2000.0
+
+# ADR-0022 — surfaced to the Reasoner LLM tool palette.
+description: >
+  Aim a robot-mounted camera (default the wrist camera) at a 3-D point so a
+  later perception query or manipulation skill sees the object framed.
+  Plans a collision-aware arm motion via MoveIt that points the camera's
+  optical axis at look_at.target_xyz. Use after navigating to an approach
+  pose and before locate_in_view / a grasp skill.
+actions:
+  - "look"
+objects: []
+scenes: []
+
+# Provenance — ROS-wrapped rSkill; paper_url carries the upstream link.
+paper_url: "https://moveit.picknik.ai/"
+
+ros_integration:
+  package: "moveit_msgs"
+  interface_type: "MoveGroup"
+  interface_name: "/move_action"
+  result_trajectory_field: "planned_trajectory.joint_trajectory"
+  # ADR-0044/0052 — selects the LookAtRskill goal-lowering adapter: the
+  # `look_at` block below is consumed by the adapter (popped before the
+  # MoveGroup goal message is built); `request.goal_constraints` is filled in
+  # at dispatch.
+  goal_builder: "look_at"
+  # Defaults target the upstream `moveit_resources_panda_moveit_config` demo:
+  # planning frame `panda_link0`, LIBERO eye-in-hand camera on `panda_hand`.
+  # `look_at.target_xyz` is a reachable point on the demo's tabletop; real
+  # dispatches override it via goal_params_json.
+  default_goal_json: |
+    {
+      "look_at": {
+        "target_xyz": [0.5, 0.0, 0.2],
+        "frame_id": "panda_link0",
+        "camera": "wrist",
+        "standoff_m": null,
+        "position_tolerance_m": 0.02,
+        "orientation_tolerance_rad": 0.15
+      },
+      "request": {
+        "group_name": "panda_arm",
+        "num_planning_attempts": 5,
+        "allowed_planning_time": 5.0,
+        "max_velocity_scaling_factor": 0.3,
+        "max_acceleration_scaling_factor": 0.3,
+        "goal_constraints": []
+      },
+      "planning_options": {
+        "plan_only": true,
+        "replan": false
+      }
+    }
+  ros_dependencies:
+    - "ros-${ROS_DISTRO}-moveit"
+    - "ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config"
+
+# ADR-0026 — per-skill JSON Schema surfaced to the Reasoner LLM tool palette.
+# The LLM overrides only the look_at block; planner settings are inherited.
+goal_params_schema:
+  type: object
+  description: >
+    Aim the named camera at a 3-D point. target_xyz is expressed in
+    look_at.frame_id (the planning frame). camera names a sensor from the
+    robot manifest (default "wrist"). Omit standoff_m to re-aim the camera
+    in place; set it to also move the camera to that distance from the
+    target along its current line of approach.
+  properties:
+    look_at:
+      type: object
+      properties:
+        target_xyz:
+          type: array
+          items:
+            type: number
+          minItems: 3
+          maxItems: 3
+          description: "Point to aim at, [x, y, z] metres in look_at.frame_id."
+        camera:
+          type: string
+          description: "Sensor name from the robot manifest. Default: wrist."
+        standoff_m:
+          type: number
+          description: >
+            Optional camera-to-target distance; omit to re-aim in place.
+      required:
+        - target_xyz
+  required:
+    - look_at

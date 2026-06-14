@@ -1,0 +1,24 @@
+# MetaWorld push-v3 — Sawyer fixed.
+# Run: openral benchmark --config scenes/benchmark/metaworld_push.yaml \
+#                        --rskill rskill://rskills/smolvla-metaworld
+# Setup: uv run pip install metaworld==3.0.0 --no-deps; note MUJOCO_GL=egl.
+
+robot_id: sawyer
+
+scene:
+  id: metaworld
+  backend: mujoco
+
+task:
+  id: metaworld/push-v3
+  scene_id: metaworld
+  instruction: "push the puck to the goal"
+  success_key: is_success
+  max_steps: 500
+
+n_episodes: 200
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/1910.10897"
+  honest_scope: "push-v3 task only. Full MT50 requires iterating over all 50 tasks."

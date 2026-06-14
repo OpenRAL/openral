@@ -1,0 +1,52 @@
+# Isaac Sim (Omniverse + PhysX + RTX) — Franka table + bowl + plate, LIBERO-shaped.
+#
+# A real Isaac Sim *core* scene (no Isaac Lab) that mirrors the LIBERO obs/action
+# contract so a LIBERO-finetuned rSkill drives it through `openral sim run`:
+#   - camera1 (agent-view) + camera2 (eye-in-hand wrist), 256x256
+#   - 8-D state [eef_pos(3) | eef_axisangle(3) | gripper_qpos(2)]
+#   - 7-D OSC-pose-delta action -> Lula IK (core motion_generation) moves the arm
+#
+# The props are out-of-distribution for a LIBERO policy, so this validates that
+# the pipeline RUNS and the arm MOVES — not task success. ADR-0045.
+#
+# Run (ACT is the smallest VLA → easiest on an 8 GB GPU):
+#   uv sync --all-packages --group isaacsim --inexact
+#   export OPENRAL_ISAAC_SIDECAR_PYTHON=/path/to/isaac-venv/bin/python
+#   openral sim run --config scenes/sim/isaac_franka_bowl_plate.yaml \
+#                   --rskill rskill://rskills/act-libero
+
+robot_id: franka_panda
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2"]
+  backend_options:
+    layout: "bowl_plate"     # selects IsaacBowlPlateScene (LIBERO contract + EE-delta IK)
+    headless: true
+    host: "127.0.0.1"
+    # port omitted on purpose: the isaac backend derives a stable, DISTINCT
+    # per-scene port (_scene_default_port). A shared pin (was 5757) let a
+    # different Isaac scene adopt this scene's lingering sidecar and serve the
+    # wrong layout; the identity-checked ping handshake still guards reuse.
+    boot_timeout_s: 1200
+    timeout_ms: 120000
+
+task:
+  id: isaac_sim/put_the_bowl_on_the_plate
+  scene_id: isaac_sim
+  instruction: "put the bowl on the plate"
+  success_key: is_success
+  max_steps: 200
+
+n_episodes: 1
+seed: 0
+
+metadata:
+  adr: "docs/adr/0045-isaac-sim-backend-integration.md"
+  honest_scope: >-
+    LIBERO-shaped Isaac Sim scene for driving a LIBERO rSkill (act/smolvla) end-to-end.
+    Proves the wire + EE-delta IK arm motion; the props are OOD for the policy so this
+    is a pipeline/motion check, not a tuned benchmark.

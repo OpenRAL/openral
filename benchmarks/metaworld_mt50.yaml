@@ -1,0 +1,152 @@
+# MetaWorld MT50 benchmark suite — 50 manipulation tasks.
+#
+# Mirrors the MT50 setting from Yu et al., 2019 (arXiv:1910.10897). The
+# 50 task names match lerobot's TASK_NAME_TO_ID (see
+# .venv/lib/python3.12/site-packages/lerobot/envs/metaworld_config.json)
+# which in turn matches MetaWorld v3 (post-2024 Metaworld 3.x).
+#
+# Shape (ADR-0042): bare list of 50 BenchmarkScenes (one per task); suite
+# id = filename stem ("metaworld_mt50"). All share the same scene,
+# robot, episode budget and provenance — the YAML uses an anchor
+# (&mw_scene) to keep the file compact. Each task overrides only its
+# id + instruction. Suite-level invariants are enforced by
+# :func:`openral_core.raise_on_invalid_suite`.
+#
+# Protocol: 5 episodes per task = 250 total rollouts. This is lighter
+# than the 50-ep/task default in the original paper so the suite finishes
+# in under 4h on a single GPU; raise n_episodes to scale up.
+#
+# Notes: 50 manipulation tasks (assembly, button-press, drawer, faucet,
+# hammer, insertion, lever, peg, pick-place, plate, push, reach, sweep,
+# window, …). Lighter than the paper protocol (5 seeds/task vs 50) to
+# keep the runtime within ~4h on a single GPU; bump n_episodes for a
+# paper-equivalent reproduction. The success key is "success" — the
+# metaworld env reports it under info["success"], not info["is_success"].
+#
+# Run:
+#   openral benchmark run --suite metaworld_mt50 \
+#       --rskill smolvla-metaworld
+
+- &mw_scene
+  scene:
+    id: metaworld
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+    cameras: ["camera1"]
+  task: &task_proto
+    id: metaworld/assembly-v3
+    scene_id: metaworld
+    instruction: "assemble the nut onto the peg"
+    max_steps: 200
+    success_key: success
+  robot_id: sawyer
+  n_episodes: 5
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/1910.10897"
+    display_name: "MetaWorld MT50"
+    simulator: "MetaWorld v3 (MuJoCo via lerobot)"
+    honest_scope: >
+      5 episodes per task across all 50 MetaWorld MT50 tasks
+      (250 rollouts total). Lighter than the paper protocol
+      (5 seeds/task vs 50) to keep the runtime within ~4h on a
+      single GPU.
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/basketball-v3,                instruction: "dunk the ball into the hoop" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/bin-picking-v3,               instruction: "pick the cube from the red bin and place it in the blue bin" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/box-close-v3,                 instruction: "close the box lid" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/button-press-topdown-v3,      instruction: "press the button from above" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/button-press-topdown-wall-v3, instruction: "press the wall-blocked button from above" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/button-press-v3,              instruction: "press the button" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/button-press-wall-v3,         instruction: "press the wall-blocked button" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/coffee-button-v3,             instruction: "press the coffee-maker button" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/coffee-pull-v3,               instruction: "pull the mug out of the coffee maker" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/coffee-push-v3,               instruction: "push the mug into the coffee maker" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/dial-turn-v3,                 instruction: "turn the dial" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/disassemble-v3,               instruction: "lift the nut off the peg" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/door-close-v3,                instruction: "close the door" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/door-lock-v3,                 instruction: "lock the door" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/door-open-v3,                 instruction: "open the door" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/door-unlock-v3,               instruction: "unlock the door" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/drawer-close-v3,              instruction: "close the drawer" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/drawer-open-v3,               instruction: "open the drawer" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/faucet-close-v3,              instruction: "close the faucet" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/faucet-open-v3,               instruction: "open the faucet" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/hammer-v3,                    instruction: "hammer the nail flat into the wall" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/hand-insert-v3,               instruction: "insert the gripper into the slot" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/handle-press-side-v3,         instruction: "press the handle down from the side" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/handle-press-v3,              instruction: "press the handle down" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/handle-pull-side-v3,          instruction: "pull the handle up from the side" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/handle-pull-v3,               instruction: "pull the handle up" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/lever-pull-v3,                instruction: "pull the lever down" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/peg-insert-side-v3,           instruction: "insert the peg into the side hole" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/peg-unplug-side-v3,           instruction: "unplug the peg from the side hole" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/pick-out-of-hole-v3,          instruction: "pick the cube out of the hole" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/pick-place-v3,                instruction: "pick the puck and place it on the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/pick-place-wall-v3,           instruction: "pick and place over the wall" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/plate-slide-back-side-v3,     instruction: "slide the plate back from the side" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/plate-slide-back-v3,          instruction: "slide the plate back" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/plate-slide-side-v3,          instruction: "slide the plate to the side" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/plate-slide-v3,               instruction: "slide the plate forward" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/push-back-v3,                 instruction: "push the puck back to the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/push-v3,                      instruction: "push the puck to the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/push-wall-v3,                 instruction: "push the puck past the wall" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/reach-v3,                     instruction: "reach the target position" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/reach-wall-v3,                instruction: "reach the target past the wall" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/shelf-place-v3,               instruction: "place the cube on the shelf" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/soccer-v3,                    instruction: "kick the soccer ball into the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/stick-pull-v3,                instruction: "pull the stick out of the holder" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/stick-push-v3,                instruction: "push the stick to the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/sweep-into-v3,                instruction: "sweep the cube into the hole" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/sweep-v3,                     instruction: "sweep the cube off the table" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/window-close-v3,              instruction: "close the window" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/window-open-v3,               instruction: "open the window" }

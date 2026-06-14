@@ -1,0 +1,45 @@
+{
+  "_comment": "SO-100/SO-101 eval results for allenai/MolmoAct2-SO100_101 (MolmoAct2). The results block is marked pending — no in-tree reproduction has been run yet. Paper-cited numbers are NOT transcribed here because the MolmoAct2 paper (arXiv:2605.02881) does not publish a separate SO-100/101 headline success rate distinct from LIBERO. Update this file once a local rollout is run with the reproduction_cli command below.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "MolmoAct2: Action Reasoning Models for Real-world Deployment",
+    "arxiv": "https://arxiv.org/abs/2605.02881",
+    "model_variant": "MolmoAct2-SO100_101 (Molmo2-ER VLM + flow-matching action expert, ~5.5B)",
+    "checkpoint": "allenai/MolmoAct2-SO100_101",
+    "evaluated_by": "pending — no local reproduction run yet",
+    "reproduced_locally": false,
+    "reproduction_planned": "Requires a CUDA host with the so101_box MuJoCo scene and the NF4 weights pack.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite so101_tabletop --rskill molmoact2-so101",
+      "status": "pending — so101_tabletop benchmark suite not yet registered in tree",
+      "notes": [
+        "SimEnvironment config MUST set vla.extra.norm_tag='so100_so101_molmoact2' — the molmoact2 adapter defaults to 'libero' which would apply wrong normalization.",
+        "Use the so101_box scene with cameras oak_top + wrist; the rSkill aliases map oak_top→top and wrist→side.",
+        "MolmoAct2 uses flow-matching inference (10 steps per action chunk); confirm enable_depth_reasoning=False matches paper eval protocol.",
+        "Weights are Apache-2.0 — no non-commercial gate.",
+        "Re-running and overwriting this file with the benchmark output flips reproduced_locally to true."
+      ]
+    },
+    "status": "pending"
+  },
+  "benchmark": {
+    "name": "SO-101 tabletop manipulation",
+    "protocol": "binary success on tabletop pick/place/manipulation tasks with the SO-101 follower arm",
+    "robot": "SO-101 follower (6-DoF, Feetech STS3215 servos)",
+    "simulator": "MuJoCo (so101_box scene)"
+  },
+  "eval_config": {
+    "action_chunk_size": 10,
+    "n_action_steps": 10,
+    "image_size": "224x224",
+    "cameras": "camera1 (oak_top overhead), camera2 (wrist)",
+    "state_dim": 6,
+    "inference_mode": "flow-matching continuous action (10 steps, enable_depth_reasoning=False)",
+    "norm_tag": "so100_so101_molmoact2"
+  },
+  "results": {
+    "status": "pending",
+    "note": "No locally-reproduced benchmark numbers yet. See reproduction_cli above to populate."
+  }
+}

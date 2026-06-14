@@ -1,0 +1,56 @@
+{
+  "additionalProperties": false,
+  "description": "A task declaration \u2014 WHAT the robot must achieve inside a scene.\n\nTasks decouple scene assets (``SceneSpec``) from goal-conditioning. The\nsame scene can host many tasks; the same task can occasionally be run in\nmultiple compatible scenes (rare; usually 1:1 with ``scene_id``).\n\nSuccess is evaluated by the scene adapter \u2014 the reward / success signal\ncomes from the underlying gym env (``info['is_success']``,\n``info['success']``, terminal reward, \u2026).  ``success_key`` lets manifest\nauthors override which info field the runner reads.\n\nAttributes:\n    id: Stable task identifier, e.g. ``\"libero_spatial/task_0\"``,\n        ``\"metaworld/push-v3\"``.  Adapters split on ``/`` to resolve.\n    scene_id: ID of the :class:`SceneSpec` this task runs in.\n    instruction: Natural-language goal handed to the VLA as the\n        ``\"task\"`` text input.  Some adapters override this with a\n        description baked into the underlying suite (LIBERO, MetaWorld).\n    max_steps: Episode budget. Adapters may clip to scene-internal limits.\n        ``None`` means unset; ``BenchmarkScene`` enforces a concrete value\n        via its model validator.\n    success_key: Key inside ``info`` returned by ``env.step()`` whose\n        truthy value marks task success. ``None`` means unset;\n        :class:`BenchmarkScene` enforces a concrete value via its model\n        validator (required for paper-comparison benchmarks).\n    metadata: Free-form per-task notes (paper reference, dataset split, \u2026).\n\nExample:\n    >>> t = TaskSpec(\n    ...     id=\"libero_spatial/task_0\",\n    ...     scene_id=\"libero_spatial\",\n    ...     instruction=\"pick up the black bowl\",\n    ...     max_steps=200,\n    ...     success_key=\"is_success\",\n    ... )\n    >>> t.max_steps\n    200\n    >>> t.success_key\n    'is_success'\n    >>> TaskSpec(id=\"libero_spatial/task_0\", scene_id=\"libero_spatial\").max_steps is None\n    True",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "scene_id": {
+      "title": "Scene Id",
+      "type": "string"
+    },
+    "instruction": {
+      "default": "",
+      "title": "Instruction",
+      "type": "string"
+    },
+    "max_steps": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Steps"
+    },
+    "success_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Success Key"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id",
+    "scene_id"
+  ],
+  "title": "TaskSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

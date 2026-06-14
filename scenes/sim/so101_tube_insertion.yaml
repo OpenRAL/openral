@@ -1,0 +1,135 @@
+# SO-101 in a 100×61.5×75 cm tabletop box, with the tube-insertion task.
+#
+# Scene layout (top view; +X is the long edge, +Y is the depth, robot
+# sits against the back wall at high Y, OAK-D Pro on the ceiling
+# centred above the workspace):
+#
+#     +Y (depth = 61.5 cm)
+#     ↑
+#     |          [SO-101]  (base at (0.50, 0.50, 0))
+#     |        ┌────────┐
+#     |        │ workspace│
+#     |        │          │      ▽ OAK-D Pro overhead at (0.50, 0.3075, 0.749)
+#     |        │  tube    │        looking straight down
+#     |        │ block    │
+#     |        └──────────┘
+#     +---------------------> +X (width = 1.00 m)
+#
+# Both the slotted block and the cylindrical tube spawn at random
+# (x, y) within ``{tube,block}_spawn_xy_range`` each ``reset()``, lying
+# flat on the floor with a random yaw. Success = tube inserted
+# vertically into the block hole within the configured tolerances.
+#
+# Policy travels on the CLI: ``--rskill rskills/<your-skill>``.
+#
+# Image-key aliasing: the scene emits the observation dict
+#     {"images": {"oak_top": ..., "oak_top_depth": ..., "wrist": ...}, ...}
+# The RGB streams are keyed by their bare MuJoCo camera names
+# (`oak_top`, `wrist`) so they line up with `scene.cameras` below —
+# that's what the policy adapter's `resolve_camera_keys` pulls from the
+# observation. Pair this with an rSkill that maps those scene camera
+# keys onto the checkpoint's own image-feature suffixes via
+# `image_preprocessing.aliases` (direction is `<scene-cam-key>:
+# <model-feature-suffix>`):
+#     image_preprocessing:
+#       aliases:
+#         oak_top: top      # → observation.images.top
+#         wrist: wrist      # → observation.images.wrist
+# e.g. an SO-101 pick-place finetune whose checkpoint expects `top` / `wrist` /
+# `front`; the absent `front` camera is zero-padded via the image mask. The
+# depth stream is exposed as `oak_top_depth` (HxW float32 metres) for
+# skills with a depth-aware tower; depth-blind skills can ignore it.
+
+scene:
+  id: so101_box                  # @SCENES.register("so101_box", fixed_robot="so101_follower")
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["oak_top", "wrist"]
+  backend_options:
+    # Proprio state + action units. LeRobot-trained SO-100/101 checkpoints
+    # (MolmoAct2-SO100_101, pi05-so101) were recorded in degrees; the env
+    # converts MuJoCo-native radians ↔ degrees at the policy boundary so the
+    # checkpoint's norm_stats line up. Use "radians" for a sim-native policy.
+    joint_units: degrees
+
+    # Per-joint calibration affine: lerobot_deg = sign*mujoco_deg + offset.
+    # The MuJoCo so101_new_calib zero is not the LeRobot calibration zero
+    # (most visibly shoulder_lift/elbow_flex sit ~120° from URDF zero in the
+    # MolmoAct2-SO100_101 data). These offsets are that checkpoint's per-joint
+    # state-median (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex,
+    # wrist_roll, gripper); they align the sim home with the training median
+    # AND map the model's q01–q99 operating range into the reachable joint
+    # limits. Signs are +1 (no joint inversion observed). Estimated from
+    # norm_stats.json (mixture calibration) — refine if you have the dataset's
+    # exact homing offsets. Drop these (identity) for a different checkpoint.
+    joint_offsets_deg: [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+
+    # Arena (metres). 1.00 × 0.615 × 0.75 m matches the user-supplied
+    # sketch (100 × 61.5 × 75 cm).
+    box_size_xyz: [1.00, 0.615, 0.75]
+    wall_thickness: 0.010
+
+    # Robot mount: SO-101 base sits at back-centre of the floor.
+    robot_base_xyz: [0.50, 0.50, 0.00]
+    robot_base_yaw_deg: 0.0
+
+    # Wrist camera — parented to the gripper body, mounted just above the
+    # fingertips and aimed along the gripper APPROACH axis (gripper-local -X
+    # = world-down at home) so the jaw + the object being grasped stay in
+    # frame at every pose. (The old [0,-0.03,0]→[0,-0.10,-0.05] aim pointed
+    # sideways into a box wall — a blank dark view.)
+    wrist_camera_pos_local: [0.03, -0.02, -0.06]
+    wrist_camera_target_local: [-0.25, -0.02, -0.06]
+    wrist_camera_fovy: 75.0
+
+    # OAK-D Pro overhead — centred horizontally over the box,
+    # mounted at the ceiling (z = box_height - 1 mm), looking down.
+    oak_top_camera_pos: [0.50, 0.3075, 0.749]
+    oak_top_camera_target: [0.50, 0.3075, 0.0]
+    oak_top_camera_fovy: 54.0
+
+    # Slotted block — 44.5 × 44.5 × 20 mm with a Ø23 mm hole + a 5 mm
+    # slot connecting the hole to one edge.
+    slot_block_size: [0.0445, 0.0445, 0.020]
+    slot_block_hole_diameter: 0.023
+    slot_block_slot_width: 0.005
+    slot_block_mass: 0.05
+
+    # Tube — Ø21.9 mm × 90 mm long, lying on its side at reset.
+    # Hole is Ø23 mm → 0.55 mm radial clearance (1.1 mm diametric);
+    # tight enough that the insertion is a real fit-test, loose enough
+    # to be physically achievable without exact axis alignment.
+    tube_radius: 0.01095
+    tube_length: 0.090
+    tube_mass: 0.020
+
+    # Random spawn ranges (world frame). Both objects start lying on
+    # the floor at a random (x, y) within their range and a random
+    # yaw. The robot's reachable workspace radius is ~25 cm so we
+    # keep the spawn in front of the base.
+    block_spawn_xy_range: [[0.25, 0.75], [0.10, 0.40]]
+    tube_spawn_xy_range:  [[0.25, 0.75], [0.10, 0.40]]
+    spawn_min_separation: 0.10
+
+    # Success thresholds — see :class:`BoxSceneOptions` docstring.
+    # XY tolerance is 3 mm; physical fit is ±0.55 mm at the inscribed
+    # square's midpoints. The depth check enforces real insertion.
+    insertion_depth_m: 0.010
+    insertion_axis_tol_deg: 10.0
+    insertion_xy_tol_m: 0.003
+
+task:
+  id: so101_box/tube_insertion
+  scene_id: so101_box
+  instruction: "insert the orange tube into the slotted block"
+  max_steps: 500
+  success_key: is_success
+
+seed: 42
+n_episodes: 1
+record_video: false
+
+metadata:
+  honest_scope: "single-episode result; success criterion is geometric (tube vertical and inserted ≥ 10 mm into the hole)"

@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  openral-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        ROS_DISTRO: jazzy
+    image: openral-dev:latest
+    container_name: openral-dev
+    privileged: true
+    network_mode: host
+    volumes:
+      - .:/workspace
+      - /dev:/dev
+      - /run/udev:/run/udev:ro
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      # otelcol fans out: traces -> jaeger, metrics -> prometheus.
+      # Jaeger alone returns StatusCode.UNIMPLEMENTED on /v1/metrics,
+      # so we point the SDK at the collector by default.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otelcol:4317}
+    stdin_open: true
+    tty: true
+    command: bash
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: openral-otelcol
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./docker/otelcol/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"     # OTLP gRPC ingress (host-visible)
+      - "4318:4318"     # OTLP HTTP ingress (host-visible)
+      - "8889:8889"     # Prometheus scrape endpoint
+      - "13133:13133"   # health_check
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: openral-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI (host-visible)
+      # OTLP ports stay internal to the compose network: only otelcol
+      # talks to jaeger directly, so we don't publish 4317/4318 here.
+    expose:
+      - "14317"         # internal OTLP/gRPC (forwarded from otelcol)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - COLLECTOR_OTLP_GRPC_HOST_PORT=:14317
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: openral-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+    volumes:
+      - ./docker/otelcol/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"     # Prometheus UI
+    depends_on:
+      - otelcol

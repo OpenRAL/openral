@@ -1,0 +1,86 @@
+name: release-pypi
+# ADR-0021 — multi-package PyPI publishing scaffold.
+#
+# Status: SCAFFOLD ONLY. This workflow is intentionally DISABLED — the trigger
+# is `workflow_dispatch` plus a guard step that exits non-zero unless the
+# operator passes `confirm=YES`. Wiring it up to push to PyPI requires:
+#
+#   1. Registering each `openral-*` package on PyPI under the openral org.
+#   2. Configuring PyPI Trusted Publishing for this repo + this workflow file
+#      (https://docs.pypi.org/trusted-publishers/).
+#   3. Removing the `confirmation` guard step below.
+#   4. Optionally re-enabling the tag-push trigger.
+#
+# Until then, this file documents the SHAPE of the release pipeline so a
+# future PR can flip it on with a small diff and a Trusted Publishing
+# registration on the PyPI side.
+#
+# Every workspace package is pinned to 0.1.x — see CLAUDE.md "Keep ALL
+# versions to 0.1" directive (feat/cleaner-cli).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type YES to actually publish to PyPI (default no-op).'
+        required: true
+        default: 'NO'
+  # Tag trigger is intentionally commented out until Trusted Publishing is
+  # registered on PyPI. Uncomment after the one-time setup.
+  # push:
+  #   tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: refuse to publish unless confirm=YES
+        run: |
+          if [[ "${{ github.event.inputs.confirm }}" != "YES" ]]; then
+            echo "::error::Release workflow is disabled. Pass confirm=YES via workflow_dispatch to override."
+            exit 1
+          fi
+
+  build-and-publish:
+    needs: guard
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write   # PyPI trusted publishing — OIDC only, no API token.
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every distributable workspace member. Add a row when a new
+        # `python/<name>/pyproject.toml` ships a non-internal package.
+        package:
+          - python/core
+          - python/cli
+          - python/observability
+          - python/detect
+          - python/sensors
+          - python/hal
+          - python/world_state
+          - python/runner
+          - python/sim
+          - python/rskill
+          - python/reasoner
+          - python/wam
+          - python/dataset
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          python-version: "3.12"
+      - name: build sdist + wheel
+        working-directory: ${{ matrix.package }}
+        run: uv build --out-dir dist
+      - name: publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          packages-dir: ${{ matrix.package }}/dist
+          # Skip-existing lets a re-run of the matrix after a partial failure
+          # skip the already-published packages instead of erroring out.
+          skip-existing: true

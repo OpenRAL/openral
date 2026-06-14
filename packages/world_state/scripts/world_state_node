@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Entry point for ros2 run openral_world_state world_state_node."""
+
+from openral_world_state_ros.lifecycle_node import main
+
+main()

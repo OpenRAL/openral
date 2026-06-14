@@ -1,0 +1,203 @@
+# RobotDescription — Rethink Robotics Sawyer (physical embodiment).
+#
+# This is the manifest for the real 7-DoF Sawyer arm. The MetaWorld MT50
+# benchmark simulates this same robot through the metaworld / robosuite
+# MuJoCo wrappers; the sim-imposed observation/action contract (4-D
+# `agent_pos` state, 4-D delta-XYZ-plus-gripper action) lives in the
+# matching scene adapter at python/eval/src/openral_sim/adapters/
+# metaworld.py — NOT in this manifest. See docs/adr/0007-robot-sim-split.md.
+#
+# Joint limits / velocities / efforts come from the public Rethink Sawyer
+# data sheet (the company dissolved in 2018; community forks of intera_sdk
+# remain the reference). A real-HW HAL (sdk_kind: closed_with_api,
+# hal.real: openral_hal.sawyer_real:SawyerRealHAL) is tracked by
+# issue #57; today the MetaWorld MJCF is the only execution path.
+#
+# Joint naming follows the upstream sawyer_robot URDF.
+
+name: "sawyer"
+embodiment_kind: "manipulator"
+base_frame: "base"
+
+# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# Upstream xacro at github.com/RethinkRobotics/sawyer_robot/blob/master/
+# sawyer_description/urdf/sawyer.urdf.xacro requires xacro processing
+# at launch time (Sawyer also generates the URDF dynamically on robot
+# startup over Intera SDK). `robot_descriptions` ships only
+# `sawyer_mj_description` (MJCF). Wire when a wrapped-task-space VLA
+# targets Sawyer — today the LIBERO sawyer rSkills are joint-space.
+
+joints:
+  - name: "right_j0"
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "right_l0"
+    position_limits: [-3.0503, 3.0503]
+    velocity_limit: 1.74
+    effort_limit: 80.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j1"
+    joint_type: "revolute"
+    parent_link: "right_l0"
+    child_link: "right_l1"
+    position_limits: [-3.8095, 2.2842]
+    velocity_limit: 1.328
+    effort_limit: 80.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j2"
+    joint_type: "revolute"
+    parent_link: "right_l1"
+    child_link: "right_l2"
+    position_limits: [-3.0426, 3.0426]
+    velocity_limit: 1.957
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j3"
+    joint_type: "revolute"
+    parent_link: "right_l2"
+    child_link: "right_l3"
+    position_limits: [-3.0439, 3.0439]
+    velocity_limit: 1.957
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j4"
+    joint_type: "revolute"
+    parent_link: "right_l3"
+    child_link: "right_l4"
+    position_limits: [-2.9761, 2.9761]
+    velocity_limit: 3.485
+    effort_limit: 9.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j5"
+    joint_type: "revolute"
+    parent_link: "right_l4"
+    child_link: "right_l5"
+    position_limits: [-2.9761, 2.9761]
+    velocity_limit: 3.485
+    effort_limit: 9.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  - name: "right_j6"
+    joint_type: "revolute"
+    parent_link: "right_l5"
+    child_link: "right_l6"
+    position_limits: [-4.7124, 4.7124]
+    velocity_limit: 4.545
+    effort_limit: 9.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    role: "arm"
+  # ADR-0028a — single 1-DoF abstraction over the Rethink electric
+  # gripper. MetaWorld's MJCF expands this into per-finger mimic at
+  # the simulator layer; the safety kernel + rskill action contract
+  # see one width DoF. Limits follow the Rethink Electric Parallel
+  # Gripper data sheet (41 mm stroke, 35 N grip).
+  - name: "right_gripper"
+    joint_type: "prismatic"
+    parent_link: "right_l6"
+    child_link: "right_finger_pair"
+    position_limits: [0.0, 0.041]
+    velocity_limit: 0.15
+    effort_limit: 35.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "right_hand"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 35.0
+    max_payload_kg: 4.0
+    workspace_radius_m: 1.26
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 4.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["sawyer"]
+  embodiment_tags:
+    - "sawyer"
+    - "rethink"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 80.0
+  max_torque_nm: 80.0
+  deadman_required: true
+
+# Single corner-view RGB camera that mirrors MetaWorld's `pixels`
+# observation (480×480 native, surfaced as `camera1` by the
+# openral_sim MetaWorld scene adapter — see
+# python/eval/src/openral_sim/adapters/metaworld.py:92). Declared
+# here so the rSkill compatibility check on a `openral sim run --config
+# smolvla_metaworld_push.yaml` rollout matches
+# `observation.images.camera1` against a real SensorSpec — same
+# pattern as aloha_bimanual's `top`. Drift-guard intentionally does not
+# assert sensors against the HAL constant (see
+# tests/unit/test_robot_manifests_match_hal_constants.py header).
+sensors:
+  - name: "corner"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 20.0
+    intrinsics:
+      width: 480
+      height: 480
+      fx: 480.0
+      fy: 480.0
+      cx: 240.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "metaworld_corner"
+
+# `closed_with_api`: Rethink's intera_sdk is BSD-3 open-source but the
+# original vendor dissolved in 2018; active maintenance lives in community
+# forks (e.g. RethinkRobotics-opensource/sawyer_robot). Real-hardware HAL
+# is wired through SawyerRealHAL (issue #57) on top of `ros2_control` and
+# the community fork; the MetaWorld MuJoCo adapter is the sim execution
+# path and is constructed directly by openral_sim.
+#
+# This YAML mirrors `SAWYER_REAL_DESCRIPTION` in
+# python/hal/src/openral_hal/sawyer_real.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py). The sim
+# baseline `SAWYER_DESCRIPTION` in the same file keeps sdk_kind: open /
+# hal.sim: null because Sawyer has no MuJoCo HAL adapter today; the
+# MetaWorld scene adapter constructs the sim env directly.
+sdk_kind: "closed_with_api"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Sawyer has no MuJoCo sim HAL today → sim: null (build_hal(mode="sim") raises
+# ROSCapabilityMismatch). Real-only via the intera_sdk adapter.
+hal:
+  sim: null
+  real: "openral_hal.sawyer_real:SawyerRealHAL"
+
+onboard_compute:
+  driver_license: "BSD-3-Clause"             # intera_sdk / sawyer_robot fork
+  driver_repo: "https://github.com/RethinkRobotics-opensource/sawyer_robot"
+  controller_name: "sawyer_arm_controller"
+  command_topic: "/sawyer_arm_controller/joint_trajectory"
+  joint_state_topic: "/robot/joint_states"
+  estop_topic: "/robot/set_super_stop"

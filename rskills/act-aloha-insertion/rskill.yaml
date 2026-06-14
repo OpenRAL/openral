@@ -1,0 +1,98 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/act_aloha_sim_insertion_human (MIT)
+# Paper: Zhao et al., 2023 — Action Chunking Transformer.
+#
+# Sibling of skills/act-aloha (which wraps the transfer-cube checkpoint).
+# This package targets the harder bimanual peg-in-socket *insertion* task
+# from the same paper. Both skills share the ALOHA 14-DoF action space and
+# the single 480x640 top camera contract.
+#
+# LEGACY PROCESSOR PATH: same shape as rskills/act-aloha — norm stats live
+# inside model.safetensors; the schema processors block is omitted.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-act-aloha-insertion"
+version: "0.1.0"
+license: "mit"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "act"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "aloha"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.top"
+    min_width: 640
+    min_height: 480
+
+# Output side (ADR-0013). For the canonical aloha bimanual embodiment the
+# loader auto-fills n_dof (14) + vla_action_key from
+# robots/aloha_bimanual/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "hf://lerobot/act_aloha_sim_insertion_human"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# processors omitted — legacy path; norm stats live inside model.safetensors.
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 100
+# n_action_steps omitted — ACT default is 1 (per-step re-inference +
+# temporal ensembling, paper-faithful).
+latency_budget:
+  # Same ACT architecture as the cube-transfer sibling; reference-host
+  # measurements match within noise. The 25 ms ceiling keeps the
+  # canonical tolerance_pct=100 → 50 ms test ceiling.
+  per_chunk_ms: 25.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline success rate from skills/act-aloha-insertion/eval/aloha_insertion.json.
+benchmarks:
+  aloha_insertion: 0.20
+
+paper_url: "https://arxiv.org/abs/2304.13705"
+source_repo: "hf://lerobot/act_aloha_sim_insertion_human"
+
+description: >
+  ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual
+  sim-insertion demonstration set. Like the transfer-cube sibling, the
+  published checkpoint predates lerobot's PolicyProcessorPipeline
+  migration and ships without normalisation buffers. Insertion is the
+  harder ALOHA task in the original paper; the 0.20 success rate
+  reflects that.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "insert"
+  - "pick"
+  - "place"
+objects:
+  - "peg"
+  - "socket"
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 14
+
+# ADR-0019 — per-checkpoint state contract.
+state_contract:
+  dim: 14

@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "Stand-alone eval-protocol descriptor.\n\nHistorically the ``protocol`` block on the deleted ``BenchmarkSpec``\n(ADR-0009). After the Task-10 scene-hierarchy convergence (ADR-0041,\nJune 2026) a benchmark became a list of :class:`BenchmarkScene`s \u2014\neach scene carries its own ``n_episodes`` / ``seed`` /\n``task.success_key`` / ``task.max_steps`` \u2014 and ADR-0042 then\ndeleted the ``BenchmarkSpec`` wrapper altogether. ``ProtocolSpec``\nis retained as a public schema for callers that want to describe a\nprotocol independently (e.g. ADR drafts, benchmark-report tooling).\n\nPins the methodology so two rSkills evaluated under the same benchmark\nproduce apples-to-apples numbers. Authors of a benchmark should set\nthese to match the published protocol of the suite they are reproducing\n(e.g. LIBERO: 10 episodes per task, fixed seed range, ``is_success``).\n\nAttributes:\n    n_episodes: Number of independent episodes per task. Honest\n        success rates need >= 10 per task for the published LIBERO /\n        MetaWorld protocols.\n    seeds: Seed list applied per task (paired index-wise with the\n        episode index). Length MUST be >= ``n_episodes``; runners\n        slice ``seeds[:n_episodes]`` so re-runs are reproducible.\n    success_key: ``info`` key on the gym ``step()`` return whose truthy\n        value marks task success. Default ``\"is_success\"`` (LIBERO\n        convention); MetaWorld uses ``\"success\"``.\n    max_steps: Per-task episode budget. Adapters may clip to\n        scene-internal limits; the value here is the protocol ceiling.\n    min_reps: Minimum number of completed episodes per task before the\n        result JSON is written. Guards against a crash mid-suite\n        producing a misleadingly partial roll-up. ``None`` means\n        \"require every task x episode\".\n\nExample:\n    >>> p = ProtocolSpec(n_episodes=10, seeds=list(range(10)), max_steps=280)\n    >>> p.success_key\n    'is_success'",
+  "properties": {
+    "n_episodes": {
+      "default": 10,
+      "exclusiveMinimum": 0,
+      "title": "N Episodes",
+      "type": "integer"
+    },
+    "seeds": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Seeds",
+      "type": "array"
+    },
+    "success_key": {
+      "default": "is_success",
+      "title": "Success Key",
+      "type": "string"
+    },
+    "max_steps": {
+      "default": 280,
+      "exclusiveMinimum": 0,
+      "title": "Max Steps",
+      "type": "integer"
+    },
+    "min_reps": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Min Reps"
+    }
+  },
+  "title": "ProtocolSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

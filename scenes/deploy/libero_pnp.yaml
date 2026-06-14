@@ -1,0 +1,12 @@
+# LIBERO floor environment — deploy-sim digital twin (DeployScene; env-only).
+# Boots the OpenRAL stack (HAL + reasoner + safety kernel) without a predefined
+# task or success criterion; the reasoner picks the rSkill at runtime. Robot
+# auto-resolves via ``SCENES.fixed_robot("libero_spatial") == "franka_panda"``.
+# Run: openral deploy sim --config scenes/deploy/libero_pnp.yaml
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+
+scene:
+  id: libero_spatial
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256

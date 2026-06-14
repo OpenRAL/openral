@@ -1,0 +1,36 @@
+# RoboCasa GR1 tabletop — PnP cup to drawer and close.
+# Community fork (robocasa-gr1-tabletop-tasks); not an official benchmark.
+# The kitchen + GR1 forks share the python package name `robocasa`; the
+# `robocasa` group syncs the shared deps and the auto-installer picks the
+# GR1 variant for `robocasa/gr1/*` scene ids.
+# Setup: just sync --all-packages --group robocasa
+# Run: openral sim run --config scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml \
+#                      --rskill rskill://rskills/rldx1-ft-gr1-nf4
+
+scene:
+  id: robocasa/gr1/PnPCupToDrawerClose
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
+  # GR1 tabletop tasks route through the `gr1_unified/<task>_<robot>_Env`
+  # gymnasium wrapper (BASIC composite controller + Fourier-native 29-D
+  # state). `robots[0]` must be a GR1 composition so `_is_gr1_robot` flips
+  # the env construction to that path; `state_layout: gr1` selects the
+  # RLDX-1-FT-GR1 general_embodiment proprioception layout.
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PnPCupToDrawerClose
+    robots: ["GR1ArmsAndWaistFourierHands"]
+    controller: BASIC
+    state_layout: gr1
+    horizon: 600
+
+task:
+  id: robocasa/gr1/PnPCupToDrawerClose/0
+  scene_id: robocasa/gr1/PnPCupToDrawerClose
+  instruction: "pick the cup from the table and place it into the drawer, then close the drawer"
+  success_key: is_success
+  # max_steps: not enforced
+
+seed: 0

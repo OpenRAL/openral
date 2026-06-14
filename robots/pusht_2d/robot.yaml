@@ -1,0 +1,95 @@
+# RobotDescription — PushT 2-D scene-pseudo-robot (sim-only).
+#
+# Per ADR-0007 (robot/sim split), every robot.yaml is supposed to
+# describe a *physical* embodiment. PushT is the exception: gym_pusht is
+# a 2-D pymunk rigid-body benchmark with no real-robot counterpart at
+# all. This manifest exists so SimEnvironment configs targeting PushT
+# can round-trip through the schema (which requires a robot_id) — it is
+# the canonical "scene-pseudo-robot" of the PushT benchmark, not a real
+# embodiment.
+#
+# The 2-D synthetic joints + the single top-down RGB sensor mirror what
+# gym_pusht/PushT-v0 actually exposes; the (state_dim=2, action_dim=2,
+# 96x96 RGB) IO contract lives in
+# openral_sim.adapters.pusht (the matching scene adapter), not
+# here. See docs/adr/0007-robot-sim-split.md.
+
+name: "pusht_2d"
+embodiment_kind: "manipulator"
+
+base_frame: "world"
+
+# ADR-0027 — robot_state_publisher: not applicable. pusht_2d has no
+# 3D kinematic chain (synthetic 2-D toy env); no URDF exists and none
+# is useful. `urdf_path` stays unset; the launch's RSP block is
+# skipped for this embodiment.
+
+# Synthetic 2-DoF "joints" representing the (x, y) tip position.  No
+# kinematic chain to model — we expose them so the schema validates.
+joints:
+  - name: "tip_x"
+    joint_type: "prismatic"
+    parent_link: "world"
+    child_link: "tip_intermediate"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [0.0, 512.0]   # PushT canvas is 512 px wide
+    velocity_limit: 256.0
+    effort_limit: 1.0
+    actuator_kind: "servo"
+  - name: "tip_y"
+    joint_type: "prismatic"
+    parent_link: "tip_intermediate"
+    child_link: "tip"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [0.0, 512.0]
+    velocity_limit: 256.0
+    effort_limit: 1.0
+    actuator_kind: "servo"
+
+# Single 96x96 top-down RGB matching gym_pusht's ``obs["pixels"]``.
+# PushT predates the multi-cam ``observation.images.cameraN`` convention
+# and exposes the raw key ``observation.image``.
+sensors:
+  - name: "topdown"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 10.0
+    intrinsics:
+      width: 96
+      height: 96
+      fx: 96.0
+      fy: 96.0
+      cx: 48.0
+      cy: 48.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.image"
+    vendor: "sim"
+    model: "gym_pusht_topdown"
+
+capabilities:
+  locomotion: ["none"]
+  has_vision: true
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "cartesian_pose"
+  supported_vla_embodiments: ["pusht", "lerobot"]
+  embodiment_tags:
+    - "pusht"
+    - "lerobot"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 1.0
+  deadman_required: false
+
+sdk_kind: "open"
+
+# observation_spec / action_spec deliberately omitted (ADR-0007).
+# The IO contract (2-D state, 2-D action, 96x96 RGB at 10 Hz) is the
+# scene's, not the robot's, and lives in
+# openral_sim.adapters.pusht.

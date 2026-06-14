@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+r"""ADR-0018 F1 — composed-runtime entry point.
+
+Brings up ``world_state_node`` + ``rskill_runner_node`` in a single OS
+process with one shared :class:`WorldStateAggregator` (ADR-0018 §3).
+The robot's on-disk ``robot.yaml`` is selected via a ROS parameter:
+
+.. code-block:: bash
+
+    ros2 run openral_rskill_ros runtime_node --ros-args \\
+        -p robot_yaml:=/abs/path/to/robots/<id>/robot.yaml
+
+Production launches (``so100_e2e.launch.py``, ``openarm_e2e.launch.py``,
+…) spawn one ``Node(executable="runtime_node", parameters=[{"robot_yaml": …}])``
+each — the per-robot launch picks the YAML; everything else is identical.
+
+This is the entry point referenced by CLAUDE.md §1.11: real
+``RobotDescription`` loaded from the in-tree manifest, no placeholders.
+"""
+
+from __future__ import annotations
+
+import sys
+
+
+def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point — splitting obscures the launch contract
+    try:
+        import rclpy
+        from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+        from rclpy.parameter import Parameter
+    except ImportError as exc:
+        print(
+            f"runtime_node: rclpy not on PYTHONPATH ({exc}); source install/setup.bash first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from openral_observability import configure_observability
+    from openral_observability.system_metrics import start_system_metrics_collector
+    from openral_rskill_ros.compose import compose_runtime
+
+    # Idempotent + no-op if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
+    # The launch passes the dashboard's endpoint via env so the
+    # `runtime.tick` / `rskill.execute` spans land on the live UI.
+    configure_observability(service_name="openral.runtime")
+    # Feed the dashboard's System Health card. No-ops cleanly on hosts
+    # without psutil / pynvml — the card simply stays empty there.
+    start_system_metrics_collector(interval_s=1.0)
+
+    rclpy.init()
+
+    # Bootstrap a tiny throwaway node just to read the launch-supplied
+    # parameters. Avoids requiring the caller to set env vars; matches
+    # how the safety kernel reads ``envelope_file``.
+    bootstrap = rclpy.create_node("openral_runtime_bootstrap")
+    bootstrap.declare_parameter("robot_yaml", "")
+    bootstrap.declare_parameter("rskill_search_paths", [""])
+    bootstrap.declare_parameter("camera_names", [""])
+    # Forwarded to the composed RskillRunnerNode's
+    # ``reset_to_pose_service`` parameter so the runner calls the
+    # HAL's ResetToPose service with the manifest's starting_pose
+    # before the first inference tick. Empty disables the call.
+    bootstrap.declare_parameter("reset_to_pose_service", "")
+    # ADR-0025 — bridge ``/map`` from slam_toolbox into the dashboard's
+    # ``slam.occupancy_grid`` OTel span family. Off by default; the
+    # ``sim_e2e.launch.py`` flips this on when ``enable_slam:=true``
+    # so the SLAM Map card on the dashboard populates as
+    # slam_toolbox starts building the map.
+    bootstrap.declare_parameter("enable_slam_bridge", False)
+    # ADR-0030 — render the octomap occupied-voxel cloud
+    # (``/octomap_point_cloud_centers``) into the dashboard's
+    # ``world.pointcloud`` span family. Off by default; the
+    # ``sim_e2e.launch.py`` flips this on when ``enable_octomap:=true``
+    # so the robot-view pointcloud card populates as octomap_server runs.
+    bootstrap.declare_parameter("enable_world_cloud_bridge", False)
+    robot_yaml: str = bootstrap.get_parameter("robot_yaml").get_parameter_value().string_value
+    search_paths: list[str] = [
+        p
+        for p in bootstrap.get_parameter("rskill_search_paths")
+        .get_parameter_value()
+        .string_array_value
+        if p
+    ]
+    # Forwarded to the skill resolver so the policy adapter sees the
+    # scene's actual camera keys (rskill's ImagePreprocessing.aliases
+    # then remaps them to the checkpoint's observation.images.* names).
+    camera_names: list[str] = [
+        c
+        for c in bootstrap.get_parameter("camera_names").get_parameter_value().string_array_value
+        if c
+    ]
+    reset_to_pose_service: str = (
+        bootstrap.get_parameter("reset_to_pose_service").get_parameter_value().string_value
+    )
+    enable_slam_bridge: bool = (
+        bootstrap.get_parameter("enable_slam_bridge").get_parameter_value().bool_value
+    )
+    enable_world_cloud_bridge: bool = (
+        bootstrap.get_parameter("enable_world_cloud_bridge").get_parameter_value().bool_value
+    )
+    bootstrap.destroy_node()
+
+    if not robot_yaml:
+        print(
+            "runtime_node: required ROS parameter `robot_yaml` is empty; "
+            "pass `-p robot_yaml:=/abs/path/to/robots/<id>/robot.yaml` "
+            "(launches resolve this from LaunchConfiguration).",
+            file=sys.stderr,
+        )
+        rclpy.try_shutdown()
+        return 2
+
+    # Build the production resolver. ``make_default_skill_resolver``
+    # branches on ``manifest.kind`` so wrapped-ROS skills
+    # (``kind: ros_action`` / ``ros_service``) get an
+    # :class:`ROSActionRskill` against the host node, while VLA
+    # manifests fall through to the local-tree path (same search
+    # paths as the reasoner's palette seed). The local-only resolver
+    # always calls ``_build_runtime_skill_from_manifest`` which
+    # rejects non-VLA kinds, so using it directly here makes the
+    # reasoner-dispatched wrapped-ROS skills (nav2, moveit,
+    # look-at) fail at goal-execute time with ``kind='ros_action' is
+    # not a VLA policy``.
+    #
+    # ``compose_runtime`` constructs the host
+    # :class:`RskillRunnerNode`, so we hand it a resolver factory
+    # signature that closes over the node once the node is built.
+    # See ``compose.py`` / ``rskill_runner_node.py:700`` for the
+    # production wiring.
+    from openral_rskill_ros.rskill_runner_node import make_default_skill_resolver
+
+    def _build_resolver(skill_runner_node: object) -> object:
+        # ADR-0027 — wire a lazy ``tf_lookup_getter`` so the resolver
+        # reads ``skill_runner_node._tf_lookup`` AT DISPATCH TIME rather
+        # than at factory time. ``_init_tf_lookup`` runs in
+        # ``on_configure`` which fires AFTER this factory is invoked
+        # from ``compose_runtime.__init__``; without the lazy getter the
+        # resolver would close over ``None`` and the wrapped-task-space
+        # state assembler would silently fall back to the raw 11-D
+        # joint-state slice, surfacing as ``rldx adapter expects a
+        # 16-D state for state_layout='rc365', got 11-D``.
+        return make_default_skill_resolver(
+            skill_runner_node,
+            search_paths=search_paths,
+            scene_cameras=camera_names,
+            tf_lookup_getter=lambda: getattr(skill_runner_node, "_tf_lookup", None),
+        )
+
+    try:
+        runtime = compose_runtime(
+            robot_yaml,
+            skill_resolver_factory=_build_resolver,
+            enable_slam_bridge=enable_slam_bridge,
+            enable_world_cloud_bridge=enable_world_cloud_bridge,
+        )
+    except Exception as exc:  # surface as exit code, not stack trace
+        print(f"runtime_node: compose_runtime failed: {exc!s}", file=sys.stderr)
+        rclpy.try_shutdown()
+        return 3
+
+    # Forward the optional reset-service name from the bootstrap to
+    # the composed lifecycle node. ``RskillRunnerNode`` declared the
+    # parameter at construction; this just overrides the empty
+    # default before lifecycle transitions fire.
+    if reset_to_pose_service:
+        from rclpy.parameter import Parameter
+
+        runtime.skill_runner_node.set_parameters(
+            [Parameter("reset_to_pose_service", Parameter.Type.STRING, reset_to_pose_service)],
+        )
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(runtime.world_state_node)
+    executor.add_node(runtime.skill_runner_node)
+
+    # Drive the two internal lifecycle nodes to ACTIVE automatically.
+    # `runtime_node` is the launch-side entry point — there is no
+    # external lifecycle manager that would otherwise issue the
+    # transitions, so the demo would sit forever in "unconfigured".
+    # On configure / activate failure we surface a non-zero exit and
+    # log the cause instead of spinning silently.
+    from rclpy.lifecycle import TransitionCallbackReturn
+
+    for node in (runtime.world_state_node, runtime.skill_runner_node):
+        rc = node.trigger_configure()
+        if rc != TransitionCallbackReturn.SUCCESS:
+            print(
+                f"runtime_node: {node.get_name()}.trigger_configure returned {rc!r}",
+                file=sys.stderr,
+            )
+            rclpy.try_shutdown()
+            return 4
+        rc = node.trigger_activate()
+        if rc != TransitionCallbackReturn.SUCCESS:
+            print(
+                f"runtime_node: {node.get_name()}.trigger_activate returned {rc!r}",
+                file=sys.stderr,
+            )
+            rclpy.try_shutdown()
+            return 5
+
+    try:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # Normal teardown path. rclpy installs a SIGINT handler at
+        # `rclpy.init()` that shuts down the context AND raises
+        # KeyboardInterrupt out of `executor.spin()` on Jazzy. On
+        # ROS 2 Rolling / a manual `rclpy.shutdown()` from another
+        # thread, the executor instead raises ExternalShutdownException.
+        # Either way the context is already shut down by the time we
+        # reach the `finally` below, so the bare `rclpy.shutdown()`
+        # we used to call there raised
+        # `RCLError: rcl_shutdown already called` — the
+        # `try_shutdown()` switch below is the corresponding fix.
+        pass
+    finally:
+        runtime.skill_runner_node.destroy_node()
+        runtime.world_state_node.destroy_node()
+        # Idempotent — no-op when the SIGINT handler (or whoever fired
+        # ExternalShutdownException) already shut down the context.
+        rclpy.try_shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

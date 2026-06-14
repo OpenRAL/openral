@@ -1,0 +1,39 @@
+# Franka in an Isaac Sim table+bowl+plate world — deploy playground for a
+# LIBERO camera-VLA (ADR-0045).
+#
+# Env-only DeployScene (no task) using the bowl_plate layout: the LIBERO
+# obs/action contract — camera1 (agent-view) + camera2 (eye-in-hand wrist) +
+# 8-D state, and a 7-D OSC-pose-delta action. A LIBERO franka rSkill
+# (act-libero / smolvla-libero) dispatches as CARTESIAN_DELTA (env_action_dim=7),
+# which SimAttachedHAL packs into the 7-D env action and the scene applies via
+# Lula IK — the same path LIBERO uses (ADR-0036; SimAttachedHAL does not gate on
+# the manifest's supported_control_modes). Two cameras feed the VLA, so there is
+# no missing-camera warning (cf. the single-camera lift_cube deploy scene).
+#
+# Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar venv
+# (OPENRAL_ISAAC_SIDECAR_PYTHON). See scenes/sim/isaac_franka_bowl_plate.yaml.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/isaac_franka_bowl.yaml \
+#                        --no-enable-octomap --hal viewer_enabled=false
+#   then dispatch e.g. rskills/act-libero via /openral/execute_rskill.
+
+robot_id: "franka_panda"
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2"]
+  backend_options:
+    layout: "bowl_plate"
+    headless: true
+    host: "127.0.0.1"
+    # port omitted on purpose: the isaac backend derives a stable, DISTINCT
+    # per-scene port (_scene_default_port). A shared pin (was 5757) let a
+    # different Isaac scene adopt this scene's lingering sidecar and serve the
+    # wrong layout; the identity-checked ping handshake still guards reuse.
+    boot_timeout_s: 1200
+    timeout_ms: 120000

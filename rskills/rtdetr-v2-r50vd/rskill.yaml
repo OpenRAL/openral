@@ -1,0 +1,163 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-rtdetr-v2-r50vd"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "detector"
+
+# embodiment-agnostic: a perception rSkill (detector/vlm) needs only an RGB
+# camera, not a specific robot. The rSkill<->robot gate exempts these kinds
+# (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
+# it matches any robot/scene.
+embodiment_tags: []
+
+# vla_feature_key is intentionally omitted: the detector requires any RGB
+# camera of sufficient resolution, not a specific named stream.
+sensors_required:
+  - modality: "rgb"
+    min_width: 640
+    min_height: 480
+
+actuators_required: []
+
+# ADR-0037: the OpenRAL detector perception path (ros_image_detector_node →
+# DetectorRunner → ObjectsDetector) is ONNX-only. RT-DETRv2-R50 is the heavier
+# variant, so it runs through the TensorRT runtime (runtime_tensorrt): the
+# rSkill ships model.onnx and an fp16 engine is built + cached on the host on
+# first load (verified on an RTX 4070, ~115 s cold build). onnxruntime is the
+# portable CPU/GPU fallback when the tensorrt group is not installed.
+runtime: "tensorrt"
+quantization:
+  dtype: "fp16"
+  backend: "tensorrt"
+min_vram_gb:
+  fp32: 0.7
+  fp16: 0.35
+
+weights_uri: "local://rskills/rtdetr-v2-r50vd"
+
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 50.0
+
+detector:
+  # ADR-0051: always-on background producer (publishes ObjectsMetadata to
+  # WorldState; not the on-demand locate_in_view locator).
+  mode: "continuous"
+  labels:
+    - "person"
+    - "bicycle"
+    - "car"
+    - "motorcycle"
+    - "airplane"
+    - "bus"
+    - "train"
+    - "truck"
+    - "boat"
+    - "traffic light"
+    - "fire hydrant"
+    - "stop sign"
+    - "parking meter"
+    - "bench"
+    - "bird"
+    - "cat"
+    - "dog"
+    - "horse"
+    - "sheep"
+    - "cow"
+    - "elephant"
+    - "bear"
+    - "zebra"
+    - "giraffe"
+    - "backpack"
+    - "umbrella"
+    - "handbag"
+    - "tie"
+    - "suitcase"
+    - "frisbee"
+    - "skis"
+    - "snowboard"
+    - "sports ball"
+    - "kite"
+    - "baseball bat"
+    - "baseball glove"
+    - "skateboard"
+    - "surfboard"
+    - "tennis racket"
+    - "bottle"
+    - "wine glass"
+    - "cup"
+    - "fork"
+    - "knife"
+    - "spoon"
+    - "bowl"
+    - "banana"
+    - "apple"
+    - "sandwich"
+    - "orange"
+    - "broccoli"
+    - "carrot"
+    - "hot dog"
+    - "pizza"
+    - "donut"
+    - "cake"
+    - "chair"
+    - "couch"
+    - "potted plant"
+    - "bed"
+    - "dining table"
+    - "toilet"
+    - "tv"
+    - "laptop"
+    - "mouse"
+    - "remote"
+    - "keyboard"
+    - "cell phone"
+    - "microwave"
+    - "oven"
+    - "toaster"
+    - "sink"
+    - "refrigerator"
+    - "book"
+    - "clock"
+    - "vase"
+    - "scissors"
+    - "teddy bear"
+    - "hair drier"
+    - "toothbrush"
+  input_size: [640, 640]
+  score_threshold: 0.5
+
+paper_url: "https://arxiv.org/abs/2407.17140"
+source_repo: "hf://PekingU/rtdetr_v2_r50vd"
+
+description: >
+  RT-DETRv2 object detector, ResNet-50vd backbone, trained on COCO 2017
+  (80 categories). PyTorch runtime; perception producer that runs on the
+  camera tee and publishes ObjectsMetadata to /openral/perception/objects.
+  Improved baseline with bag-of-freebies and selective multi-scale features.
+  Reference latency ~30 ms GPU / ~70 ms CPU. Apache-2.0 weights mirrored
+  from PekingU/rtdetr_v2_r50vd. See ADR-0037 for the detector kind contract.
+
+actions:
+  - "detect"
+
+objects:
+  - "person"
+  - "cup"
+  - "bottle"
+  - "bowl"
+  - "chair"
+  - "table"
+  - "spoon"
+  - "fork"
+  - "knife"
+  - "plate"
+  - "laptop"
+  - "remote"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "household"

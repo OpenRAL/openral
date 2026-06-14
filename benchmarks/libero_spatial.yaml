@@ -1,0 +1,90 @@
+# LIBERO-Spatial benchmark suite — fixed (robot, scenes, tasks, protocol).
+#
+# Only the VLA (rSkill) varies across runs. Consumed by `openral benchmark run`
+# (PR D of ADR-0009); writes a RSkillEvalResult JSON to
+# rskills/<vla>/eval/libero_spatial.json with reproduced_locally=true.
+#
+# Protocol mirrors the published LIBERO protocol used by SmolVLA / pi0.5 /
+# xVLA in their papers: 10 tasks, 10 episodes per task, success_key
+# is_success, max_steps 280 (per lerobot src/lerobot/envs/libero.py).
+#
+# Render resolution is 256x256 — matches the canonical lerobot LIBERO
+# pipeline the smolvla-libero / pi05-libero-nf4 rSkills were finetuned
+# against. SmolVLA's `resize_with_pad` always upsamples to 512x512
+# inside the policy regardless of env render size (see
+# lerobot/policies/smolvla/modeling_smolvla.py:421); rendering at 512x512
+# natively was attempted in PR #83 and reverted — sharp 512x512 frames
+# turned out to be out-of-distribution for the shipped checkpoint
+# (libero_spatial avg dropped from 0.64 → 0.39 on the local repro).
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("libero_spatial"). The first scene fully spells out the per-task
+# fields; subsequent scenes merge it via the `<<: *libero_scene` YAML
+# anchor and override only the task id. Per-scene `metadata` is
+# uniform across the suite via the anchor inheritance — that means
+# `display_name` / `simulator` set on the first scene propagate to all
+# 10 scenes. Suite-level invariants (uniform robot_id / n_episodes /
+# seed / metadata, unique task ids, non-empty) are enforced by
+# :func:`openral_core.raise_on_invalid_suite`.
+#
+# Notes: per-task instructions are baked into the LIBERO suite itself
+# (env.task_description) and override TaskSpec.instruction at runtime.
+
+- &libero_scene
+  scene: &scene_block
+    id: libero_spatial
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+  task: &task_proto
+    id: libero_spatial/0  # placeholder; overridden by index below
+    scene_id: libero_spatial
+    instruction: ""
+    max_steps: 280
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 10
+  seed: 0
+  metadata: &meta_block
+    paper: "https://arxiv.org/abs/2306.03310"
+    display_name: "LIBERO-Spatial"
+    simulator: "LIBERO (MuJoCo)"
+    honest_scope: >
+      10 episodes per task across all 10 LIBERO-Spatial tasks (100 rollouts
+      total). Matches the SmolVLA / pi0.5 / xVLA published protocols.
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/1
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/2
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/3
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/4
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/5
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/6
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/7
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/8
+- <<: *libero_scene
+  task:
+    <<: *task_proto
+    id: libero_spatial/9

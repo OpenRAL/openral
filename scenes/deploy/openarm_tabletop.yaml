@@ -1,0 +1,32 @@
+# OpenArm v2 bimanual — tabletop deploy environment.
+#
+# Env-only DeployScene (no task, no eval) — boots the full OpenRAL stack
+# (HAL + reasoner + safety kernel) on the openarm tabletop with the
+# mandatory mounting pose. The reasoner picks the rSkill at runtime;
+# no scene-level task is prescribed.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_tabletop_pnp
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "left_wrist", "right_wrist"]
+  backend_options:
+    render_width: 640
+    render_height: 480
+    max_steps: 500
+
+# ADR-0002 Amendment 3 — mandatory mounting pose for the
+# openarm_tabletop_pnp scene. Lift bases above the table top + shift
+# forward into the workspace so the 0.6 m arm reach can sweep the
+# picking targets.
+base_pose:
+  xyz: [0.20, 0.0, 0.55]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+  frame_id: world

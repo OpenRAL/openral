@@ -1,0 +1,90 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX  — SIMPLER WidowX finetune
+# Base:  RLWRLD/RLDX-1-PT
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rldx1-ft-simpler-widowx-nf4"
+version: "0.1.0"
+license: "rlwrld_non_commercial"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "rldx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "widowx"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+min_vram_gb:
+  bf16: 18.0
+  int4: 7.0
+weights_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX/policy_preprocessor.json"
+  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX/policy_postprocessor.json"
+state_contract:
+  # SimplerEnv WidowX (bridge_orig) wire schema: 8 scalar state keys
+  # (x/y/z + bridge-rotation-corrected roll/pitch/yaw + pad + gripper),
+  # 1 video stream (video.image_0), 7-D delta-EEF + binary gripper
+  # action. Drives the openral rldx adapter's simpler_widowx layout —
+  # see python/sim/src/openral_sim/policies/rldx.py and ADR-0014.
+  layout: "simpler_widowx"
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# Half-chunk replay (closed-loop replanning every 8 env steps).
+n_action_steps: 8
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+
+paper_url: "https://huggingface.co/RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX"
+source_repo: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX"
+
+description: >
+  RLDX-1 fine-tuned on the SIMPLER WidowX benchmark. Shares the rldx
+  sidecar runtime. Non-commercial license.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+objects:
+  - "object"
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+# ADR-0028a — ``representation: delta_ee_6d_plus_gripper`` declares the
+# structural truth (matches the line 50 wire-schema comment): 6 cartesian
+# deltas + 1 binary gripper, NOT 7 joint positions. Without this the
+# invariant test reads ``kind: joint_position`` + no representation
+# and complains that ``dim=7 > widowx joints=6``.
+action_contract:
+  dim: 7
+  representation: "delta_ee_6d_plus_gripper"

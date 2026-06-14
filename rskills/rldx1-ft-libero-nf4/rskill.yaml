@@ -1,0 +1,148 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: RLWRLD/RLDX-1-FT-LIBERO  — LIBERO-finetuned RLDX-1
+# Base:  RLWRLD/RLDX-1-PT          (Qwen3-VL-8B + Multi-Stream Action Transformer)
+#
+# LICENSE WARNING (CLAUDE.md §7.4):
+#   Code: Apache-2.0 (https://github.com/RLWRLD/RLDX-1)
+#   Weights: RLWRLD Model License v1.0 — NON-COMMERCIAL, attribution required,
+#   no military / weapons / non-consensual surveillance use. Mirrors our GR00T
+#   policy. The loader derives is_commercial_use_allowed=False from
+#   license=rlwrld_non_commercial; activating commercially requires both
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 and a vendor agreement with RLWRLD.
+#
+# RUNTIME NOTE (auto-managed out-of-process sidecar):
+#   RLDX-1 requires Python 3.10 and a custom architectures=["RLDX"] class
+#   that lives only in the upstream `rldx` package — neither fits into
+#   our Python 3.12 main venv. The adapter speaks the server's native
+#   ZMQ + msgpack wire protocol to a Python 3.10 sidecar venv. The
+#   sidecar handles its own checkpoint loading and DOES NOT consume
+#   manifest.processors today — the per-file URIs below are declared
+#   for contract completeness, and a follow-up PR will wire the sidecar
+#   to consume them per the rSkill self-containment audit.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-rldx1-ft-libero-nf4"
+version: "0.1.0"
+license: "rlwrld_non_commercial"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "rldx"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO targets table-top manipulation on a Franka Panda.
+embodiment_tags:
+  - "franka_panda"
+
+# RLDX consumes two 256×256 RGB streams on LIBERO: agentview (camera1)
+# and eye-in-hand (camera2). The sidecar's RLDXSimPolicyWrapper renames
+# them to video.image / video.wrist_image on the wire.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+
+# Output side (ADR-0013). The franka_panda canonical YAML auto-fills
+# n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+# `int4` is the openral `QuantizationDtype` for the NF4 weight-only
+# scheme that the sidecar applies to the Qwen3-VL backbone. The MSAT
+# diffusion head is intentionally left at bf16 — quantizing the flow
+# matcher would corrupt action quality.
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+# Informational VRAM ceilings (ral skill check / bh doctor).
+min_vram_gb:
+  bf16: 18.0   # full-precision weights + 4-frame video activations.
+  int4: 7.0    # NF4 backbone + bf16 head + activations on an 8 GiB GPU.
+weights_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# Per-file URIs are declared for contract completeness; the rldx sidecar
+# handles its own checkpoint loading today and will consume these in a
+# follow-up PR.
+processors:
+  preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO/policy_preprocessor.json"
+  postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-LIBERO/policy_postprocessor.json"
+# RLDX's RLDXSimPolicyWrapper handles image preprocessing internally —
+# the server flips frames as needed and applies its own normalisation.
+# We pass raw (256, 256, 3) uint8 frames; no adapter-level remap.
+image_preprocessing:
+  # Upstream LIBERO eval env (rldx/eval/sim/LIBERO/libero_env.py)
+  # rotates both agentview + wrist by 180° before passing to the
+  # policy: `obs["agentview_image"][::-1, ::-1]`. The rldx adapter
+  # honours this manifest flag and applies the same transform so the
+  # FT-LIBERO checkpoint sees in-distribution image orientation.
+  flip_180: true
+# RLDX-1 carries an embedded state-encoder for the LIBERO 8-D
+# (eef_pos | axisangle | gripper_qpos) layout — see the adapter for
+# the wire mapping. We expose dim=8 here so the loader's compat
+# check still has a concrete number to validate against.
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# RLDX action horizon = 16 (per upstream README + config.json).
+chunk_size: 16
+# n_action_steps omitted — equals chunk_size (full chunk replay).
+# Half-chunk replay (RTC exec_horizon=8) bought tighter closed-loop
+# reactivity at the cost of 2× round-trips per episode; for the LIBERO
+# PnP / drawer tasks the full-chunk open-loop horizon is fine and
+# visibly halves viewer lag. Override via vla.extra.replan_steps in
+# the YAML or --n-action-steps on the CLI.
+latency_budget:
+  per_chunk_ms: 1500.0   # Qwen3-VL-8B at NF4 backbone + 4-frame video is heavy.
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline benchmark dict. The eval/libero_*.json fixtures are
+# paper-cited (RLWRLD model card) with reproduced_locally:false until
+# a real `openral benchmark run` lands successfully.
+
+paper_url: "https://huggingface.co/RLWRLD/RLDX-1-FT-LIBERO"
+source_repo: "hf://RLWRLD/RLDX-1-FT-LIBERO"
+
+description: >
+  RLDX-1 fine-tuned on the LIBERO benchmark task suite. RLDX-1 pairs a
+  Qwen3-VL-8B-Instruct backbone (~6.9 B params total) with a Multi-Stream
+  Action Transformer flow-matching head producing 16-step LIBERO action
+  chunks. Weights ship under RLWRLD Model License v1.0 (non-commercial).
+  Runs out-of-process via the `rldx` sidecar adapter; NF4 quantization
+  on the Qwen3-VL backbone is required to fit on 8 GiB GPUs.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  representation: "delta_ee_6d_plus_gripper"

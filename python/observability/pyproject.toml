@@ -1,0 +1,30 @@
+[project]
+name = "openral-observability"
+version = "0.1.0"
+description = "OpenRAL observability — OpenTelemetry tracing + structlog→OTLP logging bridge for Skill / inference / safety spans"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "opentelemetry-api>=1.27",                         # reason: stable Tracer/Span API
+    "opentelemetry-sdk>=1.27",                         # reason: TracerProvider, LoggerProvider
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",    # reason: OTLP/gRPC exporter to Jaeger:4317
+    "opentelemetry-proto>=1.27",                       # reason: dashboard decodes OTLP/HTTP protobuf bodies on its embedded receiver
+    "structlog>=24.1",                                 # reason: structured logging per CLAUDE.md §5.1
+    "mcap>=1.2",                                       # reason: ADR-0018 F7 openral replay reads rosbag2/mcap files (openral_observability.replay.bag_reader)
+    "psutil>=5.9",                                     # reason: system_metrics sampler reads CPU + RAM gauges for the dashboard's System health card
+    "nvidia-ml-py>=12.560",                            # reason: system_metrics sampler reads GPU util + memory via pynvml; pure-Python wrapper that gracefully no-ops on hosts without an NVIDIA driver
+]
+
+[project.optional-dependencies]
+dashboard = [
+    "fastapi>=0.110",          # reason: ASGI app for openral dashboard (OTLP/HTTP receiver + SSE stream)
+    "uvicorn[standard]>=0.27", # reason: ASGI server for openral dashboard
+    "httpx>=0.27",             # reason: test transport for the embedded OTLP/HTTP receiver
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_observability"]

@@ -1,0 +1,1632 @@
+{
+  "total_files": 361,
+  "total_functions": 3276,
+  "by_tier": {
+    "unit": 2522,
+    "sim": 307,
+    "pkg:observability": 113,
+    "integration": 65,
+    "pkg:dataset": 53,
+    "pkg:hal": 48,
+    "hil": 36,
+    "ros:openral_safety": 30,
+    "ros:openral_rskill_ros": 25,
+    "pkg:state_adapter": 11,
+    "ros:openral_hal_panda_mobile": 8,
+    "ros:openral_perception_ros": 8,
+    "pkg:wam": 6,
+    "pkg:reasoner": 5,
+    "ros:openral_prompt_router": 5,
+    "ros:openral_reasoner_ros": 5,
+    "pkg:core": 4,
+    "ros:world_state": 4,
+    "ros:openral_hal_ur5e": 3,
+    "ros:openral_safety_watchdog": 3,
+    "ros:openral_slam_bringup": 3,
+    "ros:openral_hal_so100": 2,
+    "ros:openral_human_estop": 2,
+    "ros:openral_nav2_bringup": 2,
+    "ros:openral_hal_aloha": 1,
+    "ros:openral_hal_franka": 1,
+    "ros:openral_hal_g1": 1,
+    "ros:openral_hal_h1": 1,
+    "ros:openral_hal_rizon4": 1,
+    "ros:openral_hal_ur10e": 1
+  },
+  "by_marker": {
+    "parametrize": 98,
+    "skipif": 45,
+    "asyncio": 15,
+    "filterwarnings": 8,
+    "slow": 1
+  },
+  "by_directory": {
+    "tests/unit": 2522,
+    "tests/sim": 287,
+    "python/observability/tests": 113,
+    "tests/integration": 65,
+    "python/dataset/tests": 53,
+    "python/hal/tests": 48,
+    "tests/hil": 33,
+    "packages/openral_safety/test": 30,
+    "packages/openral_rskill_ros/test": 25,
+    "tests/sim/safety": 20,
+    "python/state_adapter/tests": 11,
+    "packages/openral_hal_panda_mobile/test": 8,
+    "packages/openral_perception_ros/test": 8,
+    "python/wam/tests": 6,
+    "python/reasoner/tests": 5,
+    "packages/openral_prompt_router/test": 5,
+    "packages/openral_reasoner_ros/test": 5,
+    "python/core/tests": 4,
+    "packages/world_state/test": 4,
+    "tests/hil/safety": 3,
+    "packages/openral_hal_ur5e/test": 3,
+    "packages/openral_safety_watchdog/test": 3,
+    "packages/openral_slam_bringup/test": 3,
+    "packages/openral_hal_so100/test": 2,
+    "packages/openral_human_estop/test": 2,
+    "packages/openral_nav2_bringup/test": 2,
+    "packages/openral_hal_aloha/test": 1,
+    "packages/openral_hal_franka/test": 1,
+    "packages/openral_hal_g1/test": 1,
+    "packages/openral_hal_h1/test": 1,
+    "packages/openral_hal_rizon4/test": 1,
+    "packages/openral_hal_ur10e/test": 1
+  },
+  "trivial": [],
+  "no_assertion": [
+    {
+      "path": "tests/hil/test_aloha.py",
+      "name": "test_disconnect_is_idempotent",
+      "qualname": "TestAlohaHIL.test_disconnect_is_idempotent",
+      "lineno": 122,
+      "tier": "hil",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "04537a0a8622b4a51d7be4751582f67b7a81348c"
+    },
+    {
+      "path": "tests/hil/test_franka_panda.py",
+      "name": "test_disconnect_is_idempotent",
+      "qualname": "TestFrankaPandaHIL.test_disconnect_is_idempotent",
+      "lineno": 116,
+      "tier": "hil",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "223ed873285fd79181b4d5dc60fef44b078ffce1"
+    },
+    {
+      "path": "tests/hil/test_sawyer.py",
+      "name": "test_disconnect_is_idempotent",
+      "qualname": "TestSawyerHIL.test_disconnect_is_idempotent",
+      "lineno": 106,
+      "tier": "hil",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "8342543721432825d97561851a96a28079f416b7"
+    },
+    {
+      "path": "tests/sim/test_hal_protocol_contracts.py",
+      "name": "test_disconnect_idempotent",
+      "qualname": "TestHALLifecycleContract.test_disconnect_idempotent",
+      "lineno": 137,
+      "tier": "sim",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "b8a0fc963a4a91e7a40d6d1571e8fc53d5a5661b"
+    },
+    {
+      "path": "tests/sim/test_hal_protocol_contracts.py",
+      "name": "test_disconnect_without_connect_is_noop",
+      "qualname": "TestHALLifecycleContract.test_disconnect_without_connect_is_noop",
+      "lineno": 143,
+      "tier": "sim",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a39fbecb172002d64c0502d7ce383b0a62d5d455"
+    },
+    {
+      "path": "tests/sim/test_openarm_scene_pnp.py",
+      "name": "test_openarm_tabletop_scene_loads_and_steps",
+      "qualname": "test_openarm_tabletop_scene_loads_and_steps",
+      "lineno": 74,
+      "tier": "sim",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a4b3b9ec13981cf9f1d8c7e5b6544134e863d2c9"
+    },
+    {
+      "path": "tests/unit/test_aloha.py",
+      "name": "test_disconnect_idempotent",
+      "qualname": "TestProtocolConformance.test_disconnect_idempotent",
+      "lineno": 177,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "b8a0fc963a4a91e7a40d6d1571e8fc53d5a5661b"
+    },
+    {
+      "path": "tests/unit/test_benchmark_schemas.py",
+      "name": "test_raise_on_invalid_suite_happy_path",
+      "qualname": "test_raise_on_invalid_suite_happy_path",
+      "lineno": 141,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "9a4fc9a432a92585f8610fe2e2ef882cd457a31c"
+    },
+    {
+      "path": "tests/unit/test_benchmark_schemas.py",
+      "name": "test_raise_on_invalid_suite_allows_mixed_max_steps_per_task",
+      "qualname": "test_raise_on_invalid_suite_allows_mixed_max_steps_per_task",
+      "lineno": 202,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "0e921328f21745323d3ac9fe2c2466e1a66e57cb"
+    },
+    {
+      "path": "tests/unit/test_benchmark_schemas.py",
+      "name": "test_raise_on_invalid_suite_allows_mixed_success_key_per_task",
+      "qualname": "test_raise_on_invalid_suite_allows_mixed_success_key_per_task",
+      "lineno": 211,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "6c1b56485810d42de2cbc02913019936513127a0"
+    },
+    {
+      "path": "tests/unit/test_cartesian_rskill_contracts.py",
+      "name": "test_swept_skill_declares_cartesian_action_contract",
+      "qualname": "test_swept_skill_declares_cartesian_action_contract",
+      "lineno": 77,
+      "tier": "unit",
+      "markers": [
+        "parametrize"
+      ],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "4f3281949f73f26837f634e4a22f654fc32b7f48"
+    },
+    {
+      "path": "tests/unit/test_cartesian_rskill_contracts.py",
+      "name": "test_reference_widowx_skill_already_declares_cartesian_contract",
+      "qualname": "test_reference_widowx_skill_already_declares_cartesian_contract",
+      "lineno": 81,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "74aa93a8335ba51978cbcd825bfd071acf67c871"
+    },
+    {
+      "path": "tests/unit/test_cli_deploy_sim.py",
+      "name": "test_bh_preflight_palette_deps_silent_when_no_capability_match",
+      "qualname": "test_bh_preflight_palette_deps_silent_when_no_capability_match",
+      "lineno": 495,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "f22cd21ea6419260ec30fd039c76f7519b15fcab"
+    },
+    {
+      "path": "tests/unit/test_cli_deploy_sim.py",
+      "name": "test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir",
+      "qualname": "test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir",
+      "lineno": 510,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "04a250644a9bd5ea95aead95026e3ab0cfe4619f"
+    },
+    {
+      "path": "tests/unit/test_collision_geometry_contracts.py",
+      "name": "test_capsule_rejects_nonpositive_radius",
+      "qualname": "test_capsule_rejects_nonpositive_radius",
+      "lineno": 49,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "abf65e400a82b6a35573988e8650a4371dd2a572"
+    },
+    {
+      "path": "tests/unit/test_eval_adapters_helpers.py",
+      "name": "test_reset_no_op_without_policy_reset",
+      "qualname": "TestSmolVLAAdapterBuildBatch.test_reset_no_op_without_policy_reset",
+      "lineno": 405,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "56ef17b6a538daf0a87cefea4f2a99f6fd6b84ef"
+    },
+    {
+      "path": "tests/unit/test_franka_panda_real.py",
+      "name": "test_disconnect_idempotent",
+      "qualname": "TestProtocolConformance.test_disconnect_idempotent",
+      "lineno": 132,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "b8a0fc963a4a91e7a40d6d1571e8fc53d5a5661b"
+    },
+    {
+      "path": "tests/unit/test_hal.py",
+      "name": "test_disconnect_without_connect_is_noop",
+      "qualname": "TestLifecycle.test_disconnect_without_connect_is_noop",
+      "lineno": 175,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "ebb46b48d6c60c578c613a3bc657325a9e28814e"
+    },
+    {
+      "path": "tests/unit/test_hal.py",
+      "name": "test_allows_any_mode_when_supported_is_empty",
+      "qualname": "TestSendAction.test_allows_any_mode_when_supported_is_empty",
+      "lineno": 274,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "6c04c4c7e539229db9843d69b94d0152bde7342f"
+    },
+    {
+      "path": "tests/unit/test_hal_protocol_conformance.py",
+      "name": "test_hal_disconnect_is_idempotent",
+      "qualname": "test_hal_disconnect_is_idempotent",
+      "lineno": 315,
+      "tier": "unit",
+      "markers": [
+        "parametrize"
+      ],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "abd256cfaa9445dfac200a14789654f2bf3cc8a3"
+    },
+    {
+      "path": "tests/unit/test_install_command.py",
+      "name": "test_no_conflict_no_raise",
+      "qualname": "TestInstallConflictGuard.test_no_conflict_no_raise",
+      "lineno": 88,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "cc2108faab41a747bd6cb5a615f327b3e9c324dc"
+    },
+    {
+      "path": "tests/unit/test_install_command.py",
+      "name": "test_dispatch_repl_line_handles_quoted_args",
+      "qualname": "TestReplDispatch.test_dispatch_repl_line_handles_quoted_args",
+      "lineno": 149,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "f437f2ae76511de9e97ab698426bc4244befd0ae"
+    },
+    {
+      "path": "tests/unit/test_isaac_sim_sidecar_wire.py",
+      "name": "test_connect_pings_existing_sidecar",
+      "qualname": "TestSidecarRollout.test_connect_pings_existing_sidecar",
+      "lineno": 167,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "801383ed11cf6e855d5fb6cc8a383a1da15260f5"
+    },
+    {
+      "path": "tests/unit/test_lifecycle_autostart.py",
+      "name": "test_drive_transition_succeeds_when_state_advances_despite_no_response",
+      "qualname": "test_drive_transition_succeeds_when_state_advances_despite_no_response",
+      "lineno": 143,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "3915fd5a8d5759897ab57336bb310689610c3497"
+    },
+    {
+      "path": "tests/unit/test_lifecycle_autostart.py",
+      "name": "test_drive_transition_polls_grace_window_before_success",
+      "qualname": "test_drive_transition_polls_grace_window_before_success",
+      "lineno": 162,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "5e7b6c6c9bc9bd26940d60a15949787d75e5ab70"
+    },
+    {
+      "path": "tests/unit/test_molmoact2_offline_gate.py",
+      "name": "test_allowed_with_env_pinned",
+      "qualname": "TestRequireRemoteCodeAck.test_allowed_with_env_pinned",
+      "lineno": 34,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "de202ec802cee91423197f53c33a1d6219ca24f8"
+    },
+    {
+      "path": "tests/unit/test_molmoact2_offline_gate.py",
+      "name": "test_allowed_with_env_unpinned",
+      "qualname": "TestRequireRemoteCodeAck.test_allowed_with_env_unpinned",
+      "lineno": 38,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a176b40c66b9a8ca14a107dc253c61f1ca330c20"
+    },
+    {
+      "path": "tests/unit/test_mujoco_arm.py",
+      "name": "test_disconnect_when_never_connected_is_noop",
+      "qualname": "test_disconnect_when_never_connected_is_noop",
+      "lineno": 169,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "7a23ae48851e0446950889e7105f02738e1dd1de"
+    },
+    {
+      "path": "tests/unit/test_quantization_meta_init_helpers.py",
+      "name": "test_module_without_reset_is_noop",
+      "qualname": "TestTargetedResetParameters.test_module_without_reset_is_noop",
+      "lineno": 47,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "085a07417d2fd3ddfc46fadf6329c800a476604c"
+    },
+    {
+      "path": "tests/unit/test_quantize_rskill_remote_code_gate.py",
+      "name": "test_default_trusted_org_passes",
+      "qualname": "TestRequireTrustedRemoteCode.test_default_trusted_org_passes",
+      "lineno": 31,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "695e8d971653ecde6fa2d542d8c5f7d5b362f089"
+    },
+    {
+      "path": "tests/unit/test_quantize_rskill_remote_code_gate.py",
+      "name": "test_env_allowlist_extends_trust",
+      "qualname": "TestRequireTrustedRemoteCode.test_env_allowlist_extends_trust",
+      "lineno": 42,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "2409520dfe5ee5f9a2089791b7420409c292745c"
+    },
+    {
+      "path": "tests/unit/test_quantize_rskill_remote_code_gate.py",
+      "name": "test_local_path_exempt",
+      "qualname": "TestRequireTrustedRemoteCode.test_local_path_exempt",
+      "lineno": 61,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "1a8adcc9125e4acc4596b8064b9c360ef4edda39"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_apache_always_passes",
+      "qualname": "TestCheckLicense.test_apache_always_passes",
+      "lineno": 386,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a116e8e7e5731b9a06e0482139871815a73fa249"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_nvidia_passes_when_env_set",
+      "qualname": "TestCheckLicense.test_nvidia_passes_when_env_set",
+      "lineno": 403,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "f2068832f53b3ef4cdfe29df9b0cdd92fe7dd4dc"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_nvidia_passes_when_non_commercial_use",
+      "qualname": "TestCheckLicense.test_nvidia_passes_when_non_commercial_use",
+      "lineno": 412,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dd7f30978aedde114fe9e21cf666cffebf94a5e7"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_proprietary_does_not_raise",
+      "qualname": "TestCheckLicense.test_proprietary_does_not_raise",
+      "lineno": 422,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "784b5ded295bf8c90e094ebf7d626b1c1e4ea862"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_rlwrld_passes_when_env_set",
+      "qualname": "TestCheckLicense.test_rlwrld_passes_when_env_set",
+      "lineno": 438,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "259851e468931f9341d33a3231707178192546d4"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_rlwrld_passes_when_non_commercial_use",
+      "qualname": "TestCheckLicense.test_rlwrld_passes_when_non_commercial_use",
+      "lineno": 447,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "09f5b415f50b56dccff41a356710ddf02e82c5d5"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_permissive_research_passes_when_env_set",
+      "qualname": "TestCheckLicense.test_permissive_research_passes_when_env_set",
+      "lineno": 473,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "5725955728ef0c0fa182bd4f489b35dbcf5ed852"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_nvidia_open_model_always_passes",
+      "qualname": "TestCheckLicense.test_nvidia_open_model_always_passes",
+      "lineno": 482,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "d23d954e9308402afa225b6e4395d2b9fda9cbfe"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_unknown_does_not_raise",
+      "qualname": "TestCheckLicense.test_unknown_does_not_raise",
+      "lineno": 493,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "4a64a9f49bf5edcbc5cd0589ba4e5cae56082079"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_tag_match_passes",
+      "qualname": "TestCheckCapabilities.test_tag_match_passes",
+      "lineno": 610,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "860c1e0545539b7159b0ef52915ba37c509816f0"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_bool_flag_satisfied_passes",
+      "qualname": "TestCheckCapabilities.test_bool_flag_satisfied_passes",
+      "lineno": 625,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "d4d4563a417a6a3b14ab9979a203f1021a23a449"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_numeric_flag_at_threshold_passes",
+      "qualname": "TestCheckCapabilities.test_numeric_flag_at_threshold_passes",
+      "lineno": 638,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "432b4bbda86ef7002cb55f527d56f3788bde4fc5"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_empty_requirements_always_passes",
+      "qualname": "TestCheckCapabilities.test_empty_requirements_always_passes",
+      "lineno": 651,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "50ef7105f6c304f802f3689674bde81a853b27b7"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_runtime_supported_passes",
+      "qualname": "TestCheckCapabilities.test_runtime_supported_passes",
+      "lineno": 692,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "755a640ab4b059293650b2b3e225744c4ac300f9"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_runtime_unknown_skips_check",
+      "qualname": "TestCheckCapabilities.test_runtime_unknown_skips_check",
+      "lineno": 700,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "7e556594150e282e2d3b4d2b8add08f2eaf7e515"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_quantization_dtype_supported_passes",
+      "qualname": "TestCheckCapabilities.test_quantization_dtype_supported_passes",
+      "lineno": 721,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "6f836ea40be0b6be8f7fae2d8e2cdaf4d647f196"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_quantization_dtype_unknown_skips_check",
+      "qualname": "TestCheckCapabilities.test_quantization_dtype_unknown_skips_check",
+      "lineno": 731,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dad4bd9fc7363fcdac1364e4a12773a2a92636d0"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_no_requirements_always_passes",
+      "qualname": "TestCheckSensors.test_no_requirements_always_passes",
+      "lineno": 791,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "5c20dee5c45e5db07baed9156782da4086bddb61"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_keyed_match_passes",
+      "qualname": "TestCheckSensors.test_keyed_match_passes",
+      "lineno": 795,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "16d87f18bf1033fd415fb7582f5244523e43e9a6"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_modality_count_satisfied",
+      "qualname": "TestCheckSensors.test_modality_count_satisfied",
+      "lineno": 857,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "aaf6702450fb4acbe547f5447e30ec45a3abb4c3"
+    },
+    {
+      "path": "tests/unit/test_rskill_loader.py",
+      "name": "test_passes_when_both_tags_and_sensors_match",
+      "qualname": "TestCheckCompatibility.test_passes_when_both_tags_and_sensors_match",
+      "lineno": 897,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "767bf76c89c665dc24575bfec5ffe64997f369ab"
+    },
+    {
+      "path": "tests/unit/test_runtime.py",
+      "name": "test_quantize_is_noop",
+      "qualname": "TestNullRuntime.test_quantize_is_noop",
+      "lineno": 156,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "74724c16d0f643c16b111f118c380cde5a111e16"
+    },
+    {
+      "path": "tests/unit/test_runtime.py",
+      "name": "test_warmup_is_noop",
+      "qualname": "TestNullRuntime.test_warmup_is_noop",
+      "lineno": 160,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dedc1caf6f960c9d9a1230f5fba1fa38fee6fbd0"
+    },
+    {
+      "path": "tests/unit/test_runtime.py",
+      "name": "test_invalidate_miss_is_noop",
+      "qualname": "TestEngineCache.test_invalidate_miss_is_noop",
+      "lineno": 437,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "5f088ab336bfb085fa28ac93a3608fcbde014012"
+    },
+    {
+      "path": "tests/unit/test_sawyer_real.py",
+      "name": "test_disconnect_idempotent",
+      "qualname": "TestProtocolConformance.test_disconnect_idempotent",
+      "lineno": 180,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "b8a0fc963a4a91e7a40d6d1571e8fc53d5a5661b"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_intrinsics_pinhole",
+      "qualname": "test_fuzz_intrinsics_pinhole",
+      "lineno": 300,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "669901bfd84165129b9ae09f66cf67de2565cb07"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_sensor_spec",
+      "qualname": "test_fuzz_sensor_spec",
+      "lineno": 307,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "1b23cd26e201bf3cefb1c69cde67583ad7bb1ef4"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_sensor_bundle",
+      "qualname": "test_fuzz_sensor_bundle",
+      "lineno": 314,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "286e70b34c40db564edb72d075860378cbda2176"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_joint_spec",
+      "qualname": "test_fuzz_joint_spec",
+      "lineno": 321,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "9439958c1c9334bf5a5c6b17bec028c8e0bbd374"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_end_effector_spec",
+      "qualname": "test_fuzz_end_effector_spec",
+      "lineno": 328,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "fec11788fa8f9662e3c7350087aa5643fbb37c14"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_robot_capabilities",
+      "qualname": "test_fuzz_robot_capabilities",
+      "lineno": 335,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a2d80ecdf110ed5888f455e9d151b0d62b8a01de"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_safety_envelope",
+      "qualname": "test_fuzz_safety_envelope",
+      "lineno": 342,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "4cad6674dd99431ad057ca229328c80a3d4e46fe"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_hal_entrypoints",
+      "qualname": "test_fuzz_hal_entrypoints",
+      "lineno": 349,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "c81ebb918d554c72fdcb02dc06d6f7312b16db0c"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_robot_description",
+      "qualname": "test_fuzz_robot_description",
+      "lineno": 356,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "cc8f6cc0b2fc816f43145fd89a648351f279c546"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_joint_state",
+      "qualname": "test_fuzz_joint_state",
+      "lineno": 363,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "18cac25635740732c5c0e8f531e89597f46a01d0"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_pose6d",
+      "qualname": "test_fuzz_pose6d",
+      "lineno": 370,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a759446fb476f8f6ecdafd1a4999994d0a70f61d"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_detected_object",
+      "qualname": "test_fuzz_detected_object",
+      "lineno": 377,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "1ff3d0c51a5dd5edcd97cf99eea56737b924ddd2"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_world_state",
+      "qualname": "test_fuzz_world_state",
+      "lineno": 384,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "7a9a3b39ec92bfd99d3d112e3973e3715244a630"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_capsule_shape",
+      "qualname": "test_fuzz_capsule_shape",
+      "lineno": 391,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "2294d2583a8e9f10ba9dd139a49ad4b5eeddf84f"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_sphere_shape",
+      "qualname": "test_fuzz_sphere_shape",
+      "lineno": 398,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "9856008090e9ea95a4fe19215840be2a6999d93b"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_link_collision_geometry",
+      "qualname": "test_fuzz_link_collision_geometry",
+      "lineno": 405,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "1b53fcde681dd43990f79b56c59dcafde3691988"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_world_collision_primitive",
+      "qualname": "test_fuzz_world_collision_primitive",
+      "lineno": 412,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "94450c8407583fd770b6be336836d75730dbb748"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_occupancy_grid_ref",
+      "qualname": "test_fuzz_occupancy_grid_ref",
+      "lineno": 419,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "da29a23d5a0a4ce60ed19fd4d9e4995fbf9dc243"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_collision_evidence",
+      "qualname": "test_fuzz_collision_evidence",
+      "lineno": 426,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "fff8a4fbc15db4f87afea2d86a569dd8a83a7ede"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_action",
+      "qualname": "test_fuzz_action",
+      "lineno": 433,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "8b6374f74097e5a59af6cd994b1ed2db5f11f1c0"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_quantization_config",
+      "qualname": "test_fuzz_quantization_config",
+      "lineno": 463,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "fc746a915b2793561767780f289f6755ab13333b"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_device_info",
+      "qualname": "test_fuzz_device_info",
+      "lineno": 470,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "609e75a5508e46e021d3aa4e8bdc566f5393f31e"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_rskill_latency_budget",
+      "qualname": "test_fuzz_rskill_latency_budget",
+      "lineno": 669,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "fcd22793652ea59a7b515907ee5b9c2516eff4bb"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_rskill_manifest",
+      "qualname": "test_fuzz_rskill_manifest",
+      "lineno": 676,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "d17be34974282cd2ba6fde696c6cfaaa2ef9ae5c"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_scene_spec",
+      "qualname": "test_fuzz_scene_spec",
+      "lineno": 738,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "129e11366b4f8f9e0787bf18e3188bb1c23b0838"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_vla_spec",
+      "qualname": "test_fuzz_vla_spec",
+      "lineno": 745,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "782f3911592278cf27fbbf8754c2f8f4f911859f"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_task_spec",
+      "qualname": "test_fuzz_task_spec",
+      "lineno": 752,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "00dc626429d3989ffd76d1b9b4d6560f142eca13"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_hal_config",
+      "qualname": "test_fuzz_hal_config",
+      "lineno": 871,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "f16a4ce287847368714955f1c4e557785f0f9179"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_tick_result",
+      "qualname": "test_fuzz_tick_result",
+      "lineno": 937,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "d6c245ca4f47051e3f7c6a17697ce5d23ceffb39"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_run_result",
+      "qualname": "test_fuzz_run_result",
+      "lineno": 958,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a115980c3fa94f4412e436c4d5035ec9eace311f"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_spatial_node",
+      "qualname": "test_fuzz_spatial_node",
+      "lineno": 1072,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "224f19b7afd5726f5a2f20bf1a7306a65ce015ba"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_spatial_edge",
+      "qualname": "test_fuzz_spatial_edge",
+      "lineno": 1079,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "975772feaf45cd402930546f702958a7ee8a7194"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_scene_graph",
+      "qualname": "test_fuzz_scene_graph",
+      "lineno": 1086,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a0e14e704fb69d467e4568c877250930b76c3688"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_recall_object_query",
+      "qualname": "test_fuzz_recall_object_query",
+      "lineno": 1093,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dc2ed399e7b44c227de1db17d2352b33071fa9a0"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_approach_viewpoint",
+      "qualname": "test_fuzz_approach_viewpoint",
+      "lineno": 1100,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "72b63248fc6dacb92bdc78c10f7890e310c220f9"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_recall_object_match",
+      "qualname": "test_fuzz_recall_object_match",
+      "lineno": 1107,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "e9da86205df3ac5babce41d1997f6e685fb9ab59"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_recall_object_result",
+      "qualname": "test_fuzz_recall_object_result",
+      "lineno": 1114,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "8f5566d6d6ac3227961baa6a325b1427171a2b63"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_resolve_place_query",
+      "qualname": "test_fuzz_resolve_place_query",
+      "lineno": 1121,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "1bdf329824f6e9f3568da8a2e5ad9ff1d2a06d65"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_resolve_place_result",
+      "qualname": "test_fuzz_resolve_place_result",
+      "lineno": 1128,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "e3a336c3ba728007bf0415dcff4c3fbfad992d1b"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_recall_object_tool",
+      "qualname": "test_fuzz_recall_object_tool",
+      "lineno": 1151,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "846db6b15fba98fbe58122dce71cf8f9cdb09492"
+    },
+    {
+      "path": "tests/unit/test_schemas_fuzz.py",
+      "name": "test_fuzz_resolve_place_tool",
+      "qualname": "test_fuzz_resolve_place_tool",
+      "lineno": 1158,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dd54adff0c2b3baf324d0095b30f5717a3eafad1"
+    },
+    {
+      "path": "tests/unit/test_smolvla_adapter.py",
+      "name": "test_stop_is_idempotent",
+      "qualname": "TestChunkedExecutor.test_stop_is_idempotent",
+      "lineno": 194,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "dc1722fc4f7867a4e1d2b681d027b1c92243dcdc"
+    },
+    {
+      "path": "tests/unit/test_smolvla_adapter.py",
+      "name": "test_shutdown_is_idempotent",
+      "qualname": "TestSmolVLAAdapterLifecycle.test_shutdown_is_idempotent",
+      "lineno": 331,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "ee030f4d1694486d887ee4a8bf2b8f8eef5d8460"
+    },
+    {
+      "path": "tests/unit/test_so100_follower_hal.py",
+      "name": "test_disconnect_idempotent",
+      "qualname": "TestSO100FollowerHALLifecycle.test_disconnect_idempotent",
+      "lineno": 203,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "0a0abb0ebfc6117cf408c84970436299589ec7b3"
+    },
+    {
+      "path": "tests/unit/test_so100_follower_hal.py",
+      "name": "test_disconnect_without_connect_is_noop",
+      "qualname": "TestSO100FollowerHALLifecycle.test_disconnect_without_connect_is_noop",
+      "lineno": 207,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "95b62dae5f9c60acd60f958da3ab85bec155733d"
+    },
+    {
+      "path": "tests/unit/test_so100_follower_hal.py",
+      "name": "test_sends_zero_action",
+      "qualname": "TestSO100FollowerHALSendAction.test_sends_zero_action",
+      "lineno": 273,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "e75689131fdfdc0305785274f88c6c31c0ab6b97"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_builder.py",
+      "name": "test_resolve_place_unknown_raises",
+      "qualname": "test_resolve_place_unknown_raises",
+      "lineno": 105,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "a4426165c7f1bdda48c8d77753c11bbf234cff6c"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_contracts.py",
+      "name": "test_scene_graph_rejects_duplicate_node_ids",
+      "qualname": "test_scene_graph_rejects_duplicate_node_ids",
+      "lineno": 103,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "c9add77533e964e99ca5056bb46cffa0f44584fa"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_contracts.py",
+      "name": "test_scene_graph_rejects_dangling_edge",
+      "qualname": "test_scene_graph_rejects_dangling_edge",
+      "lineno": 113,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "5b5ef1d011540a7afda1814cd3c01ede86ba73da"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_contracts.py",
+      "name": "test_node_rejects_last_seen_before_first_seen",
+      "qualname": "test_node_rejects_last_seen_before_first_seen",
+      "lineno": 129,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "e7a889926409ebc597d04aa3da078c24dc198237"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_contracts.py",
+      "name": "test_node_occludes_contents_requires_container",
+      "qualname": "test_node_occludes_contents_requires_container",
+      "lineno": 145,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "6e773613d32160bf5cf611fcb616d88d1301cbbe"
+    },
+    {
+      "path": "tests/unit/test_spatial_memory_contracts.py",
+      "name": "test_recall_object_query_requires_a_term",
+      "qualname": "test_recall_object_query_requires_a_term",
+      "lineno": 166,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "d6b56128522ab41941c01ca68b45a094bbc230c4"
+    },
+    {
+      "path": "tests/unit/test_world_state.py",
+      "name": "test_clear_nonexistent_is_noop",
+      "qualname": "TestForcedDiagnostics.test_clear_nonexistent_is_noop",
+      "lineno": 413,
+      "tier": "unit",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "6bb2f01bcaa97ed27142fc5f6cf39109e1f86eda"
+    },
+    {
+      "path": "python/observability/tests/test_sdk_init.py",
+      "name": "test_shutdown_is_safe_when_unconfigured",
+      "qualname": "test_shutdown_is_safe_when_unconfigured",
+      "lineno": 51,
+      "tier": "pkg:observability",
+      "markers": [],
+      "has_assertion": false,
+      "has_validation_call": false,
+      "is_trivial": false,
+      "body_hash": "7f66e4a4b0fd283353a9ce1be61552789ca95911"
+    }
+  ],
+  "shadowed": [],
+  "duplicate_groups": [
+    {
+      "body_hash": "a4879b98a540d24adf425bf36006c1ec010c6eb8",
+      "members": [
+        "tests/sim/test_aloha_bimanual_act_aloha.py::test_manifest_has_latency_budget",
+        "tests/sim/test_franka_panda_smolvla_libero.py::test_manifest_has_latency_budget",
+        "tests/sim/test_panda_mobile_pi05_robocasa.py::test_manifest_has_latency_budget",
+        "tests/sim/test_pusht_2d_diffusion_pusht.py::test_manifest_has_latency_budget"
+      ]
+    },
+    {
+      "body_hash": "a11c9bddfb6858cff5e87f0fbf102384906a1476",
+      "members": [
+        "tests/sim/test_hal_protocol_contracts.py::test_satisfies_hal_protocol",
+        "tests/unit/test_aloha.py::test_satisfies_hal_protocol",
+        "tests/unit/test_franka_panda_real.py::test_satisfies_hal_protocol",
+        "tests/unit/test_sawyer_real.py::test_satisfies_hal_protocol"
+      ]
+    },
+    {
+      "body_hash": "b8a0fc963a4a91e7a40d6d1571e8fc53d5a5661b",
+      "members": [
+        "tests/sim/test_hal_protocol_contracts.py::test_disconnect_idempotent",
+        "tests/unit/test_aloha.py::test_disconnect_idempotent",
+        "tests/unit/test_franka_panda_real.py::test_disconnect_idempotent",
+        "tests/unit/test_sawyer_real.py::test_disconnect_idempotent"
+      ]
+    },
+    {
+      "body_hash": "142243caf6c975b3d64e1605c2247d0e2518779c",
+      "members": [
+        "tests/sim/test_g1_hal_mujoco.py::test_send_action_holds_zero_pose",
+        "tests/sim/test_h1_hal_mujoco.py::test_send_action_holds_zero_pose",
+        "tests/sim/test_openarm_hal_mujoco.py::test_hold_zero_pose"
+      ]
+    },
+    {
+      "body_hash": "318286fdba6f7a2f99450f3fe7c65b48d1dfd0de",
+      "members": [
+        "tests/unit/test_aloha.py::test_read_state_before_connect_raises",
+        "tests/unit/test_franka_panda_real.py::test_read_state_before_connect_raises",
+        "tests/unit/test_sawyer_real.py::test_read_state_before_connect_raises"
+      ]
+    },
+    {
+      "body_hash": "1188ec8c8ebd1b3ba1d361c2f4bf41a701032fc5",
+      "members": [
+        "tests/unit/test_aloha.py::test_estop_always_raises",
+        "tests/unit/test_franka_panda_real.py::test_estop_always_raises",
+        "tests/unit/test_sawyer_real.py::test_estop_always_raises"
+      ]
+    },
+    {
+      "body_hash": "bf52c4c01f9adb36193811b1649be96b9cebe554",
+      "members": [
+        "tests/unit/test_aloha.py::test_estop_is_safety_violation",
+        "tests/unit/test_franka_panda_real.py::test_estop_is_safety_violation",
+        "tests/unit/test_sawyer_real.py::test_estop_is_safety_violation"
+      ]
+    },
+    {
+      "body_hash": "d716cbb273037c03b00120dc996c721529476a2b",
+      "members": [
+        "tests/sim/test_aloha_bimanual_hal_mujoco.py::test_joint_names_match_expected_layout",
+        "tests/unit/test_aloha.py::test_joint_order_left_arm_then_left_gripper_then_right_arm_then_right_gripper"
+      ]
+    },
+    {
+      "body_hash": "f5fac59117e80480fbd203da6fe2d86c8987c887",
+      "members": [
+        "tests/sim/test_aloha_bimanual_hal_mujoco.py::test_capabilities_bimanual",
+        "tests/unit/test_aloha.py::test_capabilities_declare_bimanual"
+      ]
+    },
+    {
+      "body_hash": "a3b47384e563cf8a7820562dbf142b4d55270290",
+      "members": [
+        "tests/sim/test_aloha_bimanual_hal_mujoco.py::test_connect_loads_mujoco_model",
+        "tests/sim/test_openarm_hal_mujoco.py::test_connect_loads_mujoco_model"
+      ]
+    },
+    {
+      "body_hash": "8729b78ce151cc49a8690283aeb6a5899c5da27e",
+      "members": [
+        "tests/sim/test_franka_isaac_deploy_hal.py::test_connect_resolves_action_dim",
+        "tests/sim/test_franka_urdf_isaac.py::test_connect_resolves_action_dim"
+      ]
+    },
+    {
+      "body_hash": "080e3a0523540abae610e3671abf0b32c79fa805",
+      "members": [
+        "tests/sim/test_franka_isaac_deploy_hal.py::test_read_images_returns_isaac_frame",
+        "tests/sim/test_franka_urdf_isaac.py::test_read_images_returns_isaac_frame"
+      ]
+    },
+    {
+      "body_hash": "3bc1e08c5c37746371767f0f06d80c864dcd7cec",
+      "members": [
+        "tests/sim/test_franka_panda_hal_mujoco.py::test_estop_raises_safety_violation",
+        "tests/sim/test_hal_protocol_contracts.py::test_estop_raises_safety_violation"
+      ]
+    },
+    {
+      "body_hash": "c74a9535b17ff3aa7099512d516786ca9ba94b14",
+      "members": [
+        "tests/sim/test_franka_panda_smolvla_libero.py::test_manifest_declares_two_rgb_sensors",
+        "tests/sim/test_panda_mobile_pi05_robocasa.py::test_manifest_declares_two_rgb_sensors"
+      ]
+    },
+    {
+      "body_hash": "b36e66c6348e1af0d06c1b1c7ccc1129c967f471",
+      "members": [
+        "tests/sim/test_g1_hal_mujoco.py::test_initial_positions_are_zero",
+        "tests/sim/test_h1_hal_mujoco.py::test_initial_positions_are_zero"
+      ]
+    },
+    {
+      "body_hash": "df269653e84ca1a5cc3a398315062092a06b6232",
+      "members": [
+        "tests/sim/test_rizon4_hal_mujoco.py::test_initial_positions_are_zero",
+        "tests/sim/test_ur5e_hal_mujoco.py::test_initial_positions_are_zero"
+      ]
+    },
+    {
+      "body_hash": "4aa9e852aa7f7ba8291d072408ace79ad66cecf9",
+      "members": [
+        "tests/sim/test_so100_follower_hal_mujoco.py::test_embodiment_tags_include_so100",
+        "tests/unit/test_so100_follower_hal.py::test_embodiment_tag"
+      ]
+    },
+    {
+      "body_hash": "a993490fa9bcbdfe93abfbdd0224acf0c7e2f3a8",
+      "members": [
+        "tests/sim/test_so100_follower_hal_mujoco.py::test_connect_loads_mujoco_model",
+        "tests/sim/test_ur5e_hal_mujoco.py::test_connect_loads_mujoco_model"
+      ]
+    },
+    {
+      "body_hash": "048bb4b86f10b6819cae4e3295e45edd1c39f5fa",
+      "members": [
+        "tests/sim/test_so100_follower_hal_mujoco.py::test_rejects_wrong_joint_count",
+        "tests/sim/test_ur5e_hal_mujoco.py::test_rejects_wrong_joint_count"
+      ]
+    },
+    {
+      "body_hash": "1f72b837fb37944e45482ddd21ff5878c4a4a32a",
+      "members": [
+        "tests/unit/test_action_representation_slots.py::test_joint_positions_returns_none_canonical_slots",
+        "tests/unit/test_skill_runner_representation_dispatch.py::test_joint_representation_returns_none"
+      ]
+    },
+    {
+      "body_hash": "12888b0963e37b7de770b312d122df80d61d8801",
+      "members": [
+        "tests/unit/test_doctor.py::test_check_gpu_absent_non_mac",
+        "tests/unit/test_doctor.py::test_check_gpu_nvsmi_query_fails"
+      ]
+    },
+    {
+      "body_hash": "325c62af8e5e8e298b3c992c319b1dc7c8d3f61d",
+      "members": [
+        "tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_before_step",
+        "tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_without_pixels"
+      ]
+    },
+    {
+      "body_hash": "de99c808e092c2c21414f6a028ce91d583345ad9",
+      "members": [
+        "tests/unit/test_eval_adapters_helpers.py::test_close_delegates_to_env",
+        "tests/unit/test_eval_adapters_helpers.py::test_close_delegates_to_env"
+      ]
+    },
+    {
+      "body_hash": "b807e01b7b32cad3794cb16250c2809b06438810",
+      "members": [
+        "tests/unit/test_franka_panda_real.py::test_send_action_before_connect_raises",
+        "tests/unit/test_sawyer_real.py::test_send_action_before_connect_raises"
+      ]
+    },
+    {
+      "body_hash": "a01b65698c0aedc4fed835ca4838d9d411a0dc6c",
+      "members": [
+        "tests/unit/test_franka_panda_real.py::test_after_estop_send_action_fails",
+        "tests/unit/test_sawyer_real.py::test_after_estop_send_action_fails"
+      ]
+    },
+    {
+      "body_hash": "6d2a49b221263614f3f4b8dcd1524d589978d876",
+      "members": [
+        "tests/unit/test_runtime.py::test_device_property",
+        "tests/unit/test_runtime.py::test_device_property"
+      ]
+    },
+    {
+      "body_hash": "9ddd6ad8fc12a6e4fcd912f8a700f6f8f28df609",
+      "members": [
+        "tests/unit/test_runtime.py::test_initial_not_loaded",
+        "tests/unit/test_runtime.py::test_initial_not_loaded"
+      ]
+    },
+    {
+      "body_hash": "489c5c76bc3a41bf59944f08398c283ccc0e34be",
+      "members": [
+        "tests/unit/test_runtime.py::test_infer_before_load_raises",
+        "tests/unit/test_runtime.py::test_infer_before_load_raises"
+      ]
+    },
+    {
+      "body_hash": "a2c9f272a06686f7e49332edb3d66a1f7b01535c",
+      "members": [
+        "packages/openral_hal_ur10e/test/test_lifecycle_node.py::test_lifecycle_smoke",
+        "packages/openral_hal_ur5e/test/test_lifecycle_node.py::test_lifecycle_smoke"
+      ]
+    }
+  ]
+}

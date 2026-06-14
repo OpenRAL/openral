@@ -1,0 +1,212 @@
+# RobotDescription — Flexiv Rizon 4 (physical embodiment, sim baseline).
+#
+# This manifest mirrors `RIZON4_DESCRIPTION` in
+# python/hal/src/openral_hal/flexiv_rizon4.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py).  Position
+# limits come from the upstream Flexiv Rizon 4 URDF /
+# mujoco_menagerie verbatim; velocity / effort limits come from the
+# published Flexiv spec sheet.
+#
+# The MuJoCo digital twin (`Rizon4MujocoHAL`) is the only execution
+# path available today.  A real-HW HAL wrapping the Flexiv RDK
+# (`flexivrobotics/flexiv_rdk`) is a planned follow-up; the RDK is
+# BSD-style but vendor-distributed so the future
+# `Rizon4RealHAL.robot.yaml` would flip sdk_kind to
+# `closed_with_api` and hal.real to the real adapter.
+
+name: "rizon4"
+embodiment_kind: "manipulator"
+base_frame: "base_link"
+
+# ADR-0027 — robot_state_publisher wiring. Rizon4 URDF root is
+# ``base_link`` per Flexiv's official description; matches base_frame.
+urdf_path: "robot_descriptions:rizon4_description"
+# Self-collision ACM source for the offline lowering tool (ADR-0030): the
+# Flexiv MoveIt SRDF (flexiv_ros2, arm_prefix="" resolved). Regenerate via
+# `openral collision lower --robot robots/rizon4/robot.yaml --write`.
+srdf_path: "robots/rizon4/rizon4.srdf"
+
+joints:
+  - name: "joint1"
+    origin_xyz: [0, 0, 0.155]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "link1"
+    position_limits: [-2.88, 2.88]
+    velocity_limit: 2.0
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint2"
+    origin_xyz: [0, 0.03, 0.21]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "link1"
+    child_link: "link2"
+    position_limits: [-2.356, 2.356]
+    velocity_limit: 2.0
+    effort_limit: 123.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint3"
+    origin_xyz: [0, 0.035, 0.205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link2"
+    child_link: "link3"
+    position_limits: [-3.054, 3.054]
+    velocity_limit: 2.0
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint4"
+    origin_xyz: [-0.02, -0.03, 0.19]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "link3"
+    child_link: "link4"
+    position_limits: [-1.955, 2.775]
+    velocity_limit: 2.0
+    effort_limit: 64.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint5"
+    origin_xyz: [-0.02, 0.025, 0.195]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link4"
+    child_link: "link5"
+    position_limits: [-3.054, 3.054]
+    velocity_limit: 2.0
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint6"
+    origin_xyz: [0, 0.03, 0.19]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "link5"
+    child_link: "link6"
+    position_limits: [-1.484, 4.625]
+    velocity_limit: 2.0
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "joint7"
+    origin_xyz: [-0.015, 0.073, 0.11]
+    origin_rpy: [0, -1.5707963, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "link6"
+    child_link: "link7"
+    position_limits: [-3.054, 3.054]
+    velocity_limit: 2.0
+    effort_limit: 39.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+
+end_effectors:
+  - name: "flange"
+    kind: "tool"
+    n_dof: 0
+    max_payload_kg: 4.0
+    workspace_radius_m: 0.78
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 4.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["rizon4"]
+  embodiment_tags:
+    - "rizon4"
+    - "flexiv"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 150.0
+  max_torque_nm: 123.0
+  deadman_required: true
+
+# `sdk_kind: open` because the menagerie MJCF is freely usable
+# (BSD-style); a future `Rizon4RealHAL` wrapping the Flexiv RDK would
+# flip this to `closed_with_api` (the RDK is BSD-licensed but
+# vendor-distributed per CLAUDE.md §7.4) and set hal.real to
+# `openral_hal.flexiv_rizon4_real:Rizon4RealHAL`.
+sdk_kind: "open"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Sim-only today → real: null (build_hal(mode="real") raises ROSCapabilityMismatch
+# until the flexiv_rdk wrapper lands).
+hal:
+  sim: "openral_hal.flexiv_rizon4:Rizon4MujocoHAL"
+  real: null
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
+# Source: ``flexiv_rizon4/rizon4.xml`` in mujoco_menagerie.  Default 1:1
+# mapping applies (no gripper). See ADR-0023.
+sim:
+  mjcf_uri: "robot_descriptions:rizon4_mj_description"
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "base_link"
+    shape: { shape: "capsule", radius_m: 0.0851, length_m: 0.1579 }
+    origin_xyz_rpy: [-0.0010, 0.0024, 0.0729, -0.0391, -0.0340, 0.0007]
+  - link_name: "link1"
+    shape: { shape: "capsule", radius_m: 0.0774, length_m: 0.2825 }
+    origin_xyz_rpy: [-0.0019, -0.0079, 0.1321, -2.9907, -0.0407, 0.5265]
+  - link_name: "link2"
+    shape: { shape: "capsule", radius_m: 0.0802, length_m: 0.2655 }
+    origin_xyz_rpy: [0.0010, 0.0409, 0.0712, 0.0748, -0.0204, -0.0008]
+  - link_name: "link3"
+    shape: { shape: "capsule", radius_m: 0.0668, length_m: 0.2520 }
+    origin_xyz_rpy: [-0.0089, 0.0079, 0.1168, 3.0068, 0.1312, 1.5433]
+  - link_name: "link4"
+    shape: { shape: "capsule", radius_m: 0.0651, length_m: 0.2525 }
+    origin_xyz_rpy: [-0.0119, 0.0312, 0.0733, -3.0224, 0.1459, -1.7725]
+  - link_name: "link5"
+    shape: { shape: "capsule", radius_m: 0.0674, length_m: 0.2465 }
+    origin_xyz_rpy: [0.0014, -0.0093, 0.1160, -2.9964, 0.0198, -0.2705]
+  - link_name: "link6"
+    shape: { shape: "capsule", radius_m: 0.0909, length_m: 0.2406 }
+    origin_xyz_rpy: [0.0320, 0.0643, 0.0548, 2.9908, -0.5357, -2.6043]
+  - link_name: "link7"
+    shape: { shape: "capsule", radius_m: 0.0630, length_m: 0.1032 }
+    origin_xyz_rpy: [-0.0008, 0.0030, 0.0383, -2.9156, -0.2298, 1.5872]
+
+# GENERATED by `openral collision lower` (source: srdf) — do not hand-edit.
+allowed_collision_pairs:
+  - [base_link, link1]
+  - [base_link, link2]
+  - [base_link, link3]
+  - [base_link, link4]
+  - [link1, link2]
+  - [link1, link3]
+  - [link1, link4]
+  - [link2, link3]
+  - [link2, link4]
+  - [link2, link5]
+  - [link3, link4]
+  - [link3, link5]
+  - [link3, link6]
+  - [link3, link7]
+  - [link4, link5]
+  - [link4, link6]
+  - [link4, link7]
+  - [link5, link6]
+  - [link6, link7]

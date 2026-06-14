@@ -1,0 +1,232 @@
+{
+  "$defs": {
+    "JointType": {
+      "description": "Kinematic joint type following URDF conventions.",
+      "enum": [
+        "revolute",
+        "prismatic",
+        "continuous",
+        "fixed",
+        "floating",
+        "planar"
+      ],
+      "title": "JointType",
+      "type": "string"
+    }
+  },
+  "description": "URDF-derived joint specification.\n\nAttributes:\n    name: Joint name matching the URDF.\n    joint_type: Kinematic joint type.\n    parent_link: Parent link name.\n    child_link: Child link name.\n    axis_xyz: Rotation/translation axis unit vector.\n    position_limits: (min, max) in radians or meters.\n    velocity_limit: Maximum velocity.\n    effort_limit: Maximum effort (N or Nm).\n    has_position_sensor: Whether position feedback is available.\n    has_velocity_sensor: Whether velocity feedback is available.\n    has_torque_sensor: Whether torque feedback is available.\n    backlash_estimate: Estimated backlash in radians.\n    actuator_kind: Type of actuator.\n    sim_joint_name: Optional override carrying the **MJCF/MuJoCo\n        joint name** as it appears in the simulator's compiled\n        model when that name differs from :attr:`name`. The HAL\n        uses :attr:`name` for the world-state contract (it's the\n        URDF-shaped logical identifier the safety supervisor sees\n        on every chunk); a separate ``sim_joint_name`` lets a\n        sim-adapter look up ``mj_name2id`` without hardcoding\n        robosuite / robocasa / MuJoCo naming conventions in\n        backend modules. ``None`` means \"the MJCF joint name\n        matches :attr:`name`\" \u2014 true for every fixed-base\n        manipulator we ship; only mobile bases and humanoids\n        whose MJCF auto-prefixes joints (robosuite's\n        ``mobilebase0_\u2026`` namespace, GR-1's ``robot0_\u2026``) need\n        it. See ADR-0025.\n    role: Structural classification (ADR-0028a). The downstream\n        runner / safety / dataset-bridge code identifies grippers\n        and base DoFs by this tag instead of substring-matching the\n        joint name (which silently misclassifies any joint\n        containing ``\"gripper\"``, e.g. ``\"gripper_pose\"``). Default\n        ``\"unknown\"`` keeps legacy manifests loadable; the fleet\n        annotates incrementally per ADR-0028a.\n    origin_xyz: Fixed translation (metres) of this joint's frame in\n        its ``parent_link`` frame \u2014 the URDF ``<joint><origin xyz>``.\n        With :attr:`origin_rpy` and :attr:`axis_xyz` it gives the\n        kernel everything it needs for forward kinematics (ADR-0030).\n        Default ``(0, 0, 0)``; populated by the offline lowering tool\n        (from MJCF/URDF) only for robots that enable self-collision\n        checking \u2014 legacy manifests are unaffected.\n    origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this\n        joint's frame in its ``parent_link`` frame \u2014 the URDF\n        ``<joint><origin rpy>``. Default ``(0, 0, 0)``. ADR-0030.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "joint_type": {
+      "$ref": "#/$defs/JointType"
+    },
+    "parent_link": {
+      "title": "Parent Link",
+      "type": "string"
+    },
+    "child_link": {
+      "title": "Child Link",
+      "type": "string"
+    },
+    "axis_xyz": {
+      "default": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Axis Xyz",
+      "type": "array"
+    },
+    "origin_xyz": {
+      "default": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Origin Xyz",
+      "type": "array"
+    },
+    "origin_rpy": {
+      "default": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Origin Rpy",
+      "type": "array"
+    },
+    "position_limits": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Position Limits"
+    },
+    "velocity_limit": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Velocity Limit"
+    },
+    "effort_limit": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effort Limit"
+    },
+    "has_position_sensor": {
+      "default": true,
+      "title": "Has Position Sensor",
+      "type": "boolean"
+    },
+    "has_velocity_sensor": {
+      "default": true,
+      "title": "Has Velocity Sensor",
+      "type": "boolean"
+    },
+    "has_torque_sensor": {
+      "default": false,
+      "title": "Has Torque Sensor",
+      "type": "boolean"
+    },
+    "backlash_estimate": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Backlash Estimate"
+    },
+    "actuator_kind": {
+      "anyOf": [
+        {
+          "enum": [
+            "dc",
+            "bldc",
+            "stepper",
+            "servo",
+            "tendon",
+            "hydraulic",
+            "pneumatic"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Actuator Kind"
+    },
+    "sim_joint_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sim Joint Name"
+    },
+    "role": {
+      "default": "unknown",
+      "enum": [
+        "arm",
+        "base",
+        "gripper",
+        "torso",
+        "leg",
+        "head",
+        "neck",
+        "wheel",
+        "unknown"
+      ],
+      "title": "Role",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "joint_type",
+    "parent_link",
+    "child_link"
+  ],
+  "title": "JointSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,45 @@
+{
+  "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
+  "properties": {
+    "name": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Name",
+      "type": "array"
+    },
+    "position": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Position",
+      "type": "array"
+    },
+    "velocity": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Velocity",
+      "type": "array"
+    },
+    "effort": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Effort",
+      "type": "array"
+    },
+    "stamp_ns": {
+      "title": "Stamp Ns",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "name",
+    "position",
+    "stamp_ns"
+  ],
+  "title": "JointState",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

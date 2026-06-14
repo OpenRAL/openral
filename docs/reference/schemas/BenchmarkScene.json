@@ -1,0 +1,296 @@
+{
+  "$defs": {
+    "BenchmarkMetadata": {
+      "additionalProperties": false,
+      "description": "Provenance block required on every BenchmarkScene.\n\n``paper`` / ``honest_scope`` are the published-protocol citation +\na one-sentence \"what this eval actually measured\" statement.\n\n``display_name`` / ``simulator`` are optional paper-comparison\nlabels (ADR-0042) that surface into ``RSkillEvalResult.benchmark``\nwhen present \u2014 ``display_name`` becomes ``benchmark.name`` and\n``simulator`` becomes ``benchmark.simulator``. Pre-ADR-0042 these\nlived in a free-form dict on the deleted ``BenchmarkSpec``; moving\nthem per-scene keeps them with their provenance and lets the\naggregator emit identical JSON whether driven by ``run_benchmark``\n(suite) or ``run_benchmark_scene`` (single scene).",
+      "properties": {
+        "paper": {
+          "title": "Paper",
+          "type": "string"
+        },
+        "honest_scope": {
+          "title": "Honest Scope",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "simulator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Simulator"
+        }
+      },
+      "required": [
+        "paper",
+        "honest_scope"
+      ],
+      "title": "BenchmarkMetadata",
+      "type": "object"
+    },
+    "PhysicsBackend": {
+      "description": "Physics / scene backend used to instantiate a :class:`SceneSpec`.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld.\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
+      "enum": [
+        "mujoco",
+        "mujoco_mjx",
+        "pybullet",
+        "isaacsim",
+        "genesis",
+        "mock"
+      ],
+      "title": "PhysicsBackend",
+      "type": "string"
+    },
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    },
+    "SceneSpec": {
+      "additionalProperties": false,
+      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (:class:`TaskSpec`) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "backend": {
+          "$ref": "#/$defs/PhysicsBackend",
+          "default": "mujoco"
+        },
+        "assets_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assets Uri"
+        },
+        "observation_height": {
+          "default": 256,
+          "exclusiveMinimum": 0,
+          "title": "Observation Height",
+          "type": "integer"
+        },
+        "observation_width": {
+          "default": 256,
+          "exclusiveMinimum": 0,
+          "title": "Observation Width",
+          "type": "integer"
+        },
+        "cameras": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cameras",
+          "type": "array"
+        },
+        "backend_options": {
+          "additionalProperties": true,
+          "title": "Backend Options",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "SceneSpec",
+      "type": "object"
+    },
+    "TaskSpec": {
+      "additionalProperties": false,
+      "description": "A task declaration \u2014 WHAT the robot must achieve inside a scene.\n\nTasks decouple scene assets (``SceneSpec``) from goal-conditioning. The\nsame scene can host many tasks; the same task can occasionally be run in\nmultiple compatible scenes (rare; usually 1:1 with ``scene_id``).\n\nSuccess is evaluated by the scene adapter \u2014 the reward / success signal\ncomes from the underlying gym env (``info['is_success']``,\n``info['success']``, terminal reward, \u2026).  ``success_key`` lets manifest\nauthors override which info field the runner reads.\n\nAttributes:\n    id: Stable task identifier, e.g. ``\"libero_spatial/task_0\"``,\n        ``\"metaworld/push-v3\"``.  Adapters split on ``/`` to resolve.\n    scene_id: ID of the :class:`SceneSpec` this task runs in.\n    instruction: Natural-language goal handed to the VLA as the\n        ``\"task\"`` text input.  Some adapters override this with a\n        description baked into the underlying suite (LIBERO, MetaWorld).\n    max_steps: Episode budget. Adapters may clip to scene-internal limits.\n        ``None`` means unset; ``BenchmarkScene`` enforces a concrete value\n        via its model validator.\n    success_key: Key inside ``info`` returned by ``env.step()`` whose\n        truthy value marks task success. ``None`` means unset;\n        :class:`BenchmarkScene` enforces a concrete value via its model\n        validator (required for paper-comparison benchmarks).\n    metadata: Free-form per-task notes (paper reference, dataset split, \u2026).\n\nExample:\n    >>> t = TaskSpec(\n    ...     id=\"libero_spatial/task_0\",\n    ...     scene_id=\"libero_spatial\",\n    ...     instruction=\"pick up the black bowl\",\n    ...     max_steps=200,\n    ...     success_key=\"is_success\",\n    ... )\n    >>> t.max_steps\n    200\n    >>> t.success_key\n    'is_success'\n    >>> TaskSpec(id=\"libero_spatial/task_0\", scene_id=\"libero_spatial\").max_steps is None\n    True",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "scene_id": {
+          "title": "Scene Id",
+          "type": "string"
+        },
+        "instruction": {
+          "default": "",
+          "title": "Instruction",
+          "type": "string"
+        },
+        "max_steps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Steps"
+        },
+        "success_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Success Key"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "scene_id"
+      ],
+      "title": "TaskSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Full benchmark eval spec for ``openral benchmark``.\n\n``n_episodes``, ``seed``, and ``metadata`` are required with no\ndefaults \u2014 they must match the published evaluation protocol.\nThe task must supply ``success_key`` and ``max_steps``.",
+  "properties": {
+    "scene": {
+      "$ref": "#/$defs/SceneSpec"
+    },
+    "robot_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Robot Id"
+    },
+    "base_pose": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Pose6D"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "task": {
+      "$ref": "#/$defs/TaskSpec"
+    },
+    "seed": {
+      "title": "Seed",
+      "type": "integer"
+    },
+    "n_episodes": {
+      "exclusiveMinimum": 0,
+      "title": "N Episodes",
+      "type": "integer"
+    },
+    "record_video": {
+      "default": false,
+      "title": "Record Video",
+      "type": "boolean"
+    },
+    "save_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Save Dir"
+    },
+    "metadata": {
+      "$ref": "#/$defs/BenchmarkMetadata"
+    }
+  },
+  "required": [
+    "scene",
+    "task",
+    "seed",
+    "n_episodes",
+    "metadata"
+  ],
+  "title": "BenchmarkScene",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

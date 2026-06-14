@@ -1,0 +1,205 @@
+{
+  "additionalProperties": false,
+  "description": "Typed validator helper for ``SceneSpec.backend_options`` under RoboCasa.\n\nRoboCasa exposes two scenario modes:\n\n* **prebuilt** \u2014 pick one of the ~100 atomic-PnP / door / drawer /\n  navigation tasks shipped with the package by name (e.g.\n  ``\"PnPCounterToCab\"``). Set :attr:`prebuilt_task`; leave all\n  procedural keys at their defaults.\n* **procedural** -- author a kitchen by composing\n  :attr:`kitchen_style` x :attr:`layout_id` x :attr:`fixtures` x\n  :attr:`spawn_objects` x :attr:`task_verb`. Set :attr:`mode` to\n  ``\"procedural\"`` and leave :attr:`prebuilt_task` ``None``.\n\nThe model is **purely additive**: it lives alongside\n:class:`SceneSpec` and is constructed by the RoboCasa scene adapter\nat factory time via ``RoboCasaBackendOptions.model_validate(\nscene.backend_options)``. The parent ``SceneSpec.backend_options:\ndict[str, object]`` field is unchanged, so this class does not\nconstitute a schema migration (ADR-0015, CLAUDE.md \u00a71.6).\n\nSee :doc:`ADR-0015 </adr/0015-robocasa-isolated-backend-lazy-assets>`\nfor the full backend rationale.\n\nAttributes:\n    mode: ``\"prebuilt\"`` (default) or ``\"procedural\"``.\n    prebuilt_task: One of RoboCasa's ~100 atomic task names, e.g.\n        ``\"PnPCounterToCab\"``. Only valid when ``mode=\"prebuilt\"``.\n    kitchen_style: 0..9, picks one of RoboCasa's 10 kitchen aesthetic\n        packs. Only valid when ``mode=\"procedural\"``.\n    layout_id: 0..9, picks one of RoboCasa's 10 floor plans. Only\n        valid when ``mode=\"procedural\"``.\n    fixtures: Subset of RoboCasa fixture names to spawn. Empty list\n        keeps the layout's default fixtures.\n    spawn_objects: Subset of RoboCasa object asset names to spawn on\n        counters / inside cabinets.\n    task_verb: Coarse procedural-mode goal: pick-and-place, open,\n        close, press, navigate. Required when ``mode=\"procedural\"``.\n    robots: RoboCasa robot composition names, e.g.\n        ``[\"PandaMobile\"]`` (default) or ``[\"GR1\"]``. Must match\n        entries the upstream RoboCasa env factory accepts.\n    controller: RoboCasa controller name. ``\"OSC_POSE\"`` works for\n        arm-style robots; the adapter validates against the\n        controller config exposed by RoboCasa at import time.\n    horizon: Maximum step budget for the underlying RoboCasa env.\n\nExample:\n    >>> opts = RoboCasaBackendOptions(mode=\"prebuilt\", prebuilt_task=\"PnPCounterToCab\")\n    >>> opts.task_verb is None\n    True",
+  "properties": {
+    "mode": {
+      "default": "prebuilt",
+      "enum": [
+        "prebuilt",
+        "procedural"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "prebuilt_task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prebuilt Task"
+    },
+    "kitchen_style": {
+      "anyOf": [
+        {
+          "maximum": 9,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Kitchen Style"
+    },
+    "layout_id": {
+      "anyOf": [
+        {
+          "maximum": 9,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layout Id"
+    },
+    "fixtures": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Fixtures",
+      "type": "array"
+    },
+    "spawn_objects": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Spawn Objects",
+      "type": "array"
+    },
+    "task_verb": {
+      "anyOf": [
+        {
+          "enum": [
+            "pnp",
+            "open",
+            "close",
+            "press",
+            "navigate"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Task Verb"
+    },
+    "robots": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Robots",
+      "type": "array"
+    },
+    "controller": {
+      "default": "OSC_POSE",
+      "title": "Controller",
+      "type": "string"
+    },
+    "horizon": {
+      "default": 500,
+      "exclusiveMinimum": 0,
+      "title": "Horizon",
+      "type": "integer"
+    },
+    "state_layout": {
+      "default": "human300_16d",
+      "enum": [
+        "smolvla_9d",
+        "human300_16d",
+        "gr1"
+      ],
+      "title": "State Layout",
+      "type": "string"
+    },
+    "obj_instance_split": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Obj Instance Split"
+    },
+    "layout_and_style_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layout And Style Ids"
+    },
+    "layout_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Layout Ids"
+    },
+    "style_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Style Ids"
+    },
+    "obj_groups": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Obj Groups"
+    },
+    "ignore_done": {
+      "default": false,
+      "title": "Ignore Done",
+      "type": "boolean"
+    }
+  },
+  "title": "RoboCasaBackendOptions",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

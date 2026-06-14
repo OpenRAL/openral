@@ -1,0 +1,58 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2306.03310",
+    "arxiv": null,
+    "model_variant": "smolvla",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite libero_goal --rskill smolvla-libero",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "LIBERO-Goal",
+    "dataset": null,
+    "protocol": "10 episodes per task, success_key=is_success, max_steps=300",
+    "robot": "franka_panda",
+    "simulator": "LIBERO (MuJoCo)"
+  },
+  "eval_config": {
+    "n_episodes": 10,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "success_key": "is_success",
+    "max_steps": 300,
+    "vla_id": "smolvla",
+    "weights_uri": "rskills/smolvla-libero"
+  },
+  "results": {
+    "libero_goal/0_success_rate": 0.8,
+    "libero_goal/1_success_rate": 0.8,
+    "libero_goal/2_success_rate": 0.9,
+    "libero_goal/3_success_rate": 0.2,
+    "libero_goal/4_success_rate": 0.9,
+    "libero_goal/5_success_rate": 0.6,
+    "libero_goal/6_success_rate": 0.0,
+    "libero_goal/7_success_rate": 1.0,
+    "libero_goal/8_success_rate": 0.5,
+    "libero_goal/9_success_rate": 1.0,
+    "avg_success_rate": 0.67,
+    "n_tasks": 10,
+    "n_episodes_per_task": 10,
+    "n_episodes_total": 100,
+    "mean_step_latency_ms_avg": 6.935547315820766
+  },
+  "baselines": {}
+}

@@ -1,0 +1,58 @@
+"""openral auto-provisioning — `openral detect` machinery."""
+
+__version__ = "0.1.0"
+
+from openral_detect.assemble import assemble_robot_description
+from openral_detect.compatibility import (
+    CompatibilityReport,
+    RSkillCompatRow,
+    SectionVerdict,
+    check_installed_rskills,
+    check_single_rskill,
+)
+from openral_detect.detect import PROBE_NAMES, detect_hardware
+from openral_detect.report import (
+    AppleSiliconInfo,
+    CameraProbeResult,
+    DdsTopicRecord,
+    DetectionReport,
+    GpuProbeResult,
+    JetsonInfo,
+    NetworkInterfaceInfo,
+    NetworkProbeResult,
+    NvidiaGpuInfo,
+    OrbbecDeviceInfo,
+    RealsenseDeviceInfo,
+    Ros2TopologyResult,
+    UsbDeviceRecord,
+    UsbMatchRecord,
+    UsbProbeResult,
+    V4l2CameraInfo,
+)
+
+__all__ = [
+    "PROBE_NAMES",
+    "AppleSiliconInfo",
+    "CameraProbeResult",
+    "CompatibilityReport",
+    "DdsTopicRecord",
+    "DetectionReport",
+    "GpuProbeResult",
+    "JetsonInfo",
+    "NetworkInterfaceInfo",
+    "NetworkProbeResult",
+    "NvidiaGpuInfo",
+    "OrbbecDeviceInfo",
+    "RSkillCompatRow",
+    "RealsenseDeviceInfo",
+    "Ros2TopologyResult",
+    "SectionVerdict",
+    "UsbDeviceRecord",
+    "UsbMatchRecord",
+    "UsbProbeResult",
+    "V4l2CameraInfo",
+    "assemble_robot_description",
+    "check_installed_rskills",
+    "check_single_rskill",
+    "detect_hardware",
+]

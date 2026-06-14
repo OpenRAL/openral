@@ -1,0 +1,94 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-locateanything-3b-nf4"
+version: "0.1.0"
+license: "nvidia_non_commercial"
+role: "s1"
+kind: "detector"
+
+# embodiment-agnostic: a perception rSkill (detector/vlm) needs only an RGB
+# camera, not a specific robot. The rSkill<->robot gate exempts these kinds
+# (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
+# it matches any robot/scene.
+embodiment_tags: []
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 640
+    min_height: 480
+
+actuators_required: []
+
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+  extra:
+    scheme: "nf4"
+    quantizer: "bitsandbytes"
+    compute_dtype: "bfloat16"
+    min_params_to_quantize: 4000000
+    loader: "transformers.AutoModel"
+    trust_remote_code: true
+min_vram_gb:
+  fp32: 17.0
+  bf16: 8.5
+  int4: 5.0
+
+weights_uri: "hf://OpenRAL/rskill-locateanything-3b-nf4"
+
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 1000.0
+
+detector:
+  # ADR-0051: on-demand prompted locator. The reasoner invokes this open-vocab
+  # detector via the read-only locate_in_view tool (ADR-0043) when it needs to
+  # find a specific object NOT covered by the continuous detector bank (RT-DETR /
+  # OmDet-Turbo) — e.g. an attribute-qualified or novel object. It is not the
+  # always-on world-state producer.
+  mode: "on_demand"
+  # LocateAnything is open-vocabulary: `labels` is the STATIC DEFAULT query set
+  # the detector grounds every frame when no runtime override is supplied. The
+  # reasoner can override it live via set_query (ADR-0037 2026-06-09 amendment,
+  # Phase 3). These defaults mirror the common manipulation/scene objects the
+  # rtdetr detector rSkills list.
+  labels:
+    - "person"
+    - "cup"
+    - "bottle"
+    - "bowl"
+    - "box"
+    - "chair"
+    - "table"
+  # input_size is unused by the VLM_SIDECAR tier — LocateAnything resizes the
+  # frame dynamically (longest side capped in the sidecar). It is kept because
+  # DetectorContract requires it; (640, 640) is a neutral placeholder.
+  input_size: [640, 640]
+  # score_threshold does not apply: LocateAnything is a grounding model and
+  # emits boxes without per-box confidence (each detection is reported at 1.0).
+  score_threshold: 0.5
+
+paper_url: "https://arxiv.org/abs/2605.27365"
+source_repo: "hf://nvidia/LocateAnything-3B@7a81d810571dc5f244b2f0b6868128f24b1cbd85"
+
+description: >
+  NVIDIA LocateAnything-3B open-vocabulary grounding detector packaged as an
+  NF4 bitsandbytes PyTorch rSkill. It localizes queried objects, text, GUI
+  elements, and points from RGB images without commanding actuators.
+
+actions:
+  - "detect"
+
+objects:
+  - "open-vocabulary object"
+  - "text"
+  - "gui element"
+  - "point target"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "document"
+  - "gui"
+  - "driving"

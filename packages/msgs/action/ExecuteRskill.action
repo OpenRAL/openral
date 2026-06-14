@@ -1,0 +1,22 @@
+# Goal — invoke an rSkill
+string rskill_id            # e.g. "openral/skill-pick-cube-so100"
+string revision            # HF Hub revision (sha or tag); empty = latest pinned
+string prompt              # natural-language instruction
+string prompt_metadata_json # serialized SkillPrompt metadata (Pydantic)
+string goal_params_json    # ADR-0026 — per-skill structured parameters
+                            #   (serialized JSON object); empty = disabled.
+                            #   Wrapped-ROS skills deep-merge over
+                            #   ros_integration.default_goal_json at
+                            #   configure-time; VLAs ignore.
+float64 deadline_s         # 0 = use manifest default
+---
+# Result
+bool success
+string failure_reason      # empty on success
+string trace_id            # OTel trace id for replay
+---
+# Feedback
+float32 progress           # 0..1
+string state               # "loading"|"warming"|"executing"|"replanning"|"recovering"
+uint32 chunk_index
+uint32 chunks_total

@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "RSkillEvalBenchmark": {
+      "additionalProperties": true,
+      "description": "The benchmark suite a :class:`RSkillEvalResult` was measured against.\n\nAttributes:\n    name: Canonical suite name (``\"LIBERO\"``, ``\"MetaWorld\"``,\n        ``\"ALOHA\"``, ``\"PushT\"``, ``\"RoboCasa\"`` \u2026).  Used by\n        ``openral benchmark report`` to group rows.\n    dataset: Optional HF dataset identifier.\n    protocol: Free-text description of the eval protocol.\n    robot: ``robot_id`` the benchmark was evaluated on.\n    simulator: Free-text simulator description.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "dataset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset"
+        },
+        "protocol": {
+          "title": "Protocol",
+          "type": "string"
+        },
+        "robot": {
+          "title": "Robot",
+          "type": "string"
+        },
+        "simulator": {
+          "title": "Simulator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "protocol",
+        "robot",
+        "simulator"
+      ],
+      "title": "RSkillEvalBenchmark",
+      "type": "object"
+    },
+    "RSkillEvalSource": {
+      "additionalProperties": true,
+      "description": "Provenance for a benchmark result block.\n\nUsed inside :class:`RSkillEvalResult` so consumers know where the numbers\ncame from (paper vs local reproduction) without having to read the\n``_comment`` line.\n\nAttributes:\n    paper: Plain-text title of the source paper / report.\n    arxiv: Optional arxiv URL or id.\n    model_variant: Which checkpoint variant the numbers describe\n        (e.g. ``\"SmolVLA (0.45B)\"``).\n    evaluated_by: Free-text \u2014 ``\"upstream authors\"`` or a contributor.\n    reproduced_locally: ``True`` only when OpenRAL CI / contributor\n        re-ran the benchmark and the listed numbers match.\n    reproduction_planned: Optional plan for closing the gap when\n        ``reproduced_locally`` is ``False``.\n    reproduction_cli: Either a single command string or a structured\n        ``{description, single_suite_example, all_suites, suite_max_steps,\n        notes}`` block (matches the LIBERO eval JSON shape).\n    table: Optional pointer at a specific table in the source paper.\n    status: Optional state marker \u2014 ``\"in_progress\"``, ``\"deferred\"``,\n        ``\"reproduced\"`` \u2014 for benchmarks that are not yet final.",
+      "properties": {
+        "paper": {
+          "title": "Paper",
+          "type": "string"
+        },
+        "arxiv": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Arxiv"
+        },
+        "model_variant": {
+          "title": "Model Variant",
+          "type": "string"
+        },
+        "evaluated_by": {
+          "title": "Evaluated By",
+          "type": "string"
+        },
+        "reproduced_locally": {
+          "title": "Reproduced Locally",
+          "type": "boolean"
+        },
+        "reproduction_planned": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reproduction Planned"
+        },
+        "reproduction_cli": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reproduction Cli"
+        },
+        "table": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Table"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "paper",
+        "model_variant",
+        "evaluated_by",
+        "reproduced_locally"
+      ],
+      "title": "RSkillEvalSource",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Pydantic model of a ``rskills/<id>/eval/<benchmark>.json`` file.\n\nThe ``results`` and ``baselines`` blocks are intentionally\nbenchmark-specific \u2014 LIBERO has four sub-suites with success rates,\nMetaWorld carries an MT50 average, ALOHA has a single cube-transfer\nrate.  We require the metadata blocks (``source``, ``benchmark``,\n``eval_config``) but leave ``results`` as a free-form dict so each\nbenchmark can declare its own keys.\n\nAttributes:\n    schema_version: Semver-ish version string for this on-disk format.\n    source: Provenance \u2014 paper / reproduction state.\n    benchmark: Suite identity (name, robot, simulator).\n    eval_config: Free-form configuration the benchmark was run with\n        (chunk size, image size, denoising steps, \u2026).\n    results: Free-form per-task / per-suite success rates.\n    baselines: Optional free-form comparison numbers from prior work.\n    trace_id: Hex OTel trace id (32 chars) for the rollout that\n        produced this result. Set by ``openral benchmark run`` from the\n        ``cli.command`` root span so reviewers can deep-link from\n        ``rskills/<id>/eval/<benchmark>.json`` straight to the\n        trace tree in Jaeger / Tempo. Optional \u2014 paper-cited\n        numbers (``reproduced_locally: false``) leave it ``None``.\n\nExample:\n    >>> # RSkillEvalResult.model_validate_json(\n    >>> #     '{\"schema_version\": \"0.1\", \"source\": {...}, ...}')",
+  "properties": {
+    "schema_version": {
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/RSkillEvalSource"
+    },
+    "benchmark": {
+      "$ref": "#/$defs/RSkillEvalBenchmark"
+    },
+    "eval_config": {
+      "additionalProperties": true,
+      "title": "Eval Config",
+      "type": "object"
+    },
+    "results": {
+      "additionalProperties": true,
+      "title": "Results",
+      "type": "object"
+    },
+    "baselines": {
+      "additionalProperties": true,
+      "title": "Baselines",
+      "type": "object"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{32}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    }
+  },
+  "required": [
+    "source",
+    "benchmark",
+    "results"
+  ],
+  "title": "RSkillEvalResult",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

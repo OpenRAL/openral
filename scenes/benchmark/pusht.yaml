@@ -1,0 +1,23 @@
+# Diffusion Policy PushT — 2-D pymunk pusher, no arm.
+# Run: openral benchmark --config scenes/benchmark/pusht.yaml \
+#                        --rskill rskill://rskills/diffusion-pusht
+
+robot_id: pusht_2d
+
+scene:
+  id: pusht
+  backend: mujoco
+
+task:
+  id: pusht/0
+  scene_id: pusht
+  instruction: "push the T-block onto the target"
+  success_key: is_success
+  max_steps: 300
+
+n_episodes: 200
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2303.04137"
+  honest_scope: "Standard PushT eval (2-D). Paper reports ~0.91 coverage ratio."

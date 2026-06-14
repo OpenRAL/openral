@@ -1,0 +1,57 @@
+{
+  "_comment": "LIBERO eval results for lerobot/pi05_libero_finetuned_v044 (\u03c00.5). Status: pending local verification. Numbers will be filled in after a reproduction run using lerobot-eval. Do NOT add numbers without a locally-verified eval run or a precise paper citation. Note: \u03c00.5 weights are non-commercial \u2014 ensure OPENRAL_ALLOW_NONCOMMERCIAL=1 is set before running evals on restricted infrastructure.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "\u03c00: A Vision-Language-Action Flow Model for General Robot Control",
+    "arxiv": "https://arxiv.org/abs/2410.24164",
+    "model_variant": "\u03c00.5 (PaliGemma 3B, flow-matching)",
+    "checkpoint": "lerobot/pi05_libero_finetuned_v044",
+    "evaluated_by": "TBD",
+    "reproduced_locally": false,
+    "reproduction_planned": "Pending \u2014 requires checkpoint inspection for camera/state spec before running lerobot-eval.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite libero_spatial --rskill pi05-libero",
+      "status": "in-tree (libero_spatial); pi05 is ~8 h per LIBERO suite on A100 so paper numbers stay until a full repro run lands",
+      "notes": [
+        "The 'results' block on this file is still the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",
+        "\u03c00.5 uses flow-matching inference; confirm --policy.flow_matching_steps is set appropriately.",
+        "Weights are non-commercial \u2014 ensure OPENRAL_ALLOW_NONCOMMERCIAL=1 before running evals."
+      ]
+    },
+    "status": "pending"
+  },
+  "benchmark": {
+    "name": "LIBERO",
+    "dataset": "physical-intelligence/libero",
+    "protocol": "10 trials per task, binary success, multi-task training",
+    "tasks_per_suite": 10,
+    "suites": [
+      "spatial",
+      "object",
+      "goal",
+      "long"
+    ],
+    "total_tasks": 40,
+    "robot": "Franka Panda (7-DOF)",
+    "simulator": "LIBERO (MuJoCo-based)"
+  },
+  "eval_config": {
+    "action_chunk_size": "TBD",
+    "flow_matching_steps": "TBD",
+    "image_size": "TBD",
+    "cameras": "TBD",
+    "state_dim": "TBD",
+    "inference_mode": "TBD"
+  },
+  "results": {
+    "status": "pending",
+    "source": "upstream_paper_pending",
+    "libero_spatial": null,
+    "libero_object": null,
+    "libero_goal": null,
+    "libero_long": null,
+    "libero_avg": null,
+    "note": "Fill in after running lerobot-eval with the \u03c00.5 checkpoint, or after extracting values from an upstream publication with exact table reference."
+  }
+}

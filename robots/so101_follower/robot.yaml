@@ -1,0 +1,239 @@
+# RobotDescription — Hugging Face SO-101 follower (real + sim).
+#
+# The SO-101 is the hardware revision of the SO-100: identical 6-DoF
+# kinematic chain (5 servo joints + 1-DoF jaw, all driven over a USB
+# serial bus by Feetech STS3215 servos), updated mechanical design and
+# calibration. The same lerobot-side SDK driver (SO100DigitalTwin /
+# the Feetech serial backend) handles the hardware; only the
+# Onshape-derived MJCF mesh set is different.
+#
+# Joint kinematic detail is taken from the public SO-101 MJCF in
+# ``robot_descriptions`` / ``TheRobotStudio/SO-ARM100/Simulation/SO101``
+# (the ``new_calib`` variant). ``position_limits`` are in radians
+# despite the lerobot SDK exposing degrees — OpenRAL keeps the
+# URDF-native units.
+#
+# Manifest joint order is the kinematic chain order:
+#   shoulder_pan → shoulder_lift → elbow_flex → wrist_flex → wrist_roll → gripper
+# which is also the order the SO-101 MJCF declares its <position>
+# actuators (named "1"…"6") and its hinge joints (named "1"…"6") —
+# :func:`MujocoArmHAL._sim_kwargs_for` resolves the manifest-to-MJCF
+# mapping by INDEX, so the manifest's logical joint names need not
+# match the MJCF's numeric names.
+
+name: "so101_follower"
+embodiment_kind: "manipulator"
+
+base_frame: "base"
+# ADR-0030 — URDF for the offline collision-lowering tool (geometry + joint FK).
+# robot_descriptions ships a real URDF for the SO-ARM101. No SRDF with matching
+# link names, so the ACM uses the conservative sampling fallback.
+urdf_path: "python:robot_descriptions.so_arm101_description:URDF_PATH"
+
+joints:
+  - name: "shoulder_pan"
+    origin_xyz: [0.0207909, -0.0230745, 0.0948817]
+    origin_rpy: [-3.14159, 0, 1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "shoulder"
+    position_limits: [-1.9199, 1.9199]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "shoulder_lift"
+    origin_xyz: [-0.0303992, -0.0182778, -0.0542]
+    origin_rpy: [1.5707927, -1.5707927, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "shoulder"
+    child_link: "upper_arm"
+    position_limits: [-1.7453, 1.7453]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "elbow_flex"
+    origin_xyz: [-0.11257, -0.028, 0]
+    origin_rpy: [0, 0, 1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "upper_arm"
+    child_link: "lower_arm"
+    position_limits: [-1.7453, 1.5708]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "wrist_flex"
+    origin_xyz: [-0.1349, 0.0052, 0]
+    origin_rpy: [0, 0, -1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "lower_arm"
+    child_link: "wrist"
+    position_limits: [-1.6581, 1.6581]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "wrist_roll"
+    joint_type: "revolute"
+    parent_link: "wrist"
+    child_link: "gripper_base"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-2.7925, 2.7925]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "gripper"
+    joint_type: "revolute"
+    parent_link: "gripper_base"
+    child_link: "moving_jaw"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-0.1745, 1.7453]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+
+end_effectors:
+  - name: "gripper"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 5.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.32
+
+# SO-101 ships with optional USB cameras. ``camera1`` mirrors the
+# overhead third-person view used by the lerobot SO-101 datasets;
+# ``camera2`` is the wrist-mounted view on the gripper body. The
+# ``so101_box`` sim scene routes the in-scene OAK-D Pro overhead
+# stream into ``observation.images.camera1`` and the MJCF wrist
+# camera into ``observation.images.camera2``.
+sensors:
+  - name: "front"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 30.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 480.0
+      fy: 480.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "luxonis"
+    model: "oak_d_pro"
+  - name: "wrist"
+    modality: "rgb"
+    frame_id: "wrist"
+    parent_frame: "wrist_roll"
+    rate_hz: 30.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 192.0
+      fy: 192.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera2"
+    vendor: "generic_usb"
+    model: "so101_wrist"
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+  supported_vla_embodiments: ["so101_follower"]
+  embodiment_tags:
+    - "so101_follower"
+    - "lerobot"
+
+safety:
+  workspace_box_min_xyz: [-0.4, -0.4, 0.0]
+  workspace_box_max_xyz: [0.4, 0.4, 0.6]
+  max_ee_speed_m_s: 0.5
+  max_ee_accel_m_s2: 2.0
+  max_joint_speed_factor: 0.7
+  max_force_n: 10.0
+  max_torque_nm: 3.35
+  deadman_required: true
+  contact_force_threshold_n: 5.0
+
+sdk_kind: "open"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# sim: null → derive MujocoArmHAL.from_description from the `sim:` block below.
+# real: the SO-101 reuses the SO-100 lerobot Feetech follower verbatim.
+hal:
+  sim: null
+  real: "openral_hal.so100_follower:SO100FollowerHAL"
+  # ADR-0029 — real-HAL construction defaults threaded by build_hal so the
+  # manifest-driven lifecycle node needs no bespoke `port` ROS parameter.
+  parameters:
+    defaults:
+      port: "/dev/ttyUSB0"
+      calibrate_on_connect: false
+
+# MuJoCo wiring consumed by ``MujocoArmHAL.from_description``.
+# Source: ``Simulation/SO101/so101_new_calib.xml`` in
+# ``TheRobotStudio/SO-ARM100`` (vendored via ``robot_descriptions``).
+# The jaw joint range is ``[-0.1745, 1.7453]`` (radians) and its
+# closed position is non-zero, so ``gripper.read_mode`` is
+# ``affine_low_high`` (same as SO-100). The qpos slot for the jaw is
+# index 5 (sixth joint in the kinematic chain).
+sim:
+  mjcf_uri: "robot_descriptions:so_arm101_mj_description"
+  grippers:
+    - joint: "gripper"
+      ctrl_range: [-0.1745, 1.7453]
+      qpos_addrs: [5]
+      qpos_scale: 1.9198  # 1.7453 - (-0.1745); kept for symmetry, unused in affine mode
+      read_mode: "affine_low_high"
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [6]
+  state_representation: "joint_positions"
+  image_flip_180: false
+
+action_spec:
+  dim: 6
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "base"
+    shape: { shape: "capsule", radius_m: 0.0750, length_m: 0.1140 }
+    origin_xyz_rpy: [0.0241, -0.0043, 0.0766, -1.2860, -0.0544, 0.0408]
+  - link_name: "shoulder"
+    shape: { shape: "capsule", radius_m: 0.0448, length_m: 0.1209 }
+    origin_xyz_rpy: [-0.0197, 0.0025, -0.0078, -0.0298, 0.3195, -0.0048]
+  - link_name: "upper_arm"
+    shape: { shape: "capsule", radius_m: 0.0486, length_m: 0.1493 }
+    origin_xyz_rpy: [-0.0596, -0.0040, 0.0232, -0.4095, 1.3670, -0.3351]
+  - link_name: "lower_arm"
+    shape: { shape: "capsule", radius_m: 0.0523, length_m: 0.1609 }
+    origin_xyz_rpy: [-0.0682, 0.0011, 0.0281, -3.0091, -1.3993, 2.9843]
+  - link_name: "wrist"
+    shape: { shape: "capsule", radius_m: 0.0466, length_m: 0.0796 }
+    origin_xyz_rpy: [-0.0002, -0.0271, 0.0305, 1.7853, -0.2109, -0.2613]
+
+# GENERATED by `openral collision lower` (source: sampling) — do not hand-edit.
+allowed_collision_pairs:
+  - [base, shoulder]
+  - [base, upper_arm]
+  - [lower_arm, upper_arm]
+  - [lower_arm, wrist]
+  - [shoulder, upper_arm]

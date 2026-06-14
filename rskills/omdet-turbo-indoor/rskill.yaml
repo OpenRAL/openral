@@ -1,0 +1,404 @@
+# rSkill manifest — OmDet-Turbo indoor open-vocabulary detector (kind: detector,
+# ADR-0037 2026-06-12 amendment).
+#
+# Packages `omlab/omdet-turbo-swin-tiny-hf` (Apache-2.0, real-time open-vocabulary
+# detector, AutoModelForZeroShotObjectDetection) as an OpenRAL perception producer.
+# It runs IN PROCESS under the runtime's own transformers (no sidecar) over a
+# FIXED, curated indoor vocabulary (~230 household / kitchen / office /
+# manipulation classes). Because the vocabulary never changes, the detector
+# behaves like a large closed-vocabulary detector: an unprompted background
+# producer that streams ObjectsMetadata to /openral/perception/objects with far
+# more than the 80 COCO classes the RT-DETR rSkills cover.
+#
+# Unlike rskills/locateanything-3b-nf4, this detector is NOT query-driven: there
+# is no set_query and the detector node does not subscribe it to
+# /openral/perception/detector_query. The reasoner does not retarget it.
+#
+# LICENSE: weights are Apache-2.0 (omlab OmDet-Turbo public release) — fully
+# commercial-safe (CLAUDE.md §1.9), unlike the NVIDIA non-commercial
+# LocateAnything weights.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-omdet-turbo-indoor"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "detector"  # ADR-0037: perception producer; emits ObjectsMetadata, no Action
+
+# ── Compatibility contract ──────────────────────────────────────────────────
+# embodiment-agnostic: a perception rSkill (detector/vlm) needs only an RGB
+# camera, not a specific robot. The rSkill<->robot gate exempts these kinds
+# (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
+# it matches any robot/scene.
+embodiment_tags: []
+
+sensors_required:
+  - modality: "rgb"
+    min_width: 640
+    min_height: 480
+
+# Detectors command no actuators.
+actuators_required: []
+
+# ── Runtime / weights ───────────────────────────────────────────────────────
+# OmDet-Turbo is a first-class transformers architecture
+# (AutoModelForZeroShotObjectDetection), so it loads under the runtime's own
+# transformers>=5 and runs in process — no sidecar venv (contrast
+# locateanything-3b-nf4, pinned to transformers==4.57.1). fp16 on GPU; CPU is the
+# portable fallback for GPU-less hosts / deploy sim.
+runtime: "pytorch"
+quantization:
+  dtype: "fp16"
+  backend: "pytorch"
+min_vram_gb:
+  fp32: 1.0
+  fp16: 0.6
+
+weights_uri: "hf://omlab/omdet-turbo-swin-tiny-hf"
+
+chunk_size: 1
+latency_budget:
+  # OmDet-Turbo (Swin-tiny) is real-time on GPU; a large fixed vocabulary adds
+  # text-encoding cost. 200 ms budget covers the per-frame forward on a modest
+  # GPU; the detector leg is throttled by the node, not run at full frame rate.
+  per_chunk_ms: 200.0
+
+# ── Detector contract (ADR-0037) ────────────────────────────────────────────
+# engine: zeroshot_hf selects the in-process Transformers zero-shot backend
+# (OmDetTurboDetector / DetectorTier.ZEROSHOT_HF). `labels` is the FIXED
+# vocabulary detected every frame — curated indoor / household / manipulation
+# objects, a superset of the indoor-relevant COCO classes.
+detector:
+  engine: "zeroshot_hf"
+  # ADR-0051: always-on background producer. Streams ObjectsMetadata into
+  # WorldState.detected_objects every frame; the reasoner reads it passively and
+  # never prompts it. NOT the on-demand locate_in_view locator (that is
+  # locateanything-3b-nf4, mode: on_demand).
+  mode: "continuous"
+  labels:
+    # ── kitchen & tableware ──
+    - "cup"
+    - "mug"
+    - "bottle"
+    - "water bottle"
+    - "wine glass"
+    - "drinking glass"
+    - "bowl"
+    - "plate"
+    - "saucer"
+    - "fork"
+    - "knife"
+    - "spoon"
+    - "chopsticks"
+    - "ladle"
+    - "spatula"
+    - "whisk"
+    - "cutting board"
+    - "frying pan"
+    - "pot"
+    - "saucepan"
+    - "kettle"
+    - "teapot"
+    - "colander"
+    - "mixing bowl"
+    - "measuring cup"
+    - "tongs"
+    - "grater"
+    - "dish towel"
+    - "napkin"
+    - "placemat"
+    - "tray"
+    - "pitcher"
+    - "thermos"
+    - "lunch box"
+    - "food container"
+    - "jar"
+    - "tin can"
+    - "carton"
+    - "egg carton"
+    - "salt shaker"
+    - "pepper grinder"
+    - "coaster"
+    # ── food ──
+    - "apple"
+    - "banana"
+    - "orange"
+    - "lemon"
+    - "lime"
+    - "tomato"
+    - "potato"
+    - "onion"
+    - "carrot"
+    - "broccoli"
+    - "bell pepper"
+    - "cucumber"
+    - "lettuce"
+    - "mushroom"
+    - "strawberry"
+    - "bread"
+    - "bagel"
+    - "sandwich"
+    - "pizza"
+    - "donut"
+    - "cake"
+    - "cookie"
+    - "muffin"
+    - "egg"
+    - "cheese"
+    # ── appliances & electronics ──
+    - "refrigerator"
+    - "microwave"
+    - "oven"
+    - "stove"
+    - "toaster"
+    - "blender"
+    - "coffee maker"
+    - "dishwasher"
+    - "rice cooker"
+    - "television"
+    - "remote control"
+    - "laptop"
+    - "computer monitor"
+    - "keyboard"
+    - "computer mouse"
+    - "tablet computer"
+    - "cell phone"
+    - "telephone"
+    - "headphones"
+    - "earbuds"
+    - "speaker"
+    - "router"
+    - "game controller"
+    - "webcam"
+    - "printer"
+    - "projector"
+    - "charger"
+    - "power strip"
+    - "extension cord"
+    - "usb cable"
+    - "alarm clock"
+    # ── furniture ──
+    - "chair"
+    - "armchair"
+    - "office chair"
+    - "stool"
+    - "bench"
+    - "sofa"
+    - "ottoman"
+    - "dining table"
+    - "coffee table"
+    - "desk"
+    - "side table"
+    - "nightstand"
+    - "bookshelf"
+    - "cabinet"
+    - "cupboard"
+    - "dresser"
+    - "drawer"
+    - "wardrobe"
+    - "shelf"
+    - "tv stand"
+    - "bed"
+    - "pillow"
+    - "cushion"
+    - "blanket"
+    - "filing cabinet"
+    # ── bathroom ──
+    - "toilet"
+    - "toilet paper"
+    - "sink"
+    - "faucet"
+    - "bathtub"
+    - "shower head"
+    - "towel"
+    - "washcloth"
+    - "soap"
+    - "soap dispenser"
+    - "shampoo bottle"
+    - "toothbrush"
+    - "toothpaste"
+    - "hairbrush"
+    - "comb"
+    - "hair dryer"
+    - "razor"
+    - "mirror"
+    - "bath mat"
+    - "tissue box"
+    - "bathroom scale"
+    # ── office & stationery ──
+    - "book"
+    - "notebook"
+    - "magazine"
+    - "newspaper"
+    - "folder"
+    - "binder"
+    - "pen"
+    - "pencil"
+    - "marker"
+    - "highlighter"
+    - "eraser"
+    - "ruler"
+    - "scissors"
+    - "stapler"
+    - "tape dispenser"
+    - "paper clip"
+    - "sticky note"
+    - "envelope"
+    - "calculator"
+    - "clipboard"
+    - "whiteboard"
+    - "calendar"
+    - "glue stick"
+    - "paintbrush"
+    # ── cleaning & laundry ──
+    - "broom"
+    - "mop"
+    - "dustpan"
+    - "vacuum cleaner"
+    - "bucket"
+    - "sponge"
+    - "spray bottle"
+    - "paper towel"
+    - "garbage bag"
+    - "laundry basket"
+    - "clothes hanger"
+    - "clothespin"
+    - "iron"
+    - "rubber glove"
+    # ── containers & personal items ──
+    - "box"
+    - "cardboard box"
+    - "basket"
+    - "storage bin"
+    - "backpack"
+    - "handbag"
+    - "tote bag"
+    - "suitcase"
+    - "briefcase"
+    - "wallet"
+    - "keys"
+    - "key chain"
+    - "umbrella"
+    - "eyeglasses"
+    - "sunglasses"
+    - "wristwatch"
+    - "picture frame"
+    - "painting"
+    - "poster"
+    - "clock"
+    - "vase"
+    - "flower pot"
+    - "potted plant"
+    - "candle"
+    - "lamp"
+    - "table lamp"
+    - "floor lamp"
+    - "light bulb"
+    - "flashlight"
+    - "electric fan"
+    - "space heater"
+    - "air conditioner"
+    - "humidifier"
+    - "thermostat"
+    - "smoke detector"
+    - "fire extinguisher"
+    - "first aid kit"
+    # ── tools & hardware ──
+    - "hammer"
+    - "screwdriver"
+    - "wrench"
+    - "pliers"
+    - "power drill"
+    - "tape measure"
+    - "utility knife"
+    - "toolbox"
+    - "work gloves"
+    - "safety goggles"
+    - "ladder"
+    - "step stool"
+    - "batteries"
+    - "light switch"
+    - "power outlet"
+    - "door handle"
+    - "doorknob"
+    - "door"
+    - "window"
+    - "curtain"
+    - "rug"
+    - "doormat"
+    # ── clothing & wearables ──
+    - "shoe"
+    - "sneaker"
+    - "boot"
+    - "slipper"
+    - "sock"
+    - "glove"
+    - "hat"
+    - "scarf"
+    - "belt"
+    - "tie"
+    - "shirt"
+    - "jacket"
+    - "sweater"
+    - "pants"
+    # ── toys & kids ──
+    - "teddy bear"
+    - "doll"
+    - "toy car"
+    - "building block"
+    - "ball"
+    - "stuffed animal"
+    - "balloon"
+    - "crayon"
+    # ── plants & misc ──
+    - "houseplant"
+    - "watering can"
+    - "person"
+  input_size: [640, 640]
+  # OmDet-Turbo emits per-box confidences; this is the keep threshold applied in
+  # the post-processor + ObjectsMetadata build.
+  score_threshold: 0.3
+
+# ── Provenance ──────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2403.06892"
+source_repo: "hf://omlab/omdet-turbo-swin-tiny-hf"
+
+description: >
+  OmDet-Turbo (Swin-tiny) real-time open-vocabulary detector, run in-process
+  over a fixed curated indoor vocabulary (~230 household/kitchen/office/
+  manipulation classes). An unprompted background producer: publishes
+  ObjectsMetadata to /openral/perception/objects every frame without reasoner
+  prompting, giving the world model far more classes than the 80 COCO
+  categories. Apache-2.0 weights from omlab/omdet-turbo-swin-tiny-hf. See
+  ADR-0037 (2026-06-12 amendment) for the zeroshot_hf detector engine.
+
+# ADR-0022 — action vocabulary for the reasoner LLM tool palette.
+# DETECT signals that this skill is a perception producer.
+actions:
+  - "detect"
+
+# Representative coverage keywords surfaced to the reasoner (ADR-0051) so it can
+# route between "already tracked in world state" and the on-demand locator. The
+# full 266-class vocabulary is in `detector.labels`; these are the category
+# summary the palette shows the LLM.
+objects:
+  - "kitchenware (cup, mug, bottle, bowl, plate, pot, pan, kettle, utensils)"
+  - "food (fruit, vegetables, bread, packaged food)"
+  - "appliances (fridge, microwave, oven, toaster, kettle, TV)"
+  - "electronics (laptop, monitor, keyboard, phone, remote, charger, cables)"
+  - "furniture (chair, sofa, table, desk, bed, shelf, cabinet, drawer)"
+  - "bathroom items (toilet, sink, towel, soap, toothbrush, mirror)"
+  - "office and stationery (book, pen, scissors, stapler, folder, notebook)"
+  - "cleaning and laundry (broom, mop, bucket, sponge, spray bottle, hamper)"
+  - "containers and personal items (box, basket, bag, backpack, keys, glasses)"
+  - "tools and hardware (hammer, screwdriver, drill, switch, outlet, door handle)"
+  - "clothing and wearables (shoe, hat, glove, jacket)"
+  - "toys (teddy bear, doll, ball, blocks)"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "household"
+  - "office"
+  - "bathroom"

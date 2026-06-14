@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vendored from flexivrobotics/flexiv_ros2 flexiv_moveit_config/srdf/flexiv_macro.srdf.xacro
+     (humble), arm_prefix="" resolved. Self-collision ACM source for the offline lowering
+     tool (ADR-0030). Do not hand-edit. -->
+<robot name="rizon4">
+  <group name="rizon_arm"><chain base_link="base_link" tip_link="flange"/></group>
+  <disable_collisions link1="base_link" link2="link1" reason="Adjacent"/>
+  <disable_collisions link1="base_link" link2="link2" reason="Never"/>
+  <disable_collisions link1="base_link" link2="link3" reason="Never"/>
+  <disable_collisions link1="base_link" link2="link4" reason="Never"/>
+  <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
+  <disable_collisions link1="link1" link2="link3" reason="Never"/>
+  <disable_collisions link1="link1" link2="link4" reason="Never"/>
+  <disable_collisions link1="link2" link2="link3" reason="Adjacent"/>
+  <disable_collisions link1="link2" link2="link4" reason="Never"/>
+  <disable_collisions link1="link2" link2="link5" reason="Never"/>
+  <disable_collisions link1="link3" link2="link4" reason="Adjacent"/>
+  <disable_collisions link1="link3" link2="link5" reason="Never"/>
+  <disable_collisions link1="link3" link2="link6" reason="Never"/>
+  <disable_collisions link1="link3" link2="link7" reason="Never"/>
+  <disable_collisions link1="link4" link2="link5" reason="Adjacent"/>
+  <disable_collisions link1="link4" link2="link6" reason="Never"/>
+  <disable_collisions link1="link4" link2="link7" reason="Never"/>
+  <disable_collisions link1="link5" link2="link6" reason="Adjacent"/>
+  <disable_collisions link1="link6" link2="link7" reason="Adjacent"/>
+  <disable_collisions link1="link7" link2="flange" reason="Adjacent"/>
+</robot>

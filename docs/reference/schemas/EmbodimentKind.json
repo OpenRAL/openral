@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbodimentKind",
+  "description": "Top-level kinematic class of a robot body.",
+  "type": "string",
+  "enum": [
+    "humanoid",
+    "manipulator",
+    "bimanual",
+    "quadruped",
+    "mobile_base",
+    "mobile_manipulator",
+    "drone"
+  ]
+}

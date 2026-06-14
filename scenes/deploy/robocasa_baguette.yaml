@@ -1,0 +1,28 @@
+# RoboCasa kitchen — deterministic baguette PnP (ADR-0044 find→navigate→grab e2e).
+#
+# Same digital twin as robocasa_pnp.yaml (panda_mobile mobile manipulator, full
+# OpenRAL stack with SLAM + Nav2), but pins the PnP target object to a baguette
+# (obj_groups: baguette) so the object on the counter is deterministic across
+# seeds — "Pick the baguette from the counter and place it in the cabinet."
+# Used by the find→navigate→grab integration test so recall_object /
+# locate_in_view can query a known object name.
+#
+# Run: openral deploy sim --config scenes/deploy/robocasa_baguette.yaml
+# Setup: just sync --group robocasa  +  uv pip install -e _external/robocasa --no-deps
+
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  # 512² (was 128²) so the open-vocab detector (LocateAnything-3B) can ground
+  # objects: at 128² the baguette is ~20 px and upscaling to the VLM's 1024
+  # input is too blurry to detect (every query returned found=False). VLA
+  # policies downsample their own input, so the higher source res is harmless
+  # to pi05/rldx. Costs more EGL render time per step.
+  observation_height: 512
+  observation_width: 512
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    obj_groups: baguette

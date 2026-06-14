@@ -1,0 +1,195 @@
+# rSkill manifest — Nav2 NavigateToPose (kind: ros_action, result-only)
+#
+# Wraps the upstream `nav2_msgs/action/NavigateToPose` action server as
+# an OpenRAL rSkill. See `docs/adr/0024-ros-wrapped-rskills.md`.
+#
+# RESULT-ONLY MODE
+# ----------------
+# `ros_integration.result_trajectory_field` is omitted, which puts the
+# adapter into result-only mode: it sends the goal, awaits the action
+# result, and raises `ROSRskillGoalSatisfied` on success. NO `Action`
+# chunk is emitted to `/openral/candidate_action`. Nav2's own behaviour
+# tree publishes `cmd_vel` directly to the base controller, BYPASSING
+# the OpenRAL safety supervisor for those velocity commands. Collision
+# avoidance relies entirely on Nav2's costmap. The Out-of-scope section
+# of ADR-0024 tracks the follow-up that brings velocity-stream safety
+# under the supervisor's check (no in-tree HAL exposes `body_twist` in
+# `supported_control_modes` today, so this is also blocked on a
+# mobile-base HAL landing — issue tracked separately).
+#
+# ADR-0026 — per-dispatch structured parameters. The LLM tool palette
+# surfaces this schema to the provider; the reasoner attaches the
+# generated payload as ``goal_params_json`` on the ExecuteSkill goal;
+# the wrapped-action adapter deep-merges it over the
+# ``default_goal_json`` below at configure-time. Omit fields you want
+# from the manifest default.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-nav2-navigate-to-pose"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "ros_action"
+
+# `mobile_base` is the canonical CLASS tag for any robot with a planar
+# base + ``body_twist`` actuator (defined in ``openral_core.schemas``
+# alongside the robot-specific tags). A robot must (a) declare this tag
+# in its ``robots/<id>/robot.yaml`` and (b) be reachable by a running
+# Nav2 stack on this deployment for the skill to actually resolve.
+# Robot-specific tags (``panda_mobile`` etc.) intentionally do NOT
+# appear here — Nav2's behaviour is base-agnostic, so the manifest
+# stays generic and any mobile_base robot can target it.
+embodiment_tags:
+  - "mobile_base"
+
+# Body twist is what Nav2's behaviour-tree controllers ultimately
+# publish on `/cmd_vel`. Declaring it here is the honest description of
+# what the wrapped server commands; the OpenRAL ActionChunk path is NOT
+# used (see result-only mode above).
+actuators_required:
+  - kind: "body_twist"
+    control_mode_semantics:
+      mode: "absolute"
+
+# `chunk_size: 1` is REQUIRED for kind: ros_action even in result-only
+# mode (the schema validator enforces it uniformly across both modes).
+chunk_size: 1
+
+# Navigation is long-horizon — a full run can take 30+ seconds. The
+# adapter waits ×5 of this as the action-result deadline, so allow
+# enough headroom (60 s here → 300 s wait ceiling).
+latency_budget:
+  per_chunk_ms: 60000.0
+
+# ADR-0022 — surfaced to the Reasoner LLM tool palette.
+description: >
+  Navigate the mobile base to a target pose via Nav2's NavigateToPose.
+  Supports BOTH absolute and relative goals via pose.header.frame_id:
+  "map" = absolute world coordinates (drive to (3.5, 2.1)); "base_link"
+  = relative to current pose, used for turns / forward / back-up
+  (Nav2 transforms via tf2 on goal accept — the LLM does NOT need to
+  compose quaternions against the live pose). Result-only mode: Nav2
+  publishes cmd_vel directly; collision avoidance relies on its costmap.
+actions:
+  - "navigate"
+objects: []
+scenes:
+  - "indoor"
+
+# Provenance — required by the rSkill doc validator's publish gate.
+# See sibling moveit-plan-arm manifest for the rationale on using
+# `paper_url` rather than `source_repo` for ROS-wrapped rSkills.
+paper_url: "https://docs.nav2.org/"
+
+ros_integration:
+  package: "nav2_msgs"
+  interface_type: "NavigateToPose"
+  interface_name: "/navigate_to_pose"
+  # OMITTED → result-only mode (the adapter awaits the result and
+  # raises ROSRskillGoalSatisfied without emitting any Action chunk).
+  result_trajectory_field: null
+  # Default = "stay where you are" (identity offset in base_link).
+  # Picked so a misconfigured dispatch is a no-op (Nav2 reports
+  # "Reached the goal" without moving) rather than a wild drive to
+  # the map origin. The reasoner MUST override at least one of
+  # ``pose.position.{x,y}`` or ``pose.orientation.{z,w}`` to actually
+  # command motion.
+  default_goal_json: |
+    {
+      "pose": {
+        "header": {
+          "frame_id": "base_link"
+        },
+        "pose": {
+          "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+          "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}
+        }
+      },
+      "behavior_tree": ""
+    }
+  ros_dependencies:
+    - "ros-${ROS_DISTRO}-nav2-bringup"
+    - "ros-${ROS_DISTRO}-nav2-msgs"
+
+# ADR-0026 — per-skill JSON Schema surfaced to the Reasoner LLM tool
+# palette. The LLM produces a JSON object matching this schema; the
+# adapter deep-merges over ``default_goal_json`` at configure-time.
+#
+# The schema unifies absolute and relative goals: pick ``frame_id``
+# to choose, fill in position + orientation as offsets in that frame.
+# Nav2's bt_navigator transforms the goal to the planning frame on
+# accept via tf2, so the LLM does not need to compose quaternions
+# against the live robot pose — declare the offset in ``base_link``
+# and Nav2 does the math.
+goal_params_schema:
+  type: object
+  description: >
+    Target pose for Nav2's NavigateToPose action. Position +
+    orientation are interpreted in ``pose.header.frame_id`` (Nav2
+    transforms to its planning frame on accept).
+  properties:
+    pose:
+      type: object
+      properties:
+        header:
+          type: object
+          properties:
+            frame_id:
+              type: string
+              enum: ["map", "odom", "base_link"]
+              description: >
+                Frame the position + orientation are expressed in.
+                ``map`` = absolute world goal (use when you know the
+                world coordinate, e.g. "drive to (3.5, 2.1)").
+                ``base_link`` = relative to current pose (use for
+                turn / forward / back-up commands — position is the
+                offset in metres ahead/left/up of the robot, and
+                orientation is the rotation from current heading).
+                ``odom`` = relative-ish (drifts over time, prefer
+                ``base_link``).
+          required: ["frame_id"]
+        pose:
+          type: object
+          properties:
+            position:
+              type: object
+              properties:
+                x:
+                  type: number
+                  description: >
+                    Target x (m). In ``base_link`` frame this is
+                    forward distance (positive = ahead, negative =
+                    backward). In ``map`` frame this is the absolute
+                    world x coordinate.
+                y:
+                  type: number
+                  description: >
+                    Target y (m). In ``base_link`` frame this is
+                    leftward distance (positive = left). In ``map``
+                    frame this is the absolute world y coordinate.
+                z:
+                  type: number
+                  description: "Target z (m); ground robots use 0."
+              required: ["x", "y"]
+            orientation:
+              type: object
+              description: >
+                Target orientation as a quaternion. For ground robots
+                the only non-zero components are ``z = sin(yaw/2)``
+                and ``w = cos(yaw/2)`` (yaw rotation around vertical
+                axis). In ``base_link`` frame the quaternion is the
+                rotation FROM current heading; in ``map`` frame it
+                is the absolute world heading.
+                Common values for ``base_link`` turns:
+                  - identity (no rotation):     z=0,        w=1
+                  - +90° (counter-clockwise):   z=0.7071,   w=0.7071
+                  - -90° (clockwise):           z=-0.7071,  w=0.7071
+                  - 180°:                       z=1.0,      w=0
+              properties:
+                x: { type: number, description: "Quaternion x component." }
+                y: { type: number, description: "Quaternion y component." }
+                z: { type: number, description: "Quaternion z component (sin(yaw/2) for a pure yaw rotation)." }
+                w: { type: number, description: "Quaternion w component (cos(yaw/2) for a pure yaw rotation)." }
+          required: ["position", "orientation"]
+      required: ["pose"]
+  required: ["pose"]

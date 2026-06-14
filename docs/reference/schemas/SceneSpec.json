@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "PhysicsBackend": {
+      "description": "Physics / scene backend used to instantiate a :class:`SceneSpec`.\n\nAttributes:\n    MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld.\n    MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).\n    PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).\n    ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.\n    GENESIS: Genesis (physics-language unification). Future.\n    MOCK: In-process mock with no physics \u2014 used for wiring smoketests.",
+      "enum": [
+        "mujoco",
+        "mujoco_mjx",
+        "pybullet",
+        "isaacsim",
+        "genesis",
+        "mock"
+      ],
+      "title": "PhysicsBackend",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (:class:`TaskSpec`) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "backend": {
+      "$ref": "#/$defs/PhysicsBackend",
+      "default": "mujoco"
+    },
+    "assets_uri": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Assets Uri"
+    },
+    "observation_height": {
+      "default": 256,
+      "exclusiveMinimum": 0,
+      "title": "Observation Height",
+      "type": "integer"
+    },
+    "observation_width": {
+      "default": 256,
+      "exclusiveMinimum": 0,
+      "title": "Observation Width",
+      "type": "integer"
+    },
+    "cameras": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Cameras",
+      "type": "array"
+    },
+    "backend_options": {
+      "additionalProperties": true,
+      "title": "Backend Options",
+      "type": "object"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "SceneSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

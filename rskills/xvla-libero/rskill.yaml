@@ -1,0 +1,102 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/xvla-libero (Apache-2.0)
+# Base:  lerobot/xvla-base
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-xvla-libero"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "xvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO benchmark targets table-top manipulation with a Franka Panda arm.
+embodiment_tags:
+  - "franka_panda"
+
+# xVLA LIBERO consumes the same two-RGB-camera contract as smolvla_libero.
+# A third 224x224 zero-tensor slot is filled in-process by the example runner;
+# it does not correspond to a physical sensor on the robot.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side (ADR-0013). For the canonical franka_panda embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
+weights_uri: "hf://lerobot/xvla-libero"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://lerobot/xvla-libero/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/xvla-libero/policy_postprocessor.json"
+# xVLA on LIBERO uses the same 180° image flip as SmolVLA/pi05 LIBERO
+# and the canonical 8-D LIBERO proprio state.
+image_preprocessing:
+  flip_180: true
+state_contract:
+  dim: 8
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 16
+# n_action_steps omitted — equals chunk_size (xVLA default = full chunk).
+latency_budget:
+  per_chunk_ms: 200.0   # xVLA architecture TBD — conservative budget until locally benchmarked
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# eval/libero.json is status=pending (no measured value yet).
+
+# Paper URL not yet published; leave null until the official xVLA report drops.
+source_repo: "hf://lerobot/xvla-libero"
+
+description: >
+  xVLA official LIBERO fine-tune from the lerobot team — a
+  Vision-Language-Action model developed in collaboration with the
+  lerobot ecosystem; weights are Apache-2.0. State dimensions, camera
+  names, and normalisation statistics have not been locally verified —
+  see docs/reference/vla_compatibility.md §3.1. Latency budget is a
+  conservative placeholder; update after local profiling.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # ADR-0036 — LIBERO action space is 6-D OSC end-effector delta + gripper.
+  representation: "delta_ee_6d_plus_gripper"

@@ -1,0 +1,20 @@
+name: docs
+# Auto-triggers disabled: out of GitHub Actions credits.
+# Re-enable PR/push triggers once billing is restored. See issue tracker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run mkdocs build --strict

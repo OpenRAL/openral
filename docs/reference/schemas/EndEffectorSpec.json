@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "Hand": {
+      "description": "Laterality of an end-effector.",
+      "enum": [
+        "left",
+        "right",
+        "na"
+      ],
+      "title": "Hand",
+      "type": "string"
+    }
+  },
+  "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator\n        (ADR-0028a). False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "parallel_gripper",
+        "suction",
+        "dexterous_hand",
+        "tool",
+        "none"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "hand": {
+      "$ref": "#/$defs/Hand",
+      "default": "na"
+    },
+    "n_dof": {
+      "default": 1,
+      "title": "N Dof",
+      "type": "integer"
+    },
+    "max_grip_force_n": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Grip Force N"
+    },
+    "max_payload_kg": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Payload Kg"
+    },
+    "workspace_radius_m": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Workspace Radius M"
+    },
+    "tactile_sensors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tactile Sensors",
+      "type": "array"
+    },
+    "actuated": {
+      "default": true,
+      "title": "Actuated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "name",
+    "kind"
+  ],
+  "title": "EndEffectorSpec",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

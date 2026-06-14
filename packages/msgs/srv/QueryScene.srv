@@ -1,0 +1,33 @@
+# ADR-0047 — ask a scene VLM (e.g. Qwen3.5-4B NF4, kind: "vlm") an open-ended
+# question about the CURRENT camera view, on demand.
+#
+# Called by the reasoner's read-only `query_scene` tool dispatch
+# (openral_reasoner_ros.reasoner_node._dispatch_query_scene). The perception
+# node (openral_perception_ros.ros_image_detector_node) captures the latest
+# frame of the requested camera and forwards it plus the question to the VLM
+# sidecar, returning the model's free-text answer. Read-only: no actuation.
+#
+# Unlike LocateInView (which localizes an object and returns boxes), this
+# answers open-ended scene-state questions for the reasoner's replanning ladder
+# — task progress and success/failure verification ("has the robot grasped the
+# mug?", "is the bowl on the shelf?", "did we drop the object?").
+#
+# Request:
+#   question — free-text question about the scene's state. Sent verbatim to the
+#              VLM as the textual prompt alongside the frame.
+#   camera   — optional camera selector. Empty = the perception node's
+#              primary/default camera; otherwise one of its configured camera
+#              ids so the reasoner can choose a viewpoint. NOT a hardcoded name.
+#
+# Response:
+#   ok      — true iff the VLM produced an answer (a frame was available and the
+#             sidecar responded). False on no-frame / sidecar error.
+#   camera  — the camera id actually queried (echoes the resolved default).
+#   answer  — the VLM's free-text answer when ok; empty string otherwise.
+
+string question
+string camera
+---
+bool ok
+string camera
+string answer

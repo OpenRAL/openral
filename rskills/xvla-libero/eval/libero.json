@@ -1,0 +1,55 @@
+{
+  "_comment": "LIBERO eval results for lerobot/xvla-libero (xVLA). Status: pending local verification. Numbers will be filled in after a reproduction run using lerobot-eval. Do NOT add numbers without a locally-verified eval run or a precise paper citation with table reference.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "TBD",
+    "model_variant": "xVLA",
+    "checkpoint": "lerobot/xvla-libero",
+    "evaluated_by": "TBD",
+    "reproduced_locally": false,
+    "reproduction_planned": "Pending \u2014 requires checkpoint inspection for camera/state spec before running lerobot-eval.",
+    "reproduction_cli": {
+      "description": "Re-run this benchmark inside the OpenRAL repo. ADR-0009 PR D: openral benchmark run is the canonical producer of RSkillEvalResult JSONs with reproduced_locally=true.",
+      "command": "openral benchmark run --suite libero_spatial --rskill xvla-libero",
+      "status": "in-tree (libero_spatial); xvla on LIBERO is paper-quoted until a contributor runs the full suite locally",
+      "notes": [
+        "The 'results' block on this file is still the paper snapshot (reproduced_locally=false); re-running the command above and overwriting the file with its output flips that flag.",
+        "Camera key names and state dim must be verified against the checkpoint config before running.",
+        "xVLA architecture details (action chunk size, flow-matching steps if any) TBD."
+      ]
+    },
+    "status": "pending"
+  },
+  "benchmark": {
+    "name": "LIBERO",
+    "dataset": "physical-intelligence/libero",
+    "protocol": "10 trials per task, binary success, multi-task training",
+    "tasks_per_suite": 10,
+    "suites": [
+      "spatial",
+      "object",
+      "goal",
+      "long"
+    ],
+    "total_tasks": 40,
+    "robot": "Franka Panda (7-DOF)",
+    "simulator": "LIBERO (MuJoCo-based)"
+  },
+  "eval_config": {
+    "action_chunk_size": "TBD",
+    "image_size": "TBD",
+    "cameras": "TBD",
+    "state_dim": "TBD",
+    "inference_mode": "TBD"
+  },
+  "results": {
+    "status": "pending",
+    "source": "upstream_paper_pending",
+    "libero_spatial": null,
+    "libero_object": null,
+    "libero_goal": null,
+    "libero_long": null,
+    "libero_avg": null,
+    "note": "Fill in after running lerobot-eval with the xVLA checkpoint, or after extracting values from an upstream publication with exact table reference."
+  }
+}

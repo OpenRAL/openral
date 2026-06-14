@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JointType",
+  "description": "Kinematic joint type following URDF conventions.",
+  "type": "string",
+  "enum": [
+    "revolute",
+    "prismatic",
+    "continuous",
+    "fixed",
+    "floating",
+    "planar"
+  ]
+}

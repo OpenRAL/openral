@@ -1,0 +1,27 @@
+# RoboCasa PickPlaceCounterToCabinet — PandaMobile robot.
+# Not an officially benchmarked scene (no canonical published numbers).
+# Run: openral sim run --config scenes/sim/robocasa_pnp.yaml \
+#                      --rskill rskill://rskills/pi05-robocasa365-human300-nf4
+# Setup: just sync --all-packages --group robocasa
+
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  observation_height: 128
+  observation_width: 128
+  cameras: ["camera1", "camera2", "camera3"]
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    horizon: 600
+
+task:
+  id: robocasa/PickPlaceCounterToCabinet/0
+  scene_id: robocasa/PickPlaceCounterToCabinet
+  instruction: "pick the object from the counter and place it into the cabinet"
+  success_key: is_success
+  # max_steps: not enforced
+
+seed: 1

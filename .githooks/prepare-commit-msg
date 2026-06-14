@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Auto-append a DCO `Signed-off-by:` trailer to commits that lack one, so the
+# `Verify Signed-off-by` CI (.github/workflows/dco.yml) passes without anyone
+# having to remember `git commit -s`. Opt-in: enabled by `just install-hooks`
+# (which points core.hooksPath at .githooks/).
+#
+# Signing off certifies the Developer Certificate of Origin (CONTRIBUTING.md):
+# you wrote the change, or otherwise have the right to submit it under the
+# project's license. Installing this hook is your standing affirmation of that.
+#
+# prepare-commit-msg args: $1 = message file, $2 = source, $3 = sha.
+set -euo pipefail
+
+msg_file="$1"
+source_type="${2:-}"
+
+# Never touch merge / squash messages — they aren't a single authored change.
+case "$source_type" in
+    merge|squash) exit 0 ;;
+esac
+
+name="$(git config user.name || true)"
+email="$(git config user.email || true)"
+if [ -z "$name" ] || [ -z "$email" ]; then
+    # No identity configured — let the commit proceed; CI will flag it with a
+    # clear message rather than us guessing a sign-off.
+    exit 0
+fi
+
+trailer="Signed-off-by: $name <$email>"
+
+# Idempotent: only append when this exact trailer isn't already present
+# (covers `git commit -s`, amend, and re-runs).
+if ! grep -qiF "$trailer" "$msg_file"; then
+    git interpret-trailers --if-exists doNothing \
+        --trailer "$trailer" --in-place "$msg_file"
+fi

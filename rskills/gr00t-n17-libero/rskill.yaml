@@ -1,0 +1,104 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-gr00t-n17-libero"
+version: "0.1.0"
+# NVIDIA Open Model License — GR00T N1.7 permits commercial use, unlike the
+# OneWay Noncommercial License on N1 / N1.5 / N1.6 (see ADR-0046). The loader
+# therefore does NOT block this skill in a commercial deployment.
+license: "nvidia_open_model"
+role: "s1"
+kind: "vla"
+
+# Out-of-process GR00T family (ADR-0046). The 3B policy runs in its own
+# Python 3.10 sidecar venv; openral talks to it over ZMQ + msgpack, sharing
+# the architecture of the `rldx` adapter (RLDX-1 is itself a GR00T-N1.5
+# finetune). The runtime adapter + tools/gr00t_sidecar.py land in ADR-0046
+# PR2; this manifest packages and validates the checkpoint today.
+model_family: "gr00t"
+
+embodiment_tags:
+  - "franka_panda"
+
+# LIBERO convention: agentview + wrist RGB. GR00T resizes internally; these
+# are minimum source resolutions.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+
+# Root-level repackage of nvidia/GR00T-N1.7-LIBERO's `libero_spatial/` per-suite
+# checkpoint (the upstream repo has NO root model.safetensors — its weights live
+# in a subfolder amid DeepSpeed optimizer shards, so the bare repo id resolves to
+# nothing the GR00T server can load). This OpenRAL repo bundles the inference
+# checkpoint at the repo root so the sidecar's `from_pretrained` loads it
+# directly (NF4 at load, ~3 GB VRAM). bf16 weights; the gr00t adapter NF4-
+# quantizes the Cosmos backbone on load (OPENRAL_GR00T_QUANTIZATION default nf4).
+weights_uri: "hf://OpenRAL/rskill-gr00t-n17-libero"
+
+# GR00T checkpoints carry their own normalization metadata (experiment_cfg
+# in the checkpoint) rather than lerobot PolicyProcessorPipeline JSONs, so
+# this family declares no `processors` block.
+
+# Upstream GR00T's own LIBERO eval env rotates BOTH cameras 180° before the
+# policy — see Isaac-GR00T `gr00t/eval/sim/LIBERO/libero_env.py`:
+#   "video.image":       obs["agentview_image"][::-1, ::-1]
+#   "video.wrist_image": obs["robot0_eye_in_hand_image"][::-1, ::-1]
+# so the checkpoint was trained on 180°-flipped frames (the standard LIBERO
+# convention shared by every other libero rSkill: smolvla / pi05 / act / xvla /
+# rldx1-ft-libero all set flip_180: true). Our lerobot LiberoEnv passes raw
+# robosuite frames, so the adapter must apply the flip. Without this the policy
+# saw upside-down images and scored 0/10 on libero_spatial (GPU-verified before
+# the fix); the rldx-family adapter applies it in `_pick_images` off this flag.
+image_preprocessing:
+  flip_180: true
+
+state_contract:
+  dim: 8
+
+chunk_size: 16
+latency_budget:
+  per_chunk_ms: 1500.0
+
+paper_url: "https://arxiv.org/abs/2503.14734"
+source_repo: "hf://nvidia/GR00T-N1.7-LIBERO"  # upstream provenance (libero_spatial/ subfolder)
+
+description: >
+  NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) finetuned on
+  the LIBERO benchmark, packaged for OpenRAL. 7-D LIBERO action space
+  (delta end-effector 6-DoF + gripper) over two RGB views. Runs
+  out-of-process via the GR00T ZMQ sidecar (ADR-0046). Open Model License —
+  commercial use permitted.
+
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 7
+  representation: "delta_ee_6d_plus_gripper"
+
+benchmarks:
+  libero_spatial: 0.9

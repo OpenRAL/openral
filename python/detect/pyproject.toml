@@ -1,0 +1,33 @@
+[project]
+name = "openral-detect"
+version = "0.1.0"
+description = "Hardware probing + RobotDescription assembly + skill compatibility report"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openral-core",          # reason: RobotDescription / RobotCapabilities / RSkillManifest
+    "openral-sensors",       # reason: CATALOG.build for materializing detected sensors
+    "openral-rskill",         # reason: rSkill.check_compatibility + list_installed
+    "openral-cli",           # reason: reuse autodetect.enumerate_usb_devices + scan_dds_topics
+    "openral-observability", # reason: tracing spans around each probe
+    "pydantic>=2.7",             # reason: DetectionReport / CompatibilityReport models
+    "psutil>=5.9",               # reason: network interface enumeration in probe_network
+]
+
+[project.optional-dependencies]
+nvidia = [
+    "nvidia-ml-py>=12.560",      # reason: pynvml backend for probe_gpus (no subprocess)
+]
+jetson = [
+    "jetson-stats>=4.2",         # reason: jtop backend for Jetson Orin TOPS + power mode
+]
+realsense = [
+    "pyrealsense2>=2.55",        # reason: live RealSense device enumeration (Linux x86 only)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_detect"]

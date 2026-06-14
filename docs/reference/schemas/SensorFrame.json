@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "FrameEncoding": {
+      "description": "How the bytes inside a :class:`SensorFrame` are interpreted.\n\nThe first four values are raw per-pixel layouts. ``JPEG`` / ``PNG`` are\ncompressed forms; the runner decodes lazily. ``CUDA_NV12`` and ``RAW``\nmark frames whose payload is an opaque handle (NVMM pointer, DMA-BUF fd)\n\u2014 the ``data`` field is empty and the consumer must read via ``handle``.",
+      "enum": [
+        "bgr8",
+        "rgb8",
+        "mono8",
+        "depth16",
+        "jpeg",
+        "png",
+        "cuda_nv12",
+        "raw"
+      ],
+      "title": "FrameEncoding",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A single sensor frame \u2014 metadata plus an optional inline payload.\n\nA :class:`SensorFrame` is the carrier passed from a ``SensorReader`` into\n:class:`WorldState.image_frames`. Exactly one of ``data``,\n``topic``, or ``handle`` is populated:\n\n* ``data`` carries the pixel bytes for in-process delivery and for trace\n  capture. JSON-serialized as base64 by Pydantic, so payloads round-trip\n  through ``model_dump_json`` / ``model_validate_json``.\n* ``topic`` points at a ROS 2 topic \u2014 the bytes live on the ROS 2 bus and\n  the consumer subscribes for them. This is the path the\n  ``Ros2ImageSensorReader`` uses and what :attr:`WorldState.images`\n  already carries.\n* ``handle`` is an opaque integer (e.g. CUDA NVMM pointer, DMA-BUF file\n  descriptor) \u2014 in-process only, never serialized. Set by the\n  ``GStreamerSensorReader`` when frames stay on the GPU.\n\nAttributes:\n    sensor_id: Sensor name; matches :attr:`SensorSpec.name`.\n    stamp_monotonic_ns: Capture-time monotonic timestamp in nanoseconds.\n    stamp_wall_ns: Capture-time wall-clock timestamp in nanoseconds.\n    encoding: How to interpret the bytes.\n    width: Image width in pixels.\n    height: Image height in pixels.\n    channels: Number of channels (3 for RGB/BGR, 1 for MONO/DEPTH).\n    data: Optional inline pixel payload (or compressed bytes for\n        ``JPEG`` / ``PNG``). Mutually exclusive with ``topic`` /\n        ``handle``.\n    topic: Optional ROS 2 topic reference. Mutually exclusive with\n        ``data`` / ``handle``.\n    handle: Optional opaque in-process handle (NVMM / DMA-BUF). Mutually\n        exclusive with ``data`` / ``topic``.\n    metadata: Free-form per-frame metadata (gain, exposure, \u2026).\n\nExample:\n    >>> SensorFrame(\n    ...     sensor_id=\"wrist_rgb\",\n    ...     stamp_monotonic_ns=1,\n    ...     stamp_wall_ns=2,\n    ...     encoding=FrameEncoding.RGB8,\n    ...     width=640,\n    ...     height=480,\n    ...     topic=\"/cameras/wrist_rgb/image_raw\",\n    ... ).channels\n    3",
+  "properties": {
+    "sensor_id": {
+      "title": "Sensor Id",
+      "type": "string"
+    },
+    "stamp_monotonic_ns": {
+      "minimum": 0,
+      "title": "Stamp Monotonic Ns",
+      "type": "integer"
+    },
+    "stamp_wall_ns": {
+      "minimum": 0,
+      "title": "Stamp Wall Ns",
+      "type": "integer"
+    },
+    "encoding": {
+      "$ref": "#/$defs/FrameEncoding"
+    },
+    "width": {
+      "exclusiveMinimum": 0,
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "exclusiveMinimum": 0,
+      "title": "Height",
+      "type": "integer"
+    },
+    "channels": {
+      "default": 3,
+      "exclusiveMinimum": 0,
+      "title": "Channels",
+      "type": "integer"
+    },
+    "data": {
+      "anyOf": [
+        {
+          "format": "binary",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Data"
+    },
+    "topic": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Topic"
+    },
+    "handle": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Handle"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "sensor_id",
+    "stamp_monotonic_ns",
+    "stamp_wall_ns",
+    "encoding",
+    "width",
+    "height"
+  ],
+  "title": "SensorFrame",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

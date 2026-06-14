@@ -1,0 +1,27 @@
+# SimplerEnv WidowX — carrot-on-plate task, SAPIEN/ManiSkill3 backend.
+# Run: openral benchmark --config scenes/benchmark/widowx_carrot_on_plate.yaml \
+#                        --rskill rskill://rskills/rldx1-ft-simpler-widowx-nf4
+# Setup: just sync --all-packages --group simpler-env
+
+robot_id: widowx
+
+scene:
+  id: simpler_env
+  backend: mujoco            # SAPIEN under the hood
+  observation_height: 480
+  observation_width: 640
+  cameras: ["camera1"]
+
+task:
+  id: simpler_env/widowx_carrot_on_plate
+  scene_id: simpler_env
+  instruction: "put the carrot on the plate"
+  success_key: is_success
+  max_steps: 400
+
+n_episodes: 200
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2405.05941"
+  honest_scope: "carrot_on_plate task. SimplerEnv reports per-task success rates."

@@ -1,0 +1,44 @@
+# ALOHA peg-insertion benchmark suite — single bimanual task.
+#
+# Mirrors the ACT paper's protocol on the gym-aloha peg-insertion env.
+# Same 50-seed protocol as aloha_transfer_cube.yaml; insertion is the
+# harder sibling (paper reports much lower success).
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename
+# stem ("aloha_insertion"). Single-task suite — one BenchmarkScene
+# replayed across 50 seeds (the runner derives
+# ``range(seed, seed + n_episodes)``). Suite-level invariants are
+# enforced by :func:`openral_core.raise_on_invalid_suite`.
+#
+# Notes: gym_aloha/AlohaInsertion-v0. ACT's published sim-insertion
+# success rate is lower than cube-transfer; see the
+# skill-act-aloha-insertion README for the rationale on the missing
+# eval/ block.
+#
+# Run:
+#   openral benchmark run --suite aloha_insertion \
+#       --rskill act-aloha-insertion
+
+- scene:
+    id: aloha_insertion
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top"]
+  task:
+    id: aloha_insertion/0
+    scene_id: aloha_insertion
+    instruction: "insert the peg into the socket"
+    max_steps: 400
+    success_key: is_success
+  robot_id: aloha_bimanual
+  n_episodes: 50
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/2304.13705"
+    display_name: "ALOHA bimanual peg insertion (gym-aloha)"
+    simulator: "gym-aloha (MuJoCo)"
+    honest_scope: >
+      50 evaluation rollouts on the single AlohaInsertion-v0 task,
+      matching the ACT paper's protocol. Harder sibling of
+      aloha_transfer_cube; the paper reports much lower sim success.

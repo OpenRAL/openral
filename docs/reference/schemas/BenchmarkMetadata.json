@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "description": "Provenance block required on every BenchmarkScene.\n\n``paper`` / ``honest_scope`` are the published-protocol citation +\na one-sentence \"what this eval actually measured\" statement.\n\n``display_name`` / ``simulator`` are optional paper-comparison\nlabels (ADR-0042) that surface into ``RSkillEvalResult.benchmark``\nwhen present \u2014 ``display_name`` becomes ``benchmark.name`` and\n``simulator`` becomes ``benchmark.simulator``. Pre-ADR-0042 these\nlived in a free-form dict on the deleted ``BenchmarkSpec``; moving\nthem per-scene keeps them with their provenance and lets the\naggregator emit identical JSON whether driven by ``run_benchmark``\n(suite) or ``run_benchmark_scene`` (single scene).",
+  "properties": {
+    "paper": {
+      "title": "Paper",
+      "type": "string"
+    },
+    "honest_scope": {
+      "title": "Honest Scope",
+      "type": "string"
+    },
+    "display_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Name"
+    },
+    "simulator": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Simulator"
+    }
+  },
+  "required": [
+    "paper",
+    "honest_scope"
+  ],
+  "title": "BenchmarkMetadata",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

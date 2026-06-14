@@ -1,0 +1,172 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Pre-quantized nf4 HF-Hub mirror of the local-converted
+# `robocasa/robocasa365_checkpoints/pi05_pretrain_human300` checkpoint.
+# Produced by:
+#
+#   HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
+#       --source outputs/run_artifacts/r365_pi05_ckpt_lerobot \
+#       --target OpenRAL/rskill-pi05-robocasa365-human300-nf4 \
+#       --policy-class lerobot.policies.pi05.modeling_pi05.PI05Policy
+#
+# The HF-backed variant ships the *already-packed* nf4 state dict plus
+# a `quantization_metadata.json` sentinel. The pi05 adapter detects the
+# sentinel, meta-initialises the policy graph (~14 s instead of the
+# ~137 s `from_pretrained` walk), overlays the prequant state via
+# `install_prequantized_linears`, and skips the bf16->nf4 conversion
+# entirely. Warm-up drops to ~20 s on a 4070-mobile.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-robocasa365-human300-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "panda_mobile"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 128
+    min_height: 128
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 128
+    min_height: 128
+
+# Output side (ADR-0013). For the canonical panda_mobile embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/panda_mobile/robot.yaml.
+# RoboCasa365 emits per-step deltas on the Franka mobile arm, not absolute targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "delta"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # ``int4`` is the OpenRAL `QuantizationDtype` enum value that
+  # matches bitsandbytes nf4. The exact bnb scheme (nf4 + compute_dtype
+  # bf16, applied to every Linear with >=4M weight elements) is recorded
+  # in the upstream `quantization_metadata.json` sentinel that the pi05
+  # adapter probes via `detect_prequantized_nf4`.
+  dtype: "int4"
+  backend: "pytorch"
+weights_uri: "hf://OpenRAL/rskill-pi05-robocasa365-human300-nf4"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-robocasa365-human300-nf4/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-robocasa365-human300-nf4/policy_postprocessor.json"
+# The RoboCasa365 Human-300 finetune wants the canonical openpi-robocasa
+# preprocessing: vertical-flip BEFORE policy ingestion (mirrors
+# RoboCasaGymEnv.process_img); the three robosuite camera streams alias
+# into camera1/camera2/camera3.
+image_preprocessing:
+  flip_180: false
+  flip_vertical: true
+  aliases:
+    camera1: "robot0_agentview_left_image"
+    camera2: "robot0_agentview_right_image"
+    camera3: "robot0_eye_in_hand_image"
+state_contract:
+  layout: "human300_16d"
+  dim: 16
+  # ADR-0027 — per-robot source bindings the layout-adapter registry
+  # consumes to assemble the 16-D vector at runtime. The values below
+  # match panda_mobile's URDF (the canonical target). Other planar-base
+  # Franka deployments inherit unchanged; override per-robot only if
+  # the URDF renames panda_hand or panda_finger_joint{1,2}.
+  bindings:
+    # See rldx1-ft-rc365-nf4/rskill.yaml: ``panda_hand_tcp`` matches
+    # robosuite's ``gripper0_right_grip_site`` (the eef site the policy
+    # was trained on) within ~6 mm, whereas ``panda_hand`` is the wrist
+    # body ~9 cm above the grasp point.
+    eef_frame: "panda_hand_tcp"
+    base_frame: "base_link"
+    # See ``rldx1-ft-rc365-nf4/rskill.yaml`` for the rationale —
+    # ``odom`` is the HAL-published frame mirroring MJCF base qpos
+    # in deploy_sim and wheel-odometry on real hardware; ``map``
+    # routes through SLAM which is non-authoritative on a fresh
+    # sim boot and was producing state ~14 m off ground truth.
+    world_frame: "odom"
+    # openral's panda_mobile robot.yaml exposes the franka gripper as
+    # one parallel_gripper joint (per ADR-0028a, the MJCF two-finger
+    # mimic is collapsed to a single 1-DoF abstraction). The
+    # ``human300_16d`` assembler mirrors a single binding to ``[v, -v]``
+    # to reconstruct the 2-D training-distribution shape.
+    gripper_qpos_joints: ["panda_gripper"]
+    quaternion_convention: "xyzw"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 50
+# n_action_steps omitted — equals chunk_size (full chunk replay).
+latency_budget:
+  per_chunk_ms: 5000.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# No published benchmark numbers yet for this prequant pack; leave empty.
+
+source_repo: "hf://OpenRAL/rskill-pi05-robocasa365-human300-nf4"
+
+description: >
+  Pre-quantized nf4 mirror of the openpi-converted
+  robocasa/robocasa365_checkpoints/pi05_pretrain_human300 checkpoint
+  (PaliGemma 3.4 B, 300 atomic+composite RoboCasa365 tasks). The pi05
+  adapter detects the quantization_metadata.json sentinel and skips
+  the bf16->nf4 conversion, dropping warm-up to ~20 s on a
+  4070-mobile. Image input is vertically flipped before ingestion to
+  match openpi-robocasa eval; state is the 16-D human300 layout.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+  - "pour"
+  - "wipe"
+  - "push"
+objects: []
+scenes:
+  - "kitchen"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+# ADR-0028b — RoboCasa365 pi0.5 emits a 12-D action vector matching
+# robosuite's HybridMobileBase composite for PandaOmron. Layout
+# cross-checked against the unnormalizer per-dim stats
+# (`policy_preprocessor_step_2_normalizer_processor.safetensors`)
+# AND the live ``_action_split_indexes`` for the composite:
+#   [0:5]  arm OSC delta (xyz + axis-angle)            → composite 'right'
+#   [6]    gripper close                               → composite 'right_gripper'
+#                                                        (std=0.99 in training — actively used)
+#   [7:9]  base velocity (forward, side, yaw)          → composite 'base'
+#                                                        (stds 0.23 / 0.19 / 0.15 — actively used)
+#   [10]   torso placeholder                           → composite 'torso'
+#                                                        (std=0 in training; safe to discard)
+#   [11]   composite mode flag (-1=manipulate, +1=nav) → HAL hardcodes -1
+# ADR-0028d — slot 7-9 is now a JOINT_VELOCITY chunk that the
+# panda_mobile HAL routes to the composite 'base' part directly. The
+# previous `[7] discard + [8,10] body_twist` layout shifted base
+# channels by one dim AND went through the BODY_TWIST velocity-vs-delta
+# misinterpretation, which is why pi05 used to "pick the bread but then
+# move its base randomly".
+action_contract:
+  dim: 12
+  slots:
+    - {range: [0, 5],   control_mode: "cartesian_delta",  ee: "panda_hand",    frame: "panda_link0"}
+    - {range: [6, 6],   control_mode: "gripper_position", ee: "panda_gripper"}
+    - {range: [7, 9],   control_mode: "joint_velocity",   joint_names: ["base_x", "base_y", "base_yaw"]}
+    - {range: [10, 10], discard: true}
+    - {range: [11, 11], control_mode: "composite_mode"}   # HybridMobileBase mux flag (ADR-0028d)

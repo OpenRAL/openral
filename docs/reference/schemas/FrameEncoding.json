@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FrameEncoding",
+  "description": "How the bytes inside a :class:`SensorFrame` are interpreted.",
+  "type": "string",
+  "enum": [
+    "bgr8",
+    "rgb8",
+    "mono8",
+    "depth16",
+    "jpeg",
+    "png",
+    "cuda_nv12",
+    "raw"
+  ]
+}

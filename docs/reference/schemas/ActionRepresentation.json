@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionRepresentation",
+  "description": "Action vector representation format.",
+  "type": "string",
+  "enum": [
+    "joint_positions",
+    "joint_velocities",
+    "delta_ee_6d_plus_gripper",
+    "delta_ee_6d",
+    "cartesian_pose"
+  ]
+}

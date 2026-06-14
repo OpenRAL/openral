@@ -1,0 +1,31 @@
+[project]
+name = "openral-cli"
+version = "0.1.0"
+description = "OpenRAL command-line tool"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "openral-core",   # reason: robot schemas for doctor / detect output
+    "openral-detect", # reason: detect_hardware + assemble_robot_description for `openral detect`
+    "openral-sim",   # reason: `openral sim run` mounts openral_sim.cli.sim_app onto the openral tree
+    "openral-observability[dashboard]", # reason: configure OTel tracing + log bridge at CLI entry; [dashboard] adds FastAPI+uvicorn for `openral dashboard`
+    "openral-sensors", # reason: RealSense launch generator + calibrate_camera_cmd
+    "openral-rskill",  # reason: rSkill loader for 'openral rskill install' / 'openral rskill list'
+    "typer>=0.12",        # reason: CLI framework
+    "rich>=13.7",         # reason: terminal formatting
+    "pyudev>=0.24.4",
+]
+
+[project.scripts]
+# Canonical (and only) entry point — `openral`. With no arguments it drops
+# into an interactive REPL (`openral>` prompt) where subcommands run bare
+# (`sim run --config …`). With arguments it behaves as a one-shot CLI for
+# scripts and CI. See ADR-0021.
+openral = "openral_cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openral_cli"]

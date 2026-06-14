@@ -1,0 +1,105 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/act_aloha_sim_transfer_cube_human (MIT)
+# Paper: Zhao et al., 2023 — Action Chunking Transformer.
+#
+# LEGACY PROCESSOR PATH: this checkpoint pre-dates lerobot's
+# PolicyProcessorPipeline migration and ships its norm stats inside
+# model.safetensors. The schema's processors block is therefore omitted;
+# the ACT adapter dispatches on manifest.processors is None and falls
+# back to the snapshot_download + _try_load_act_norm_stats path. Migrating
+# to per-file URIs would require re-publishing the upstream checkpoint
+# and is tracked as a follow-up.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-act-aloha"
+version: "0.1.0"
+license: "mit"
+role: "s1"
+kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "act"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# Bimanual ALOHA (2 × 7-DoF arms = 14-DoF action space). Used by
+# tests/sim/test_aloha_bimanual_act_aloha.py (gym-aloha MuJoCo).
+embodiment_tags:
+  - "aloha"
+
+# ACT for ALOHA cube-transfer ships with a single top-down 480×640 RGB stream.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.top"
+    min_width: 640
+    min_height: 480
+
+# Output side (ADR-0013). For the canonical aloha bimanual embodiment the
+# loader auto-fills n_dof (14) + vla_action_key from
+# robots/aloha_bimanual/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "hf://lerobot/act_aloha_sim_transfer_cube_human"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# processors omitted — legacy path; norm stats live inside model.safetensors.
+# ACT manages its own preprocessing / state contract inside the lerobot
+# ACTPolicy so nothing else needs to move.
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 100
+# n_action_steps omitted — ACT default is 1 (per-step re-inference +
+# temporal ensembling, paper-faithful).
+latency_budget:
+  # Reference-host measurement (RTX 4070 Laptop, CUDA 12.8, PyTorch 2.10)
+  # of the warm full-chunk inference is 16 ms; bf16 autocast is ~12 ms.
+  # We pin per_chunk_ms to 25 ms to keep the canonical
+  # "tolerance_pct=100 → 2× ceiling" pattern (giving a 50 ms test ceiling,
+  # matching the previous _WARM_CHUNK_CEILING_S = 0.050).
+  per_chunk_ms: 25.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline success rate from skills/act-aloha/eval/aloha_transfer_cube.json
+# (50 episodes via `openral benchmark run`).
+benchmarks:
+  aloha_transfer_cube: 0.82
+
+paper_url: "https://arxiv.org/abs/2304.13705"
+source_repo: "hf://lerobot/act_aloha_sim_transfer_cube_human"
+
+description: >
+  Action Chunking Transformer (~52M-param encoder-decoder) finetuned on
+  the ALOHA bimanual cube-transfer demonstration set. Action chunks of
+  length 100. The published checkpoint predates lerobot's
+  PolicyProcessorPipeline migration and ships without normalisation
+  buffers — see tests/sim/test_aloha_bimanual_act_aloha.py for the
+  resulting numerical-contract caveats.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "transfer"
+  - "pick"
+  - "place"
+objects:
+  - "cube"
+scenes:
+  - "tabletop"
+
+# ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 14
+
+# ADR-0019 — per-checkpoint state contract.
+state_contract:
+  dim: 14

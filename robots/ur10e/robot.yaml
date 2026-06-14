@@ -1,0 +1,195 @@
+# RobotDescription — Universal Robots UR10e (real hardware via ur_robot_driver).
+#
+# This manifest is the production / real-HW entry point: sdk_kind: closed,
+# hal.real: openral_hal.ur_real:UR10eRealHAL. It mirrors
+# UR10e_REAL_DESCRIPTION in python/hal/src/openral_hal/ur_real.py — drift
+# guarded by tests/unit/test_robot_manifests_match_hal_constants.py.
+#
+# A separate sim-only entry point (UR10e_DESCRIPTION /
+# openral_hal.ur:UR10eHAL, MuJoCo-backed) lives in
+# python/hal/src/openral_hal/ur.py:188. The two arms share kinematic
+# structure (6-DoF revolute, identical joint naming) but differ in payload,
+# reach, and per-joint velocity / effort limits.
+#
+# Joint limits, velocities, and torques are taken from the UR10e datasheet:
+# https://www.universal-robots.com/products/ur10e/
+# Velocities are slower on the shoulder/lift joints (120°/s = 2.094 rad/s)
+# because the larger inertia of the UR10e caps the safe slew rate.
+#
+# License posture (CLAUDE.md §7.4): same as the UR5e manifest — ur_robot_driver
+# is BSD-3 (open); the closed sdk_kind flags the runtime dependency on real
+# UR hardware + the URCap "external_control" program on the teach pendant.
+
+name: "ur10e"
+embodiment_kind: "manipulator"
+base_frame: "ur10e_base_link"
+
+# ADR-0027 — robot_state_publisher wiring. Same pattern as ur5e — the
+# upstream UR URDF root is ``base_link``; we bridge to our namespaced
+# ``ur10e_base_link`` via a static transform.
+urdf_path: "robot_descriptions:ur10e_description"
+# Self-collision ACM source for the offline lowering tool (ADR-0030): the
+# UR MoveIt SRDF (ros-industrial). Regenerate via
+# `openral collision lower --robot robots/ur10e/robot.yaml --write`.
+srdf_path: "robots/ur10e/ur10e.srdf"
+urdf_root_frame: "base_link"
+static_base_to_urdf_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+joints:
+  - name: "shoulder_pan_joint"
+    origin_xyz: [0, 0, 0.1807]
+    origin_rpy: [0, 0, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "shoulder_link"
+    position_limits: [-6.283185307179586, 6.283185307179586]
+    velocity_limit: 2.094                  # 120°/s
+    effort_limit: 330.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "shoulder_lift_joint"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "shoulder_link"
+    child_link: "upper_arm_link"
+    position_limits: [-6.283185307179586, 6.283185307179586]
+    velocity_limit: 2.094
+    effort_limit: 330.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "elbow_joint"
+    origin_xyz: [-0.6127, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "upper_arm_link"
+    child_link: "forearm_link"
+    position_limits: [-3.141592653589793, 3.141592653589793]
+    velocity_limit: 3.142                  # 180°/s
+    effort_limit: 150.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "wrist_1_joint"
+    origin_xyz: [-0.57155, 0, 0.17415]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "forearm_link"
+    child_link: "wrist_1_link"
+    position_limits: [-6.283185307179586, 6.283185307179586]
+    velocity_limit: 3.141592653589793
+    effort_limit: 56.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "wrist_2_joint"
+    origin_xyz: [0, -0.11985, 0]
+    origin_rpy: [1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "wrist_1_link"
+    child_link: "wrist_2_link"
+    position_limits: [-6.283185307179586, 6.283185307179586]
+    velocity_limit: 3.141592653589793
+    effort_limit: 56.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+  - name: "wrist_3_joint"
+    origin_xyz: [0, 0.11655, 0]
+    origin_rpy: [-1.5707963, 0, 0]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "wrist_2_link"
+    child_link: "wrist_3_link"
+    position_limits: [-6.283185307179586, 6.283185307179586]
+    velocity_limit: 3.141592653589793
+    effort_limit: 56.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+
+end_effectors:
+  - name: "tool0"
+    kind: "tool"
+    n_dof: 0
+    max_payload_kg: 12.5
+    workspace_radius_m: 1.30
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 12.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["ur10e"]
+  embodiment_tags:
+    - "ur10e"
+    - "ur"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 330.0
+  max_torque_nm: 330.0
+  deadman_required: true
+
+sdk_kind: "closed"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+hal:
+  sim: "openral_hal.ur:UR10eHAL"
+  real: "openral_hal.ur_real:UR10eRealHAL"
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
+# for the sim baseline.  Source: ``universal_robots_ur10e/ur10e.xml`` in
+# mujoco_menagerie.  Default 1:1 mapping applies (no gripper).
+# See ADR-0023.
+sim:
+  mjcf_uri: "robot_descriptions:ur10e_mj_description"
+
+onboard_compute:
+  driver_license: "BSD-3-Clause"             # ur_robot_driver
+  driver_repo: "https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver"
+  controller_name: "scaled_joint_trajectory_controller"
+  command_topic: "/scaled_joint_trajectory_controller/joint_trajectory"
+  joint_state_topic: "/joint_states"
+  safety_mode_topic: "/io_and_status_controller/safety_mode"
+  urcap_program: "external_control"
+
+# GENERATED by `openral collision lower` — do not hand-edit.
+collision_geometry:
+  - link_name: "shoulder_link"
+    shape: { shape: "capsule", radius_m: 0.1613, length_m: 0.2090 }
+    origin_xyz_rpy: [-0.0264, -0.0168, 0.0483, 1.9643, -0.7198, -1.0265]
+  - link_name: "upper_arm_link"
+    shape: { shape: "capsule", radius_m: 0.1581, length_m: 0.7503 }
+    origin_xyz_rpy: [-0.2994, 0.0000, 0.2221, -3.1329, -1.5311, 3.1325]
+  - link_name: "forearm_link"
+    shape: { shape: "capsule", radius_m: 0.0997, length_m: 0.6788 }
+    origin_xyz_rpy: [-0.2780, -0.0001, 0.0295, 3.1025, -1.5281, -3.1008]
+  - link_name: "wrist_1_link"
+    shape: { shape: "capsule", radius_m: 0.0816, length_m: 0.1318 }
+    origin_xyz_rpy: [-0.0012, -0.0084, -0.0029, -1.3456, 0.0200, -0.0160]
+  - link_name: "wrist_2_link"
+    shape: { shape: "capsule", radius_m: 0.0716, length_m: 0.1265 }
+    origin_xyz_rpy: [0.0007, 0.0094, 0.0006, -1.6841, -0.0087, 0.0098]
+  - link_name: "wrist_3_link"
+    shape: { shape: "capsule", radius_m: 0.0561, length_m: 0.0997 }
+    origin_xyz_rpy: [0.0007, -0.0036, -0.0158, 1.6662, 0.0052, 0.0057]
+
+# GENERATED by `openral collision lower` (source: srdf) — do not hand-edit.
+allowed_collision_pairs:
+  - [forearm_link, upper_arm_link]
+  - [forearm_link, wrist_1_link]
+  - [shoulder_link, upper_arm_link]
+  - [shoulder_link, wrist_1_link]
+  - [shoulder_link, wrist_2_link]
+  - [wrist_1_link, wrist_2_link]
+  - [wrist_1_link, wrist_3_link]
+  - [wrist_2_link, wrist_3_link]

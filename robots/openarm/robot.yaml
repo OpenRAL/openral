@@ -1,0 +1,512 @@
+# RobotDescription — Enactic OpenArm v2 bimanual arm (sim baseline).
+#
+# This manifest mirrors `OPENARM_DESCRIPTION` in
+# python/hal/src/openral_hal/openarm.py (drift guarded by
+# tests/unit/test_robot_manifests_match_hal_constants.py).
+#
+# Joint limits + per-joint kp/kv (in the MJCF) + symmetric finger
+# gains come from the upstream `enactic/openarm_mujoco` v2 bimanual
+# MJCF — see PR #19 on master.  v2 dropped v1's
+# software-PD-on-top-of-torque-motors complexity in favour of
+# native <position> actuators with per-class PD gains
+# (DM8009: kp=230 kv=2.7; DM4340: kp=190 kv=2.2; DM4310: kp=30 kv=1.5;
+# fingers: kp=30 kv=0.2), proper ctrlrange / forcerange, and a
+# single driven finger per side (the follower finger tracks via an
+# <equality> constraint inside the MJCF).
+#
+# The HAL fetches the v2 MJCF lazily via
+# `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` because
+# the `robot_descriptions` package still pins to a pre-v2 commit;
+# the helper can be removed once upstream bumps.
+#
+# A real-HW HAL wrapping lerobot's upstream OpenArm driver (see
+# huggingface.co/docs/lerobot/openarm) is a planned follow-up; both
+# share this manifest.
+
+name: "openarm_v2"
+embodiment_kind: "bimanual"
+base_frame: "openarm_base"
+
+# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# Upstream URDF + xacro live at github.com/enactic/openarm_description
+# (single-arm) and github.com/reazon-research/openarm_ros2
+# (bimanual bringup); both require xacro processing at launch time
+# which sim_e2e.launch.py does not yet support. The
+# `robot_descriptions` Python package ships only
+# `openarm_v1_mj_description` (MJCF). Wire one of these once a
+# wrapped-task-space VLA targets openarm.
+
+joints:
+  # ── Left arm (7 revolute) ─────────────────────────────────────────
+  - name: "left_joint1"
+    origin_xyz: [0, 0.0625, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link0"
+    child_link: "openarm_left_link1"
+    position_limits: [-3.49066, 1.39626]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint1"
+  - name: "left_joint2"
+    origin_xyz: [0, 0.06, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link1"
+    child_link: "openarm_left_link2"
+    position_limits: [-3.31613, 0.174533]
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint2"
+  - name: "left_joint3"
+    origin_xyz: [0, 0, -0.06625]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link2"
+    child_link: "openarm_left_link3"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint3"
+  - name: "left_joint4"
+    origin_xyz: [0, 0, -0.15375]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link3"
+    child_link: "openarm_left_link4"
+    position_limits: [0.0, 2.44346]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint4"
+  - name: "left_joint5"
+    origin_xyz: [0, 0, -0.0955]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link4"
+    child_link: "openarm_left_link5"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint5"
+  - name: "left_joint6"
+    origin_xyz: [0, 0, -0.1205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link5"
+    child_link: "openarm_left_link6"
+    position_limits: [-0.785398, 0.785398]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint6"
+  - name: "left_joint7"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_left_link6"
+    child_link: "openarm_left_link7"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_left_joint7"
+  # ── Left gripper (1 revolute) — v2 grippers are hinge joints ─────
+  - name: "left_gripper"
+    joint_type: "revolute"
+    parent_link: "openarm_left_link7"
+    child_link: "openarm_left_finger_pair"
+    position_limits: [0.0, 0.7854]
+    velocity_limit: 4.0
+    effort_limit: 333.0
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+  # ── Right arm (7 revolute) ────────────────────────────────────────
+  - name: "right_joint1"
+    origin_xyz: [0, -0.0625, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link0"
+    child_link: "openarm_right_link1"
+    position_limits: [-1.39626, 3.49066]   # mirrored vs left
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint1"
+  - name: "right_joint2"
+    origin_xyz: [0, -0.06, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [-1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link1"
+    child_link: "openarm_right_link2"
+    position_limits: [-0.174533, 3.31613]   # mirrored vs left
+    velocity_limit: 4.0
+    effort_limit: 40.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint2"
+  - name: "right_joint3"
+    origin_xyz: [0, 0, -0.06625]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link2"
+    child_link: "openarm_right_link3"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint3"
+  - name: "right_joint4"
+    origin_xyz: [0, 0, -0.15375]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, -1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link3"
+    child_link: "openarm_right_link4"
+    position_limits: [0.0, 2.44346]
+    velocity_limit: 4.0
+    effort_limit: 27.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint4"
+  - name: "right_joint5"
+    origin_xyz: [0, 0, -0.0955]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 0, -1]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link4"
+    child_link: "openarm_right_link5"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint5"
+  - name: "right_joint6"
+    origin_xyz: [0, 0, -0.1205]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [0, 1, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link5"
+    child_link: "openarm_right_link6"
+    position_limits: [-0.785398, 0.785398]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint6"
+  - name: "right_joint7"
+    origin_xyz: [0, 0, 0]
+    origin_rpy: [0, 0, 0]
+    axis_xyz: [1, 0, 0]
+    joint_type: "revolute"
+    parent_link: "openarm_right_link6"
+    child_link: "openarm_right_link7"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 4.0
+    effort_limit: 7.0
+    has_torque_sensor: true
+    actuator_kind: "bldc"
+    sim_joint_name: "openarm_right_joint7"
+  # ── Right gripper (1 revolute) — mirrored range vs left ──────────
+  - name: "right_gripper"
+    joint_type: "revolute"
+    parent_link: "openarm_right_link7"
+    child_link: "openarm_right_finger_pair"
+    position_limits: [-0.7854, 0.0]
+    velocity_limit: 4.0
+    effort_limit: 333.0
+    has_torque_sensor: false
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "left_gripper"
+    kind: "parallel_gripper"
+    hand: "left"
+    n_dof: 1
+    max_grip_force_n: 333.0
+    max_payload_kg: 2.0
+    workspace_radius_m: 0.7
+  - name: "right_gripper"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 333.0
+    max_payload_kg: 2.0
+    workspace_radius_m: 0.7
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 2.0
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: false
+  has_lidar: false
+  has_audio: false
+  bimanual: true
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments:
+    - "openarm_v2"
+    - "openarm"
+  embodiment_tags:
+    - "openarm"
+    - "openarm_v2"
+    - "enactic"
+    - "bimanual"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  max_force_n: 40.0
+  max_torque_nm: 40.0
+  deadman_required: true
+
+# `sdk_kind: open` — both the upstream enactic/openarm_mujoco MJCF and
+# the LeRobot OpenArm driver are open-source.  A future
+# `OpenArmRealHAL` wrapping lerobot will keep `sdk_kind: open` and
+# set `hal.real` to the real adapter.
+sdk_kind: "open"
+# ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Sim-only today → real: null until the lerobot OpenArm driver wrapper lands.
+hal:
+  sim: "openral_hal.openarm:OpenArmMujocoHAL"
+  real: null
+  # issue #191 Phase 3b — OpenArmMujocoHAL construction kwargs, threaded by
+  # build_hal so the manifest-driven node needs no bespoke ROS params.
+  parameters:
+    defaults:
+      settle_steps: 4
+      gravity_enabled: false
+      staleness_limit_s: 0.5
+
+# Cameras declared by the openarm_tabletop_pnp MJCF scene. The HAL's
+# offscreen renderer publishes each to /openral/cameras/<name>/image
+# and the WorldStateAggregator forwards them onto observation.images.
+# These three SensorSpecs satisfy the pi05-openarm rskill's
+# ``sensors_required`` entries (``observation.images.{base,left_wrist,
+# right_wrist}``) at the eval capability gate. ``base`` is an alias of
+# the global ``top`` view (renamed in the rskill manifest's
+# ``image_preprocessing.aliases``).
+sensors:
+  - name: "base"
+    modality: "rgb"
+    frame_id: "world"
+    # The MJCF overview camera is named "top"; the sensor / VLA feature key is
+    # "base". issue #191 Phase 3b — read_images renders sim_camera_name.
+    sim_camera_name: "top"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 640.0
+      fy: 640.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.base"
+    vendor: "sim"
+    model: "mujoco_top"
+  - name: "left_wrist"
+    modality: "rgb"
+    frame_id: "openarm_left_ee_base_link"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 640.0
+      fy: 640.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.left_wrist"
+    vendor: "sim"
+    model: "mujoco_wrist"
+  - name: "right_wrist"
+    modality: "rgb"
+    frame_id: "openarm_right_ee_base_link"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 640.0
+      fy: 640.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.right_wrist"
+    vendor: "sim"
+    model: "mujoco_wrist"
+
+# MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
+# Source: ``enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`` fetched
+# lazily by ``openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf``
+# (drops out when ``robot_descriptions`` bumps its pin past v2).
+# Layout: 7 arm + 1 driver-finger per side = 16 actuators, but 18 qpos
+# (each side has a passive follower finger at qpos 8 / 17 — we skip
+# those, the MJCF's <equality> constraint keeps the follower in sync).
+# OpenArm v2 ships <position> actuators with per-class PD gains, so
+# ``seed_ctrl_from_qpos=true`` is required: the actuators must hold the
+# initial pose on the first ``mj_step`` or they'll drive every joint to
+# ``ctrl == 0``.  See ADR-0023.
+sim:
+  mjcf_uri: "openarm_v2:bimanual"
+  joint_qpos_addr:
+    left_joint1: 0
+    left_joint2: 1
+    left_joint3: 2
+    left_joint4: 3
+    left_joint5: 4
+    left_joint6: 5
+    left_joint7: 6
+    left_gripper: 7          # qpos 8 is the left follower finger (passive)
+    right_joint1: 9
+    right_joint2: 10
+    right_joint3: 11
+    right_joint4: 12
+    right_joint5: 13
+    right_joint6: 14
+    right_joint7: 15
+    right_gripper: 16        # qpos 17 is the right follower finger (passive)
+  grippers:
+    - joint: "left_gripper"
+      ctrl_range: [0.0, 0.7854]
+      qpos_addrs: [7]
+      qpos_scale: 0.7854
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+    - joint: "right_gripper"
+      ctrl_range: [-0.7854, 0.0]
+      qpos_addrs: [16]
+      qpos_scale: 0.7854
+      read_mode: "passthrough"
+      write_mode: "passthrough"
+  seed_ctrl_from_qpos: true
+
+# Per-robot scene rendering defaults (openral-core 0.3.0).
+# Consumed by the ``openarm_tabletop_pnp`` MJCF composer
+# (``openral_sim.backends.openarm_robosuite._assets``) when the
+# SceneEnvironment YAML does not override ``scene.backend_options.top_camera_*``.
+# The placement matches the ``mddoai/openarm_2026-05-14_clean`` dataset
+# POV (camera between the two robot bases, looking forward + down at the
+# tabletop) so the OpenRAL/rskill-pi05-openarm-vision-nf4 rollout
+# inherits its training-distribution viewpoint by default. Backend
+# overrides still win — this block is the *default*.
+scene_defaults:
+  top_camera:
+    pos: [0.20, 0.0, 0.95]
+    target: [0.65, 0.0, 0.05]
+    fovy: 65.0
+  # issue #191 Phase 3b — declarative MJCF scene composition. The manifest-driven
+  # node calls this composer before building the HAL and threads the resulting
+  # tabletop MJCF (arm + table + cubes + drawer) in as the HAL's mjcf_path,
+  # replacing the bespoke openarm node's _create_hal splicing.
+  composition:
+    composer: "openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf"
+    params:
+      strip_actuators: false
+      robot_lift_z: 0.36
+      robot_forward_x: 0.20
+      white_background: true
+
+# ADR-0030 — geometric safety. Conservative capsule/sphere bounds per arm
+# link plus the self-collision allowed-collision matrix (adjacent links touch
+# by design). Hand-authored here as the real fixture; on a production robot
+# the offline lowering tool would emit this from the MJCF (which already
+# carries capsule geoms + contype/conaffinity exclusions). ``joints`` stays
+# normative for the kinematic chain — this block adds geometry only.
+collision_geometry:
+  # Left arm — 7 links as capsules along the link's local +Z, plus the
+  # gripper finger pair as a sphere.
+  - link_name: "openarm_left_link1"
+    shape: { shape: "capsule", radius_m: 0.05, length_m: 0.10 }
+    origin_xyz_rpy: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link2"
+    shape: { shape: "capsule", radius_m: 0.045, length_m: 0.12 }
+    origin_xyz_rpy: [0.0, 0.0, 0.06, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link3"
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.22 }
+    origin_xyz_rpy: [0.0, 0.0, 0.11, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link4"
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.12 }
+    origin_xyz_rpy: [0.0, 0.0, 0.06, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link5"
+    shape: { shape: "capsule", radius_m: 0.035, length_m: 0.20 }
+    origin_xyz_rpy: [0.0, 0.0, 0.10, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link6"
+    shape: { shape: "capsule", radius_m: 0.035, length_m: 0.08 }
+    origin_xyz_rpy: [0.0, 0.0, 0.04, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_link7"
+    shape: { shape: "capsule", radius_m: 0.03, length_m: 0.06 }
+    origin_xyz_rpy: [0.0, 0.0, 0.03, 0.0, 0.0, 0.0]
+  - link_name: "openarm_left_finger_pair"
+    shape: { shape: "sphere", radius_m: 0.05 }
+    origin_xyz_rpy: [0.0, 0.0, 0.04, 0.0, 0.0, 0.0]
+  # Right arm — mirror of the left.
+  - link_name: "openarm_right_link1"
+    shape: { shape: "capsule", radius_m: 0.05, length_m: 0.10 }
+    origin_xyz_rpy: [0.0, 0.0, 0.05, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link2"
+    shape: { shape: "capsule", radius_m: 0.045, length_m: 0.12 }
+    origin_xyz_rpy: [0.0, 0.0, 0.06, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link3"
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.22 }
+    origin_xyz_rpy: [0.0, 0.0, 0.11, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link4"
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.12 }
+    origin_xyz_rpy: [0.0, 0.0, 0.06, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link5"
+    shape: { shape: "capsule", radius_m: 0.035, length_m: 0.20 }
+    origin_xyz_rpy: [0.0, 0.0, 0.10, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link6"
+    shape: { shape: "capsule", radius_m: 0.035, length_m: 0.08 }
+    origin_xyz_rpy: [0.0, 0.0, 0.04, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_link7"
+    shape: { shape: "capsule", radius_m: 0.03, length_m: 0.06 }
+    origin_xyz_rpy: [0.0, 0.0, 0.03, 0.0, 0.0, 0.0]
+  - link_name: "openarm_right_finger_pair"
+    shape: { shape: "sphere", radius_m: 0.05 }
+    origin_xyz_rpy: [0.0, 0.0, 0.04, 0.0, 0.0, 0.0]
+
+# GENERATED by `openral collision lower` (source: mjcf) — do not hand-edit.
+allowed_collision_pairs:
+  - [openarm_left_link1, openarm_left_link2]
+  - [openarm_left_link1, openarm_left_link3]
+  - [openarm_left_link2, openarm_left_link3]
+  - [openarm_left_link3, openarm_left_link4]
+  - [openarm_left_link4, openarm_left_link5]
+  - [openarm_left_link5, openarm_left_link6]
+  - [openarm_left_link6, openarm_left_link7]
+  - [openarm_right_link1, openarm_right_link2]
+  - [openarm_right_link1, openarm_right_link3]
+  - [openarm_right_link2, openarm_right_link3]
+  - [openarm_right_link3, openarm_right_link4]
+  - [openarm_right_link4, openarm_right_link5]
+  - [openarm_right_link5, openarm_right_link6]
+  - [openarm_right_link6, openarm_right_link7]
