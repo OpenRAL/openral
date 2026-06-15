@@ -6,9 +6,12 @@
 A single `ament_cmake` ROS 2 package (Python node) that subscribes a
 camera `sensor_msgs/Image`, runs the GStreamer-free
 [`openral_runner.backends.gstreamer.objects_detector.ObjectsDetector`](../../python/runner/src/openral_runner/backends/gstreamer/objects_detector.py)
-(RT-DETR ONNX, the `rtdetr-coco-r18` rSkill), and publishes the
+(or a manifest-driven backend — see below), and publishes the
 detections on `/openral/perception/objects` — the topic the world-state
-lifecycle node lifts to 3D in deploy-sim.
+lifecycle node lifts to 3D in deploy-sim. The deploy-sim **default** backend is
+the open-vocabulary `omdet-turbo-indoor` continuous detector (grounds arbitrary
+indoor/kitchen objects); it falls back to the fixed-label RT-DETR COCO ONNX
+(`rtdetr-coco-r18`) when the omdet deps are not installed.
 
 It exists so the perception → spatial-memory object lift (ADR-0035) can
 run against a plain ROS image topic in `openral deploy sim`, without
@@ -57,15 +60,19 @@ Not invoked directly in practice — it's wired into the generic
 argument, driven by the CLI:
 
 ```bash
-openral deploy sim --config scenes/<SceneEnvironment>.yaml --enable-object-detector
+openral deploy sim --config scenes/<SceneEnvironment>.yaml   # detector ON by default
 ```
 
-`openral deploy sim` auto-enables the detector when
-`rskills/rtdetr-coco-r18/model.onnx` is present (use
-`--no-enable-object-detector` to force it off, `--object-detector-onnx
-PATH` to override the model). The launch forwards `onnx_path`,
-`labels`, `model_id`, `input_size`, and the topics as ROS parameters on
-the node. The detection camera can render at up to 640² with
+`openral deploy sim` brings the detector up **by default** (pass
+`--no-object-detector` to turn the leg off). With no explicit override the
+default backend is the open-vocab `omdet-turbo-indoor` manifest, falling back to
+the in-tree RT-DETR COCO ONNX (`rskills/rtdetr-coco-r18/model.onnx`) when the
+omdet deps are absent; the leg auto-downgrades to off only when neither backend
+is available. Use `--object-detector-manifest PATH` to pick a specific detector
+rSkill or `--object-detector-onnx PATH` to force the fixed-label RT-DETR path.
+The launch forwards `onnx_path`/`manifest_path`, `labels`, `model_id`,
+`input_size`, and the topics as ROS parameters on the node, and throttles by the
+manifest's `DetectorEngine` (`vlm_sidecar` 0.5 Hz, `zeroshot_hf` 2 Hz, ONNX 5 Hz). The detection camera can render at up to 640² with
 resolution-consistent intrinsics so the lift scales `bbox_xyxy` to the
 intrinsics correctly.
 

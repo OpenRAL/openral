@@ -975,16 +975,19 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # path, the (VLM-ignored) onnx override, and the query.
             with pathlib.Path(object_detector_manifest).open(encoding="utf-8") as handle:
                 man = yaml.safe_load(handle) or {}
-            # The VLM is slow (~1-2 s / frame); throttle hard so the single-threaded
-            # callback doesn't back up. ONNX manifests keep the 5 Hz cap.
-            is_vlm = man.get("runtime") == "pytorch"
+            # Throttle by the detector engine so the single-threaded callback never
+            # backs up: the VLM sidecar (LocateAnything) is slow (~1-2 s / frame),
+            # the in-process OmDet-Turbo zero-shot backend is ~hundreds of ms, and
+            # the RT-DETR ONNX path is fast. ADR-0037 DetectorEngine.
+            engine = (man.get("detector") or {}).get("engine")
+            max_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(engine, 5.0)
             det_params = {
                 "image_topic": det_image_topic,
                 "sensor_id": det_camera,
                 "manifest_path": object_detector_manifest,
                 "onnx_path": object_detector_onnx,
                 "query": object_detector_query,
-                "max_rate_hz": 0.5 if is_vlm else 5.0,
+                "max_rate_hz": max_rate_hz,
             }
         else:
             rskill_yaml = pathlib.Path(_RSKILLS_DIR) / "rtdetr-coco-r18" / "rskill.yaml"
