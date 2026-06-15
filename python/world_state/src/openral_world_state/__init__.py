@@ -49,6 +49,7 @@ from openral_world_state.object_lift import (
     aabb_iou_3d,
     build_in_fov_predicate,
     decode_occupied_centers,
+    depth_cloud_to_centers_base,
     homogeneous_from_quat_xyz,
 )
 from openral_world_state.object_memory import ObjectMemory
@@ -90,6 +91,7 @@ __all__ = [
     "compute_approach_viewpoint",
     "compute_gaze_pose",
     "decode_occupied_centers",
+    "depth_cloud_to_centers_base",
     "emit_scene_objects_span",
     "homogeneous_from_quat_xyz",
     "look_at_quat_wxyz",

@@ -173,3 +173,21 @@ Key parameters: `object_lift_enabled` (master toggle, default `True`), `object_l
 
 `ObjectsLiftError(ValueError)` — raised by geometry helpers on degenerate inputs (e.g. a
 near-zero quaternion or an occupancy buffer whose byte length does not match `size_x * size_y * size_z`).
+
+## Amendment — 2026-06-15 (octomap-free depth fallback; GitHub #11)
+
+The object lift previously required an octomap voxel grid (`/openral/world_voxels`) as its depth
+source and silently dropped every detection when none was published — so with `--no-enable-octomap`
+(common in dense scenes that false-positive the kernel's octomap collision check) spatial memory
+never accumulated and `recall_object` always missed. The lift now **falls back to the depth camera
+point cloud** when no fresh voxel grid is available: `_WorldStateLifecycleNode` subscribes the
+configurable `object_depth_points_topic` (default `/openral/cameras/front_depth/points`,
+`sensor_msgs/PointCloud2`, BEST_EFFORT) and, when `_latest_voxels` is stale/absent, decodes it via
+`depth_cloud_to_centers_base` (drop non-finite returns, subsample to `object_lift_depth_max_points`
+= 4000, transform the cloud's optical frame → base frame) and feeds the result to
+`VoxelFrustumLifter.lift` as `occupied_centers_base` — interchangeable with the octomap path. The
+octomap voxel grid remains preferred when fresh (filtered, persistent). Verified live on
+`robocasa_baguette` with octomap **off**: `world_state_slow.detected_object_labels` populated and
+`recall_object` returns matches. New public symbol: `openral_world_state.depth_cloud_to_centers_base`.
+SLAM stays on-by-default for any robot that can run it (`capabilities.has_lidar`) so the `map` frame
+the lift projects through is present (deploy-sim CLI, firm default).

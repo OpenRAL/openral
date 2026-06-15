@@ -177,6 +177,15 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("object_lift_enabled", True)
             self.declare_parameter("object_detections_topic", "/openral/perception/objects")
             self.declare_parameter("object_voxels_topic", "/openral/world_voxels")
+            # ADR-0035 amendment (#11) — depth point cloud used as the lift's
+            # depth source when no octomap voxel grid is available (octomap is
+            # often disabled in dense scenes to avoid kernel false positives, yet
+            # the lift still needs depth to place a 2D box in 3D). Empty disables
+            # the fallback.
+            self.declare_parameter(
+                "object_depth_points_topic", "/openral/cameras/front_depth/points"
+            )
+            self.declare_parameter("object_lift_depth_max_points", 4000)
             self.declare_parameter("object_lift_map_frame", "map")
             self.declare_parameter("object_lift_k_nearest", 25)
             self.declare_parameter("object_lift_min_voxels", 3)
@@ -207,6 +216,11 @@ if _ROS2_AVAILABLE:
             self._memory: object | None = None
             self._latest_voxels: object | None = None
             self._voxel_stamp_ns: int = 0
+            # #11 — depth point-cloud fallback for the lift (octomap-free path).
+            self._depth_points_sub: object | None = None
+            self._latest_depth_points: object | None = None
+            self._depth_points_stamp_ns: int = 0
+            self._depth_max_points: int = 0
             self._candidate_buffer: list[object] = []
             self._seen_sensor_ids: set[str] = set()
             self._map_frame = "map"
@@ -408,9 +422,11 @@ if _ROS2_AVAILABLE:
                     self._on_voxels,
                     vox_qos,
                 )
+                depth_topic = self._setup_depth_points_fallback(det_qos)
                 self.get_logger().info(
                     f"WorldState object lift enabled (map='{self._map_frame}', "
-                    f"detections='{det_topic}', voxels='{vox_topic}')."
+                    f"detections='{det_topic}', voxels='{vox_topic}', "
+                    f"depth_fallback='{depth_topic or '(off)'}')."
                 )
             return TransitionCallbackReturn.SUCCESS
 
@@ -610,6 +626,69 @@ if _ROS2_AVAILABLE:
             self._latest_voxels = msg
             self._voxel_stamp_ns = self.get_clock().now().nanoseconds
 
+        def _setup_depth_points_fallback(self, qos: object) -> str:
+            """Subscribe the depth point cloud used as the #11 octomap-free lift source.
+
+            Returns the resolved topic (empty when the fallback is disabled).
+            """
+            from sensor_msgs.msg import PointCloud2
+
+            self._depth_max_points = (
+                self.get_parameter("object_lift_depth_max_points")
+                .get_parameter_value()
+                .integer_value
+            )
+            depth_topic = (
+                self.get_parameter("object_depth_points_topic").get_parameter_value().string_value
+            )
+            if depth_topic:
+                self._depth_points_sub = self.create_subscription(
+                    PointCloud2, depth_topic, self._on_depth_points, qos
+                )
+            return depth_topic
+
+        def _on_depth_points(self, msg: object) -> None:  # PointCloud2
+            """Store the latest depth point cloud (#11 octomap-free lift fallback)."""
+            self._latest_depth_points = msg
+            self._depth_points_stamp_ns = self.get_clock().now().nanoseconds
+
+        def _depth_centers_base(self, base_frame: str, now_ns: int) -> object | None:
+            """Depth-cloud points as ``(N, 3)`` in the base frame, or ``None``.
+
+            #11 — fallback depth source for the object lift when no octomap voxel
+            grid is published (e.g. ``--no-enable-octomap``). Decodes the latest
+            ``sensor_msgs/PointCloud2``, drops non-finite returns, subsamples to a
+            bounded count, and transforms it from the cloud's optical frame into
+            the robot base frame (where the lifter expects ``occupied_centers``).
+            Returns ``None`` on a missing/stale cloud or unavailable TF — the lift
+            then simply skips, exactly as it does without voxels.
+            """
+            from openral_world_state import depth_cloud_to_centers_base
+
+            cloud = self._latest_depth_points
+            if cloud is None:
+                return None
+            if (
+                self._voxel_staleness_ns
+                and (now_ns - self._depth_points_stamp_ns) > self._voxel_staleness_ns
+            ):
+                return None
+            try:
+                from sensor_msgs_py import point_cloud2
+
+                raw = point_cloud2.read_points_numpy(cloud, field_names=("x", "y", "z"))
+            except Exception as exc:  # decode is best-effort; never kill the callback
+                self.get_logger().debug(f"depth cloud decode failed: {exc}")
+                return None
+            cloud_frame = str(getattr(cloud.header, "frame_id", "") or "")  # type: ignore[attr-defined]
+            t_base_from_cloud = self._lookup_4x4(base_frame, cloud_frame)
+            if t_base_from_cloud is None:
+                return None
+            centers = depth_cloud_to_centers_base(
+                raw, t_base_from_cloud, max_points=self._depth_max_points
+            )
+            return centers if centers.shape[0] else None
+
         def _lookup_4x4(self, target: str, source: str) -> object | None:
             """Latest target<-source transform as a 4x4 numpy array, or None."""
             import rclpy
@@ -647,16 +726,12 @@ if _ROS2_AVAILABLE:
 
             if not self._lift_enabled or self._aggregator is None:
                 return
-            grid = self._latest_voxels
-            if grid is None:
-                return  # best-effort: no voxels => no lift, no warning
             now_ns = self.get_clock().now().nanoseconds
-            if (
+            grid = self._latest_voxels
+            voxels_fresh = grid is not None and not (
                 self._voxel_staleness_ns
                 and (now_ns - self._voxel_stamp_ns) > self._voxel_staleness_ns
-            ):
-                self.get_logger().debug("voxel grid stale; skipping lift")
-                return
+            )
             try:
                 md = ObjectsMetadata.model_validate_json(msg.metadata_json)  # type: ignore[attr-defined]
             except Exception as exc:
@@ -675,12 +750,21 @@ if _ROS2_AVAILABLE:
             t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
             if t_cam_from_base is None or t_map_from_base is None:
                 return  # best-effort: missing TF => skip
-            centers = decode_occupied_centers(
-                origin=(grid.origin.x, grid.origin.y, grid.origin.z),  # type: ignore[attr-defined]
-                resolution=grid.resolution,  # type: ignore[attr-defined]
-                size_xyz=(grid.size_x, grid.size_y, grid.size_z),  # type: ignore[attr-defined]
-                occupancy=bytes(grid.occupancy),  # type: ignore[attr-defined]
-            )
+            # Prefer the octomap voxel grid (filtered, persistent); fall back to
+            # the raw depth point cloud when no fresh grid exists (#11) so the
+            # lift — and thus spatial-memory ingest + recall_object — works even
+            # with octomap disabled. Both yield occupied centres in the base frame.
+            if voxels_fresh:
+                centers = decode_occupied_centers(
+                    origin=(grid.origin.x, grid.origin.y, grid.origin.z),  # type: ignore[attr-defined]
+                    resolution=grid.resolution,  # type: ignore[attr-defined]
+                    size_xyz=(grid.size_x, grid.size_y, grid.size_z),  # type: ignore[attr-defined]
+                    occupancy=bytes(grid.occupancy),  # type: ignore[attr-defined]
+                )
+            else:
+                centers = self._depth_centers_base(base_frame, now_ns)
+                if centers is None:
+                    return  # no voxels and no usable depth cloud => skip
             cands = self._lifter.lift(  # type: ignore[union-attr]
                 detections=md.detections,
                 occupied_centers_base=centers,
