@@ -472,12 +472,14 @@ if _ROS2_AVAILABLE:
                 self._cancel_requested = True
             return CancelResponse.ACCEPT
 
-        def _execute_cb(self, goal_handle: ServerGoalHandle) -> Any:
+        def _execute_cb(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + aborts; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
                 ROSConfigError,
+                ROSError,
                 ROSEStopRequested,
+                ROSSafetyViolation,
             )
             from openral_msgs.action import ExecuteRskill
             from openral_observability import rskill_span
@@ -549,6 +551,27 @@ if _ROS2_AVAILABLE:
                     span.record_exception(exc)
                     result.success = False
                     result.failure_reason = f"safety_estop:{exc!s}"
+                    goal_handle.abort()
+                    self._reset_active_goal()
+                    return result
+                except ROSSafetyViolation:
+                    # Never convert a safety violation into a soft failure_reason
+                    # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
+                    raise
+                except ROSError as exc:
+                    # A typed runtime failure during execution (e.g. a wrapped
+                    # ros_action skill whose goal could not be built from
+                    # malformed goal_params_json, an inference timeout, a planning
+                    # error). Previously these escaped the callback and the goal
+                    # aborted with an EMPTY failure_reason, so the reasoner could
+                    # not replan. Surface the typed reason so the replanning ladder
+                    # can act on it.
+                    span.record_exception(exc)
+                    self.get_logger().error(
+                        f"rskill_runner.execute_failed: kind={type(exc).__name__} reason={exc!s}"
+                    )
+                    result.success = False
+                    result.failure_reason = f"{type(exc).__name__}: {exc!s}"
                     goal_handle.abort()
                     self._reset_active_goal()
                     return result
