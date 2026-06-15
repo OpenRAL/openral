@@ -15,6 +15,7 @@ Two tiers:
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import shutil
 
@@ -276,9 +277,19 @@ def _gpu_present() -> bool:
     return shutil.which("nvidia-smi") is not None
 
 
+def _omdet_runtime_present() -> bool:
+    # The real backend lazily imports torch + transformers + timm (the Swin
+    # backbone needs timm). Without the ``omdet`` group synced these are absent,
+    # so the e2e must skip — not fail — exactly as the RT-DETR ONNX gate skips
+    # when onnxruntime is absent.
+    mods = ("torch", "transformers", "timm")
+    return all(importlib.util.find_spec(mod) is not None for mod in mods)
+
+
 @pytest.mark.skipif(
-    not _gpu_present(),
-    reason="needs a local GPU to load omlab/omdet-turbo-swin-tiny-hf "
+    not (_gpu_present() and _omdet_runtime_present()),
+    reason="needs a local GPU + the `omdet` group (torch/transformers/timm) to "
+    "load omlab/omdet-turbo-swin-tiny-hf; run `uv sync --group omdet` "
     "(the legitimate CI skip path, CLAUDE.md §12).",
 )
 def test_e2e_detects_indoor_objects_on_coco_sample() -> None:
