@@ -87,7 +87,7 @@ _REQUIRE_SIGNED_ENV = "OPENRAL_REQUIRE_SIGNED_SKILLS"
 # text with no action contract, so a robot's embodiment is not a meaningful
 # match axis. The rSkill↔robot embodiment gate exempts these kinds entirely —
 # they run on any robot/scene and need not enumerate embodiment tags.
-_EMBODIMENT_AGNOSTIC_KINDS: frozenset[str] = frozenset({"detector", "vlm"})
+_EMBODIMENT_AGNOSTIC_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
 
 
 # ── Registry entry schema ──────────────────────────────────────────────────────
