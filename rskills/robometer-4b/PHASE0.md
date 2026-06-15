@@ -32,7 +32,8 @@ Gating spike for ADR-0057 (`kind: reward` rSkill). See
   `pip install "robometer @ git+https://github.com/robometer/robometer@<SHA>"` (or `uv pip install`), not a
   per-run `git clone`. Weights resolve from the HF cache (one-time). This satisfies the "no env bloat / no
   massive repo every run" constraint because the sidecar env is isolated and built once.
-- **Pin SHA:** _TBD in Task 0.1 step 1 (record the commit used)._
+- **Pin SHA:** `a669dffc241d7d76bec12f36efd4084d914d017c` (robometer/robometer HEAD as of 2026-06-15). Install: `uv pip install "robometer[robometer,quantization] @ git+https://github.com/robometer/robometer@a669dffc…"`. See `_vendor/PROVENANCE.md`.
+- **Deps (from pyproject):** `torch==2.8.0`, `transformers>=4.57`, `xformers==0.0.32.post2`, `decord>=0.6.0`, `qwen-vl-utils[decord]==0.0.14`, `opencv-*-headless`, `bitsandbytes`, `hydra-core`, `trl==0.20.0` (robometer extra). `robometer`/`vlac` extras conflict.
 
 ## `RFM_LOAD`
 
