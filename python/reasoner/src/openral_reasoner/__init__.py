@@ -39,12 +39,14 @@ from openral_reasoner.plan import Plan, ToolCall
 from openral_reasoner.protocol import LLMClient, Reasoner
 from openral_reasoner.spatial_query import (
     SpatialMemoryQuerier,
+    SpatialQueryOutcome,
     SpatialQueryTool,
     format_recall_object_result,
     format_resolve_place_result,
     recall_object_tool_to_query,
     resolve_place_tool_to_query,
     run_spatial_query,
+    run_spatial_query_detailed,
 )
 from openral_reasoner.tool_use import (
     DEFAULT_SYSTEM_PROMPT,
@@ -78,6 +80,7 @@ __all__ = [
     "SearchCandidate",
     "SearchProgress",
     "SpatialMemoryQuerier",
+    "SpatialQueryOutcome",
     "SpatialQueryTool",
     "ToolCall",
     "ToolPalette",
@@ -93,5 +96,6 @@ __all__ = [
     "resolve_place_tool_to_query",
     "resolve_reasoner_system_prompt",
     "run_spatial_query",
+    "run_spatial_query_detailed",
 ]
 __version__ = "0.1.0"

@@ -87,7 +87,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
-from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query
+from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
 from openral_reasoner.tool_use import (
     ToolUseClient,
     build_tool_use_client_from_env,
@@ -411,6 +411,11 @@ class ReasonerNode(LifecycleNode):
         # ADR-0039 §3 — bound the find→re-prompt cascade so a query that keeps
         # missing terminates in human-handoff instead of looping forever.
         self._spatial_search = SearchProgress(SearchBudget())
+        # ADR-0043/0056 — recall_object queries already escalated to a live
+        # locate_in_view this search streak (one escalation per query term, so a
+        # repeated miss doesn't re-fire the detector every tick). Reset whenever
+        # the active-search bound resets (new operator goal / non-search action).
+        self._locate_escalated: set[str] = set()
 
         # ROS parameters: when both are set, on_configure walks
         # `rskill_search_paths` for `*/rskill.yaml`, loads the
@@ -847,6 +852,7 @@ class ReasonerNode(LifecycleNode):
         # bound never accumulates.
         if str(getattr(msg.header, "frame_id", "") or "") != "spatial_memory":
             self._spatial_search.reset()
+            self._locate_escalated.clear()
         self._on_tick(force=True, tier="D")
 
     def _on_skill_registry_changed(self, msg: Any) -> None:
@@ -1434,6 +1440,7 @@ class ReasonerNode(LifecycleNode):
         # cascade bound counts only *consecutive* spatial queries.
         if not isinstance(call, RecallObjectTool | ResolvePlaceTool):
             self._spatial_search.reset()
+            self._locate_escalated.clear()
         if isinstance(call, EmitPromptTool):
             self._dispatch_emit_prompt(call, traceparent=traceparent)
             return
@@ -1545,9 +1552,35 @@ class ReasonerNode(LifecycleNode):
             def refiner(viewpoint: Any, target_xyz: tuple[float, float, float]) -> Any:
                 return refine_approach_pose(grid, viewpoint, target_xyz, inflation_m=inflation_m)
 
-        result_text = run_spatial_query(
+        outcome = run_spatial_query_detailed(
             call, self._spatial_memory, now_ns=now_ns, refine_approach=refiner
         )
+        result_text = outcome.text
+
+        # ADR-0043/0056 — a recall_object MISS escalates to a live locate_in_view
+        # (open-vocab, same query) BEFORE the search budget runs out and we hand
+        # off. The on-demand detector grounds objects the spatial map never
+        # ingested, and matches the goal term verbatim even when the stored label
+        # differs (e.g. recall "baguette" vs ingested "bread"). This is policy —
+        # it does not depend on the LLM choosing locate_in_view. One escalation
+        # per query term per search streak so a repeated miss can't spam the
+        # detector; if locate also misses, the normal budget/handoff path resumes.
+        if (
+            isinstance(call, RecallObjectTool)
+            and not outcome.found
+            and self._detector_available
+            and call.query not in self._locate_escalated
+        ):
+            self._locate_escalated.add(call.query)
+            self.get_logger().info(
+                f"dispatch: recall_object miss for {call.query!r} → escalating to "
+                "locate_in_view (live detector) before handoff",
+            )
+            self._dispatch_locate_in_view(
+                LocateInViewTool(query=call.query, detector=self._default_on_demand_detector),
+                traceparent=traceparent,
+            )
+            return
 
         within_budget = self._spatial_search.record_attempt()
         msg = IDLPromptStamped()
