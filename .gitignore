@@ -1,3 +1,6 @@
+# Unsloth writes a compiled-kernel cache into CWD when the robometer sidecar runs (ADR-0057)
+unsloth_compiled_cache/
+
 # Python
 __pycache__/
 *.py[cod]

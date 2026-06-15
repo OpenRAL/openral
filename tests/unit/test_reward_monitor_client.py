@@ -10,7 +10,9 @@ Run with:
 
 from __future__ import annotations
 
+import os
 import pathlib
+import shutil
 
 import pytest
 import yaml
@@ -74,3 +76,44 @@ def test_score_rejects_mismatched_frame_sizes() -> None:
     ]
     with pytest.raises(ROSConfigError, match="share width/height"):
         mon.score(frames, "do the task")
+
+
+def _gpu_present() -> bool:
+    return shutil.which("nvidia-smi") is not None
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENRAL_ROBOMETER_SIDECAR_VENV") or not _gpu_present(),
+    reason="needs a provisioned Robometer sidecar venv + a local GPU "
+    "(set OPENRAL_ROBOMETER_SIDECAR_VENV).",
+)
+def test_e2e_score_clip_over_zmq() -> None:
+    """The real NF4 Robometer sidecar scores a clip end-to-end via build_reward_monitor.
+
+    Exercises the production wire (manifest → client → auto-spawned sidecar → ZMQ
+    score) and asserts per-frame progress/success arrays of the right shape and
+    range. Semantic correctness (progress ramping on a real rollout) is validated
+    separately — see rskills/robometer-4b/PHASE0.md Phase 3.
+    """
+    import numpy as np
+
+    manifest = _load_manifest()
+    mon = build_reward_monitor(manifest, port=5770)
+    n, h, w = 6, 224, 224
+    frames = [
+        Frame(
+            stamp_ns=i * 333_000_000,
+            bgr=np.random.randint(0, 255, (h, w, 3), dtype=np.uint8).tobytes(),
+            width=w,
+            height=h,
+        )
+        for i in range(n)
+    ]
+    try:
+        progress, success = mon.score(frames, "pick up the cube and place it in the bowl")
+        assert len(progress) == n
+        assert len(success) == n
+        assert all(0.0 <= s <= 1.0 for s in success)
+        assert all(0.0 <= p <= 1.0 for p in progress)  # discrete mode → [0,1]
+    finally:
+        mon.close()

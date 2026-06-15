@@ -71,6 +71,16 @@ This cleanly separates open-vocabulary from prompting: the `locate_in_view` tool
 
 Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers==5.3.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`uv sync --group qwen-vlm`). The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
 
+## Reward-monitor rSkills (`kind: reward`)
+
+`kind: reward` rSkills (ADR-0057) are robotic **reward / progress-monitor** models that run **in parallel with a VLA policy** and score the rollout: given the VLA's camera frames + the task instruction, they emit **per-frame normalized progress (0–1)** and **per-frame success probability**. Where a scene VLM (`query_scene`) returns free text, a reward monitor returns quantitative scalars + trends. It is reached through the read-only `query_task_progress` reasoner tool, never `ExecuteSkill` (so `role: s2`, excluded from the actuation palette); the signal is **advisory** — it feeds the replanning ladder, never the motors.
+
+| rSkill | Backbone | Notes |
+|---|---|---|
+| [`robometer-4b`](../../rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; NF4-quantized on load (~3.3 GB resident, 3.56 GB peak, fits 8 GB alongside a small VLA); runs out-of-process via `tools/robometer_sidecar.py` + the `RobometerReward` backend over ZMQ; served by `openral_perception_ros.reward_monitor_node` on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool (ADR-0057) |
+
+Like the Qwen scene VLM, the Robometer monitor runs in an **isolated sidecar venv**: its `RBM` class cannot be loaded by vanilla `transformers.AutoModel` (its HF `config.json` advertises `architectures: ["RFM"]` with no `auto_map`), so the sidecar `uv pip install`s the pinned upstream `robometer` package and **forces `transformers==4.57.1`** (the resolver pulls 5.x, which drops `input_ids` from the processor). The node-side ZMQ + msgpack client ships in the `robometer` dependency group (`uv sync --group robometer`). The sidecar is a **stateless scorer**; the rolling frame buffer (`RollingFrameBuffer`, fed by the same `sensor_msgs/Image` topic the VLA uses — GStreamer tee on real hardware, sim HAL publisher in `deploy-sim`) lives node-side. `weights_uri` points at the SHA-pinned Apache-2.0 upstream (NF4-quantized on load; a pre-quantized OpenRAL repo can replace it later). The reasoner offers `query_task_progress` when launched with `task_progress_available:=true`. The upstream `robometer` code is not an OpenRAL-trusted org — it is pinned by commit and runs only in the isolated venv.
+
 ## Manifest format
 
 ```yaml
