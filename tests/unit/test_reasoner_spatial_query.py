@@ -81,6 +81,17 @@ def test_recall_object_bridge_miss_suggests_search() -> None:
     assert "search" in text.lower()
 
 
+def test_recall_miss_points_llm_at_scene_objects_visibility() -> None:
+    # A miss nudges the LLM to map its goal onto the live scene_objects list
+    # (its own semantics, e.g. baguette->bread) before any active search — leaning
+    # on world-state visibility, not an embedder or a hardcoded locate path.
+    text = run_spatial_query(
+        RecallObjectTool(query="baguette"), _memory(), now_ns=2_000_000_000_000
+    )
+    assert "scene_objects" in text
+    assert "WORLD_STATE" in text
+
+
 # ── run_spatial_query_detailed reports match/miss (drives ADR-0043/0056 escalation) ──
 
 

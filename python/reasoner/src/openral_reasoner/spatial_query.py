@@ -93,8 +93,11 @@ def format_recall_object_result(
     """
     if not result.matches:
         return (
-            f"spatial_memory: {query_text!r} is not in memory. "
-            "Consider an active search of likely locations."
+            f"spatial_memory: {query_text!r} is not in memory. Check the "
+            "scene_objects list in WORLD_STATE first — the live detector may "
+            "have it under a different label (e.g. a 'baguette' goal vs a "
+            "detected 'bread'); if a listed object is your target, act on it "
+            "directly. Otherwise consider an active search of likely locations."
         )
     lines = [f"spatial_memory: {len(result.matches)} match(es) for {query_text!r}:"]
     for m in result.matches:
@@ -205,8 +208,10 @@ def run_spatial_query_detailed(
     except ROSObjectNotInMemory:
         return SpatialQueryOutcome(
             text=(
-                f"spatial_memory: {call.reference!r} is not in memory. "
-                "Consider an active search of likely locations."
+                f"spatial_memory: {call.reference!r} is not in memory. Check the "
+                "scene_objects list in WORLD_STATE first — the live detector may "
+                "have it under a different label; if a listed object is your "
+                "target, act on it directly. Otherwise consider an active search."
             ),
             found=False,
         )
