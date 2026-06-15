@@ -630,10 +630,16 @@ class ROSActionRskill(rSkillBase):
         try:
             _set_message_fields(goal_msg, self._goal_dict)
         except Exception as exc:  # reason: IDL setattr can raise various TypeError shapes
+            # Almost always a goal_params_json that doesn't match the IDL nesting
+            # (e.g. an LLM flattening NavigateToPose's pose.pose.{position,
+            # orientation} up to the PoseStamped). Echo the merged goal keys so
+            # the propagated failure_reason lets the reasoner correct on replan.
             raise ROSConfigError(
-                f"ROSActionRskill({self.name!r}): failed to apply default_goal_json "
-                f"to {self._interface_type.__name__}.Goal — check field names / types: "
-                f"{exc}"
+                f"ROSActionRskill({self.name!r}): failed to apply goal params "
+                f"to {self._interface_type.__name__}.Goal — {exc}. The merged goal "
+                f"must match the IDL field nesting; got top-level keys "
+                f"{sorted(self._goal_dict)}. Check goal_params_json against the "
+                f"manifest's goal_params_schema (each level must nest, not flatten)."
             ) from exc
 
         goal_future = self._client.send_goal_async(goal_msg)
