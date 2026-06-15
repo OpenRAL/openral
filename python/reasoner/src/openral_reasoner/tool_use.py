@@ -762,6 +762,29 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "input_schema": QuerySceneTool.model_json_schema(),
             },
         )
+
+    # ADR-0057 — the read-only reward-monitor tool is surfaced only when a reward
+    # rSkill (Robometer-4B NF4) exposes the /openral/perception/query_task_progress
+    # service. Where query_scene returns free text, this returns a quantitative
+    # windowed progress/success assessment of the current task. No actuation.
+    if palette.task_progress_available:
+        from openral_core import QueryTaskProgressTool  # noqa: PLC0415
+
+        tools.append(
+            {
+                "name": "query_task_progress",
+                "description": (
+                    "Read-only: ask the reward monitor how the CURRENT task is going. Returns a "
+                    "quantitative assessment over the last 'window_s' seconds: normalized "
+                    "progress (0-1) and success probability (0-1) now, their trends, and a "
+                    "'stalled' flag. Use this to decide whether the policy is succeeding, "
+                    "stalling (replan), or done. For open-ended scene questions use query_scene "
+                    "instead. Optionally override 'task'; empty reuses the active goal. "
+                    "No actuation."
+                ),
+                "input_schema": QueryTaskProgressTool.model_json_schema(),
+            },
+        )
     return tools
 
 

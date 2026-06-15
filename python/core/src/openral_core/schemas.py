@@ -6315,6 +6315,38 @@ class QuerySceneTool(_ReasonerToolBase):
     camera: str = ""
 
 
+class QueryTaskProgressTool(_ReasonerToolBase):
+    """Tool variant (**read-only**) — ask the reward monitor how the task is going (ADR-0057).
+
+    Backed by a ``kind: "reward"`` rSkill (Robometer-4B NF4) running in parallel
+    with the active VLA in an out-of-process ZMQ sidecar. Where
+    :class:`QuerySceneTool` answers *open-ended* scene questions as free text,
+    ``query_task_progress`` returns a **quantitative** windowed assessment of the
+    *current task*: normalized progress and success over the last
+    :attr:`window_s` seconds, plus their trends and a ``stalled`` flag.
+
+    It calls the ``/openral/perception/query_task_progress`` ROS service, which
+    scores the monitor's buffered camera frames against the task instruction and
+    returns ``progress_now`` / ``success_now`` / ``progress_trend`` /
+    ``success_trend`` / ``stalled`` / ``succeeded``. The reasoner uses it to
+    decide whether to continue, escalate to :class:`QuerySceneTool`, advance, or
+    enter the replanning ladder. Like every variant it **holds no authority over
+    actuation** (ADR-0018 §4) — the reward signal is advisory; the dispatch never
+    gates the safety kernel.
+
+    Attributes:
+        tool: Discriminator (always ``"query_task_progress"``).
+        window_s: How many seconds of recent frames to assess. Must be > 0;
+            clamped to the monitor's configured ``frame_window_s``.
+        task: Optional task-instruction override. Empty (default) reuses the
+            instruction the monitor was co-activated with (the active VLA's goal).
+    """
+
+    tool: Literal["query_task_progress"] = "query_task_progress"
+    window_s: float = Field(gt=0.0, default=8.0)
+    task: str = ""
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
@@ -6324,6 +6356,7 @@ ReasonerToolCall: TypeAlias = (
     | ResolvePlaceTool
     | LocateInViewTool
     | QuerySceneTool
+    | QueryTaskProgressTool
 )
 """Discriminated union over the reasoner tool variants (ADR-0018 §4; ADR-0039).
 
