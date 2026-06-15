@@ -248,7 +248,9 @@ class OmDetTurboDetector:
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
             self._device = self._device_pref
-        self._processor = AutoProcessor.from_pretrained(self._weights_source)
+        self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]  # reason: transformers AutoProcessor.from_pretrained is unstubbed in 5.3.0
+            self._weights_source
+        )
         model = AutoModelForZeroShotObjectDetection.from_pretrained(self._weights_source)
         self._fit_timm_backbone_to_processor(model)
         self._model = model.to(self._device).eval()
