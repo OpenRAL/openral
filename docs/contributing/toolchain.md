@@ -95,6 +95,7 @@ Planned (not yet wired): `openral run`, `openral benchmark run`.
 
 ## Tooling self-help
 
+- **`openral` prints `AMENT_TRACE_SETUP_FILES: unbound variable` and exits?** Your `~/.local/bin/openral` predates the fix that sources the (not-`set -u`-safe) ROS 2 overlays with nounset disabled. Re-run `just install-cli` to regenerate it.
 - **Python import unclear?** `uv run python -c 'import openral_<pkg>; print(openral_<pkg>.__file__)'`.
 - **ROS 2 topic missing?** `ros2 topic list -t` in a `source install/setup.bash`-ed shell.
 - **Schema diff?** `just schema-export` and check `git diff python/openral_core/schemas/`.
