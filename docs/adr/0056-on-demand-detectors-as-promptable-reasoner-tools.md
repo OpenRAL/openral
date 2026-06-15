@@ -135,3 +135,17 @@ locator triggers a managed activate → one-shot → (optional) deactivate, surf
 4. **VLM/VQA scene-understanding is out of scope** for this ADR. LocateAnything is used here only as a
    box-returning open-vocab locator. Richer `kind: vlm` / VQA capability, if ever pursued, is a
    separate ADR — not added here.
+
+## Amendment — 2026-06-15 (recall→locate escalation; GitHub #10)
+
+The on-demand locator is now reachable **autonomously**, not only when the LLM explicitly
+picks `locate_in_view`. In `ReasonerNode._dispatch_spatial_query`, a `recall_object` **miss**
+(`SpatialQueryOutcome.found == False`) escalates to a live `locate_in_view` for the same query
+term **before** the active-search budget reaches human-handoff — provided a detector is available
+(`detector_available`) and the term hasn't already been escalated this search streak
+(`_locate_escalated`, reset alongside the search bound). This is **policy**, encoded in the node,
+so it does not depend on the LLM choosing the tool (local models often don't). It closes the
+"object seen but stored under a different label" gap — e.g. a goal naming "baguette" when the
+continuous detector ingested it as "bread" — by grounding the exact prompt verbatim through the
+open-vocab locator. Read-only invariant unchanged (the locator never actuates). Verified live on
+`scenes/deploy/robocasa_baguette.yaml`: recall miss → locate `found=True` → autonomous pick.
