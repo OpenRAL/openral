@@ -232,6 +232,68 @@ def test_deploy_sim_default_detector_falls_back_to_rtdetr_when_omdet_absent(
     assert f"object_detector_onnx:={rtdetr}" in joined
 
 
+def test_deploy_sim_default_locator_is_omdet_turbo_locator_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0056 — default on-demand locator is omdet-turbo-locator when omdet deps import."""
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: True)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    locator = _REPO_ROOT / "rskills" / "omdet-turbo-locator" / "rskill.yaml"
+    assert invocation.object_detector_locators == (str(locator.resolve()),)
+    joined = " ".join(invocation.argv_template)
+    assert f"object_detector_locators:={locator.resolve()}" in joined
+
+
+def test_deploy_sim_no_locator_when_omdet_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """omdet deps absent → no default on-demand locator (RT-DETR continuous still on)."""
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: False)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.object_detector_locators == ()
+    assert "object_detector_locators:=" not in " ".join(invocation.argv_template)
+
+
+def test_deploy_sim_explicit_locator_alias_resolves_to_manifest() -> None:
+    """An explicit --object-detector-locator alias resolves to its in-tree manifest."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        object_detector_locators=["locateanything-3b-nf4"],
+    )
+    locator = _REPO_ROOT / "rskills" / "locateanything-3b-nf4" / "rskill.yaml"
+    assert invocation.object_detector_locators == (str(locator.resolve()),)
+    assert f"object_detector_locators:={locator.resolve()}" in " ".join(invocation.argv_template)
+
+
+def test_deploy_sim_no_locators_when_detector_disabled() -> None:
+    """--no-object-detector → no continuous detector AND no on-demand locators."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_object_detector=False,
+        object_detector_locators=["omdet-turbo-locator"],
+    )
+    assert invocation.object_detector_locators == ()
+    assert "object_detector_locators:=" not in " ".join(invocation.argv_template)
+
+
 def test_deploy_sim_no_object_detector_flag_disables() -> None:
     """``--no-object-detector`` (enable_object_detector=False) turns the leg off."""
     invocation = resolve_launch_invocation(

@@ -17,7 +17,15 @@ from pathlib import Path
 
 from openral_core import RobotCapabilities, RSkillManifest
 from openral_core.schemas import DetectorMode
-from openral_reasoner.palette import ContinuousDetectorEntry, ToolPalette, build_tool_palette
+from openral_reasoner.palette import (
+    ContinuousDetectorEntry,
+    OnDemandDetectorEntry,
+    ToolPalette,
+    build_tool_palette,
+    detector_alias,
+    detector_service_segment,
+    locate_in_view_service,
+)
 from openral_reasoner.tool_use import _tool_palette_to_anthropic_tools
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +84,77 @@ def test_palette_collects_continuous_detectors_not_the_on_demand_locator() -> No
 
     omdet = next(d for d in palette.continuous_detectors if "omdet" in d.rskill_id)
     assert omdet.num_labels > 200  # the curated indoor vocabulary
+
+
+# ── ADR-0056: on-demand locators surfaced as selectable locate_in_view options ──
+
+
+def test_palette_surfaces_on_demand_locators_with_aliases() -> None:
+    caps = RobotCapabilities(embodiment_tags=["so100_follower"])
+    palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
+
+    aliases = {d.alias for d in palette.on_demand_detectors}
+    assert "omdet-turbo-locator" in aliases
+    assert "locateanything-3b-nf4" in aliases
+    # On-demand locators are not continuous producers and not ExecuteSkill tools.
+    cont_ids = {d.rskill_id for d in palette.continuous_detectors}
+    skill_ids = {s.rskill_id for s in palette.skills}
+    for d in palette.on_demand_detectors:
+        assert d.rskill_id not in cont_ids
+        assert d.rskill_id not in skill_ids
+        assert d.alias == detector_alias(d.rskill_id)
+
+
+def test_detector_alias_and_service_routing() -> None:
+    assert detector_alias("OpenRAL/rskill-omdet-turbo-locator") == "omdet-turbo-locator"
+    assert detector_alias("plain-name") == "plain-name"
+    assert detector_service_segment("omdet-turbo-locator") == "omdet_turbo_locator"
+    # Explicit selector → namespaced service.
+    assert (
+        locate_in_view_service("omdet-turbo-locator")
+        == "/openral/perception/omdet_turbo_locator/locate_in_view"
+    )
+    # Empty selector + a default → the default's namespaced service.
+    assert (
+        locate_in_view_service("", default="locateanything-3b-nf4")
+        == "/openral/perception/locateanything_3b_nf4/locate_in_view"
+    )
+    # Empty selector + no default → legacy single-detector service (back-compat).
+    assert locate_in_view_service("") == "/openral/perception/locate_in_view"
+
+
+def test_locate_in_view_description_lists_locator_options() -> None:
+    palette = ToolPalette(
+        detector_available=True,
+        on_demand_detectors=(
+            OnDemandDetectorEntry(
+                rskill_id="OpenRAL/rskill-omdet-turbo-locator",
+                alias="omdet-turbo-locator",
+                description="fast real-time open-vocab locator",
+            ),
+            OnDemandDetectorEntry(
+                rskill_id="OpenRAL/rskill-locateanything-3b-nf4",
+                alias="locateanything-3b-nf4",
+                description="high-quality grounding VLM",
+            ),
+        ),
+    )
+    desc = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}["locate_in_view"][
+        "description"
+    ]
+    assert "'detector'" in desc
+    assert "omdet-turbo-locator" in desc and "locateanything-3b-nf4" in desc
+
+
+def test_locate_in_view_tool_schema_exposes_detector_field() -> None:
+    from openral_core import LocateInViewTool
+
+    schema = LocateInViewTool.model_json_schema()
+    assert "detector" in schema["properties"]
+    assert LocateInViewTool(query="mug").detector == ""
+    assert LocateInViewTool(query="mug", detector="omdet-turbo-locator").detector == (
+        "omdet-turbo-locator"
+    )
 
 
 # ── tool_use: locate_in_view description is coverage-aware ───────────────────
