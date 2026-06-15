@@ -37,24 +37,39 @@ Gating spike for ADR-0057 (`kind: reward` rSkill). See
 
 ## `RFM_LOAD`
 
-- `load_model_from_hf(model_path="robometer/Robometer-4B", device=...)` → `(exp_config, tokenizer, processor, reward_model)`. dtype/trust_remote_code args not surfaced in the example script; confirm empirically in the probe. `rbm.py` imports `Qwen3VLModel` (needs recent transformers; falls back if absent), `Qwen2_5_VLModel`, `SmolVLMModel`.
+- `load_model_from_hf(model_path="robometer/Robometer-4B", device=...)` → `(exp_config, tokenizer, processor, reward_model)`. `rbm.py` imports `Qwen3VLModel` (needs transformers ≥4.57), `Qwen2_5_VLModel`, `SmolVLMModel`.
+- **Empirically confirmed:** loads `class RBM` (`ExperimentConfig`), 4,447,004,940 params (4.03 B trainable), heads `progress_head` / `success_head` / `preference_head` + `frame_pool_attn` all present. Unsloth patches in on import (Unsloth-processed checkpoint). Processor/tokenizer pulled from the base model (none in the HF repo).
+- **⚠️ transformers version pin (HARD constraint):** the resolver installs transformers **5.5.0**, which breaks robometer — the processor `__call__` kwargs API changed in 5.x ("Kwargs … have to be in `processor_kwargs` dict"), so the collator drops `input_ids` → `KeyError: 'input_ids'` in `forward_model`. **Must pin `transformers==4.57.1`** (downgrades huggingface-hub to 0.36.2). The production sidecar env must pin this.
 
 ## `RFM_INPUT`
 
 - Video frames as `np.ndarray (T, H, W, C)` uint8 + task instruction string → wrapped in `Trajectory` → `ProgressSample` → `setup_batch_collator(...)` → `progress_inputs`.
 - Default sampling **fps = 3** (`example_inference_local.py --fps 3`).
 
-## `RFM_OUTPUT` (RESOLVED)
+## `RFM_INPUT` (empirically confirmed)
 
-- `forward()` returns `(ModelOutput, timing_raw)`; `ModelOutput` carries `progress_logits` (dict "A"/"B"), `success_logits` (dict "A"/"B"), optional `pref_logits`. Heads: `progress_head`, `success_head`, `preference_head`.
-- Post-processed via `compute_batch_outputs(reward_model, tokenizer, inputs, sample_type="progress", is_discrete_mode=..., num_bins=...)` → dict with:
-  - `progress_pred` — per-trajectory list of per-frame progress (the normalized 0–1 signal we feed the Reasoner).
-  - `success_probs` — per-frame success probability.
-  - (preference path via `sample_type="preference"`.)
+- `progress_inputs` (nested under `batch["progress_inputs"]` from the collator) has keys:
+  `['attention_mask', 'image_grid_thw', 'input_ids', 'pixel_values', 'resample_attempts']`.
+- Tokenizer/processor resolved from base `Qwen/Qwen3-VL-4B-Instruct` (vocab 151643, vision/video pad tokens).
+- bf16; xformers attention path (FA2 off). Default fps=3 in the upstream example.
 
-## `RFM_PROGRESS_RANGE`
+## `RFM_OUTPUT` (RESOLVED + empirically confirmed)
 
-- Continuous 0–1 progress; a discrete/binned mode exists (`is_discrete_mode`, `num_bins`). _Confirm the default mode + exact range empirically in the probe, then set `RewardContract.progress_range`._
+- `compute_batch_outputs(reward_model, tokenizer, progress_inputs, sample_type="progress", is_discrete_mode, num_bins)` returns a dict:
+  - `progress_pred` — per-frame progress sequence.
+  - `outputs_success` → `{"success_probs": ...}` — **per-frame success probability, 0–1** (nested!). Observed shape `(8,)` for 8 frames, values 0.001–0.013 on random-noise frames (correctly "not succeeding").
+- `forward()` (raw) returns `(ModelOutput, timing_raw)` with `progress_logits`/`success_logits` (dicts "A"/"B") + optional `pref_logits`; heads `progress_head`/`success_head`/`preference_head` + `frame_pool_attn`.
+- Preference path via `sample_type="preference"` (not probed; trajectory-pair comparison).
+
+## `RFM_PROGRESS_RANGE` (RESOLVED — use DISCRETE mode)
+
+- **Continuous mode** (`is_discrete_mode=False`): `progress_pred` is **raw regression**, shape `(80,)` for 8 frames (finer-than-frame granularity), range observed ≈ **−1.58…3.95** — NOT normalized; would need our own normalization.
+- **Discrete mode** (`is_discrete_mode=True, num_bins=100`): `progress_pred` is **per-frame**, shape `(8,)`, values in **0–1** (binned expected value). This is the per-frame normalized progress OpenRAL wants.
+- **Decision:** `RewardContract` defaults to **discrete mode** (`num_bins` configurable, e.g. 100) → per-frame progress ∈ [0,1] + per-frame success ∈ [0,1]. `progress_range = [0.0, 1.0]`.
+
+## GATE RESULT: ✅ PASSED (empirically)
+
+- Model loads locally via the pinned `robometer` package (class `RBM`, 4.447 B params, all 3 heads present); a full forward runs on CPU and emits per-frame progress + success. Vanilla `AutoModel` confirmed insufficient. transformers **must** be pinned to `4.57.1`. Discrete mode yields the desired normalized 0–1 per-frame progress + success. Proceed to Phase 1.
 
 ## Environment / host facts
 

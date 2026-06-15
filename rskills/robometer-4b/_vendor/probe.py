@@ -53,8 +53,15 @@ def main() -> int:
         video_embeddings=None,
     )
     progress_sample = ProgressSample(trajectory=traj, sample_type="progress")
-    progress_inputs = batch_collator([progress_sample])
+    batch = batch_collator([progress_sample])
+    # The collator returns a wrapper dict; the model inputs live under "progress_inputs".
+    progress_inputs = batch["progress_inputs"]
+    for key, value in progress_inputs.items():
+        if hasattr(value, "to"):
+            progress_inputs[key] = value.to(args.device)
+    reward_model.eval()
 
+    print(f"[probe] progress_inputs keys = {sorted(progress_inputs.keys())}", flush=True)
     print("[probe] running compute_batch_outputs ...", flush=True)
     results = compute_batch_outputs(
         reward_model,
@@ -67,6 +74,18 @@ def main() -> int:
 
     print("\n=== RESULT KEYS ===")
     print(sorted(results.keys()))
+
+    # success lives nested under outputs_success
+    outputs_success = results.get("outputs_success")
+    if isinstance(outputs_success, dict):
+        print(f"[probe] outputs_success keys = {sorted(outputs_success.keys())}")
+        for k, v in outputs_success.items():
+            try:
+                arr = np.asarray(v[0] if (isinstance(v, list) and v) else v, dtype=np.float32)
+                print(f"  outputs_success[{k}]: shape={arr.shape} "
+                      f"min={arr.min():.4f} max={arr.max():.4f}" if arr.size else f"  outputs_success[{k}]: empty")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  outputs_success[{k}]: <{type(v).__name__}> ({exc})")
 
     def describe(name: str) -> None:
         val = results.get(name)
