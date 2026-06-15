@@ -333,6 +333,14 @@ class LaunchInvocation:
     """ADR-0037 2026-06-09 — initial open-vocabulary query for a VLM detector
     (e.g. 'red mug'). Forwarded as ``object_detector_query:=<text>``. Empty =
     the manifest's ``detector.labels`` default. Ignored by ONNX detectors."""
+    object_detector_locators: tuple[str, ...]
+    """ADR-0056 — resolved manifest paths of the ``mode: on_demand`` open-vocab
+    locators to bring up alongside the continuous detector. The launch builds one
+    namespaced lifecycle node per entry (``/openral/perception/<alias>/locate_in_view``)
+    so the reasoner can choose a model via ``LocateInViewTool.detector``. Forwarded
+    as ``object_detector_locators:=<comma-joined paths>`` only when non-empty.
+    Defaults to the omdet-turbo-locator manifest when the detector is on and the
+    omdet deps are importable (LocateAnything is opt-in via an explicit path)."""
     spatial_memory_ingest: bool
     """ADR-0038 opt-in. Set by ``openral deploy sim --spatial-memory-ingest``;
     forwarded as ``spatial_memory_ingest:=true``. The reasoner then accumulates
@@ -455,6 +463,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     object_detector_onnx: Path | None = None,
     object_detector_manifest: str | None = None,
     object_detector_query: str | None = None,
+    object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
 ) -> LaunchInvocation:
@@ -603,6 +612,29 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         )
         enable_object_detector = False
 
+    # ADR-0056 — on-demand open-vocab locators co-resident alongside the
+    # continuous detector. Each token is a manifest path (``…/rskill.yaml``) or a
+    # short alias resolved to ``rskills/<alias>/rskill.yaml``; the launch builds one
+    # namespaced locate_in_view node per entry so the reasoner can pick a model.
+    # Default = omdet-turbo-locator when the detector is on and the omdet deps are
+    # importable (LocateAnything is opt-in — NVIDIA non-commercial, 5 GB VRAM).
+    resolved_object_detector_locators: list[str] = []
+    if enable_object_detector:
+        if object_detector_locators is not None:
+            locator_tokens = object_detector_locators
+        elif _omdet_runtime_available():
+            locator_tokens = ["omdet-turbo-locator"]
+        else:
+            locator_tokens = []
+        for token in locator_tokens:
+            candidate = Path(token)
+            manifest_path = (
+                candidate
+                if candidate.suffix == ".yaml"
+                else repo_root / "rskills" / token / "rskill.yaml"
+            )
+            resolved_object_detector_locators.append(str(manifest_path.resolve()))
+
     # ADR-0038 — auto-enable durable spatial-memory ingest whenever the object
     # detector runs (the producer that feeds it); an explicit flag overrides.
     if spatial_memory_ingest is None:
@@ -694,6 +726,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
+    # ADR-0056 — only forward the locator list when non-empty (ros2 launch rejects
+    # an empty ``name:=`` value; the launch file defaults it to "").
+    if resolved_object_detector_locators:
+        argv_template.append(
+            "object_detector_locators:=" + ",".join(resolved_object_detector_locators)
+        )
     # ADR-0053 — only forward the approach skill when opted in (empty default;
     # ros2 launch rejects an empty ``name:=`` value, and the launch file
     # defaults ``approach_skill_id`` to "").
@@ -712,6 +750,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         object_detector_onnx=resolved_object_detector_onnx,
         object_detector_manifest=resolved_object_detector_manifest,
         object_detector_query=object_detector_query or "",
+        object_detector_locators=tuple(resolved_object_detector_locators),
         spatial_memory_ingest=spatial_memory_ingest,
         hal_params=hal_params,
         hal_mode=hal_mode,
@@ -1459,6 +1498,19 @@ def deploy_sim_command(
             "and the openral_nav2_bringup package colcon-built."
         ),
     ),
+    object_detector_locator: list[str] | None = typer.Option(
+        None,
+        "--object-detector-locator",
+        help=(
+            "ADR-0056 — on-demand open-vocab locator to bring up alongside the "
+            "continuous detector (repeatable). A manifest path or a short alias "
+            "(e.g. 'omdet-turbo-locator', 'locateanything-3b-nf4'). Each becomes a "
+            "namespaced locate_in_view node the reasoner picks via the tool's "
+            "'detector' field. Default = omdet-turbo-locator when the detector is "
+            "on and the omdet deps are present; LocateAnything is opt-in (NVIDIA "
+            "non-commercial, 5 GB VRAM, needs the sidecar venv)."
+        ),
+    ),
     enable_sim_clock: bool = typer.Option(
         False,
         "--enable-sim-clock/--no-enable-sim-clock",
@@ -1613,6 +1665,7 @@ def deploy_sim_command(
             object_detector_onnx=object_detector_onnx,
             object_detector_manifest=object_detector_manifest,
             object_detector_query=object_detector_query,
+            object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,
         )

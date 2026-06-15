@@ -86,7 +86,7 @@ from openral_reasoner.context import (
     PromptRecord,
 )
 from openral_reasoner.core import ReasonerCore
-from openral_reasoner.palette import ToolPalette, build_tool_palette
+from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
 from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query
 from openral_reasoner.tool_use import (
     ToolUseClient,
@@ -477,8 +477,17 @@ class ReasonerNode(LifecycleNode):
         self._detector_available: bool = (
             self.get_parameter("detector_available").get_parameter_value().bool_value
         )
-        # Cached client for the locate_in_view service; created lazily on first use.
-        self._locate_in_view_client: Any = None
+        # ADR-0056 — the default on-demand locator alias used when a locate_in_view
+        # call leaves ``detector`` empty (e.g. "omdet-turbo-locator"). Empty = the
+        # legacy single-detector service /openral/perception/locate_in_view. Set by
+        # the deploy launch to the default locator it brings up.
+        self.declare_parameter("default_on_demand_detector", "")
+        self._default_on_demand_detector: str = (
+            self.get_parameter("default_on_demand_detector").get_parameter_value().string_value
+        )
+        # ADR-0056 — locate_in_view clients cached per resolved service name (one
+        # per on-demand locator the reasoner has routed to), created lazily.
+        self._locate_in_view_clients: dict[str, Any] = {}
         # ADR-0047 — when true, offer the read-only ``query_scene`` tool (ask a
         # scene VLM an open-ended question about the current view, via the
         # ``/openral/perception/query_scene`` service). The deploy launch sets
@@ -1592,28 +1601,33 @@ class ReasonerNode(LifecycleNode):
                 "dispatch: locate_in_view — openral_msgs/srv/LocateInView not built; skipping",
             )
             return
-        if self._locate_in_view_client is None:
-            self._locate_in_view_client = self.create_client(
-                LocateInView, "/openral/perception/locate_in_view"
-            )
-        client = self._locate_in_view_client
+        # ADR-0056 — route to the chosen on-demand locator's namespaced service;
+        # empty ``detector`` falls back to the deployment default (or the legacy
+        # single-detector service). One cached client per resolved service name.
+        service = locate_in_view_service(call.detector, default=self._default_on_demand_detector)
+        client = self._locate_in_view_clients.get(service)
+        if client is None:
+            client = self.create_client(LocateInView, service)
+            self._locate_in_view_clients[service] = client
         if not client.service_is_ready() and not client.wait_for_service(
             timeout_sec=_LIFECYCLE_SERVER_PROBE_S,
         ):
             self.get_logger().warning(
-                f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r} — "
-                "/openral/perception/locate_in_view not on graph; skipping",
+                f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r} "
+                f"detector={call.detector!r} — {service} not on graph; skipping",
             )
             return
         req = LocateInView.Request()
         req.query = call.query
         req.camera = call.camera
+        req.detector = call.detector
         future = client.call_async(req)
         future.add_done_callback(
             lambda fut: self._on_locate_in_view_response(call, fut, traceparent=traceparent),
         )
         self.get_logger().info(
-            f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r}",
+            f"dispatch: locate_in_view query={call.query!r} camera={call.camera!r} "
+            f"detector={call.detector!r} → {service}",
         )
 
     def _on_locate_in_view_response(

@@ -318,6 +318,33 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     object_detector_onnx = LaunchConfiguration("object_detector_onnx").perform(context)
     object_detector_manifest = LaunchConfiguration("object_detector_manifest").perform(context)
     object_detector_query = LaunchConfiguration("object_detector_query").perform(context)
+    # ADR-0056 — comma-separated on-demand locator manifest paths. Each becomes a
+    # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
+    # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment
+    # derivation is the single source of truth in openral_reasoner.palette. The
+    # yaml / palette imports stay local so the detector-off base graph keeps its
+    # zero import-time cost (mirrors the detector node block below).
+    object_detector_locators_raw = LaunchConfiguration("object_detector_locators").perform(context)
+    locator_tokens = [p for p in object_detector_locators_raw.split(",") if p]
+    locator_specs: list[dict[str, str]] = []
+    if locator_tokens:
+        import yaml
+        from openral_reasoner.palette import detector_alias, detector_service_segment
+
+        for _mpath in locator_tokens:
+            with pathlib.Path(_mpath).open(encoding="utf-8") as _handle:
+                _lman = yaml.safe_load(_handle) or {}
+            _alias = detector_alias(str(_lman.get("name", _mpath)))
+            _segment = detector_service_segment(_alias)
+            locator_specs.append(
+                {
+                    "manifest": _mpath,
+                    "alias": _alias,
+                    "segment": _segment,
+                    "node": f"openral_ros_image_detector_{_segment}",
+                    "engine": str((_lman.get("detector") or {}).get("engine") or ""),
+                }
+            )
     enable_dashboard = LaunchConfiguration("enable_dashboard").perform(context).lower() in (
         "1",
         "true",
@@ -512,6 +539,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # execute_rskill and reactivates it on completion, so an 8 GB card does
         # not OOM with the detector (~1.3 GB) co-resident with the VLA (~4.5 GB).
         vram_lifecycle_peers.append("openral_ros_image_detector")
+        # ADR-0056 — each on-demand locator is its own lifecycle node, so it is an
+        # independent LLM-facing peer (toggle) and VRAM peer (evict before a VLA;
+        # LocateAnything is 5 GB so this matters on an 8 GB card).
+        for _spec in locator_specs:
+            lifecycle_peer_node_ids.append(_spec["node"])
+            vram_lifecycle_peers.append(_spec["node"])
     # ``lifecycle_peer_node_ids`` is omitted when empty: launch_ros's
     # evaluate_parameter_dict normalises a Python list to a typed array and
     # an EMPTY list collapses to ``()``, which ensure_argument_type rejects
@@ -544,6 +577,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ADR-0043 — offer the read-only locate_in_view tool to the LLM when an object
     # detector is in the graph (it exposes /openral/perception/locate_in_view).
     reasoner_params["detector_available"] = enable_object_detector
+    # ADR-0056 — the default on-demand locator the reasoner routes to when a
+    # locate_in_view call leaves ``detector`` empty (the first locator brought up).
+    if locator_specs:
+        reasoner_params["default_on_demand_detector"] = locator_specs[0]["alias"]
     reasoner = LifecycleNode(
         package="openral_reasoner_ros",
         executable="reasoner_node.py",
@@ -1035,6 +1072,37 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         extra_nodes.append(object_detector)
         autostart += _autostart_lifecycle(object_detector, "openral_ros_image_detector")
 
+        # ADR-0056 — on-demand locator nodes: one per --object-detector-locator,
+        # each serving its own namespaced /openral/perception/<alias>/locate_in_view
+        # (the reasoner picks one via LocateInViewTool.detector). They share the
+        # continuous detector's camera/topic; the node's mode wiring (ADR-0051)
+        # makes them serve-only (no continuous publish leg). Throttle by engine.
+        for spec in locator_specs:
+            locator_rate_hz = {"vlm_sidecar": 0.5, "zeroshot_hf": 2.0}.get(spec["engine"], 5.0)
+            locator_params = {
+                "image_topic": det_image_topic,
+                "sensor_id": det_camera,
+                "manifest_path": spec["manifest"],
+                "onnx_path": object_detector_onnx,
+                "query": object_detector_query,
+                "max_rate_hz": locator_rate_hz,
+                "locate_in_view_service": f"/openral/perception/{spec['segment']}/locate_in_view",
+                "query_topic": f"/openral/perception/{spec['segment']}/detector_query",
+                "detector_id": spec["alias"],
+                "use_sim_time": use_sim_time,
+            }
+            locator_node = LifecycleNode(
+                package="openral_perception_ros",
+                executable="ros_image_detector_node.py",
+                name=spec["node"],
+                namespace="",
+                parameters=[locator_params],
+                additional_env=otel_env,
+                output="screen",
+            )
+            extra_nodes.append(locator_node)
+            autostart += _autostart_lifecycle(locator_node, spec["node"])
+
     nodes: list = [
         safety_kernel,
         runtime,
@@ -1268,6 +1336,18 @@ def generate_launch_description() -> LaunchDescription:
                 "detector (e.g. 'red mug'). Empty = the manifest's detector.labels "
                 "default. Retarget live by publishing a std_msgs/String to "
                 "/openral/perception/detector_query. Ignored by ONNX detectors."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "object_detector_locators",
+            default_value="",
+            description=(
+                "ADR-0056 — comma-separated kind:detector manifest paths for the "
+                "on-demand open-vocab locators to bring up alongside the continuous "
+                "detector. Each becomes a namespaced lifecycle node serving "
+                "/openral/perception/<alias>/locate_in_view, selectable by the "
+                "reasoner via LocateInViewTool.detector. Empty = no on-demand "
+                "locator. Ignored unless enable_object_detector is true."
             ),
         ),
         DeclareLaunchArgument(

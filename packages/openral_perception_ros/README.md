@@ -45,6 +45,9 @@ so the geometry is consistent (ADR-0035 §3).
 | `input_size` | int | `640` | Square model input edge. |
 | `max_rate_hz` | double | `5.0` | Publish-rate cap. |
 | `labels` | string[] | — (required) | COCO-80 class names indexed by class-id. |
+| `query_topic` | string | `/openral/perception/detector_query` | ADR-0037 — open-vocab retarget topic (on-demand). Namespaced per locator (ADR-0056). |
+| `locate_in_view_service` | string | `/openral/perception/locate_in_view` | ADR-0056 — service name. The deploy launch sets it to `/openral/perception/<alias>/locate_in_view` per on-demand locator so several locators co-exist. |
+| `detector_id` | string | `""` | ADR-0056 — this locator's alias, echoed in the `LocateInView` response so the reasoner records which model answered. |
 
 ### Topics
 
@@ -75,6 +78,16 @@ The launch forwards `onnx_path`/`manifest_path`, `labels`, `model_id`,
 manifest's `DetectorEngine` (`vlm_sidecar` 0.5 Hz, `zeroshot_hf` 2 Hz, ONNX 5 Hz). The detection camera can render at up to 640² with
 resolution-consistent intrinsics so the lift scales `bbox_xyxy` to the
 intrinsics correctly.
+
+**On-demand locators (ADR-0056).** Alongside the continuous detector, the deploy
+launch can bring up one or more `mode: on_demand` open-vocab locators — each as
+its **own** lifecycle node serving a namespaced
+`/openral/perception/<alias>/locate_in_view`, so the reasoner picks a model via
+`LocateInViewTool.detector`. Default = `omdet-turbo-locator` (when the omdet deps
+import); add more with the repeatable `--object-detector-locator <manifest|alias>`
+(LocateAnything is opt-in — NVIDIA non-commercial, 5 GB, needs the sidecar venv).
+Each locator is an independent lifecycle + VRAM peer (ADR-0050), so the reasoner
+can evict it before a co-resident VLA.
 
 ## What's in here
 

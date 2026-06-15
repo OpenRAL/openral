@@ -6146,11 +6146,19 @@ class LocateInViewTool(_ReasonerToolBase):
             primary camera; otherwise names one of the detector's configured
             cameras so the reasoner can pick a viewpoint. **Not a hardcoded
             name** — the detector is camera-agnostic and maps the id to a topic.
+        detector: Optional on-demand locator selector (ADR-0056). Empty (default)
+            uses the deployment's default locator; otherwise an rSkill id / short
+            alias of one of the on-demand locators in the graph (e.g.
+            ``"omdet-turbo-locator"`` for fast simple "find X",
+            ``"locateanything-3b"`` for complex referring expressions). The
+            reasoner routes to ``/openral/perception/<detector>/locate_in_view``.
+            Still **read-only** — choosing a model does not grant actuation.
     """
 
     tool: Literal["locate_in_view"] = "locate_in_view"
     query: str = Field(min_length=1)
     camera: str = ""
+    detector: str = ""
 
 
 class QuerySceneTool(_ReasonerToolBase):
