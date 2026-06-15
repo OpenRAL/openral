@@ -71,6 +71,18 @@ Gating spike for ADR-0057 (`kind: reward` rSkill). See
 
 - Model loads locally via the pinned `robometer` package (class `RBM`, 4.447 B params, all 3 heads present); a full forward runs on CPU and emits per-frame progress + success. Vanilla `AutoModel` confirmed insufficient. transformers **must** be pinned to `4.57.1`. Discrete mode yields the desired normalized 0–1 per-frame progress + success. Proceed to Phase 1.
 
+## Phase 2 — NF4 quantization (✅ empirically confirmed)
+
+Probe: `_vendor/quant_probe.py` (replicates `openral_sim._quantization.quantize_nf4_in_place`:
+`nn.Linear` with `weight.numel() >= 4M` → `bnb.nn.Linear4bit(quant_type="nf4", compute_dtype=bf16)`;
+pack on `.to(cuda)`). Run with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
+
+- **236** Linear modules rewritten to NF4.
+- **NF4 resident VRAM: 3.33 GB** (down from 8.91 GB bf16).
+- **Peak VRAM incl. 8-frame @224 forward: 3.56 GB** → **4.44 GB headroom** on the 8 GB GPU.
+- Forward still correct post-quant (discrete mode): `progress_pred (8,)` ∈ [0.43, 0.54], `success_probs (8,)` ∈ [0.06, 0.29].
+- **Parallel-to-VLA verdict (revised): FEASIBLE on 8 GB.** Robometer NF4 (~3.56 GB peak, 8 frames) + a small NF4 VLA (SmolVLA ~1.5–2 GB) ≈ 5.5 GB. Caveat: activation peak scales with frame-window size / resolution / num_bins — keep the window bounded. The `quantize_rskill.py` `--loader transformers` path will NOT work as-is (no `auto_map`); production packaging must quantize via the `robometer` loader (this probe's path) and teach the sidecar's load-back to use it.
+
 ## Environment / host facts
 
 - Reference host: RTX 4070 Laptop, 8 GB (7.8 GB free). Disk: 69 GB free (93% used). HF cache already 162 GB.
