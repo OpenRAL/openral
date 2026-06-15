@@ -161,7 +161,7 @@ The model emits no action chunks and has no proprioception contract.
 | `role` / `kind` | `s2` / `reward` |
 | `runtime` | `pytorch` |
 | `quantization.dtype` / `scheme` | `int4` / `nf4` |
-| `weights_uri` | `hf://OpenRAL/rskill-robometer-4b-nf4` |
+| `weights_uri` | `hf://robometer/Robometer-4B` (SHA-pinned; NF4-quantized on load) |
 | `min_vram_gb.bf16` | 9.0 GB |
 | `min_vram_gb.int4` | 3.6 GB |
 | `reward.frame_window_s` / `target_fps` | 8.0 s / 3.0 fps |

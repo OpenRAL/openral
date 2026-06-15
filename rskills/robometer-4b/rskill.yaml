@@ -44,7 +44,11 @@ min_vram_gb:
   bf16: 9.0
   int4: 3.6
 
-weights_uri: "hf://OpenRAL/rskill-robometer-4b-nf4"
+# The sidecar quantizes to NF4 on load via the robometer loader (no pre-NF4
+# repo published yet), so weights_uri points at the loadable Apache-2.0 upstream,
+# SHA-pinned. A future pre-quantized OpenRAL/rskill-robometer-4b-nf4 repo can
+# replace this once the loader gains a pre-quantized fast path.
+weights_uri: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa34"
 
 chunk_size: 1
 latency_budget:

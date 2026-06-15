@@ -1,0 +1,40 @@
+# ADR-0057 — ask the Robometer reward monitor (kind: "reward") how the CURRENT
+# task is progressing / succeeding, on demand, over a rolling window.
+#
+# Called by the reasoner's read-only `query_task_progress` tool dispatch. The
+# reward monitor node continuously buffers the co-active VLA's camera frames and
+# scores the requested window with the NF4 Robometer model, returning per-frame
+# normalized progress + success aggregated to a windowed assessment. Read-only:
+# the signal is ADVISORY (it feeds the replanning ladder), never actuation.
+#
+# Request:
+#   window_s — how many seconds of recent frames to assess. Clamped to the
+#              monitor's configured frame_window_s.
+#   task     — the natural-language task instruction the VLA is executing; sent
+#              to the reward model alongside the frames. Empty = reuse the
+#              instruction the monitor was last given.
+#
+# Response:
+#   ok             — true iff a frame window was available and the sidecar scored
+#                    it. False on stale/no-frame or sidecar error.
+#   progress_now   — normalized progress in [0,1] at the latest frame.
+#   success_now    — success probability in [0,1] at the latest frame.
+#   progress_trend — least-squares slope of progress over the window (per frame).
+#   success_trend  — least-squares slope of success over the window (per frame).
+#   stalled        — true iff |progress_trend| is ~0 (no progress over the window).
+#   succeeded      — true iff success_now >= the manifest success_threshold.
+#   frames_seen    — number of frames scored in the window.
+#   stale          — true iff no fresh frame arrived within the staleness deadline.
+
+float64 window_s
+string task
+---
+bool ok
+float64 progress_now
+float64 success_now
+float64 progress_trend
+float64 success_trend
+bool stalled
+bool succeeded
+int32 frames_seen
+bool stale
