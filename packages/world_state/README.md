@@ -101,14 +101,20 @@ just test-integration # PYTHONPATH-aware pytest run for the launch tests
 ## Object-lift — 2D→3D spatial memory (ADR-0035)
 
 When `object_lift_enabled` is `True` (the default), the node also subscribes the
-object-detector output and the 3D occupancy voxel grid, lifts each 2D detection to a
+object-detector output and a depth source, lifts each 2D detection to a
 `map`-frame 3D centre via `VoxelFrustumLifter`, and maintains a temporal `ObjectMemory`.
 Results are written into `WorldStateAggregator.update_detected_objects()` so
 `WorldState.detected_objects` is non-empty for the first time.
 
-**Best-effort contract:** a missing, empty, or stale voxel grid is a normal condition.
-When there is no usable grid the node publishes `WorldState` with `detected_objects == []`
-unchanged from today — no error, no warning spam, no degradation of the snapshot path.
+The depth source is the 3D occupancy voxel grid (`object_voxels_topic`) when a fresh
+one is available; otherwise — ADR-0035 amendment (#11) — the node **falls back to the
+depth camera point cloud** (`object_depth_points_topic`) decoded by
+`depth_cloud_to_centers_base`. This decouples the lift from octomap, so spatial-memory
+ingest (and `recall_object`) work even with `--no-enable-octomap`.
+
+**Best-effort contract:** a missing, empty, or stale depth source is a normal condition.
+When there is neither a usable voxel grid nor a usable depth cloud the node publishes
+`WorldState` with `detected_objects == []` — no error, no warning spam, no degradation.
 The node **never fabricates a pose**: any path lacking a truthful 3D lift (no `map` TF,
 no camera intrinsics, no in-frustum voxels, stale grid) silently skips the detection.
 
@@ -126,7 +132,9 @@ the spatial memory.
 | --- | --- | --- |
 | `object_lift_enabled` | `True` | Master toggle. `False` → feature fully inert; no subscriptions or timer are created. |
 | `object_detections_topic` | `/openral/perception/objects` | `PromptStamped` topic carrying `ObjectsMetadata` detections. |
-| `object_voxels_topic` | `/openral/world_voxels` | `OccupancyVoxels` topic (base frame, row-major x-fastest). |
+| `object_voxels_topic` | `/openral/world_voxels` | `OccupancyVoxels` topic (base frame, row-major x-fastest). Preferred depth source when fresh. |
+| `object_depth_points_topic` | `/openral/cameras/front_depth/points` | ADR-0035 amendment (#11) — depth `PointCloud2` used as the lift's depth source when no fresh voxel grid exists (e.g. `--no-enable-octomap`). Empty disables the fallback. |
+| `object_lift_depth_max_points` | `4000` | Cap on depth-cloud points fed to the lift (uniform subsample) so a dense cloud can't stall per-detection projection. |
 | `object_lift_map_frame` | `map` | Fixed frame used to anchor the object memory. |
 | `object_lift_k_nearest` | `25` | K voxels (nearest to box centre) used to estimate the 3D centre. |
 | `object_lift_min_voxels` | `3` | Minimum in-frustum voxels required to lift a detection; below this the detection is skipped. |

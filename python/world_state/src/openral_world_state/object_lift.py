@@ -25,6 +25,7 @@ __all__ = [
     "aabb_iou_3d",
     "build_in_fov_predicate",
     "decode_occupied_centers",
+    "depth_cloud_to_centers_base",
     "homogeneous_from_quat_xyz",
 ]
 
@@ -120,6 +121,42 @@ def decode_occupied_centers(
     iz = occ // (sx * sy)
     idx = np.stack([ix, iy, iz], axis=1).astype(np.float64)
     return np.asarray(origin, dtype=np.float64) + (idx + 0.5) * float(resolution)
+
+
+def depth_cloud_to_centers_base(
+    points_cloud: NDArray[np.float64],
+    t_base_from_cloud: NDArray[np.float64],
+    *,
+    max_points: int = 0,
+) -> NDArray[np.float64]:
+    """Depth-cloud points → occupied centers ``(M, 3)`` in the base frame (#11).
+
+    The octomap-free fallback depth source for :class:`VoxelFrustumLifter`. Drops
+    non-finite returns (depth holes), uniformly subsamples to ``max_points`` so
+    a dense cloud can't stall the per-detection projection, and maps the cloud
+    from its optical frame into the robot base frame. The result is
+    interchangeable with :func:`decode_occupied_centers` output as the lifter's
+    ``occupied_centers_base`` argument.
+
+    Args:
+        points_cloud: ``(N, 3)`` raw cloud points in the camera optical frame.
+        t_base_from_cloud: ``(4, 4)`` transform mapping cloud-frame points into
+            the robot base frame.
+        max_points: Cap on returned points (uniform stride). ``0`` = no cap.
+
+    Returns:
+        An ``(M, 3)`` float64 array of finite points in the base frame, or shape
+        ``(0, 3)`` when the cloud has no finite points.
+    """
+    pts: NDArray[np.float64] = np.asarray(points_cloud, dtype=np.float64).reshape(-1, 3)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if pts.shape[0] == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    if max_points and pts.shape[0] > max_points:
+        stride = pts.shape[0] // max_points + 1
+        pts = pts[::stride]
+    homog = np.hstack([pts, np.ones((pts.shape[0], 1), dtype=np.float64)])
+    return np.ascontiguousarray((homog @ np.asarray(t_base_from_cloud, dtype=np.float64).T)[:, :3])
 
 
 def aabb_iou_3d(

@@ -542,10 +542,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "simulation-only. Use `openral deploy sim` instead of `openral deploy run`."
         )
 
-    # ADR-0025 — slam_toolbox defaults to ON when the robot declares a
-    # lidar in its capabilities. The CLI `--enable-slam` / `--no-enable-slam`
-    # remains the explicit override. `enable_slam is None` means "auto":
-    # honour the robot manifest; anything else wins.
+    # ADR-0025 (#11) — SLAM is ON BY DEFAULT for every robot that *can* run it:
+    # i.e. one that declares a lidar (the scan source slam_toolbox needs). This
+    # is the firm default — a SLAM-capable robot always brings up the `map` frame
+    # the object lift / spatial-memory ingest depend on, unless the operator
+    # opts out with `--no-enable-slam`. Fixed-base arms (no mobile base, no lidar)
+    # correctly stay off — there is no base to localise and nothing to map.
+    # `enable_slam is None` means "auto": honour the manifest; an explicit flag wins.
     if enable_slam is None:
         enable_slam = bool(description.capabilities.has_lidar)
     # ADR-0025 — Nav2 auto-enables alongside slam_toolbox: every

@@ -10,6 +10,7 @@ from openral_world_state.object_lift import (
     aabb_iou_3d,
     build_in_fov_predicate,
     decode_occupied_centers,
+    depth_cloud_to_centers_base,
     homogeneous_from_quat_xyz,
 )
 
@@ -236,3 +237,42 @@ def test_public_reexports():
     assert ws.aabb_iou_3d is not None
     assert ws.build_in_fov_predicate is not None
     assert ws.decode_occupied_centers is not None
+    assert ws.depth_cloud_to_centers_base is not None
+
+
+# ── #11 depth-cloud fallback (octomap-free lift depth source) ──────────────────
+
+
+def test_depth_cloud_transforms_to_base_frame():
+    # Cloud in an optical frame translated +1 m in base x; identity rotation.
+    t_base_from_cloud = homogeneous_from_quat_xyz((1.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+    pts = np.array([[0.0, 0.0, 2.0], [0.5, -0.5, 3.0]], dtype=np.float64)
+    out = depth_cloud_to_centers_base(pts, t_base_from_cloud)
+    assert out.shape == (2, 3)
+    assert np.allclose(out[0], [1.0, 0.0, 2.0])
+    assert np.allclose(out[1], [1.5, -0.5, 3.0])
+
+
+def test_depth_cloud_drops_non_finite_points():
+    t = np.eye(4, dtype=np.float64)
+    pts = np.array(
+        [[1.0, 1.0, 1.0], [np.nan, 0.0, 0.0], [0.0, np.inf, 0.0], [2.0, 2.0, 2.0]],
+        dtype=np.float64,
+    )
+    out = depth_cloud_to_centers_base(pts, t)
+    assert out.shape == (2, 3)
+    assert np.allclose(out, [[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+
+
+def test_depth_cloud_all_non_finite_returns_empty():
+    out = depth_cloud_to_centers_base(
+        np.full((4, 3), np.nan, dtype=np.float64), np.eye(4, dtype=np.float64)
+    )
+    assert out.shape == (0, 3)
+
+
+def test_depth_cloud_subsamples_to_max_points():
+    pts = np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float64), (1000, 1))
+    out = depth_cloud_to_centers_base(pts, np.eye(4, dtype=np.float64), max_points=100)
+    # Uniform stride keeps it at or below the cap (never silently unbounded).
+    assert 0 < out.shape[0] <= 100
