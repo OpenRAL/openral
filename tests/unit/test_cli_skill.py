@@ -17,7 +17,10 @@ Coverage
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from openral_cli.main import app
@@ -247,3 +250,125 @@ class TestSkillInstall:
             result = runner.invoke(app, ["rskill", "install", "test/rskill-alpha"])
         assert result.exit_code != 0
         assert "Failed to fetch manifest" in result.output
+
+    def test_bare_name_suggests_org_without_network(self) -> None:
+        """An org-less id must fail fast with an OpenRAL/ suggestion and never hit HF."""
+        mock_hf_download = MagicMock(side_effect=AssertionError("must not download"))
+        with patch("huggingface_hub.hf_hub_download", mock_hf_download):
+            result = runner.invoke(
+                app, ["rskill", "install", "rskill-qwen35-4b-nf4"], catch_exceptions=False
+            )
+        assert result.exit_code != 0
+        # Suggests the canonical org-qualified id …
+        assert "OpenRAL/rskill-qwen35-4b-nf4" in result.output
+        # … and points at the discovery command.
+        assert "rskill search" in result.output
+        # The org-less guard short-circuits before any network call.
+        mock_hf_download.assert_not_called()
+
+
+# ── ral skill search ───────────────────────────────────────────────────────────
+
+
+class TestSkillSearch:
+    """Tests for ``openral rskill search`` (ADR-0055 D4).
+
+    The HF network boundary is the only thing doubled: a *recorded* set of
+    ``OpenRAL/*`` repo ids stands in for ``HfApi.list_models`` and each hit's
+    manifest is resolved to a *real* in-tree ``rskills/<id>/rskill.yaml`` fixture
+    (CLAUDE.md §1.11 — recorded responses + real fixtures, no placeholders).
+    """
+
+    REPO_ROOT: ClassVar[Path] = Path(__file__).resolve().parents[2]
+
+    # Recorded OpenRAL org listing — mirrors real in-tree skills. The third repo
+    # has no rskill.yaml on the Hub and must be excluded from results.
+    _RECORDED_IDS: ClassVar[list[str]] = [
+        "OpenRAL/rskill-act-aloha",
+        "OpenRAL/rskill-omdet-turbo-locator",
+        "OpenRAL/rskill-broken-no-manifest",
+    ]
+    _MANIFEST_FIXTURES: ClassVar[dict[str, str]] = {
+        "OpenRAL/rskill-act-aloha": "rskills/act-aloha/rskill.yaml",
+        "OpenRAL/rskill-omdet-turbo-locator": "rskills/omdet-turbo-locator/rskill.yaml",
+    }
+
+    def _run_search(
+        self,
+        *args: str,
+        recorded_ids: list[str] | None = None,
+        capture: dict[str, object] | None = None,
+    ) -> CliRunner.Result:
+        recorded = recorded_ids if recorded_ids is not None else self._RECORDED_IDS
+        cap = capture if capture is not None else {}
+
+        def fake_list_models(
+            *, author: str, search: str | None = None, limit: int | None = None, **_: object
+        ) -> list[SimpleNamespace]:
+            cap["author"] = author
+            cap["search"] = search
+            cap["limit"] = limit
+            return [SimpleNamespace(id=i) for i in recorded]
+
+        fake_api = MagicMock()
+        fake_api.list_models.side_effect = fake_list_models
+
+        def fake_download(*, repo_id: str, filename: str, **_: object) -> str:
+            rel = self._MANIFEST_FIXTURES.get(repo_id)
+            if rel is None:
+                raise RuntimeError(f"404: no {filename} for {repo_id}")
+            return str(self.REPO_ROOT / rel)
+
+        with (
+            patch("huggingface_hub.HfApi", return_value=fake_api),
+            patch("huggingface_hub.hf_hub_download", side_effect=fake_download),
+            # Widen the Rich console so long repo ids render unwrapped in the table.
+            patch.dict(os.environ, {"COLUMNS": "200"}),
+        ):
+            return runner.invoke(app, ["rskill", "search", *args], catch_exceptions=False)
+
+    def test_lists_valid_skills_with_install_hint(self) -> None:
+        result = self._run_search("aloha")
+        assert result.exit_code == 0
+        assert "rskill-act-aloha" in result.output
+        assert "rskill-omdet-turbo-locator" in result.output
+        assert "rskill install" in result.output
+
+    def test_searches_openral_org(self) -> None:
+        cap: dict[str, object] = {}
+        result = self._run_search("aloha", capture=cap)
+        assert result.exit_code == 0
+        assert cap["author"] == "OpenRAL"
+        assert cap["search"] == "aloha"
+
+    def test_manifestless_repo_excluded_and_skip_surfaced(self) -> None:
+        result = self._run_search()
+        assert result.exit_code == 0
+        assert "broken-no-manifest" not in result.output
+        assert "skipped" in result.output.lower()
+
+    def test_kind_filter_narrows_results(self) -> None:
+        result = self._run_search("--kind", "detector")
+        assert result.exit_code == 0
+        assert "rskill-omdet-turbo-locator" in result.output
+        assert "rskill-act-aloha" not in result.output
+
+    def test_license_filter_narrows_results(self) -> None:
+        result = self._run_search("--license", "mit")
+        assert result.exit_code == 0
+        assert "rskill-act-aloha" in result.output
+        assert "rskill-omdet-turbo-locator" not in result.output
+
+    def test_no_results_is_friendly(self) -> None:
+        result = self._run_search("nonesuch", recorded_ids=[])
+        assert result.exit_code == 0
+        assert "No rSkills" in result.output
+
+    def test_json_output_is_valid(self) -> None:
+        result = self._run_search("--json")
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        ids = {row["repo_id"] for row in payload}
+        assert ids == {"OpenRAL/rskill-act-aloha", "OpenRAL/rskill-omdet-turbo-locator"}
+        for row in payload:
+            assert {"repo_id", "kind", "role", "license"} <= row.keys()

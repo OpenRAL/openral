@@ -207,6 +207,7 @@ uv run openral doctor
 # Discovery
 uv run openral detect                        # auto-detect robot + sensors → robot.yaml
 uv run openral sensor list                   # browse the sensor catalog
+uv run openral rskill search aloha           # discover rSkills on the OpenRAL Hub org
 uv run openral rskill list                   # list installed rSkills
 uv run openral rskill install OpenRAL/rskill-smolvla-libero
 uv run openral benchmark report              # aggregate eval/*.json results
