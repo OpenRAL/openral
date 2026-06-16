@@ -41,52 +41,25 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
-import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "qwen-vlm-sidecar"
 _VENV_ENV = "OPENRAL_QWEN_VLM_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_QWEN_VLM_SIDECAR_HOME"
 
-# transformers pin matches the runtime's 5.3.0 (Qwen3.5 support landed in the
-# 5.x line); the isolation value here is the bitsandbytes + qwen-vl-utils +
-# Gated-DeltaNet-kernel dep surface, plus process/VRAM separation (see module
-# docstring). ``fla`` / ``causal-conv1d`` are the optional fast linear-attention
-# kernels Qwen3.5 uses; without them transformers falls back to slower PyTorch
-# ops but the model still loads, so they are best-effort (installed if the
-# wheels resolve on this platform).
-_DEPS = (
-    "transformers==5.3.0",
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "accelerate",
-    "bitsandbytes",
-    "qwen-vl-utils",
-    "pillow",
-    "einops",
-    "safetensors",
-    "pyzmq",
-    "msgpack",
-)
-
-
-def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    """Run ``cmd`` and raise on non-zero exit."""
-    print(f"[qwen-sidecar] $ {' '.join(shlex.quote(c) for c in cmd)}", flush=True)
-    subprocess.run(cmd, env=env, check=True)
-
-
-def _ensure_uv() -> str:
-    uv = shutil.which("uv")
-    if uv is None:
-        raise SystemExit(
-            "uv not found on PATH. Install it: "
-            "https://docs.astral.sh/uv/getting-started/installation/"
-        )
-    return uv
+# Fully-pinned, hash-locked deps. transformers==5.3.0 matches the runtime pin
+# (Qwen3.5 support landed in the 5.x line); torch/torchvision resolve to +cu128.
+# ``fla`` / ``causal-conv1d`` (optional Gated-DeltaNet kernels) are intentionally
+# NOT in the lock — without them transformers falls back to slower PyTorch ops
+# but the model still loads, and their wheels do not resolve on every platform.
+# Regenerate after editing the .in source with:
+#   uv pip compile tools/sidecar_requirements/qwen_vlm.in \
+#     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     -o tools/sidecar_requirements/qwen_vlm.lock
+_LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "qwen_vlm.lock"
 
 
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
@@ -94,28 +67,31 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
 
     ``override`` (or ``$OPENRAL_QWEN_VLM_SIDECAR_VENV``) points at an existing
     venv to reuse instead of provisioning one under ``home`` — handy for
-    development against an already-built env.
+    development against an already-built env. Otherwise a Python 3.12 venv is
+    provisioned from the hash-locked ``qwen_vlm.lock`` for reproducibility
+    (CLAUDE.md §1.8).
     """
-    override = override or os.environ.get(_VENV_ENV)
-    if override:
-        py = Path(override) / "bin" / "python"
-        if not py.exists():
-            raise SystemExit(f"{_VENV_ENV} points at {override} but {py} does not exist")
-        return py
 
-    uv = _ensure_uv()
-    venv = home / ".venv"
-    py = venv / "bin" / "python"
-    sentinel = venv / ".deps-installed"
-    if py.exists() and sentinel.exists():
-        print(f"[qwen-sidecar] reusing venv at {venv}", flush=True)
-        return py
+    def _install(uv: str, py: Path) -> None:
+        # ``-r <lock>`` installs the pinned, hash-bearing lock (uv verifies the
+        # recorded hashes); we deliberately do NOT pass ``--require-hashes`` —
+        # the cu128 torch wheels surface a marker-only transitive (torchcodec)
+        # that uv's compile drops, which --require-hashes rejects even though it
+        # is never installed on this platform. Pinned versions still give the
+        # reproducibility we want (CLAUDE.md §1.8).
+        run_cmd(
+            "qwen-sidecar",
+            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "-r", str(_LOCK)],
+        )
 
-    home.mkdir(parents=True, exist_ok=True)
-    _run([uv, "venv", str(venv), "--python", "3.12"])
-    _run([uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", *_DEPS])
-    sentinel.write_text("ok\n")
-    return py
+    return ensure_pip_venv(
+        label="qwen-sidecar",
+        home=home,
+        python="3.12",
+        install=_install,
+        override=override,
+        override_env=_VENV_ENV,
+    )
 
 
 def main() -> int:

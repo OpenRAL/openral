@@ -1,0 +1,21 @@
+# Source requirements for the LocateAnything-3B sidecar venv (Python 3.12).
+# transformers==4.57.1 is the load-bearing pin (mirrors the nvidia/LocateAnything
+# Space requirements.txt); the rest are its known-good companions + ZMQ/msgpack
+# wire deps. Regenerate the lock with:
+#   uv pip compile tools/sidecar_requirements/locateanything.in \
+#     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     -o tools/sidecar_requirements/locateanything.lock
+transformers==4.57.1
+torch==2.8.0
+torchvision==0.23.0
+accelerate
+bitsandbytes
+peft
+decord==0.6.0
+lmdb
+opencv-python-headless==4.11.0.86
+einops
+safetensors
+pillow
+pyzmq
+msgpack

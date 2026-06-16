@@ -35,51 +35,22 @@ from __future__ import annotations
 
 import argparse
 import os
-import shlex
-import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "locateanything-sidecar"
 _VENV_ENV = "OPENRAL_LOCATEANYTHING_SIDECAR_VENV"
 _HOME_ENV = "OPENRAL_LOCATEANYTHING_SIDECAR_HOME"
 
-# Pins mirror the nvidia/LocateAnything Space requirements.txt (transformers
-# 4.57.1 is the load-bearing pin; the rest are its known-good companions) plus
-# the ZMQ/msgpack wire deps the server needs.
-_DEPS = (
-    "transformers==4.57.1",
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "accelerate",
-    "bitsandbytes",
-    "peft",
-    "decord==0.6.0",
-    "lmdb",
-    "opencv-python-headless==4.11.0.86",
-    "einops",
-    "safetensors",
-    "pillow",
-    "pyzmq",
-    "msgpack",
-)
-
-
-def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    """Run ``cmd`` and raise on non-zero exit."""
-    print(f"[la-sidecar] $ {' '.join(shlex.quote(c) for c in cmd)}", flush=True)
-    subprocess.run(cmd, env=env, check=True)
-
-
-def _ensure_uv() -> str:
-    uv = shutil.which("uv")
-    if uv is None:
-        raise SystemExit(
-            "uv not found on PATH. Install it: "
-            "https://docs.astral.sh/uv/getting-started/installation/"
-        )
-    return uv
+# Fully-pinned, hash-locked deps (transformers==4.57.1 is the load-bearing pin;
+# torch/torchvision resolve to the +cu128 wheels). Regenerate after editing the
+# .in source with:
+#   uv pip compile tools/sidecar_requirements/locateanything.in \
+#     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     -o tools/sidecar_requirements/locateanything.lock
+_LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "locateanything.lock"
 
 
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
@@ -88,27 +59,30 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
     ``override`` (or ``$OPENRAL_LOCATEANYTHING_SIDECAR_VENV``) points at an
     existing venv to reuse instead of provisioning one under ``home`` — handy
     for development against an already-built ``transformers==4.57.1`` env.
+    Otherwise a Python 3.12 venv is provisioned from the hash-locked
+    ``locateanything.lock`` so the env is reproducible (CLAUDE.md §1.8).
     """
-    override = override or os.environ.get(_VENV_ENV)
-    if override:
-        py = Path(override) / "bin" / "python"
-        if not py.exists():
-            raise SystemExit(f"{_VENV_ENV} points at {override} but {py} does not exist")
-        return py
 
-    uv = _ensure_uv()
-    venv = home / ".venv"
-    py = venv / "bin" / "python"
-    sentinel = venv / ".deps-installed"
-    if py.exists() and sentinel.exists():
-        print(f"[la-sidecar] reusing venv at {venv}", flush=True)
-        return py
+    def _install(uv: str, py: Path) -> None:
+        # ``-r <lock>`` installs the pinned, hash-bearing lock (uv verifies the
+        # recorded hashes); we deliberately do NOT pass ``--require-hashes`` —
+        # the cu128 torch wheels surface a marker-only transitive (torchcodec)
+        # that uv's compile drops, which --require-hashes rejects even though it
+        # is never installed on this platform. Pinned versions still give the
+        # reproducibility we want (CLAUDE.md §1.8).
+        run_cmd(
+            "la-sidecar",
+            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "-r", str(_LOCK)],
+        )
 
-    home.mkdir(parents=True, exist_ok=True)
-    _run([uv, "venv", str(venv), "--python", "3.12"])
-    _run([uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", *_DEPS])
-    sentinel.write_text("ok\n")
-    return py
+    return ensure_pip_venv(
+        label="la-sidecar",
+        home=home,
+        python="3.12",
+        install=_install,
+        override=override,
+        override_env=_VENV_ENV,
+    )
 
 
 def main() -> int:

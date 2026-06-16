@@ -63,6 +63,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
 from openral_sim.sidecar import SidecarClient
@@ -77,6 +78,18 @@ _ISAAC_SCENE_ID = "isaac_sim"
 _AUTO_SPAWN_ENV = "OPENRAL_ISAAC_AUTO_SPAWN"
 _SIDECAR_PYTHON_ENV = "OPENRAL_ISAAC_SIDECAR_PYTHON"
 _SIDECAR_SCRIPT_ENV = "OPENRAL_ISAAC_SIDECAR_SCRIPT"
+_AUTO_PROVISION_ENV = "OPENRAL_ISAAC_AUTO_PROVISION"
+
+# Default sidecar venv location + the (pinned) Isaac install. Isaac Sim / Isaac
+# Lab are ~50 GB, RTX-only, license-gated, and pulled from NVIDIA's own index —
+# they are never vendored (CLAUDE.md §1.9). So unlike the LocateAnything / Qwen
+# sidecars we do NOT auto-provision by default: provisioning runs only when the
+# operator opts in with OPENRAL_ISAAC_AUTO_PROVISION=1 (a multi-GB download), and
+# OPENRAL_ISAAC_SIDECAR_PYTHON always overrides. Pins mirror the manual recipe in
+# the ROSConfigError hint below; bump both together.
+_ISAAC_SIDECAR_HOME = Path.home() / ".cache" / "openral" / "isaac-sidecar"
+_ISAAC_PYTHON = "3.11"
+_ISAAC_DEPS = ("isaacsim[all]==5.1.0.0", "isaaclab==2.3.2", "pyzmq", "msgpack")
 # Default ZMQ endpoint. Distinct port from the RLDX sidecar (5555-ish) so the
 # two can coexist on one host.
 _DEFAULT_HOST = "127.0.0.1"
@@ -282,22 +295,69 @@ def _opt_num(
         return default
 
 
+def _provision_isaac_venv() -> Path:
+    """Create the isaac sidecar venv from the pinned NVIDIA-index install.
+
+    Opt-in (``OPENRAL_ISAAC_AUTO_PROVISION=1``) because it is a multi-GB,
+    RTX-only, license-gated download from NVIDIA's index. Uses the shared
+    :func:`ensure_pip_venv` provisioning order so it reuses an existing venv +
+    sentinel, matching the LocateAnything / Qwen sidecars. Returns the venv
+    python (``<home>/.venv/bin/python``).
+    """
+
+    def _install(uv: str, py: Path) -> None:
+        env = {**os.environ, "UV_HTTP_TIMEOUT": os.environ.get("UV_HTTP_TIMEOUT", "900")}
+        run_cmd(
+            "isaac-sidecar",
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(py),
+                "--extra-index-url",
+                "https://pypi.nvidia.com",
+                "--index-strategy",
+                "unsafe-best-match",
+                "--no-build-isolation-package",
+                "flatdict",
+                *_ISAAC_DEPS,
+            ],
+            env=env,
+        )
+
+    return ensure_pip_venv(
+        label="isaac-sidecar",
+        home=_ISAAC_SIDECAR_HOME,
+        python=_ISAAC_PYTHON,
+        install=_install,
+    )
+
+
 def _sidecar_python() -> Path:
-    """Resolve the isaac sidecar venv interpreter, or raise with the install hint."""
+    """Resolve the isaac sidecar venv interpreter, or raise with the install hint.
+
+    Resolution order: ``OPENRAL_ISAAC_SIDECAR_PYTHON`` override → an existing
+    default venv → opt-in auto-provision (``OPENRAL_ISAAC_AUTO_PROVISION=1``) →
+    a typed error carrying the exact manual commands.
+    """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
         p = Path(override).expanduser()
         if not p.is_file():
             raise ROSConfigError(f"{_SIDECAR_PYTHON_ENV}={override!r} is not a file.")
         return p
-    default = Path.home() / ".cache" / "openral" / "isaac-sidecar" / ".venv" / "bin" / "python"
+    default = _ISAAC_SIDECAR_HOME / ".venv" / "bin" / "python"
     if default.is_file():
         return default
+    if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
+        return _provision_isaac_venv()
     raise ROSConfigError(
         "Isaac Sim sidecar venv not found. It is an externally-provisioned "
         "dependency (NVIDIA Isaac Sim / Isaac Lab, separate license, RTX GPU; "
-        "ADR-0045). Provision it, then point "
-        f"{_SIDECAR_PYTHON_ENV} at its py3.11 python, e.g.:\n"
+        "ADR-0045). Set "
+        f"{_AUTO_PROVISION_ENV}=1 to auto-provision it (a multi-GB download), or "
+        f"provision it manually and point {_SIDECAR_PYTHON_ENV} at its py3.11 python:\n"
         "  uv venv --python 3.11 ~/.cache/openral/isaac-sidecar/.venv\n"
         "  UV_HTTP_TIMEOUT=900 uv pip install --python "
         "~/.cache/openral/isaac-sidecar/.venv/bin/python \\\n"
