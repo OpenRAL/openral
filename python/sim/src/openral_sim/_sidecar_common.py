@@ -121,6 +121,59 @@ def ensure_source(label: str, work: Path, repo_url: str) -> Path:
     return source
 
 
+def ensure_pip_venv(
+    *,
+    label: str,
+    home: Path,
+    python: str,
+    install: Callable[[str, Path], None],
+    override: str | None = None,
+    override_env: str | None = None,
+    sentinel_name: str = ".deps-installed",
+) -> Path:
+    """Create or reuse a ``<home>/.venv`` on ``python``, populated by ``install``.
+
+    Returns the venv's ``python``. Shared provisioning order for the
+    *pip-installable* sidecars (LocateAnything
+    detector, Qwen scene-VLM, Isaac auto-provision) — distinct from
+    :func:`run_sidecar`, which clones + execs a 3.10 policy venv:
+
+    1. An explicit ``override`` venv path (e.g. a ``--venv`` CLI arg) or the
+       ``override_env`` environment variable points at an existing venv to reuse
+       verbatim — the operator-provided escape hatch. Raises ``SystemExit`` if
+       that path has no ``bin/python``.
+    2. An already-provisioned ``<home>/.venv`` carrying the completion sentinel
+       is reused as-is.
+    3. Otherwise ``uv venv --python <python>`` creates it and ``install`` runs
+       once; the sentinel is written only on success, so an interrupted install
+       is retried rather than silently treated as done.
+
+    ``install`` receives ``(uv_path, venv_python)`` and is responsible for the
+    actual ``uv pip install`` (typically ``--require-hashes -r <lockfile>``).
+    """
+    resolved = override or (os.environ.get(override_env) if override_env else None)
+    if resolved:
+        py = Path(resolved).expanduser() / "bin" / "python"
+        if not py.exists():
+            raise SystemExit(
+                f"{override_env or 'override'} points at {resolved!r} but {py} does not exist"
+            )
+        print(f"[{label}] reusing operator-provided venv at {resolved}", flush=True)
+        return py
+    uv = ensure_uv()
+    venv = home / ".venv"
+    py = venv / "bin" / "python"
+    sentinel = venv / sentinel_name
+    if py.exists() and sentinel.exists():
+        print(f"[{label}] reusing venv at {venv}", flush=True)
+        return py
+    home.mkdir(parents=True, exist_ok=True)
+    run_cmd(label, [uv, "venv", str(venv), "--python", python])
+    install(uv, py)
+    sentinel.write_text("ok\n")
+    return py
+
+
 def make_isolated_env(venv: Path) -> dict[str, str]:
     """Build the environment for the sidecar interpreter.
 
