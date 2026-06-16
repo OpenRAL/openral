@@ -26,6 +26,10 @@ base_frame: "world"
 # `robot_descriptions` Python package ships an MJCF (`aloha_mj_description`)
 # only. Wire one of these once a wrapped-task-space VLA targets aloha.
 
+# ADR-0057 — unified asset block. MJCF-only (no URDF/SRDF wired yet).
+assets:
+  mjcf: "gym_aloha:bimanual_viperx_transfer_cube"
+
 joints:
   # 14-DoF: 2 arms × (6 revolute joints + 1 gripper)
   - name: "left_waist"
@@ -240,7 +244,6 @@ hal:
 # (the MjData default) sits below the joint limit and the position
 # actuator can't recover in a finite number of steps.  See ADR-0023.
 sim:
-  mjcf_uri: "gym_aloha:bimanual_viperx_transfer_cube"
   joint_qpos_addr:
     left_waist: 0
     left_shoulder: 1

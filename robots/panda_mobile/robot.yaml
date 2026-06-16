@@ -32,19 +32,18 @@ footprint_polygon: [[0.35, 0.25], [-0.35, 0.25], [-0.35, -0.25], [0.35, -0.25]]
 base_kinematics: "omni"
 
 # ADR-0027 — robot_state_publisher wiring. sim_e2e.launch.py reads
-# `urdf_path` (with the `python:<module>:<attribute>` form below
-# resolved via the `robot_descriptions` Python package so we don't
-# ship a 500-line URDF into the repo) and the launch starts
-# robot_state_publisher with that URDF, then a
-# static_transform_publisher to bridge base_link → panda_link0.
+# `assets.urdf.ref` (the `rd:panda_description` form below resolved via
+# the `robot_descriptions` Python package so we don't ship a 500-line
+# URDF into the repo) and the launch starts robot_state_publisher with
+# that URDF, then a static_transform_publisher to bridge
+# base_link → panda_link0.
 # Once active the per-link arm TF (panda_link0 → … → panda_hand) is
 # on /tf for openral_state_adapter's human300_16d assembler.
-urdf_path: "python:robot_descriptions.panda_description:URDF_PATH"
 # Self-collision ACM source for the offline lowering tool (ADR-0030). Vendored
 # Franka MoveIt SRDF; regenerate `allowed_collision_pairs` via
 # `openral collision lower --robot robots/panda_mobile/robot.yaml --acm-only`.
-srdf_path: "robots/panda_mobile/panda_mobile.srdf"
-urdf_root_frame: "panda_link0"
+#
+# ADR-0057 — unified asset block (URDF / SRDF). ``base_to_root_xyz_rpy``:
 # Franka mount offset on robocasa's OmronMobileBase. Identity in
 # both translation and rotation: post-6DoF-base-publish fix in
 # ``openral_hal.SimAttachedHAL.base_pose_6dof``, the HAL publishes
@@ -56,7 +55,12 @@ urdf_root_frame: "panda_link0"
 # and was double-counted on top of the 6DoF base z, pushing the
 # assembled ``base_to_eef.z`` to ~1.10 m vs sim_run's ~0.61 m and
 # making the policy reach 49 cm above the actual target.
-static_base_to_urdf_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+assets:
+  urdf:
+    ref: "rd:panda_description"
+    root_frame: "panda_link0"
+    base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  srdf: "file:panda_mobile.srdf"
 
 # ADR-0025 — declare which joints constitute the planar mobile base.
 # The generic ray-cast helper in

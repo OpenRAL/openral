@@ -29,13 +29,17 @@ base_frame: "ur5e_base_link"
 # URDF root link is ``base_link``; this robot.yaml uses
 # ``ur5e_base_link`` to keep names unambiguous in multi-arm cells, so
 # a static_transform bridges the two.
-urdf_path: "robot_descriptions:ur5e_description"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the
 # UR MoveIt SRDF (ros-industrial). Regenerate via
 # `openral collision lower --robot robots/ur5e/robot.yaml --write`.
-srdf_path: "robots/ur5e/ur5e.srdf"
-urdf_root_frame: "base_link"
-static_base_to_urdf_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# ADR-0057 — unified asset block (vendored URDF / MJCF / SRDF).
+assets:
+  urdf:
+    ref: "file:ur5e.urdf"
+    root_frame: "base_link"
+    base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  mjcf: "rd:ur5e_mj_description"
+  srdf: "file:ur5e.srdf"
 
 joints:
   - name: "shoulder_pan_joint"
@@ -152,8 +156,7 @@ hal:
 # for the sim baseline.  Source: ``universal_robots_ur5e/ur5e.xml`` in
 # mujoco_menagerie.  Default 1:1 joint→qpos/actuator mapping applies (the
 # UR5e has no gripper). See ADR-0023.
-sim:
-  mjcf_uri: "robot_descriptions:ur5e_mj_description"
+sim: {}
 
 onboard_compute:
   driver_license: "BSD-3-Clause"             # ur_robot_driver

@@ -28,7 +28,11 @@ base_frame: "base"
 # ADR-0030 — URDF for the offline collision-lowering tool (geometry + joint FK).
 # robot_descriptions ships a real URDF for the SO-ARM101. No SRDF with matching
 # link names, so the ACM uses the conservative sampling fallback.
-urdf_path: "python:robot_descriptions.so_arm101_description:URDF_PATH"
+# ADR-0057 — unified asset block (URDF / MJCF).
+assets:
+  urdf:
+    ref: "rd:so_arm101_description"
+  mjcf: "rd:so_arm101_mj_description"
 
 joints:
   - name: "shoulder_pan"
@@ -193,7 +197,6 @@ hal:
 # ``affine_low_high`` (same as SO-100). The qpos slot for the jaw is
 # index 5 (sixth joint in the kinematic chain).
 sim:
-  mjcf_uri: "robot_descriptions:so_arm101_mj_description"
   grippers:
     - joint: "gripper"
       ctrl_range: [-0.1745, 1.7453]

@@ -17,7 +17,11 @@ base_frame: "base"
 # ADR-0027 — robot_state_publisher wiring. `robot_descriptions` ships
 # the SO-ARM100 URDF (cloned from github.com/TheRobotStudio/SO-ARM100
 # on first import); root link is ``base``, matching our base_frame.
-urdf_path: "python:robot_descriptions.so_arm100_description:URDF_PATH"
+# ADR-0057 — unified asset block (URDF / MJCF).
+assets:
+  urdf:
+    ref: "rd:so_arm100_description"
+  mjcf: "rd:so_arm100_mj_description"
 
 joints:
   - name: "shoulder_pan"
@@ -180,7 +184,6 @@ hal:
 # position is non-zero (-0.174 rad), so gripper.read_mode is
 # ``affine_low_high``.  See ADR-0023.
 sim:
-  mjcf_uri: "robot_descriptions:so_arm100_mj_description"
   grippers:
     - joint: "gripper"
       ctrl_range: [-0.174, 1.75]
