@@ -176,5 +176,5 @@ PyPI / self-hosted" proposals have a paper trail to push against
   (private-gated).
 - ADR-0013 — `manifest.processors` per-file download (the rSkill
   contract evolution that builds on this substrate choice).
-- ADR-0012 — open-core licensing tiers (cross-references this ADR for
-  the open-tier distribution path).
+- ADR-0012 — licensing (uniform Apache-2.0; cross-references this ADR
+  for the distribution path).

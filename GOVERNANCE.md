@@ -49,10 +49,9 @@ contribute — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licensing & contributions
 
-OpenRAL uses a two-tier open-core licensing model
-([ADR-0012](docs/adr/0012-open-core-licensing.md)): the open core is
-Apache-2.0, and future commercial layers are source-available under PolyForm
-Small Business 1.0.0. Contributions are accepted under the Developer
+OpenRAL is licensed entirely under Apache-2.0
+([ADR-0012](docs/adr/0012-open-core-licensing.md)) — there is no commercial
+or source-available tier. Contributions are accepted under the Developer
 Certificate of Origin (DCO) — see [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
 
 ## Code of Conduct

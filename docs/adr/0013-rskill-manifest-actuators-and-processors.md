@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-05-24
 - Amended: 2026-05-24 (see Amendments below)
-- Related: ADR-0012 (open-core licensing), CLAUDE.md §1.6 (schemas evolve
+- Related: ADR-0012 (licensing), CLAUDE.md §1.6 (schemas evolve
   never silently), §1.9 (license lineage), §6.4 (rSkill packaging),
   §7.4 (VLA license matrix); ADR-0009 (separate sim and benchmarking)
 - Supersedes: none (extends the manifest surface introduced earlier in
