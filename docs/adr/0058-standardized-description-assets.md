@@ -17,9 +17,9 @@
   silently — N/A here: RobotDescription has no `schema_version`), §1.9 (license lineage),
   §3 Layer 0 / 6, §3 Safety (safety-WG review + hazard log).
 
-> Design spec: [`docs/superpowers/specs/2026-06-16-standardize-robot-description-assets-design.md`](../superpowers/specs/2026-06-16-standardize-robot-description-assets-design.md)
-> (per-robot tables, empirical timings, phasing). This ADR records the
-> decision; the spec carries the working detail.
+> Design spec (per-robot tables, empirical timings, phasing) was kept as a
+> working document outside the repo and is not checked in; this ADR records the
+> decision and carries the load-bearing detail.
 
 ## Context
 
