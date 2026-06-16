@@ -153,8 +153,11 @@ def vendor_urdf(
         >>> from pathlib import Path
         >>> import tempfile
         >>> d = Path(tempfile.mkdtemp())
-        >>> out = vendor_urdf("ur5e", upstream="rd:ur5e_description", out_dir=d)
-        >>> out.name
+        >>> # vendor-urdf needs the optional `lowering` group (yourdfpy/xacrodoc):
+        >>> out = vendor_urdf(  # doctest: +SKIP
+        ...     "ur5e", upstream="rd:ur5e_description", out_dir=d
+        ... )
+        >>> out.name  # doctest: +SKIP
         'ur5e.urdf'
     """
     out_dir.mkdir(parents=True, exist_ok=True)
