@@ -12,15 +12,15 @@ from __future__ import annotations
 #: anchored implicitly. Anything not listed is NOT exposed — notably the
 #: safety/e-stop/action topics are absent on purpose.
 BUCKET1_TOPIC_WHITELIST: list[str] = [
-    r"/openral/cameras/.*/image",   # sensor_msgs/Image  — camera panels
-    r"/map",                        # nav_msgs/OccupancyGrid — 2D nav map
+    r"/openral/cameras/.*/image",  # sensor_msgs/Image  — camera panels
+    r"/map",  # nav_msgs/OccupancyGrid — 2D nav map
     r"/octomap_point_cloud_centers",  # sensor_msgs/PointCloud2 — voxels
-    r"/scan",                       # sensor_msgs/LaserScan — optional 2D laser
-    r"/odom",                       # nav_msgs/Odometry — optional trajectory
-    r"/joint_states",               # sensor_msgs/JointState — joint plot/URDF
-    r"/robot_description",          # std_msgs/String (URDF) — 3D robot model
-    r"/tf",                         # tf2_msgs/TFMessage — frames
-    r"/tf_static",                  # tf2_msgs/TFMessage — static frames
+    r"/scan",  # sensor_msgs/LaserScan — optional 2D laser
+    r"/odom",  # nav_msgs/Odometry — optional trajectory
+    r"/joint_states",  # sensor_msgs/JointState — joint plot/URDF
+    r"/robot_description",  # std_msgs/String (URDF) — 3D robot model
+    r"/tf",  # tf2_msgs/TFMessage — frames
+    r"/tf_static",  # tf2_msgs/TFMessage — static frames
 ]
 
 #: Read-only capability set. Omits ``clientPublish``, ``services``,

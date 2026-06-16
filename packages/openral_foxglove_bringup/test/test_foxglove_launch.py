@@ -8,18 +8,36 @@ read-only, and the safety/actuation topics are never exposed.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 from pathlib import Path
 
 import pytest
 
-from openral_foxglove_bringup.topics import (
-    BUCKET1_TOPIC_WHITELIST,
-    READ_ONLY_CAPABILITIES,
-)
+_PKG_DIR = Path(__file__).resolve().parent.parent
+_LAYOUT = _PKG_DIR / "config" / "openral_layout.json"
 
-_LAYOUT = Path(__file__).resolve().parent.parent / "config" / "openral_layout.json"
+
+def _load_topics() -> object:
+    """Load ``topics.py`` by path so the test runs without the ament package installed.
+
+    This package is an ament_cmake ROS package (not a uv/pip workspace member), so
+    ``import openral_foxglove_bringup`` is unavailable under the plain pytest run —
+    mirroring how ``openral_slam_bringup``'s launch test loads its target by path.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_fxbringup_topics", _PKG_DIR / "openral_foxglove_bringup" / "topics.py"
+    )
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_topics = _load_topics()
+BUCKET1_TOPIC_WHITELIST = _topics.BUCKET1_TOPIC_WHITELIST
+READ_ONLY_CAPABILITIES = _topics.READ_ONLY_CAPABILITIES
 
 # Topics that MUST NOT be reachable through the bridge: any of these matching
 # the allowlist would let a viewer see (and, if capabilities regressed,

@@ -41,7 +41,6 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-
 from openral_foxglove_bringup.topics import (
     BUCKET1_TOPIC_WHITELIST,
     READ_ONLY_CAPABILITIES,
@@ -115,7 +114,7 @@ def generate_launch_description() -> LaunchDescription:
                 "Filesystem path to a URDF for the state publishers. Resolve a "
                 "manifest robot's URDF with: ``python -c 'from "
                 "openral_core.urdf_resolve import resolve_urdf_path; "
-                "print(resolve_urdf_path(open(\"robots/<id>/robot.yaml\")...))'`` "
+                'print(resolve_urdf_path(open("robots/<id>/robot.yaml")...))\'`` '
                 "or directly via robot_descriptions (e.g. panda_description). "
                 "NOTE: openarm has no local URDF (ADR-0027)."
             ),
@@ -134,9 +133,7 @@ def generate_launch_description() -> LaunchDescription:
     # runs when a state-publisher node is actually included (conditioned
     # actions don't visit their substitutions otherwise).
     robot_description = {
-        "robot_description": ParameterValue(
-            Command(["cat ", urdf_path]), value_type=str
-        ),
+        "robot_description": ParameterValue(Command(["cat ", urdf_path]), value_type=str),
         "use_sim_time": use_sim_time,
     }
 
