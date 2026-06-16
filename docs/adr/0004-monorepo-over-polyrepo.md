@@ -33,8 +33,8 @@ CLAUDE.md §2:
 - `huggingface.co/openral/skill-*` — skill weights & manifests (one HF
   Hub repo per published rSkill; license-gated).
 - `huggingface.co/openral/dataset-*` — LeRobotDatasets.
-- `openral/cloud` — BSL-1.1 hosted observability / fleet control plane.
-- `openral/contrib-closed-shims` — NDA-restricted vendor adapters.
+- `openral/cloud` — hosted observability / fleet control plane (separate repo; different release cadence and audience).
+- `openral/contrib-closed-shims` — adapters for closed third-party vendor SDKs that cannot be redistributed (the SDK is closed, not OpenRAL).
 - `openral/awesome-ros` — community curation.
 
 These are split precisely because they have **different licensing,
@@ -70,12 +70,13 @@ Concrete rules:
    (e.g., `openral/cloud`) cross-reference but live here.
 4. **Single CHANGELOG generator** — `release-please` consumes
    Conventional Commits across the workspace and produces one release.
-5. **Closed / non-Apache pieces stay in their own repos.** The
-   monorepo is Apache-2.0 for the open-core tier (CLAUDE.md §1.9 +
-   ADR-0012). The PolyForm SBA tier (reasoner / wam / dispatcher /
-   skill_catalog / fleet) plans to land **here** under a different
-   per-directory `LICENSE`; the BSL cloud tier and the closed-shim
-   repo do **not**.
+5. **The whole monorepo is Apache-2.0.** Every package — including the
+   reasoner, wam, dispatcher, skill_catalog, and fleet orchestration
+   layers when they land — is Apache-2.0 (CLAUDE.md §1.9 + ADR-0012);
+   there is no commercial, source-available, or BSL tier. Adapters for
+   closed third-party vendor SDKs live in the separate
+   `openral/contrib-closed-shims` repo because the upstream SDK is
+   closed, not OpenRAL.
 
 ## Consequences
 
@@ -100,11 +101,10 @@ Concrete rules:
     incremental resolver + `just test` filters mitigate this.
   - A contributor only interested in `openral-core` still clones the
     whole tree. Acceptable price for the atomicity guarantees above.
-  - When the PolyForm SBA tier lands, the per-directory licensing
-    requires reviewers to know which subtree they're editing. ADR-0012
-    handles the license posture; a future tooling PR will surface it
-    in CI (`ral check-license` exists today for installed weights, not
-    for source-tree boundaries).
+  - The whole tree is one license (Apache-2.0), so reviewers need no
+    per-subtree licensing discipline (ADR-0012). `ral check-license`
+    surfaces *weight* posture for installed skills; it is not a
+    source-tree license gate (none is needed).
 
 ## Alternatives considered
 
@@ -137,8 +137,8 @@ have a paper trail to push against (CLAUDE.md §7.9).
 ## References
 
 - CLAUDE.md §2 (repo map), §1.13 (METHODS.md), §1.14 (docs travel),
-  §1.9 / ADR-0012 (open-core licensing).
+  §1.9 / ADR-0012 (licensing).
 - Root `pyproject.toml` — uv workspace + dependency-group conflicts.
 - `packages/` — ROS 2 colcon workspace.
 - `Justfile` — the canonical task runner.
-- ADR-0012 — per-tier licensing inside the same monorepo.
+- ADR-0012 — uniform Apache-2.0 licensing across the monorepo.

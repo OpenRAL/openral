@@ -10,7 +10,7 @@
   [issue #89](https://github.com/OpenRAL/openral/issues/89).
 
 > **Numbering note.** Issue #89's research write-up labelled this work
-> "ADR-0012" before [ADR-0012 (Open-core licensing)](0012-open-core-licensing.md)
+> "ADR-0012" before [ADR-0012 (Licensing)](0012-open-core-licensing.md)
 > landed in PR #87. The next free ADR slot is **0013**, which this
 > document takes; nothing else changes.
 
@@ -241,10 +241,10 @@ detection side beyond `RobotCapabilities.nvmm_available` (Decision 3).
   platform-conditional code path will have a recorded real-device
   fixture under `tests/unit/fixtures/jetson/` *or* a `pytest.skip`
   with a typed reason — never a `MagicMock`.
-- The licensing layer added by [ADR-0012](0012-open-core-licensing.md)
-  is unaffected: all the modules touched by PR 2/3 and PR 3/3
-  (`python/detect/`, `python/rskill/`, `python/runner/`, `python/cli/`,
-  `python/core/`) sit firmly in Tier 1 (Apache-2.0).
+- Licensing ([ADR-0012](0012-open-core-licensing.md)) is unaffected: all
+  the modules touched by PR 2/3 and PR 3/3 (`python/detect/`,
+  `python/rskill/`, `python/runner/`, `python/cli/`, `python/core/`) are
+  Apache-2.0, like the rest of the repo.
 
 ### Bad / costly
 

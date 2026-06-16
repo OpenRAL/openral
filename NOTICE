@@ -1,30 +1,22 @@
 OpenRAL — Open-Source Robot Agent Harness for Vision-Language-Action Models
 Copyright 2025-2026 OpenRAL Contributors
 
-This product is distributed under a two-tier licensing model
-established by ADR-0012 (docs/adr/0012-open-core-licensing.md):
+This product is licensed entirely under the Apache License, Version 2.0
+(see LICENSE and LICENSES/Apache-2.0.txt), per ADR-0012
+(docs/adr/0012-open-core-licensing.md). Every package in this monorepo —
+contracts, runtime substrate, simulators, HAL/sensors, observability
+primitives, safety code, the LLM reasoner, WAM adapters, dispatcher, skill
+catalog, fleet orchestration, examples, tests, docs, tools, scripts, robot
+manifests, and rSkill manifests — ships under the same license. There is no
+commercial, source-available, or otherwise non-open tier.
 
-  Tier 1 — Open Core
-    Contracts, runtime substrate, simulators, HAL/sensors,
-    observability primitives, safety code, examples, tests, docs,
-    tools, scripts, robot manifests, and rSkill manifests.
-    Licensed under the Apache License, Version 2.0 (see LICENSE and
-    LICENSES/Apache-2.0.txt).
-
-  Tier 2 — Commercial Source-Available  (no Tier 2 packages exist
-    on disk today; this notice pre-declares the posture for future
-    packages: reasoner, wam, dispatcher, skill_catalog, fleet).
-    Licensed under the PolyForm Small Business License 1.0.0 (see
-    LICENSES/PolyForm-Small-Business-1.0.0.txt) together with the
-    OpenRAL Academic Research Additional Permission (see
-    LICENSES/Academic-Research-Permission.txt). Each Tier 2 package
-    will ship its own LICENSE file when it lands.
-
-Skill weights distributed via Hugging Face Hub remain governed by
-their upstream licenses (SmolVLA Apache-2.0, π0 research-permissive,
-GR00T NVIDIA AI Foundation non-commercial, OpenVLA MIT, ACT MIT,
-Diffusion Policy MIT, etc.). The license-lineage code in
-python/skill/ surfaces the posture per skill at install time.
+Skill weights distributed via Hugging Face Hub remain governed by their own
+upstream licenses (SmolVLA Apache-2.0, pi0 research-permissive, GR00T NVIDIA
+non-commercial / NVIDIA Open Model, OpenVLA MIT, ACT MIT, Diffusion Policy
+MIT, etc.). The license-lineage code in python/rskill/ surfaces the posture
+per skill at install time. This is third-party license lineage for models
+OpenRAL does not own; it does not affect the Apache-2.0 license of OpenRAL's
+own code.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

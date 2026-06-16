@@ -62,6 +62,6 @@ Don't put their code in this monorepo:
 
 - `huggingface.co/openral/skill-*` — skill weights & manifests.
 - `huggingface.co/openral/dataset-*` — LeRobotDatasets.
-- `openral/cloud` — BSL-1.1 hosted observability/fleet control plane.
-- `openral/contrib-closed-shims` — private, NDA-restricted vendor shims.
+- `openral/cloud` — hosted observability/fleet control plane (separate repo).
+- `openral/contrib-closed-shims` — adapters for closed third-party vendor SDKs (the SDK is closed, not OpenRAL).
 - `openral/awesome-ros` — community curation.

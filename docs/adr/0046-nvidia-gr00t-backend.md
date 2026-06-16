@@ -4,7 +4,7 @@
 - **Date:** 2026-06-10
 - **Related:** ADR-0010 (RLDX-1 ZMQ sidecar — the architectural precedent this
   reuses), ADR-0006 (HF-Hub rSkill packaging + license guard), ADR-0012
-  (open-core licensing), ADR-0019 (state/action contract dims). Slot 0043 is
+  (licensing), ADR-0019 (state/action contract dims). Slot 0043 is
   reserved by ADR-0044; 0043=locate-in-view, 0045=isaac-sim-backend; 0045 is now taken by the Isaac Sim backend ADR, so this one takes 0046.
 
 ## Context

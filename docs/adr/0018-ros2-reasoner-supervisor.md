@@ -7,7 +7,7 @@
   pattern, **amendment required**), §7.6 (replanning ladder,
   **amendment required**); [ADR-0010](0010-inference-runner.md)
   (Inference Runner), [ADR-0011](0011-nvmm-handoff.md) (NVMM handoff),
-  [ADR-0012](0012-open-core-licensing.md) (Open-core licensing),
+  [ADR-0012](0012-open-core-licensing.md) (Licensing),
   [ADR-0017](0017-dashboard-otlp-receiver.md) (Dashboard receiver).
 
 ## Context
@@ -347,7 +347,7 @@ live in `contrib-closed-shims` / `openral/cloud`.
 ### Neutral / out-of-scope
 
 - C++ safety kernel internals — a future ADR replaces F5's pass-through.
-- Cloud dispatcher (BSL tier, ADR-0012) is not specified here. F4 selects
+- Cloud dispatcher (Apache-2.0 like the rest of the repo, ADR-0012) is not specified here. F4 selects
   the LLM endpoint via config; a cloud endpoint is just another endpoint
   for the LLM. Offloading heavy skills to cloud is a separate ADR.
 - Voice / Slack prompt adapters are post-v1 in separate packages.

@@ -320,12 +320,6 @@ See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANC
 
 ## License
 
-OpenRAL uses a **two-tier open-core licensing model** ([ADR-0012](docs/adr/0012-open-core-licensing.md)):
+OpenRAL is licensed entirely under **Apache-2.0** ([ADR-0012](docs/adr/0012-open-core-licensing.md)). Every package in this repository — contracts, runtime substrate, simulators, HAL & sensors, observability, safety code, the LLM reasoner, WAM adapters, dispatcher, skill catalog, fleet orchestration, examples, tests, tools, scripts, and manifests — ships under the same permissive license. There is no commercial, source-available, or otherwise non-open tier. See [LICENSE](LICENSE) and [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
 
-- **Tier 1 — Open Core (Apache-2.0).** Everything currently on disk: contracts, runtime substrate, simulators, HAL & sensors, observability, safety code, examples, tests, tools, scripts, and manifests. See [LICENSE](LICENSE) and [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
-
-- **Tier 2 — Commercial Source-Available (PolyForm SBL 1.0.0 + Academic Research Additional Permission).** Planned agentic/orchestration layers (`reasoner`, `wam`, `dispatcher`, `skill_catalog`, `fleet`) — **no Tier 2 code exists in this repo today**. When they land: free for organisations with <100 employees and <$1M revenue, and free for non-commercial academic/research use at any institution size. See [`LICENSES/PolyForm-Small-Business-1.0.0.txt`](LICENSES/PolyForm-Small-Business-1.0.0.txt) and [`LICENSES/Academic-Research-Permission.txt`](LICENSES/Academic-Research-Permission.txt).
-
-Safety code and observability primitives are deliberately Tier 1 so they remain auditable by certifiers and reproducible by researchers.
-
-rSkill weights distributed via Hugging Face Hub remain governed by their upstream licenses (Apache-2.0 / MIT / research-permissive / NVIDIA non-commercial / …); the loader surfaces the posture at install time.
+rSkill weights distributed via Hugging Face Hub remain governed by their own upstream licenses (Apache-2.0 / MIT / research-permissive / NVIDIA non-commercial / …); the loader surfaces each weight's posture at install time. This is third-party license lineage for models OpenRAL does not own — it does not affect the Apache-2.0 license of OpenRAL's own code.
