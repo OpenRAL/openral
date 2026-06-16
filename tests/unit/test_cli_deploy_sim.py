@@ -216,6 +216,9 @@ def test_deploy_sim_default_detector_falls_back_to_rtdetr_when_omdet_absent(
     onnx arg points at rskills/rtdetr-coco-r18/model.onnx.
     """
     monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: False)
+    # The RT-DETR ONNX is gitignored (absent in bare CI); assert the
+    # fallback-selection logic, not the presence of the binary.
+    monkeypatch.setattr(deploy_sim, "_object_detector_onnx_present", lambda _p: True)
     invocation = resolve_launch_invocation(
         config=_OPENARM_CONFIG,
         robot_override=None,
@@ -264,8 +267,13 @@ def test_deploy_sim_no_locator_when_omdet_absent(monkeypatch: pytest.MonkeyPatch
     assert "object_detector_locators:=" not in " ".join(invocation.argv_template)
 
 
-def test_deploy_sim_explicit_locator_alias_resolves_to_manifest() -> None:
+def test_deploy_sim_explicit_locator_alias_resolves_to_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An explicit --object-detector-locator alias resolves to its in-tree manifest."""
+    # Keep the detector leg on so locators resolve: the RT-DETR ONNX is gitignored
+    # (absent in bare CI), which would otherwise downgrade the leg off.
+    monkeypatch.setattr(deploy_sim, "_object_detector_onnx_present", lambda _p: True)
     invocation = resolve_launch_invocation(
         config=_OPENARM_CONFIG,
         robot_override=None,

@@ -445,6 +445,18 @@ def _omdet_runtime_available() -> bool:
     return all(importlib.util.find_spec(mod) is not None for mod in ("transformers", "timm"))
 
 
+def _object_detector_onnx_present(path: Path) -> bool:
+    """True when the fallback RT-DETR COCO ONNX weights are on disk.
+
+    The weights (``rskills/rtdetr-coco-r18/model.onnx``, ~2 MB) are gitignored, so
+    they are present on a weights-fetched dev host but absent in a bare CI
+    checkout. :func:`resolve_launch_invocation` downgrades the detector leg off
+    when neither omdet deps nor these weights can build a backend. Factored out so
+    tests can exercise the fallback-selection logic without the gitignored binary.
+    """
+    return path.is_file()
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -604,7 +616,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if (
         enable_object_detector
         and not resolved_object_detector_manifest
-        and not resolved_object_detector_onnx.is_file()
+        and not _object_detector_onnx_present(resolved_object_detector_onnx)
     ):
         _console.print(
             "[yellow]object detector requested but no backend is available[/yellow] "
@@ -614,6 +626,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "the RT-DETR weights, or pass --no-object-detector to silence."
         )
         enable_object_detector = False
+
+    # When the leg is off (explicit --no-object-detector or the downgrade above),
+    # do not forward a continuous-detector manifest: ros2 launch would otherwise
+    # carry a manifest for a node that never starts (and, with omdet deps present,
+    # a non-empty manifest:= for a disabled leg is simply wrong).
+    if not enable_object_detector:
+        resolved_object_detector_manifest = ""
 
     # ADR-0056 — on-demand open-vocab locators co-resident alongside the
     # continuous detector. Each token is a manifest path (``…/rskill.yaml``) or a
