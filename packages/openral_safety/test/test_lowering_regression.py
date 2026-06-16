@@ -59,11 +59,17 @@ ROBOTS = sorted(Path("robots").glob("*/robot.yaml"))
 # drifted it identically); it is a pre-existing condition the fleet-wide
 # regression now surfaces.
 #
-# Per ADR-0057 §5 / CLAUDE.md §3, reconciling it is a HUMAN gate: a deliberate
-# re-lower (or a decision to keep the hand geometry and regenerate only the ACM)
-# plus safety-WG sign-off — out of scope for an automated routing change. Marked
-# strict-xfail so it stays LOUD: the moment the manifest is reconciled and this
-# starts passing, the strict marker fails and forces removing this exception.
+# DECISION (ADR-0057 §5, recorded 2026-06-16): KEEP the hand-authored geometry.
+# A deliberate candidate re-lower was performed and REJECTED — it is not
+# at-least-as-conservative (CLAUDE.md §3): it shrinks link7's capsule
+# (radius 0.060 → 0.053 m, a smaller collision envelope) and drops the hand-tuned
+# ``panda_link5 ↔ panda_link7`` ACM exception, which would re-introduce the
+# spurious E-stop that exception was added to prevent (links 5/7 sit folded
+# together in the stowed config). The hand geometry is therefore AUTHORITATIVE.
+# This entry is an accepted, deliberately-not-auto-reproducible exception, not a
+# pending fix. Kept strict-xfail so it stays LOUD: if a future change makes the
+# auto-lowering reproduce the hand geometry, the strict marker fails and forces
+# revisiting this decision.
 #
 # Detected structurally (not by a hard-coded name) the same way the fleet guard
 # tests/unit/test_collision_lowering_fleet.py does: a tool-generated geometry
