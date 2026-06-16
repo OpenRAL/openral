@@ -28,11 +28,15 @@ base_frame: "panda_link0"
 # ADR-0027 — robot_state_publisher wiring. The Franka URDF's root link
 # matches our base_frame (``panda_link0``), so no static transform is
 # needed; sim_e2e.launch.py launches RSP directly with this URDF.
-urdf_path: "python:robot_descriptions.panda_description:URDF_PATH"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the Franka
 # MoveIt SRDF. Regenerate via
 # `openral collision lower --robot robots/franka_panda/robot.yaml --acm-only`.
-srdf_path: "robots/franka_panda/franka_panda.srdf"
+# ADR-0057 — unified asset block (URDF / MJCF / SRDF).
+assets:
+  urdf:
+    ref: "rd:panda_description"
+  mjcf: "rd:panda_mj_description"
+  srdf: "file:franka_panda.srdf"
 
 joints:
   - name: "panda_joint1"
@@ -246,7 +250,6 @@ hal:
 # whose ``ctrlrange`` is the Panda gripper finger force command (0..255).
 # See ADR-0023.
 sim:
-  mjcf_uri: "robot_descriptions:panda_mj_description"
   grippers:
     - joint: "panda_gripper"
       ctrl_range: [0.0, 255.0]

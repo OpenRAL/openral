@@ -27,13 +27,17 @@ base_frame: "ur10e_base_link"
 # ADR-0027 — robot_state_publisher wiring. Same pattern as ur5e — the
 # upstream UR URDF root is ``base_link``; we bridge to our namespaced
 # ``ur10e_base_link`` via a static transform.
-urdf_path: "robot_descriptions:ur10e_description"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the
 # UR MoveIt SRDF (ros-industrial). Regenerate via
 # `openral collision lower --robot robots/ur10e/robot.yaml --write`.
-srdf_path: "robots/ur10e/ur10e.srdf"
-urdf_root_frame: "base_link"
-static_base_to_urdf_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# ADR-0057 — unified asset block (vendored URDF / MJCF / SRDF).
+assets:
+  urdf:
+    ref: "file:ur10e.urdf"
+    root_frame: "base_link"
+    base_to_root_xyz_rpy: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  mjcf: "rd:ur10e_mj_description"
+  srdf: "file:ur10e.srdf"
 
 joints:
   - name: "shoulder_pan_joint"
@@ -150,8 +154,7 @@ hal:
 # for the sim baseline.  Source: ``universal_robots_ur10e/ur10e.xml`` in
 # mujoco_menagerie.  Default 1:1 mapping applies (no gripper).
 # See ADR-0023.
-sim:
-  mjcf_uri: "robot_descriptions:ur10e_mj_description"
+sim: {}
 
 onboard_compute:
   driver_license: "BSD-3-Clause"             # ur_robot_driver

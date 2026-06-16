@@ -20,7 +20,10 @@ base_frame: "base_link"
 # URDF declares ``base_link`` as the root (verified
 # /home/<user>/.cache/robot_descriptions/Wiki-GRx-Models/GRX/GR1/
 # GR1T1/urdf/GR1T1_nohand.urdf), matching our base_frame.
-urdf_path: "python:robot_descriptions.gr1_description:URDF_PATH"
+# ADR-0057 — unified asset block (URDF only).
+assets:
+  urdf:
+    ref: "rd:gr1_description"
 
 # Joints: 3-DoF waist + 7-DoF right arm + 7-DoF left arm. Limits mirror
 # the GR1 MJCF shipped by robosuite
