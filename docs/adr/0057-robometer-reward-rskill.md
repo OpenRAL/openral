@@ -1,9 +1,9 @@
 # ADR-0057 — `kind: reward` rSkills: robotic reward models as parallel task-progress monitors
 
-- **Status:** Accepted 2026-06-15. Phases 0/2/3 validated empirically on an
-  8 GB GPU (load, NF4 quantization, working ZMQ sidecar). Schema + manifest +
-  this ADR land here; production runner backend, Reasoner tool, and live sim
-  test follow in the same branch.
+- **Status:** Accepted 2026-06-15. Phases 0–5 + the live deploy-sim co-activation
+  all validated empirically on an 8 GB GPU (load, NF4, sidecar, reasoner tool,
+  and a live openarm deploy-sim run). See the **2026-06-16 amendment** below for
+  the pre-quantized meta-load, determinism, frame-bound, and co-activation wiring.
 - **Date:** 2026-06-15
 - **ADR number:** `0057`. `0056` is claimed by the in-flight
   `feat/multi-detector-locate` branch (on-demand detectors as reasoner tools);
@@ -117,3 +117,47 @@ OpenRAL, and how does its output reach the Reasoner?
   --loader transformers` does **not** work for this model (no `auto_map`);
   packaging must quantize via the `robometer` loader path.
 - Reward output is advisory; it can never gate motors or be on the control path.
+
+## Amendment — 2026-06-16: pre-quantized meta-load, determinism, frame-bound, co-activation
+
+Validated the production path end-to-end on an 8 GB RTX 4070, including a live
+openarm `deploy-sim` run with the reasoner and the reward monitor co-active.
+
+- **Pre-quantized meta-load.** A published NF4 checkpoint
+  (`OpenRAL/rskill-robometer-4b-nf4`, built by `tools/build_robometer_nf4_checkpoint.py`)
+  loads DIRECTLY as 4-bit: build the RBM skeleton on the `meta` device, install
+  empty `Linear4bit` shells, `Params4bit.from_prequantized` the packed weights,
+  and assign the folded non-persistent rotary buffers. ~1.7 s to install the
+  weights (process→ready ≈25 s, dominated by the model-graph build + imports, not
+  weights) vs ~110 s + a 19 GB transient CPU spike for the bf16-load-then-quantize
+  path. Proven **bit-identical** to that path (same-process `max|Δ| = 0`; 4-bit
+  dequant round-trip `0`). Shared helpers in `tools/_robometer_quant.py`; the
+  sidecar's `--mode auto` picks the meta path for a `*nf4*` repo or a local
+  pre-quantized dir, else the bf16 build path.
+- **Determinism.** The reward ramp is made byte-stable across process launches by
+  forcing the math SDP kernel + `use_deterministic_algorithms(True)` +
+  `CUBLAS_WORKSPACE_CONFIG=:4096:8` + `cudnn.allow_tf32=False`. (Without this, a
+  warmed vs cold process drifts ~0.006 purely from flash/mem-efficient SDP kernel
+  selection — not the load path.)
+- **Bounded activation.** The vision-transformer forward's activation memory
+  scales with the number of frames × resolution; a full 8 s × 3 fps window of
+  640×480 frames needs ~4.7 GiB and OOMs the 3.3 GB-resident model on 8 GB even
+  with no VLA. `RobometerReward(max_frames=8)` evenly subsamples the window
+  (`_evenly_spaced_indices`, end-inclusive) to keep the forward co-resident with
+  the sim (and a small NF4 VLA). Logged, never silent.
+- **`local://` weights.** A `kind: reward` manifest's `weights_uri` may be
+  `local:///abs/dir` (offline / pre-publish / air-gapped pre-quantized checkpoint);
+  the client strips the scheme and the sidecar meta-loads it. `hf://org/repo[@rev]`
+  unchanged.
+- **Deploy-sim co-activation.** `sim_e2e.launch.py` gains opt-in
+  `enable_reward_monitor` (default off): brings up `reward_monitor_node` PARALLEL
+  to the VLA (a plain `Node` — it stays co-active, not a lifecycle/VRAM peer the
+  reasoner frees) and sets the reasoner's `task_progress_available=True` so the
+  `query_task_progress` tool is offered only when a monitor is live. The reward
+  camera auto-resolves from `robot.yaml` (the VLA's RGB camera). CLI:
+  `openral deploy sim --enable-reward-monitor [--reward-monitor-manifest <yaml>]
+  [--reward-monitor-task <str>]`. The S2 system prompt now tells the reasoner to
+  poll the monitor when it sees fit to judge a running skill (advisory).
+- **Live result.** openarm deploy-sim, no GStreamer: reward service up, sidecar
+  meta-loaded (3.32 GB), `subsampling 19 → 8 frames`, and `query_task_progress`
+  returned `ok=True, progress=0.561, success=0.283` over the live sim camera.
