@@ -432,6 +432,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     object_detector_onnx: Path | None = None,
     object_detector_manifest: str | None = None,
     object_detector_query: str | None = None,
+    enable_reward_monitor: bool = False,
+    reward_monitor_manifest: str | None = None,
+    reward_monitor_task: str | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
 ) -> LaunchInvocation:
@@ -635,6 +638,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         f"enable_sim_clock:={'true' if enable_sim_clock else 'false'}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
+        # ADR-0057 — reward monitor co-active with the VLA; the reasoner polls
+        # /openral/perception/query_task_progress when task_progress_available.
+        f"enable_reward_monitor:={'true' if enable_reward_monitor else 'false'}",
         f"spatial_memory_ingest:={'true' if spatial_memory_ingest else 'false'}",
         f"enable_dashboard:={'true' if enable_dashboard else 'false'}",
     ]
@@ -644,6 +650,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
+    # ADR-0057 — forward reward-monitor overrides only when set (ros2 launch
+    # rejects an empty ``name:=`` value; the launch file defaults both to "").
+    if reward_monitor_manifest:
+        argv_template.append(f"reward_monitor_manifest:={reward_monitor_manifest}")
+    if reward_monitor_task:
+        argv_template.append(f"reward_monitor_task:={reward_monitor_task}")
     # ADR-0053 — only forward the approach skill when opted in (empty default;
     # ros2 launch rejects an empty ``name:=`` value, and the launch file
     # defaults ``approach_skill_id`` to "").
@@ -1498,6 +1510,40 @@ def deploy_sim_command(
             "/openral/perception/detector_query."
         ),
     ),
+    enable_reward_monitor: bool = typer.Option(
+        False,
+        "--enable-reward-monitor/--no-enable-reward-monitor",
+        help=(
+            "ADR-0057 — bring up the Robometer reward monitor "
+            "(openral_perception_ros/reward_monitor_node) PARALLEL to the VLA: it "
+            "buffers the agentview RGB stream and serves "
+            "/openral/perception/query_task_progress, and the reasoner is told "
+            "task_progress_available=True so its LLM may poll per-frame "
+            "progress/success whenever it sees fit. Advisory-only. Default off. "
+            "Needs the openral_perception_ros package colcon-built and a "
+            "provisioned Robometer sidecar venv (OPENRAL_ROBOMETER_SIDECAR_VENV); "
+            "co-resident with a VLA wants a small NF4 VLA on an 8 GB GPU (~3.3 GB)."
+        ),
+    ),
+    reward_monitor_manifest: str | None = typer.Option(
+        None,
+        "--reward-monitor-manifest",
+        help=(
+            "ADR-0057 — path to a kind:reward rSkill manifest. Empty defaults to "
+            "the in-tree rskills/robometer-4b/rskill.yaml. weights_uri may be "
+            "hf://org/repo or local:///abs/path (a pre-quantized NF4 checkpoint "
+            "loaded directly as 4-bit). Ignored unless --enable-reward-monitor."
+        ),
+    ),
+    reward_monitor_task: str | None = typer.Option(
+        None,
+        "--reward-monitor-task",
+        help=(
+            "ADR-0057 — default task instruction the reward monitor scores when a "
+            "query leaves task empty. The reasoner normally passes the active task "
+            "per query. Ignored unless --enable-reward-monitor."
+        ),
+    ),
     spatial_memory_ingest: bool | None = typer.Option(
         None,
         "--spatial-memory-ingest/--no-spatial-memory-ingest",
@@ -1562,6 +1608,9 @@ def deploy_sim_command(
             object_detector_onnx=object_detector_onnx,
             object_detector_manifest=object_detector_manifest,
             object_detector_query=object_detector_query,
+            enable_reward_monitor=enable_reward_monitor,
+            reward_monitor_manifest=reward_monitor_manifest,
+            reward_monitor_task=reward_monitor_task,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,
         )
