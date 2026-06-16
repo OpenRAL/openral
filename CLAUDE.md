@@ -7,6 +7,7 @@
 > - Toolchain & `openral` CLI → [`docs/contributing/toolchain.md`](docs/contributing/toolchain.md).
 > - Glossary → [`docs/reference/glossary.md`](docs/reference/glossary.md).
 > - Public-symbol inventory → [`docs/METHODS.md`](docs/METHODS.md) index + per-layer files in [`docs/methods/`](docs/methods/). **`grep -rn <symbol> docs/methods/` before adding a helper.**
+> - Agent-tool entry points → [`AGENTS.md`](AGENTS.md) is the tool-neutral root pointer (Cursor / Codex / Copilot / Aider read it) and **redirects here**; keep it a 3-line pointer, never a copy or symlink of this file. Vendor-neutral skills live in [`.agents/skills/`](.agents/skills/) (`SKILL.md` + `references/`). `AGENTS.md` itself stays at repo root — it does **not** belong under `.agents/`.
 
 ---
 
