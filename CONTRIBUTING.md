@@ -81,11 +81,15 @@ off, amend the last commit with `git commit --amend -s`, or rebase to sign off a
 series with `git rebase --signoff <base>`. CI checks that every commit in a PR
 is signed off.
 
-**Tip — never think about `-s` again.** `just bootstrap` installs a git hook
-(`.githooks/prepare-commit-msg`) that auto-appends the `Signed-off-by` trailer
-to any commit missing one, using your Git identity. To enable it without a full
-bootstrap, run `just install-hooks` (it just points `core.hooksPath` at
-`.githooks/`). Installing the hook is itself your standing DCO affirmation.
+**Tip — never think about `-s` again.** `just bootstrap` installs the git hooks
+(`.githooks/`), including a `prepare-commit-msg` hook that auto-appends the
+`Signed-off-by` trailer to any commit missing one, using your Git identity. To
+enable them without a full bootstrap, run `just install-hooks` — it points
+`core.hooksPath` at `.githooks/` and builds the pre-commit environments, so the
+same command also wires up ruff, ruff-format, mypy, codespell, and the
+conventional-commit check (via the committed `.githooks/pre-commit` and
+`.githooks/commit-msg` wrappers, since `pre-commit install` refuses to run with
+`core.hooksPath` set). Installing the hooks is itself your standing DCO affirmation.
 
 No separate CLA is required. See [GOVERNANCE.md](GOVERNANCE.md) for how the
 project is run.
