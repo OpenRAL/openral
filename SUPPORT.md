@@ -4,7 +4,7 @@ Thanks for using OpenRAL! Here's where to go depending on what you need.
 
 ## I have a question or want to discuss an idea
 
-- **[Discord](https://discord.gg/ZU5XGfTJYe)** — the fastest way to get help, ask
+- **[Discord](https://discord.gg/3paXT2bVyB)** — the fastest way to get help, ask
   "how do I…?" questions, share what you're building, or float a design idea
   before opening an issue.
 - **[Documentation](https://openral.github.io/openral/)** — quick start, architecture,
