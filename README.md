@@ -4,7 +4,7 @@
 
 # OpenRAL
 
-**OpenRAL is to physical robots what LangGraph + Hugging Face is to LLMs** — an open-source, typed, layered runtime for composing Vision-Language-Action models (VLAs) and classical controllers into deployable robot agents.
+**An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
 
 [![CI](https://github.com/OpenRAL/openral/actions/workflows/test-python.yml/badge.svg)](https://github.com/OpenRAL/openral/actions)
 [![codecov](https://codecov.io/gh/OpenRAL/openral/branch/master/graph/badge.svg)](https://codecov.io/gh/OpenRAL/openral)
