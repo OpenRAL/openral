@@ -10,6 +10,23 @@ openral rskill list                # list installed rSkills
 openral rskill check               # which installed rSkills run on this host?
 ```
 
+## Discovery views (`SKILL.md`)
+
+Each `rskills/<id>/` also carries a generated `SKILL.md` — a standard agent-skill
+view (YAML `name` + `description` frontmatter, rSkill fields under `metadata:`) so
+tools that read the agent-skill format can **discover** OpenRAL rSkills. It is
+**discovery-only**: an agent can use it to *select* a skill, but execution always
+goes through `rSkill.from_pretrained` + the robot HAL — markdown cannot hold
+weights or the typed capability/license gates. `rskill.yaml` remains the single
+source of truth (CLAUDE.md §1.3); regenerate (never hand-edit) with:
+
+```bash
+python tools/generate_rskill_skillmd.py            # all rskills/<id>/
+python tools/generate_rskill_skillmd.py --check    # CI: fail if any are stale
+```
+
+The same `SKILL.md` is mirrored to each `OpenRAL/rskill-*` Hub repo.
+
 ## VLA policy rSkills
 
 All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exercised end-to-end by a config in [`scenes/`](../../scenes/).
