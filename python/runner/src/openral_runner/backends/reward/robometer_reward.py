@@ -30,6 +30,23 @@ if TYPE_CHECKING:
 _DEFAULT_PORT = 5769
 
 
+def _evenly_spaced_indices(n: int, k: int) -> list[int]:
+    """``k`` evenly-spaced indices into ``range(n)``, always including the last.
+
+    Used to subsample a frame window to a fixed budget so the reward model's
+    vision-transformer activation stays bounded on an 8 GB GPU (ADR-0057). The
+    newest frame (index ``n-1``) is always kept — the reasoner reads
+    ``progress_now`` from it. Returns ``list(range(n))`` when ``n <= k``.
+    """
+    if n <= k:
+        return list(range(n))
+    step = (n - 1) / (k - 1) if k > 1 else 0.0
+    idx = sorted({min(n - 1, round(i * step)) for i in range(k)})
+    if idx[-1] != n - 1:
+        idx[-1] = n - 1
+    return idx
+
+
 def _find_sidecar_script() -> Path:
     """Locate ``tools/robometer_sidecar.py`` (env override or repo walk)."""
     override = os.environ.get("OPENRAL_ROBOMETER_SIDECAR")
@@ -59,6 +76,7 @@ class RobometerReward:
         request_timeout_s: float = 180.0,
         num_bins: int = 100,
         success_threshold: float = 0.5,
+        max_frames: int = 8,
     ) -> None:
         """Store config; connection to the sidecar is deferred to first use."""
         self._model_id = model_id
@@ -69,6 +87,12 @@ class RobometerReward:
         self._boot_timeout_s = boot_timeout_s
         self._num_bins = num_bins
         self._success_threshold = success_threshold
+        # Activation memory for the vision-transformer forward scales with the
+        # number of frames (×resolution); a full 8 s × 3 fps window of 640×480
+        # frames OOMs a 3.3 GB-resident model on an 8 GB GPU (ADR-0057, observed
+        # in deploy-sim). Evenly subsample the window to at most this many frames
+        # so the reward forward stays co-resident with the sim (and a small VLA).
+        self._max_frames = max(1, max_frames)
         self._request_timeout_ms = int(request_timeout_s * 1000)
         # Lazy connection (mirrors QwenSceneVlm). `Any` because pyzmq attrs
         # aren't typed under strict.
@@ -184,6 +208,15 @@ class RobometerReward:
             raise ROSConfigError("reward score requires at least one frame")
         if not task.strip():
             raise ROSConfigError("reward score requires a non-empty task instruction")
+        # Bound activation memory: evenly subsample to <= max_frames.
+        if len(frames) > self._max_frames:
+            idx = _evenly_spaced_indices(len(frames), self._max_frames)
+            print(
+                f"[robometer] subsampling {len(frames)} -> {len(idx)} frames "
+                f"(max_frames={self._max_frames}) to bound activation memory",
+                flush=True,
+            )
+            frames = [frames[i] for i in idx]
         w, h = frames[0].width, frames[0].height
         if any(f.width != w or f.height != h for f in frames):
             raise ROSConfigError("all frames in a clip must share width/height")

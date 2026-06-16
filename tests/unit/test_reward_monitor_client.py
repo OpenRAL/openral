@@ -53,6 +53,22 @@ def test_build_reward_monitor_local_scheme() -> None:
     assert mon._weights_source == "/tmp/robometer-nf4-ckpt"  # noqa: SLF001
 
 
+def test_evenly_spaced_indices_bounds_frames() -> None:
+    """Subsampling a frame window keeps a bounded, end-inclusive, unique set (ADR-0057)."""
+    from openral_runner.backends.reward.robometer_reward import _evenly_spaced_indices
+
+    # n <= k: identity (no subsampling).
+    assert _evenly_spaced_indices(5, 8) == [0, 1, 2, 3, 4]
+    # n > k: exactly k unique, sorted, spanning first..last (newest always kept).
+    idx = _evenly_spaced_indices(19, 8)  # the openarm-window case observed live
+    assert len(idx) == 8
+    assert idx == sorted(set(idx))
+    assert idx[0] == 0 and idx[-1] == 18
+    assert all(0 <= i < 19 for i in idx)
+    # k == 1: just the newest frame.
+    assert _evenly_spaced_indices(20, 1) == [19]
+
+
 def test_build_reward_monitor_rejects_wrong_kind() -> None:
     """A non-reward manifest is rejected by the factory."""
     manifest = _load_manifest()

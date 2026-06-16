@@ -1056,6 +1056,25 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         reward_manifest = reward_monitor_manifest or str(
             pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
         )
+        # Resolve the camera the monitor scores. An explicit override wins; else
+        # default to the robot's first RGB camera from robot.yaml (the same camera
+        # the VLA consumes), so the monitor "just works" across robots — falling
+        # back to the historical agentview_left only if robot.yaml has none.
+        reward_image_topic = reward_monitor_image_topic
+        if reward_image_topic == "/openral/cameras/agentview_left/image":
+            import yaml  # local: the base graph (no detector/reward) never imports it
+
+            reward_camera = "agentview_left"
+            try:
+                with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
+                    _rdoc = yaml.safe_load(_rh) or {}
+                for _s in _rdoc.get("sensors", []):
+                    if _s.get("modality") == "rgb" and _s.get("name"):
+                        reward_camera = str(_s["name"])
+                        break
+            except (OSError, yaml.YAMLError):
+                pass
+            reward_image_topic = f"/openral/cameras/{reward_camera}/image"
         reward_monitor = Node(
             package="openral_perception_ros",
             executable="reward_monitor_node.py",
@@ -1064,7 +1083,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             parameters=[
                 {
                     "manifest_path": reward_manifest,
-                    "image_topic": reward_monitor_image_topic,
+                    "image_topic": reward_image_topic,
                     "task": reward_monitor_task,
                     "sidecar_port": int(reward_monitor_sidecar_port),
                     "use_sim_time": use_sim_time,
