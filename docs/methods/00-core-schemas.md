@@ -307,7 +307,13 @@ _Strict YAML loaders for the three scene tiers (ADR-0041)._
 ### `python/core/src/openral_core/urdf_resolve.py`
 _Shared URDF-path resolver — lifted from `sim_e2e.launch.py` (CLAUDE.md §1.13)._
 
-- `resolve_urdf_path(value, *, repo_root=None) -> str | None` — Resolve a `RobotDescription.urdf_path` (`python:<module>:<attribute>` | absolute | repo-relative) to an on-disk file, else `None`. Shared by `sim_e2e.launch.py` and the offline collision-lowering tool (ADR-0030).
+- `resolve_urdf_path(value, *, repo_root=None) -> str | None` — Resolve a `RobotDescription.urdf_path` (`python:<module>:<attribute>` | absolute | repo-relative) to an on-disk file, else `None`. Shared by `sim_e2e.launch.py` and the offline collision-lowering tool (ADR-0030). _Being superseded by `assets.resolve_asset` (ADR-0057)._
+
+### `python/core/src/openral_core/assets.py`
+_The single resolver for robot description assets — URDF / MJCF / SRDF (ADR-0057)._
+
+- `class AssetRefError(ValueError)` (L33) — A description-asset reference is malformed or cannot be resolved.
+- `def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None` (L41) — Resolve one asset `ref` to a concrete file path for the requested `kind` (`urdf`/`mjcf`/`srdf`). One grammar replacing `resolve_urdf_path`, `resolve_mjcf_uri`, plain-path SRDF, and `urdf_lowering._load_urdf_model`. Schemes: `rd:<module>` (upstream `robot_descriptions`, downloads on first use; xacro-only URDF → `AssetRefError` directing to `openral robot vendor-urdf`), `file:<relpath>` (manifest dir then repo root), `gym_aloha:<scene>` / `openarm:<variant>` / `menagerie:<model>` (sim-only MJCF loaders, lazy-imported; menagerie not yet wired), `ros2://robot_description` (URDF-only dynamic marker → returns `None`). Raises `AssetRefError` for every other unresolvable/malformed ref.
 
 ### `python/core/src/openral_core/exceptions.py`
 _openral exception hierarchy — use these, do not invent new base classes._
