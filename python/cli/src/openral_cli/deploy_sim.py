@@ -171,7 +171,7 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         # (now manifest-driven) verbatim. ``openral deploy sim`` injects this
         # robot's manifest + ``hal_mode="sim"`` and the node builds a bare
         # ``MujocoArmHAL.from_description`` from ``robots/so101_follower/
-        # robot.yaml`` (``sim.mjcf_uri`` → ``so101_new_calib``). The SAME node
+        # robot.yaml`` (``assets.mjcf`` → ``so101_new_calib``). The SAME node
         # serves so100 (``so_arm100``) and so101 (``so101_new_calib``) from
         # their own MJCF, so no dedicated ``openral_hal_so101`` package exists
         # or is needed (CLAUDE.md §1.13). The robot-name guard below keeps this

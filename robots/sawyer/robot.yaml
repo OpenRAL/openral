@@ -19,7 +19,7 @@ name: "sawyer"
 embodiment_kind: "manipulator"
 base_frame: "base"
 
-# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# ADR-0027 — robot_state_publisher: `assets.urdf` deliberately unset.
 # Upstream xacro at github.com/RethinkRobotics/sawyer_robot/blob/master/
 # sawyer_description/urdf/sawyer.urdf.xacro requires xacro processing
 # at launch time (Sawyer also generates the URDF dynamically on robot

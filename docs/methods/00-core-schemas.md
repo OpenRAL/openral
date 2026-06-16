@@ -308,11 +308,6 @@ _Strict YAML loaders for the three scene tiers (ADR-0041)._
 - `def load_benchmark_suite(path: str) -> list[BenchmarkScene]` (L148) — ADR-0042. Load a bare `list[BenchmarkScene]` from `benchmarks/<id>.yaml`. The suite id is the filename stem; the YAML root MUST be a list. Pre-ADR-0042 `{id, tasks, metadata}` dict shape is rejected with an explicit ADR-0042 redirect message naming the migration. Per-scene Pydantic validation runs here; suite-level invariants (uniformity, uniqueness, non-empty) are NOT enforced — call `raise_on_invalid_suite` separately so tests can construct invalid in-memory suites without touching disk. Raises `FileNotFoundError` for missing paths and `ROSConfigError` on every shape / validation failure (never a bare `ValidationError`).
 - `def raise_on_invalid_suite(scenes: list[BenchmarkScene], *, suite_id: str) -> None` (L223) — ADR-0042. Free-function replacement for the deleted `BenchmarkSpec.model_post_init`. Enforces the five suite invariants: non-empty list, every `scenes[i].robot_id` non-`None`, every `task.id` unique within the suite, every `scenes[i].robot_id` / `n_episodes` / `seed` / `metadata` byte-identical across the list. Per-scene `task.success_key` and `task.max_steps` MAY differ (ManiSkill3 mixed-budget suite). `suite_id` is embedded in every error message so failures point back at the right `benchmarks/<id>.yaml`. First violation wins — no batched reporting. Raises `ROSConfigError` on any invariant violation.
 
-### `python/core/src/openral_core/urdf_resolve.py`
-_Shared URDF-path resolver — lifted from `sim_e2e.launch.py` (CLAUDE.md §1.13)._
-
-- `resolve_urdf_path(value, *, repo_root=None) -> str | None` — Resolve a `RobotDescription.urdf_path` (`python:<module>:<attribute>` | absolute | repo-relative) to an on-disk file, else `None`. Shared by `sim_e2e.launch.py` and the offline collision-lowering tool (ADR-0030). _Being superseded by `assets.resolve_asset` (ADR-0057)._
-
 ### `python/core/src/openral_core/assets.py`
 _The single resolver for robot description assets — URDF / MJCF / SRDF (ADR-0057)._
 

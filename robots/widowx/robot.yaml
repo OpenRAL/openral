@@ -18,7 +18,7 @@ name: "widowx"
 embodiment_kind: "manipulator"
 base_frame: "base_link"
 
-# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# ADR-0027 — robot_state_publisher: `assets.urdf` deliberately unset.
 # Upstream xacro at github.com/Interbotix/interbotix_ros_manipulators/
 # blob/main/interbotix_ros_xsarms/interbotix_xsarm_descriptions/
 # urdf/wx250s.urdf.xacro requires the apt package

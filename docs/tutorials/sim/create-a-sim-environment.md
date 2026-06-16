@@ -267,23 +267,43 @@ for a 7-DoF arm. The required top-level blocks are:
 | `capabilities` | Control modes, embodiment tags, lift / dexterity flags |
 | `safety` | Workspace box, speed/force/torque limits, deadman flag |
 | `observation_spec`, `action_spec` | State / action shapes and representations |
-| `sim` (optional) | MuJoCo wiring consumed by `MujocoArmHAL.from_description` — see below |
+| `assets` (optional) | URDF / MJCF / SRDF reference block (ADR-0057) — see below |
+| `sim` (optional) | MuJoCo joint↔qpos wiring consumed by `MujocoArmHAL.from_description` — see below |
+
+### The `assets:` block (ADR-0057)
+
+The robot's URDF / MJCF / SRDF are named once, at the top level, via the
+unified `assets:` block. Every ref shares the
+`openral_core.assets.resolve_asset` grammar:
+
+```yaml
+assets:
+  # The MJCF that MujocoArmHAL loads. One of:
+  #   rd:<module>          — robot_descriptions package (downloads on first use)
+  #   gym_aloha:<scene>    — gym-aloha package asset
+  #   openarm:bimanual     — Enactic OpenArm v2 (fetched on first use)
+  #   file:<relpath>       — repo/manifest-relative explicit override
+  mjcf: "rd:ur5e_mj_description"
+  # Optional URDF (robot_state_publisher / collision lowering):
+  # urdf:
+  #   ref: "file:ur5e.urdf"          # or rd:<module> / ros2://robot_description
+  #   root_frame: "base_link"         # ADR-0027 robot_state_publisher wiring
+  #   base_to_root_xyz_rpy: [0, 0, 0, 0, 0, 0]
+  # Optional SRDF (seeds allowed_collision_pairs):
+  # srdf: "file:ur5e.srdf"
+```
 
 ### The `sim:` block (ADR-0023)
 
 For any robot that should drive a MuJoCo digital twin through the shared
-`MujocoArmHAL` base, declare a `sim:` block. The runner reads it directly;
-no per-robot Python file is required — pass the loaded manifest into
-`MujocoArmHAL.from_description(desc)`.
+`MujocoArmHAL` base, declare a `sim:` block alongside `assets.mjcf`. The
+runner reads it directly; no per-robot Python file is required — pass the
+loaded manifest into `MujocoArmHAL.from_description(desc)`.
 
 ```yaml
 sim:
-  # One of:
-  #   robot_descriptions:<module>   — vendored menagerie MJCF
-  #   gym_aloha:<scene>              — gym-aloha package asset
-  #   openarm_v2:bimanual            — Enactic OpenArm v2 (fetched on first use)
-  #   file:/abs/path.xml | /abs/path — explicit override
-  mjcf_uri: "robot_descriptions:ur5e_mj_description"
+  # The MJCF itself is named by `assets.mjcf` (above); this block carries
+  # only the joint↔qpos/qvel/actuator plumbing.
 
   # Floating-base humanoids (G1, H1): qpos offset 7, qvel offset 6 are
   # derived automatically.  Single-arm robots can omit.

@@ -27,7 +27,7 @@ name: "openarm_v2"
 embodiment_kind: "bimanual"
 base_frame: "openarm_base"
 
-# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# ADR-0027 — robot_state_publisher: `assets.urdf` deliberately unset.
 # Upstream URDF + xacro live at github.com/enactic/openarm_description
 # (single-arm) and github.com/reazon-research/openarm_ros2
 # (bimanual bringup); both require xacro processing at launch time

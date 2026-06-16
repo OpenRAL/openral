@@ -16,23 +16,23 @@ _HAL Protocol — the normative interface every HAL adapter must satisfy._
 ### `python/hal/src/openral_hal/_mujoco_arm.py`
 _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 / H1 / Rizon-4 / OpenArm / ALOHA adapters. Reads its wiring from `RobotDescription.sim` (ADR-0023)._
 
-- `class _MujocoArmInitKwargs(TypedDict)` — Typed shape of the kwargs accepted by `MujocoArmHAL.__init__`. (L59) Lets `MujocoArmHAL._sim_kwargs_for` return a value that unpacks cleanly into the constructor under `mypy --strict` without the `# type: ignore[arg-type]` hatch every thin subclass used to need. Fields: `mjcf_path, joint_qpos_addr, joint_qvel_addr, actuator_index, grippers, keyframe_index, seed_ctrl_from_qpos, settle_steps, gravity_enabled, staleness_limit_s`.
-- `resolve_mjcf_uri(mjcf_uri: str) -> str` — Resolve a `SimDescription.mjcf_uri` to an absolute filesystem path. Supports `robot_descriptions:<module>`, `gym_aloha:<scene>`, `openarm_v2:bimanual`, `file:/abs/path`, and bare absolute paths. (L79)
+- `class _MujocoArmInitKwargs(TypedDict)` — Typed shape of the kwargs accepted by `MujocoArmHAL.__init__`. (L60) Lets `MujocoArmHAL._sim_kwargs_for` return a value that unpacks cleanly into the constructor under `mypy --strict` without the `# type: ignore[arg-type]` hatch every thin subclass used to need. Fields: `mjcf_path, joint_qpos_addr, joint_qvel_addr, actuator_index, grippers, keyframe_index, seed_ctrl_from_qpos, settle_steps, gravity_enabled, staleness_limit_s`.
+- `_resolve_mjcf_path(desc: RobotDescription) -> str` [private] — Resolve `desc.assets.mjcf` (ADR-0057) to an absolute MJCF path via `openral_core.assets.resolve_asset`; raises `ROSConfigError` when the ref is unset or unresolvable. Replaced the former public `resolve_mjcf_uri` / `SimDescription.mjcf_uri` (ADR-0057). (L80)
 - `build_hal(description, *, mode: Literal["sim","real"], transport=None, sim_env_yaml=None) -> HAL` — Single seam for constructing a robot's simulation or real-hardware HAL from its manifest (`resolver.py`, L50). `mode="sim"` + `sim_env_yaml` set → calls `build_sim_env_from_yaml` and returns a `SimAttachedHAL` wrapping the scene's `SimRollout` (ADR-0034); bypasses the bare-twin / `hal.sim` class entirely. `mode="sim"` without `sim_env_yaml` builds `description.hal.sim` or derives `MujocoArmHAL.from_description` when it is null + a `sim:` block exists. `mode="real"` imports `description.hal.real` and threads `transport` kwargs (real HALs take `port` / `robot_ip` / `fci_ip` and embed their own description). Both modes merge `description.hal.parameters.defaults` (ADR-0029) **underneath** the explicit `transport` so the manifest carries a robot's construction kwargs; unaccepted keys are dropped. `sim_env_yaml` + `mode="real"` → `ROSConfigError`. Missing HAL for the mode → `ROSCapabilityMismatch`; malformed/unresolvable entry → `ROSConfigError`. Routed by `deploy sim` (sim) and `deploy run` (real). (ADR-0031, ADR-0034)
   - `_import_object(path: str) -> object` [private] — Resolve a `"module.path:Attribute"` import string; raises `ROSConfigError` on malformed/unimportable/missing. **Reuse watch:** the canonical entrypoint-string importer for HAL classes — do not hand-roll `importlib` in HAL callers.
-- `class MujocoArmHAL` — Generic MuJoCo-backed HAL adapter for position-controlled arms (and, via the `_per_step_update` hook, torque-controlled humanoids like the H1). (L166)
+- `class MujocoArmHAL` — Generic MuJoCo-backed HAL adapter for position-controlled arms (and, via the `_per_step_update` hook, torque-controlled humanoids like the H1). (L113)
   - `read_images() -> dict[str, NDArray]` — Render the manifest's RGB `SensorSpec`s off the live MJCF, keyed by sensor `name` (issue #191 Phase 3b). Same contract `SimAttachedHAL.read_images` exposes, so `SimSensorBridge` publishes a composed-scene arm's cameras (openarm) through the shared path. Renders the MJCF camera `sim_camera_name or name`; a missing camera / render error is skipped with a one-shot warning (never raises). The `mujoco.Renderer` is lazily created on first call so its EGL context binds on the caller (executor) thread. Returns `{}` when disconnected / no RGB sensors / after a renderer failure.
-  - `__init__(description, *, mjcf_path, joint_qpos_addr, actuator_index, joint_qvel_addr=None, grippers=(), keyframe_index=None, seed_ctrl_from_qpos=False, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Init only; MJCF is not loaded until `connect()`. `joint_qvel_addr` defaults to `joint_qpos_addr` (correct for arms without a floating base) and is passed explicitly by humanoid HALs like `G1MujocoHAL` / `H1MujocoHAL` where the free joint shifts the qvel indices by 1. `grippers` is a sequence of `SimGripperDescription` entries; single-arm robots ship one (or none), bimanual robots (Aloha, OpenArm) ship two. (L214)
+  - `__init__(description, *, mjcf_path, joint_qpos_addr, actuator_index, joint_qvel_addr=None, grippers=(), keyframe_index=None, seed_ctrl_from_qpos=False, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Init only; MJCF is not loaded until `connect()`. `joint_qvel_addr` defaults to `joint_qpos_addr` (correct for arms without a floating base) and is passed explicitly by humanoid HALs like `G1MujocoHAL` / `H1MujocoHAL` where the free joint shifts the qvel indices by 1. `grippers` is a sequence of `SimGripperDescription` entries; single-arm robots ship one (or none), bimanual robots (Aloha, OpenArm) ship two. (L161)
   - `_per_step_update(targets) -> None` — Hook invoked before every `mj_step` inside the settle loop. Default no-op; subclasses driving torque-mode actuators (`H1MujocoHAL`) override to recompute the actuator torque each step from the current `qpos` / `qvel`.
   - `connect() -> None` — Load MJCF, prepare `MjData` buffer.
   - `disconnect() -> None` — Release the MuJoCo model (idempotent).
   - `read_state() -> JointState` — Joint state in description-joint order.
   - `send_action(action: Action) -> None` — Forward last waypoint to MuJoCo and step.
-  - `reset_to_pose(pose: list[float]) -> None` — Snap `qpos` to a manifest `starting_pose` and re-seed `ctrl` (instantaneous teleport; best-effort). The ADR-0053 collision-aware alternative is **not** a HAL method — the runner dispatches the `rskill-moveit-joints` rSkill to plan a collision-free MoveGroup motion to `starting_pose` (see `05-inference-runner` / `08-cli`). (L522)
+  - `reset_to_pose(pose: list[float]) -> None` — Snap `qpos` to a manifest `starting_pose` and re-seed `ctrl` (instantaneous teleport; best-effort). The ADR-0053 collision-aware alternative is **not** a HAL method — the runner dispatches the `rskill-moveit-joints` rSkill to plan a collision-free MoveGroup motion to `starting_pose` (see `05-inference-runner` / `08-cli`). (L469)
   - `estop() -> None` — Zero `ctrl` and raise `ROSEStopRequested`.
-  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor. Reads `description.sim` and builds the HAL with the right MJCF path, qpos/qvel/actuator maps and gripper config. Removes the need for per-robot Python subclasses (ADR-0023). (L787)
-  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translate `description.sim` into the `__init__` kwarg dict.  Default 1:1 joint→qpos/actuator mapping is derived from `description.joints`, offset by 7 (qpos) / 6 (qvel) when `sim.floating_base=True`.  Used by both `from_description`, `_init_from_description`, and any caller that wants to post-process the kwargs. (L711)
-  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate `super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, …))` dance. Subclasses keep their typed `__init__(*, mjcf_path, settle_steps, gravity_enabled, staleness_limit_s)` signature (so IDEs still surface the four user-tunable knobs) and forward straight to here. (L843)
+  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor. Reads `description.sim` and builds the HAL with the right MJCF path, qpos/qvel/actuator maps and gripper config. Removes the need for per-robot Python subclasses (ADR-0023). (L734)
+  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translate `description.sim` into the `__init__` kwarg dict.  Default 1:1 joint→qpos/actuator mapping is derived from `description.joints`, offset by 7 (qpos) / 6 (qvel) when `sim.floating_base=True`.  Used by both `from_description`, `_init_from_description`, and any caller that wants to post-process the kwargs. (L658)
+  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate `super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, …))` dance. Subclasses keep their typed `__init__(*, mjcf_path, settle_steps, gravity_enabled, staleness_limit_s)` signature (so IDEs still surface the four user-tunable knobs) and forward straight to here. (L790)
   - private: `_require_connected`, `_validate_action`, `_last_arm_targets`, `_apply_arm_targets`, `_apply_gripper_target`, `_read_gripper_normalised`, `_effective_actuator_index_for`
 
 ### `python/hal/src/openral_hal/_real_description.py`
@@ -43,10 +43,10 @@ _Internal helper to derive a real-hardware ``RobotDescription`` from a sim basel
 ### `python/hal/src/openral_hal/franka_panda.py`
 _HAL adapter for the Franka Emika Panda 7-DoF arm (sim, MuJoCo)._
 
-- `class FrankaPandaHAL(MujocoArmHAL)` — Franka Panda HAL (MuJoCo-backed). Thin manifest-driven wrapper around `MujocoArmHAL`; `__init__` forwards to `self._init_from_description(FRANKA_PANDA_DESCRIPTION, …)` (ADR-0023). (L260)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L289)
-- `_panda_joint_specs() -> list[JointSpec]` (L120)
-- const `FRANKA_PANDA_DESCRIPTION = RobotDescription(...)` (L174) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.franka_panda:FrankaPandaHAL"` + `hal.real="openral_hal.franka_panda_real:FrankaPandaRealHAL"` (ADR-0031). All MuJoCo wiring (MJCF URI, joint→qpos/actuator maps, gripper config) lives in `FRANKA_PANDA_DESCRIPTION.sim`. The real-HW companion `FRANKA_PANDA_REAL_DESCRIPTION` lives in `franka_panda_real.py`.
+- `class FrankaPandaHAL(MujocoArmHAL)` — Franka Panda HAL (MuJoCo-backed). Thin manifest-driven wrapper around `MujocoArmHAL`; `__init__` forwards to `self._init_from_description(FRANKA_PANDA_DESCRIPTION, …)` (ADR-0023). (L266)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L295)
+- `_panda_joint_specs() -> list[JointSpec]` (L122)
+- const `FRANKA_PANDA_DESCRIPTION = RobotDescription(...)` (L176) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.franka_panda:FrankaPandaHAL"` + `hal.real="openral_hal.franka_panda_real:FrankaPandaRealHAL"` (ADR-0031). All MuJoCo wiring (MJCF URI, joint→qpos/actuator maps, gripper config) lives in `FRANKA_PANDA_DESCRIPTION.sim`. The real-HW companion `FRANKA_PANDA_REAL_DESCRIPTION` lives in `franka_panda_real.py`.
 
 ### `python/hal/src/openral_hal/franka_panda_real.py`
 _Real-hardware HAL adapter for the Franka Emika Panda over the FCI (issue #56)._
@@ -66,19 +66,19 @@ _Real-hardware HAL adapter for the Franka Emika Panda over the FCI (issue #56)._
 ### `python/hal/src/openral_hal/sawyer_real.py`
 _Real-hardware HAL adapter for the Rethink Sawyer 7-DoF arm (issue #57)._
 
-- `class SawyerRealHAL` — Production adapter for a physical Sawyer over `intera_sdk` / `sawyer_robot`. (L218)
-  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L265)
-  - `description -> RobotDescription` [@property] — Mirrors `SAWYER_DESCRIPTION`. (L301)
-  - `hostname -> str` [@property] (L306)
-  - `controller_name -> str` [@property] (L311)
-  - `connect() -> None` (L315)
-  - `disconnect() -> None` (L329)
-  - `read_state() -> JointState` (L333)
-  - `send_action(action) -> None` (L343)
-  - `estop() -> None` (L353)
-- `_sawyer_joint_specs() -> list[JointSpec]` (L111)
-- const `SAWYER_DESCRIPTION = RobotDescription(...)` (L154) — sim baseline; `sdk_kind="open"`, `hal.sim=None` (no MuJoCo HAL adapter today) + `hal.real="openral_hal.sawyer_real:SawyerRealHAL"`.
-- const `SAWYER_REAL_DESCRIPTION = make_real_description(SAWYER_DESCRIPTION, sdk_kind="closed_with_api")` (L193) — inherits the shared `hal`; what `robots/sawyer/robot.yaml` mirrors.
+- `class SawyerRealHAL` — Production adapter for a physical Sawyer over `intera_sdk` / `sawyer_robot`. (L220)
+  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L267)
+  - `description -> RobotDescription` [@property] — Mirrors `SAWYER_DESCRIPTION`. (L303)
+  - `hostname -> str` [@property] (L308)
+  - `controller_name -> str` [@property] (L313)
+  - `connect() -> None` (L317)
+  - `disconnect() -> None` (L331)
+  - `read_state() -> JointState` (L335)
+  - `send_action(action) -> None` (L345)
+  - `estop() -> None` (L355)
+- `_sawyer_joint_specs() -> list[JointSpec]` (L112)
+- const `SAWYER_DESCRIPTION = RobotDescription(...)` (L155) — sim baseline; `sdk_kind="open"`, `hal.sim=None` (no MuJoCo HAL adapter today) + `hal.real="openral_hal.sawyer_real:SawyerRealHAL"`.
+- const `SAWYER_REAL_DESCRIPTION = make_real_description(SAWYER_DESCRIPTION, sdk_kind="closed_with_api")` (L195) — inherits the shared `hal`; what `robots/sawyer/robot.yaml` mirrors.
 
 ### `python/hal/src/openral_hal/panda_mobile.py`
 _ADR-0025 — in-process digital-twin HAL for the `panda_mobile` embodiment (Franka 7-DoF arm on a holonomic 3-DoF base). Built by `build_hal` for the manifest-driven `ManifestHALLifecycleNode` (issue #191 Phase 3) and by tests; ROS node entrypoint in `packages/openral_hal_panda_mobile/`._
@@ -101,33 +101,33 @@ _ADR-0030 — reusable, robot-agnostic depth-camera → `sensor_msgs/PointCloud2
 ### `python/hal/src/openral_hal/aloha.py`
 _HAL adapter for the Trossen ALOHA bimanual setup (issue #58) + the MuJoCo digital twin._
 
-- `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. (L335)
-  - `__init__(*, left_arm_controller='left_arm/arm_controller', right_arm_controller='right_arm/arm_controller', left_gripper_controller='left_arm/gripper_controller', right_gripper_controller='right_arm/gripper_controller', joint_state_topic='/joint_states', estop_topic='/aloha/estop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L383)
-  - `connect() -> None` (L414)
-  - `disconnect() -> None` (L431)
-  - `read_state() -> JointState` (L438)
-  - `send_action(action) -> None` — Splits the 14-D action 4-ways across per-arm + per-gripper controllers. (L470)
-  - `estop() -> None` (L534)
+- `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. (L336)
+  - `__init__(*, left_arm_controller='left_arm/arm_controller', right_arm_controller='right_arm/arm_controller', left_gripper_controller='left_arm/gripper_controller', right_gripper_controller='right_arm/gripper_controller', joint_state_topic='/joint_states', estop_topic='/aloha/estop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L384)
+  - `connect() -> None` (L415)
+  - `disconnect() -> None` (L432)
+  - `read_state() -> JointState` (L439)
+  - `send_action(action) -> None` — Splits the 14-D action 4-ways across per-arm + per-gripper controllers. (L471)
+  - `estop() -> None` (L535)
   - private: `_require_connected`
-- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023 bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L571)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L606)
-- `_aloha_joint_specs() -> list[JointSpec]` (L150)
-- `_default_publish(topic, msg) -> None` (L559)
-- const `ALOHA_DESCRIPTION = RobotDescription(...)` (L194) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.aloha:AlohaMujocoHAL"` + `hal.real="openral_hal.aloha:AlohaHAL"`.
-- const `ALOHA_REAL_DESCRIPTION = make_real_description(ALOHA_DESCRIPTION, sdk_kind="closed_with_api")` (L306) — inherits the shared `hal`; what `robots/aloha_bimanual/robot.yaml` mirrors.
+- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023 bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L572)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L607)
+- `_aloha_joint_specs() -> list[JointSpec]` (L151)
+- `_default_publish(topic, msg) -> None` (L560)
+- const `ALOHA_DESCRIPTION = RobotDescription(...)` (L195) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.aloha:AlohaMujocoHAL"` + `hal.real="openral_hal.aloha:AlohaHAL"`.
+- const `ALOHA_REAL_DESCRIPTION = make_real_description(ALOHA_DESCRIPTION, sdk_kind="closed_with_api")` (L307) — inherits the shared `hal`; what `robots/aloha_bimanual/robot.yaml` mirrors.
 
 ### `python/hal/src/openral_hal/ur.py`
 _HAL adapters for the Universal Robots UR5e and UR10e arms (sim, MuJoCo)._
 
-- `class UR5eHAL(MujocoArmHAL)` — UR5e HAL (MuJoCo-backed). Thin manifest-driven wrapper; `__init__` forwards to `self._init_from_description(UR5e_DESCRIPTION, …)` (ADR-0023). (L282)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L306)
-- `class UR10eHAL(MujocoArmHAL)` — UR10e HAL (MuJoCo-backed). Same shape as `UR5eHAL` (ADR-0023). (L324)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L336)
-- `ur5e_with_sensors(catalog_ids=None) -> RobotDescription` (L226)
-- `ur10e_with_sensors(catalog_ids=None) -> RobotDescription` (L252)
-- `_ur_joint_specs(velocity_limits, effort_limits) -> list[JointSpec]` (L117)
-- const `UR5e_DESCRIPTION = RobotDescription(...)` (L155) — sim manifest; all MuJoCo wiring lives in `UR5e_DESCRIPTION.sim`.
-- const `UR10e_DESCRIPTION = RobotDescription(...)` (L190) — sim manifest; all MuJoCo wiring lives in `UR10e_DESCRIPTION.sim`.
+- `class UR5eHAL(MujocoArmHAL)` — UR5e HAL (MuJoCo-backed). Thin manifest-driven wrapper; `__init__` forwards to `self._init_from_description(UR5e_DESCRIPTION, …)` (ADR-0023). (L302)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L326)
+- `class UR10eHAL(MujocoArmHAL)` — UR10e HAL (MuJoCo-backed). Same shape as `UR5eHAL` (ADR-0023). (L344)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L356)
+- `ur5e_with_sensors(catalog_ids=None) -> RobotDescription` (L246)
+- `ur10e_with_sensors(catalog_ids=None) -> RobotDescription` (L272)
+- `_ur_joint_specs(velocity_limits, effort_limits) -> list[JointSpec]` (L119)
+- const `UR5e_DESCRIPTION = RobotDescription(...)` (L157) — sim manifest; all MuJoCo wiring lives in `UR5e_DESCRIPTION.sim`.
+- const `UR10e_DESCRIPTION = RobotDescription(...)` (L201) — sim manifest; all MuJoCo wiring lives in `UR10e_DESCRIPTION.sim`.
 
 ### `python/hal/src/openral_hal/ur_real.py`
 _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driver` (URCap / RTDE)._
@@ -141,46 +141,46 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L241)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L283)
-  - `connect() -> None` — Open USB serial connection. (L307)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L373)
-  - `read_state() -> JointState` — Joint state in radians. (L386)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L414)
-  - `estop() -> None` — Disconnect motors then raise. (L437)
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L246)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L288)
+  - `connect() -> None` — Open USB serial connection. (L312)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L378)
+  - `read_state() -> JointState` — Joint state in radians. (L391)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L419)
+  - `estop() -> None` — Disconnect motors then raise. (L442)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-- `_deg_to_rad(deg) -> float` (L228)
-- `_rad_to_deg(rad) -> float` (L233)
-- const `SO100_DESCRIPTION = RobotDescription(...)` (L86)
+- `_deg_to_rad(deg) -> float` (L233)
+- `_rad_to_deg(rad) -> float` (L238)
+- const `SO100_DESCRIPTION = RobotDescription(...)` (L88)
 
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum; gravity must be disabled in closed-loop tests (CLAUDE.md §6.2). Unlike the G1 / UR / Franka / SO-100 MJCFs, the H1 menagerie ships ``motor`` (torque) actuators, so this HAL runs a software PD position loop every physics step._
 
-- `class H1MujocoHAL(MujocoArmHAL)` — 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml`. Joint inventory: 5 leg + 5 leg + 1 torso + 4 arm + 4 arm (no wrists). Thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023); `__init__` forwards to `self._init_from_description(H1_DESCRIPTION, …)`. Inherits `connect/disconnect/read_state/estop`; overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange` so the public action contract stays "position targets in radians". Mirrors how `unitree_sdk2` wraps motor-level torque control in a position loop on real hardware. (L354)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L394)
+- `class H1MujocoHAL(MujocoArmHAL)` — 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml`. Joint inventory: 5 leg + 5 leg + 1 torso + 4 arm + 4 arm (no wrists). Thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023); `__init__` forwards to `self._init_from_description(H1_DESCRIPTION, …)`. Inherits `connect/disconnect/read_state/estop`; overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange` so the public action contract stays "position targets in radians". Mirrors how `unitree_sdk2` wraps motor-level torque control in a position loop on real hardware. (L359)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L399)
   - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step`.
   - `_apply_arm_targets(targets) -> None` — No-op (PD loop runs per-step instead).
-- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L207)
-- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L215)
-- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L251)
-- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L345)
-- const `H1_DESCRIPTION = RobotDescription(...)` (L274) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets +7/+6, PD gains) lives in `H1_DESCRIPTION.sim`. Drift-guarded against `robots/h1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L209)
+- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L217)
+- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L253)
+- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L350)
+- const `H1_DESCRIPTION = RobotDescription(...)` (L276) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets +7/+6, PD gains) lives in `H1_DESCRIPTION.sim`. Drift-guarded against `robots/h1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
 
 ### `python/hal/src/openral_hal/flexiv_rizon4.py`
 _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body force sensitivity (0.1 N).  Structurally identical to the UR / Franka sim HALs: position actuators, no gripper, no floating base, no PD-loop overrides — a clean `MujocoArmHAL` subclass._
 
-- `class Rizon4MujocoHAL(MujocoArmHAL)` — 7-DoF HAL driving `mujoco_menagerie/flexiv_rizon4/flexiv_rizon4.xml` via `MujocoArmHAL`. Thin manifest-driven wrapper (ADR-0023); `__init__` forwards to `self._init_from_description(RIZON4_DESCRIPTION, …)`. (L173)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L203)
-- `_rizon4_joint_specs() -> list[JointSpec]` — Build the 7 `JointSpec`s from the joint-name tuple + per-joint limit tables. (L109)
-- const `RIZON4_DESCRIPTION = RobotDescription(...)` (L130) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.flexiv_rizon4:Rizon4MujocoHAL"` + `hal.real=None` (sim-only). All MuJoCo wiring lives in `RIZON4_DESCRIPTION.sim`. Drift-guarded against `robots/rizon4/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+- `class Rizon4MujocoHAL(MujocoArmHAL)` — 7-DoF HAL driving `mujoco_menagerie/flexiv_rizon4/flexiv_rizon4.xml` via `MujocoArmHAL`. Thin manifest-driven wrapper (ADR-0023); `__init__` forwards to `self._init_from_description(RIZON4_DESCRIPTION, …)`. (L180)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L210)
+- `_rizon4_joint_specs() -> list[JointSpec]` — Build the 7 `JointSpec`s from the joint-name tuple + per-joint limit tables. (L111)
+- const `RIZON4_DESCRIPTION = RobotDescription(...)` (L132) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.flexiv_rizon4:Rizon4MujocoHAL"` + `hal.real=None` (sim-only). All MuJoCo wiring lives in `RIZON4_DESCRIPTION.sim`. Drift-guarded against `robots/rizon4/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
 
 ### `python/hal/src/openral_hal/openarm.py`
 _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fresh `HALBase` subclass — v2's native `<position>` actuators with per-class PD baked into the MJCF mean the HAL just writes target → ctrl and steps, no software PD loop needed._
 
-- `class OpenArmMujocoHAL(MujocoArmHAL)` — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023 bimanual amendment). All wiring lives in `OPENARM_DESCRIPTION.sim`: `openarm_v2:bimanual` URI (fetched lazily via `ensure_openarm_v2_mjcf`), explicit `joint_qpos_addr` that skips the passive follower-finger qpos slots (8, 17), two `PASSTHROUGH` grippers (left jaw `[0, 0.7854]`, right jaw `[-0.7854, 0]`), `seed_ctrl_from_qpos: true` so the v2 `<position>` actuators hold the initial pose on the first `mj_step`. (L414)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L449)
+- `class OpenArmMujocoHAL(MujocoArmHAL)` — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL` (ADR-0023 bimanual amendment). All wiring lives in `OPENARM_DESCRIPTION.sim`: `openarm_v2:bimanual` URI (fetched lazily via `ensure_openarm_v2_mjcf`), explicit `joint_qpos_addr` that skips the passive follower-finger qpos slots (8, 17), two `PASSTHROUGH` grippers (left jaw `[0, 0.7854]`, right jaw `[-0.7854, 0]`), `seed_ctrl_from_qpos: true` so the v2 `<position>` actuators hold the initial pose on the first `mj_step`. (L419)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L454)
 - `_openarm_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_openarm_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_openarm_joint_specs() -> list[JointSpec]` (L167, L190, L206)
-- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L235) — sim baseline (`name="openarm_v2"`, all 16 joints revolute matching v2's hinge gripper).  `sdk_kind="open"`, `hal.sim="openral_hal.openarm:OpenArmMujocoHAL"` + `hal.real=None` (sim-only).  Drift-guarded against `robots/openarm/robot.yaml`.
+- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L237) — sim baseline (`name="openarm_v2"`, all 16 joints revolute matching v2's hinge gripper).  `sdk_kind="open"`, `hal.sim="openral_hal.openarm:OpenArmMujocoHAL"` + `hal.real=None` (sim-only).  Drift-guarded against `robots/openarm/robot.yaml`.
 
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its pin past PR #19._
@@ -191,12 +191,12 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 ### `python/hal/src/openral_hal/g1.py`
 _MuJoCo digital twin for the Unitree G1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum, gravity must be disabled in closed-loop tests (CLAUDE.md §6.2)._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL driving `mujoco_menagerie/unitree_g1/g1.xml` via `MujocoArmHAL` with an explicit `joint_qvel_addr` mapping (the free joint occupies 7 qpos slots but only 6 qvel slots). Floating-base joint is implicit world state, not in `description.joints`. Thin manifest-driven wrapper (ADR-0023); `__init__` forwards to `self._init_from_description(G1_DESCRIPTION, …)`. (L342)
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL driving `mujoco_menagerie/unitree_g1/g1.xml` via `MujocoArmHAL` with an explicit `joint_qvel_addr` mapping (the free joint occupies 7 qpos slots but only 6 qvel slots). Floating-base joint is implicit world state, not in `description.joints`. Thin manifest-driven wrapper (ADR-0023); `__init__` forwards to `self._init_from_description(G1_DESCRIPTION, …)`. (L347)
   - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)`
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L203)
-- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L211)
-- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L261)
-- const `G1_DESCRIPTION = RobotDescription(...)` (L289) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets) lives in `G1_DESCRIPTION.sim`. Drift-guarded against `robots/g1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L205)
+- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L213)
+- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L263)
+- const `G1_DESCRIPTION = RobotDescription(...)` (L291) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets) lives in `G1_DESCRIPTION.sim`. Drift-guarded against `robots/g1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
 
 ### `python/hal/src/openral_hal/so100_mujoco.py`
 _MuJoCo digital twin for the SO-100 follower arm (Menagerie MJCF)._
