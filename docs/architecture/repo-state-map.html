@@ -1412,6 +1412,15 @@ const LAYERS = [
         inputs: ["OPENRAL_ROS2_TRACING env var", "active OTel context"],
         outputs: ["CTF trace (lttngust)", "JSONL fallback"],
       },
+      {
+        title: "Foxglove live-scene bridge (ADR-0059)",
+        pkg: "packages/openral_foxglove_bringup",
+        status: "green",
+        desc: "Read-only live-scene visualisation surface — the live-ROS half of a hybrid with the OTel dashboard (ADR-0017, kept for traces/metrics). Wraps upstream foxglove_bridge with a safety-conscious posture: capabilities restricted to [connectionGraph, assets] (no clientPublish/services/parameters — the surface cannot actuate the robot), loopback bind (127.0.0.1, issue #44), and an explicit Bucket-1 topic allowlist (camera images, /map, octomap cloud, joint states, TF, robot_description) that never matches the safety/e-stop/action topics. All three invariants are hermetic-test-enforced. Spawned into the deploy-sim graph by `openral deploy sim --foxglove` (default off), wrapped in a TimerAction(5s) so it starts after the topic producers (foxglove-sdk-cpp v0.18.0 stale-bridge ordering). Phase 2: opt-in image_transport compressed-image republishers (~10x camera bandwidth cut). Phase 3: a Bucket-2 converter node (bucket2_markers) re-publishing openral_msgs/WorldCollision → visualization_msgs/MarkerArray and openral_msgs/OccupancyVoxels → sensor_msgs/PointCloud2 so Foxglove renders the custom world types natively. Phase 4: an MCAP recorder (ros2 bag record -s mcap, scoped to the Bucket-1 allowlist). Any path that re-enables a write capability (E-stop reset, Publish/Teleop, prompt input) is out of scope pending safety-WG sign-off.",
+        inputs: ["/openral/cameras/*/image", "/map", "/octomap_point_cloud_centers", "/joint_states", "/tf", "/robot_description", "openral_msgs/WorldCollision", "openral_msgs/OccupancyVoxels"],
+        outputs: ["Foxglove WebSocket (ws://127.0.0.1:8765)", "/openral/world_collisions_markers", "/openral/world_voxels_cloud", "MCAP bag"],
+        schemas: ["msg/WorldCollision", "msg/OccupancyVoxels"],
+      },
     ],
   },
 ];

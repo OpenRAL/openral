@@ -36,8 +36,9 @@ Then open https://app.foxglove.dev (or the desktop app), choose
 from __future__ import annotations
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.conditions import IfCondition, UnlessCondition
+from launch.launch_context import LaunchContext
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -119,6 +120,34 @@ def generate_launch_description() -> LaunchDescription:
                 "NOTE: openarm has no local URDF (ADR-0027)."
             ),
         ),
+        # --- Compressed-image transport (ADR-0059 decision 4) ---------------
+        # Raw sensor_msgs/Image is ~9 MB/s per camera; a multi-camera arm can
+        # saturate a laptop link and Foxglove's send buffer. The republisher
+        # below converts selected raw camera topics to sensor_msgs/CompressedImage
+        # via image_transport, bringing bandwidth down ~10×. Default OFF so the
+        # raw path stays the default and no extra nodes run in CI.
+        DeclareLaunchArgument(
+            "republish_compressed",
+            default_value="false",
+            description=(
+                "When true, spawn one image_transport republisher per topic in "
+                "``compressed_camera_topics`` to convert raw→compressed. "
+                "Compressed topics (/…/image/compressed) are already Bucket-1 "
+                "whitelisted (ADR-0059 decision 4). Default false — raw path stays "
+                "available for fidelity-sensitive use."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "compressed_camera_topics",
+            default_value="",
+            description=(
+                "Comma- or space-separated list of raw sensor_msgs/Image topics to "
+                "compress when ``republish_compressed`` is true. Example: "
+                '"/openral/cameras/base/image /openral/cameras/left_wrist/image". '
+                "Each topic gains a /compressed sibling republished by "
+                "image_transport."
+            ),
+        ),
     ]
 
     address = LaunchConfiguration("address")
@@ -128,6 +157,8 @@ def generate_launch_description() -> LaunchDescription:
     with_rsp = LaunchConfiguration("with_robot_state_publisher")
     with_jsp = LaunchConfiguration("with_joint_state_publisher")
     urdf_path = LaunchConfiguration("robot_description_urdf")
+    republish_compressed = LaunchConfiguration("republish_compressed")
+    compressed_camera_topics = LaunchConfiguration("compressed_camera_topics")
 
     # URDF file content as the ``robot_description`` parameter. ``cat`` only
     # runs when a state-publisher node is actually included (conditioned
@@ -191,6 +222,58 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[robot_description],
     )
 
+    # ADR-0059 decision 4: opt-in compressed-image republishers.
+    # ``compressed_camera_topics`` is a runtime LaunchConfiguration string —
+    # we can't branch on it at module load, so it is resolved inside an
+    # OpaqueFunction that runs after all args are substituted.
+    def _spawn_compressed_republishers(
+        context: LaunchContext,
+        republish_compressed_cfg: LaunchConfiguration,
+        compressed_camera_topics_cfg: LaunchConfiguration,
+        use_sim_time_cfg: LaunchConfiguration,
+    ) -> list:
+        if republish_compressed_cfg.perform(context).lower() != "true":
+            return []
+        raw_topics_str = compressed_camera_topics_cfg.perform(context).strip()
+        if not raw_topics_str:
+            return []
+        sim_time = use_sim_time_cfg.perform(context)
+        # Accept comma- or whitespace-separated topic lists.
+        raw_topics = [t for t in raw_topics_str.replace(",", " ").split() if t]
+        nodes = []
+        for idx, topic in enumerate(raw_topics):
+            # image_transport republish subscribes on remap "in" (raw) and
+            # publishes compressed images with remap "out/compressed" →
+            # <topic>/compressed, matching the Bucket-1 whitelist pattern
+            # r"/openral/cameras/.*/image/compressed".
+            nodes.append(
+                Node(
+                    package="image_transport",
+                    executable="republish",
+                    name=f"openral_foxglove_compressed_republisher_{idx}",
+                    output="screen",
+                    arguments=["raw", "compressed"],
+                    parameters=[{"use_sim_time": sim_time == "true"}],
+                    remappings=[
+                        ("in", topic),
+                        ("out/compressed", topic + "/compressed"),
+                    ],
+                )
+            )
+        return nodes
+
+    compressed_republishers = OpaqueFunction(
+        function=_spawn_compressed_republishers,
+        args=[republish_compressed, compressed_camera_topics, use_sim_time],
+    )
+
     return LaunchDescription(
-        [*args, bridge_safe, bridge_all, robot_state_publisher, joint_state_publisher]
+        [
+            *args,
+            bridge_safe,
+            bridge_all,
+            robot_state_publisher,
+            joint_state_publisher,
+            compressed_republishers,
+        ]
     )

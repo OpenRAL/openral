@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Console entry point for the Bucket-2 converter node (ADR-0059 Phase 3).
+
+Installed to ``lib/openral_foxglove_bringup/bucket2_markers`` so
+``ros2 launch openral_foxglove_bringup bucket2.launch.py`` can resolve
+``executable="bucket2_markers"``. The implementation lives in the importable
+package module; this thin wrapper only invokes its ``main()``.
+"""
+
+from openral_foxglove_bringup.bucket2_markers import main
+
+if __name__ == "__main__":
+    main()

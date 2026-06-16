@@ -49,6 +49,10 @@ _FORBIDDEN_TOPICS = [
     "/openral/candidate_action",
     "/openral/failure/safety",
     "/openral/prompt_in/dashboard",
+    # Compressed patterns must not accidentally widen to safety topics either.
+    "/openral/cameras/base/image/compressed/estop",
+    "/openral/estop/compressed",
+    "/openral/safe_action/compressed",
 ]
 
 
@@ -84,6 +88,22 @@ def test_bucket1_topics_are_whitelisted(topic: str) -> None:
     """Every native panel's source topic is actually exposed."""
     assert any(re.fullmatch(pat, topic) for pat in BUCKET1_TOPIC_WHITELIST), (
         f"{topic} is NOT reachable — its panel would be empty"
+    )
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "/openral/cameras/0/image/compressed",
+        "/openral/cameras/base/image/compressed",
+        "/openral/cameras/left_wrist/image/compressed",
+        "/openral/cameras/right_wrist/image/compressed",
+    ],
+)
+def test_compressed_camera_topics_are_whitelisted(topic: str) -> None:
+    """image_transport compressed sibling topics are exposed (ADR-0059 decision 4)."""
+    assert any(re.fullmatch(pat, topic) for pat in BUCKET1_TOPIC_WHITELIST), (
+        f"{topic} is NOT whitelisted — compressed panel would be empty"
     )
 
 

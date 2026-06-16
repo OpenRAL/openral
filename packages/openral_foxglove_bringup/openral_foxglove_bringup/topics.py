@@ -13,6 +13,11 @@ from __future__ import annotations
 #: safety/e-stop/action topics are absent on purpose.
 BUCKET1_TOPIC_WHITELIST: list[str] = [
     r"/openral/cameras/.*/image",  # sensor_msgs/Image  — camera panels
+    # ADR-0059 decision 4: ``image_transport`` compressed sibling topics.
+    # When the opt-in republisher is active these carry sensor_msgs/CompressedImage
+    # at ~1/10th the raw bandwidth; Foxglove renders them natively in the Image panel.
+    r"/openral/cameras/.*/image/compressed",       # sensor_msgs/CompressedImage
+    r"/openral/cameras/.*/image/compressedDepth",  # sensor_msgs/CompressedImage (depth)
     r"/map",  # nav_msgs/OccupancyGrid — 2D nav map
     r"/octomap_point_cloud_centers",  # sensor_msgs/PointCloud2 — voxels
     r"/scan",  # sensor_msgs/LaserScan — optional 2D laser
@@ -21,6 +26,12 @@ BUCKET1_TOPIC_WHITELIST: list[str] = [
     r"/robot_description",  # std_msgs/String (URDF) — 3D robot model
     r"/tf",  # tf2_msgs/TFMessage — frames
     r"/tf_static",  # tf2_msgs/TFMessage — static frames
+    # ADR-0059 decision 5: Bucket-2 converter outputs — the custom
+    # openral_msgs world types re-published as standard viz types by
+    # ``bucket2_markers`` (launch/bucket2.launch.py) so Foxglove renders
+    # them natively. Read-only viz, not actuation.
+    r"/openral/world_collisions_markers",  # visualization_msgs/MarkerArray — capsule obstacles
+    r"/openral/world_voxels_cloud",  # sensor_msgs/PointCloud2 — occupied voxel centres
 ]
 
 #: Read-only capability set. Omits ``clientPublish``, ``services``,

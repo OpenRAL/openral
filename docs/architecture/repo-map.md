@@ -37,7 +37,8 @@ openral/                      ← THIS monorepo
 │  ├─ openral_safety_watchdog/ · openral_human_estop/ ← deadman watchdog + human E-stop forwarders ✓
 │  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift, ADR-0035) ✓
 │  ├─ openral_octomap_bridge/ ← OctoMap → safety-kernel OccupancyVoxels lowering (ADR-0030) ✓
-│  └─ openral_nav2_bringup/ · openral_slam_bringup/ ← reasoner-managed Nav2 / slam_toolbox services (ADR-0025) ✓
+│  ├─ openral_nav2_bringup/ · openral_slam_bringup/ ← reasoner-managed Nav2 / slam_toolbox services (ADR-0025) ✓
+│  └─ openral_foxglove_bringup/ ← read-only Foxglove live-scene bridge + Bucket-2 converter + MCAP (ADR-0059) ✓
 │  Planned: core_ros, sensors_ros, dispatcher_ros, launch
 ├─ cpp/                           ← openral_safety_kernel — C++ deny-by-default kernel (ADR-0020, planned) ◐
 ├─ rskills/                       ← rSkill packages (manifest + weights + eval/) — VLA + detector kinds ✓

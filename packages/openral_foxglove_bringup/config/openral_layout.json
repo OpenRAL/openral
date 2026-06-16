@@ -60,6 +60,35 @@
     },
     "RawMessages!state": {
       "topicPath": "/joint_states"
+    },
+    "3D!bucket2": {
+      "followTf": "base_link",
+      "scene": {},
+      "cameraState": {
+        "perspective": true,
+        "distance": 4,
+        "phi": 45,
+        "thetaOffset": 30,
+        "targetOffset": [0, 0, 0],
+        "fovy": 45,
+        "near": 0.05,
+        "far": 5000
+      },
+      "topics": {
+        "/openral/world_collisions_markers": {
+          "visible": true,
+          "colorField": "z",
+          "colorMode": "rgba"
+        },
+        "/openral/world_voxels_cloud": {
+          "visible": true,
+          "colorField": "z",
+          "colorMode": "colormap",
+          "colorMap": "turbo",
+          "pointSize": 0.04
+        }
+      },
+      "layers": {}
     }
   },
   "globalVariables": {},
@@ -75,7 +104,12 @@
     },
     "second": {
       "direction": "column",
-      "first": "3D!world",
+      "first": {
+        "direction": "row",
+        "first": "3D!world",
+        "second": "3D!bucket2",
+        "splitPercentage": 55
+      },
       "second": {
         "direction": "row",
         "first": "Plot!joints",
