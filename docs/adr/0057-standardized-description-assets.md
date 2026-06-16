@@ -140,6 +140,45 @@ runs **once at authoring time**; the committed output is reproducible (not
 hand-edited) and **runtime needs zero build tooling**. End users no longer
 install `xacrodoc` / `yourdfpy` to get `/tf`.
 
+**Joint-name-only vendoring for already-flat URDFs (`h1`).** Some robots ship a
+flat upstream URDF whose *joint* names diverge from the manifest /
+HAL-control-contract names, which makes `robot_state_publisher`'s `/tf` use
+joint names that don't match the HAL's `/joint_states`. `h1` suffixes every
+joint with `_joint` (`torso_joint`). For these, `vendor-urdf --raw-text` copies
+the upstream URDF **text verbatim** and applies the joint renames with `re.sub`
+directly on the raw XML — **no yourdfpy round-trip** (which would absolutize /
+mangle `package://` and relative mesh paths, and rewrite CRLF). The renames
+target **joint names only** (`<joint name="X"` and any `joint="X"` reference);
+link names, geometry, inertials, mesh paths and line endings are preserved
+byte-for-byte (verified: the only diff vs upstream is the renamed joint-name
+attributes plus the inserted provenance comment). `h1` strips `_joint`.
+
+**`so100_follower` / `so101_follower` / `gr1` are NOT yet vendored** — each
+blocked for a distinct reason, all surfaced (not papered over):
+
+- **`so100_follower` / `so101_follower` — relative-path collision meshes.**
+  Their upstream URDF names joints `1`..`6` (SO-ARM motor convention → manifest
+  semantic names `shoulder_pan`..`gripper`), which `vendor-urdf --raw-text`
+  renames correctly. **But** their `<collision>` meshes are referenced by
+  *relative* path (`assets/*.stl`), resolved by yourdfpy against the URDF file's
+  own directory. Relocating the vendored URDF under `robots/<id>/` makes those
+  meshes unreachable, so the safety collision-lowering router (§5) silently
+  flips them from URDF-sampling to MJCF — a safety-source change the
+  lowering-regression test correctly rejects (`so100_follower`'s MJCF-path ACM
+  comes out empty; `so101_follower`'s happens to coincide but the silent flip is
+  still rejected by the router's "no source flip" intent). Vendoring these two
+  therefore *also* requires vendoring (or `package://`-rewriting) their mesh
+  assets (3 MB / 16 MB) — a maintainer / safety-WG decision, deferred.
+- **`gr1` — copy-left upstream.** Its URDF (Wiki-GRx-Models) is licensed
+  **GPL-3.0**. CLAUDE.md §1.9 rejects copy-left from open-core without TSC
+  review, so the GPL-3.0 URDF cannot be committed into this Apache-2.0 repo. A
+  joint-name patch is mechanically trivial (strip `_joint`, collapse
+  `*_elbow_pitch` → `*_elbow`) but the license, not the mechanics, is the
+  blocker.
+
+All three keep their `rd:` ref and their documented `/tf` joint-name xfail
+(`test_asset_resolution._URDF_JOINT_NAME_MISMATCH`).
+
 ### 5. URDF stays optional
 
 7 of the 16 robots are MuJoCo-sim-only (`aloha_bimanual`, `sawyer`, `widowx`,
@@ -231,12 +270,21 @@ license is ambiguous, the vendoring is blocked, not guessed):
 | `ur5e` / `ur10e` | ROS-Industrial `universal_robots` / `ur_description` | BSD-3-Clause | Matches the `ur_robot_driver` BSD-3 posture already recorded in `robots/ur5e/README.md`. |
 | `rizon4` | `flexivrobotics/flexiv_description` | Apache-2.0 | Upstream URDF (see `robots/rizon4/README.md`). |
 | `openarm` | `enactic/openarm` (description) | Apache-2.0 | Upstream xacro is prefix-mismatched; vendored URDF is prefix-patched to the HAL joints. |
+| `h1` | `unitreerobotics/unitree_ros` (`h1_description`) | BSD-3-Clause (confirmed: `unitree_ros/LICENSE`, © Unitree Robotics) | Already-flat upstream URDF; vendored via `vendor-urdf --raw-text` with `_joint` suffix stripped from joint names only (mesh `package://` paths verbatim). |
 
-All four are permissive (Apache-2.0 / BSD), so §1.9's "Apache-2.0 / MIT / BSD,
-no GPL without TSC review" constraint is satisfied. No copy-left, no
+All vendored URDFs are permissive (Apache-2.0 / BSD), so §1.9's "Apache-2.0 /
+MIT / BSD, no GPL without TSC review" constraint is satisfied. No copy-left, no
 closed-SDK bundling. The third-party meshes these URDFs reference still resolve
 via `package://` from the `robot_descriptions` cache (the prompted download) —
 **full offline mesh vendoring is explicitly out of scope** (spec §8).
+
+**Not vendored (blocked at vendor time — recorded per §1.2, truth over
+plausibility):**
+
+| Robot | Upstream source | License | Why not vendored |
+|---|---|---|---|
+| `gr1` | `Wiki-GRx-Models` (Fourier) | **GPL-3.0** (confirmed: `Wiki-GRx-Models/LICENSE`) | Copy-left — §1.9 rejects from open-core without TSC review. Keeps `rd:` ref + xfail. |
+| `so100_follower` / `so101_follower` | `TheRobotStudio/SO-ARM100` | Apache-2.0 | License is fine, but the upstream URDF's *relative-path* collision meshes (`assets/*.stl`) make a relocated copy flip the safety lowering source (§4). Needs the meshes vendored too — deferred. |
 
 ## Consequences
 

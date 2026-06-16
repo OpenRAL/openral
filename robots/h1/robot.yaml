@@ -37,10 +37,14 @@ base_frame: "pelvis"
 
 # ADR-0027 — robot_state_publisher wiring. URDF root link is ``pelvis``,
 # matching base_frame; no static transform needed.
-# ADR-0057 — unified asset block (URDF / MJCF).
+# ADR-0057 — unified asset block (URDF / MJCF). The URDF is a vendored,
+# joint-name-patched copy of rd:h1_description: upstream suffixes every joint
+# with '_joint' (torso_joint); we strip the suffix so robot_state_publisher's
+# /tf joint names match the HAL/menagerie names (torso, left_knee, ...). Only
+# joint names changed — links/meshes (package:// paths) verbatim.
 assets:
   urdf:
-    ref: "rd:h1_description"
+    ref: "file:h1.urdf"
   mjcf: "rd:h1_mj_description"
 
 joints:
