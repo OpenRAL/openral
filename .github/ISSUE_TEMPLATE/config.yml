@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: 💬 Discord community
-    url: https://discord.gg/ZdNyUT4V5
+    url: https://discord.gg/ZU5XGfTJYe
     about: Questions, help, design discussion, and showing off what you built. Start here for anything that isn't a confirmed bug or feature request.
   - name: 📖 Documentation
-    url: https://docs.openral.dev
+    url: https://openral.github.io/openral/
     about: Quick start, architecture, tutorials, and the API reference.
   - name: 🔒 Report a security or safety vulnerability
     url: https://github.com/OpenRAL/openral/security/advisories/new
