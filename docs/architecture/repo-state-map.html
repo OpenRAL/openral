@@ -1422,7 +1422,7 @@ const CROSS = [
     title: "openral_core schemas",
     pkg: "python/core · schemas.py",
     status: "green",
-    desc: "Pydantic v2 contracts for every layer boundary. ~45 models · property-based tested with hypothesis · 42 JSON Schemas exported. On-disk schemas at `schema_version: \"0.1\"`. ADR-0057 (the assets-block migration) is a backward-incompatible change — the legacy `urdf_path`/`mjcf_uri`/`srdf_path`/URDF-root fields were removed in favour of `assets: AssetRefs` — and per CLAUDE.md §1.6 still owes a `schema_version` bump + migrator (in-tree manifests already moved; the version-field bump + migrator land with the ADR-0057 PR). Backward-compatible additions evolve in place.",
+    desc: "Pydantic v2 contracts for every layer boundary. ~45 models · property-based tested with hypothesis · 42 JSON Schemas exported. On-disk schemas at `schema_version: \"0.1\"`. ADR-0057 (the assets-block migration) is a backward-incompatible change — the legacy `urdf_path`/`mjcf_uri`/`srdf_path`/URDF-root fields were removed in favour of `assets: AssetRefs`. No `schema_version` bump/migrator: `RobotDescription` carries no `schema_version`, all 16 in-tree manifests are hand-migrated, and per the no-backwards-compatibility decision old-format manifests are unsupported (CLAUDE.md §1.6 applies only to `schema_version`-bearing formats — rSkill/scene/trace — which this change does not touch). Backward-compatible additions evolve in place.",
     schemas: ["RobotDescription","AssetRefs","UrdfAsset","WorldState","Action","SensorSpec","RSkillInfo","RSkillManifest","SafetyEnvelope","JointState","Pose6D","DetectedObject","SceneDefaults","TopCameraDefaults"],
   },
   {
