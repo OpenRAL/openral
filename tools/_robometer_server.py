@@ -56,6 +56,7 @@ def _split_repo_rev(weights: str) -> tuple[str, str | None]:
 
 def _resolve_local_dir(weights: str) -> str:
     """Return a local directory for ``weights`` (snapshot_download if it's an HF id)."""
+    weights = weights.removeprefix("local://")
     if os.path.isdir(weights):
         return weights
     from huggingface_hub import snapshot_download

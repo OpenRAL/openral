@@ -44,6 +44,15 @@ def test_build_reward_monitor_propagates_contract() -> None:
     assert mon._weights_source == "robometer/Robometer-4B"  # noqa: SLF001 — @sha stripped
 
 
+def test_build_reward_monitor_local_scheme() -> None:
+    """``local://`` weights resolve to a bare path (pre-quantized checkpoint dir)."""
+    manifest = _load_manifest()
+    local = manifest.model_copy(update={"weights_uri": "local:///tmp/robometer-nf4-ckpt"})
+    mon = build_reward_monitor(local, port=5769)
+    # local:// stripped to the absolute dir; the sidecar meta-loads it directly.
+    assert mon._weights_source == "/tmp/robometer-nf4-ckpt"  # noqa: SLF001
+
+
 def test_build_reward_monitor_rejects_wrong_kind() -> None:
     """A non-reward manifest is rejected by the factory."""
     manifest = _load_manifest()

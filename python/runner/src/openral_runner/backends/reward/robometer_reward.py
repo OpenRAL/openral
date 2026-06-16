@@ -272,7 +272,12 @@ def build_reward_monitor(
     if manifest.reward is None:  # pragma: no cover — validator guarantees this
         raise ROSConfigError(f"reward manifest {manifest.name!r} has no `reward` block")
     raw = manifest.weights_uri or manifest.source_repo or "robometer/Robometer-4B"
-    weights_source = raw.removeprefix("hf://").split("@", 1)[0]
+    # hf://org/repo[@rev] -> "org/repo[@rev]" (sidecar resolves rev); local:///path
+    # -> "/path" (a pre-quantized checkpoint dir loaded directly as 4-bit).
+    if raw.startswith("local://"):
+        weights_source = raw.removeprefix("local://")
+    else:
+        weights_source = raw.removeprefix("hf://").split("@", 1)[0]
     return RobometerReward(
         model_id=manifest.name,
         weights_source=weights_source,
