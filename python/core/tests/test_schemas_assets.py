@@ -8,9 +8,8 @@ only checks the ref *string* format; file resolution lives in
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from openral_core.schemas import AssetRefs, RobotDescription, SimDescription, UrdfAsset
+from pydantic import ValidationError
 
 
 def test_assets_block_parses_and_validates() -> None:

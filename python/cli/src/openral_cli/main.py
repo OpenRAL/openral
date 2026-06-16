@@ -2513,6 +2513,7 @@ def robot_vendor_urdf(
     )
     typer.echo(f"Wrote {written}")
 
+
 # ADR-0018 F10: `openral prompt "do X"` publishes a one-shot PromptStamped
 # onto /openral/prompt_in/cli; the prompt_router_node fans it out to
 # /openral/prompt for the F4 reasoner. rclpy import is deferred inside

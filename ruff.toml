@@ -42,6 +42,7 @@ convention = "google"
 "python/observability/src/**" = ["ANN401", "PLC0415", "PLW0603"]  # **attrs accepts arbitrary OTel span attribute values (Any is correct); the structlog bridge import is deliberately lazy to avoid a circular SDK init dep; module-level _INSTALLED guard is the simplest idempotency pattern
 "python/cli/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set (ADR-0058 vendor-urdf test dir)
 "python/core/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror tests/** ignore set (ADR-0030 urdf_resolve test dir)
+"python/core/src/openral_core/assets.py" = ["PLC0415"]  # ADR-0058: gym_aloha / openarm / robot_descriptions are optional sim-only deps deferred inside resolve_asset so openral_core stays import-safe without them
 "python/hal/tests/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003"]  # mirror the repo-wide tests/** ignore set (new package test dir, ADR-0034)
 "python/observability/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
 "python/reasoner/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set

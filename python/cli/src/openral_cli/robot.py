@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 _PROVENANCE = (
     "<!-- Vendored by `openral robot vendor-urdf {id}` from {src}. "
@@ -202,8 +203,8 @@ def _resolve_renames(
         and len(rename) == _PAIR_LEN
         and all(isinstance(x, str) for x in rename)
     ):
-        return [rename]  # type: ignore[list-item] # reason: validated 2-str tuple above
-    return list(rename)
+        return [cast("tuple[str, str]", rename)]
+    return list(cast("Sequence[tuple[str, str]]", rename))
 
 
 def _read_raw_text(upstream: str) -> str:
@@ -220,7 +221,7 @@ def _read_raw_text(upstream: str) -> str:
         import importlib
 
         module = importlib.import_module(f"robot_descriptions.{upstream[len('rd:') :]}")
-        path = Path(module.URDF_PATH)  # type: ignore[attr-defined] # reason: rd modules expose URDF_PATH
+        path = Path(module.URDF_PATH)
     else:
         raise ValueError(f"raw_text mode needs a 'file:' or 'rd:' upstream, got {upstream!r}")
     # newline="" disables universal-newline translation so an upstream that uses
