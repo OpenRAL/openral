@@ -2447,6 +2447,58 @@ app.add_typer(dataset_app, name="dataset")
 # (it pulls yourdfpy/trimesh) so `openral --help` stays fast.
 app.add_typer(collision_app, name="collision")
 
+# ADR-0057: `openral robot vendor-urdf <id>` — expand an upstream xacro to a
+# flat, committed URDF so end users need no xacro tooling at runtime. The
+# `vendor_urdf` import is deferred inside the command (it pulls robot_descriptions/
+# xacrodoc/yourdfpy) so `openral --help` stays fast.
+robot_app = typer.Typer(
+    name="robot",
+    help="Robot description assets — vendor a flat URDF from an upstream xacro (ADR-0057).",
+    no_args_is_help=True,
+)
+app.add_typer(robot_app, name="robot")
+
+
+@robot_app.command("vendor-urdf")
+def robot_vendor_urdf(
+    robot_id: str = typer.Argument(
+        ...,
+        help="OpenRAL robot id; names the output file (e.g. ur5e → ur5e.urdf).",
+    ),
+    upstream: str = typer.Option(
+        ...,
+        "--upstream",
+        help=(
+            "Upstream source: 'rd:<robot_descriptions module>' (xacro, expanded "
+            "via xacrodoc) or 'file:<path>' to an already-flat URDF."
+        ),
+    ),
+    out: Path = typer.Option(
+        ...,
+        "--out",
+        help="Output directory; '<robot_id>.urdf' is written here.",
+    ),
+    rename: str | None = typer.Option(
+        None,
+        "--rename",
+        help=(
+            "Optional joint/link rename as 'PATTERN=>REPL' (regex re.sub). "
+            "Defaults to the per-robot rule (openarm strips its 'openarm_' prefix)."
+        ),
+    ),
+) -> None:
+    """Expand an upstream description to a flat, committed URDF (ADR-0057)."""
+    from openral_cli.robot import vendor_urdf
+
+    rename_pair: tuple[str, str] | None = None
+    if rename is not None:
+        if "=>" not in rename:
+            raise typer.BadParameter("--rename must be 'PATTERN=>REPL'", param_hint="--rename")
+        pat, _, repl = rename.partition("=>")
+        rename_pair = (pat, repl)
+    written = vendor_urdf(robot_id, upstream=upstream, out_dir=out, rename=rename_pair)
+    typer.echo(f"Wrote {written}")
+
 # ADR-0018 F10: `openral prompt "do X"` publishes a one-shot PromptStamped
 # onto /openral/prompt_in/cli; the prompt_router_node fans it out to
 # /openral/prompt for the F4 reasoner. rclpy import is deferred inside

@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vendored by `openral robot vendor-urdf rizon4` from rd:rizon4_description. Upstream license applies — see docs/adr/0057. -->
+<robot name="Rizon4">
+  <link name="world"/>
+  <link name="base_link">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link0.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link0.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link1">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link1.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.062 0.062 0.002"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.0025" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link1.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link2">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link2.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.062 0.062 0.002"/>
+      </geometry>
+      <origin xyz="0.0 -0.0025 0.0" rpy="1.570796327 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link2.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link3">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link3.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.051 0.051 0.002"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.0025" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link3.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link4">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link4.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.051 0.051 0.002"/>
+      </geometry>
+      <origin xyz="0.0 -0.0025 0.0" rpy="1.570796327 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link4.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link5">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link5.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.051 0.051 0.002"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.0025" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link5.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link6">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link6.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.051 0.051 0.002"/>
+      </geometry>
+      <origin xyz="0.0 -0.0025 0.0" rpy="1.570796327 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link6.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="link7">
+    <visual name="shell">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/link7.obj"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <visual name="ring">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/visual/ring.obj" scale="0.051 0.051 0.002"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.0025" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision name="convex_mesh">
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/flexiv_description/meshes/Rizon4/collision/link7.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="flange"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0.0 0.0 0.155" rpy="0.0 -0.0 3.1415926531795866"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="123.0" velocity="2.0944" lower="-2.8798" upper="2.8798"/>
+  </joint>
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0.0 0.03 0.21" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 1.0 0.0"/>
+    <limit effort="123.0" velocity="2.0944" lower="-2.3562" upper="2.3562"/>
+  </joint>
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <origin xyz="0.0 0.035 0.205" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="64.0" velocity="2.4435" lower="-3.0543" upper="3.0543"/>
+  </joint>
+  <joint name="joint4" type="revolute">
+    <parent link="link3"/>
+    <child link="link4"/>
+    <origin xyz="-0.02 -0.03 0.19" rpy="0.0 -0.0 3.1415926531795866"/>
+    <axis xyz="0.0 1.0 0.0"/>
+    <limit effort="64.0" velocity="2.4435" lower="-1.9548" upper="2.7751"/>
+  </joint>
+  <joint name="joint5" type="revolute">
+    <parent link="link4"/>
+    <child link="link5"/>
+    <origin xyz="-0.02 0.025 0.195" rpy="0.0 -0.0 3.1415926531795866"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="39.0" velocity="4.8869" lower="-3.0543" upper="3.0543"/>
+  </joint>
+  <joint name="joint6" type="revolute">
+    <parent link="link5"/>
+    <child link="link6"/>
+    <origin xyz="0.0 0.03 0.19" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 1.0 0.0"/>
+    <limit effort="39.0" velocity="4.8869" lower="-1.4835" upper="4.6251"/>
+  </joint>
+  <joint name="joint7" type="revolute">
+    <parent link="link6"/>
+    <child link="link7"/>
+    <origin xyz="-0.015 0.073 0.11" rpy="3.141592653589793 -1.5707963265897933 3.141592653589793"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="39.0" velocity="4.8869" lower="-3.0543" upper="3.0543"/>
+  </joint>
+  <joint name="link7_to_flange" type="fixed">
+    <parent link="link7"/>
+    <child link="flange"/>
+    <origin xyz="0.0 0.0 0.081" rpy="0.0 -0.0 3.1415926531795866"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+</robot>

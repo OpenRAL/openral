@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vendored by `openral robot vendor-urdf ur10e` from rd:ur10e_description. Upstream license applies — see docs/adr/0057. -->
+<robot name="ur10e">
+  <link name="world"/>
+  <link name="base_link"/>
+  <link name="base_link_inertia">
+    <inertial>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+      <mass value="4.0"/>
+      <inertia ixx="0.0061063308908" ixy="0.0" ixz="0.0" iyy="0.0061063308908" iyz="0.0" izz="0.01125"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/base.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/base.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    </collision>
+  </link>
+  <link name="shoulder_link">
+    <inertial>
+      <origin xyz="0.021 -0.027 0.0" rpy="1.570796326794897 -0.0 0.0"/>
+      <mass value="7.369"/>
+      <inertia ixx="0.03408" ixy="2e-05" ixz="-0.00425" iyy="0.03529" iyz="8e-05" izz="0.02156"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/shoulder.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/shoulder.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    </collision>
+  </link>
+  <link name="upper_arm_link">
+    <inertial>
+      <origin xyz="-0.2327 0.0 0.158" rpy="0.0 -0.0 0.0"/>
+      <mass value="13.051"/>
+      <inertia ixx="0.02814" ixy="5e-05" ixz="-0.01561" iyy="0.77068" iyz="2e-05" izz="0.76943"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/upperarm.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.1762" rpy="1.5707963267948966 -0.0 -1.5707963267948966"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/upperarm.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.1762" rpy="1.5707963267948966 -0.0 -1.5707963267948966"/>
+    </collision>
+  </link>
+  <link name="forearm_link">
+    <inertial>
+      <origin xyz="-0.33155 0.0 0.068" rpy="0.0 -0.0 0.0"/>
+      <mass value="3.989"/>
+      <inertia ixx="0.01014" ixy="8e-05" ixz="0.00916" iyy="0.30928" iyz="0.0" izz="0.30646"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/forearm.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0393" rpy="1.5707963267948966 -0.0 -1.5707963267948966"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/forearm.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 0.0393" rpy="1.5707963267948966 -0.0 -1.5707963267948966"/>
+    </collision>
+  </link>
+  <link name="wrist_1_link">
+    <inertial>
+      <origin xyz="0.0 -0.018 0.007" rpy="1.570796326794897 -0.0 0.0"/>
+      <mass value="2.1"/>
+      <inertia ixx="0.00296" ixy="-1e-05" ixz="0.0" iyy="0.00222" iyz="-0.00024" izz="0.00258"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/wrist1.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.135" rpy="1.5707963267948966 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/wrist1.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.135" rpy="1.5707963267948966 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="wrist_2_link">
+    <inertial>
+      <origin xyz="0.0 0.018 -0.007" rpy="-1.570796326794897 -0.0 0.0"/>
+      <mass value="1.98"/>
+      <inertia ixx="0.00296" ixy="-1e-05" ixz="0.0" iyy="0.00222" iyz="-0.00024" izz="0.00258"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/wrist2.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.12" rpy="0.0 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/wrist2.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.12" rpy="0.0 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="wrist_3_link">
+    <inertial>
+      <origin xyz="0.0 0.0 -0.026" rpy="0.0 -0.0 0.0"/>
+      <mass value="0.615"/>
+      <inertia ixx="0.0004" ixy="0.0" ixz="0.0" iyy="0.00041" iyz="0.0" izz="0.00034"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/visual/wrist3.dae"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.1168" rpy="1.5707963267948966 -0.0 0.0"/>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="/home/allopart/.cache/robot_descriptions/ur_description/meshes/ur10e/collision/wrist3.stl"/>
+      </geometry>
+      <origin xyz="0.0 0.0 -0.1168" rpy="1.5707963267948966 -0.0 0.0"/>
+    </collision>
+  </link>
+  <link name="ft_frame"/>
+  <link name="base"/>
+  <link name="flange"/>
+  <link name="tool0"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="base_link-base_link_inertia" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_link_inertia"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="shoulder_pan_joint" type="revolute">
+    <parent link="base_link_inertia"/>
+    <child link="shoulder_link"/>
+    <origin xyz="0.0 0.0 0.1807" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="330.0" velocity="2.0943951023931953" lower="-6.283185307179586" upper="6.283185307179586"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="shoulder_lift_joint" type="revolute">
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+    <origin xyz="0.0 0.0 0.0" rpy="1.570796327 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="330.0" velocity="2.0943951023931953" lower="-6.283185307179586" upper="6.283185307179586"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="elbow_joint" type="revolute">
+    <parent link="upper_arm_link"/>
+    <child link="forearm_link"/>
+    <origin xyz="-0.6127 0.0 0.0" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="150.0" velocity="3.141592653589793" lower="-3.141592653589793" upper="3.141592653589793"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="wrist_1_joint" type="revolute">
+    <parent link="forearm_link"/>
+    <child link="wrist_1_link"/>
+    <origin xyz="-0.57155 0.0 0.17415" rpy="0.0 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="54.0" velocity="3.141592653589793" lower="-6.283185307179586" upper="6.283185307179586"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="wrist_2_joint" type="revolute">
+    <parent link="wrist_1_link"/>
+    <child link="wrist_2_link"/>
+    <origin xyz="0.0 -0.11985 -2.458164590756244e-11" rpy="1.570796327 -0.0 0.0"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="54.0" velocity="3.141592653589793" lower="-6.283185307179586" upper="6.283185307179586"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="wrist_3_joint" type="revolute">
+    <parent link="wrist_2_link"/>
+    <child link="wrist_3_link"/>
+    <origin xyz="0.0 0.11655 -2.390480459346185e-11" rpy="-1.5707963270000003 1.2246467991473532e-16 -1.2246467991473532e-16"/>
+    <axis xyz="0.0 0.0 1.0"/>
+    <limit effort="54.0" velocity="3.141592653589793" lower="-6.283185307179586" upper="6.283185307179586"/>
+    <dynamics damping="0" friction="0"/>
+  </joint>
+  <joint name="wrist_3_link-ft_frame" type="fixed">
+    <parent link="wrist_3_link"/>
+    <child link="ft_frame"/>
+    <origin xyz="0.0 0.0 0.0" rpy="3.141592653589793 -0.0 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="base_link-base_fixed_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 -0.0 3.141592653589793"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="wrist_3-flange" type="fixed">
+    <parent link="wrist_3_link"/>
+    <child link="flange"/>
+    <origin xyz="0.0 0.0 0.0" rpy="-1.5707963267948966 -1.5707963267948966 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+  <joint name="flange-tool0" type="fixed">
+    <parent link="flange"/>
+    <child link="tool0"/>
+    <origin xyz="0.0 0.0 0.0" rpy="1.5707963267948966 -0.0 1.5707963267948966"/>
+    <axis xyz="1.0 0.0 0.0"/>
+  </joint>
+</robot>

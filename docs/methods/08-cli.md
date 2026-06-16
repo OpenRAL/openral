@@ -111,6 +111,11 @@ _ADR-0030 — `openral collision lower|check` Typer app: offline URDF/SRDF → m
 - `render_blocks(model) -> tuple[str, str]` — Render a `LoweredCollisionModel` to `(geometry_block, acm_block)` YAML text with a generated-provenance header; floats rounded to 4 dp for a stable diff.
 - `inject_joint_fk(text, joint_fk) -> str` — Inject `origin_xyz`/`origin_rpy`/`axis_xyz` into the named manifest joint blocks (matched by name), dropping any pre-existing FK lines. Used when onboarding a robot onto self-collision (the kernel needs joint FK to place capsules). Idempotent; preserves all other lines/comments.
 
+### `python/cli/src/openral_cli/robot.py`
+_ADR-0057 — `openral robot vendor-urdf <id>`: expand an upstream xacro to a flat, committed URDF so end users need no xacro tooling at runtime. Defers `robot_descriptions`/`xacrodoc`/`yourdfpy` inside the command so `openral --help` stays fast._
+
+- `vendor_urdf(robot_id, *, upstream, out_dir, rename=None) -> Path` — Load `upstream` (`rd:<robot_descriptions module>` → xacro expanded via xacrodoc, or `file:<path>` → already-flat URDF), serialize to a flat URDF, optionally apply a `(pattern, repl)` `re.sub` rename (default per-robot from `_RENAME`; openarm strips its `openarm_` prefix → `left_joint1..7`/`right_joint1..7`), and write `<robot_id>.urdf` with an ADR-0057 provenance header placed after the XML declaration (so the document stays well-formed). Returns the written path.
+
 ### `python/cli/src/openral_cli/_rskill_scaffolder.py`
 _Scaffolder helper backing `openral rskill new` and `tools/rskill_scaffolder.py`._
 Copies `rskills/template/` into a target directory, rewrites manifest sentinels (`name` / `license` / `embodiment_tags` / `weights_uri` / `source_repo`) plus README sentinels, then re-validates the result through `RSkillManifest.from_yaml` + `rSkill.from_yaml` so a malformed scaffold fails at scaffold-time. Partial scaffolds are cleaned up on validation failure.
