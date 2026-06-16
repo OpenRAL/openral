@@ -67,6 +67,7 @@ from openral_core import (
     LifecycleTransitionTool,
     LocateInViewTool,
     QuerySceneTool,
+    QueryTaskProgressTool,
     RecallObjectTool,
     ReloadGstPipelineTool,
     ResolvePlaceTool,
@@ -503,6 +504,17 @@ class ReasonerNode(LifecycleNode):
         )
         # Cached client for the query_scene service; created lazily on first use.
         self._query_scene_client: Any = None
+        # ADR-0057 — when true, offer the read-only ``query_task_progress`` tool
+        # (ask the Robometer reward monitor for a windowed progress/success
+        # assessment of the current task, via the
+        # ``/openral/perception/query_task_progress`` service). The deploy launch
+        # sets this when it brings up a reward monitor. Default false.
+        self.declare_parameter("task_progress_available", False)
+        self._task_progress_available: bool = (
+            self.get_parameter("task_progress_available").get_parameter_value().bool_value
+        )
+        # Cached client for the query_task_progress service; created lazily.
+        self._query_task_progress_client: Any = None
 
         # Populated by on_configure.
         self._renderer: ContextRenderer = ContextRenderer()
@@ -948,6 +960,7 @@ class ReasonerNode(LifecycleNode):
             spatial_memory_available=self._spatial_memory is not None,
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
+            task_progress_available=self._task_progress_available,
         )
 
     def _maybe_load_spatial_memory(self) -> None:
@@ -1324,6 +1337,7 @@ class ReasonerNode(LifecycleNode):
             spatial_memory_available=self._spatial_memory is not None,
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
+            task_progress_available=self._task_progress_available,
         )
         self._palette = new_palette
         self.get_logger().info(
@@ -1458,6 +1472,9 @@ class ReasonerNode(LifecycleNode):
             return
         if isinstance(call, QuerySceneTool):
             self._dispatch_query_scene(call, traceparent=traceparent)
+            return
+        if isinstance(call, QueryTaskProgressTool):
+            self._dispatch_query_task_progress(call, traceparent=traceparent)
             return
         if isinstance(call, ReloadGstPipelineTool):
             # F6 sensor-package service IDL (e.g.
@@ -1779,6 +1796,101 @@ class ReasonerNode(LifecycleNode):
         self._prompt_pub.publish(msg)
         self.get_logger().info(
             f"dispatch: query_scene → re-prompt ok={resp.ok} ({len(text)} chars)",
+        )
+
+    def _dispatch_query_task_progress(
+        self,
+        call: QueryTaskProgressTool,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Ask the reward monitor for a windowed progress/success assessment (ADR-0057).
+
+        Calls ``/openral/perception/query_task_progress`` (served by the
+        reward_monitor_node, backed by the Robometer NF4 sidecar). Async
+        (``call_async`` + done-callback) so the multi-hundred-ms reward inference
+        never blocks the reasoner executor; the quantitative result is republished
+        as a ``PromptStamped`` (frame_id ``"reward_monitor"``) feeding the next
+        tick — the prompt cascade that drives the replanning ladder. Read-only:
+        the reward signal is advisory, no actuation, no ``FailureTrigger``.
+        """
+        try:
+            from openral_msgs.srv import QueryTaskProgress
+        except ImportError:
+            self.get_logger().warning(
+                "dispatch: query_task_progress — openral_msgs/srv/QueryTaskProgress "
+                "not built; skipping",
+            )
+            return
+        if self._query_task_progress_client is None:
+            self._query_task_progress_client = self.create_client(
+                QueryTaskProgress, "/openral/perception/query_task_progress"
+            )
+        client = self._query_task_progress_client
+        if not client.service_is_ready() and not client.wait_for_service(
+            timeout_sec=_LIFECYCLE_SERVER_PROBE_S,
+        ):
+            self.get_logger().warning(
+                f"dispatch: query_task_progress window_s={call.window_s} — "
+                "/openral/perception/query_task_progress not on graph; skipping",
+            )
+            return
+        req = QueryTaskProgress.Request()
+        req.window_s = call.window_s
+        req.task = call.task
+        future = client.call_async(req)
+        future.add_done_callback(
+            lambda fut: self._on_query_task_progress_response(call, fut, traceparent=traceparent),
+        )
+        self.get_logger().info(
+            f"dispatch: query_task_progress window_s={call.window_s} task={call.task!r}",
+        )
+
+    def _on_query_task_progress_response(
+        self,
+        call: QueryTaskProgressTool,
+        future: Any,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Render a ``QueryTaskProgress`` response as a re-prompt (ADR-0057 cascade).
+
+        Surfaces the quantitative assessment in plain language so the LLM can act
+        on it — continue, escalate to ``query_scene``, advance, or replan when the
+        task has ``stalled`` or success is low.
+        """
+        try:
+            resp = future.result()
+        except Exception as exc:  # best-effort; a failed query must not kill the tick
+            self.get_logger().warning(f"dispatch: query_task_progress response failed: {exc}")
+            return
+        assert self._prompt_pub is not None
+        if not resp.ok:
+            reason = "no fresh camera frames" if resp.stale else "the reward monitor errored"
+            text = f"query_task_progress[window {call.window_s:.0f}s]: no assessment ({reason})."
+        else:
+            verdict = (
+                "SUCCEEDED"
+                if resp.succeeded
+                else ("STALLED — consider replanning" if resp.stalled else "in progress")
+            )
+            text = (
+                f"query_task_progress[window {call.window_s:.0f}s, {resp.frames_seen} frames]: "
+                f"progress={resp.progress_now:.2f} (trend {resp.progress_trend:+.3f}/frame), "
+                f"success={resp.success_now:.2f} (trend {resp.success_trend:+.3f}/frame) — "
+                f"{verdict}."
+            )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "reward_monitor"  # consumed by _on_prompt → next tick
+        msg.text = text
+        metadata: dict[str, Any] = {"source": "reward_monitor", "tool": call.tool}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+        self.get_logger().info(
+            f"dispatch: query_task_progress → re-prompt ok={resp.ok} ({len(text)} chars)",
         )
 
     def _dispatch_execute_rskill(

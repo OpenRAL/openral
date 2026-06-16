@@ -158,6 +158,34 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "If progress stalled or regressed, change tactic — tweak the goal "
     "params, substitute a different skill, or re-plan the approach — "
     "rather than re-issuing the same call against unchanged context. "
+    # ── Poll the reward monitor to judge a running skill (ADR-0057) ────
+    "When the read-only query_task_progress tool is in the palette, a "
+    "reward monitor is running IN PARALLEL with the executing skill (e.g. a "
+    "VLA), scoring the live camera against the task. Use it to judge HOW a "
+    "running skill is doing — call query_task_progress (with the active "
+    "task text and a window_s over the last few seconds) to get a "
+    "normalized per-frame progress (0-1), a success probability, and "
+    "whether progress has stalled. Poll it WHEN YOU SEE FIT — typically a "
+    "few seconds into a long manipulation/VLA dispatch, or whenever you "
+    "must decide between letting the skill continue, advancing to the next "
+    "step (success high / rising), or entering the replanning ladder "
+    "(stalled or success not improving). It is unlike recall_object / "
+    "locate_in_view (which answer WHERE an object is): query_task_progress "
+    "answers WHETHER THE TASK IS SUCCEEDING. It is ADVISORY and read-only — "
+    "it never moves the robot; you act on its signal by choosing the next "
+    "tool. Do not poll it every tick for its own sake; query when the "
+    "answer would change your next decision. "
+    # ── Bound long dispatches so you can poll between them ─────────────
+    "IMPORTANT — to be ABLE to poll a running skill, you must hand control "
+    "back to yourself: an execute_rskill goal dispatched with deadline_s=0 "
+    "runs to completion and you cannot act (or poll) until it returns. So "
+    "when query_task_progress is in the palette and you dispatch a long "
+    "policy (e.g. a VLA), set a BOUNDED deadline_s (a few seconds) — the "
+    "goal returns control to you at the deadline, you poll "
+    "query_task_progress to judge it, then either re-dispatch the same "
+    "skill to continue (progress rising), advance, or replan (stalled / not "
+    "succeeding). When no reward monitor is present, deadline_s=0 (run to "
+    "completion) remains fine. "
     # ── Safety: observe and work around, NEVER bypass ─────────────────
     "Safety is enforced below you by the C++ safety kernel: you PROPOSE, "
     "the kernel DISPOSES. You observe safety in the FAILURES section "
@@ -772,6 +800,29 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "camera. No actuation."
                 ),
                 "input_schema": QuerySceneTool.model_json_schema(),
+            },
+        )
+
+    # ADR-0057 — the read-only reward-monitor tool is surfaced only when a reward
+    # rSkill (Robometer-4B NF4) exposes the /openral/perception/query_task_progress
+    # service. Where query_scene returns free text, this returns a quantitative
+    # windowed progress/success assessment of the current task. No actuation.
+    if palette.task_progress_available:
+        from openral_core import QueryTaskProgressTool  # noqa: PLC0415
+
+        tools.append(
+            {
+                "name": "query_task_progress",
+                "description": (
+                    "Read-only: ask the reward monitor how the CURRENT task is going. Returns a "
+                    "quantitative assessment over the last 'window_s' seconds: normalized "
+                    "progress (0-1) and success probability (0-1) now, their trends, and a "
+                    "'stalled' flag. Use this to decide whether the policy is succeeding, "
+                    "stalling (replan), or done. For open-ended scene questions use query_scene "
+                    "instead. Optionally override 'task'; empty reuses the active goal. "
+                    "No actuation."
+                ),
+                "input_schema": QueryTaskProgressTool.model_json_schema(),
             },
         )
     return tools

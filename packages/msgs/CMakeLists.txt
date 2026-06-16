@@ -34,6 +34,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   srv/LocateInView.srv
   # ADR-0047 — reasoner's read-only query_scene question against a scene VLM (Qwen3.5-4B).
   srv/QueryScene.srv
+  # ADR-0057 — reasoner's read-only query_task_progress against the Robometer reward monitor.
+  srv/QueryTaskProgress.srv
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs
 )
 

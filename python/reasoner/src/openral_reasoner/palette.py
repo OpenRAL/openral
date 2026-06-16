@@ -243,6 +243,14 @@ class ToolPalette(BaseModel):
     off by default so the tool never appears without a dispatcher. Distinct from
     ``detector_available``: localization (``locate_in_view``) and scene-state
     reasoning (``query_scene``) are independently provisioned backends."""
+    task_progress_available: bool = False
+    """ADR-0057 — when ``True`` the LLM additionally sees the **read-only**
+    ``query_task_progress`` tool (ask the Robometer reward monitor for a
+    quantitative windowed progress/success assessment of the current task). Set
+    by the reasoner_node only when a reward monitor exposes the
+    ``/openral/perception/query_task_progress`` service; off by default. Distinct
+    from ``scene_query_available``: ``query_scene`` returns free text, this
+    returns normalized progress/success scalars + trends."""
 
     @model_validator(mode="before")
     @classmethod
@@ -295,6 +303,7 @@ def build_tool_palette(
     spatial_memory_available: bool = False,
     detector_available: bool = False,
     scene_query_available: bool = False,
+    task_progress_available: bool = False,
 ) -> ToolPalette:
     """Build a :class:`ToolPalette` from the installed-skill registry.
 
@@ -342,6 +351,10 @@ def build_tool_palette(
         scene_query_available: When ``True`` the palette advertises the read-only
             ``query_scene`` tool (ADR-0047); set by the reasoner when a scene VLM
             exposes ``/openral/perception/query_scene``.
+        task_progress_available: When ``True`` the palette advertises the
+            read-only ``query_task_progress`` tool (ADR-0057); set by the reasoner
+            when a reward monitor exposes
+            ``/openral/perception/query_task_progress``.
 
     Returns:
         A frozen :class:`ToolPalette`.
@@ -429,4 +442,5 @@ def build_tool_palette(
         spatial_memory_available=spatial_memory_available,
         detector_available=detector_available,
         scene_query_available=scene_query_available,
+        task_progress_available=task_progress_available,
     )

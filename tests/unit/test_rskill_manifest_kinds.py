@@ -259,5 +259,6 @@ def test_every_intree_rskill_manifest_declares_kind() -> None:
             "ros_service",
             "detector",
             "vlm",
+            "reward",
         }, f"{yaml_path}: unexpected kind={manifest.kind!r}"
     assert not missing

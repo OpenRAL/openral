@@ -1,0 +1,90 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-robometer-4b-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s2"
+kind: "reward"
+
+# Embodiment-agnostic: a reward monitor scores any rollout video + task
+# instruction and is exempt from the rSkill<->robot embodiment gate.
+embodiment_tags: []
+
+# Consumes the same RGB camera stream the co-active VLA uses. No actuators.
+sensors_required:
+  - modality: "rgb"
+    min_width: 224
+    min_height: 224
+
+actuators_required: []
+
+runtime: "pytorch"
+
+# NF4 bitsandbytes quantization (empirically validated, ADR-0057 Phase 2):
+# 236 Linear modules -> Linear4bit, 8.91 GB bf16 -> 3.33 GB resident,
+# 3.56 GB peak incl. an 8-frame forward (4.44 GB headroom on an 8 GB GPU).
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+  extra:
+    scheme: "nf4"
+    quantizer: "bitsandbytes"
+    compute_dtype: "bfloat16"
+    min_params_to_quantize: 4000000
+    # RBM cannot be loaded by vanilla AutoModel (config advertises
+    # architectures:["RFM"] with no auto_map). The sidecar loads via the
+    # pinned robometer package: robometer.utils.save.load_model_from_hf.
+    loader: "robometer.utils.save.load_model_from_hf"
+    # transformers MUST be pinned to 4.57.1 (5.x changes processor kwargs and
+    # drops input_ids). robometer package pinned to a669dffc.
+    transformers_pin: "4.57.1"
+    robometer_pin: "a669dffc241d7d76bec12f36efd4084d914d017c"
+
+min_vram_gb:
+  fp32: 18.0
+  bf16: 9.0
+  int4: 3.6
+
+# Pre-quantized NF4 checkpoint (ADR-0057): the sidecar loads the packed weights
+# DIRECTLY on the meta device via Params4bit.from_prequantized — no bf16
+# materialization, no requantize (~25 s to ready vs ~110 s + a 19 GB CPU spike).
+# Bit-identical to the bf16+quantize path. Built by
+# tools/build_robometer_nf4_checkpoint.py from the SHA-pinned upstream below.
+weights_uri: "hf://OpenRAL/rskill-robometer-4b-nf4"
+
+chunk_size: 1
+latency_budget:
+  # S2-cadence monitor over a frame window; not a per-control-step signal.
+  per_chunk_ms: 3000.0
+
+source_repo: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa34"
+
+# Reward / progress-monitor contract (ADR-0057). Discrete mode yields
+# per-frame normalized progress in [0,1] + per-frame success probability.
+reward:
+  progress_range: [0.0, 1.0]
+  success_threshold: 0.5
+  preference: false
+  frame_window_s: 8.0
+  target_fps: 3.0
+  num_bins: 100
+  instruction_required: true
+
+description: >
+  Robometer-4B (Qwen3-VL-4B robotic reward foundation model, arXiv 2603.02115)
+  as an NF4 reward rSkill. Runs parallel to a VLA: given rollout frames + the
+  task instruction it emits per-frame normalized progress (0-1) and success
+  probability, queried on demand by the Reasoner. Advisory-only — never gates
+  motors. Embodiment-agnostic. Apache-2.0. ADR-0057.
+
+actions:
+  - "monitor"
+
+objects:
+  - "task progress"
+  - "task success"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "manipulation"

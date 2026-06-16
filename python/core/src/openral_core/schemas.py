@@ -655,6 +655,7 @@ class RSkillAction(str, Enum):
     GENERALIST = "generalist"
     DETECT = "detect"
     QUERY = "query"
+    MONITOR = "monitor"
 
 
 class ObservationSpec(BaseModel):
@@ -3387,7 +3388,9 @@ class RSkillProcessors(BaseModel):
         return self
 
 
-RSkillKind: TypeAlias = Literal["vla", "wam", "ros_action", "ros_service", "detector", "vlm"]
+RSkillKind: TypeAlias = Literal[
+    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward"
+]
 """Discriminator selecting how an rSkill is instantiated at the loader.
 
 * ``"vla"`` — learnable Vision-Language-Action policy. Requires
@@ -3432,7 +3435,7 @@ _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
 # is not a meaningful match axis. They MAY declare an empty ``embodiment_tags``
 # (match-any) — see ``_check_embodiment_tags_present`` below — and the
 # rSkill↔robot gate exempts them (``openral_rskill.loader._EMBODIMENT_AGNOSTIC_KINDS``).
-_PERCEPTION_KINDS: frozenset[str] = frozenset({"detector", "vlm"})
+_PERCEPTION_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
 
 
 class RosIntegration(BaseModel):
@@ -3680,6 +3683,77 @@ class DetectorContract(BaseModel):
             raise ValueError(
                 f"DetectorContract.input_size must have both dimensions > 0, got {v!r}."
             )
+        return v
+
+
+class RewardContract(BaseModel):
+    """Manifest contract for ``kind: "reward"`` rSkills (ADR-0057).
+
+    Carries the configuration a robotic **reward / progress-monitor** model
+    (e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score
+    a rollout. A reward skill runs in parallel with a ``kind: "vla"`` policy,
+    continuously ingesting the VLA's camera frames into a rolling window, and
+    emits per-frame **progress** ∈ ``progress_range`` and per-frame **success**
+    probability. The Reasoner queries it on demand (``QueryTaskProgressTool``)
+    to decide whether to continue, escalate to a scene VLM, advance, or replan.
+    The signal is **advisory only** — it never actuates and never gates motors
+    (CLAUDE.md §1.1).
+
+    Required when :attr:`RSkillManifest.kind` is ``"reward"``; forbidden for all
+    other kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).
+    Like ``detector`` / ``vlm``, a reward skill is a pure perception consumer:
+    it emits no Action chunks and requires no actuators.
+
+    Attributes:
+        progress_range: ``(min, max)`` of the normalized per-frame progress
+            scalar. Default ``(0.0, 1.0)`` — Robometer's discrete/binned mode
+            (see :attr:`num_bins`) emits progress already in ``[0, 1]``.
+        success_threshold: Per-frame success probability at/above which the
+            frame is considered a task success. In ``[0.0, 1.0]``; default
+            ``0.5``.
+        preference: Whether the model also exposes a trajectory-preference
+            head (Robometer does). Default ``False`` — the progress/success
+            path is the Reasoner-facing contract; preference is future work.
+        frame_window_s: Length of the rolling frame buffer in seconds. The
+            sidecar evicts frames older than this relative to the newest.
+            Must be > 0.
+        target_fps: Frame-sampling rate fed to the model (Robometer's example
+            uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a
+            per-control-step signal.
+        num_bins: Discrete-mode bin count for the progress head. Robometer's
+            discrete mode yields per-frame normalized progress in ``[0, 1]``;
+            continuous mode yields raw regression values. Must be > 0;
+            default ``100``.
+        instruction_required: Whether a natural-language task instruction must
+            accompany the frames (Robometer requires one). Default ``True``.
+
+    Example:
+        >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)
+        >>> c.progress_range
+        (0.0, 1.0)
+        >>> c.success_threshold
+        0.5
+        >>> c.num_bins
+        100
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    progress_range: tuple[float, float] = (0.0, 1.0)
+    success_threshold: float = Field(ge=0.0, le=1.0, default=0.5)
+    preference: bool = False
+    frame_window_s: float = Field(gt=0.0)
+    target_fps: float = Field(gt=0.0)
+    num_bins: int = Field(gt=0, default=100)
+    instruction_required: bool = True
+
+    @field_validator("progress_range")
+    @classmethod
+    def _check_progress_range(cls, v: tuple[float, float]) -> tuple[float, float]:
+        """``progress_range`` must be a non-degenerate ``(min, max)`` interval."""
+        lo, hi = v
+        if hi <= lo:
+            raise ValueError(f"RewardContract.progress_range must have max > min, got {v!r}.")
         return v
 
 
@@ -4070,6 +4144,14 @@ class RSkillManifest(BaseModel):
     # pure perception producer.
     detector: DetectorContract | None = None
 
+    # Reward / progress-monitor model contract (ADR-0057). REQUIRED when
+    # ``kind == "reward"``; FORBIDDEN otherwise. Carries the rolling-window +
+    # sampling-rate + progress-range config a robotic reward model (Robometer)
+    # needs. A reward skill is a pure perception consumer — it emits no Action
+    # chunks, requires no actuators, and its progress/success signal is
+    # advisory-only (never gates motors).
+    reward: RewardContract | None = None
+
     # ADR-0026 — optional JSON-Schema (OpenAPI / JSON-Schema 7 shape)
     # describing the per-skill ``goal_params_json`` payload the LLM may
     # attach to an ``ExecuteRskillTool`` dispatch. The reasoner's
@@ -4107,7 +4189,7 @@ class RSkillManifest(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
+    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912, PLR0915  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
         """Enforce the per-:attr:`kind` field shape for VLA vs ROS-wrapper vs detector.
 
         Rules:
@@ -4164,6 +4246,11 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='vla' forbids "
                     "`detector` (it is for kind='detector' perception producers only)."
                 )
+            if self.reward is not None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='vla' forbids "
+                    "`reward` (it is for kind='reward' progress monitors only)."
+                )
             if not self.actuators_required:
                 raise ValueError(
                     f"RSkillManifest({self.name!r}): kind='vla' requires at least one "
@@ -4187,6 +4274,7 @@ class RSkillManifest(BaseModel):
                 "image_preprocessing": self.image_preprocessing,
                 "starting_pose": self.starting_pose,
                 "detector": self.detector,
+                "reward": self.reward,
             }
             set_fields = sorted(name for name, value in forbidden.items() if value is not None)
             if set_fields:
@@ -4229,6 +4317,7 @@ class RSkillManifest(BaseModel):
                 "processors": self.processors,
                 "n_action_steps": self.n_action_steps,
                 "starting_pose": self.starting_pose,
+                "reward": self.reward,
             }
             set_detector_forbidden = sorted(
                 name for name, value in forbidden_detector.items() if value is not None
@@ -4258,6 +4347,7 @@ class RSkillManifest(BaseModel):
                 )
             forbidden_vlm = {
                 "detector": self.detector,
+                "reward": self.reward,
                 "ros_integration": self.ros_integration,
                 "action_contract": self.action_contract,
                 "state_contract": self.state_contract,
@@ -4282,6 +4372,47 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='vlm' requires "
                     f"`actuators_required` to be empty (got {len(self.actuators_required)} "
                     "entries). A scene VLM actuates nothing."
+                )
+            return self
+
+        if self.kind == "reward":
+            if self.reward is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='reward' requires a "
+                    "`reward` block (frame_window_s, target_fps, progress_range)."
+                )
+            if self.weights_uri is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='reward' requires "
+                    "`weights_uri` (the Hugging Face reward-model repository)."
+                )
+            forbidden_reward = {
+                "detector": self.detector,
+                "model_family": self.model_family,
+                "ros_integration": self.ros_integration,
+                "action_contract": self.action_contract,
+                "state_contract": self.state_contract,
+                "processors": self.processors,
+                "n_action_steps": self.n_action_steps,
+                "image_preprocessing": self.image_preprocessing,
+                "starting_pose": self.starting_pose,
+            }
+            set_reward_forbidden = sorted(
+                name for name, value in forbidden_reward.items() if value is not None
+            )
+            if set_reward_forbidden:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='reward' forbids "
+                    f"these fields: {set_reward_forbidden!r}. A reward monitor is a "
+                    "pure perception consumer — it has no action contract, no "
+                    "detector block, no ROS wrapper, and no VLA policy "
+                    "preprocessing."
+                )
+            if self.actuators_required:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='reward' requires "
+                    f"`actuators_required` to be empty (got {len(self.actuators_required)} "
+                    "entries). A reward monitor actuates nothing."
                 )
             return self
 
@@ -6194,6 +6325,38 @@ class QuerySceneTool(_ReasonerToolBase):
     camera: str = ""
 
 
+class QueryTaskProgressTool(_ReasonerToolBase):
+    """Tool variant (**read-only**) — ask the reward monitor how the task is going (ADR-0057).
+
+    Backed by a ``kind: "reward"`` rSkill (Robometer-4B NF4) running in parallel
+    with the active VLA in an out-of-process ZMQ sidecar. Where
+    :class:`QuerySceneTool` answers *open-ended* scene questions as free text,
+    ``query_task_progress`` returns a **quantitative** windowed assessment of the
+    *current task*: normalized progress and success over the last
+    :attr:`window_s` seconds, plus their trends and a ``stalled`` flag.
+
+    It calls the ``/openral/perception/query_task_progress`` ROS service, which
+    scores the monitor's buffered camera frames against the task instruction and
+    returns ``progress_now`` / ``success_now`` / ``progress_trend`` /
+    ``success_trend`` / ``stalled`` / ``succeeded``. The reasoner uses it to
+    decide whether to continue, escalate to :class:`QuerySceneTool`, advance, or
+    enter the replanning ladder. Like every variant it **holds no authority over
+    actuation** (ADR-0018 §4) — the reward signal is advisory; the dispatch never
+    gates the safety kernel.
+
+    Attributes:
+        tool: Discriminator (always ``"query_task_progress"``).
+        window_s: How many seconds of recent frames to assess. Must be > 0;
+            clamped to the monitor's configured ``frame_window_s``.
+        task: Optional task-instruction override. Empty (default) reuses the
+            instruction the monitor was co-activated with (the active VLA's goal).
+    """
+
+    tool: Literal["query_task_progress"] = "query_task_progress"
+    window_s: float = Field(gt=0.0, default=8.0)
+    task: str = ""
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
@@ -6203,6 +6366,7 @@ ReasonerToolCall: TypeAlias = (
     | ResolvePlaceTool
     | LocateInViewTool
     | QuerySceneTool
+    | QueryTaskProgressTool
 )
 """Discriminated union over the reasoner tool variants (ADR-0018 §4; ADR-0039).
 

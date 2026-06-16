@@ -147,6 +147,45 @@ def test_deploy_sim_object_detector_manifest_selects_vlm() -> None:
     assert "enable_object_detector:=true" in joined
 
 
+def test_deploy_sim_reward_monitor_forwarded() -> None:
+    """``--enable-reward-monitor`` forwards the leg + overrides into the argv (ADR-0057).
+
+    The reward monitor runs parallel to the VLA; the launch sets the reasoner's
+    ``task_progress_available`` from this flag. A ``local://`` manifest (pre-quantized
+    NF4 checkpoint) and the default task must be forwarded; with it off, no blank
+    ``reward_monitor_*:=`` arg reaches ros2 launch.
+    """
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_reward_monitor=True,
+        reward_monitor_manifest="local:///tmp/robometer-nf4-ckpt",
+        reward_monitor_task="stack the blocks",
+    )
+    joined = " ".join(invocation.argv_template)
+    assert "enable_reward_monitor:=true" in joined
+    assert "reward_monitor_manifest:=local:///tmp/robometer-nf4-ckpt" in joined
+    assert "reward_monitor_task:=stack the blocks" in joined
+
+
+def test_deploy_sim_no_reward_monitor_emits_no_empty_launch_args() -> None:
+    """Reward monitor off (default): the leg is false and no blank override is sent."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    joined = " ".join(invocation.argv_template)
+    assert "enable_reward_monitor:=false" in joined
+    assert "reward_monitor_manifest:=" not in joined
+    assert "reward_monitor_task:=" not in joined
+
+
 def test_deploy_sim_no_detector_emits_no_empty_launch_args(tmp_path: Path) -> None:
     """With no usable backend, the leg downgrades off and emits no empty args.
 

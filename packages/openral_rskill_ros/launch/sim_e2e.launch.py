@@ -318,6 +318,20 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     object_detector_onnx = LaunchConfiguration("object_detector_onnx").perform(context)
     object_detector_manifest = LaunchConfiguration("object_detector_manifest").perform(context)
     object_detector_query = LaunchConfiguration("object_detector_query").perform(context)
+    # ADR-0057 — reward-monitor leg. Off by default; when on, a reward_monitor_node
+    # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
+    # is told task_progress_available=True so its LLM may poll
+    # /openral/perception/query_task_progress (the query_task_progress tool) whenever
+    # it sees fit. Advisory-only — never actuates.
+    enable_reward_monitor = LaunchConfiguration("enable_reward_monitor").perform(
+        context
+    ).lower() in ("1", "true", "yes")
+    reward_monitor_manifest = LaunchConfiguration("reward_monitor_manifest").perform(context)
+    reward_monitor_task = LaunchConfiguration("reward_monitor_task").perform(context)
+    reward_monitor_image_topic = LaunchConfiguration("reward_monitor_image_topic").perform(context)
+    reward_monitor_sidecar_port = LaunchConfiguration("reward_monitor_sidecar_port").perform(
+        context
+    )
     # ADR-0056 — comma-separated on-demand locator manifest paths. Each becomes a
     # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
     # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment
@@ -577,6 +591,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ADR-0043 — offer the read-only locate_in_view tool to the LLM when an object
     # detector is in the graph (it exposes /openral/perception/locate_in_view).
     reasoner_params["detector_available"] = enable_object_detector
+    # ADR-0057 — offer the read-only query_task_progress tool only when a reward
+    # monitor is co-active (otherwise the tool would dispatch to a dead service).
+    reasoner_params["task_progress_available"] = enable_reward_monitor
     # ADR-0056 — the default on-demand locator the reasoner routes to when a
     # locate_in_view call leaves ``detector`` empty (the first locator brought up).
     if locator_specs:
@@ -1103,6 +1120,53 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             extra_nodes.append(locator_node)
             autostart += _autostart_lifecycle(locator_node, spec["node"])
 
+    if enable_reward_monitor:
+        # ADR-0057 — reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM
+        # peer the reasoner frees before a policy; it stays co-active). Plain Node:
+        # subscribes the agentview RGB stream, buffers a rolling window, auto-spawns
+        # the Robometer NF4 sidecar from the manifest, and serves
+        # /openral/perception/query_task_progress for the reasoner to poll.
+        reward_manifest = reward_monitor_manifest or str(
+            pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
+        )
+        # Resolve the camera the monitor scores. An explicit override wins; else
+        # default to the robot's first RGB camera from robot.yaml (the same camera
+        # the VLA consumes), so the monitor "just works" across robots — falling
+        # back to the historical agentview_left only if robot.yaml has none.
+        reward_image_topic = reward_monitor_image_topic
+        if reward_image_topic == "/openral/cameras/agentview_left/image":
+            import yaml  # local: the base graph (no detector/reward) never imports it
+
+            reward_camera = "agentview_left"
+            try:
+                with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
+                    _rdoc = yaml.safe_load(_rh) or {}
+                for _s in _rdoc.get("sensors", []):
+                    if _s.get("modality") == "rgb" and _s.get("name"):
+                        reward_camera = str(_s["name"])
+                        break
+            except (OSError, yaml.YAMLError):
+                pass
+            reward_image_topic = f"/openral/cameras/{reward_camera}/image"
+        reward_monitor = Node(
+            package="openral_perception_ros",
+            executable="reward_monitor_node.py",
+            name="openral_reward_monitor",
+            namespace="",
+            parameters=[
+                {
+                    "manifest_path": reward_manifest,
+                    "image_topic": reward_image_topic,
+                    "task": reward_monitor_task,
+                    "sidecar_port": int(reward_monitor_sidecar_port),
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            additional_env=otel_env,
+            output="screen",
+        )
+        extra_nodes.append(reward_monitor)
+
     nodes: list = [
         safety_kernel,
         runtime,
@@ -1336,6 +1400,59 @@ def generate_launch_description() -> LaunchDescription:
                 "detector (e.g. 'red mug'). Empty = the manifest's detector.labels "
                 "default. Retarget live by publishing a std_msgs/String to "
                 "/openral/perception/detector_query. Ignored by ONNX detectors."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_reward_monitor",
+            default_value="false",
+            description=(
+                "ADR-0057 — bring up the Robometer reward monitor "
+                "(openral_perception_ros/reward_monitor_node) PARALLEL to the VLA. "
+                "It buffers the agentview RGB stream and serves "
+                "/openral/perception/query_task_progress; the reasoner is told "
+                "task_progress_available=True so its LLM may poll per-frame "
+                "progress/success whenever it sees fit. Advisory-only — never "
+                "actuates. Default off. Requires the openral_perception_ros package "
+                "built and a provisioned Robometer sidecar venv "
+                "(OPENRAL_ROBOMETER_SIDECAR_VENV); co-resident with a VLA needs ~3.3 GB "
+                "free VRAM (use a small NF4 VLA on an 8 GB GPU)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "reward_monitor_manifest",
+            default_value="",
+            description=(
+                "ADR-0057 — path to a kind:reward rSkill manifest. Empty defaults to "
+                "the in-tree rskills/robometer-4b/rskill.yaml. weights_uri may be "
+                "hf://org/repo or local:///abs/path (a pre-quantized NF4 checkpoint "
+                "loaded directly as 4-bit). Ignored unless enable_reward_monitor."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "reward_monitor_task",
+            default_value="",
+            description=(
+                "ADR-0057 — default task instruction the reward monitor scores when "
+                "a query leaves task empty (e.g. the operator's task goal). The "
+                "reasoner normally passes the active task per query. Ignored unless "
+                "enable_reward_monitor."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "reward_monitor_image_topic",
+            default_value="/openral/cameras/agentview_left/image",
+            description=(
+                "ADR-0057 — camera RGB topic the reward monitor buffers; must match "
+                "the camera the co-active VLA consumes. Ignored unless "
+                "enable_reward_monitor."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "reward_monitor_sidecar_port",
+            default_value="5769",
+            description=(
+                "ADR-0057 — ZMQ port for the Robometer reward sidecar the monitor "
+                "auto-spawns. Ignored unless enable_reward_monitor."
             ),
         ),
         DeclareLaunchArgument(

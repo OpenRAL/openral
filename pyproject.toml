@@ -341,6 +341,20 @@ qwen-vlm = [
     "pyzmq>=25",
     "msgpack>=1",
 ]
+robometer = [
+    # ADR-0057 — opt-in Robometer-4B reward monitor for the reasoner's
+    # query_task_progress tool.
+    #
+    # The model itself runs in its OWN sidecar venv
+    # (`tools/robometer_sidecar.py`, provisioned separately — it pins the
+    # robometer package + transformers==4.57.1); what we install here is the
+    # node-side ZMQ + msgpack client that
+    # `openral_runner.backends.reward.robometer_reward` uses to talk to that
+    # sidecar — the same wire transport as qwen-vlm / locateanything / rldx.
+    # Required by the reward_monitor_node's query_task_progress service.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
 omdet = [
     # ADR-0037 (2026-06-12 amendment) — opt-in OmDet-Turbo in-process
     # open-vocabulary detector (rskills/omdet-turbo-indoor, engine: zeroshot_hf).
