@@ -23,9 +23,20 @@ parsing artifact in a throwaway analysis script (``str.strip('- \\n')`` ate the
 leading minus sign), not a defect in OpenRAL. This guard is kept as a forward
 invariant, not a bug repro. See GH #13 for the full pin.
 
-Coverage today:
-* ``franka_panda`` (native mujoco_menagerie panda) — runs here; the raw-qpos read
-  matches the URDF-derived model, so it PASSES.
+Cross-HAL audit (2026-06-16): NO read path in ANY HAL applies a sign/axis
+transform — ``SimAttachedHAL`` and ``MujocoArmHAL`` read raw ``qpos`` keyed by
+joint name, and the ros2_control bridge republishes ``/joint_states`` verbatim.
+So a flip cannot be *introduced* in code; the only residual risk is a per-robot
+``robot.yaml``-vs-MJCF data discrepancy. Of every shipped ``robot.yaml``, only
+``franka_panda`` / ``panda_mobile`` have an asymmetric (single-sign) arm joint
+(``panda_joint4``) — the lone case where the range invariant can even catch a
+flip; both verified consistent. The other arms have symmetric ranges (a flip
+would be range-invisible) but are covered structurally by the no-transform read.
+
+Coverage today (each commands a mid-range in-limits pose, reads it back, asserts
+within limits; skips if its MJCF asset is unavailable):
+* ``franka_panda`` (menagerie) — also round-trips the commanded joint4 sign.
+* ``openarm`` (openarm_v2 bimanual), ``so100`` (menagerie), ``aloha`` (gym_aloha).
 """
 
 from __future__ import annotations
@@ -49,12 +60,18 @@ except Exception as exc:
 
 from openral_core import Action, ControlMode, RobotDescription
 from openral_hal import FrankaPandaHAL
+from openral_hal.aloha import AlohaMujocoHAL
+from openral_hal.openarm import OpenArmMujocoHAL
+from openral_hal.so100_mujoco import SO100MujocoHAL
 
 pytestmark = [
     pytest.mark.sim,
     pytest.mark.skipif(_MUJOCO_ERROR is not None, reason=f"mujoco unavailable: {_MUJOCO_ERROR}"),
-    pytest.mark.skipif(_MJCF_ERROR is not None, reason=f"Panda MJCF unavailable: {_MJCF_ERROR}"),
 ]
+
+_needs_panda_mjcf = pytest.mark.skipif(
+    _MJCF_ERROR is not None, reason=f"Panda MJCF unavailable: {_MJCF_ERROR}"
+)
 
 # Tolerance on the declared limit boundary (rad). MuJoCo clamps limited joints to
 # their range, so a faithful read sits inside; this only forgives float epsilon.
@@ -87,6 +104,24 @@ def assert_joints_within_declared_limits(state: object, description: RobotDescri
     )
 
 
+def _midrange_target(description: RobotDescription) -> list[float]:
+    """A per-joint target at the midpoint of each arm joint's declared limits.
+
+    Gripper / limit-less joints get ``0.0``. Commanding the midpoint guarantees an
+    in-limits goal for any arm, so a faithful raw-qpos read back must land inside
+    the declared range — and a flipped convention on an asymmetric joint would not.
+    """
+    target: list[float] = []
+    for joint in description.joints:
+        if joint.role == "gripper" or not joint.position_limits:
+            target.append(0.0)
+            continue
+        lo, hi = joint.position_limits
+        target.append((lo + hi) / 2.0)
+    return target
+
+
+@_needs_panda_mjcf
 def test_franka_panda_published_joints_obey_declared_limits() -> None:
     """Native Franka (menagerie) read is convention-consistent — the invariant.
 
@@ -100,13 +135,45 @@ def test_franka_panda_published_joints_obey_declared_limits() -> None:
     hal = FrankaPandaHAL(gravity_enabled=False, settle_steps=1500)
     hal.connect()
     try:
-        hal.send_action(
-            Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target])
-        )
+        hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[target]))
         state = hal.read_state()
         # Round-trips the commanded sign (would flip under a convention bug)...
         assert state.position[3] == pytest.approx(target[3], abs=1e-2)
         # ...and stays within the robot.yaml declared limits.
         assert_joints_within_declared_limits(state, hal.description)
+    finally:
+        hal.disconnect()
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(
+            lambda: OpenArmMujocoHAL(gravity_enabled=False, settle_steps=1500), id="openarm"
+        ),
+        pytest.param(lambda: SO100MujocoHAL(gravity_enabled=False, settle_steps=1500), id="so100"),
+        pytest.param(lambda: AlohaMujocoHAL(gravity_enabled=False, settle_steps=1500), id="aloha"),
+    ],
+)
+def test_native_mujoco_arm_published_joints_obey_declared_limits(factory) -> None:  # type: ignore[no-untyped-def]  # reason: pytest param is a zero-arg HAL factory; precise Callable type adds no safety here
+    """Every native MuJoCo arm HAL reads back a commanded mid-range pose in-limits.
+
+    Generalizes the franka invariant to the other instantiable native arms. Each
+    resolves its own MJCF (menagerie / openarm_v2 / gym_aloha); an unavailable
+    asset ``pytest.skip``s rather than failing (per CLAUDE.md §1.11 — no fakes).
+    """
+    try:
+        hal = factory()
+        hal.connect()
+    except Exception as exc:  # asset clone / MJCF parse may raise non-ImportError types
+        pytest.skip(f"HAL MJCF asset unavailable: {type(exc).__name__}: {exc}")
+    try:
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[_midrange_target(hal.description)],
+            )
+        )
+        assert_joints_within_declared_limits(hal.read_state(), hal.description)
     finally:
         hal.disconnect()
