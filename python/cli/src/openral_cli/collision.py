@@ -209,10 +209,15 @@ def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> t
     into the on-disk text — touching only the requested block(s).
     """
     from openral_core import RobotDescription
-    from openral_safety.urdf_lowering import lower_robot
+    from openral_safety.urdf_lowering import lower_robot_auto
 
     robot = RobotDescription.from_yaml(str(robot_path))
-    model = lower_robot(
+    # Route via the provenance-correct dispatcher (ADR-0057 §5): SRDF+URDF →
+    # SRDF ACM, URDF-with-usable-meshes → sampling, MJCF-native → MJCF. The
+    # naive ``urdf if assets.urdf else mjcf`` wrongly sent openarm (unusable URDF
+    # meshes) to the URDF path. The byte-identical regression test routes through
+    # this same dispatcher.
+    model = lower_robot_auto(
         robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
     )
     geo_block, acm_block = render_blocks(model)
