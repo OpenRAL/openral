@@ -198,9 +198,7 @@ def run_spatial_query_detailed(
                 else:
                     refined_matches.append(m.model_copy(update={"approach": refined}))
             result = result.model_copy(update={"matches": refined_matches})
-        text = format_recall_object_result(
-            call.query, result, blocked_node_ids=frozenset(blocked)
-        )
+        text = format_recall_object_result(call.query, result, blocked_node_ids=frozenset(blocked))
         return SpatialQueryOutcome(text=text, found=found)
     query = resolve_place_tool_to_query(call)
     try:
