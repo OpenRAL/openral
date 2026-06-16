@@ -26,11 +26,18 @@ _DROPPED_PAIR = "  - [panda_link1, panda_link4]\n"
 
 
 def _drifted_copy(tmp_path: Path) -> Path:
-    """A panda_mobile copy whose ACM drops the link1↔link4 pair (deliberate drift)."""
+    """A panda_mobile copy whose ACM drops the link1↔link4 pair (deliberate drift).
+
+    The manifest's ``assets.srdf = file:panda_mobile.srdf`` resolves against the
+    manifest's own directory (ADR-0057 ``resolve_asset``), so the SRDF must be
+    copied alongside ``robot.yaml`` or the SRDF ACM path can't be lowered.
+    """
+    src_dir = Path("robots/panda_mobile")
     dst = tmp_path / "robot.yaml"
-    text = Path("robots/panda_mobile/robot.yaml").read_text(encoding="utf-8")
+    text = (src_dir / "robot.yaml").read_text(encoding="utf-8")
     assert _DROPPED_PAIR in text, "fixture expects link1↔link4 in the committed ACM"
     dst.write_text(text.replace(_DROPPED_PAIR, ""), encoding="utf-8")
+    shutil.copy(src_dir / "panda_mobile.srdf", tmp_path / "panda_mobile.srdf")
     return dst
 
 
