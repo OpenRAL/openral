@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_foxglove_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    PROTOTYPE / SPIKE — bringup wrapper for upstream foxglove_bridge as a
+    read-only live visualisation surface for OpenRAL. Exposes only the
+    "Bucket-1" topics (camera images, /map occupancy grid, octomap point
+    cloud, joint states, TF, robot_description) over the Foxglove
+    WebSocket protocol, with client-publish and service capabilities
+    DISABLED so the surface cannot actuate the robot. Ships a default
+    Foxglove Studio layout in config/openral_layout.json.
+
+    This is a feasibility spike (see
+    docs/investigations/foxglove-dashboard-port-feasibility.md). Graduating
+    it past prototype — and any path that re-enables clientPublish/services
+    (e.g. an E-stop button) — requires the ADR called out in that report
+    plus safety-WG review (CLAUDE.md §3).
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <!-- The upstream foxglove_bridge is the workhorse this package wraps.
+       exec_depend so `rosdep install` picks it up; not needed to BUILD
+       this bringup wrapper. -->
+  <exec_depend>foxglove_bridge</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

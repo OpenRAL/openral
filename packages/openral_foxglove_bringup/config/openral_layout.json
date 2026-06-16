@@ -1,0 +1,89 @@
+{
+  "configById": {
+    "Image!camera": {
+      "imageMode": {
+        "imageTopic": "/openral/cameras/0/image"
+      }
+    },
+    "3D!nav": {
+      "followTf": "map",
+      "scene": {},
+      "cameraState": {
+        "perspective": false,
+        "distance": 12,
+        "phi": 0,
+        "thetaOffset": 0,
+        "targetOffset": [0, 0, 0],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "topics": {
+        "/map": { "visible": true },
+        "/odom": { "visible": true },
+        "/scan": { "visible": true }
+      },
+      "layers": {},
+      "publish": { "type": "point", "poseTopic": "", "pointTopic": "" }
+    },
+    "3D!world": {
+      "followTf": "base_link",
+      "scene": {},
+      "cameraState": {
+        "perspective": true,
+        "distance": 6,
+        "phi": 55,
+        "thetaOffset": 45,
+        "targetOffset": [0, 0, 0],
+        "fovy": 45,
+        "near": 0.1,
+        "far": 5000
+      },
+      "topics": {
+        "/octomap_point_cloud_centers": { "visible": true, "colorField": "z", "colorMode": "colormap", "colorMap": "turbo" },
+        "/map": { "visible": true }
+      },
+      "layers": {}
+    },
+    "Plot!joints": {
+      "paths": [
+        { "value": "/joint_states.position[0]", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/joint_states.position[1]", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/joint_states.position[2]", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/joint_states.position[3]", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/joint_states.position[4]", "enabled": true, "timestampMethod": "receiveTime" },
+        { "value": "/joint_states.position[5]", "enabled": true, "timestampMethod": "receiveTime" }
+      ],
+      "showLegend": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 30
+    },
+    "RawMessages!state": {
+      "topicPath": "/joint_states"
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": { "speed": 1 },
+  "layout": {
+    "direction": "row",
+    "first": {
+      "direction": "column",
+      "first": "Image!camera",
+      "second": "3D!nav",
+      "splitPercentage": 45
+    },
+    "second": {
+      "direction": "column",
+      "first": "3D!world",
+      "second": {
+        "direction": "row",
+        "first": "Plot!joints",
+        "second": "RawMessages!state",
+        "splitPercentage": 60
+      },
+      "splitPercentage": 55
+    },
+    "splitPercentage": 42
+  }
+}
