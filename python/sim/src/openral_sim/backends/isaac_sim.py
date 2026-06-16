@@ -364,7 +364,7 @@ def _sensor_dict(sensor: SensorSpec) -> dict[str, Any]:
 def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     """Marshal a ``RobotDescription`` to the JSON isaac robot spec (ADR-0045).
 
-    Resolves the manifest ``urdf_path`` to an on-disk file (the
+    Resolves the manifest ``assets.urdf.ref`` to an on-disk file (the
     ``python:<module>:<attr>`` form resolves where ``robot_descriptions`` lives,
     on this py3.12 side), then carries the URDF path + actuated-joint order/role +
     action contract + sensors. The planar base joints (``base_joints``) are

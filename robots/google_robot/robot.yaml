@@ -22,7 +22,7 @@ name: "google_robot"
 embodiment_kind: "mobile_manipulator"
 base_frame: "base_link"
 
-# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# ADR-0027 — robot_state_publisher: `assets.urdf` deliberately unset.
 # The Google "Everyday Robot" (RT-1 platform) has no public URDF —
 # `awesome-robot-descriptions` and `robot_descriptions` both lack
 # one, and `google-research/robotics_transformer` ships training

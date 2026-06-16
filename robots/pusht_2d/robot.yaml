@@ -21,7 +21,7 @@ base_frame: "world"
 
 # ADR-0027 — robot_state_publisher: not applicable. pusht_2d has no
 # 3D kinematic chain (synthetic 2-D toy env); no URDF exists and none
-# is useful. `urdf_path` stays unset; the launch's RSP block is
+# is useful. `assets.urdf` stays unset; the launch's RSP block is
 # skipped for this embodiment.
 
 # Synthetic 2-DoF "joints" representing the (x, y) tip position.  No

@@ -38,7 +38,7 @@ if _MUJOCO_ERROR is None:
     _RENDERER_ERROR = mujoco_renderer_probe_error()
 
 
-# Robots exercised. Each must have a `sim.mjcf_uri` resolvable via
+# Robots exercised. Each must have an `assets.mjcf` resolvable via
 # robot_descriptions; the suite skips a robot whose MJCF can't be fetched
 # (offline CI) rather than failing.
 _ROBOTS = ("so101_follower", "franka_panda", "ur5e")

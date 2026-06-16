@@ -365,7 +365,7 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
     """so101 resolves to the shared so100 node, now manifest-driven (issue #191).
 
     `openral deploy sim` is a digital twin, so the so100/so101 node builds a bare
-    `MujocoArmHAL.from_description` from the robot manifest (its `sim.mjcf_uri`)
+    `MujocoArmHAL.from_description` from the robot manifest (its `assets.mjcf`)
     rather than opening the Feetech serial bus. After the Phase 2 migration the
     CLI forwards the resolved `robots/so101_follower/robot.yaml` as `robot_yaml`
     + `hal_mode="sim"` (manifest-driven node); `bare_twin_sim=True` keeps it a

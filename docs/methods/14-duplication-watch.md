@@ -118,11 +118,12 @@ contributor should look at before adding similar code.
   returning a `_MujocoArmInitKwargs` TypedDict so the `**kwargs`
   unpack into `__init__` is typed-clean under `mypy --strict` with
   no per-subclass `# type: ignore`). Per-robot `_<robot>_mjcf_path`
-  helpers were also retired in the same cleanup — every URI resolves
-  through the central `resolve_mjcf_uri` function (`robot_descriptions:`
-  / `gym_aloha:` / `openarm_v2:bimanual` / `file:` schemes). New
+  helpers were also retired in the same cleanup — every MJCF ref resolves
+  through the central `openral_core.assets.resolve_asset` grammar (`rd:`
+  / `gym_aloha:` / `openarm:` / `menagerie:` / `file:` schemes; ADR-0057). New
   MuJoCo HALs — single-arm, floating-base humanoid, **or** bimanual —
-  should declare a `sim:` block in `robots/<id>/robot.yaml` and call
+  should declare an `assets.mjcf` ref (plus an optional `sim:` joint-wiring
+  block) in `robots/<id>/robot.yaml` and call
   `MujocoArmHAL.from_description(desc)`. No per-robot Python file is
   required at all; the existing classes only exist so the explicit
   `hal.sim` strings (`"openral_hal.<robot>:<Class>"`) some manifests pin keep resolving.

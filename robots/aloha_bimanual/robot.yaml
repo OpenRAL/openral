@@ -16,7 +16,7 @@ embodiment_kind: "bimanual"
 
 base_frame: "world"
 
-# ADR-0027 — robot_state_publisher: `urdf_path` deliberately unset.
+# ADR-0027 — robot_state_publisher: `assets.urdf` deliberately unset.
 # The ALOHA arms (Trossen ViperX-300) have an upstream xacro at
 # github.com/Interbotix/interbotix_ros_manipulators/blob/main/
 # interbotix_ros_xsarms/interbotix_xsarm_descriptions/urdf/vx300s.urdf.xacro

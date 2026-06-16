@@ -964,7 +964,8 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 #    resolving on the policy thread. The trigger differs per scene:
 #      * ``openarm_`` imports robosuite + robosuite_models in its env factory
 #        (robosuite's deps pull transformers).
-#      * ``tabletop_push`` calls ``resolve_mjcf_uri`` to load the arm MJCF,
+#      * ``tabletop_push`` resolves ``assets.mjcf`` (via ``resolve_asset``)
+#        to load the arm MJCF,
 #        which imports ``openral_hal._mujoco_arm`` → ``openral_hal._base``;
 #        that chain transitively imports transformers. (Verified:
 #        ``import openral_hal._mujoco_arm`` leaves ``transformers`` in

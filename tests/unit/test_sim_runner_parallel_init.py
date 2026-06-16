@@ -197,7 +197,7 @@ def test_race_prone_prefix_catalogue_is_non_empty() -> None:
     [
         ("openarm_tabletop_pnp", True),
         ("openarm_other_scene", True),
-        # tabletop_push races: its env factory calls `resolve_mjcf_uri`, which
+        # tabletop_push races: its env factory resolves `assets.mjcf`, which
         # imports `openral_hal._mujoco_arm` → `_base` → transformers on the env
         # thread, concurrent with the policy thread's lerobot→transformers load.
         ("tabletop_push", True),
