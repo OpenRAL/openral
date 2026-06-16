@@ -125,6 +125,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0011](0011-nvmm-handoff.md) | NVMM → CUDA tensor handoff across Sensors / Skill boundary | Proposed | extends 0010 |
 | [0017](0017-dashboard-otlp-receiver.md) | `openral dashboard` — embedded OTLP/HTTP receiver | Accepted | — |
 | [0019](0019-rosbag2-lerobot-dataset-bridge.md) | rosbag2 ↔ LeRobotDataset v3 bridge | Accepted | amends 0010 |
+| [0059](0059-foxglove-live-scene-visualization.md) | Foxglove as the read-only live-scene surface (hybrid with the OTel dashboard) | Proposed | keeps 0017; taps 0058 `/tf`; safety-WG-gated |
 
 ## J · Motion / MoveIt goal building
 
