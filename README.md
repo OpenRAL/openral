@@ -15,7 +15,7 @@
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/discord/1512426527432900698?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/ZdNyUT4V5)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/ZdNyUT4V5) · [Docs](https://docs.openral.dev)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/GzwUUzCXq) · [Docs](https://openral.github.io/openral/)
 
 </div>
 
@@ -308,7 +308,7 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 
 ## Community & support
 
-- **[Discord](https://discord.gg/ZdNyUT4V5)** — questions, help, design chat
+- **[Discord](https://discord.gg/GzwUUzCXq)** — questions, help, design chat
 - **General enquiries:** hello@openral.dev
 - **Robot safety / coordinated disclosure:** safety@openral.dev (see [SECURITY.md](SECURITY.md))
 - **Security vulnerabilities:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or security@openral.dev — **never** a public issue
