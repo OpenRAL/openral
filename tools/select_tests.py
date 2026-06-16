@@ -67,6 +67,7 @@ class SelectionConfig(BaseModel):
 
     full_run_globs: list[str] = Field(default_factory=list)
     ignore_globs: list[str] = Field(default_factory=list)
+    isolate_globs: list[str] = Field(default_factory=list)
     extra_triggers: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -77,12 +78,19 @@ class SelectionResult(BaseModel):
     whole suite and ``targets`` is empty. Otherwise ``targets`` is the sorted,
     de-duplicated set of pytest paths to run, and ``reasons`` explains *why*
     each was picked (CLAUDE.md §1.4).
+
+    ``isolated_targets`` is the subset of in-scope tests that must run in their
+    OWN pytest process (``isolate_globs`` — fork-in-threaded-process crashers,
+    issue #24). They are removed from ``targets`` so a broad partition never
+    collects them; the caller runs each one separately. On a ``full_run`` they
+    are still reported (the full-suite invocation must exclude and re-run them).
     """
 
     full_run: bool = False
     full_run_reason: str | None = None
     affected_packages: list[str] = Field(default_factory=list)
     targets: list[str] = Field(default_factory=list)
+    isolated_targets: list[str] = Field(default_factory=list)
     reasons: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -210,19 +218,55 @@ def _classify_path(rel: str, dir_imports: dict[str, str]) -> tuple[str, str] | N
     return None
 
 
+def _isolate_files(repo_root: Path, config: SelectionConfig) -> list[str]:
+    """Repo-relative paths of every existing file matching an ``isolate_glob``.
+
+    Globs are resolved against the working tree (literal paths resolve to
+    themselves), so a stale entry pointing at a deleted file is silently dropped
+    rather than handed to pytest as a phantom target.
+    """
+    matched: set[str] = set()
+    for glob in config.isolate_globs:
+        for path in repo_root.glob(glob):
+            if path.is_file():
+                matched.add(path.relative_to(repo_root).as_posix())
+    return sorted(matched)
+
+
+def _in_scope_isolated(targets: set[str], isolate_files: list[str]) -> list[str]:
+    """Isolate files a selected ``targets`` set would actually execute.
+
+    A file is in scope when it is itself a target or lives under a selected
+    directory target (e.g. ``tests/unit`` from a fixture trigger). Files no
+    selected target reaches are left out — isolating them would run tests the
+    diff never selected, defeating the point of selective execution.
+    """
+    in_scope: list[str] = []
+    for rel in isolate_files:
+        for tgt in targets:
+            if rel == tgt or rel.startswith(tgt.rstrip("/") + "/"):
+                in_scope.append(rel)
+                break
+    return sorted(in_scope)
+
+
 def select(
     repo_root: Path,
     changed_files: list[str],
     config: SelectionConfig,
 ) -> SelectionResult:
     """Resolve a list of changed repo-relative paths to pytest targets."""
-    # 1. Blast radius — any match forces a full run.
+    isolate_files = _isolate_files(repo_root, config)
+
+    # 1. Blast radius — any match forces a full run. The full-suite invocation
+    #    still collects the isolate files, so report them for separate execution.
     for rel in changed_files:
         for glob in config.full_run_globs:
             if fnmatch.fnmatch(rel, glob):
                 return SelectionResult(
                     full_run=True,
                     full_run_reason=f"{rel} matches full-run glob {glob!r}",
+                    isolated_targets=isolate_files,
                 )
 
     dir_imports = package_dir_import_names(repo_root)
@@ -286,10 +330,19 @@ def select(
             hit = sorted(imports & affected)
             reasons[test_rel].append(f"imports affected package(s): {', '.join(hit)}")
 
+    # 5. Peel fork-in-threaded-process crashers into their own process (#24).
+    #    Removed from `targets` so no broad partition collects them; a directory
+    #    target that *contains* one stays (the caller --ignores it there).
+    isolated = _in_scope_isolated(targets, isolate_files)
+    targets -= set(isolated)
+    for rel in isolated:
+        reasons[rel].append("isolated: forks a multiprocessing pool (issue #24)")
+
     return SelectionResult(
         full_run=False,
         affected_packages=sorted(affected),
         targets=sorted(targets),
+        isolated_targets=isolated,
         reasons={k: reasons[k] for k in sorted(reasons)},
     )
 
@@ -309,7 +362,7 @@ def changed_files_from_git(base: str, head: str, repo_root: Path) -> list[str]:
 def _render_human(result: SelectionResult) -> str:
     if result.full_run:
         return f"FULL RUN — {result.full_run_reason}"
-    if not result.targets:
+    if not result.targets and not result.isolated_targets:
         return "No tests selected (no code paths affected)."
     lines = [f"Affected packages: {', '.join(result.affected_packages) or '(none)'}", ""]
     lines.append(f"Selected {len(result.targets)} pytest target(s):")
@@ -317,6 +370,15 @@ def _render_human(result: SelectionResult) -> str:
         lines.append(f"  • {tgt}")
         for reason in result.reasons.get(tgt, []):
             lines.append(f"      ← {reason}")
+    if result.isolated_targets:
+        lines.append("")
+        lines.append(
+            f"{len(result.isolated_targets)} isolated target(s) (own process — issue #24):"
+        )
+        for tgt in result.isolated_targets:
+            lines.append(f"  • {tgt}")
+            for reason in result.reasons.get(tgt, []):
+                lines.append(f"      ← {reason}")
     return "\n".join(lines)
 
 
@@ -359,7 +421,13 @@ def main(argv: list[str] | None = None) -> int:
             "full_run": "true" if result.full_run else "false",
             "targets": " ".join(result.targets),
             "targets_json": json.dumps(result.targets),
-            "any": "true" if (result.full_run or result.targets) else "false",
+            "isolated_targets": " ".join(result.isolated_targets),
+            "isolated_targets_json": json.dumps(result.isolated_targets),
+            "any": (
+                "true"
+                if (result.full_run or result.targets or result.isolated_targets)
+                else "false"
+            ),
         }
         if out_path:
             with open(out_path, "a", encoding="utf-8") as fh:

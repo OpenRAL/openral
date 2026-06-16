@@ -35,6 +35,22 @@ ignore_globs = [
   "cpp/**",
 ]
 
+# Test files that must run in their OWN pytest process, never folded into a
+# broad partition. These drive lerobot's dataset `compute_stats`, which forks a
+# multiprocessing pool; when the fork happens inside an interpreter that other
+# CLI tests have already made multi-threaded (numpy/pyarrow/torch threadpools,
+# structlog/OTel, HF http pools), a forked child or a C-extension `atexit`
+# handler crashes during Python finalization — a non-zero process exit AFTER an
+# all-pass summary (issue #24). Run alone, the fork happens in a not-yet-threaded
+# process and they pass clean. Globs are matched against repo-relative paths;
+# `select_tests.py` peels any in-scope match into `isolated_targets` and the
+# `test-selective` workflow runs each in its own `pytest` invocation (mirroring
+# the per-process handling for EGL/MuJoCo sim tests).
+isolate_globs = [
+  "tests/unit/test_cli_dataset_from_bag.py",
+  "tests/unit/test_cli_replay_record_profile.py",
+]
+
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
 # scan can attribute to a package, mapped to the tests that load them. Keys
 # are globs (matched against the repo-relative changed path); values are

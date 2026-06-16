@@ -113,3 +113,49 @@ def test_ros_package_change_selects_its_test_dir() -> None:
 def test_fixture_change_triggers_loader_test() -> None:
     result = select_tests.select(REPO_ROOT, ["scenes/kitchen/pick.yaml"], CONFIG)
     assert "tests/unit/test_examples_sim_configs_load.py" in result.targets
+
+
+# --- isolation of fork-in-threaded-process crashers (issue #24) ---------------
+
+_FORK_TEST = "tests/unit/test_cli_dataset_from_bag.py"
+
+
+def test_config_declares_fork_isolation_globs() -> None:
+    # The real toml flags the lerobot dataset CLI tests that fork a pool.
+    assert _FORK_TEST in CONFIG.isolate_globs
+    assert "tests/unit/test_cli_replay_record_profile.py" in CONFIG.isolate_globs
+
+
+def test_isolated_test_is_peeled_out_of_targets() -> None:
+    # A core change selects the broad CLI surface, which imports the fork tests.
+    result = select_tests.select(REPO_ROOT, ["python/core/src/openral_core/schemas.py"], CONFIG)
+    assert _FORK_TEST in result.isolated_targets
+    # Critically, it must NOT also be a normal target — that is what folds it
+    # into the broad partition and trips the teardown crash.
+    assert _FORK_TEST not in result.targets
+    # Every isolated target still carries a reason (CLAUDE.md §1.4).
+    assert result.reasons[_FORK_TEST]
+
+
+def test_directly_changed_fork_test_runs_isolated_only() -> None:
+    # Editing the fork test itself selects it, but only in its own process.
+    result = select_tests.select(REPO_ROOT, [_FORK_TEST], CONFIG)
+    assert not result.full_run
+    assert result.isolated_targets == [_FORK_TEST]
+    assert _FORK_TEST not in result.targets
+
+
+def test_full_run_still_reports_isolated_targets() -> None:
+    # The full-suite invocation collects the fork tests too, so they must be
+    # reported for separate execution even on a blast-radius change.
+    result = select_tests.select(REPO_ROOT, ["pyproject.toml"], CONFIG)
+    assert result.full_run
+    assert _FORK_TEST in result.isolated_targets
+    assert result.targets == []
+
+
+def test_unrelated_change_does_not_isolate_fork_test() -> None:
+    # A leaf change that never reaches the fork tests leaves them out entirely —
+    # isolating un-selected tests would defeat selective execution.
+    result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
+    assert result.isolated_targets == []

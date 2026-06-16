@@ -48,6 +48,18 @@ suite.
    nothing here rather than forcing a wasteful full Python run.
 6. **Unattributed source ⇒ full run.** A changed `.py`/`.cpp`/… that maps to no
    known package is treated conservatively as a full run.
+7. **Fork-isolated tests run in their own process.** A handful of tests
+   (`isolate_globs` in the toml) drive lerobot's dataset `compute_stats`, which
+   forks a multiprocessing pool. Folded into the broad CLI partition — which has
+   already spun up numpy/pyarrow/torch threadpools — the fork happens in a
+   multi-threaded interpreter and a forked child / C-extension `atexit` handler
+   crashes during Python finalization: the process exits non-zero **after** an
+   all-pass summary, turning green tests into red CI ([issue #24](https://github.com/OpenRAL/openral/issues/24)).
+   `select_tests.py` peels any in-scope match out of `targets` into
+   `isolated_targets`; the runner `--ignore`s them from every partition and runs
+   each in its own `pytest` invocation (the same per-process treatment EGL/MuJoCo
+   sim tests already get). Run alone, the fork lands in a not-yet-threaded
+   process and they pass clean.
 
 Every selected target carries a human-readable reason.
 
@@ -65,7 +77,9 @@ just test-changed-run                    # selects, then invokes pytest
 
 In CI, the [`test-selective`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/test-selective.yml)
 workflow runs `select_tests.py --github-output`, then either runs the whole
-suite (`full_run=true`) or just the emitted targets.
+suite (`full_run=true`) or just the emitted targets — `--ignore`ing the
+`isolated_targets` from those partitions and re-running each in its own process
+(see rule 7 above). `just test-changed-run` mirrors this locally.
 
 ### Worked examples
 
