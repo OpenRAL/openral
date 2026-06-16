@@ -149,3 +149,4 @@ nav:
     - ADR-0054 MoveIt goal-builder library: adr/0054-moveit-goal-builder-library.md
     - ADR-0055 rSkill registry & discoverability: adr/0055-rskill-registry-model-and-discoverability.md
     - ADR-0056 On-demand detectors as prompt-able reasoner tools: adr/0056-on-demand-detectors-as-promptable-reasoner-tools.md
+    - ADR-0057 Standardized description assets: adr/0057-standardized-description-assets.md

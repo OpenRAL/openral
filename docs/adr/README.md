@@ -73,6 +73,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0029](0029-unified-hal-lifecycle-node.md) | Unify per-robot HAL lifecycle nodes into one robot.yaml-driven node | Accepted | — |
 | [0031](0031-sim-real-hal-separation.md) | Explicit sim/real HAL separation with deterministic command routing | Proposed | built on by 0032 |
 | [0049](0049-hal-multithreaded-executor-proprio-snapshot.md) | Dedicated HAL publisher thread + proprio snapshot (odom-starvation fix) | Proposed | — |
+| [0057](0057-standardized-description-assets.md) | Standardized description assets — one `assets:` block + resolver (URDF/xacro/MJCF/SRDF) | Proposed | folds 0027 mount fields; relocates 0030 lowering inputs |
 
 ## E · Sim, eval & benchmarking
 

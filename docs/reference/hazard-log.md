@@ -84,3 +84,85 @@ proof).
 merge**, per CLAUDE.md §3. The hazard analysis above and the structural test
 suite are the author's contribution; the reviewer must independently verify
 the no-enforcement-change claim.
+
+---
+
+## Entry 002 — Standardized description assets: relocate lowering inputs (ADR-0057)
+
+**Date:** 2026-06-16
+**ADR:** [ADR-0057](../adr/0057-standardized-description-assets.md) (standardized
+robot description assets — URDF / xacro / MJCF / SRDF)
+**PR:** _pending_ (implementing PR for ADR-0057; this entry is authored with the
+ADR per CLAUDE.md §3 and links the regression test below as its mitigation)
+**Files to change (safety-relevant subset):**
+- `packages/openral_safety/openral_safety/urdf_lowering.py` — delete the
+  divergent `_load_urdf_model`; route URDF/SRDF reads through the new
+  `openral_core.assets.resolve_asset` resolver.
+- `python/core/src/openral_core/assets.py` — new single resolver (the file
+  locator the lowering tool now calls).
+- The 16 `robots/<id>/robot.yaml` manifests — migrated to the `assets:` block;
+  `ur5e`/`ur10e`/`rizon4`/`openarm` gain vendored `robots/<id>/<id>.urdf`.
+
+### What changed
+
+This change replaces four divergent asset-resolution mechanisms (two of them
+URDF loaders) with **one** resolver, `resolve_asset(ref, kind)`, and folds the
+asset references into a structured `RobotDescription.assets` block. For the
+xacro-only robots (`ur5e`/`ur10e`/`rizon4`) and `openarm`, the lowering tool now
+reads a **vendored, pre-expanded URDF** instead of expanding upstream xacro
+in-process.
+
+It changes **only how the source URDF/SRDF/MJCF files are located** — not their
+contents, not the lowering algorithm, not the ACM sampling seed.
+
+### Hazard analysis
+
+**The C++ safety kernel does not read URDF/SRDF/MJCF at runtime.** It reads only
+the lowered `collision_geometry` + `allowed_collision_pairs` from the manifest
+(`collision_params_from_description`). URDF/SRDF/MJCF are *inputs to the offline
+lowering tool* (ADR-0030), which produces those lowered fields at authoring time.
+
+This PR does **not** modify:
+
+- Any kernel check, threshold, capsule-distance test, or ACM lookup.
+- The lowering geometry algorithm (mesh→capsule fit, primitive bounds).
+- The ACM derivation or its deterministic sampling seed
+  (`_RNG_SEED = 20260610`, `_N_SAMPLES = 2000`).
+- The committed `collision_geometry` / `allowed_collision_pairs` values in any
+  manifest.
+
+**Same input bytes → same lowered output.** The upstream URDF/SRDF/MJCF reach the
+lowering tool unchanged; the vendored URDFs are the *expanded* form of the same
+upstream xacro the divergent loader expanded before. Therefore the lowered
+geometry and ACM are byte-identical.
+
+**Conservatism:** identical geometry and an identical ACM are, by construction,
+at least as conservative as what they replace (CLAUDE.md §3). The change cannot
+make any pair newly *allowed* (less safe) without changing the ACM bytes — which
+the regression test forbids.
+
+**Cannot leave motors energised:** no actuation path, no E-stop logic, and no
+process-teardown path is touched; this is an authoring-time file-locator change.
+
+### Mitigation — byte-identical lowering regression test (release blocker)
+
+For every robot carrying `collision_geometry` in its manifest, re-run lowering
+through the new resolver and assert the output is **identical** to the committed
+values: byte-for-byte for the ACM pairs, geometric equality for the capsules.
+**A diff blocks the release.** This is the primary mitigation. It is backed by
+the unchanged existing safety suite:
+`packages/openral_safety/test/test_urdf_lowering_fk.py` (incl.
+`test_franka_acm_uses_srdf_when_srdf_path_set`), the `mjcf_lowering` tests, the
+envelope-loader tests, the kernel integration tests, and the fleet guard
+`tests/unit/test_collision_lowering_fleet.py`.
+
+### Safety-WG reviewer gate
+
+**This change requires explicit sign-off from a safety-WG reviewer before
+merge**, per CLAUDE.md §3. The reviewer must independently verify (a) the
+"kernel never reads these files / this only relocates them" claim and (b) the
+byte-identical regression evidence across the fleet, including that the vendored
+`ur5e`/`ur10e`/`rizon4`/`openarm` URDFs lower to the same geometry the in-process
+xacro path produced.
+
+- [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).
