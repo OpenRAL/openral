@@ -38,16 +38,16 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a p
 ### `tools/select_tests.py`
 _Selective test execution — maps a git diff to the minimal pytest targets that can observe it. Backs `just test-changed` / the `test-selective` workflow. See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
 
-- `class SelectionConfig(BaseModel)` (L65) — Typed view of `tools/test_selection.toml`: `full_run_globs`, `ignore_globs`, `extra_triggers`.
-- `class SelectionResult(BaseModel)` (L73) — `full_run` / `full_run_reason` / `affected_packages` / `targets` / `reasons` (per-target rationale).
-- `load_config(path) -> SelectionConfig` (L89) — Load + validate the TOML config.
-- `package_dir_import_names(repo_root) -> dict[str, str]` (L101) — `python/<dir>` → its `src/openral_*` import name.
-- `build_dependency_graph(repo_root) -> dict[str, set[str]]` (L120) — Import-name → direct `openral` deps, derived from each `pyproject.toml` (never hand-written).
-- `transitive_dependents(graph, changed) -> set[str]` (L144) — Closure of packages that depend on any changed package (includes `changed`).
-- `map_test_imports(repo_root) -> dict[str, set[str]]` (L171) — Each top-level `tests/` file → the `openral_*` packages it imports.
-- `select(repo_root, changed_files, config) -> SelectionResult` (L213) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests).
-- `changed_files_from_git(base, head, repo_root) -> list[str]` (L297) — Merge-base `git diff --name-only base...head`.
-- `main(argv=None) -> int` (L323) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
+- `class SelectionConfig(BaseModel)` (L65) — Typed view of `tools/test_selection.toml`: `full_run_globs`, `ignore_globs`, `isolate_globs`, `extra_triggers`.
+- `class SelectionResult(BaseModel)` (L74) — `full_run` / `full_run_reason` / `affected_packages` / `targets` / `isolated_targets` (own-process, issue #24) / `reasons` (per-target rationale).
+- `load_config(path) -> SelectionConfig` (L97) — Load + validate the TOML config.
+- `package_dir_import_names(repo_root) -> dict[str, str]` (L109) — `python/<dir>` → its `src/openral_*` import name.
+- `build_dependency_graph(repo_root) -> dict[str, set[str]]` (L128) — Import-name → direct `openral` deps, derived from each `pyproject.toml` (never hand-written).
+- `transitive_dependents(graph, changed) -> set[str]` (L152) — Closure of packages that depend on any changed package (includes `changed`).
+- `map_test_imports(repo_root) -> dict[str, set[str]]` (L179) — Each top-level `tests/` file → the `openral_*` packages it imports.
+- `select(repo_root, changed_files, config) -> SelectionResult` (L253) — Resolve changed paths to pytest targets (blast-radius → full run; else per-package dirs + import-intersecting tests), peeling `isolate_globs` matches into `isolated_targets`.
+- `changed_files_from_git(base, head, repo_root) -> list[str]` (L350) — Merge-base `git diff --name-only base...head`.
+- `main(argv=None) -> int` (L385) — CLI; `--files` / `--base/--head`, `--github-output` for CI step outputs.
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._

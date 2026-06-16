@@ -72,7 +72,25 @@ jobs:
 
       - name: Run full suite (blast-radius change)
         if: steps.select.outputs.full_run == 'true'
-        run: uv run pytest tests/unit/ -q -p no:launch_testing -p no:launch_ros
+        run: |
+          # `isolated_targets` fork a multiprocessing pool (lerobot
+          # compute_stats); run in the broad `tests/unit/` process they crash at
+          # interpreter teardown despite passing (issue #24). --ignore them here
+          # and run each in its own process below.
+          ignore=""
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            ignore="$ignore --ignore=$t"
+          done
+          rc=0
+          # shellcheck disable=SC2086 -- intentional word-splitting of $ignore.
+          uv run pytest tests/unit/ $ignore \
+            -q -p no:launch_testing -p no:launch_ros || rc=1
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            echo "::group::pytest (isolated) ${t}"
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
       - name: Run selected targets
         if: steps.select.outputs.full_run != 'true' && steps.select.outputs.any == 'true'
@@ -93,13 +111,25 @@ jobs:
             [ -z "$root" ] && root="$t"  # no test-root segment → its own group
             groups["$root"]="${groups["$root"]} $t"
           done
+          # `isolated_targets` (issue #24) are already excluded from `targets`,
+          # but a directory target may still *collect* them — --ignore each from
+          # every partition, then run them one-per-process below.
+          ignore=""
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            ignore="$ignore --ignore=$t"
+          done
           rc=0
           for root in "${!groups[@]}"; do
             echo "::group::pytest ${root}"
             # shellcheck disable=SC2086 -- intentional word-splitting of the
-            # space-separated per-group target list.
-            uv run pytest ${groups["$root"]} \
+            # space-separated per-group target list and $ignore flags.
+            uv run pytest ${groups["$root"]} $ignore \
               -q -p no:launch_testing -p no:launch_ros || rc=1
+            echo "::endgroup::"
+          done
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            echo "::group::pytest (isolated) ${t}"
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
           exit $rc

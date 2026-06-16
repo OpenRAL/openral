@@ -359,18 +359,28 @@ test-changed-run base="origin/master" head="HEAD":
     #!/usr/bin/env bash
     set -euo pipefail
     plan=$(uv run python tools/select_tests.py --base "{{base}}" --head "{{head}}" --github-output)
+    # Fork-in-threaded-process crashers (issue #24) run in their own process.
+    isolated=$(echo "$plan" | python3 -c "import sys,json; print(json.load(sys.stdin)['isolated_targets'])" 2>/dev/null || true)
+    ignore=""
+    for t in $isolated; do ignore="$ignore --ignore=$t"; done
+    rc=0
     if echo "$plan" | grep -q '"full_run": "true"'; then
         echo "Blast-radius change → running full unit suite"
-        uv run pytest tests/unit/ -q -p no:launch_testing -p no:launch_ros
+        uv run pytest tests/unit/ $ignore -q -p no:launch_testing -p no:launch_ros || rc=1
     else
         targets=$(echo "$plan" | python3 -c "import sys,json; print(json.load(sys.stdin)['targets'])" 2>/dev/null || true)
-        if [ -z "${targets// }" ]; then
+        if [ -z "${targets// }" ] && [ -z "${isolated// }" ]; then
             echo "No code paths affected by this diff — nothing to run."
-        else
+        elif [ -n "${targets// }" ]; then
             echo "Running selected targets: $targets"
-            uv run pytest $targets -q -p no:launch_testing -p no:launch_ros
+            uv run pytest $targets $ignore -q -p no:launch_testing -p no:launch_ros || rc=1
         fi
     fi
+    for t in $isolated; do
+        echo "Running isolated target (own process): $t"
+        uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+    done
+    exit $rc
 
 # Audit the test suite (dead / shadowed / duplicate / no-assertion) and refresh
 # docs/contributing/test-audit.md. Read-only — never deletes tests.
