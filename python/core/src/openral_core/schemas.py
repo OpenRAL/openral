@@ -779,26 +779,103 @@ class SimGripperDescription(BaseModel):
     mirror_actuator_index: int | None = None
 
 
+# ADR-0057 — the single description-asset ref grammar. The schema validator
+# below only checks the ref *string* shape (cheap, no I/O); the resolver in
+# ``openral_core.assets`` does the file resolution. Both must accept the same
+# schemes, so keep these in lock-step with ``openral_core.assets``.
+_ASSET_SCHEMES = ("rd:", "file:", "gym_aloha:", "openarm:", "menagerie:")
+_ROS2_DYNAMIC = "ros2://robot_description"
+
+
+def _validate_ref(v: str) -> str:
+    """Reject any asset ref that is neither the dynamic marker nor a known scheme."""
+    if v == _ROS2_DYNAMIC or v.startswith(_ASSET_SCHEMES):
+        return v
+    raise ValueError(
+        f"asset ref {v!r} must start with one of {_ASSET_SCHEMES} or be {_ROS2_DYNAMIC!r}"
+    )
+
+
+class UrdfAsset(BaseModel):
+    """A URDF asset reference plus its ``robot_state_publisher`` wiring.
+
+    ADR-0027 / ADR-0057. The ``ref`` is resolved by
+    :func:`openral_core.assets.resolve_asset`; ``root_frame`` and
+    ``base_to_root_xyz_rpy`` carry the static transform that bridges a URDF
+    whose root link differs from the robot's ``base_frame`` (e.g. Franka's
+    ``panda_link0`` mounted onto a ``base_link`` mobile platform).
+
+    Attributes:
+        ref: Asset reference (``rd:<module>``, ``file:<relpath>``, or
+            ``ros2://robot_description`` for runtime topic-supplied URDFs).
+        root_frame: The URDF's root link name when it differs from
+            :attr:`RobotDescription.base_frame`. ``None`` → the URDF root
+            equals ``base_frame`` (no static transform needed).
+        base_to_root_xyz_rpy: The 6-DoF transform ``[x, y, z, roll, pitch,
+            yaw]`` (metres + radians) published via
+            ``static_transform_publisher`` to bridge ``base_frame`` to
+            :attr:`root_frame`. ``None`` when :attr:`root_frame` is ``None``.
+
+    Example:
+        >>> UrdfAsset(ref="rd:panda_description", root_frame="panda_link0").root_frame
+        'panda_link0'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    root_frame: str | None = None
+    base_to_root_xyz_rpy: tuple[float, float, float, float, float, float] | None = None
+
+    @field_validator("ref")
+    @classmethod
+    def _validate_urdf_ref(cls, v: str) -> str:
+        return _validate_ref(v)
+
+
+class AssetRefs(BaseModel):
+    """The unified description-asset block on :class:`RobotDescription`.
+
+    ADR-0057 §4. Replaces the scattered ``urdf_path`` / ``mjcf_uri`` /
+    ``srdf_path`` (+ ADR-0027 URDF-root fields) with one block whose refs
+    share the :func:`openral_core.assets.resolve_asset` grammar.
+
+    Attributes:
+        urdf: URDF asset (with optional ``robot_state_publisher`` wiring),
+            or ``None`` when the robot ships no URDF.
+        mjcf: MJCF asset ref (MuJoCo wiring), or ``None``.
+        srdf: SRDF asset ref whose ``disable_collisions`` block seeds
+            :attr:`RobotDescription.allowed_collision_pairs`, or ``None``.
+
+    Example:
+        >>> AssetRefs(urdf=UrdfAsset(ref="rd:panda_description")).urdf.ref
+        'rd:panda_description'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    urdf: UrdfAsset | None = None
+    mjcf: str | None = None
+    srdf: str | None = None
+
+    @field_validator("mjcf", "srdf")
+    @classmethod
+    def _validate_optional_ref(cls, v: str | None) -> str | None:
+        return None if v is None else _validate_ref(v)
+
+
 class SimDescription(BaseModel):
     """MuJoCo wiring for a single-arm robot, consumed by ``MujocoArmHAL``.
 
-    All fields except ``mjcf_uri`` are optional with defaults derived from
+    The MJCF itself is named by :attr:`RobotDescription.assets.mjcf`
+    (ADR-0057); this block carries only the joint↔qpos/qvel/actuator
+    plumbing. All fields are optional with defaults derived from
     :attr:`RobotDescription.joints`.  The default mapping is "1:1 in joint
     order, offset by 7 (qpos) / 6 (qvel) if ``floating_base`` is True" —
     which is correct for every robot in the open core today bar minor
     gripper bookkeeping.
 
     Attributes:
-        mjcf_uri: One of:
-
-            * ``"file:/abs/path/to.xml"`` — explicit filesystem path
-              (the leading ``file:`` is optional and a bare absolute path
-              is also accepted for backwards compatibility).
-            * ``"robot_descriptions:<module>"`` — defer to the
-              ``robot_descriptions`` Python package; ``<module>`` is the
-              module name whose ``MJCF_PATH`` attribute is read at
-              ``connect()`` time.
-
         floating_base: If True, the robot's MJCF has a 6-DoF free joint
             before the actuated joints (humanoids).  In that case the
             default ``joint_qpos_addr[joints[i].name] = 7 + i`` and
@@ -830,16 +907,12 @@ class SimDescription(BaseModel):
             gains will drive ``qpos`` to ``ctrl == 0`` otherwise).
 
     Example:
-        >>> sim = SimDescription(
-        ...     mjcf_uri="robot_descriptions:ur5e_mj_description",
-        ... )
-        >>> sim.mjcf_uri
-        'robot_descriptions:ur5e_mj_description'
+        >>> SimDescription(floating_base=True).floating_base
+        True
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    mjcf_uri: str
     floating_base: bool = False
     joint_qpos_addr: dict[str, int] | None = None
     joint_qvel_addr: dict[str, int] | None = None
@@ -1124,7 +1197,10 @@ class RobotDescription(BaseModel):
     Attributes:
         name: Robot name, e.g. "so100_follower".
         embodiment_kind: Top-level kinematic class.
-        urdf_path: Path or URL to the URDF file.
+        assets: Unified URDF / MJCF / SRDF reference block (ADR-0057).
+            Refs share the :func:`openral_core.assets.resolve_asset`
+            grammar; the URDF's ``robot_state_publisher`` wiring lives on
+            :attr:`AssetRefs.urdf` (ADR-0027). Empty by default.
         base_frame: Base link tf2 frame name.
         odom_frame: Odometry tf2 frame name.
         map_frame: Map tf2 frame name.
@@ -1170,10 +1246,8 @@ class RobotDescription(BaseModel):
         allowed_collision_pairs: Link-name pairs excluded from
             self-collision (adjacent links touch by design); the
             allowed-collision matrix. On real robots this is sourced from
-            the SRDF ``disable_collisions`` block. ADR-0030.
-        srdf_path: Optional path / URL to an SRDF whose
-            ``disable_collisions`` block seeds
-            :attr:`allowed_collision_pairs`. ADR-0030.
+            the SRDF ``disable_collisions`` block (named by
+            :attr:`AssetRefs.srdf`). ADR-0030.
 
     Example:
         >>> desc = RobotDescription(
@@ -1198,7 +1272,7 @@ class RobotDescription(BaseModel):
 
     name: str
     embodiment_kind: EmbodimentKind
-    urdf_path: str | None = None
+    assets: AssetRefs = Field(default_factory=AssetRefs)
     base_frame: str = "base_link"
     odom_frame: str = "odom"
     map_frame: str = "map"
@@ -1218,17 +1292,8 @@ class RobotDescription(BaseModel):
     sim: SimDescription | None = None
     scene_defaults: SceneDefaults | None = None
     base_joints: list[str] | None = None
-    # ADR-0027 — robot_state_publisher wiring. When the URDF's root
-    # link differs from this robot's ``base_frame`` (e.g. Franka's
-    # ``panda_link0`` mounted onto a ``base_link`` mobile platform),
-    # ``urdf_root_frame`` names the URDF root and
-    # ``static_base_to_urdf_root_xyz_rpy`` carries the 6-DoF transform
-    # (``[x, y, z, roll, pitch, yaw]`` in metres + radians) the launch
-    # publishes via ``static_transform_publisher`` to bridge them.
-    # Both ``None`` → the URDF root equals ``base_frame`` (no static
-    # transform needed; the URDF chain attaches directly).
-    urdf_root_frame: str | None = None
-    static_base_to_urdf_root_xyz_rpy: tuple[float, float, float, float, float, float] | None = None
+    # ADR-0027 robot_state_publisher wiring now lives on ``assets.urdf``
+    # (``root_frame`` + ``base_to_root_xyz_rpy``) — see ``UrdfAsset``.
     # ADR-0025 / Nav2 — generic mobile-base properties so a per-robot
     # Nav2 param file need not be hand-vendored. ``footprint_radius``
     # feeds Nav2's ``robot_radius`` (collision envelope, metres) and
@@ -1242,14 +1307,13 @@ class RobotDescription(BaseModel):
     # kernel-facing set of per-link convex primitives; ``allowed_collision_pairs``
     # is the self-collision exclusion matrix (adjacent links touch by design).
     # Both are authored by hand or emitted by the offline lowering tool from
-    # this robot's MJCF or URDF + SRDF. ``srdf_path`` points at an SRDF whose
+    # this robot's MJCF or URDF + SRDF. ``assets.srdf`` points at an SRDF whose
     # ``disable_collisions`` block is the canonical source for
     # ``allowed_collision_pairs`` on real robots. All empty / ``None`` keeps
     # existing manifests loadable; ``joints`` stays normative for the chain, so
     # URDF/SRDF contribute geometry + ACM only (no dual source of truth).
     collision_geometry: list[LinkCollisionGeometry] = Field(default_factory=list)
     allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)
-    srdf_path: str | None = None
     # ADR-0025 / dashboard overlay — optional base footprint as a list of
     # base-frame ``(x, y)`` vertices in metres (CCW by convention). Used to
     # draw the robot's true outline on the SLAM occupancy grid; ``None``
