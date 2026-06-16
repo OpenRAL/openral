@@ -11,6 +11,17 @@ without the env gate.
 
 from __future__ import annotations
 
+import pytest
+
+# Skip unless the ROS deps + this colcon package are importable (matches the
+# sibling HAL/estop shims). Under plain `pytest` selection without a sourced
+# colcon overlay (the select-and-test CI job), `openral_reasoner_ros` isn't on
+# the path; skip rather than hard-fail. The substantive coverage runs under
+# `colcon test` and the gated tests/integration end-to-end test.
+pytest.importorskip("rclpy")
+pytest.importorskip("openral_msgs")
+pytest.importorskip("openral_reasoner_ros")
+
 
 def test_import_only() -> None:
     """Smoke import — the reasoner_node module loads with rclpy + openral_msgs sourced."""
