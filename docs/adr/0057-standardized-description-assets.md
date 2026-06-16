@@ -227,9 +227,13 @@ mandates, not suggestions):
    lowering path re-fits geometry from the URDF and the ACM loses the
    hand-tuned `panda_link5 ↔ panda_link7` capsule-junction pair. This drift is
    **pre-existing** (the old `lower_robot`-for-everything CLI drifted it
-   identically) and is marked **strict-xfail** so it stays loud. Reconciling it
-   — a deliberate re-lower, or a decision to keep the hand geometry and
-   regenerate only the ACM — is a **safety-WG human gate** (see checkbox 3).
+   identically) and is marked **strict-xfail** so it stays loud. **Resolved
+   (2026-06-16): keep the hand-authored geometry.** A candidate re-lower was
+   performed and rejected as *not* at-least-as-conservative — it shrinks link7's
+   capsule (0.060 → 0.053 m) and drops the hand-tuned `link5 ↔ link7` ACM
+   exception (re-introducing a spurious E-stop in the stowed config). The hand
+   geometry is authoritative; the strict-xfail records it as an accepted, not a
+   pending, exception.
 2. **All existing safety tests pass unchanged** —
    `packages/openral_safety/test/test_urdf_lowering_fk.py` (including
    `test_franka_acm_uses_srdf_when_srdf_path_set`), the `mjcf_lowering` tests,
@@ -239,10 +243,11 @@ mandates, not suggestions):
    self-clear. Tracked as a pending checkbox:
    - [ ] **PENDING: safety-WG reviewer sign-off** on the lowering-regression
      evidence and the "locates files, never changes geometry" claim.
-   - [ ] **PENDING: safety-WG decision on `panda_mobile`** — keep the
-     hand-authored geometry (regenerate only its ACM) or re-lower from the URDF
-     and re-review the resulting ACM. Until decided, the regression's strict-xfail
-     records the known drift without hiding it.
+   - [x] **RESOLVED (2026-06-16): keep `panda_mobile`'s hand-authored geometry.**
+     The candidate re-lower is less conservative (link7 capsule shrinks
+     0.060 → 0.053 m) and drops the hand-tuned `link5 ↔ link7` ACM exception
+     (spurious-E-stop risk in the stowed config), so it was rejected. No kernel
+     geometry changes; the strict-xfail now records an accepted exception.
 4. **Hazard-log update** — entry added below referencing the regression test as
    the mitigation (CLAUDE.md §3).
 5. **TDD for the safety-touching edits** (`urdf_lowering.py`,
