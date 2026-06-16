@@ -571,9 +571,7 @@ def test_recall_miss_escalates_to_locate_in_view() -> None:
     rclpy.init()
     try:
         client = FakeToolUseClient(
-            responses=[
-                RecallObjectTool(query="teapot", rationale="find it") for _ in range(6)
-            ],
+            responses=[RecallObjectTool(query="teapot", rationale="find it") for _ in range(6)],
         )
         reasoner = ReasonerNode(
             client=client,
