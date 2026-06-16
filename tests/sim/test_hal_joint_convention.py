@@ -1,26 +1,31 @@
 """Joint-convention guard: a HAL's published joints must obey its own kinematic limits.
 
 The safety kernel's collision FK is built from each robot's ``robot.yaml`` joint
-chain (axes + ``position_limits``, ADR-0030). If the HAL publishes a joint value
-in a DIFFERENT sign/axis convention than that model, the kernel forward-kinematics
-a configuration the real robot is not in — a mirror-image arm — which both
-false-positives self-collision E-stops AND can MISS real collisions (GH #13).
+chain (axes + ``position_limits``, ADR-0030). If a HAL ever published a joint
+value in a DIFFERENT sign/axis convention than that model, the kernel would
+forward-kinematics a configuration the real robot is not in — a mirror-image arm
+— which both false-positives self-collision E-stops AND can MISS real collisions.
 
-Such a mismatch is detectable on any joint whose declared ``position_limits`` are
-entirely one sign (e.g. the Franka ``panda_joint4`` range ``[-3.0718, -0.0698]``):
-a sign flip lands the published value OUTSIDE the declared range. This module
-asserts the cheap, robust invariant — **every HAL-published joint position lies
-within that joint's declared ``position_limits``** — so a convention regression
-trips a test instead of silently feeding the safety kernel a wrong pose.
+Such a mismatch would be detectable on any joint whose declared ``position_limits``
+are entirely one sign (e.g. the Franka ``panda_joint4`` range ``[-3.0718,
+-0.0698]``): a sign flip lands the published value OUTSIDE the declared range.
+This module asserts the cheap, robust invariant — **every HAL-published joint
+position lies within that joint's declared ``position_limits``** — so a future
+convention regression trips a test instead of silently feeding the safety kernel
+a wrong pose.
+
+Status: no such mismatch exists today. A live robocasa pin (2026-06-16) read the
+``panda_mobile`` ``panda_joint4`` three ways at the same configuration — raw
+MuJoCo ``robot0_joint4`` qpos, robosuite ``robot0_joint_pos[3]``, and
+``SimAttachedHAL.read_state`` — and all three agreed at ``-2.2384`` rad (negative,
+inside ``[-3.0718, -0.0698]``). An earlier "joint4 publishes +2.6" report was a
+parsing artifact in a throwaway analysis script (``str.strip('- \\n')`` ate the
+leading minus sign), not a defect in OpenRAL. This guard is kept as a forward
+invariant, not a bug repro. See GH #13 for the full pin.
 
 Coverage today:
 * ``franka_panda`` (native mujoco_menagerie panda) — runs here; the raw-qpos read
-  matches the URDF-derived model, so it PASSES (the baseline / methodology check).
-* ``panda_mobile`` (robocasa-backed) — confirmed to VIOLATE this on ``panda_joint4``
-  (publishes ``+2.6`` rad, out of ``[-3.0718, -0.0698]``): the robosuite/robocasa
-  MJCF joint4 convention disagrees with the kernel's URDF FK model. Tracked in
-  GH #13 (safety-WG). Asserting it here needs the robocasa env; see that issue for
-  the full FK-vs-MuJoCo-xpos verification.
+  matches the URDF-derived model, so it PASSES.
 """
 
 from __future__ import annotations
@@ -83,13 +88,12 @@ def assert_joints_within_declared_limits(state: object, description: RobotDescri
 
 
 def test_franka_panda_published_joints_obey_declared_limits() -> None:
-    """Native Franka (menagerie) read is convention-consistent — the baseline.
+    """Native Franka (menagerie) read is convention-consistent — the invariant.
 
     Commands a valid in-limits pose (joint4 negative, per its ``[-3.0718,
     -0.0698]`` range) and reads it back: a faithful raw-qpos read lands inside
     the declared limits AND round-trips the commanded sign. A flipped convention
-    (the panda_mobile/robocasa bug, GH #13) would read joint4 back positive,
-    out of range.
+    would read joint4 back positive, out of range, and fail this guard.
     """
     # In-limits target: joint4 = -2.0 ∈ [-3.0718, -0.0698]; others within range.
     target = [0.0, -0.5, 0.0, -2.0, 0.0, 1.5, 0.7, 0.0]
