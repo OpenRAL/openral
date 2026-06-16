@@ -160,6 +160,4 @@ def _resolve_openarm(variant: str, kind: AssetKind) -> Path:
 
 def _resolve_menagerie(model: str, kind: AssetKind) -> Path:
     """Resolve ``menagerie:<model>`` — not yet wired (YAGNI)."""
-    raise AssetRefError(
-        f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv"
-    )
+    raise AssetRefError(f"menagerie:{model} not yet wired — widowx is sim-only via SimplerEnv")

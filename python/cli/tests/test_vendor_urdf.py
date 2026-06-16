@@ -141,9 +141,7 @@ def test_vendor_raw_text_diff_is_joint_names_only(tmp_path: Path) -> None:
         # Drop the provenance comment and normalize the XML-declaration quoting;
         # everything else must match line-for-line apart from joint-name attrs.
         return [
-            ln
-            for ln in lines
-            if "Vendored by" not in ln and not ln.lstrip().startswith("<?xml")
+            ln for ln in lines if "Vendored by" not in ln and not ln.lstrip().startswith("<?xml")
         ]
 
     v, u = _strip(vendored), _strip(upstream)
