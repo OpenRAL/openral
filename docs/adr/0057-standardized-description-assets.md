@@ -284,7 +284,7 @@ plausibility):**
 | Robot | Upstream source | License | Why not vendored |
 |---|---|---|---|
 | `gr1` | `Wiki-GRx-Models` (Fourier) | **GPL-3.0** (confirmed: `Wiki-GRx-Models/LICENSE`) | Copy-left — §1.9 rejects from open-core without TSC review. Keeps `rd:` ref + xfail. |
-| `so100_follower` / `so101_follower` | `TheRobotStudio/SO-ARM100` | Apache-2.0 | License is fine, but the upstream URDF's *relative-path* collision meshes (`assets/*.stl`) make a relocated copy flip the safety lowering source (§4). Needs the meshes vendored too — deferred. |
+| `so100_follower` / `so101_follower` | `TheRobotStudio/SO-ARM100` | Apache-2.0 | Vendored joint-renamed URDF + the upstream Apache-2.0 mesh assets (relative-path) under `robots/<id>/assets/` (with the upstream `LICENSE`); lowering re-fits byte-identically from the vendored meshes. ~3 MB (so100) / ~16 MB (so101). |
 
 ## Consequences
 

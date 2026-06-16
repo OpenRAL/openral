@@ -20,7 +20,7 @@ base_frame: "base"
 # ADR-0057 — unified asset block (URDF / MJCF).
 assets:
   urdf:
-    ref: "rd:so_arm100_description"
+    ref: "file:so100_follower.urdf"
   mjcf: "rd:so_arm100_mj_description"
 
 joints:

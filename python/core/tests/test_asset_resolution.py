@@ -11,17 +11,13 @@ Principled skips/xfails only — no faked passes:
 * ``menagerie:`` refs are not yet wired (Task 1 YAGNI); ``widowx``'s MJCF
   therefore *must* raise :class:`AssetRefError`, which the test asserts rather
   than skipping (the honest outcome).
-* h1 left this table under ADR-0057 — it ships a vendored, joint-name-patched
-  URDF (``robots/h1/h1.urdf``: ``_joint`` suffix stripped) whose joints match the
-  manifest and whose ``package://`` meshes resolve location-independently, so it
-  PASSES the cross-check with no safety-lowering drift.
-* so100_follower/so101_follower still :data:`xfail`: their upstream URDF names
-  joints '1'..'6' and references its collision meshes by *relative* path
-  (``assets/*.stl``). A vendored, joint-renamed copy would resolve those meshes
-  only next to the upstream file, so relocating it under ``robots/`` flips the
-  safety collision-lowering source from URDF-sampling to MJCF (ADR-0057 §5) — a
-  silent safety-source change. Vendoring these two needs the meshes vendored too
-  (a maintainer/ADR decision), so they keep the documented xfail for now.
+* h1, so100_follower, so101_follower left this table under ADR-0057 — each ships
+  a vendored, joint-name-patched URDF (``robots/<id>/<id>.urdf``) whose joints
+  match the manifest, so all three PASS the cross-check with no safety-lowering
+  drift. h1's ``package://h1_description`` meshes resolve location-independently;
+  so100/so101 use *relative* mesh paths, so their Apache-2.0 mesh assets are
+  vendored alongside under ``robots/<id>/assets/`` (with the upstream LICENSE) —
+  the lowering re-fits identically from the vendored meshes.
 * gr1 still :data:`xfail`: its upstream (Wiki-GRx-Models) URDF is **GPL-3.0**, a
   copy-left license that CLAUDE.md §1.9 rejects from open-core without TSC
   review, so it cannot be vendored into the repo. It keeps its ``_joint``-suffix
@@ -43,20 +39,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFESTS = sorted((_REPO_ROOT / "robots").glob("*/robot.yaml"))
 
 # Robots whose declared URDF uses joint names that diverge from the manifest's
-# HAL/control-contract names. h1 left this table under ADR-0057 — it ships a
-# vendored, joint-name-patched URDF (robots/h1/h1.urdf) whose joints match the
-# manifest. The rest remain, each for a documented, auditable reason:
-#  * so100/so101 — upstream collision meshes are relative-path, so a relocated
-#    vendored copy flips the safety lowering source (ADR-0057 §5).
+# HAL/control-contract names. h1, so100_follower and so101_follower left this
+# table under ADR-0057 — each ships a vendored, joint-name-patched URDF whose
+# joints match the manifest (so100/so101 vendor their Apache-2.0 meshes too).
+# Only gr1 remains, for a documented, auditable reason:
 #  * gr1 — upstream URDF is GPL-3.0, copy-left, rejected from open-core (§1.9).
 _URDF_JOINT_NAME_MISMATCH: dict[str, str] = {
-    "so100_follower": "rd:so_arm100_description URDF names joints '1'..'6'; "
-    "manifest uses semantic HAL names (shoulder_pan, ...). Not yet vendored: its "
-    "relative-path collision meshes would flip the safety lowering source if the "
-    "URDF were relocated under robots/ (ADR-0057 §5).",
-    "so101_follower": "rd:so_arm101_description URDF names joints '1'..'6'; "
-    "manifest uses semantic HAL names (shoulder_pan, ...). Not yet vendored: same "
-    "relative-path collision-mesh constraint as so100_follower (ADR-0057 §5).",
     "gr1": "rd:gr1_description URDF suffixes every joint with '_joint' "
     "(waist_yaw_joint); manifest drops the suffix (waist_yaw). Not vendorable: "
     "the Wiki-GRx-Models upstream is GPL-3.0, copy-left (CLAUDE.md §1.9).",
