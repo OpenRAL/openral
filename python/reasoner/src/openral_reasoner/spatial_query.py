@@ -16,7 +16,7 @@ module does not import the Layer-2 ``openral_world_state`` package — the concr
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from openral_core import (
     ApproachViewpoint,
@@ -93,8 +93,11 @@ def format_recall_object_result(
     """
     if not result.matches:
         return (
-            f"spatial_memory: {query_text!r} is not in memory. "
-            "Consider an active search of likely locations."
+            f"spatial_memory: {query_text!r} is not in memory. Check the "
+            "scene_objects list in WORLD_STATE first — the live detector may "
+            "have it under a different label (e.g. a 'baguette' goal vs a "
+            "detected 'bread'); if a listed object is your target, act on it "
+            "directly. Otherwise consider an active search of likely locations."
         )
     lines = [f"spatial_memory: {len(result.matches)} match(es) for {query_text!r}:"]
     for m in result.matches:
@@ -130,15 +133,33 @@ def format_resolve_place_result(reference: str, result: ResolvePlaceResult) -> s
     return text
 
 
-def run_spatial_query(
+class SpatialQueryOutcome(NamedTuple):
+    """Result of a spatial-memory query: the rendered text + whether it matched.
+
+    ``found`` is ``True`` when ``recall_object`` returned ≥1 match (in memory,
+    even if every approach is grid-BLOCKED — the object is still known) or
+    ``resolve_place`` resolved the reference; ``False`` on a "not in memory"
+    miss. The reasoner node uses ``found`` to decide whether to escalate a
+    recall miss to a live ``locate_in_view`` (ADR-0043/0056) before handoff.
+    """
+
+    text: str
+    found: bool
+
+
+def run_spatial_query_detailed(
     call: SpatialQueryTool,
     querier: SpatialMemoryQuerier,
     *,
     now_ns: int,
     from_node_id: str | None = None,
     refine_approach: ApproachRefiner | None = None,
-) -> str:
-    """Execute a read-only spatial-memory tool call and render the result as text.
+) -> SpatialQueryOutcome:
+    """Execute a read-only spatial-memory tool call; render text + report match.
+
+    Same behaviour as :func:`run_spatial_query` but also reports whether the
+    query matched (``SpatialQueryOutcome.found``), so the caller can escalate a
+    miss to a live perception check without re-parsing the rendered text.
 
     Args:
         call: A :class:`~openral_core.RecallObjectTool` or
@@ -154,14 +175,15 @@ def run_spatial_query(
             through unchanged.
 
     Returns:
-        An LLM-readable text block to feed back into the reasoning loop. A miss
-        (no match / unresolved reference) is reported as text — never a
-        fabricated pose (CLAUDE.md §1.2): ``resolve_place`` raises
+        A :class:`SpatialQueryOutcome`. A miss (no match / unresolved reference)
+        is reported as text and ``found=False`` — never a fabricated pose
+        (CLAUDE.md §1.2): ``resolve_place`` raises
         :class:`~openral_core.exceptions.ROSObjectNotInMemory` internally, which
         is caught and rendered as a "not in memory" message.
     """
     if isinstance(call, RecallObjectTool):
         result = querier.recall_object(recall_object_tool_to_query(call), now_ns=now_ns)
+        found = bool(result.matches)
         blocked: set[str] = set()
         if refine_approach is not None and result.matches:
             refined_matches = []
@@ -176,13 +198,44 @@ def run_spatial_query(
                 else:
                     refined_matches.append(m.model_copy(update={"approach": refined}))
             result = result.model_copy(update={"matches": refined_matches})
-        return format_recall_object_result(call.query, result, blocked_node_ids=frozenset(blocked))
+        text = format_recall_object_result(call.query, result, blocked_node_ids=frozenset(blocked))
+        return SpatialQueryOutcome(text=text, found=found)
     query = resolve_place_tool_to_query(call)
     try:
         resolved = querier.resolve_place(query, from_node_id=from_node_id)
     except ROSObjectNotInMemory:
-        return (
-            f"spatial_memory: {call.reference!r} is not in memory. "
-            "Consider an active search of likely locations."
+        return SpatialQueryOutcome(
+            text=(
+                f"spatial_memory: {call.reference!r} is not in memory. Check the "
+                "scene_objects list in WORLD_STATE first — the live detector may "
+                "have it under a different label; if a listed object is your "
+                "target, act on it directly. Otherwise consider an active search."
+            ),
+            found=False,
         )
-    return format_resolve_place_result(call.reference, resolved)
+    return SpatialQueryOutcome(
+        text=format_resolve_place_result(call.reference, resolved), found=True
+    )
+
+
+def run_spatial_query(
+    call: SpatialQueryTool,
+    querier: SpatialMemoryQuerier,
+    *,
+    now_ns: int,
+    from_node_id: str | None = None,
+    refine_approach: ApproachRefiner | None = None,
+) -> str:
+    """Execute a read-only spatial-memory tool call and render the result as text.
+
+    Thin wrapper over :func:`run_spatial_query_detailed` returning only the
+    rendered text (the historical signature). See that function for argument
+    and return-value semantics.
+    """
+    return run_spatial_query_detailed(
+        call,
+        querier,
+        now_ns=now_ns,
+        from_node_id=from_node_id,
+        refine_approach=refine_approach,
+    ).text

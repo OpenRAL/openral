@@ -38,6 +38,7 @@ from openral_rskill.ros_action_rskill import (
     ROSActionRskill,
     _merge_nested,
     _resolve_dotted,
+    _set_message_fields,
     build_joint_permutation_from_names,
 )
 
@@ -502,3 +503,46 @@ def test_constructor_rejects_manifest_without_ros_integration() -> None:
     bad_manifest = _trajectory_manifest().model_copy(update={"ros_integration": None})
     with pytest.raises(ROSConfigError, match="ros_integration"):
         _make_skill(bad_manifest, _two_dof_robot())
+
+
+# ── #nav goal-build: nested IDL application + flattened-params rejection ───────
+
+
+def test_set_message_fields_applies_correct_nesting() -> None:
+    # The manifest's nested default_goal_json shape must apply cleanly to a real
+    # geometry_msgs/PoseStamped (the rosidl_runtime_py production path).
+    geometry_msgs = pytest.importorskip("geometry_msgs.msg")
+    ps = geometry_msgs.PoseStamped()
+    _set_message_fields(
+        ps, {"header": {"frame_id": "map"}, "pose": {"position": {"x": 3.5, "y": 2.1}}}
+    )
+    assert ps.header.frame_id == "map"
+    assert ps.pose.position.x == 3.5
+    assert ps.pose.position.y == 2.1
+
+
+def test_set_message_fields_rejects_flattened_pose() -> None:
+    # The exact LLM mistake that broke nav2-navigate-to-pose: position/orientation
+    # hoisted to the PoseStamped level (instead of under pose.pose). PoseStamped has
+    # no such field, so application must raise — this is what the adapter wraps into
+    # an actionable ROSConfigError the reasoner can replan on.
+    geometry_msgs = pytest.importorskip("geometry_msgs.msg")
+    ps = geometry_msgs.PoseStamped()
+    flattened = {
+        "header": {"frame_id": "map"},
+        "pose": {"position": {"x": 0.0}},
+        "position": {"x": 3.5},  # misplaced
+        "orientation": {"w": 1.0},  # misplaced
+    }
+    with pytest.raises((AttributeError, TypeError, ValueError)):
+        _set_message_fields(ps, flattened)
+
+
+def test_merge_nested_flattened_override_surfaces_bad_keys() -> None:
+    # A flattened override deep-merges into extra top-level keys on the PoseStamped
+    # (header, pose, position, orientation) — the structural smell the goal-build
+    # then rejects.
+    default = {"pose": {"header": {"frame_id": "base_link"}, "pose": {"position": {"x": 0.0}}}}
+    override = {"pose": {"position": {"x": 3.5}, "orientation": {"w": 1.0}}}
+    merged = _merge_nested(default, override)
+    assert sorted(merged["pose"]) == ["header", "orientation", "pose", "position"]

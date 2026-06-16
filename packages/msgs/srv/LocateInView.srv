@@ -8,21 +8,33 @@
 # returns whether the queried object is in view. Read-only: no actuation.
 #
 # Request:
-#   query  — free-text / label naming the object to look for (e.g. "red mug").
-#            Sent verbatim as the detector's open-vocabulary query.
-#   camera — optional camera selector. Empty = the detector's primary/default
-#            camera; otherwise one of the detector's configured camera ids so
-#            the reasoner can choose a viewpoint. NOT a hardcoded name.
+#   query    — free-text / label naming the object to look for (e.g. "red mug").
+#              Sent verbatim as the detector's open-vocabulary query.
+#   camera   — optional camera selector. Empty = the detector's primary/default
+#              camera; otherwise one of the detector's configured camera ids so
+#              the reasoner can choose a viewpoint. NOT a hardcoded name.
+#   detector — ADR-0056 — optional on-demand locator selector (rSkill id /
+#              short alias, e.g. "omdet-turbo-locator" or "locateanything-3b").
+#              Empty = the deployment's default locator. The reasoner routes the
+#              call to /openral/perception/<detector>/locate_in_view; per-detector
+#              service namespacing means several locators can co-exist and the
+#              reasoner picks the model. This field is informational on the server
+#              side (each node already owns one model); it is echoed back so the
+#              prompt cascade records which locator answered.
 #
 # Response:
 #   found          — true iff the detector grounded the object in the frame.
 #   camera         — the camera id actually queried (echoes the resolved default).
+#   detector       — the locator id that answered (echoes the request, or the
+#                    node's own id when the request left it empty).
 #   metadata_json  — ObjectsMetadata JSON (boxes/labels/confidence) when found;
 #                    empty string when not found or no frame was available.
 
 string query
 string camera
+string detector
 ---
 bool found
 string camera
+string detector
 string metadata_json

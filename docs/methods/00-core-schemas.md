@@ -30,17 +30,17 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   `JOINT_POSITIONS, JOINT_VELOCITIES, DELTA_EE_6D_PLUS_GRIPPER, DELTA_EE_6D, CARTESIAN_POSE`
 - `class RSkillAction(str, Enum)` — Closed vocabulary of high-level action verbs an rSkill can perform (ADR-0022); declared on `RSkillManifest.actions` and surfaced to the reasoner LLM tool palette so it can pick a skill by what it does. (L610)
   Manipulation primitives: `PICK, PLACE, PICK_AND_PLACE, TRANSFER, GRASP, RELEASE`; articulated / contact-rich: `OPEN, CLOSE, PUSH, PULL, SLIDE, INSERT, POUR, WIPE, ROTATE`; motion: `REACH`; mobile: `NAVIGATE`; social/expressive: `WAVE, SHAKE`; generalist marker (foundation / multi-task checkpoints): `GENERALIST`; perception producer: `DETECT` (ADR-0037, for `kind: "detector"` rSkills); scene VLM: `QUERY` (ADR-0047, for `kind: "vlm"` rSkills).
-- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2132)
+- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2135)
   `FP32, FP16, BF16, INT8, INT4, FP4_NVFP4`
-- `class QuantizationBackend(str, Enum)` — Inference backend. (L2156)
+- `class QuantizationBackend(str, Enum)` — Inference backend. (L2159)
   `PYTORCH, ONNX, TENSORRT, GGUF, MLX`
-- `class RSkillState(str, Enum)` — Skill lifecycle. (L2228)
+- `class RSkillState(str, Enum)` — Skill lifecycle. (L2231)
   `UNCONFIGURED, INACTIVE, ACTIVE, FINALIZED, ERROR`
-- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2308)
+- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2311)
   `APACHE_2_0, MIT, BSD, PERMISSIVE_RESEARCH, NVIDIA_NON_COMMERCIAL, NVIDIA_OPEN_MODEL, RLWRLD_NON_COMMERCIAL, PROPRIETARY, UNKNOWN` (NVIDIA_OPEN_MODEL = GR00T N1.7+, commercial OK — ADR-0046)
-- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2322)
+- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2325)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
-- `class PhysicsBackend(str, Enum)` — Sim backend. (L4594)
+- `class PhysicsBackend(str, Enum)` — Sim backend. (L4598)
   `MUJOCO, MUJOCO_MJX, PYBULLET, ISAACSIM, GENESIS, MOCK`
 
 **Pydantic models — robot manifest hierarchy**
@@ -286,7 +286,7 @@ Discriminated union over the closed palette of typed tool calls the F4 reasoner 
 - `class EmitPromptTool` (L3556) — `tool="emit_prompt"`; fields `target_topic` (must start with `/`), `text`, `metadata_json`.
 - `class RecallObjectTool` — **read-only query** (ADR-0039); `tool="recall_object"`; fields `query` (free-text/label), `limit`. Recalls an object from the ADR-0038 scene-graph memory; no actuation authority. Dispatch + result-return is ADR-0039 Phase 2 (not yet in the live provider palette).
 - `class ResolvePlaceTool` — **read-only query** (ADR-0039); `tool="resolve_place"`; field `reference` ("the kitchen", "where I was standing"). Resolves a place/room/agent to a goal pose + path; no actuation authority. Dispatch is ADR-0039 Phase 2.
-- `class LocateInViewTool` — **read-only query** (ADR-0043); `tool="locate_in_view"`; fields `query` (object to look for), `camera` (optional viewpoint id, default `""` = primary — camera-agnostic, not a hardcoded name). Asks a live VLM detector if the object is in the CURRENT frame (vs `recall_object`'s *remembered* objects); dispatched via the `/openral/perception/locate_in_view` service. No actuation authority.
+- `class LocateInViewTool` — **read-only query** (ADR-0043); `tool="locate_in_view"`; fields `query` (object to look for), `camera` (optional viewpoint id, default `""` = primary — camera-agnostic, not a hardcoded name), `detector` (ADR-0056 — optional on-demand locator selector / alias, default `""` = the deployment default; the reasoner routes to `/openral/perception/<detector>/locate_in_view`). Asks a live VLM detector if the object is in the CURRENT frame (vs `recall_object`'s *remembered* objects). No actuation authority — choosing a model does not grant it.
 - `class QuerySceneTool` — **read-only query** (ADR-0047); `tool="query_scene"`; fields `question` (open-ended scene-state question, min_length=1), `camera` (optional viewpoint id, default `""`). Asks a scene VLM (Qwen3.5-4B) an open-ended question about the CURRENT frame for task-progress / success verification; dispatched via `/openral/perception/query_scene`, answer fed back as a re-prompt. Distinct from `locate_in_view` (localization → boxes): returns free text. No actuation authority.
 - `class QueryTaskProgressTool` — **read-only query** (ADR-0057); `tool="query_task_progress"`; fields `window_s` (seconds of recent frames to assess, > 0, default 8.0), `task` (optional instruction override, default `""` → reuse the active goal). Asks the Robometer reward monitor for a quantitative windowed assessment of the CURRENT task; dispatched via `/openral/perception/query_task_progress`, the verdict (progress/success now + trends + `stalled`/`succeeded`) fed back as a re-prompt driving the replanning ladder. Distinct from `query_scene` (free text): returns normalized scalars. No actuation authority.
 - `ReasonerToolCall: TypeAlias` — Discriminated union over the eight variants above (four actuation/effect + four ADR-0039/0043/0047 read-only query). Module docstring shows the encode/decode pattern.

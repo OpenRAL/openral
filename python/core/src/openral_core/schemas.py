@@ -1928,7 +1928,10 @@ class SceneGraph(BaseModel):
     nodes.
 
     Attributes:
-        schema_version: On-disk schema version (pinned ``"0.1"`` pre-publish).
+        schema_version: On-disk schema version (``"0.1"``; no
+            backward-incompatible change yet). Now the repo is published it
+            is versioned for real (CLAUDE.md §1.6): an incompatible change
+            bumps it and ships a migrator.
         nodes: All scene-graph nodes.
         edges: All directed relations between nodes.
     """
@@ -3764,11 +3767,11 @@ class RSkillManifest(BaseModel):
     selecting a runtime + quantization, then constructing a runtime
     :class:`~openral_rskill.Skill` instance.
 
-    ``schema_version`` stays at ``"0.1"`` deliberately: the schema has
-    not been tagged or published, so the entire in-flight design lands
-    as a single ``"0.1"`` baseline. Pre-release iteration does not bump
-    the schema version; a real bump is reserved for the first
-    post-1.0 shape change.
+    ``schema_version`` is ``"0.1"``: the manifest surface has had no
+    backward-incompatible change. Now the repo is published it is
+    versioned for real (CLAUDE.md §1.6) — a backward-incompatible change
+    bumps it and ships a migrator, while backward-compatible additions
+    (ADR-0013/0022/0024) evolve the surface in place.
 
     ADR-0013 added two symmetric guards on top of the initial V1 shape:
 
@@ -3796,9 +3799,10 @@ class RSkillManifest(BaseModel):
 
     Attributes:
         schema_version: On-disk format version. ``"0.1"`` today.
-            ADR-0013 extended the surface in place (no version bump
-            because the schema has not been published); a future shape
-            that needs a real migration bumps post-1.0.
+            Backward-compatible extensions (ADR-0013/0022/0024) evolved
+            the surface in place; now the repo is published, a
+            backward-incompatible change bumps this and ships a migrator
+            (CLAUDE.md §1.6).
         name: HF Hub identifier, e.g. ``"openral/rskill-pick-cube-so100"``.
             Must match ``<owner>/<repo>``.
         version: SemVer string of the rSkill package itself (not the
@@ -6275,11 +6279,19 @@ class LocateInViewTool(_ReasonerToolBase):
             primary camera; otherwise names one of the detector's configured
             cameras so the reasoner can pick a viewpoint. **Not a hardcoded
             name** — the detector is camera-agnostic and maps the id to a topic.
+        detector: Optional on-demand locator selector (ADR-0056). Empty (default)
+            uses the deployment's default locator; otherwise an rSkill id / short
+            alias of one of the on-demand locators in the graph (e.g.
+            ``"omdet-turbo-locator"`` for fast simple "find X",
+            ``"locateanything-3b"`` for complex referring expressions). The
+            reasoner routes to ``/openral/perception/<detector>/locate_in_view``.
+            Still **read-only** — choosing a model does not grant actuation.
     """
 
     tool: Literal["locate_in_view"] = "locate_in_view"
     query: str = Field(min_length=1)
     camera: str = ""
+    detector: str = ""
 
 
 class QuerySceneTool(_ReasonerToolBase):

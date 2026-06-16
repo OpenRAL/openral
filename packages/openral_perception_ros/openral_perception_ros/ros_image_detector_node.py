@@ -205,6 +205,14 @@ def main(args: Any = None) -> None:
             self.declare_parameter("labels", [""])
             self.declare_parameter("query", "")
             self.declare_parameter("query_topic", "/openral/perception/detector_query")
+            # ADR-0056 — per-detector service namespace so several on-demand
+            # locators co-exist. The deploy launch sets these to
+            # /openral/perception/<alias>/locate_in_view for each locator node;
+            # the legacy single-detector default keeps back-compat. ``detector_id``
+            # is echoed in the LocateInView response so the reasoner records which
+            # locator answered.
+            self.declare_parameter("locate_in_view_service", "/openral/perception/locate_in_view")
+            self.declare_parameter("detector_id", "")
 
             self._last_pub_ns = 0
             # Latest BGR frame per camera id, for the on-demand locate_in_view service.
@@ -272,9 +280,14 @@ def main(args: Any = None) -> None:
                 try:
                     from openral_msgs.srv import LocateInView
 
+                    locate_service = (
+                        self.get_parameter("locate_in_view_service")
+                        .get_parameter_value()
+                        .string_value
+                    )
                     self._srv = self.create_service(
                         LocateInView,
-                        "/openral/perception/locate_in_view",
+                        locate_service,
                         self._on_locate_in_view,
                     )
                 except ImportError:
@@ -530,6 +543,10 @@ def main(args: Any = None) -> None:
             query = request.query.strip()
             camera = request.camera.strip() or self._primary_id
             response.camera = camera
+            # ADR-0056 — echo which locator answered (the request's selector, or
+            # this node's own id when the caller left it empty).
+            own_id = self.get_parameter("detector_id").get_parameter_value().string_value
+            response.detector = request.detector.strip() or own_id
             if self._detector is None:  # inactive (ADR-0050 — VRAM released)
                 response.found = False
                 response.metadata_json = ""

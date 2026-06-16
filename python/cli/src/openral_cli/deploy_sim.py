@@ -311,26 +311,36 @@ class LaunchInvocation:
     forwarded as ``enable_octomap:=true``. Defaults to "auto" = the robot
     manifest declares a depth SensorSpec (nothing to map otherwise)."""
     enable_object_detector: bool
-    """ADR-0035 opt-in for the object-detection perception leg
+    """ADR-0035 object-detection perception leg
     (ros_image_detector_node → /openral/perception/objects → world-state
-    object-lift → /openral/world_voxels). Set by
-    ``openral deploy sim --enable-object-detector``; forwarded as
-    ``enable_object_detector:=true``. Defaults to "auto" = the resolved
-    ``object_detector_onnx`` file exists (nothing to detect with otherwise)."""
+    object-lift → /openral/world_voxels). **On by default**; disabled with
+    ``openral deploy sim --no-object-detector``. Forwarded as
+    ``enable_object_detector:=true|false``. Auto-downgrades to ``false`` when no
+    backend is available (omdet deps absent *and* the RT-DETR ONNX missing)."""
     object_detector_onnx: Path
-    """ADR-0035 — absolute path to the RT-DETR ONNX weights the detector
-    loads. Forwarded as ``object_detector_onnx:=<path>``. Defaults to the
-    in-tree ``rskills/rtdetr-coco-r18/model.onnx``."""
+    """ADR-0035 — absolute path to the RT-DETR ONNX weights used by the legacy /
+    fallback detector path. Forwarded as ``object_detector_onnx:=<path>``.
+    Defaults to the in-tree ``rskills/rtdetr-coco-r18/model.onnx``; passing it
+    explicitly selects the fixed-label RT-DETR path over the omdet default."""
     object_detector_manifest: str
     """ADR-0037 2026-06-09 — path to a kind:detector rSkill manifest. When set,
     the detector node builds its backend from the manifest (runtime:pytorch →
-    the open-vocab LocateAnything VLM sidecar; runtime:onnx → RT-DETR ONNX)
-    instead of the hardcoded RT-DETR path. Forwarded as
-    ``object_detector_manifest:=<path>``. Empty = legacy RT-DETR."""
+    the open-vocab LocateAnything VLM sidecar; runtime:onnx → RT-DETR ONNX).
+    Forwarded as ``object_detector_manifest:=<path>``. Empty = the RT-DETR ONNX
+    fallback. By default (no explicit override) this resolves to the
+    ``omdet-turbo-indoor`` manifest when the omdet deps are importable."""
     object_detector_query: str
     """ADR-0037 2026-06-09 — initial open-vocabulary query for a VLM detector
     (e.g. 'red mug'). Forwarded as ``object_detector_query:=<text>``. Empty =
     the manifest's ``detector.labels`` default. Ignored by ONNX detectors."""
+    object_detector_locators: tuple[str, ...]
+    """ADR-0056 — resolved manifest paths of the ``mode: on_demand`` open-vocab
+    locators to bring up alongside the continuous detector. The launch builds one
+    namespaced lifecycle node per entry (``/openral/perception/<alias>/locate_in_view``)
+    so the reasoner can choose a model via ``LocateInViewTool.detector``. Forwarded
+    as ``object_detector_locators:=<comma-joined paths>`` only when non-empty.
+    Defaults to the omdet-turbo-locator manifest when the detector is on and the
+    omdet deps are importable (LocateAnything is opt-in via an explicit path)."""
     spatial_memory_ingest: bool
     """ADR-0038 opt-in. Set by ``openral deploy sim --spatial-memory-ingest``;
     forwarded as ``spatial_memory_ingest:=true``. The reasoner then accumulates
@@ -414,6 +424,39 @@ def _scan_params_from_description(description: RobotDescription) -> dict[str, ob
     return params
 
 
+def _omdet_runtime_available() -> bool:
+    """True when the OmDet-Turbo continuous detector's runtime deps are importable.
+
+    The default object detector is omdet-turbo-indoor (open-vocabulary, grounds
+    arbitrary indoor/kitchen objects rather than the fixed COCO-80 of RT-DETR).
+    Its in-process zero-shot backend
+    (``openral_runner.backends.gstreamer.omdet_turbo_detector.OmDetTurboDetector``)
+    needs ``transformers`` + ``timm`` — the ``omdet`` dependency group. When they
+    are absent (a checkout that only synced the base group),
+    :func:`resolve_launch_invocation` gracefully falls back to the in-tree
+    RT-DETR COCO ONNX so ``deploy sim`` still brings up a detector instead of the
+    node hard-failing at backend build.
+
+    Patched in tests to exercise both branches without touching the environment.
+    """
+    # Local import: the probe is cheap and scoped to this one decision.
+    import importlib.util
+
+    return all(importlib.util.find_spec(mod) is not None for mod in ("transformers", "timm"))
+
+
+def _object_detector_onnx_present(path: Path) -> bool:
+    """True when the fallback RT-DETR COCO ONNX weights are on disk.
+
+    The weights (``rskills/rtdetr-coco-r18/model.onnx``, ~2 MB) are gitignored, so
+    they are present on a weights-fetched dev host but absent in a bare CI
+    checkout. :func:`resolve_launch_invocation` downgrades the detector leg off
+    when neither omdet deps nor these weights can build a backend. Factored out so
+    tests can exercise the fallback-selection logic without the gitignored binary.
+    """
+    return path.is_file()
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -435,6 +478,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_reward_monitor: bool = False,
     reward_monitor_manifest: str | None = None,
     reward_monitor_task: str | None = None,
+    object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
 ) -> LaunchInvocation:
@@ -513,10 +557,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "simulation-only. Use `openral deploy sim` instead of `openral deploy run`."
         )
 
-    # ADR-0025 — slam_toolbox defaults to ON when the robot declares a
-    # lidar in its capabilities. The CLI `--enable-slam` / `--no-enable-slam`
-    # remains the explicit override. `enable_slam is None` means "auto":
-    # honour the robot manifest; anything else wins.
+    # ADR-0025 (#11) — SLAM is ON BY DEFAULT for every robot that *can* run it:
+    # i.e. one that declares a lidar (the scan source slam_toolbox needs). This
+    # is the firm default — a SLAM-capable robot always brings up the `map` frame
+    # the object lift / spatial-memory ingest depend on, unless the operator
+    # opts out with `--no-enable-slam`. Fixed-base arms (no mobile base, no lidar)
+    # correctly stay off — there is no base to localise and nothing to map.
+    # `enable_slam is None` means "auto": honour the manifest; an explicit flag wins.
     if enable_slam is None:
         enable_slam = bool(description.capabilities.has_lidar)
     # ADR-0025 — Nav2 auto-enables alongside slam_toolbox: every
@@ -535,26 +582,83 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             for s in description.sensors
         )
 
-    # ADR-0035 — the object-detection leg defaults to the in-tree RT-DETR
-    # rSkill weights and auto-enables only when those weights actually exist
-    # (the detector node hard-fails to build an ObjectsDetector otherwise).
-    # ``--object-detector-onnx`` overrides the path; ``--enable-object-detector``
-    # / ``--no-enable-object-detector`` overrides the auto-decision.
-    resolved_object_detector_onnx = (
-        object_detector_onnx.resolve()
-        if object_detector_onnx is not None
-        else repo_root / "rskills" / "rtdetr-coco-r18" / "model.onnx"
-    )
-    # ADR-0037 2026-06-09 — a manifest path selects a manifest-driven backend
-    # (e.g. the LocateAnything VLM, which needs no ONNX file). Resolve it and let
-    # its presence auto-enable the detector leg even when no ONNX exists.
-    resolved_object_detector_manifest = (
-        str(Path(object_detector_manifest).resolve()) if object_detector_manifest else ""
-    )
-    if enable_object_detector is None:
-        enable_object_detector = bool(resolved_object_detector_manifest) or (
-            resolved_object_detector_onnx.is_file()
+    # ADR-0035/0037 — the object-detection leg is ON by default (deploy sim is a
+    # perception-driven stack; ``--no-object-detector`` turns it off). The default
+    # backend is the open-vocabulary ``omdet-turbo-indoor`` continuous detector,
+    # which grounds arbitrary indoor/kitchen objects instead of the fixed COCO-80
+    # of RT-DETR; when its runtime deps (transformers/timm — the ``omdet`` group)
+    # are not importable we gracefully fall back to the in-tree RT-DETR COCO ONNX
+    # so the graph still comes up. Explicit ``--object-detector-manifest`` /
+    # ``--object-detector-onnx`` override the default selection.
+    default_rtdetr_onnx = repo_root / "rskills" / "rtdetr-coco-r18" / "model.onnx"
+    default_omdet_manifest = repo_root / "rskills" / "omdet-turbo-indoor" / "rskill.yaml"
+    if object_detector_manifest:
+        resolved_object_detector_manifest = str(Path(object_detector_manifest).resolve())
+        resolved_object_detector_onnx = (
+            object_detector_onnx.resolve()
+            if object_detector_onnx is not None
+            else default_rtdetr_onnx
         )
+    elif object_detector_onnx is not None:
+        # Explicit ONNX → the legacy fixed-label RT-DETR path (no manifest).
+        resolved_object_detector_manifest = ""
+        resolved_object_detector_onnx = object_detector_onnx.resolve()
+    elif _omdet_runtime_available():
+        resolved_object_detector_manifest = str(default_omdet_manifest.resolve())
+        resolved_object_detector_onnx = default_rtdetr_onnx
+    else:
+        # Graceful fallback: omdet deps absent → in-tree RT-DETR COCO-80 ONNX.
+        resolved_object_detector_manifest = ""
+        resolved_object_detector_onnx = default_rtdetr_onnx
+
+    if enable_object_detector is None:
+        enable_object_detector = True
+    # Downgrade to off (rather than let the node hard-fail at backend build) when
+    # the detector is requested but no usable backend is present — a checkout that
+    # has neither the omdet deps nor the gitignored RT-DETR ONNX weights.
+    if (
+        enable_object_detector
+        and not resolved_object_detector_manifest
+        and not _object_detector_onnx_present(resolved_object_detector_onnx)
+    ):
+        _console.print(
+            "[yellow]object detector requested but no backend is available[/yellow] "
+            "(omdet deps not importable and RT-DETR ONNX missing at "
+            f"{resolved_object_detector_onnx}); disabling the detector leg. Run "
+            "`just sync --group omdet --inexact` for the open-vocab default, fetch "
+            "the RT-DETR weights, or pass --no-object-detector to silence."
+        )
+        enable_object_detector = False
+
+    # When the leg is off (explicit --no-object-detector or the downgrade above),
+    # do not forward a continuous-detector manifest: ros2 launch would otherwise
+    # carry a manifest for a node that never starts (and, with omdet deps present,
+    # a non-empty manifest:= for a disabled leg is simply wrong).
+    if not enable_object_detector:
+        resolved_object_detector_manifest = ""
+
+    # ADR-0056 — on-demand open-vocab locators co-resident alongside the
+    # continuous detector. Each token is a manifest path (``…/rskill.yaml``) or a
+    # short alias resolved to ``rskills/<alias>/rskill.yaml``; the launch builds one
+    # namespaced locate_in_view node per entry so the reasoner can pick a model.
+    # Default = omdet-turbo-locator when the detector is on and the omdet deps are
+    # importable (LocateAnything is opt-in — NVIDIA non-commercial, 5 GB VRAM).
+    resolved_object_detector_locators: list[str] = []
+    if enable_object_detector:
+        if object_detector_locators is not None:
+            locator_tokens = object_detector_locators
+        elif _omdet_runtime_available():
+            locator_tokens = ["omdet-turbo-locator"]
+        else:
+            locator_tokens = []
+        for token in locator_tokens:
+            candidate = Path(token)
+            manifest_path = (
+                candidate
+                if candidate.suffix == ".yaml"
+                else repo_root / "rskills" / token / "rskill.yaml"
+            )
+            resolved_object_detector_locators.append(str(manifest_path.resolve()))
 
     # ADR-0038 — auto-enable durable spatial-memory ingest whenever the object
     # detector runs (the producer that feeds it); an explicit flag overrides.
@@ -656,6 +760,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"reward_monitor_manifest:={reward_monitor_manifest}")
     if reward_monitor_task:
         argv_template.append(f"reward_monitor_task:={reward_monitor_task}")
+    # ADR-0056 — only forward the locator list when non-empty (ros2 launch rejects
+    # an empty ``name:=`` value; the launch file defaults it to "").
+    if resolved_object_detector_locators:
+        argv_template.append(
+            "object_detector_locators:=" + ",".join(resolved_object_detector_locators)
+        )
     # ADR-0053 — only forward the approach skill when opted in (empty default;
     # ros2 launch rejects an empty ``name:=`` value, and the launch file
     # defaults ``approach_skill_id`` to "").
@@ -674,6 +784,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         object_detector_onnx=resolved_object_detector_onnx,
         object_detector_manifest=resolved_object_detector_manifest,
         object_detector_query=object_detector_query or "",
+        object_detector_locators=tuple(resolved_object_detector_locators),
         spatial_memory_ingest=spatial_memory_ingest,
         hal_params=hal_params,
         hal_mode=hal_mode,
@@ -1421,6 +1532,19 @@ def deploy_sim_command(
             "and the openral_nav2_bringup package colcon-built."
         ),
     ),
+    object_detector_locator: list[str] | None = typer.Option(
+        None,
+        "--object-detector-locator",
+        help=(
+            "ADR-0056 — on-demand open-vocab locator to bring up alongside the "
+            "continuous detector (repeatable). A manifest path or a short alias "
+            "(e.g. 'omdet-turbo-locator', 'locateanything-3b-nf4'). Each becomes a "
+            "namespaced locate_in_view node the reasoner picks via the tool's "
+            "'detector' field. Default = omdet-turbo-locator when the detector is "
+            "on and the omdet deps are present; LocateAnything is opt-in (NVIDIA "
+            "non-commercial, 5 GB VRAM, needs the sidecar venv)."
+        ),
+    ),
     enable_sim_clock: bool = typer.Option(
         False,
         "--enable-sim-clock/--no-enable-sim-clock",
@@ -1463,28 +1587,29 @@ def deploy_sim_command(
             "E-stop. Default on (bundled ADR-0030 behaviour)."
         ),
     ),
-    enable_object_detector: bool | None = typer.Option(
-        None,
-        "--enable-object-detector/--no-enable-object-detector",
+    enable_object_detector: bool = typer.Option(
+        True,
+        "--object-detector/--no-object-detector",
         help=(
             "ADR-0035 — bring up the ROS-Image object detector "
-            "(openral_perception_ros/ros_image_detector_node): runs RT-DETR "
-            "over the agentview RGB tee and publishes ObjectsMetadata to "
-            "/openral/perception/objects, which the world-state node's "
-            "object-lift raises into /openral/world_voxels. **Auto by "
-            "default**: enabled when the --object-detector-onnx weights "
-            "exist on disk. Requires the openral_perception_ros package "
-            "colcon-built."
+            "(openral_perception_ros/ros_image_detector_node): publishes "
+            "ObjectsMetadata to /openral/perception/objects, which the "
+            "world-state node's object-lift raises into /openral/world_voxels. "
+            "**On by default.** The default backend is the open-vocabulary "
+            "omdet-turbo-indoor continuous detector (falls back to the in-tree "
+            "RT-DETR COCO ONNX when the omdet deps are absent). Pass "
+            "--no-object-detector to turn the leg off. Requires the "
+            "openral_perception_ros package colcon-built."
         ),
     ),
     object_detector_onnx: Path | None = typer.Option(
         None,
         "--object-detector-onnx",
         help=(
-            "ADR-0035 — path to the RT-DETR ONNX weights the object detector "
-            "loads. Defaults to the in-tree "
-            "rskills/rtdetr-coco-r18/model.onnx. Providing a path also "
-            "drives the object-detector auto-enable decision."
+            "ADR-0035 — path to the RT-DETR ONNX weights for the legacy / "
+            "fallback detector path. Defaults to the in-tree "
+            "rskills/rtdetr-coco-r18/model.onnx. Passing a path explicitly "
+            "selects the fixed-label RT-DETR backend over the omdet default."
         ),
     ),
     object_detector_manifest: str | None = typer.Option(
@@ -1611,6 +1736,7 @@ def deploy_sim_command(
             enable_reward_monitor=enable_reward_monitor,
             reward_monitor_manifest=reward_monitor_manifest,
             reward_monitor_task=reward_monitor_task,
+            object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,
         )

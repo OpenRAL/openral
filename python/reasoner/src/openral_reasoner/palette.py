@@ -31,9 +31,13 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 __all__ = [
     "ContinuousDetectorEntry",
+    "OnDemandDetectorEntry",
     "RSkillToolEntry",
     "ToolPalette",
     "build_tool_palette",
+    "detector_alias",
+    "detector_service_segment",
+    "locate_in_view_service",
 ]
 
 
@@ -63,6 +67,69 @@ class ContinuousDetectorEntry(BaseModel):
     objects: tuple[str, ...] = ()
     scenes: tuple[str, ...] = ()
     num_labels: int = 0
+
+
+def detector_alias(rskill_name: str) -> str:
+    """Short, LLM- and operator-facing id for a detector rSkill (ADR-0056).
+
+    Strips the ``OpenRAL/`` org prefix and the ``rskill-`` kind prefix, so
+    ``"OpenRAL/rskill-omdet-turbo-locator"`` → ``"omdet-turbo-locator"``. This is
+    the value the reasoner passes in ``LocateInViewTool.detector`` and the basis
+    for the per-detector service namespace (see :func:`detector_service_segment`).
+    """
+    short = rskill_name.rsplit("/", 1)[-1]
+    return short[len("rskill-") :] if short.startswith("rskill-") else short
+
+
+def detector_service_segment(alias: str) -> str:
+    """ROS-safe service-namespace segment for a detector alias (ADR-0056).
+
+    ROS 2 names allow only ``[A-Za-z0-9_]`` per token, so hyphens in the alias
+    become underscores: ``"omdet-turbo-locator"`` → ``"omdet_turbo_locator"``. The
+    detector node's locate service lives at
+    ``/openral/perception/<segment>/locate_in_view``.
+    """
+    return alias.replace("-", "_")
+
+
+def locate_in_view_service(detector: str, *, default: str = "") -> str:
+    """Resolve the ``locate_in_view`` service for a (possibly empty) detector selector (ADR-0056).
+
+    Single source of truth shared by the reasoner dispatch (resolves
+    ``LocateInViewTool.detector``) and the deploy launch (names each on-demand
+    locator node's service). An empty ``detector`` falls back to ``default``; an
+    empty resolved alias yields the legacy single-detector service
+    ``/openral/perception/locate_in_view`` (back-compat for deployments that bring
+    up exactly one on-demand detector). Otherwise the service is namespaced by the
+    ROS-safe alias segment.
+    """
+    alias = detector or default
+    if not alias:
+        return "/openral/perception/locate_in_view"
+    return f"/openral/perception/{detector_service_segment(alias)}/locate_in_view"
+
+
+class OnDemandDetectorEntry(BaseModel):
+    """A ``mode: on_demand`` open-vocab locator, surfaced as a locate_in_view option (ADR-0056).
+
+    On-demand locators are prompt-able **read-only** tools: the reasoner picks one
+    by :attr:`alias` in ``LocateInViewTool.detector`` and asks it "is object X in
+    view right now?". Unlike continuous detectors they are not background
+    producers; unlike VLAs they carry no actuation authority.
+
+    Attributes:
+        rskill_id: The detector rSkill's :attr:`RSkillManifest.name`.
+        alias: Short selector the reasoner passes as ``detector``
+            (see :func:`detector_alias`).
+        description: The manifest ``description`` — the capability hint the LLM
+            scores when choosing between locators.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rskill_id: str
+    alias: str
+    description: str
 
 
 class RSkillToolEntry(BaseModel):
@@ -159,9 +226,15 @@ class ToolPalette(BaseModel):
     detector_available: bool = False
     """ADR-0043 — when ``True`` the LLM additionally sees the **read-only**
     ``locate_in_view`` tool (ask a live VLM detector whether an object is in the
-    current camera frame). Set by the reasoner_node only when a detector exposes
-    the ``/openral/perception/locate_in_view`` service; off by default so the tool
-    never appears without a dispatcher."""
+    current camera frame). Set by the reasoner_node only when a detector exposes a
+    ``/openral/perception/<detector>/locate_in_view`` service; off by default so the
+    tool never appears without a dispatcher."""
+    on_demand_detectors: tuple[OnDemandDetectorEntry, ...] = ()
+    """ADR-0056 — ``mode: on_demand`` open-vocab locators installed for the active
+    robot. Surfaced as the selectable ``detector`` options of the read-only
+    ``locate_in_view`` tool so the LLM can choose the model (e.g. a light real-time
+    locator vs a high-quality grounding VLM). Gated by ``detector_available`` like
+    the tool itself; empty = the tool keeps its single default-locator behaviour."""
     scene_query_available: bool = False
     """ADR-0047 — when ``True`` the LLM additionally sees the **read-only**
     ``query_scene`` tool (ask a scene VLM an open-ended question about the current
@@ -300,6 +373,7 @@ def build_tool_palette(
     robot_tags = set(robot_capabilities.embodiment_tags)
     entries: list[RSkillToolEntry] = []
     continuous_detectors: list[ContinuousDetectorEntry] = []
+    on_demand_detectors: list[OnDemandDetectorEntry] = []
     for skill in installed_skills:
         if skill.role != "s1":
             continue
@@ -320,6 +394,17 @@ def build_tool_palette(
                         objects=tuple(skill.objects),
                         scenes=tuple(skill.scenes),
                         num_labels=len(skill.detector.labels),
+                    )
+                )
+            elif skill.detector is not None and skill.detector.mode is DetectorMode.ON_DEMAND:
+                # ADR-0056 — on-demand locators are prompt-able read-only tools, not
+                # ExecuteSkill policies: surfaced as selectable ``detector`` options
+                # of locate_in_view, never admitted to the actuating palette.
+                on_demand_detectors.append(
+                    OnDemandDetectorEntry(
+                        rskill_id=skill.name,
+                        alias=detector_alias(skill.name),
+                        description=skill.description,
                     )
                 )
             continue
@@ -347,11 +432,13 @@ def build_tool_palette(
     # Stable order so tool schemas are deterministic across builds.
     entries.sort(key=lambda e: e.rskill_id)
     continuous_detectors.sort(key=lambda d: d.rskill_id)
+    on_demand_detectors.sort(key=lambda d: d.alias)
     return ToolPalette(
         skills=tuple(entries),
         sensor_ids=frozenset(sensor_ids),
         node_ids=frozenset(node_ids),
         continuous_detectors=tuple(continuous_detectors),
+        on_demand_detectors=tuple(on_demand_detectors),
         spatial_memory_available=spatial_memory_available,
         detector_available=detector_available,
         scene_query_available=scene_query_available,

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openral_core import RecallObjectTool, ResolvePlaceTool
-from openral_reasoner import ToolPalette, run_spatial_query
+from openral_reasoner import ToolPalette, run_spatial_query, run_spatial_query_detailed
 from openral_reasoner.tool_use import _decode_tool_payload, _tool_palette_to_anthropic_tools
 from openral_world_state import SpatialMemory
 
@@ -79,6 +79,47 @@ def test_recall_object_bridge_miss_suggests_search() -> None:
     text = run_spatial_query(RecallObjectTool(query="teapot"), _memory(), now_ns=2_000_000_000_000)
     assert "not in memory" in text
     assert "search" in text.lower()
+
+
+def test_recall_miss_points_llm_at_scene_objects_visibility() -> None:
+    # A miss nudges the LLM to map its goal onto the live scene_objects list
+    # (its own semantics, e.g. baguette->bread) before any active search — leaning
+    # on world-state visibility, not an embedder or a hardcoded locate path.
+    text = run_spatial_query(
+        RecallObjectTool(query="baguette"), _memory(), now_ns=2_000_000_000_000
+    )
+    assert "scene_objects" in text
+    assert "WORLD_STATE" in text
+
+
+# ── run_spatial_query_detailed reports match/miss (drives ADR-0043/0056 escalation) ──
+
+
+def test_detailed_reports_found_on_hit() -> None:
+    """A match returns found=True so the node does NOT escalate to locate_in_view."""
+    outcome = run_spatial_query_detailed(
+        RecallObjectTool(query="bottle of wine"), _memory(), now_ns=2_000_000_000_000
+    )
+    assert outcome.found is True
+    assert "wine_bottle" in outcome.text
+
+
+def test_detailed_reports_miss_on_recall_object() -> None:
+    """A recall miss returns found=False — the trigger for the live locate fallthrough."""
+    outcome = run_spatial_query_detailed(
+        RecallObjectTool(query="teapot"), _memory(), now_ns=2_000_000_000_000
+    )
+    assert outcome.found is False
+    assert "not in memory" in outcome.text
+
+
+def test_detailed_reports_miss_on_resolve_place() -> None:
+    """An unresolved place reference is also found=False."""
+    outcome = run_spatial_query_detailed(
+        ResolvePlaceTool(reference="the dungeon"), _memory(), now_ns=2_000_000_000_000
+    )
+    assert outcome.found is False
+    assert "not in memory" in outcome.text
 
 
 def test_resolve_place_bridge_returns_path() -> None:

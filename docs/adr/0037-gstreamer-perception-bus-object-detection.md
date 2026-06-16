@@ -336,3 +336,29 @@ and grounds indoor classes on `coco_sample.jpg` (skipped on GPU-less hosts, CLAU
 only; (ii) mirror the same `engine: zeroshot_hf` tier for grounding-DINO / OWLv2 if a
 higher-accuracy (non-real-time) variant is wanted; (iii) wire the `deploy sim` throttle defaults for
 the larger vocabulary.
+
+## Amendment (2026-06-15): omdet-turbo-indoor is the deploy-sim default detector
+
+`openral deploy sim` previously defaulted to the fixed-label RT-DETR COCO ONNX (`rtdetr-coco-r18`)
+and auto-enabled the detector leg only when those weights happened to exist on disk. COCO-80 has no
+`bread`/`baguette` (or most household objects), so the default detector was structurally blind to the
+objects deploy-sim scenes actually contain — a `deploy sim` run would silently bring up a detector
+that could never ground the target object. This amendment changes the **default**, not the
+contract:
+
+- **Default backend = `omdet-turbo-indoor`** (open-vocab `engine: zeroshot_hf`, 266 indoor/kitchen
+  classes incl. `bread`) when its runtime deps (`transformers` + `timm`, the `omdet` group) are
+  importable, resolved by `openral_cli.deploy_sim._omdet_runtime_available()`. **Graceful fallback**
+  to the in-tree RT-DETR COCO ONNX when they are not, so a base-group checkout still comes up.
+- **Detector on by default.** The CLI flag is now `--object-detector/--no-object-detector` (was
+  `--enable-object-detector/--no-enable-object-detector`, auto-by-weights). The leg auto-downgrades
+  to off (with a console notice) only when neither backend is available — no hard-fail at node build.
+  This is the enable-default half of ADR-0035's detector leg.
+- **Engine-aware throttle** (resolves follow-up iii): `sim_e2e.launch.py` caps the publish rate by
+  `DetectorContract.engine` — `vlm_sidecar` 0.5 Hz, `zeroshot_hf` 2 Hz, RT-DETR ONNX 5 Hz — instead
+  of the prior `runtime == "pytorch" → 0.5 Hz` heuristic that throttled the in-process OmDet backend
+  as slowly as the LocateAnything VLM sidecar.
+
+Explicit `--object-detector-manifest` / `--object-detector-onnx` overrides are unchanged. No schema
+change; on-disk `schema_version` stays `"0.1"`. Arbitrary-object grounding (e.g. `baguette`) still
+needs the on-demand open-vocab locator (`locate_in_view`, ADR-0043/0051) — a separate work item.

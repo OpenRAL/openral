@@ -535,6 +535,114 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_recall_miss_escalates_to_locate_in_view() -> None:
+    """ADR-0043/0056 — a recall_object miss escalates to a live locate_in_view.
+
+    When the goal object is not in spatial memory and an on-demand detector is
+    available, the reasoner must (policy, not LLM choice) call the namespaced
+    ``locate_in_view`` service for the SAME query before handing off — so the
+    live open-vocab detector can ground objects the map never ingested. This
+    stands up a real LocateInView service server and asserts it receives the
+    query when recall_object misses.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from pathlib import Path
+
+    from openral_core import RecallObjectTool
+    from openral_msgs.msg import PromptStamped
+    from openral_msgs.srv import LocateInView
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from openral_world_state import SpatialMemory
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    fixture = (
+        Path(__file__).resolve().parents[2] / "tests" / "unit" / "fixtures"
+    ) / "home_scene_graph.json"
+    assert fixture.exists(), f"scene-graph fixture missing: {fixture}"
+    memory = SpatialMemory.load(fixture)
+
+    service_name = "/openral/perception/omdet_turbo_locator/locate_in_view"
+    received: list[str] = []
+    got_request = threading.Event()
+
+    rclpy.init()
+    try:
+        client = FakeToolUseClient(
+            responses=[RecallObjectTool(query="teapot", rationale="find it") for _ in range(6)],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            spatial_memory=memory,
+        )
+        # The node reads detector_available / default_on_demand_detector from ROS
+        # params at construction; set them white-box for the test (the deploy
+        # launch sets them from the wired on-demand locator).
+        reasoner._detector_available = True
+        reasoner._default_on_demand_detector = "omdet-turbo-locator"
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        srv_node = rclpy.create_node("openral_test_locate_server")
+
+        def _serve(req: Any, resp: Any) -> Any:
+            received.append(req.query)
+            resp.found = True
+            resp.camera = "default"
+            resp.detector = req.detector or "omdet-turbo-locator"
+            resp.metadata_json = "{}"
+            got_request.set()
+            return resp
+
+        srv_node.create_service(LocateInView, service_name, _serve)
+
+        pub_node = rclpy.create_node("openral_test_locate_publisher")
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSHistoryPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=20,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(srv_node)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_test_locate_publisher"
+        msg.text = "find the teapot"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not got_request.is_set():
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        executor.remove_node(srv_node)
+        srv_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert got_request.is_set(), "recall miss did not escalate to locate_in_view within 10 s"
+    assert "teapot" in received, f"locate_in_view called with wrong query: {received}"
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_severity_fail_failure_preempts_reasoner_tick() -> None:
     """A SEVERITY_FAIL FailureTrigger forces an out-of-band reasoner tick.
 

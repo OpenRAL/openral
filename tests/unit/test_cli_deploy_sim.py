@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import pytest
+from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
     _ROBOT_HAL_REGISTRY,
     _cmdline_is_openral_graph_process,
@@ -186,18 +187,18 @@ def test_deploy_sim_no_reward_monitor_emits_no_empty_launch_args() -> None:
 
 
 def test_deploy_sim_no_detector_emits_no_empty_launch_args(tmp_path: Path) -> None:
-    """With the detector disabled, no empty ``name:=`` arg reaches ros2 launch.
+    """With no usable backend, the leg downgrades off and emits no empty args.
 
     Regression: ``ros2 launch`` rejects ``object_detector_manifest:=`` (empty
     value), so the optional detector overrides must be omitted entirely when
     unset rather than forwarded blank — otherwise the whole graph aborts at
     launch. (Surfaced bringing up robocasa deploy-sim without a detector.)
 
-    The detector auto-enables when the default RT-DETR ONNX weights exist
-    (ADR-0035), and those weights are gitignored — present on a dev host that
-    built them, absent in a fresh clone / CI. Point ``object_detector_onnx`` at
-    a guaranteed-absent path so the auto-decision is deterministically "off" on
-    every host, which is exactly the no-weights condition this test covers.
+    The detector is on by default (ADR-0035), but auto-downgrades to off when no
+    backend is available. An explicit ``--object-detector-onnx`` selects the
+    RT-DETR path; pointing it at a guaranteed-absent file (and supplying no
+    manifest) reproduces the no-weights condition deterministically on every
+    host — neither omdet nor RT-DETR can build, so the leg downgrades off.
     """
     invocation = resolve_launch_invocation(
         config=_OPENARM_CONFIG,
@@ -206,7 +207,7 @@ def test_deploy_sim_no_detector_emits_no_empty_launch_args(tmp_path: Path) -> No
         reset_to_pose_service=None,
         hal_param_overrides=None,
         object_detector_onnx=tmp_path / "absent-rtdetr.onnx",
-        # no object_detector_manifest / query → detector off
+        # no object_detector_manifest / query → RT-DETR path, weights absent → off
     )
     assert invocation.enable_object_detector is False
     # Every forwarded arg is a well-formed ``name:=value`` with a non-empty value.
@@ -218,6 +219,146 @@ def test_deploy_sim_no_detector_emits_no_empty_launch_args(tmp_path: Path) -> No
     assert "object_detector_manifest:=" not in joined
     assert "object_detector_query:=" not in joined
     assert "enable_object_detector:=false" in joined
+
+
+def test_deploy_sim_default_detector_is_omdet_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default detector = open-vocab omdet-turbo-indoor when its deps import.
+
+    No ``--object-detector-*`` override + omdet runtime deps present → the leg is
+    on and resolves to the omdet-turbo-indoor manifest (grounds arbitrary
+    indoor/kitchen objects, unlike the fixed COCO-80 of RT-DETR).
+    """
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: True)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    omdet = _REPO_ROOT / "rskills" / "omdet-turbo-indoor" / "rskill.yaml"
+    assert invocation.enable_object_detector is True
+    assert invocation.object_detector_manifest == str(omdet.resolve())
+    joined = " ".join(invocation.argv_template)
+    assert f"object_detector_manifest:={omdet.resolve()}" in joined
+    assert "enable_object_detector:=true" in joined
+
+
+def test_deploy_sim_default_detector_falls_back_to_rtdetr_when_omdet_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """omdet deps absent → graceful fallback to the in-tree RT-DETR COCO ONNX.
+
+    The leg stays on (the ONNX ships in-tree), no manifest is forwarded, and the
+    onnx arg points at rskills/rtdetr-coco-r18/model.onnx.
+    """
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: False)
+    # The RT-DETR ONNX is gitignored (absent in bare CI); assert the
+    # fallback-selection logic, not the presence of the binary.
+    monkeypatch.setattr(deploy_sim, "_object_detector_onnx_present", lambda _p: True)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    rtdetr = _REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "model.onnx"
+    assert invocation.enable_object_detector is True
+    assert invocation.object_detector_manifest == ""
+    joined = " ".join(invocation.argv_template)
+    assert "object_detector_manifest:=" not in joined
+    assert "enable_object_detector:=true" in joined
+    assert f"object_detector_onnx:={rtdetr}" in joined
+
+
+def test_deploy_sim_default_locator_is_omdet_turbo_locator_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0056 — default on-demand locator is omdet-turbo-locator when omdet deps import."""
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: True)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    locator = _REPO_ROOT / "rskills" / "omdet-turbo-locator" / "rskill.yaml"
+    assert invocation.object_detector_locators == (str(locator.resolve()),)
+    joined = " ".join(invocation.argv_template)
+    assert f"object_detector_locators:={locator.resolve()}" in joined
+
+
+def test_deploy_sim_no_locator_when_omdet_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """omdet deps absent → no default on-demand locator (RT-DETR continuous still on)."""
+    monkeypatch.setattr(deploy_sim, "_omdet_runtime_available", lambda: False)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.object_detector_locators == ()
+    assert "object_detector_locators:=" not in " ".join(invocation.argv_template)
+
+
+def test_deploy_sim_explicit_locator_alias_resolves_to_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit --object-detector-locator alias resolves to its in-tree manifest."""
+    # Keep the detector leg on so locators resolve: the RT-DETR ONNX is gitignored
+    # (absent in bare CI), which would otherwise downgrade the leg off.
+    monkeypatch.setattr(deploy_sim, "_object_detector_onnx_present", lambda _p: True)
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        object_detector_locators=["locateanything-3b-nf4"],
+    )
+    locator = _REPO_ROOT / "rskills" / "locateanything-3b-nf4" / "rskill.yaml"
+    assert invocation.object_detector_locators == (str(locator.resolve()),)
+    assert f"object_detector_locators:={locator.resolve()}" in " ".join(invocation.argv_template)
+
+
+def test_deploy_sim_no_locators_when_detector_disabled() -> None:
+    """--no-object-detector → no continuous detector AND no on-demand locators."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_object_detector=False,
+        object_detector_locators=["omdet-turbo-locator"],
+    )
+    assert invocation.object_detector_locators == ()
+    assert "object_detector_locators:=" not in " ".join(invocation.argv_template)
+
+
+def test_deploy_sim_no_object_detector_flag_disables() -> None:
+    """``--no-object-detector`` (enable_object_detector=False) turns the leg off."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_object_detector=False,
+    )
+    assert invocation.enable_object_detector is False
+    joined = " ".join(invocation.argv_template)
+    assert "enable_object_detector:=false" in joined
+    assert "object_detector_manifest:=" not in joined
+    for arg in invocation.argv_template:
+        if ":=" in arg:
+            name, _, value = arg.partition(":=")
+            assert value != "", f"empty launch arg {name!r} would abort ros2 launch"
 
 
 def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
