@@ -102,6 +102,28 @@ def test_changed_test_file_is_selected_directly() -> None:
     assert "tests/unit/test_select_tests.py" in result.targets
 
 
+def test_deleted_package_init_under_tests_selects_dir() -> None:
+    # A diff lists deletions too. Removing python/observability/tests/__init__.py
+    # must NOT become a pytest node id (the file is gone) — it selects the
+    # package's tests dir, which observes the change and still exists.
+    rel = "python/observability/tests/__init__.py"
+    assert not (REPO_ROOT / rel).exists()
+    result = select_tests.select(REPO_ROOT, [rel], CONFIG)
+    assert not result.full_run
+    assert rel not in result.targets
+    assert "python/observability/tests" in result.targets
+
+
+def test_deleted_test_file_is_not_emitted_as_target() -> None:
+    # A removed test_*.py would otherwise be handed to pytest as a missing
+    # path, aborting the whole session with "file or directory not found".
+    rel = "tests/unit/test_does_not_exist_after_deletion.py"
+    assert not (REPO_ROOT / rel).exists()
+    result = select_tests.select(REPO_ROOT, [rel], CONFIG)
+    assert not result.full_run
+    assert result.targets == []
+
+
 def test_ros_package_change_selects_its_test_dir() -> None:
     target = "packages/openral_hal_so100"
     if not (REPO_ROOT / target / "test").is_dir():

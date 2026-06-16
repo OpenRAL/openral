@@ -205,7 +205,14 @@ def _classify_path(rel: str, dir_imports: dict[str, str]) -> tuple[str, str] | N
         for pkg_rel, import_name in dir_imports.items():
             if rel.startswith(pkg_rel + "/"):
                 if "/tests/" in rel or rel.endswith("/tests"):
-                    return ("test", rel)
+                    # A real test module is a precise node id. A support file
+                    # (``__init__.py``, test helpers — ``conftest.py`` is a
+                    # full-run glob) or a *deleted* test path can't be one, so
+                    # fall back to the package's tests dir: it observes the
+                    # change and always exists.
+                    name = Path(rel).name
+                    is_test_module = name.startswith("test_") and name.endswith(".py")
+                    return ("test", rel if is_test_module else f"{pkg_rel}/tests")
                 return ("package", import_name)
     if rel.startswith("packages/"):
         parts = rel.split("/")
@@ -329,6 +336,13 @@ def select(
             targets.add(test_rel)
             hit = sorted(imports & affected)
             reasons[test_rel].append(f"imports affected package(s): {', '.join(hit)}")
+
+    # A diff lists deleted paths too; never hand pytest a target that no longer
+    # exists on disk — one missing path aborts the entire session with
+    # "file or directory not found" (CLAUDE.md §1.4: drop the dead target
+    # rather than let a deletion mask every other selection). Done before the
+    # isolation peel below so a deleted path can never be reported as isolated.
+    targets = {tgt for tgt in targets if (repo_root / tgt).exists()}
 
     # 5. Peel fork-in-threaded-process crashers into their own process (#24).
     #    Removed from `targets` so no broad partition collects them; a directory
