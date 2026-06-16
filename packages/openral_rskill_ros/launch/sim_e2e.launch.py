@@ -219,16 +219,22 @@ def _build_nav2_include(robot_yaml: str, *, use_sim_time: bool) -> object:
     )
 
 
-def _resolve_urdf_path(value: str) -> str | None:
-    """Resolve a ``RobotDescription.urdf_path`` to a concrete filesystem path.
+def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
+    """Resolve a ``RobotDescription.assets.urdf.ref`` to a concrete URDF path.
 
-    Thin wrapper over ``openral_core.urdf_resolve.resolve_urdf_path`` (the shared
-    resolver); kept here so launch-time callers and the warning context are
-    unchanged. See that function for the supported formats.
+    Thin wrapper over ``openral_core.assets.resolve_asset`` (ADR-0057). Returns
+    ``None`` for the ``ros2://robot_description`` dynamic marker (the URDF is on
+    the ``/robot_description`` topic at runtime — no file to read). ``file:`` refs
+    resolve against the robot's manifest dir, then the repo root.
     """
-    from openral_core.urdf_resolve import resolve_urdf_path
+    from openral_core.assets import AssetRefError, resolve_asset
 
-    return resolve_urdf_path(value, repo_root=_REPO_ROOT)
+    try:
+        path = resolve_asset(ref, "urdf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        print(f"[sim_e2e] could not resolve urdf ref {ref!r}: {exc}", flush=True)
+        return None
+    return None if path is None else str(path)
 
 
 def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: object) -> list:  # noqa: PLR0915  # reason: launch compose is naturally linear — arg resolution + node construction + autostart wiring in one place is the clearest expression of the boot order
@@ -389,13 +395,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # check exactly as before. A lowering error falls back loudly so a geometry
     # hiccup never blocks the boot.
     collision_params: dict[str, object] = collision_params_from_description(description)
-    if description.sim is not None:
+    if description.assets.mjcf:
         try:
             import mujoco
-            from openral_hal._mujoco_arm import resolve_mjcf_uri
+            from openral_core.assets import resolve_asset
             from openral_safety.mjcf_lowering import lower_collision_params
 
-            model = mujoco.MjModel.from_xml_path(resolve_mjcf_uri(description.sim.mjcf_uri))
+            _mjcf_path = resolve_asset(
+                description.assets.mjcf, "mjcf", manifest_dir=pathlib.Path(robot_yaml).parent
+            )
+            model = mujoco.MjModel.from_xml_path(str(_mjcf_path))
             mjcf_params = lower_collision_params(model, [j.name for j in description.joints])
             # Only override the manifest model when the MJCF actually yields a
             # self-collision model. MJCFs whose collision geoms are meshes (e.g.
@@ -715,24 +724,23 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
     )
 
-    # ADR-0027 — robot_state_publisher: when the robot.yaml carries a
-    # ``urdf_path``, launch ``robot_state_publisher`` so the per-link
+    # ADR-0027/0057 — robot_state_publisher: when the robot.yaml carries an
+    # ``assets.urdf`` ref, launch ``robot_state_publisher`` so the per-link
     # arm + sensor TF chain lands on ``/tf`` (consumed by the
     # ``openral_state_adapter`` registry at step time; also by
-    # Nav2 / MoveIt / RViz when present). The path can be either:
+    # Nav2 / MoveIt / RViz when present). The ref can be either:
     #
-    # * a normal filesystem path (absolute or relative to the repo);
-    # * the literal token ``ros2://robot_description`` — declared by
-    #   the dynamic detection assembler when the robot publishes its
-    #   own URDF on the ``/robot_description`` topic (not handled here;
-    #   RSP is skipped because the URDF is already on the bus);
-    # * a ``python:<module>:<attribute>`` reference resolved at
-    #   launch time via :func:`_resolve_urdf_path` — used so robots
-    #   pull their canonical URDF from the ``robot_descriptions``
-    #   Python package without checking large files into-tree.
+    # * a ``file:<relpath>`` (vendored URDF, resolved against the manifest dir
+    #   then the repo root) or a ``rd:<module>`` ref (pulled from the
+    #   ``robot_descriptions`` package, no large file checked in-tree);
+    # * the ``ros2://robot_description`` dynamic marker — declared by the
+    #   detection assembler when the robot publishes its own URDF on the
+    #   ``/robot_description`` topic. ``resolve_asset`` returns ``None`` for it,
+    #   so RSP is skipped (the URDF is already on the bus).
     extra_nodes: list = []
-    if description.urdf_path and not description.urdf_path.startswith("ros2://"):
-        urdf_path = _resolve_urdf_path(description.urdf_path)
+    urdf_asset = description.assets.urdf
+    if urdf_asset is not None:
+        urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
         if urdf_path is not None:
             with open(urdf_path, encoding="utf-8") as fh:
                 robot_description_xml = fh.read()
@@ -766,11 +774,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # a static transform between the HAL-published ``base_link``
             # and the URDF root (e.g. ``base_link → panda_link0`` when
             # the Franka URDF's root differs from the robot.yaml's
-            # ``base_frame``). When robot.yaml declares
-            # ``static_base_to_urdf_root_xyz_rpy``, spawn a
+            # ``base_frame``). When ``assets.urdf`` declares
+            # ``base_to_root_xyz_rpy`` + ``root_frame`` (ADR-0057), spawn a
             # ``static_transform_publisher`` to bridge.
-            static_xform = getattr(description, "static_base_to_urdf_root_xyz_rpy", None)
-            static_root_frame = getattr(description, "urdf_root_frame", None)
+            static_xform = urdf_asset.base_to_root_xyz_rpy
+            static_root_frame = urdf_asset.root_frame
             if static_xform is not None and static_root_frame is not None:
                 x, y, z, roll, pitch, yaw = static_xform
                 extra_nodes.append(

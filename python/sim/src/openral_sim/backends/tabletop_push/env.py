@@ -3,7 +3,7 @@
 This is the *greenfield* "robot as a flag" scene: registered free-axis (no
 ``fixed_robot``), it composes its task world around whatever compatible arm the
 YAML's ``robot_id`` (or ``--robot``) names, resolving the base MJCF from that
-robot's manifest (``sim.mjcf_uri``). Unlike ``so101_box`` — which is coupled to
+robot's manifest (``assets.mjcf``). Unlike ``so101_box`` — which is coupled to
 the SO-ARM101 MJCF schema and therefore pinned to ``so101_follower`` — this
 scene works for any position-controlled arm (verified for SO-101, Franka, UR5e).
 
@@ -356,7 +356,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
 
     The robot is a flag: ``env_cfg.robot_id`` (set from the YAML ``robot_id:`` or
     ``--robot``) resolves a :class:`~openral_core.RobotDescription`, whose
-    ``sim.mjcf_uri`` provides the base arm MJCF. The table / cube / goal / camera
+    ``assets.mjcf`` provides the base arm MJCF. The table / cube / goal / camera
     world is composed around it via :func:`compose_tabletop_mjcf`. The robot mount
     honours ``env_cfg.base_pose`` (full 6-DOF) with the ``robot_base_xyz`` /
     ``robot_base_yaw_deg`` backend options as a yaw-only fallback.

@@ -200,4 +200,4 @@ def test_robot_description_without_collision_geometry_still_loads() -> None:
     )
     assert minimal.collision_geometry == []
     assert minimal.allowed_collision_pairs == []
-    assert minimal.srdf_path is None
+    assert minimal.assets.srdf is None

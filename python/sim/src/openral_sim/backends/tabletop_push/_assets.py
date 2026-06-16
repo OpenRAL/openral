@@ -4,7 +4,7 @@ Unlike :mod:`openral_sim.backends.so101_box._assets` (which regex-splices its
 task world into the SO-ARM101 MJCF and is therefore coupled to that robot's
 ``<body name="base">`` / ``<body name="gripper">`` / ``"1"``..``"6"`` schema),
 this composer is **robot as a flag**: it works against any arm whose manifest
-declares a ``sim.mjcf_uri``.
+declares an ``assets.mjcf``.
 
 How it stays robot-agnostic
 ---------------------------
@@ -20,7 +20,7 @@ How it stays robot-agnostic
   (``worldbody.bodies[0]``) — no body-name lookup, so an SO-ARM ``base``, a
   Franka ``link0`` and a UR ``base`` are all handled identically.
 * The robot's base MJCF is resolved from the manifest via
-  :func:`openral_hal._mujoco_arm.resolve_mjcf_uri` (the same source
+  :func:`openral_core.assets.resolve_asset` (the same source
   ``build_hal(mode="sim")`` uses) — the manifest is the single robot-MJCF
   contract across ``sim run`` / ``deploy sim`` / ``deploy run``.
 
@@ -144,25 +144,29 @@ class TabletopOptions:
 
 
 def _resolve_robot_mjcf(description: RobotDescription) -> str:
-    """Resolve a robot's base MJCF path from its manifest ``sim.mjcf_uri``.
+    """Resolve a robot's base MJCF path from its manifest ``assets.mjcf``.
 
-    Reuses :func:`openral_hal._mujoco_arm.resolve_mjcf_uri` — the single
-    resolver that ``build_hal(mode="sim")`` / ``MujocoArmHAL.from_description``
-    use — so every URI scheme (``robot_descriptions:``, ``gym_aloha:``,
-    ``openarm_v2:``, ``file:``) is honoured identically across the sim/real
-    paths. Imported lazily (the parent ``openral_hal`` package drags torch +
-    lerobot at import time, which the light CLI paths must avoid).
+    Reuses :func:`openral_core.assets.resolve_asset` — the single resolver that
+    ``build_hal(mode="sim")`` / ``MujocoArmHAL.from_description`` use — so every
+    ref scheme (``rd:``, ``gym_aloha:``, ``openarm:``, ``menagerie:``, ``file:``)
+    is honoured identically across the sim/real paths.
     """
-    sim = description.sim
-    if sim is None or not sim.mjcf_uri:
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    if not description.assets.mjcf:
         raise ROSConfigError(
-            f"tabletop_push: robot {description.name!r} has no `sim.mjcf_uri` in its "
+            f"tabletop_push: robot {description.name!r} has no `assets.mjcf` in its "
             "manifest, so there is no base MJCF to build the tabletop scene around.",
         )
-    # reason: import lazily — the parent openral_hal package drags torch/lerobot.
-    from openral_hal._mujoco_arm import resolve_mjcf_uri
-
-    return resolve_mjcf_uri(sim.mjcf_uri)
+    try:
+        path = resolve_asset(description.assets.mjcf, "mjcf")
+    except AssetRefError as exc:
+        raise ROSConfigError(f"tabletop_push: {exc}") from exc
+    if path is None:
+        raise ROSConfigError(
+            f"tabletop_push: assets.mjcf={description.assets.mjcf!r} did not resolve to a file.",
+        )
+    return str(path)
 
 
 def _base_pos_quat(
@@ -195,7 +199,7 @@ def compose_tabletop_mjcf(
 ) -> mujoco.MjModel:
     """Compose and compile the ``tabletop_push`` model around ``description``.
 
-    The robot's base MJCF (resolved from ``description.sim.mjcf_uri``) is loaded
+    The robot's base MJCF (resolved from ``description.assets.mjcf``) is loaded
     into an :class:`mujoco.MjSpec`; the table, cube, goal marker, two world
     cameras and a light are appended to its ``worldbody``; the robot root body
     is re-anchored to the requested base pose; and the spec is compiled. Because
@@ -203,7 +207,7 @@ def compose_tabletop_mjcf(
     indices the manifest contract assumes.
 
     Args:
-        description: Robot whose ``sim.mjcf_uri`` provides the base arm MJCF.
+        description: Robot whose ``assets.mjcf`` provides the base arm MJCF.
         options: Scene options; ``None`` uses :class:`TabletopOptions` defaults.
         base_pose: Optional full 6-DOF robot mount pose (free-axis scenes honour
             it); falls back to ``options.robot_base_xyz`` / ``robot_base_yaw_deg``.
@@ -213,7 +217,7 @@ def compose_tabletop_mjcf(
 
     Raises:
         ROSConfigError: If ``mujoco`` is missing, the manifest lacks
-            ``sim.mjcf_uri``, the loaded MJCF declares no root body, or a
+            ``assets.mjcf``, the loaded MJCF declares no root body, or a
             requested ``wrist_camera_mount_body`` is absent from it.
     """
     opts = options if options is not None else TabletopOptions()

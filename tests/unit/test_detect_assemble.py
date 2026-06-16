@@ -230,7 +230,8 @@ class TestRos2Metadata:
             ),
         )
         desc = assemble_robot_description(report)
-        assert desc.urdf_path == "ros2://robot_description"
+        assert desc.assets.urdf is not None
+        assert desc.assets.urdf.ref == "ros2://robot_description"
         assert desc.middleware == "cyclonedds"
 
 

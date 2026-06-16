@@ -13,7 +13,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-from openral_core.urdf_resolve import resolve_urdf_path
+from openral_core.assets import resolve_asset
 from openral_safety.urdf_lowering import (
     sample_acm_from_urdf,
 )
@@ -21,7 +21,15 @@ from openral_safety.urdf_lowering import (
 pytest.importorskip("yourdfpy")
 pytest.importorskip("robot_descriptions")
 
-_PANDA = "python:robot_descriptions.panda_description:URDF_PATH"
+_PANDA = "rd:panda_description"
+
+
+def _resolve_urdf_path(ref: str) -> str | None:
+    """Resolve an asset ref to a URDF file path string (test helper)."""
+    p = resolve_asset(ref, "urdf")
+    return None if p is None else str(p)
+
+
 _PANDA_SRDF = Path("/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf")
 # A modest sweep keeps the test fast while still exercising every rule; the
 # production default is larger (_N_SAMPLES).
@@ -36,7 +44,7 @@ def _arm_only(pairs: set[frozenset[str]]) -> set[frozenset[str]]:
 
 
 def test_sampling_is_deterministic_under_pinned_seed() -> None:
-    urdf = resolve_urdf_path(_PANDA)
+    urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
     a = sample_acm_from_urdf(urdf, n_samples=_N)
     b = sample_acm_from_urdf(urdf, n_samples=_N)
@@ -44,7 +52,7 @@ def test_sampling_is_deterministic_under_pinned_seed() -> None:
 
 
 def test_adjacent_links_always_disabled() -> None:
-    urdf = resolve_urdf_path(_PANDA)
+    urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
     pairs = sample_acm_from_urdf(urdf, n_samples=_N)
     # Every directly joint-connected arm pair on the panda chain.
@@ -60,7 +68,7 @@ def test_sampler_does_not_disable_a_never_collide_pair() -> None:
     so the sampling fallback must NOT auto-disable one. link1↔link4 never collides in
     the sweep but, lacking a mesh-ground-truth SRDF, is kept checked.
     """
-    urdf = resolve_urdf_path(_PANDA)
+    urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
     pairs = sample_acm_from_urdf(urdf, n_samples=_N)
     assert frozenset({"panda_link1", "panda_link4"}) not in pairs
@@ -72,7 +80,7 @@ def test_sampled_acm_keeps_never_collide_pairs_checked() -> None:
     Disable only what provably must be (adjacent + always-colliding junctions); a
     sampled 'never-collide' verdict is not trusted (it can miss the tail).
     """
-    urdf = resolve_urdf_path(_PANDA)
+    urdf = _resolve_urdf_path(_PANDA)
     assert urdf is not None
     sampled = _arm_only(sample_acm_from_urdf(urdf, n_samples=_N))
     # SRDF "Never" pairs (kinematically far) must NOT be auto-disabled by sampling.

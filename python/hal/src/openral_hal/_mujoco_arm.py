@@ -32,6 +32,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypedDict
 
 import structlog
+from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.exceptions import (
     ROSConfigError,
     ROSEStopRequested,
@@ -53,7 +54,7 @@ from openral_hal._base import HALBase
 if TYPE_CHECKING:
     import mujoco
 
-__all__ = ["MujocoArmHAL", "resolve_mjcf_uri"]
+__all__ = ["MujocoArmHAL"]
 
 
 class _MujocoArmInitKwargs(TypedDict):
@@ -76,88 +77,34 @@ class _MujocoArmInitKwargs(TypedDict):
     staleness_limit_s: float
 
 
-def resolve_mjcf_uri(mjcf_uri: str) -> str:
-    """Resolve a ``RobotDescription.sim.mjcf_uri`` to an absolute filesystem path.
+def _resolve_mjcf_path(desc: RobotDescription) -> str:
+    """Resolve ``desc.assets.mjcf`` to an absolute MJCF path via :func:`resolve_asset`.
 
-    Supported schemes:
-
-    * ``"robot_descriptions:<module>"`` — imports
-      ``robot_descriptions.<module>`` and returns its ``MJCF_PATH``
-      attribute as a string.  Used by every menagerie-vendored robot.
-    * ``"gym_aloha:<scene>"`` — fetch
-      ``gym_aloha/assets/<scene>.xml`` from the installed ``gym_aloha``
-      package.  Used by the Trossen ALOHA sim twin.
-    * ``"openarm_v2:bimanual"`` — call
-      :func:`openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` to
-      fetch the OpenArm v2 bimanual MJCF (until ``robot_descriptions``
-      bumps its pin past v2).
-    * ``"file:/abs/path"`` (or a bare absolute path) — returned as-is.
-
-    Args:
-        mjcf_uri: The URI from a :class:`SimDescription`.
-
-    Returns:
-        Absolute filesystem path to the MJCF XML.
+    The MujocoArmHAL is built from a :class:`RobotDescription` alone (the
+    manifest path is not threaded through ``from_description``), so no
+    ``manifest_dir`` is supplied — every in-tree MJCF ref is a ``rd:`` /
+    ``gym_aloha:`` / ``openarm:`` / ``menagerie:`` scheme that resolves without
+    one (no robot declares a ``file:`` MJCF). ``AssetRefError`` is translated to
+    :class:`ROSConfigError` at this HAL boundary, matching the contract
+    ``_sim_kwargs_for`` documented for the old resolver.
 
     Raises:
-        ROSConfigError: On an unrecognised scheme or a missing asset.
+        ROSConfigError: If ``desc.assets.mjcf`` is unset or cannot be resolved.
     """
-    if mjcf_uri.startswith("robot_descriptions:"):
-        module_name = mjcf_uri.split(":", 1)[1]
-        try:
-            import importlib  # reason: optional sim-only dep
-
-            module = importlib.import_module(f"robot_descriptions.{module_name}")
-        except ModuleNotFoundError as exc:
-            raise ROSConfigError(
-                "robot_descriptions is not installed (or the requested submodule "
-                f"{module_name!r} is missing). Install the sim extras with: "
-                "just sync --all-packages --group sim"
-            ) from exc
-        try:
-            return str(module.MJCF_PATH)
-        except AttributeError as exc:
-            raise ROSConfigError(
-                f"robot_descriptions.{module_name} has no MJCF_PATH attribute"
-            ) from exc
-    if mjcf_uri.startswith("gym_aloha:"):
-        scene = mjcf_uri.split(":", 1)[1]
-        try:
-            import gym_aloha  # reason: optional sim-only dep
-        except ModuleNotFoundError as exc:
-            raise ROSConfigError(
-                "gym_aloha is not installed. Install the sim extras with: "
-                "just sync --all-packages --group sim"
-            ) from exc
-        import os
-
-        path = os.path.join(os.path.dirname(gym_aloha.__file__), "assets", f"{scene}.xml")
-        if not os.path.isfile(path):
-            raise ROSConfigError(
-                f"gym_aloha is installed but the requested scene MJCF is missing "
-                f"at {path!r}. Re-install gym-aloha or fix the scene id."
-            )
-        return path
-    if mjcf_uri.startswith("openarm_v2:"):
-        variant = mjcf_uri.split(":", 1)[1]
-        if variant != "bimanual":
-            raise ROSConfigError(
-                f"unsupported openarm_v2 variant {variant!r} — only 'bimanual' is wired today"
-            )
-        # Local import keeps the openarm fetcher off the import path for
-        # robots that don't need it.
-        from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
-
-        return ensure_openarm_v2_mjcf()
-    if mjcf_uri.startswith("file:"):
-        return mjcf_uri[len("file:") :]
-    if mjcf_uri.startswith("/"):
-        return mjcf_uri
-    raise ROSConfigError(
-        f"unrecognised mjcf_uri {mjcf_uri!r} — expected one of "
-        "'robot_descriptions:<module>', 'gym_aloha:<scene>', "
-        "'openarm_v2:bimanual', 'file:<abs-path>' or a bare absolute path"
-    )
+    if not desc.assets.mjcf:
+        raise ROSConfigError(
+            f"RobotDescription '{desc.name}' has no `assets.mjcf` ref; "
+            "cannot resolve a MuJoCo MJCF for MujocoArmHAL."
+        )
+    try:
+        path = resolve_asset(desc.assets.mjcf, "mjcf")
+    except AssetRefError as exc:
+        raise ROSConfigError(str(exc)) from exc
+    if path is None:  # ros2:// is urdf-only; resolve_asset never returns None for mjcf
+        raise ROSConfigError(
+            f"assets.mjcf={desc.assets.mjcf!r} for '{desc.name}' did not resolve to a file."
+        )
+    return str(path)
 
 
 log = structlog.get_logger(__name__)
@@ -771,7 +718,7 @@ class MujocoArmHAL(HALBase):
                 )
 
         return _MujocoArmInitKwargs(
-            mjcf_path=mjcf_path_override or resolve_mjcf_uri(sim.mjcf_uri),
+            mjcf_path=mjcf_path_override or _resolve_mjcf_path(description),
             joint_qpos_addr=joint_qpos_addr,
             joint_qvel_addr=joint_qvel_addr,
             actuator_index=actuator_index,
@@ -814,7 +761,7 @@ class MujocoArmHAL(HALBase):
             gravity_enabled: Forwarded to :meth:`__init__`.
             staleness_limit_s: Forwarded to :meth:`__init__`.
             mjcf_path_override: Optional absolute path that wins over
-                ``description.sim.mjcf_uri`` — useful in tests that ship a
+                ``description.assets.mjcf`` — useful in tests that ship a
                 stripped MJCF.
 
         Returns:
@@ -867,7 +814,7 @@ class MujocoArmHAL(HALBase):
             description: A :class:`RobotDescription` whose ``sim`` field is
                 populated.
             mjcf_path: Optional override for the MJCF file path; wins over
-                ``description.sim.mjcf_uri`` when set.
+                ``description.assets.mjcf`` when set.
             settle_steps: Optional override for the number of MuJoCo
                 physics steps per :meth:`send_action`.
             gravity_enabled: When ``False``, gravity is zeroed at

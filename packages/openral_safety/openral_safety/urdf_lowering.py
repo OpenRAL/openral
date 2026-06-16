@@ -29,9 +29,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from openral_core import CapsuleShape, LinkCollisionGeometry, RobotDescription, SphereShape
-from openral_core.urdf_resolve import resolve_urdf_path
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import numpy as np
     from numpy.typing import NDArray
 
@@ -216,7 +218,7 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
     """
     import numpy as np
 
-    model = _load_urdf_model(urdf_path)
+    model = _load_urdf(urdf_path)
     handler = getattr(model, "_filename_handler", None)
 
     out: list[LinkCollisionGeometry] = []
@@ -437,7 +439,7 @@ def acm_for_geometry(
     pair; that's safe but mesh-authoritative SRDFs stay efficient. Deterministic
     under the pinned seed.
     """
-    model = _load_urdf_model(urdf_path)
+    model = _load_urdf(urdf_path)
     links, counts = _pair_collision_counts(
         model, geoms, n_samples=n_samples, seed=seed, margin_m=margin_m
     )
@@ -502,33 +504,22 @@ class LoweredCollisionModel:
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = field(default_factory=dict)
 
 
-def _load_urdf_model(urdf_ref: str) -> object:
-    """Load a yourdfpy model from a manifest ``urdf_path`` form OR a file path.
+def _load_urdf(urdf_path: str) -> object:
+    """Load a yourdfpy model from a concrete on-disk URDF file path.
 
-    Supports ``robot_descriptions:<module>`` (processes the module's xacro via
-    ``xacrodoc`` — the UR / Flexiv arms ship only xacro), a ``python:…`` /
-    repo-relative / absolute path resolved by :func:`resolve_urdf_path`, and a bare
-    on-disk file path. Raises ``ValueError`` when the reference can't be loaded.
+    The asset grammar is resolved upstream by
+    :func:`openral_core.assets.resolve_asset` (``rd:`` modules download their
+    pre-expanded URDF, ``file:`` refs resolve against the manifest dir), so this
+    helper only loads a real file — no URI dispatch. Collision-scene-graph build
+    + collision meshes on, visual meshes off, identical to the previous loader.
     """
-    import yourdfpy  # type: ignore[import-untyped]  # reason: yourdfpy ships no stubs
+    import yourdfpy  # reason: yourdfpy ships no stubs; mypy.ini ignores its imports
 
-    if urdf_ref.startswith("robot_descriptions:"):
-        from robot_descriptions.loaders.yourdfpy import load_robot_description
-
-        module = urdf_ref.split(":", 1)[1]
-        return load_robot_description(
-            module,
-            load_meshes=False,
-            load_collision_meshes=True,
-            build_collision_scene_graph=True,
-        )
-    import os
-
-    path = urdf_ref if os.path.isfile(urdf_ref) else resolve_urdf_path(urdf_ref)
-    if path is None:
-        raise ValueError(f"urdf_path {urdf_ref!r} did not resolve")
     return yourdfpy.URDF.load(
-        path, build_collision_scene_graph=True, load_meshes=False, load_collision_meshes=True
+        urdf_path,
+        build_collision_scene_graph=True,
+        load_meshes=False,
+        load_collision_meshes=True,
     )
 
 
@@ -549,7 +540,7 @@ def lower_joint_fk(robot: RobotDescription, urdf_ref: str) -> dict[str, tuple[_V
     """
     import numpy as np
 
-    model = _load_urdf_model(urdf_ref)
+    model = _load_urdf(urdf_ref)
     urdf_links: set[str] = set(model.link_map)  # type: ignore[attr-defined]  # reason: yourdfpy URDF
     by_child: dict[str, object] = {j.child: j for j in model.robot.joints}  # type: ignore[attr-defined]  # reason: yourdfpy URDF
     model.update_cfg(np.zeros(model.num_actuated_joints))  # type: ignore[attr-defined]  # reason: yourdfpy URDF
@@ -579,6 +570,7 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     n_samples: int = _N_SAMPLES,
     seed: int = _RNG_SEED,
     margin_m: float = _SAMPLE_MARGIN_M,
+    manifest_dir: Path | None = None,
 ) -> LoweredCollisionModel:
     """Lower joint FK + sampling ACM from a robot's MJCF, keeping its manifest geometry.
 
@@ -589,18 +581,29 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     MJCF by ``sim_joint_name``), and the ACM is the capsule sweep run with **mujoco
     forward kinematics** over the manifest geometry. ``acm_source = "mjcf"``.
 
-    Raises ``ValueError`` if the robot has no ``sim.mjcf_uri``.
+    ``manifest_dir`` resolves a ``file:`` MJCF ref against the manifest's own
+    directory (no in-tree robot uses one today, but the resolver honours it).
+
+    Raises:
+        ROSConfigError: If the robot has no ``assets.mjcf`` ref, or it cannot be
+            resolved to a file.
     """
     import mujoco
     import numpy as np
+    from openral_core.assets import AssetRefError, resolve_asset
 
     from openral_safety.mjcf_lowering import _seg_seg_distance
 
-    if robot.sim is None or not robot.sim.mjcf_uri:
-        raise ValueError(f"{robot.name}: no urdf_path and no sim.mjcf_uri to lower from")
-    from openral_hal._mujoco_arm import resolve_mjcf_uri
+    if not robot.assets.mjcf:
+        raise ROSConfigError(f"{robot.name}: no urdf and no assets.mjcf to lower from")
+    try:
+        mjcf_path = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        raise ROSConfigError(f"{robot.name}: {exc}") from exc
+    if mjcf_path is None:  # mjcf never yields the ros2:// dynamic marker
+        raise ROSConfigError(f"{robot.name}: assets.mjcf={robot.assets.mjcf!r} did not resolve")
 
-    model = mujoco.MjModel.from_xml_path(resolve_mjcf_uri(robot.sim.mjcf_uri))
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
     data = mujoco.MjData(model)
     hinge_slide = (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE))
 
@@ -728,42 +731,51 @@ def lower_robot(
     srdf_path: str | None = None,
     acm_only: bool = False,
     geometry_only: bool = False,
+    manifest_dir: Path | None = None,
 ) -> LoweredCollisionModel:
     """Lower a robot's URDF/SRDF into the manifest collision blocks (ADR-0030).
 
-    ACM source precedence: an explicit ``srdf_path`` → the manifest's ``srdf_path``
-    → the URDF random-pose sampling fallback. The ACM is scoped to links that carry
-    geometry, so an SRDF's hand/finger rows don't leak into an arm-only model.
-    ``acm_only`` / ``geometry_only`` restrict the output so hand-tuned geometry on
-    an existing safety robot isn't churned when only the ACM needs refreshing.
+    ACM source precedence: an explicit ``srdf_path`` → the manifest's
+    ``assets.srdf`` → the URDF random-pose sampling fallback. The ACM is scoped to
+    links that carry geometry, so an SRDF's hand/finger rows don't leak into an
+    arm-only model. ``acm_only`` / ``geometry_only`` restrict the output so
+    hand-tuned geometry on an existing safety robot isn't churned when only the ACM
+    needs refreshing.
 
     Args:
-        robot: The robot manifest (must declare ``urdf_path``).
-        srdf_path: Override SRDF; falls back to ``robot.srdf_path`` then sampling.
+        robot: The robot manifest (must declare ``assets.urdf`` or a sim MJCF).
+        srdf_path: Override SRDF (a resolved file path); falls back to the
+            manifest's ``assets.srdf`` ref then sampling.
         acm_only: Emit only ``allowed_collision_pairs`` (keep existing geometry).
         geometry_only: Emit only ``collision_geometry`` (skip the ACM).
+        manifest_dir: Directory the manifest was loaded from; ``file:`` URDF /
+            SRDF refs (the vendored arms, every in-tree SRDF) resolve against it.
 
     Returns:
         A :class:`LoweredCollisionModel`.
 
     Raises:
-        ValueError: If ``robot.urdf_path`` is unset or does not resolve.
+        ROSConfigError: If ``assets.urdf`` is unset (and no sim MJCF) or a
+            declared asset ref does not resolve.
     """
-    if robot.urdf_path is None:
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    if robot.assets.urdf is None:
         # MJCF-native robots (no URDF; mesh collision) lower from their sim MJCF —
         # geometry stays the manifest's hand-authored capsules.
-        if robot.sim is not None and robot.sim.mjcf_uri:
-            return lower_robot_from_mjcf(robot)
-        raise ValueError(f"{robot.name}: urdf_path is required to lower a collision model")
-    if robot.urdf_path.startswith("robot_descriptions:"):
-        # xacro-only robots (UR / Flexiv) load via the robot_descriptions loader;
-        # don't run the file resolver (it would warn about a non-existent path).
-        urdf_ref = robot.urdf_path
-    else:
-        urdf = resolve_urdf_path(robot.urdf_path)
-        if urdf is None:
-            raise ValueError(f"{robot.name}: urdf_path {robot.urdf_path!r} did not resolve")
-        urdf_ref = urdf
+        if robot.assets.mjcf:
+            return lower_robot_from_mjcf(robot, manifest_dir=manifest_dir)
+        raise ROSConfigError(f"{robot.name}: assets.urdf is required to lower a collision model")
+    try:
+        urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        raise ROSConfigError(f"{robot.name}: {exc}") from exc
+    if urdf is None:  # ros2://robot_description — no static file to lower from
+        raise ROSConfigError(
+            f"{robot.name}: assets.urdf.ref={robot.assets.urdf.ref!r} is the dynamic "
+            "robot_description marker (no file); cannot lower a collision model from it."
+        )
+    urdf_ref = str(urdf)
 
     # Links the manifest actually models (its kinematic chain). Generated geometry
     # is scoped to these so an orphan URDF link (e.g. panda_leftfinger, absent from
@@ -778,8 +790,17 @@ def lower_robot(
 
     pairs: list[tuple[str, str]] = []
     source = "sampling"
-    used_srdf = srdf_path or robot.srdf_path
+    # ACM source precedence: explicit srdf_path override → manifest assets.srdf →
+    # sampling. Only resolve the SRDF ref when the ACM is actually produced
+    # (geometry_only emits no ACM, so a missing/absent SRDF must not block it).
+    used_srdf: str | None = srdf_path
     if not geometry_only:
+        if used_srdf is None and robot.assets.srdf:
+            try:
+                resolved_srdf = resolve_asset(robot.assets.srdf, "srdf", manifest_dir=manifest_dir)
+            except AssetRefError as exc:
+                raise ROSConfigError(f"{robot.name}: {exc}") from exc
+            used_srdf = str(resolved_srdf) if resolved_srdf is not None else None
         # The kernel checks collisions with the SAME capsules it will load: the
         # existing manifest geometry under acm_only, else the freshly lowered set.
         # The ACM is computed against that geometry so a mesh-based SRDF's omitted

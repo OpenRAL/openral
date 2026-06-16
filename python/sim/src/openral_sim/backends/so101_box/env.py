@@ -549,7 +549,7 @@ def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
     ``reset()`` calls.
 
     ADR-0033 — the base arm MJCF is resolved from the robot manifest's
-    ``sim.mjcf_uri`` (the same source ``build_hal(mode="sim")`` uses), not a
+    ``assets.mjcf`` (the same source ``build_hal(mode="sim")`` uses), not a
     hardcode. The scene's splice anchors (``<body name="base">`` /
     ``<body name="gripper">``) + actuator naming (``"1"``..``"6"``) are still
     so_arm101-schema-specific, so ``fixed_robot`` stays ``so101_follower``

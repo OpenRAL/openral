@@ -59,6 +59,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -235,8 +236,8 @@ ALOHA_DESCRIPTION = RobotDescription(
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
     # ctrlrange — gym-aloha's reset does the same.  See ADR-0023.
+    assets=AssetRefs(mjcf="gym_aloha:bimanual_viperx_transfer_cube"),
     sim=SimDescription(
-        mjcf_uri="gym_aloha:bimanual_viperx_transfer_cube",
         joint_qpos_addr={
             "left_waist": 0,
             "left_shoulder": 1,
@@ -586,7 +587,7 @@ class AlohaMujocoHAL(MujocoArmHAL):
     Args:
         mjcf_path: Optional override for the MJCF file.  When ``None``,
             the file is resolved through the ``gym_aloha:`` URI scheme
-            from :data:`ALOHA_DESCRIPTION.sim.mjcf_uri`.
+            from :data:`ALOHA_DESCRIPTION.assets.mjcf`.
         settle_steps: Number of MuJoCo physics steps per
             :meth:`send_action` call.
         gravity_enabled: When ``False``, gravity is zeroed at

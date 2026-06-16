@@ -12,12 +12,15 @@ from pathlib import Path
 
 import pytest
 from openral_core import RobotDescription
+from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import AssetRefs
 from openral_safety.urdf_lowering import lower_robot
 
 pytest.importorskip("yourdfpy")
 pytest.importorskip("robot_descriptions")
 
 _PANDA_SRDF = Path("/opt/ros/jazzy/share/moveit_resources_panda_moveit_config/config/panda.srdf")
+_PANDA_MOBILE_DIR = Path("robots/panda_mobile")
 
 # The Franka SRDF arm-link (1-7) disables PLUS the link5↔link7 capsule-junction
 # extra (the short link6 makes panda_mobile's link5/link7 capsules always overlap;
@@ -86,10 +89,9 @@ def test_lower_robot_falls_back_to_sampling_without_srdf() -> None:
     disabled, but a far never-colliding pair (link1↔link4) stays CHECKED — a sweep
     can't prove it never collides, so without an SRDF it is not auto-disabled.
     """
-    robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml").model_copy(
-        update={"srdf_path": None}
-    )
-    result = lower_robot(robot, acm_only=True)
+    base = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    robot = base.model_copy(update={"assets": base.assets.model_copy(update={"srdf": None})})
+    result = lower_robot(robot, acm_only=True, manifest_dir=_PANDA_MOBILE_DIR)
     assert result.acm_source == "sampling"
     pairs = set(result.allowed_collision_pairs)
     assert ("panda_link5", "panda_link6") in pairs  # adjacent
@@ -109,10 +111,13 @@ def test_geometry_only_emits_capsules_no_acm() -> None:
 
 
 def test_lower_robot_requires_urdf_path() -> None:
-    """A manifest with neither urdf_path NOR a sim MJCF raises, never guesses."""
-    # openarm has no urdf_path but DOES have an MJCF (lowers via that path), so clear
-    # the sim block to hit the no-source error.
-    robot = RobotDescription.from_yaml("robots/openarm/robot.yaml").model_copy(update={"sim": None})
-    assert robot.urdf_path is None
-    with pytest.raises(ValueError, match="urdf_path"):
+    """A manifest with neither a URDF NOR an MJCF asset raises, never guesses."""
+    # openarm has no urdf but DOES have an MJCF (lowers via that path); clear BOTH
+    # asset refs to hit the no-source error.
+    robot = RobotDescription.from_yaml("robots/openarm/robot.yaml").model_copy(
+        update={"assets": AssetRefs()}
+    )
+    assert robot.assets.urdf is None
+    assert not robot.assets.mjcf
+    with pytest.raises(ROSConfigError, match="urdf"):
         lower_robot(robot, acm_only=True)

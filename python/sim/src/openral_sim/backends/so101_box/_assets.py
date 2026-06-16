@@ -205,13 +205,13 @@ def _resolve_so101_mjcf() -> Path:
 
 
 def _resolve_robot_mjcf(description: RobotDescription) -> Path:
-    """Resolve a robot's base MJCF from its manifest ``sim.mjcf_uri`` (ADR-0033).
+    """Resolve a robot's base MJCF from its manifest ``assets.mjcf`` (ADR-0033/0057).
 
-    The same ``sim.mjcf_uri`` source ``build_hal(mode="sim")`` /
+    The same ``assets.mjcf`` source ``build_hal(mode="sim")`` /
     ``MujocoArmHAL.from_description`` consume — so the manifest is the single
-    robot-MJCF source across sim run, deploy sim, and deploy run. Supports the
-    ``robot_descriptions:<module>`` scheme (the SO-ARM family) and ``file:``/
-    bare absolute paths; the ``robot_descriptions`` import is lazy.
+    robot-MJCF source across sim run, deploy sim, and deploy run. Resolved by the
+    one :func:`openral_core.assets.resolve_asset` grammar (``rd:`` for the SO-ARM
+    family, ``file:`` / ``gym_aloha:`` / ``openarm:`` / ``menagerie:``).
 
     The composed scene splices its task world onto this robot MJCF via the
     ``<body name="base">`` + ``<body name="gripper">`` anchors, so the robot
@@ -219,21 +219,22 @@ def _resolve_robot_mjcf(description: RobotDescription) -> Path:
     base/end-effector body names needs those anchors parameterised — a
     follow-up beyond the so101_box PoC.
     """
-    sim = description.sim
-    if sim is None or not sim.mjcf_uri:
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    if not description.assets.mjcf:
         raise ROSConfigError(
-            f"so101_box: robot {description.name!r} has no `sim.mjcf_uri` in its manifest, "
+            f"so101_box: robot {description.name!r} has no `assets.mjcf` in its manifest, "
             "so there is no base MJCF to compose the box scene around.",
         )
-    uri = sim.mjcf_uri
-    if uri.startswith("robot_descriptions:"):
-        import importlib
-
-        module_name = uri.split(":", 1)[1]
-        module = importlib.import_module(f"robot_descriptions.{module_name}")
-        return Path(module.MJCF_PATH)
-    path = uri[len("file:") :] if uri.startswith("file:") else uri
-    return Path(path)
+    try:
+        path = resolve_asset(description.assets.mjcf, "mjcf")
+    except AssetRefError as exc:
+        raise ROSConfigError(f"so101_box: {exc}") from exc
+    if path is None:
+        raise ROSConfigError(
+            f"so101_box: assets.mjcf={description.assets.mjcf!r} did not resolve to a file.",
+        )
+    return path
 
 
 def _yaw_quat_z(yaw_deg: float) -> tuple[float, float, float, float]:
@@ -542,7 +543,7 @@ def compose_so101_box_mjcf(
     Args:
         options: Scene options. ``None`` falls back to all defaults
             (matches :class:`BoxSceneOptions` field defaults).
-        robot_description: Robot whose ``sim.mjcf_uri`` provides the base arm
+        robot_description: Robot whose ``assets.mjcf`` provides the base arm
             MJCF (ADR-0033). ``None`` falls back to the SO-101 MJCF, keeping the
             legacy call path byte-for-byte unchanged. The robot must share the
             so_arm101 splice anchors (``<body name="base">`` + ``gripper``).
@@ -563,7 +564,7 @@ def compose_so101_box_mjcf(
     opts = options if options is not None else BoxSceneOptions()
 
     # ADR-0033 — the robot is a flag: resolve its base MJCF from the manifest
-    # (`sim.mjcf_uri`) when a description is given; default to SO-101 so the
+    # (`assets.mjcf`) when a description is given; default to SO-101 so the
     # legacy call path is byte-for-byte unchanged.
     upstream_path = (
         _resolve_robot_mjcf(robot_description)
