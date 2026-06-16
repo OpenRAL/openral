@@ -3050,6 +3050,10 @@ robocasa = [
     { name = "robosuite", version = "1.5.2", source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b#232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" } },
     { name = "transformers" },
 ]
+robometer = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 sim = [
     { name = "accelerate" },
     { name = "bitsandbytes" },
@@ -3170,6 +3174,10 @@ robocasa = [
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" },
     { name = "transformers", specifier = "==5.3.0" },
+]
+robometer = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
 ]
 sim = [
     { name = "accelerate", specifier = ">=1.13.0" },
