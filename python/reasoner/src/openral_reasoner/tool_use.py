@@ -175,6 +175,17 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "it never moves the robot; you act on its signal by choosing the next "
     "tool. Do not poll it every tick for its own sake; query when the "
     "answer would change your next decision. "
+    # ── Bound long dispatches so you can poll between them ─────────────
+    "IMPORTANT — to be ABLE to poll a running skill, you must hand control "
+    "back to yourself: an execute_rskill goal dispatched with deadline_s=0 "
+    "runs to completion and you cannot act (or poll) until it returns. So "
+    "when query_task_progress is in the palette and you dispatch a long "
+    "policy (e.g. a VLA), set a BOUNDED deadline_s (a few seconds) — the "
+    "goal returns control to you at the deadline, you poll "
+    "query_task_progress to judge it, then either re-dispatch the same "
+    "skill to continue (progress rising), advance, or replan (stalled / not "
+    "succeeding). When no reward monitor is present, deadline_s=0 (run to "
+    "completion) remains fine. "
     # ── Safety: observe and work around, NEVER bypass ─────────────────
     "Safety is enforced below you by the C++ safety kernel: you PROPOSE, "
     "the kernel DISPOSES. You observe safety in the FAILURES section "
