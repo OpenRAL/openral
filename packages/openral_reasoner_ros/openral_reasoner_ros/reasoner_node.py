@@ -1870,7 +1870,8 @@ class ReasonerNode(LifecycleNode):
             text = f"query_task_progress[window {call.window_s:.0f}s]: no assessment ({reason})."
         else:
             verdict = (
-                "SUCCEEDED" if resp.succeeded
+                "SUCCEEDED"
+                if resp.succeeded
                 else ("STALLED — consider replanning" if resp.stalled else "in progress")
             )
             text = (

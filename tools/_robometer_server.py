@@ -38,10 +38,10 @@ import _robometer_quant as q
 
 q.set_cublas_workspace_env()  # MUST precede CUDA init (torch import below)
 
-import msgpack
-import numpy as np
-import torch
-import zmq
+import msgpack  # noqa: E402 — must follow set_cublas_workspace_env()
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import zmq  # noqa: E402
 
 q.apply_determinism()
 
@@ -75,30 +75,32 @@ class _Scorer:
         resolved = mode
         if mode == "auto":
             local_first = weights if os.path.isdir(weights) else None
-            if local_first and q.is_prequantized_checkpoint(local_first):
-                resolved = "prequantized"
-            elif "nf4" in os.path.basename(_split_repo_rev(weights)[0]).lower():
+            if (
+                local_first and q.is_prequantized_checkpoint(local_first)
+            ) or "nf4" in os.path.basename(_split_repo_rev(weights)[0]).lower():
                 resolved = "prequantized"
             else:
                 resolved = "bf16"
 
         if resolved == "prequantized":
-            self.exp_config, self.tokenizer, self.processor, self.model = (
-                self._load_prequantized(weights))
+            self.exp_config, self.tokenizer, self.processor, self.model = self._load_prequantized(
+                weights
+            )
         else:
             self.exp_config, self.tokenizer, self.processor, self.model = (
-                self._load_bf16_and_quantize(weights))
+                self._load_bf16_and_quantize(weights)
+            )
 
         self.model.eval()
         if device == "cuda":
             torch.cuda.synchronize()
             vram = torch.cuda.memory_allocated() / 1e9
-            print(f"[robometer-server] ready ({resolved}): {vram:.2f} GB on {device}",
-                  flush=True)
+            print(f"[robometer-server] ready ({resolved}): {vram:.2f} GB on {device}", flush=True)
         self.collator = setup_batch_collator(
-            self.processor, self.tokenizer, self.exp_config, is_eval=True)
+            self.processor, self.tokenizer, self.exp_config, is_eval=True
+        )
 
-    def _load_prequantized(self, weights: str):
+    def _load_prequantized(self, weights: str) -> tuple:
         """Direct 4-bit load of the published checkpoint (meta device, no bf16)."""
         import yaml
         from robometer.configs.experiment_configs import ExperimentConfig
@@ -108,7 +110,7 @@ class _Scorer:
 
         local = _resolve_local_dir(weights)
         print(f"[robometer-server] prequantized meta-load from {local} ...", flush=True)
-        raw = yaml.safe_load(open(os.path.join(local, "config.yaml")))
+        raw = yaml.safe_load(open(os.path.join(local, "config.yaml")))  # noqa: SIM115 — one-shot sidecar load
         valid = {f.name for f in fields(ExperimentConfig)}
         exp = ExperimentConfig(**{k: v for k, v in raw.items() if k in valid})
         base_id = getattr(exp.model, "base_model_id", "Qwen/Qwen3-VL-4B-Instruct")
@@ -117,14 +119,23 @@ class _Scorer:
         processor = AutoProcessor.from_pretrained(local)
         tokenizer = AutoTokenizer.from_pretrained(local)
         # Direct construction defaults to "eager"; production uses "sdpa".
-        for c in (config, getattr(config, "text_config", None),
-                  getattr(config, "vision_config", None)):
+        for c in (
+            config,
+            getattr(config, "text_config", None),
+            getattr(config, "vision_config", None),
+        ):
             if c is not None:
                 c._attn_implementation = "sdpa"
 
         with torch.device("meta"):
-            model = RBM(config, processor, tokenizer, base_model=None,
-                        base_model_id=base_id, model_config=exp.model)
+            model = RBM(
+                config,
+                processor,
+                tokenizer,
+                base_model=None,
+                base_model_id=base_id,
+                model_config=exp.model,
+            )
         q.install_linear4bit_shells(model, torch.bfloat16)
         state = load_file(os.path.join(local, "model.safetensors"), device=self.device)
         consumed = q.install_prequantized(model, state, self.device)
@@ -137,13 +148,14 @@ class _Scorer:
         print(f"[robometer-server] installed NF4 + {n_buf} rotary buffers", flush=True)
         return exp, tokenizer, processor, model
 
-    def _load_bf16_and_quantize(self, weights: str):
+    def _load_bf16_and_quantize(self, weights: str) -> tuple:
         """Upstream bf16 load + in-place NF4 (used to build the prequant checkpoint)."""
         from robometer.utils.save import load_model_from_hf
 
         print(f"[robometer-server] loading {weights} bf16 on CPU ...", flush=True)
         exp_config, tokenizer, processor, model = load_model_from_hf(
-            model_path=weights, device="cpu")
+            model_path=weights, device="cpu"
+        )
         n = q.quantize_nf4_in_place(model, compute_dtype=torch.bfloat16)
         model.to(self.device)
         print(f"[robometer-server] quantized {n} NF4 modules", flush=True)
@@ -155,21 +167,42 @@ class _Scorer:
         from robometer.evals.eval_server import compute_batch_outputs
 
         t = int(frames_rgb.shape[0])
-        traj = Trajectory(frames=frames_rgb, frames_shape=tuple(frames_rgb.shape), task=task,
-                          id="0", metadata={"subsequence_length": t}, video_embeddings=None)
+        traj = Trajectory(
+            frames=frames_rgb,
+            frames_shape=tuple(frames_rgb.shape),
+            task=task,
+            id="0",
+            metadata={"subsequence_length": t},
+            video_embeddings=None,
+        )
         batch = self.collator([ProgressSample(trajectory=traj, sample_type="progress")])
         inp = batch["progress_inputs"]
         for k, v in inp.items():
             if hasattr(v, "to"):
                 inp[k] = v.to(self.device)
-        res = compute_batch_outputs(self.model, self.tokenizer, inp,
-                                    sample_type="progress", is_discrete_mode=True,
-                                    num_bins=num_bins)
-        prog = np.asarray(res["progress_pred"][0] if isinstance(res["progress_pred"], list)
-                          else res["progress_pred"], dtype=np.float32)
+        res = compute_batch_outputs(
+            self.model,
+            self.tokenizer,
+            inp,
+            sample_type="progress",
+            is_discrete_mode=True,
+            num_bins=num_bins,
+        )
+        prog = np.asarray(
+            res["progress_pred"][0]
+            if isinstance(res["progress_pred"], list)
+            else res["progress_pred"],
+            dtype=np.float32,
+        )
         succ_raw = res.get("outputs_success", {}).get("success_probs")
-        succ = (np.asarray(succ_raw[0] if isinstance(succ_raw, list) and succ_raw else succ_raw,
-                           dtype=np.float32) if succ_raw is not None else np.zeros_like(prog))
+        succ = (
+            np.asarray(
+                succ_raw[0] if isinstance(succ_raw, list) and succ_raw else succ_raw,
+                dtype=np.float32,
+            )
+            if succ_raw is not None
+            else np.zeros_like(prog)
+        )
         return prog.tolist(), succ.tolist()
 
 
@@ -200,9 +233,10 @@ def main() -> int:
                 bgr = np.frombuffer(req["frames"], dtype=np.uint8).reshape(n, h, w, 3)
                 rgb = bgr[:, :, :, ::-1]  # BGR -> RGB (model expects RGB)
                 progress, success = scorer.score(
-                    np.ascontiguousarray(rgb), str(req["task"]), int(req.get("num_bins", 100)))
+                    np.ascontiguousarray(rgb), str(req["task"]), int(req.get("num_bins", 100))
+                )
                 sock.send(msgpack.packb({"ok": True, "progress": progress, "success": success}))
-            except Exception as exc:  # noqa: BLE001 — report to client, keep serving
+            except Exception as exc:
                 sock.send(msgpack.packb({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
         elif op == "shutdown":
             sock.send(msgpack.packb({"ok": True}))

@@ -59,8 +59,7 @@ def test_query_task_progress_independent_of_scene_query() -> None:
     from openral_reasoner.tool_use import _tool_palette_to_anthropic_tools
 
     names = [
-        d["name"]
-        for d in _tool_palette_to_anthropic_tools(ToolPalette(scene_query_available=True))
+        d["name"] for d in _tool_palette_to_anthropic_tools(ToolPalette(scene_query_available=True))
     ]
     assert "query_scene" in names
     assert "query_task_progress" not in names

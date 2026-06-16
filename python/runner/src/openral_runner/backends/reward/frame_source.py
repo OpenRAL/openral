@@ -65,6 +65,7 @@ class RollingFrameBuffer:
         max_frames: int = 256,
         stale_after_s: float = 3.0,
     ) -> None:
+        """Build an empty buffer retaining ``window_s`` seconds / ``max_frames`` frames."""
         if window_s <= 0.0:
             raise ValueError(f"window_s must be > 0, got {window_s}")
         if max_frames <= 0:
@@ -101,7 +102,12 @@ class RollingFrameBuffer:
         return (now_ns - self._frames[-1].stamp_ns) > self._stale_after_ns
 
     def __len__(self) -> int:
+        """Number of frames currently buffered."""
         return len(self._frames)
+
+
+# A least-squares slope needs at least two points; fewer reads as "no trend".
+_MIN_POINTS_FOR_SLOPE = 2
 
 
 def trend(series: list[float]) -> float:
@@ -111,7 +117,7 @@ def trend(series: list[float]) -> float:
     falling over the queried window — no numpy dependency.
     """
     n = len(series)
-    if n < 2:
+    if n < _MIN_POINTS_FOR_SLOPE:
         return 0.0
     xs = range(n)
     mean_x = (n - 1) / 2.0

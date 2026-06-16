@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 __all__ = ["RobometerReward", "RollingFrameBuffer", "build_reward_monitor"]
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> Any:  # noqa: ANN401 — lazy re-export; concrete types are in the submodules
     """Lazy re-export so importing the package pulls in no optional deps."""
     if name == "RollingFrameBuffer":
         from openral_runner.backends.reward.frame_source import (  # noqa: PLC0415

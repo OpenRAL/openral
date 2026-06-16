@@ -30,16 +30,21 @@ def quantize_nf4_in_place(root: torch.nn.Module, compute_dtype: torch.dtype) -> 
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
                 new = bnb.nn.Linear4bit(
-                    child.in_features, child.out_features,
+                    child.in_features,
+                    child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=compute_dtype, quant_type="nf4",
+                    compute_dtype=compute_dtype,
+                    quant_type="nf4",
                 )
                 new.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(), requires_grad=False, quant_type="nf4",
+                    child.weight.data.clone(),
+                    requires_grad=False,
+                    quant_type="nf4",
                 )
                 if child.bias is not None:
                     new.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(compute_dtype), requires_grad=False,
+                        child.bias.data.clone().to(compute_dtype),
+                        requires_grad=False,
                     )
                 setattr(module, name, new)
                 n += 1
@@ -60,7 +65,8 @@ def main() -> int:
 
     print("[quant] loading bf16 on CPU ...", flush=True)
     exp_config, tokenizer, processor, reward_model = load_model_from_hf(
-        model_path="robometer/Robometer-4B", device="cpu",
+        model_path="robometer/Robometer-4B",
+        device="cpu",
     )
     reward_model.eval()
 
@@ -79,9 +85,14 @@ def main() -> int:
     batch_collator = setup_batch_collator(processor, tokenizer, exp_config, is_eval=True)
     T = 8
     frames = np.random.randint(0, 255, (T, 224, 224, 3), dtype=np.uint8)
-    traj = Trajectory(frames=frames, frames_shape=tuple(frames.shape),
-                      task="pick up the cube", id="0",
-                      metadata={"subsequence_length": T}, video_embeddings=None)
+    traj = Trajectory(
+        frames=frames,
+        frames_shape=tuple(frames.shape),
+        task="pick up the cube",
+        id="0",
+        metadata={"subsequence_length": T},
+        video_embeddings=None,
+    )
     batch = batch_collator([ProgressSample(trajectory=traj, sample_type="progress")])
     progress_inputs = batch["progress_inputs"]
     for k, v in progress_inputs.items():
@@ -91,16 +102,28 @@ def main() -> int:
     print("[quant] running forward (discrete mode) ...", flush=True)
     with torch.no_grad():
         results = compute_batch_outputs(
-            reward_model, tokenizer, progress_inputs,
-            sample_type="progress", is_discrete_mode=True, num_bins=100,
+            reward_model,
+            tokenizer,
+            progress_inputs,
+            sample_type="progress",
+            is_discrete_mode=True,
+            num_bins=100,
         )
     torch.cuda.synchronize()
     peak = torch.cuda.max_memory_allocated() / 1e9
 
-    prog = np.asarray(results["progress_pred"][0] if isinstance(results["progress_pred"], list)
-                      else results["progress_pred"], dtype=np.float32)
+    prog = np.asarray(
+        results["progress_pred"][0]
+        if isinstance(results["progress_pred"], list)
+        else results["progress_pred"],
+        dtype=np.float32,
+    )
     succ = results.get("outputs_success", {}).get("success_probs")
-    succ = np.asarray(succ[0] if isinstance(succ, list) and succ else succ, dtype=np.float32) if succ is not None else np.array([])
+    succ = (
+        np.asarray(succ[0] if isinstance(succ, list) and succ else succ, dtype=np.float32)
+        if succ is not None
+        else np.array([])
+    )
 
     print("\n=== NF4 RESULT ===")
     print(f"  modules quantized: {n}")

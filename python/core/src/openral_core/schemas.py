@@ -3753,9 +3753,7 @@ class RewardContract(BaseModel):
         """``progress_range`` must be a non-degenerate ``(min, max)`` interval."""
         lo, hi = v
         if hi <= lo:
-            raise ValueError(
-                f"RewardContract.progress_range must have max > min, got {v!r}."
-            )
+            raise ValueError(f"RewardContract.progress_range must have max > min, got {v!r}.")
         return v
 
 
@@ -4191,7 +4189,7 @@ class RSkillManifest(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
+    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912, PLR0915  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
         """Enforce the per-:attr:`kind` field shape for VLA vs ROS-wrapper vs detector.
 
         Rules:

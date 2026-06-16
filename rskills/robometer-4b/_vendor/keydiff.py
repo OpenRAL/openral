@@ -1,4 +1,5 @@
 """Diagnose meta-skeleton ↔ checkpoint key divergence (ADR-0057 load fix)."""
+
 from __future__ import annotations
 
 import pathlib
@@ -25,8 +26,14 @@ def main() -> int:
     for cfg_src in ("robometer/Robometer-4B", base_id):
         config = AutoConfig.from_pretrained(cfg_src)
         with torch.device("meta"):
-            model = RBM(config, None, None, base_model=None, base_model_id=base_id,
-                        model_config=exp_config.model)
+            model = RBM(
+                config,
+                None,
+                None,
+                base_model=None,
+                base_model_id=base_id,
+                model_config=exp_config.model,
+            )
         mkeys = set(model.state_dict().keys())
         vis_fc1 = [k for k in mkeys if "visual.blocks.0.mlp" in k]
         vt = type(dict(model.named_modules()).get("model.visual.blocks.0.mlp.linear_fc1"))
@@ -38,7 +45,7 @@ def main() -> int:
 
     with safe_open(str(CKPT), framework="pt") as f:
         skeys = set(f.keys())
-    print(f"\n=== checkpoint file ===")
+    print("\n=== checkpoint file ===")
     print(f"  total keys: {len(skeys)}")
     print(f"  visual.blocks.0.mlp keys: {sorted(k for k in skeys if 'visual.blocks.0.mlp' in k)}")
     # model keys (last config = base) vs file

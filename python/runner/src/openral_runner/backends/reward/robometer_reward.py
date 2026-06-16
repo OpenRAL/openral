@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
 # Default sidecar port — distinct from the scene-VLM (5759) and detector ports.
 _DEFAULT_PORT = 5769
+# |progress trend per sample| below this reads as "stalled" (no meaningful change).
+_STALL_TREND_EPS = 0.002
 
 
 def _evenly_spaced_indices(n: int, k: int) -> list[int]:
@@ -88,7 +90,7 @@ class RobometerReward:
         self._num_bins = num_bins
         self._success_threshold = success_threshold
         # Activation memory for the vision-transformer forward scales with the
-        # number of frames (×resolution); a full 8 s × 3 fps window of 640×480
+        # number of frames (x resolution); a full 8 s x 3 fps window of 640x480
         # frames OOMs a 3.3 GB-resident model on an 8 GB GPU (ADR-0057, observed
         # in deploy-sim). Evenly subsample the window to at most this many frames
         # so the reward forward stays co-resident with the sim (and a small VLA).
@@ -255,7 +257,7 @@ class RobometerReward:
             "success_now": success[-1],
             "progress_trend": p_trend,
             "success_trend": trend(success),
-            "stalled": abs(p_trend) < 0.002,
+            "stalled": abs(p_trend) < _STALL_TREND_EPS,
             "succeeded": success[-1] >= self._success_threshold,
             "frames_seen": len(frames),
         }

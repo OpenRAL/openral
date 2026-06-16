@@ -125,9 +125,7 @@ _VALID_REWARD: dict = {
     "role": "s2",
     "kind": "reward",
     "embodiment_tags": [],
-    "sensors_required": [
-        {"modality": "rgb", "min_width": 224, "min_height": 224}
-    ],
+    "sensors_required": [{"modality": "rgb", "min_width": 224, "min_height": 224}],
     "actuators_required": [],
     "runtime": "pytorch",
     "weights_uri": "hf://OpenRAL/rskill-robometer-4b-nf4",

@@ -23,7 +23,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "robometer-sidecar"
@@ -76,8 +75,18 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
 
     home.mkdir(parents=True, exist_ok=True)
     _run([uv, "venv", str(venv), "--python", "3.12"])
-    _run([uv, "pip", "install", "--python", str(py), "--torch-backend=cu128",
-          _ROBOMETER_SPEC, *_EXTRA_DEPS])
+    _run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(py),
+            "--torch-backend=cu128",
+            _ROBOMETER_SPEC,
+            *_EXTRA_DEPS,
+        ]
+    )
     # Force the transformers pin AFTER robometer (its resolver pulls 5.x).
     _run([uv, "pip", "install", "--python", str(py), _TRANSFORMERS_PIN])
     sentinel.write_text("ok\n")

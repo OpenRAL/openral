@@ -42,6 +42,7 @@ from typing import Any
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the reward-monitor node, shut down cleanly."""
     import rclpy
+    from openral_runner.backends.reward.frame_source import Frame, RollingFrameBuffer
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import (
@@ -53,7 +54,6 @@ def main(args: Any = None) -> None:
     from sensor_msgs.msg import Image
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
-    from openral_runner.backends.reward.frame_source import Frame, RollingFrameBuffer
 
     class RewardMonitorNode(Node):  # type: ignore[misc]
         """Subscribe camera Image(s), buffer frames, serve query_task_progress."""
@@ -138,7 +138,9 @@ def main(args: Any = None) -> None:
             gp = self.get_parameter
             manifest = RSkillManifest.from_yaml(manifest_path)
             if manifest.reward is None:
-                raise ValueError(f"manifest {manifest.name!r} is kind:reward but has no reward block")
+                raise ValueError(
+                    f"manifest {manifest.name!r} is kind:reward but has no reward block"
+                )
             monitor = build_reward_monitor(
                 manifest,
                 host=gp("sidecar_host").get_parameter_value().string_value,

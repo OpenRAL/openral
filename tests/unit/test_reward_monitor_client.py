@@ -38,11 +38,11 @@ def test_build_reward_monitor_propagates_contract() -> None:
     manifest = _load_manifest()
     mon = build_reward_monitor(manifest, port=5769)
     assert isinstance(mon, RobometerReward)
-    assert mon._num_bins == manifest.reward.num_bins  # noqa: SLF001 — test asserts wiring
-    assert mon._success_threshold == manifest.reward.success_threshold  # noqa: SLF001
+    assert mon._num_bins == manifest.reward.num_bins
+    assert mon._success_threshold == manifest.reward.success_threshold
     # hf:// scheme stripped from the weights source; the manifest now points at the
     # published pre-quantized NF4 repo (the sidecar meta-loads it directly as 4-bit).
-    assert mon._weights_source == "OpenRAL/rskill-robometer-4b-nf4"  # noqa: SLF001
+    assert mon._weights_source == "OpenRAL/rskill-robometer-4b-nf4"
 
 
 def test_build_reward_monitor_local_scheme() -> None:
@@ -51,7 +51,7 @@ def test_build_reward_monitor_local_scheme() -> None:
     local = manifest.model_copy(update={"weights_uri": "local:///tmp/robometer-nf4-ckpt"})
     mon = build_reward_monitor(local, port=5769)
     # local:// stripped to the absolute dir; the sidecar meta-loads it directly.
-    assert mon._weights_source == "/tmp/robometer-nf4-ckpt"  # noqa: SLF001
+    assert mon._weights_source == "/tmp/robometer-nf4-ckpt"
 
 
 def test_evenly_spaced_indices_bounds_frames() -> None:

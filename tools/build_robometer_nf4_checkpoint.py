@@ -30,8 +30,8 @@ import _robometer_quant as q
 
 q.set_cublas_workspace_env()
 
-import torch
-import yaml
+import torch  # noqa: E402 — must follow set_cublas_workspace_env()
+import yaml  # noqa: E402
 
 q.apply_determinism()
 
@@ -56,29 +56,37 @@ def main() -> int:
 
     repo = args.upstream.split("@", 1)[0]
     t0 = time.monotonic()
-    print(f"[build] loading {args.upstream} bf16 on CPU (vanilla, use_unsloth=False) ...",
-          flush=True)
+    print(
+        f"[build] loading {args.upstream} bf16 on CPU (vanilla, use_unsloth=False) ...", flush=True
+    )
     resolved = resolve_checkpoint_path(args.upstream)
-    raw = yaml.safe_load(open(hf_hub_download(repo, "config.yaml")))
+    raw = yaml.safe_load(open(hf_hub_download(repo, "config.yaml")))  # noqa: SIM115 — one-shot build script
     valid = {f.name for f in fields(ExperimentConfig)}
     exp = ExperimentConfig(**{k: v for k, v in raw.items() if k in valid})
     exp.model.use_unsloth = False
     tokenizer, processor, model = setup_model_and_processor(
-        exp.model, str(resolved), peft_config=None)
+        exp.model, str(resolved), peft_config=None
+    )
     model = model.to("cpu").eval()
-    print(f"[build] load took {time.monotonic()-t0:.1f}s; peak RSS {_rss_gb():.1f} GB",
-          flush=True)
+    print(
+        f"[build] load took {time.monotonic() - t0:.1f}s; peak RSS {_rss_gb():.1f} GB", flush=True
+    )
 
     t1 = time.monotonic()
     n = q.quantize_nf4_in_place(model, compute_dtype=torch.bfloat16)
     model.to("cuda")
     torch.cuda.synchronize()
-    print(f"[build] NF4 {n} modules + to(cuda) in {time.monotonic()-t1:.1f}s; "
-          f"{torch.cuda.memory_allocated()/1e9:.2f} GB VRAM", flush=True)
+    print(
+        f"[build] NF4 {n} modules + to(cuda) in {time.monotonic() - t1:.1f}s; "
+        f"{torch.cuda.memory_allocated() / 1e9:.2f} GB VRAM",
+        flush=True,
+    )
 
     args.out.mkdir(parents=True, exist_ok=True)
-    sd = {k: (v.detach().contiguous() if hasattr(v, "detach") else v)
-          for k, v in model.state_dict().items()}
+    sd = {
+        k: (v.detach().contiguous() if hasattr(v, "detach") else v)
+        for k, v in model.state_dict().items()
+    }
     # Fold non-persistent rotary inv_freq buffers in (load_state_dict skips them).
     folded = 0
     for name, buf in model.named_buffers():
@@ -94,8 +102,11 @@ def main() -> int:
         yaml.safe_dump(raw, f, sort_keys=False)
 
     size_gb = (args.out / "model.safetensors").stat().st_size / 1e9
-    print(f"[build] saved {len(sd)} tensors ({folded} folded buffers), {size_gb:.2f} GB "
-          f"-> {args.out}", flush=True)
+    print(
+        f"[build] saved {len(sd)} tensors ({folded} folded buffers), {size_gb:.2f} GB "
+        f"-> {args.out}",
+        flush=True,
+    )
     return 0
 
 

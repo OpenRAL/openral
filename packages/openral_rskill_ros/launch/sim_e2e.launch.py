@@ -329,7 +329,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reward_monitor_manifest = LaunchConfiguration("reward_monitor_manifest").perform(context)
     reward_monitor_task = LaunchConfiguration("reward_monitor_task").perform(context)
     reward_monitor_image_topic = LaunchConfiguration("reward_monitor_image_topic").perform(context)
-    reward_monitor_sidecar_port = LaunchConfiguration("reward_monitor_sidecar_port").perform(context)
+    reward_monitor_sidecar_port = LaunchConfiguration("reward_monitor_sidecar_port").perform(
+        context
+    )
     # ADR-0056 — comma-separated on-demand locator manifest paths. Each becomes a
     # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
     # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment

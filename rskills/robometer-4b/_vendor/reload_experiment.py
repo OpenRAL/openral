@@ -37,8 +37,12 @@ def _rss_gb() -> float:
 
 
 _BNB_META_SUFFIXES = (
-    ".absmax", ".quant_map", ".nested_absmax", ".nested_quant_map",
-    ".quant_state.bitsandbytes__nf4", ".quant_state.bitsandbytes__fp4",
+    ".absmax",
+    ".quant_map",
+    ".nested_absmax",
+    ".nested_quant_map",
+    ".quant_state.bitsandbytes__nf4",
+    ".quant_state.bitsandbytes__fp4",
 )
 
 
@@ -62,7 +66,8 @@ def _install_prequantized(policy, state, device):
                 consumed.add(full)
         consumed.add(wkey)
         module.weight = bnb.nn.Params4bit.from_prequantized(
-            data=state[wkey], quantized_stats=stats, requires_grad=False, device=device)
+            data=state[wkey], quantized_stats=stats, requires_grad=False, device=device
+        )
         bkey = f"{prefix}.bias"
         if module.bias is not None and bkey in state:
             module.bias = torch.nn.Parameter(state[bkey].to(device), requires_grad=False)
@@ -81,9 +86,13 @@ def _quantize_structure(root, compute_dtype):
         nonlocal n
         for name, child in list(m.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
-                new = bnb.nn.Linear4bit(child.in_features, child.out_features,
-                                        bias=child.bias is not None,
-                                        compute_dtype=compute_dtype, quant_type="nf4")
+                new = bnb.nn.Linear4bit(
+                    child.in_features,
+                    child.out_features,
+                    bias=child.bias is not None,
+                    compute_dtype=compute_dtype,
+                    quant_type="nf4",
+                )
                 setattr(m, name, new)
                 n += 1
             else:
@@ -116,23 +125,34 @@ def main() -> int:
     # and defaults to "eager"; production's setup_model_and_processor uses "sdpa"
     # (flash-attn absent). Force sdpa on every (sub)config so the meta path is
     # numerically identical to the bf16+quantize reference.
-    for c in (config, getattr(config, "text_config", None),
-              getattr(config, "vision_config", None)):
+    for c in (config, getattr(config, "text_config", None), getattr(config, "vision_config", None)):
         if c is not None:
             c._attn_implementation = "sdpa"
 
-    print(f"[reload] tf32 matmul={torch.backends.cuda.matmul.allow_tf32} "
-          f"cudnn.tf32={torch.backends.cudnn.allow_tf32} "
-          f"fp32_precision(matmul)={torch.get_float32_matmul_precision()}", flush=True)
+    print(
+        f"[reload] tf32 matmul={torch.backends.cuda.matmul.allow_tf32} "
+        f"cudnn.tf32={torch.backends.cudnn.allow_tf32} "
+        f"fp32_precision(matmul)={torch.get_float32_matmul_precision()}",
+        flush=True,
+    )
 
     t0 = time.monotonic()
     print("[reload] building RBM skeleton on META (instant, no weights) ...", flush=True)
     with torch.device("meta"):
-        model = RBM(config, processor, tokenizer, base_model=None,
-                    base_model_id=base_id, model_config=exp_config.model)
+        model = RBM(
+            config,
+            processor,
+            tokenizer,
+            base_model=None,
+            base_model_id=base_id,
+            model_config=exp_config.model,
+        )
     n = _quantize_structure(model, compute_dtype=torch.bfloat16)
-    print(f"[reload] meta skeleton + {n} Linear4bit shells in "
-          f"{time.monotonic()-t0:.1f}s; peak RSS {_rss_gb():.1f} GB", flush=True)
+    print(
+        f"[reload] meta skeleton + {n} Linear4bit shells in "
+        f"{time.monotonic() - t0:.1f}s; peak RSS {_rss_gb():.1f} GB",
+        flush=True,
+    )
 
     t1 = time.monotonic()
     state = load_file(str(CKPT / "model.safetensors"), device="cuda")
@@ -162,8 +182,9 @@ def main() -> int:
             recomputed_meta += 1
         else:  # Qwen3VLVisionRotaryEmbedding closed form
             dim = 2 * buf.shape[0]
-            inv_freq = 1.0 / (10000.0 ** (torch.arange(0, dim, 2, dtype=torch.float,
-                                                       device="cuda") / dim))
+            inv_freq = 1.0 / (
+                10000.0 ** (torch.arange(0, dim, 2, dtype=torch.float, device="cuda") / dim)
+            )
             parent.register_buffer(leaf, inv_freq, persistent=False)
             recomputed_meta += 1
     # Rebind the dangling non-buffer rope attributes off the (now-real) inv_freq.
@@ -173,12 +194,17 @@ def main() -> int:
             continue
         if hasattr(mod, "original_inv_freq"):
             mod.original_inv_freq = ifb
-        if hasattr(mod, "rope_init_fn") and hasattr(mod, "config") \
-                and getattr(mod, "attention_scaling", None) is None:
+        if (
+            hasattr(mod, "rope_init_fn")
+            and hasattr(mod, "config")
+            and getattr(mod, "attention_scaling", None) is None
+        ):
             _, scaling = mod.rope_init_fn(mod.config, "cuda")
             mod.attention_scaling = scaling
-    print(f"[reload] rotary buffers loaded-from-ckpt={loaded_bufs} "
-          f"recomputed-from-meta(expect 0)={recomputed_meta}")
+    print(
+        f"[reload] rotary buffers loaded-from-ckpt={loaded_bufs} "
+        f"recomputed-from-meta(expect 0)={recomputed_meta}"
+    )
 
     # any params/buffers still on meta (not in the checkpoint)?
     still_meta = [n for n, p in model.named_parameters() if p.is_meta]
@@ -187,13 +213,18 @@ def main() -> int:
     print(f"[reload] meta buffers left after rotary fix: {still_meta_buf}")
     # sanity: is a vision weight real (install handled it)?
     vw = dict(model.named_parameters()).get("model.visual.blocks.0.mlp.linear_fc1.weight")
-    print(f"[reload] vision fc1 weight is_meta={vw.is_meta if vw is not None else 'absent'} "
-          f"dtype={vw.dtype if vw is not None else '-'}")
+    print(
+        f"[reload] vision fc1 weight is_meta={vw.is_meta if vw is not None else 'absent'} "
+        f"dtype={vw.dtype if vw is not None else '-'}"
+    )
     torch.cuda.synchronize()
-    print(f"[reload] install_prequantized({n_q}) + load_state_dict in {time.monotonic()-t1:.1f}s; "
-          f"{torch.cuda.memory_allocated()/1e9:.2f} GB VRAM; "
-          f"missing={len(missing)} unexpected={len(unexpected)} "
-          f"meta_params_left={len(still_meta)} meta_bufs_left={len(still_meta_buf)}", flush=True)
+    print(
+        f"[reload] install_prequantized({n_q}) + load_state_dict in {time.monotonic() - t1:.1f}s; "
+        f"{torch.cuda.memory_allocated() / 1e9:.2f} GB VRAM; "
+        f"missing={len(missing)} unexpected={len(unexpected)} "
+        f"meta_params_left={len(still_meta)} meta_bufs_left={len(still_meta_buf)}",
+        flush=True,
+    )
     if missing:
         print(f"[reload] sample missing keys: {missing[:5]}")
     if unexpected:
@@ -201,34 +232,42 @@ def main() -> int:
 
     # forward on the real video → expect the ramp
     model.eval()
+    import decord
     from robometer.data.dataset_types import ProgressSample, Trajectory
     from robometer.evals.eval_server import compute_batch_outputs
     from robometer.utils.setup_utils import setup_batch_collator
-
-    import decord
 
     vr = decord.VideoReader("/tmp/robometer_example.mp4")
     step = max(1, int(round(vr.get_avg_fps() / 3.0)))
     idx = list(range(0, len(vr), step))[:10]
     frames = vr.get_batch(idx).asnumpy().astype(np.uint8)
     collator = setup_batch_collator(processor, tokenizer, exp_config, is_eval=True)
-    traj = Trajectory(frames=frames, frames_shape=tuple(frames.shape),
-                      task="Pick up the object and place it in the container", id="0",
-                      metadata={"subsequence_length": int(frames.shape[0])}, video_embeddings=None)
+    traj = Trajectory(
+        frames=frames,
+        frames_shape=tuple(frames.shape),
+        task="Pick up the object and place it in the container",
+        id="0",
+        metadata={"subsequence_length": int(frames.shape[0])},
+        video_embeddings=None,
+    )
     batch = collator([ProgressSample(trajectory=traj, sample_type="progress")])
     inp = batch["progress_inputs"]
     for k, v in inp.items():
         if hasattr(v, "to"):
             inp[k] = v.to("cuda")
     with torch.no_grad():
-        res = compute_batch_outputs(model, tokenizer, inp, sample_type="progress",
-                                    is_discrete_mode=True, num_bins=100)
+        res = compute_batch_outputs(
+            model, tokenizer, inp, sample_type="progress", is_discrete_mode=True, num_bins=100
+        )
     prog = np.asarray(res["progress_pred"][0], dtype=np.float32)
-    print(f"[reload] progress series (meta+prequantized path): "
-          f"{[round(float(x),4) for x in prog]}")
-    print(f"[reload] COMPARE to the build_experiment REFERENCE series — they must "
-          f"match element-wise to ~1e-3 for the prequantized load to be trusted.",
-          flush=True)
+    print(
+        f"[reload] progress series (meta+prequantized path): {[round(float(x), 4) for x in prog]}"
+    )
+    print(
+        "[reload] COMPARE to the build_experiment REFERENCE series — they must "
+        "match element-wise to ~1e-3 for the prequantized load to be trusted.",
+        flush=True,
+    )
     return 0
 
 

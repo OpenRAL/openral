@@ -52,7 +52,7 @@ def apply_determinism() -> None:
     torch.backends.cuda.enable_math_sdp(True)
 
 
-def quantize_nf4_in_place(root: "object", compute_dtype: "object") -> int:
+def quantize_nf4_in_place(root: object, compute_dtype: object) -> int:
     """Rewrite large ``nn.Linear`` -> ``bnb.nn.Linear4bit`` (the repo's NF4 rule).
 
     Returns the number of modules replaced. Quantization happens lazily on the
@@ -68,15 +68,19 @@ def quantize_nf4_in_place(root: "object", compute_dtype: "object") -> int:
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
                 new = bnb.nn.Linear4bit(
-                    child.in_features, child.out_features,
+                    child.in_features,
+                    child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=compute_dtype, quant_type="nf4",
+                    compute_dtype=compute_dtype,
+                    quant_type="nf4",
                 )
                 new.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(), requires_grad=False, quant_type="nf4")
+                    child.weight.data.clone(), requires_grad=False, quant_type="nf4"
+                )
                 if child.bias is not None:
                     new.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(compute_dtype), requires_grad=False)
+                        child.bias.data.clone().to(compute_dtype), requires_grad=False
+                    )
                 setattr(module, name, new)
                 n += 1
             else:
@@ -86,7 +90,7 @@ def quantize_nf4_in_place(root: "object", compute_dtype: "object") -> int:
     return n
 
 
-def install_linear4bit_shells(root: "object", compute_dtype: "object") -> int:
+def install_linear4bit_shells(root: object, compute_dtype: object) -> int:
     """Replace large ``nn.Linear`` with EMPTY ``Linear4bit`` shells (no packing).
 
     Used on a meta-device skeleton so :func:`install_prequantized` can drop in the
@@ -101,10 +105,17 @@ def install_linear4bit_shells(root: "object", compute_dtype: "object") -> int:
         nonlocal n
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= MIN_PARAMS:
-                setattr(module, name, bnb.nn.Linear4bit(
-                    child.in_features, child.out_features,
-                    bias=child.bias is not None,
-                    compute_dtype=compute_dtype, quant_type="nf4"))
+                setattr(
+                    module,
+                    name,
+                    bnb.nn.Linear4bit(
+                        child.in_features,
+                        child.out_features,
+                        bias=child.bias is not None,
+                        compute_dtype=compute_dtype,
+                        quant_type="nf4",
+                    ),
+                )
                 n += 1
             else:
                 _replace(child)
@@ -113,7 +124,7 @@ def install_linear4bit_shells(root: "object", compute_dtype: "object") -> int:
     return n
 
 
-def install_prequantized(policy: "object", state: dict, device: str) -> set:
+def install_prequantized(policy: object, state: dict, device: str) -> set:
     """Drop saved packed NF4 weights into ``Linear4bit`` shells via from_prequantized.
 
     Returns the set of consumed checkpoint keys (so the caller can ``load_state_dict``
@@ -138,7 +149,8 @@ def install_prequantized(policy: "object", state: dict, device: str) -> set:
                 consumed.add(full)
         consumed.add(wkey)
         module.weight = bnb.nn.Params4bit.from_prequantized(
-            data=state[wkey], quantized_stats=stats, requires_grad=False, device=device)
+            data=state[wkey], quantized_stats=stats, requires_grad=False, device=device
+        )
         bkey = f"{prefix}.bias"
         if module.bias is not None and bkey in state:
             module.bias = torch.nn.Parameter(state[bkey].to(device), requires_grad=False)
@@ -146,7 +158,7 @@ def install_prequantized(policy: "object", state: dict, device: str) -> set:
     return consumed
 
 
-def assign_meta_buffers(model: "object", state: dict, device: str) -> int:
+def assign_meta_buffers(model: object, state: dict, device: str) -> int:
     """Assign any still-meta buffer (non-persistent rotary inv_freq) from ``state``.
 
     ``load_state_dict`` SKIPS non-persistent buffers (reports them ``unexpected``
@@ -162,8 +174,7 @@ def assign_meta_buffers(model: "object", state: dict, device: str) -> int:
         if bname not in state:
             raise RuntimeError(f"meta buffer {bname!r} missing from checkpoint")
         parent = model.get_submodule(bname.rsplit(".", 1)[0]) if "." in bname else model
-        parent.register_buffer(bname.rsplit(".", 1)[-1], state[bname].to(device),
-                               persistent=False)
+        parent.register_buffer(bname.rsplit(".", 1)[-1], state[bname].to(device), persistent=False)
         assigned += 1
     for _nm, mod in model.named_modules():
         ifb = getattr(mod, "inv_freq", None)
@@ -182,7 +193,7 @@ def is_prequantized_checkpoint(path: str) -> bool:
     from safetensors import safe_open
 
     with safe_open(str(st), framework="pt") as f:
-        for k in f.keys():
+        for k in f.keys():  # noqa: SIM118 — safetensors handle, not a dict (no __contains__/__iter__)
             if k.endswith(".quant_state.bitsandbytes__nf4"):
                 return True
     return False

@@ -80,8 +80,8 @@ def test_every_modern_intree_manifest_declares_processors() -> None:
         # Non-VLA kinds don't carry a lerobot policy; `processors` is
         # `None` by construction and the manifest-level validator forbids
         # it from being set (ADR-0024 wrapped-ROS, ADR-0037 detector,
-        # ADR-0047 scene VLM).
-        if manifest.kind in {"ros_action", "ros_service", "detector", "vlm"}:
+        # ADR-0047 scene VLM, ADR-0057 reward monitor).
+        if manifest.kind in {"ros_action", "ros_service", "detector", "vlm", "reward"}:
             continue
         if manifest.processors is None:
             if name not in _LEGACY_NO_PROCESSORS_ALLOWLIST:
