@@ -14,7 +14,7 @@
   [ADR-0023](0023-data-driven-mujoco-hal.md) (the data-driven MuJoCo HAL that
   consumes `sim.mjcf_uri`); CLAUDE.md §1.2 (truth over plausibility — no silent
   `None`), §1.3 (types are the contract), §1.6 (schemas evolve, never
-  silently — `schema_version` bump + migrator), §1.9 (license lineage),
+  silently — N/A here: RobotDescription has no `schema_version`), §1.9 (license lineage),
   §3 Layer 0 / 6, §3 Safety (safety-WG review + hazard log).
 
 > Design spec: [`docs/superpowers/specs/2026-06-16-standardize-robot-description-assets-design.md`](../superpowers/specs/2026-06-16-standardize-robot-description-assets-design.md)
@@ -120,9 +120,12 @@ The old fields (`urdf_path`, `sim.mjcf_uri`, `srdf_path`, `urdf_root_frame`,
 **removed outright** — not deprecated, not aliased. This is an explicit user
 decision: the cost of carrying two grammars and two resolvers (the exact source
 of the silent-`None` bug) is higher than the cost of a one-time migration of 16
-manifests. Per CLAUDE.md §1.6 this is a backward-incompatible on-disk change:
-**`schema_version` is bumped and a migrator ships in the same PR** (the repo is
-published; `schema_version` is no longer frozen at `"0.1"`).
+manifests. **No migrator ships:** `RobotDescription` manifests carry no
+`schema_version` field, and per the user's no-backwards-compatibility directive
+old-format manifests are not supported. All 16 in-repo manifests are hand-migrated
+in this PR; there are no other manifests to migrate. (CLAUDE.md §1.6's bump +
+migrator requirement applies to on-disk formats that carry `schema_version` —
+rSkill / scene / trace — none of which this change touches.)
 
 ### 4. xacro-only robots ship vendored, pre-expanded URDFs
 
@@ -252,8 +255,8 @@ via `package://` from the `robot_descriptions` cache (the prompted download) —
 
 **Costs**
 
-- **Breaking schema change** — old fields removed; `schema_version` bumped +
-  migrator shipped (CLAUDE.md §1.6).
+- **Breaking schema change** — old fields removed; all 16 manifests hand-migrated.
+  No migrator (RobotDescription carries no `schema_version`; no old-format support).
 - **Migrate all 16 manifests** to the `assets:` block (spec §4.3 has the
   canonical per-robot table).
 - **Vendor 4 URDFs** (`ur5e`, `ur10e`, `rizon4`, `openarm`) — committing
@@ -293,8 +296,8 @@ Detailed in spec §7:
    license lineage.
 2. **Resolver** `openral_core/assets.py` + grammar validator + unit tests
    (TDD).
-3. **Schema** `AssetRefs` / `UrdfAsset`; remove old fields; `schema_version`
-   bump + migrator; `hypothesis` round-trip.
+3. **Schema** `AssetRefs` / `UrdfAsset`; remove old fields (no `schema_version`
+   bump/migrator — RobotDescription carries none); `hypothesis` round-trip.
 4. **Vendoring CLI** `openral robot vendor-urdf`; run it → commit
    `robots/{ur5e,ur10e,rizon4,openarm}/<id>.urdf` with license headers.
 5. **Migrate all 16 manifests** to `assets:`.
