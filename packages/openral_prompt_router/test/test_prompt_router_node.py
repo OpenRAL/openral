@@ -8,6 +8,17 @@ The live integration test lives in
 
 from __future__ import annotations
 
+import pytest
+
+# Skip unless the ROS deps + this colcon package are importable (matches the
+# sibling reasoner_ros/HAL/estop shims). Under plain ``pytest`` selection without
+# a sourced colcon overlay (the select-and-test CI job), ``openral_prompt_router``
+# isn't on the path; skip rather than hard-fail. The substantive coverage runs
+# under ``colcon test`` and the gated integration end-to-end test.
+pytest.importorskip("rclpy")
+pytest.importorskip("openral_msgs")
+pytest.importorskip("openral_prompt_router")
+
 
 def test_import_only() -> None:
     """Smoke import — the prompt_router_node module loads with rclpy + openral_msgs sourced."""

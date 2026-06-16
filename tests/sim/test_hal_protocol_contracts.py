@@ -87,6 +87,27 @@ def _make_hal(hal_class: type[HAL]) -> HAL:
         return hal_class(gravity_enabled=False, settle_steps=2000)
 
 
+def _missing_optional_dep(exc: BaseException) -> bool:
+    """True if a missing-import/-file error sits anywhere in ``exc``'s cause chain.
+
+    The HAL boundary translates the optional-dependency failure twice before it
+    reaches us: ``resolve_asset`` raises ``AssetRefError(... ) from ImportError``,
+    then ``_resolve_mjcf_path`` raises ``ROSConfigError(str(exc)) from
+    AssetRefError``. The ``ImportError`` we key on is therefore two links deep, so
+    we walk ``__cause__``/``__context__`` rather than inspecting only the top
+    frame. A genuine misconfiguration (e.g. a bad scene id) has no import/file
+    error in its chain and is re-raised.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, (ModuleNotFoundError, ImportError, FileNotFoundError)):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 @pytest.fixture(params=_HAL_CLASSES)
 def hal(request: pytest.FixtureRequest) -> HAL:
     """Parametrized fixture instantiating each HAL class."""
@@ -98,7 +119,7 @@ def hal(request: pytest.FixtureRequest) -> HAL:
         # Skip rather than fail the shared contract suite — CLAUDE.md §1.11. A
         # ROSConfigError with no missing-import/-file root cause is a genuine
         # misconfiguration and is re-raised.
-        if isinstance(exc.__cause__, (ModuleNotFoundError, ImportError, FileNotFoundError)):
+        if _missing_optional_dep(exc):
             pytest.skip(f"{request.param.__name__}: {exc}")
         raise
 
