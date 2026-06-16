@@ -779,7 +779,7 @@ class SimGripperDescription(BaseModel):
     mirror_actuator_index: int | None = None
 
 
-# ADR-0057 — the single description-asset ref grammar. The schema validator
+# ADR-0058 — the single description-asset ref grammar. The schema validator
 # below only checks the ref *string* shape (cheap, no I/O); the resolver in
 # ``openral_core.assets`` does the file resolution. Both must accept the same
 # schemes, so keep these in lock-step with ``openral_core.assets``.
@@ -799,7 +799,7 @@ def _validate_ref(v: str) -> str:
 class UrdfAsset(BaseModel):
     """A URDF asset reference plus its ``robot_state_publisher`` wiring.
 
-    ADR-0027 / ADR-0057. The ``ref`` is resolved by
+    ADR-0027 / ADR-0058. The ``ref`` is resolved by
     :func:`openral_core.assets.resolve_asset`; ``root_frame`` and
     ``base_to_root_xyz_rpy`` carry the static transform that bridges a URDF
     whose root link differs from the robot's ``base_frame`` (e.g. Franka's
@@ -836,7 +836,7 @@ class UrdfAsset(BaseModel):
 class AssetRefs(BaseModel):
     """The unified description-asset block on :class:`RobotDescription`.
 
-    ADR-0057 §4. Replaces the scattered ``urdf_path`` / ``mjcf_uri`` /
+    ADR-0058 §4. Replaces the scattered ``urdf_path`` / ``mjcf_uri`` /
     ``srdf_path`` (+ ADR-0027 URDF-root fields) with one block whose refs
     share the :func:`openral_core.assets.resolve_asset` grammar.
 
@@ -868,7 +868,7 @@ class SimDescription(BaseModel):
     """MuJoCo wiring for a single-arm robot, consumed by ``MujocoArmHAL``.
 
     The MJCF itself is named by :attr:`RobotDescription.assets.mjcf`
-    (ADR-0057); this block carries only the joint↔qpos/qvel/actuator
+    (ADR-0058); this block carries only the joint↔qpos/qvel/actuator
     plumbing. All fields are optional with defaults derived from
     :attr:`RobotDescription.joints`.  The default mapping is "1:1 in joint
     order, offset by 7 (qpos) / 6 (qvel) if ``floating_base`` is True" —
@@ -1197,7 +1197,7 @@ class RobotDescription(BaseModel):
     Attributes:
         name: Robot name, e.g. "so100_follower".
         embodiment_kind: Top-level kinematic class.
-        assets: Unified URDF / MJCF / SRDF reference block (ADR-0057).
+        assets: Unified URDF / MJCF / SRDF reference block (ADR-0058).
             Refs share the :func:`openral_core.assets.resolve_asset`
             grammar; the URDF's ``robot_state_publisher`` wiring lives on
             :attr:`AssetRefs.urdf` (ADR-0027). Empty by default.

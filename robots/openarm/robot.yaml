@@ -36,7 +36,7 @@ base_frame: "openarm_base"
 # `openarm_v1_mj_description` (MJCF). Wire one of these once a
 # wrapped-task-space VLA targets openarm.
 
-# ADR-0057 — unified asset block. Vendored URDF + bimanual MJCF.
+# ADR-0058 — unified asset block. Vendored URDF + bimanual MJCF.
 assets:
   urdf:
     ref: "file:openarm.urdf"

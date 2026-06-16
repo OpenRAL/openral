@@ -27,7 +27,7 @@ base_frame: "base_link"
 # `mujoco_menagerie/trossen_wx250s` (MJCF, no URDF wrapper).
 # Wire when a wrapped-task-space VLA targets WidowX.
 
-# ADR-0057 — unified asset block. MJCF-only (no URDF/SRDF wired yet).
+# ADR-0058 — unified asset block. MJCF-only (no URDF/SRDF wired yet).
 assets:
   mjcf: "menagerie:trossen_wx250s"
 

@@ -1,7 +1,7 @@
 """``openral robot vendor-urdf <id>`` — expand an upstream xacro to a flat URDF.
 
 The flat, committed URDF means end users need no xacro tooling at runtime
-(ADR-0057). The xacro-only arms (ur5e/ur10e/rizon4) ship a ``XACRO_PATH`` in
+(ADR-0058). The xacro-only arms (ur5e/ur10e/rizon4) ship a ``XACRO_PATH`` in
 ``robot_descriptions``; we let ``robot_descriptions``' ``yourdfpy`` loader run
 ``xacrodoc`` to expand every ``${…}`` substitution, then serialize the resulting
 flat URDF with a provenance header. ``openarm`` ships only MJCF upstream, so its

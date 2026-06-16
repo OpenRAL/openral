@@ -43,7 +43,7 @@ base_kinematics: "omni"
 # Franka MoveIt SRDF; regenerate `allowed_collision_pairs` via
 # `openral collision lower --robot robots/panda_mobile/robot.yaml --acm-only`.
 #
-# ADR-0057 — unified asset block (URDF / SRDF). ``base_to_root_xyz_rpy``:
+# ADR-0058 — unified asset block (URDF / SRDF). ``base_to_root_xyz_rpy``:
 # Franka mount offset on robocasa's OmronMobileBase. Identity in
 # both translation and rotation: post-6DoF-base-publish fix in
 # ``openral_hal.SimAttachedHAL.base_pose_6dof``, the HAL publishes

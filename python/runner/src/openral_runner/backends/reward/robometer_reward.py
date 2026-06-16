@@ -36,7 +36,7 @@ def _evenly_spaced_indices(n: int, k: int) -> list[int]:
     """``k`` evenly-spaced indices into ``range(n)``, always including the last.
 
     Used to subsample a frame window to a fixed budget so the reward model's
-    vision-transformer activation stays bounded on an 8 GB GPU (ADR-0057). The
+    vision-transformer activation stays bounded on an 8 GB GPU (ADR-0058). The
     newest frame (index ``n-1``) is always kept — the reasoner reads
     ``progress_now`` from it. Returns ``list(range(n))`` when ``n <= k``.
     """
@@ -91,7 +91,7 @@ class RobometerReward:
         self._success_threshold = success_threshold
         # Activation memory for the vision-transformer forward scales with the
         # number of frames (x resolution); a full 8 s x 3 fps window of 640x480
-        # frames OOMs a 3.3 GB-resident model on an 8 GB GPU (ADR-0057, observed
+        # frames OOMs a 3.3 GB-resident model on an 8 GB GPU (ADR-0058, observed
         # in deploy-sim). Evenly subsample the window to at most this many frames
         # so the reward forward stays co-resident with the sim (and a small VLA).
         self._max_frames = max(1, max_frames)

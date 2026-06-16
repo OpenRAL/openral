@@ -267,10 +267,10 @@ for a 7-DoF arm. The required top-level blocks are:
 | `capabilities` | Control modes, embodiment tags, lift / dexterity flags |
 | `safety` | Workspace box, speed/force/torque limits, deadman flag |
 | `observation_spec`, `action_spec` | State / action shapes and representations |
-| `assets` (optional) | URDF / MJCF / SRDF reference block (ADR-0057) — see below |
+| `assets` (optional) | URDF / MJCF / SRDF reference block (ADR-0058) — see below |
 | `sim` (optional) | MuJoCo joint↔qpos wiring consumed by `MujocoArmHAL.from_description` — see below |
 
-### The `assets:` block (ADR-0057)
+### The `assets:` block (ADR-0058)
 
 The robot's URDF / MJCF / SRDF are named once, at the top level, via the
 unified `assets:` block. Every ref shares the

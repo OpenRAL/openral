@@ -29,7 +29,7 @@ def _drifted_copy(tmp_path: Path) -> Path:
     """A panda_mobile copy whose ACM drops the link1↔link4 pair (deliberate drift).
 
     The manifest's ``assets.srdf = file:panda_mobile.srdf`` resolves against the
-    manifest's own directory (ADR-0057 ``resolve_asset``), so the SRDF must be
+    manifest's own directory (ADR-0058 ``resolve_asset``), so the SRDF must be
     copied alongside ``robot.yaml`` or the SRDF ACM path can't be lowered.
     """
     src_dir = Path("robots/panda_mobile")

@@ -862,7 +862,7 @@ def _urdf_has_collision_geometry(urdf_path: str) -> bool:
 
 
 def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None) -> LoweringSource:
-    """Pick the provenance-correct lowering source for ``robot`` (ADR-0057 §5).
+    """Pick the provenance-correct lowering source for ``robot`` (ADR-0058 §5).
 
     Deterministic routing that reproduces each robot's *committed* collision
     source exactly — a drift here changes what the C++ safety kernel checks, so

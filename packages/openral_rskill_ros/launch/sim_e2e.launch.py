@@ -222,7 +222,7 @@ def _build_nav2_include(robot_yaml: str, *, use_sim_time: bool) -> object:
 def _resolve_urdf_path(ref: str, manifest_dir: pathlib.Path) -> str | None:
     """Resolve a ``RobotDescription.assets.urdf.ref`` to a concrete URDF path.
 
-    Thin wrapper over ``openral_core.assets.resolve_asset`` (ADR-0057). Returns
+    Thin wrapper over ``openral_core.assets.resolve_asset`` (ADR-0058). Returns
     ``None`` for the ``ros2://robot_description`` dynamic marker (the URDF is on
     the ``/robot_description`` topic at runtime — no file to read). ``file:`` refs
     resolve against the robot's manifest dir, then the repo root.
@@ -775,7 +775,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # and the URDF root (e.g. ``base_link → panda_link0`` when
             # the Franka URDF's root differs from the robot.yaml's
             # ``base_frame``). When ``assets.urdf`` declares
-            # ``base_to_root_xyz_rpy`` + ``root_frame`` (ADR-0057), spawn a
+            # ``base_to_root_xyz_rpy`` + ``root_frame`` (ADR-0058), spawn a
             # ``static_transform_publisher`` to bridge.
             static_xform = urdf_asset.base_to_root_xyz_rpy
             static_root_frame = urdf_asset.root_frame

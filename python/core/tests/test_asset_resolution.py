@@ -1,4 +1,4 @@
-"""All-robots asset resolution + URDF/MJCF/SRDF validity (ADR-0057 §6).
+"""All-robots asset resolution + URDF/MJCF/SRDF validity (ADR-0058 §6).
 
 The user's explicit "test everything for all robots": every ``robots/*/robot.yaml``
 is parametrized through :func:`openral_core.assets.resolve_asset` and its declared
@@ -11,7 +11,7 @@ Principled skips/xfails only — no faked passes:
 * ``menagerie:`` refs are not yet wired (Task 1 YAGNI); ``widowx``'s MJCF
   therefore *must* raise :class:`AssetRefError`, which the test asserts rather
   than skipping (the honest outcome).
-* h1, so100_follower, so101_follower left this table under ADR-0057 — each ships
+* h1, so100_follower, so101_follower left this table under ADR-0058 — each ships
   a vendored, joint-name-patched URDF (``robots/<id>/<id>.urdf``) whose joints
   match the manifest, so all three PASS the cross-check with no safety-lowering
   drift. h1's ``package://h1_description`` meshes resolve location-independently;
@@ -40,7 +40,7 @@ MANIFESTS = sorted((_REPO_ROOT / "robots").glob("*/robot.yaml"))
 
 # Robots whose declared URDF uses joint names that diverge from the manifest's
 # HAL/control-contract names. h1, so100_follower and so101_follower left this
-# table under ADR-0057 — each ships a vendored, joint-name-patched URDF whose
+# table under ADR-0058 — each ships a vendored, joint-name-patched URDF whose
 # joints match the manifest (so100/so101 vendor their Apache-2.0 meshes too).
 # Only gr1 remains, for a documented, auditable reason:
 #  * gr1 — upstream URDF is GPL-3.0, copy-left, rejected from open-core (§1.9).
@@ -176,7 +176,7 @@ def test_urdf_less_robots_declare_no_urdf() -> None:
 
 
 def test_grammar_validator_rejects_legacy_form() -> None:
-    """The pre-ADR-0057 ``robot_descriptions:`` ref form is rejected at validation."""
+    """The pre-ADR-0058 ``robot_descriptions:`` ref form is rejected at validation."""
     from openral_core.schemas import UrdfAsset
     from pydantic import ValidationError
 

@@ -17,7 +17,7 @@ base_frame: "base"
 # ADR-0027 — robot_state_publisher wiring. `robot_descriptions` ships
 # the SO-ARM100 URDF (cloned from github.com/TheRobotStudio/SO-ARM100
 # on first import); root link is ``base``, matching our base_frame.
-# ADR-0057 — unified asset block (URDF / MJCF).
+# ADR-0058 — unified asset block (URDF / MJCF).
 assets:
   urdf:
     ref: "file:so100_follower.urdf"

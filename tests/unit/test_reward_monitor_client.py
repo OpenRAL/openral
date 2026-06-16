@@ -55,7 +55,7 @@ def test_build_reward_monitor_local_scheme() -> None:
 
 
 def test_evenly_spaced_indices_bounds_frames() -> None:
-    """Subsampling a frame window keeps a bounded, end-inclusive, unique set (ADR-0057)."""
+    """Subsampling a frame window keeps a bounded, end-inclusive, unique set (ADR-0058)."""
     from openral_runner.backends.reward.robometer_reward import _evenly_spaced_indices
 
     # n <= k: identity (no subsampling).

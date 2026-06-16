@@ -30,17 +30,17 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   `JOINT_POSITIONS, JOINT_VELOCITIES, DELTA_EE_6D_PLUS_GRIPPER, DELTA_EE_6D, CARTESIAN_POSE`
 - `class RSkillAction(str, Enum)` — Closed vocabulary of high-level action verbs an rSkill can perform (ADR-0022); declared on `RSkillManifest.actions` and surfaced to the reasoner LLM tool palette so it can pick a skill by what it does. (L610)
   Manipulation primitives: `PICK, PLACE, PICK_AND_PLACE, TRANSFER, GRASP, RELEASE`; articulated / contact-rich: `OPEN, CLOSE, PUSH, PULL, SLIDE, INSERT, POUR, WIPE, ROTATE`; motion: `REACH`; mobile: `NAVIGATE`; social/expressive: `WAVE, SHAKE`; generalist marker (foundation / multi-task checkpoints): `GENERALIST`; perception producer: `DETECT` (ADR-0037, for `kind: "detector"` rSkills); scene VLM: `QUERY` (ADR-0047, for `kind: "vlm"` rSkills).
-- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2198)
+- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2199)
   `FP32, FP16, BF16, INT8, INT4, FP4_NVFP4`
-- `class QuantizationBackend(str, Enum)` — Inference backend. (L2222)
+- `class QuantizationBackend(str, Enum)` — Inference backend. (L2223)
   `PYTORCH, ONNX, TENSORRT, GGUF, MLX`
-- `class RSkillState(str, Enum)` — Skill lifecycle. (L2294)
+- `class RSkillState(str, Enum)` — Skill lifecycle. (L2295)
   `UNCONFIGURED, INACTIVE, ACTIVE, FINALIZED, ERROR`
-- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2374)
+- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2375)
   `APACHE_2_0, MIT, BSD, PERMISSIVE_RESEARCH, NVIDIA_NON_COMMERCIAL, NVIDIA_OPEN_MODEL, RLWRLD_NON_COMMERCIAL, PROPRIETARY, UNKNOWN` (NVIDIA_OPEN_MODEL = GR00T N1.7+, commercial OK — ADR-0046)
-- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2388)
+- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2389)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
-- `class PhysicsBackend(str, Enum)` — Sim backend. (L4529)
+- `class PhysicsBackend(str, Enum)` — Sim backend. (L4660)
   `MUJOCO, MUJOCO_MJX, PYBULLET, ISAACSIM, GENESIS, MOCK`
 
 **Pydantic models — robot manifest hierarchy**
@@ -70,8 +70,8 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 - `class CapsuleShape(BaseModel)` — Capsule collision primitive (segment along local +Z swept by a radius); discriminator `shape="capsule"`, fields `radius_m (>0), length_m (>=0)`. (ADR-0030, L853)
 - `CollisionShape: TypeAlias = CapsuleShape | SphereShape` — Discriminated union of convex collision primitives (discriminator `shape`); mesh shapes excluded so the allocation-free kernel checks only analytic convex volumes. (ADR-0030, L882)
 - `class LinkCollisionGeometry(BaseModel)` — One convex collision volume attached to a robot link; fields `link_name, shape: CollisionShape, origin_xyz_rpy`. Lowered, kernel-facing form (hand-authored or emitted by the offline lowering tool from MJCF/URDF). (ADR-0030, L894)
-- `class RobotDescription(BaseModel)` — Top-level robot manifest, one per robot. (L1193)
-  fields: `name, embodiment_kind, assets, base_frame, odom_frame, map_frame, joints, end_effectors, sensors, sensor_bundles, capabilities, safety, ros2_namespace, middleware, onboard_compute, sdk_kind, hal, observation_spec, action_spec, sim, scene_defaults, base_joints, footprint_radius, base_kinematics, collision_geometry, allowed_collision_pairs, footprint_polygon`. **`assets: AssetRefs`** (ADR-0057) is the single URDF/MJCF/SRDF reference block (default empty) — it replaces the former scattered `urdf_path`, `urdf_root_frame`, `static_base_to_urdf_root_xyz_rpy`, and `srdf_path` fields (and `SimDescription.mjcf_uri`); refs share the `openral_core.assets.resolve_asset` grammar and the URDF's `robot_state_publisher` wiring (`root_frame` + `base_to_root_xyz_rpy`, ADR-0027) lives on `assets.urdf`. **`collision_geometry: list[LinkCollisionGeometry]`** + **`allowed_collision_pairs: list[tuple[str, str]]`** (ADR-0030) carry the per-link collision primitives and the self-collision allowed-collision matrix the safety kernel consumes; all default empty/`None` and `joints` stays normative for the kinematic chain (URDF/SRDF add geometry + ACM only — the SRDF `disable_collisions` block named by `assets.srdf` is the canonical source for `allowed_collision_pairs` on real robots). `footprint_radius: float | None` (>0) + `base_kinematics: Literal["differential","holonomic","omni","ackermann"] | None` (ADR-0025) drive the generic Nav2 bringup (see `nav2_param_overrides`). `footprint_polygon: list[tuple[float, float]] | None` — optional base-frame XY polygon vertices (metres, CCW); when set, draws the true base outline on the SLAM occupancy grid instead of the `footprint_radius` circle (ADR-0025).
+- `class RobotDescription(BaseModel)` — Top-level robot manifest, one per robot. (L1194)
+  fields: `name, embodiment_kind, assets, base_frame, odom_frame, map_frame, joints, end_effectors, sensors, sensor_bundles, capabilities, safety, ros2_namespace, middleware, onboard_compute, sdk_kind, hal, observation_spec, action_spec, sim, scene_defaults, base_joints, footprint_radius, base_kinematics, collision_geometry, allowed_collision_pairs, footprint_polygon`. **`assets: AssetRefs`** (ADR-0058) is the single URDF/MJCF/SRDF reference block (default empty) — it replaces the former scattered `urdf_path`, `urdf_root_frame`, `static_base_to_urdf_root_xyz_rpy`, and `srdf_path` fields (and `SimDescription.mjcf_uri`); refs share the `openral_core.assets.resolve_asset` grammar and the URDF's `robot_state_publisher` wiring (`root_frame` + `base_to_root_xyz_rpy`, ADR-0027) lives on `assets.urdf`. **`collision_geometry: list[LinkCollisionGeometry]`** + **`allowed_collision_pairs: list[tuple[str, str]]`** (ADR-0030) carry the per-link collision primitives and the self-collision allowed-collision matrix the safety kernel consumes; all default empty/`None` and `joints` stays normative for the kinematic chain (URDF/SRDF add geometry + ACM only — the SRDF `disable_collisions` block named by `assets.srdf` is the canonical source for `allowed_collision_pairs` on real robots). `footprint_radius: float | None` (>0) + `base_kinematics: Literal["differential","holonomic","omni","ackermann"] | None` (ADR-0025) drive the generic Nav2 bringup (see `nav2_param_overrides`). `footprint_polygon: list[tuple[float, float]] | None` — optional base-frame XY polygon vertices (metres, CCW); when set, draws the true base outline on the SLAM occupancy grid instead of the `footprint_radius` circle (ADR-0025).
   - `scene_defaults: SceneDefaults | None = None` — Optional scene-level defaults (top-camera POV, etc.) consumed by the MJCF composers as the fallback when an environment does not pin its own values.
   - `validate_for_e2e_pipeline(self) -> None` — Assert this manifest carries every field the e2e ROS graph (`openral deploy sim` → C++ safety kernel) needs: every actuated joint must have `position_limits`, `velocity_limit`, and `effort_limit` set. Raises `ROSConfigError` listing every missing field at once — used by `sim_e2e.launch.py` so a misshapen manifest fails at launch-parse time, not later in the HAL's first actuation tick. Pure validation; for synthesis of the kernel `EnvelopeIntersection` use `openral_safety.envelope_loader.compute_intersection(robot, skill=None)`.
   - `lidar_sensor(self) -> SensorSpec | None` [@property] — First declared `lidar_2d` `SensorSpec` (beam count `n_channels`, `range_min_m`/`range_max_m`, `rate_hz`), or None. Single source of truth for the synthetic `/scan` envelope: `openral deploy sim` (`deploy_sim._scan_params_from_description`) forwards it as HAL `scan_*` ROS params and `SimSensorBridge` (which owns `/scan` for the manifest-driven node) reads the envelope from them, so neither hardcodes a scan envelope. ADR-0025.
@@ -80,20 +80,20 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 - `class GripperWriteMode(str, Enum)` — How `MujocoArmHAL` maps an Action's gripper value to `ctrl`. (ADR-0023 bimanual amendment) Values: `NORMALISED` (`[0,1]` → `ctrl_range`), `PASSTHROUGH` (raw → `ctrl`; MuJoCo clips).
 - `class SimGripperDescription(BaseModel)` — Gripper wiring inside a MuJoCo MJCF. (ADR-0023)
   fields: `joint, ctrl_range, qpos_addrs, qpos_scale, read_mode, write_mode, actuator_index, mirror_actuator_index`
-- `class UrdfAsset(BaseModel)` — A URDF asset reference plus its `robot_state_publisher` wiring. (ADR-0027 / ADR-0057)
+- `class UrdfAsset(BaseModel)` — A URDF asset reference plus its `robot_state_publisher` wiring. (ADR-0027 / ADR-0058)
   fields: `ref: str` (validated against the `resolve_asset` scheme grammar), `root_frame: str | None` (URDF root link when it differs from `base_frame`), `base_to_root_xyz_rpy: tuple[float×6] | None` (static `base_frame`→`root_frame` transform [x,y,z,roll,pitch,yaw], metres+radians)
-- `class AssetRefs(BaseModel)` — Unified `RobotDescription.assets` block: one URDF/MJCF/SRDF reference set replacing the former scattered asset fields. (ADR-0057 §4)
+- `class AssetRefs(BaseModel)` — Unified `RobotDescription.assets` block: one URDF/MJCF/SRDF reference set replacing the former scattered asset fields. (ADR-0058 §4)
   fields: `urdf: UrdfAsset | None`, `mjcf: str | None`, `srdf: str | None` (the last two are bare refs, validated against the same scheme grammar; all default `None`)
-- `class SimDescription(BaseModel)` — Optional `RobotDescription.sim` block holding MuJoCo joint↔qpos/qvel/actuator wiring for `MujocoArmHAL.from_description`; the MJCF itself is named by `RobotDescription.assets.mjcf` (ADR-0057). (ADR-0023)
+- `class SimDescription(BaseModel)` — Optional `RobotDescription.sim` block holding MuJoCo joint↔qpos/qvel/actuator wiring for `MujocoArmHAL.from_description`; the MJCF itself is named by `RobotDescription.assets.mjcf` (ADR-0058). (ADR-0023)
   fields: `floating_base, joint_qpos_addr, joint_qvel_addr, actuator_index, grippers, settle_steps_default, keyframe_index, seed_ctrl_from_qpos`
 - `class HalEntrypoints(BaseModel)` — `RobotDescription.hal` block: the robot's simulation + real-hardware HAL import strings, resolved by `openral_hal.build_hal`. (ADR-0031)
   fields: `sim: str | None` (null → derive `MujocoArmHAL.from_description` when a `sim:` block exists), `real: str | None` (null → simulation-only robot), `parameters: HalParameters` (per-robot HAL construction defaults; ADR-0029)
 - `class HalParameters(BaseModel)` — `RobotDescription.hal.parameters` block: per-robot HAL construction defaults (serial `port`, `robot_ip`, …) merged into the constructor by `openral_hal.build_hal` (explicit `transport` wins; unaccepted keys dropped), so a parameterised robot needs no bespoke lifecycle subclass. Empty by default. (ADR-0029, issue #191)
   fields: `defaults: dict[str, object]`
-- `class TopCameraDefaults(BaseModel)` — Default placement for the scene-level "top" / "base" camera consumed by sim backends that render an overview camera. (L925)
+- `class TopCameraDefaults(BaseModel)` — Default placement for the scene-level "top" / "base" camera consumed by sim backends that render an overview camera. (L926)
   fields: `pos: tuple[float, float, float], target: tuple[float, float, float], fovy: float (gt=0, lt=180)`
   - Replaces the dataset-specific `_DEFAULT_TOP_CAMERA_*` module-level constants previously hard-coded in `openral_sim.backends.openarm_robosuite._assets`. Backend YAML overrides (`scene.backend_options.top_camera_*`) still win — this submodel is the default fed to the composer.
-- `class SceneDefaults(BaseModel)` — Per-robot scene rendering defaults consulted when the scene YAML does not override them. Fields: `top_camera: TopCameraDefaults | None`, `composition: SceneComposition | None`. (L990)
+- `class SceneDefaults(BaseModel)` — Per-robot scene rendering defaults consulted when the scene YAML does not override them. Fields: `top_camera: TopCameraDefaults | None`, `composition: SceneComposition | None`. (L991)
 - `class SceneComposition(BaseModel)` — Declarative MJCF scene composition (issue #191 Phase 3b). `composer: "module:fn"` returning `(xml, meshdir)` + `params: dict`. The manifest-driven `ManifestHALLifecycleNode._create_hal` calls the composer and threads the composed MJCF in as the HAL's `mjcf_path` — replaced openarm's bespoke `_create_hal` tabletop splicing.
   fields: `composer: str`, `params: dict[str, object]`
   fields: `top_camera: TopCameraDefaults | None = None`
@@ -101,15 +101,15 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 
 **Pydantic models — runtime snapshots**
 
-- `class JointState(BaseModel)` — Real-time joint state snapshot. (L1594)
+- `class JointState(BaseModel)` — Real-time joint state snapshot. (L1595)
   fields: `name, position, velocity, effort, stamp_ns`
-- `class Pose6D(BaseModel)` — 6D pose (position + xyzw quaternion). (L1612)
+- `class Pose6D(BaseModel)` — 6D pose (position + xyzw quaternion). (L1613)
   fields: `xyz, quat_xyzw, frame_id`
-- `class DetectedObject(BaseModel)` — Object detection. (L1626)
+- `class DetectedObject(BaseModel)` — Object detection. (L1627)
   fields: `label, confidence, pose, bbox_3d, track_id`
 - `class WorldCollisionPrimitive(BaseModel)` — A placed convex obstacle in the world (world-frame analogue of `LinkCollisionGeometry`); fields `shape: CollisionShape, pose: Pose6D, object_id: str | None`. (ADR-0030, L1371)
 - `class OccupancyGridRef(BaseModel)` — Reference to a 2D occupancy grid for mobile-base world-collision (mirrors `nav_msgs/OccupancyGrid` metadata); fields `frame_id, resolution_m (>0), width (>=0), height (>=0), origin: Pose6D, data_topic`. (ADR-0030, L1395)
-- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills. (L1810)
+- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills. (L1811)
   fields: `stamp_ns, joint_state, base_pose, base_twist, ee_poses, contact_forces, images, image_frames, point_clouds, tactile, detected_objects, battery_pct, diagnostics, collision_primitives, occupancy_grid`
   - **collision_primitives / occupancy_grid (added ADR-0030)** — `list[WorldCollisionPrimitive]` (default empty) + `OccupancyGridRef | None` (default `None`): the bounded world surface the kernel's world-collision phase checks robot links against; an absent/stale world is treated as unavailable (fail-closed).
   - **image_frames (added ADR-0010)** — `dict[str, SensorFrame] | None`. Optional in-process frame carrier for no-ROS deployments; default `None` keeps the existing `images: dict[str, str]` topic-ref path unchanged.
@@ -309,10 +309,10 @@ _Strict YAML loaders for the three scene tiers (ADR-0041)._
 - `def raise_on_invalid_suite(scenes: list[BenchmarkScene], *, suite_id: str) -> None` (L223) — ADR-0042. Free-function replacement for the deleted `BenchmarkSpec.model_post_init`. Enforces the five suite invariants: non-empty list, every `scenes[i].robot_id` non-`None`, every `task.id` unique within the suite, every `scenes[i].robot_id` / `n_episodes` / `seed` / `metadata` byte-identical across the list. Per-scene `task.success_key` and `task.max_steps` MAY differ (ManiSkill3 mixed-budget suite). `suite_id` is embedded in every error message so failures point back at the right `benchmarks/<id>.yaml`. First violation wins — no batched reporting. Raises `ROSConfigError` on any invariant violation.
 
 ### `python/core/src/openral_core/assets.py`
-_The single resolver for robot description assets — URDF / MJCF / SRDF (ADR-0057)._
+_The single resolver for robot description assets — URDF / MJCF / SRDF (ADR-0058)._
 
-- `class AssetRefError(ValueError)` (L37) — A description-asset reference is malformed or cannot be resolved.
-- `def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None` (L41) — Resolve one asset `ref` to a concrete file path for the requested `kind` (`urdf`/`mjcf`/`srdf`). One grammar replacing `resolve_urdf_path`, `resolve_mjcf_uri`, plain-path SRDF, and `urdf_lowering._load_urdf_model`. Schemes: `rd:<module>` (upstream `robot_descriptions`, downloads on first use; xacro-only URDF → `AssetRefError` directing to `openral robot vendor-urdf`), `file:<relpath>` (manifest dir then repo root), `gym_aloha:<scene>` / `openarm:<variant>` / `menagerie:<model>` (sim-only MJCF loaders, lazy-imported; menagerie not yet wired), `ros2://robot_description` (URDF-only dynamic marker → returns `None`). Raises `AssetRefError` for every other unresolvable/malformed ref.
+- `class AssetRefError(ValueError)` (L40) — A description-asset reference is malformed or cannot be resolved.
+- `def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None) -> Path | None` (L44) — Resolve one asset `ref` to a concrete file path for the requested `kind` (`urdf`/`mjcf`/`srdf`). One grammar replacing `resolve_urdf_path`, `resolve_mjcf_uri`, plain-path SRDF, and `urdf_lowering._load_urdf_model`. Schemes: `rd:<module>` (upstream `robot_descriptions`, downloads on first use; xacro-only URDF → `AssetRefError` directing to `openral robot vendor-urdf`), `file:<relpath>` (manifest dir then repo root), `gym_aloha:<scene>` / `openarm:<variant>` / `menagerie:<model>` (sim-only MJCF loaders, lazy-imported; menagerie not yet wired), `ros2://robot_description` (URDF-only dynamic marker → returns `None`). Raises `AssetRefError` for every other unresolvable/malformed ref.
 
 ### `python/core/src/openral_core/exceptions.py`
 _openral exception hierarchy — use these, do not invent new base classes._

@@ -2,7 +2,7 @@
 
 One grammar replaces ``resolve_urdf_path``, ``resolve_mjcf_uri``, the
 plain-path SRDF handling, and ``openral_safety.urdf_lowering._load_urdf_model``.
-See ``docs/adr/0057-standardized-description-assets.md``.
+See ``docs/adr/0058-standardized-description-assets.md``.
 
 Grammar (``resolve_asset(ref, kind)``):
 

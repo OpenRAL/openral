@@ -23,7 +23,7 @@ base_frame: "base_link"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the
 # Flexiv MoveIt SRDF (flexiv_ros2, arm_prefix="" resolved). Regenerate via
 # `openral collision lower --robot robots/rizon4/robot.yaml --write`.
-# ADR-0057 — unified asset block (vendored URDF / MJCF / SRDF).
+# ADR-0058 — unified asset block (vendored URDF / MJCF / SRDF).
 assets:
   urdf:
     ref: "file:rizon4.urdf"

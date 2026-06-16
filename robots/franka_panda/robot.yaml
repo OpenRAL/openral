@@ -31,7 +31,7 @@ base_frame: "panda_link0"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the Franka
 # MoveIt SRDF. Regenerate via
 # `openral collision lower --robot robots/franka_panda/robot.yaml --acm-only`.
-# ADR-0057 — unified asset block (URDF / MJCF / SRDF).
+# ADR-0058 — unified asset block (URDF / MJCF / SRDF).
 assets:
   urdf:
     ref: "rd:panda_description"

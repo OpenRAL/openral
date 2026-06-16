@@ -26,7 +26,7 @@ base_frame: "world"
 # `robot_descriptions` Python package ships an MJCF (`aloha_mj_description`)
 # only. Wire one of these once a wrapped-task-space VLA targets aloha.
 
-# ADR-0057 — unified asset block. MJCF-only (no URDF/SRDF wired yet).
+# ADR-0058 — unified asset block. MJCF-only (no URDF/SRDF wired yet).
 assets:
   mjcf: "gym_aloha:bimanual_viperx_transfer_cube"
 

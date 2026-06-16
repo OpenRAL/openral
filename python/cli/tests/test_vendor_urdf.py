@@ -1,4 +1,4 @@
-"""Unit tests for ``openral robot vendor-urdf`` (ADR-0057 description vendoring).
+"""Unit tests for ``openral robot vendor-urdf`` (ADR-0058 description vendoring).
 
 The command expands an upstream xacro to a flat, committed URDF so end users
 need no xacro tooling at runtime. These tests exercise the real expander
@@ -69,7 +69,7 @@ def test_vendor_openarm_strips_prefix(tmp_path: Path) -> None:
     assert '"openarm_left_joint1"' not in text
 
 
-# ── Raw-text mode (ADR-0057): joint-name-patched URDFs for so100/so101/gr1/h1 ──
+# ── Raw-text mode (ADR-0058): joint-name-patched URDFs for so100/so101/gr1/h1 ──
 #
 # These exercise the real ``robot_descriptions`` cache. They skip cleanly when a
 # given upstream module is not installed/cached.

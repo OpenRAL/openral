@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Vendored by `openral robot vendor-urdf ur5e` from rd:ur5e_description. Upstream license applies — see docs/adr/0057. -->
+<!-- Vendored by `openral robot vendor-urdf ur5e` from rd:ur5e_description. Upstream license applies — see docs/adr/0058. -->
 <robot name="ur5e">
   <link name="world"/>
   <link name="base_link"/>

@@ -244,7 +244,7 @@ class ToolPalette(BaseModel):
     ``detector_available``: localization (``locate_in_view``) and scene-state
     reasoning (``query_scene``) are independently provisioned backends."""
     task_progress_available: bool = False
-    """ADR-0057 — when ``True`` the LLM additionally sees the **read-only**
+    """ADR-0058 — when ``True`` the LLM additionally sees the **read-only**
     ``query_task_progress`` tool (ask the Robometer reward monitor for a
     quantitative windowed progress/success assessment of the current task). Set
     by the reasoner_node only when a reward monitor exposes the

@@ -1,5 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
-<!-- Vendored by hand from rd:so_arm100_description (Apache-2.0). Joints renamed to HAL convention; meshes in ./assets/. See docs/adr/0057. -->
+<!-- Vendored by hand from rd:so_arm100_description (Apache-2.0). Joints renamed to HAL convention; meshes in ./assets/. See docs/adr/0058. -->
 <robot name="so_arm100">
   
   <!-- Materials -->
