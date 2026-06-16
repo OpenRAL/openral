@@ -26,7 +26,7 @@ import math
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from openral_core import CapsuleShape, LinkCollisionGeometry, RobotDescription, SphereShape
 from openral_core.exceptions import ROSConfigError
@@ -41,14 +41,17 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LoweredCollisionModel",
+    "LoweringSource",
     "acm_for_geometry",
     "fit_capsule_to_vertices",
     "lower_joint_fk",
     "lower_link_geometry",
     "lower_robot",
+    "lower_robot_auto",
     "lower_robot_from_mjcf",
     "parse_srdf_disabled_pairs",
     "sample_acm_from_urdf",
+    "select_lowering",
 ]
 
 _AcmPairs = set[frozenset[str]]
@@ -818,4 +821,107 @@ def lower_robot(
         acm_source=source,
         srdf_path=used_srdf,
         joint_fk=joint_fk,
+    )
+
+
+# ── Provenance-correct dispatch: pick the lowering source per robot ─────────────
+
+LoweringSource = Literal["srdf", "sampling", "mjcf"]
+"""Which lowering path a robot resolves to (matches ``LoweredCollisionModel.acm_source``)."""
+
+
+def _resolved_urdf_path(robot: RobotDescription, manifest_dir: Path | None) -> str | None:
+    """The robot's URDF as a concrete on-disk path, or ``None`` if it has no static URDF.
+
+    Returns ``None`` for a robot with no ``assets.urdf`` and for the
+    ``ros2://robot_description`` dynamic marker (a runtime topic, not a file) —
+    in both cases there is no URDF file to lower geometry from.
+    """
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    if robot.assets.urdf is None:
+        return None
+    try:
+        urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        raise ROSConfigError(f"{robot.name}: {exc}") from exc
+    return None if urdf is None else str(urdf)
+
+
+def _urdf_has_collision_geometry(urdf_path: str) -> bool:
+    """True iff the URDF yields at least one collision capsule/sphere.
+
+    The discriminator between the URDF-sampling path and the MJCF path for a
+    robot that declares both but no SRDF. A URDF whose ``<collision>`` meshes do
+    not resolve on disk (e.g. ``openarm``'s ``package://`` refs) lowers to *zero*
+    geometry; such a robot must lower from its MJCF instead, where its
+    hand-authored manifest capsules are kept. ``lower_link_geometry`` warns per
+    missing mesh, so the unusable URDF is never silently dropped.
+    """
+    return len(lower_link_geometry(urdf_path)) > 0
+
+
+def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None) -> LoweringSource:
+    """Pick the provenance-correct lowering source for ``robot`` (ADR-0057 §5).
+
+    Deterministic routing that reproduces each robot's *committed* collision
+    source exactly — a drift here changes what the C++ safety kernel checks, so
+    the choice is explicit, not the old ``urdf if assets.urdf else mjcf`` guess:
+
+    * ``"srdf"`` — an SRDF **and** a URDF: the SRDF's ``disable_collisions`` is
+      the mesh-proven ACM ground truth (franka_panda, panda_mobile, rizon4,
+      ur5e, ur10e).
+    * ``"sampling"`` — a URDF (no SRDF) whose ``<collision>`` meshes resolve to
+      usable geometry: the MoveIt-style random-pose ACM sweep over the
+      URDF-fitted capsules (g1, h1, so100_follower, so101_follower).
+    * ``"mjcf"`` — no usable URDF geometry but an MJCF exists: keep the
+      manifest's hand-authored capsules and sweep the ACM with mujoco FK
+      (openarm, whose vendored URDF's collision meshes are ``package://`` refs
+      that don't resolve).
+
+    Raises:
+        ROSConfigError: If the robot declares no lowerable asset (no URDF/SRDF
+            file and no MJCF), or a declared ref does not resolve.
+    """
+    urdf_path = _resolved_urdf_path(robot, manifest_dir)
+    if robot.assets.srdf and urdf_path is not None:
+        return "srdf"
+    if urdf_path is not None and _urdf_has_collision_geometry(urdf_path):
+        return "sampling"
+    if robot.assets.mjcf:
+        return "mjcf"
+    if urdf_path is not None:
+        # A URDF with no usable collision geometry and no MJCF: still the URDF
+        # path (it will raise/emit empty geometry, surfacing the missing meshes)
+        # rather than silently producing nothing.
+        return "sampling"
+    raise ROSConfigError(
+        f"{robot.name}: no lowerable asset — needs assets.urdf (with collision "
+        "meshes) or assets.mjcf"
+    )
+
+
+def lower_robot_auto(
+    robot: RobotDescription,
+    *,
+    acm_only: bool = False,
+    geometry_only: bool = False,
+    manifest_dir: Path | None = None,
+) -> LoweredCollisionModel:
+    """Lower ``robot`` via the provenance-correct source (:func:`select_lowering`).
+
+    The single dispatch the CLI (``openral collision lower``/``check``) and the
+    byte-identical regression test both call, so routing can never diverge
+    between "what we commit" and "what we verify". ``acm_only`` / ``geometry_only``
+    are forwarded to the URDF path; the MJCF path always emits both blocks (it
+    keeps the manifest geometry and recomputes the ACM).
+
+    Raises:
+        ROSConfigError: Propagated from :func:`select_lowering` /
+            :func:`lower_robot` / :func:`lower_robot_from_mjcf`.
+    """
+    if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
+        return lower_robot_from_mjcf(robot, manifest_dir=manifest_dir)
+    return lower_robot(
+        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=manifest_dir
     )

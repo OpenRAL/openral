@@ -171,7 +171,23 @@ mandates, not suggestions):
    the new resolver and assert the output is **identical** to the committed
    values — byte-for-byte for the ACM pairs, geometric equality for the
    capsules. **A diff is a release blocker.** This is the concrete mitigation
-   the hazard-log entry below references.
+   the hazard-log entry below references. **Implemented:**
+   `packages/openral_safety/test/test_lowering_regression.py` — re-lowers every
+   committed robot through the provenance-correct dispatcher
+   `openral_safety.urdf_lowering.lower_robot_auto` (`select_lowering` picks SRDF /
+   URDF-sampling / MJCF per the §5 rule), asserting ACM-set equality, exact ACM
+   order, per-link geometric equality at committed (4-dp) precision, and
+   byte-identical rendered blocks. 9/10 robots re-lower with **zero drift**
+   (franka_panda, g1, h1, openarm, rizon4, so100_follower, so101_follower, ur5e,
+   ur10e). **One documented exception — `panda_mobile`:** its committed
+   `collision_geometry` is **hand-authored** (no `# GENERATED` header; clean
+   round capsules) and it has no MJCF to keep that geometry, so *any* current
+   lowering path re-fits geometry from the URDF and the ACM loses the
+   hand-tuned `panda_link5 ↔ panda_link7` capsule-junction pair. This drift is
+   **pre-existing** (the old `lower_robot`-for-everything CLI drifted it
+   identically) and is marked **strict-xfail** so it stays loud. Reconciling it
+   — a deliberate re-lower, or a decision to keep the hand geometry and
+   regenerate only the ACM — is a **safety-WG human gate** (see checkbox 3).
 2. **All existing safety tests pass unchanged** —
    `packages/openral_safety/test/test_urdf_lowering_fk.py` (including
    `test_franka_acm_uses_srdf_when_srdf_path_set`), the `mjcf_lowering` tests,
@@ -181,6 +197,10 @@ mandates, not suggestions):
    self-clear. Tracked as a pending checkbox:
    - [ ] **PENDING: safety-WG reviewer sign-off** on the lowering-regression
      evidence and the "locates files, never changes geometry" claim.
+   - [ ] **PENDING: safety-WG decision on `panda_mobile`** — keep the
+     hand-authored geometry (regenerate only its ACM) or re-lower from the URDF
+     and re-review the resulting ACM. Until decided, the regression's strict-xfail
+     records the known drift without hiding it.
 4. **Hazard-log update** — entry added below referencing the regression test as
    the mitigation (CLAUDE.md §3).
 5. **TDD for the safety-touching edits** (`urdf_lowering.py`,
