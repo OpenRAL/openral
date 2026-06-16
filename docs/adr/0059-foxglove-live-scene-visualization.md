@@ -1,6 +1,6 @@
 # ADR-0059: Foxglove as the live-scene visualization surface (read-only, hybrid with OTel)
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-06-16
 - Related: [ADR-0017](0017-dashboard-otlp-receiver.md) (the `openral dashboard`
   OTLP/HTTP receiver this ADR deliberately keeps for traces/metrics/health — the
@@ -174,7 +174,8 @@ so the safety posture is explicit and test-enforced:
   opt-in for a trusted LAN; the bridge has no auth/TLS, so a public bind is
   documented as prohibited.
 
-Graduating this ADR to **Accepted** and any future work that re-enables a write
-capability (E-stop reset, Publish/Teleop, prompt input) requires safety-WG
-sign-off and a hazard-log entry. Until then the surface is view-only and the robot
-cannot be actuated through it.
+The **read-only** scope recorded here is accepted with safety-WG sign-off: the
+surface is view-only and the robot cannot be actuated through it. Any future work
+that re-enables a write capability (E-stop reset, Publish/Teleop, prompt input)
+is a separate decision requiring its own safety-WG sign-off and a hazard-log
+entry — it is not authorized by this ADR.
