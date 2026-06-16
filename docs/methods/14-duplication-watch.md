@@ -120,7 +120,7 @@ contributor should look at before adding similar code.
   no per-subclass `# type: ignore`). Per-robot `_<robot>_mjcf_path`
   helpers were also retired in the same cleanup — every MJCF ref resolves
   through the central `openral_core.assets.resolve_asset` grammar (`rd:`
-  / `gym_aloha:` / `openarm:` / `menagerie:` / `file:` schemes; ADR-0057). New
+  / `gym_aloha:` / `openarm:` / `menagerie:` / `file:` schemes; ADR-0058). New
   MuJoCo HALs — single-arm, floating-base humanoid, **or** bimanual —
   should declare an `assets.mjcf` ref (plus an optional `sim:` joint-wiring
   block) in `robots/<id>/robot.yaml` and call

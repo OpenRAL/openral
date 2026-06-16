@@ -117,7 +117,7 @@ def main() -> int:
     # (ROS 2 / colcon populate PYTHONPATH and would shadow the pinned deps).
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
-    # Empirically required to fit NF4 + the forward in 8 GB (ADR-0057 Phase 2).
+    # Empirically required to fit NF4 + the forward in 8 GB (ADR-0058 Phase 2).
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     cmd = [

@@ -22,7 +22,7 @@ with **only the joint names patched**: the upstream suffixes every joint with
 vendor-urdf h1 --upstream rd:h1_description --out robots/h1 --raw-text` strips
 the `_joint` suffix from joint names **on the raw URDF text** — link names,
 geometry, inertials and the `package://h1_description/...` mesh paths are
-byte-identical to upstream (ADR-0057 §4). End users need no xacro tooling and
+byte-identical to upstream (ADR-0058 §4). End users need no xacro tooling and
 no joint-name reconciliation at runtime.
 
 ## What this is — and what it isn't

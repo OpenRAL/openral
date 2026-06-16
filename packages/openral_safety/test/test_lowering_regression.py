@@ -1,14 +1,14 @@
-"""Byte-identical lowering regression — the ADR-0057 §5 safety gate (hard gate).
+"""Byte-identical lowering regression — the ADR-0058 §5 safety gate (hard gate).
 
 The C++ safety kernel checks self-collision (ACM) and world-collision against the
 *lowered* ``collision_geometry`` + ``allowed_collision_pairs`` committed in each
-``robot.yaml`` (ADR-0030). ADR-0057 moves only *how the source files are located*,
+``robot.yaml`` (ADR-0030). ADR-0058 moves only *how the source files are located*,
 never the geometry — so re-lowering every robot through the provenance-correct
 dispatcher (:func:`openral_safety.urdf_lowering.lower_robot_auto`) MUST reproduce the
 committed values exactly. A drift is a release blocker (CLAUDE.md §3): it would
 change what the kernel checks without a paper trail.
 
-This is the concrete mitigation the ADR-0057 hazard-log entry references. It
+This is the concrete mitigation the ADR-0058 hazard-log entry references. It
 exercises real manifests, real URDF/SRDF/MJCF assets, and the real lowering math
 — no mocks, no stubs (§1.11). The committed manifest carries geometry rendered to
 4 dp (``render_blocks``); the comparison is at that committed precision (rounded,
@@ -55,11 +55,11 @@ ROBOTS = sorted(Path("robots").glob("*/robot.yaml"))
 # sampling URDF paths — both FIT geometry from the URDF meshes, producing
 # different capsules (link5 r≈0.094 L≈0.347, tilted), under which link5/link7 no
 # longer always-collide, so the ACM loses that pair. This drift is NOT introduced
-# by the ADR-0057 resolver change (the old ``lower_robot``-for-everything CLI
+# by the ADR-0058 resolver change (the old ``lower_robot``-for-everything CLI
 # drifted it identically); it is a pre-existing condition the fleet-wide
 # regression now surfaces.
 #
-# DECISION (ADR-0057 §5, recorded 2026-06-16): KEEP the hand-authored geometry.
+# DECISION (ADR-0058 §5, recorded 2026-06-16): KEEP the hand-authored geometry.
 # A deliberate candidate re-lower was performed and REJECTED — it is not
 # at-least-as-conservative (CLAUDE.md §3): it shrinks link7's capsule
 # (radius 0.060 → 0.053 m, a smaller collision envelope) and drops the hand-tuned
@@ -175,7 +175,7 @@ def _param(manifest: Path) -> object:
                     f"{name} collision_geometry is HAND-AUTHORED (no GENERATED "
                     "header) and has no MJCF-native keep path; no current lowering "
                     "path reproduces it. Needs a deliberate re-lower + safety-WG "
-                    "sign-off (ADR-0057 §5) — a human gate, not an automated "
+                    "sign-off (ADR-0058 §5) — a human gate, not an automated "
                     "routing fix."
                 ),
             ),
@@ -185,7 +185,7 @@ def _param(manifest: Path) -> object:
 
 @pytest.mark.parametrize("manifest", [_param(p) for p in ROBOTS])
 def test_lowering_output_unchanged(manifest: Path) -> None:
-    """Re-lowering a robot reproduces its committed collision model exactly (ADR-0057)."""
+    """Re-lowering a robot reproduces its committed collision model exactly (ADR-0058)."""
     desc = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
     if not desc.collision_geometry:
         pytest.skip("no collision_geometry to regress")

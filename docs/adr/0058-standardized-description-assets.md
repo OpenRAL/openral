@@ -1,4 +1,4 @@
-# ADR-0057: Standardized robot description assets (URDF / xacro / MJCF / SRDF)
+# ADR-0058: Standardized robot description assets (URDF / xacro / MJCF / SRDF)
 
 - Status: **Proposed**
 - Date: 2026-06-16

@@ -2447,13 +2447,13 @@ app.add_typer(dataset_app, name="dataset")
 # (it pulls yourdfpy/trimesh) so `openral --help` stays fast.
 app.add_typer(collision_app, name="collision")
 
-# ADR-0057: `openral robot vendor-urdf <id>` — expand an upstream xacro to a
+# ADR-0058: `openral robot vendor-urdf <id>` — expand an upstream xacro to a
 # flat, committed URDF so end users need no xacro tooling at runtime. The
 # `vendor_urdf` import is deferred inside the command (it pulls robot_descriptions/
 # xacrodoc/yourdfpy) so `openral --help` stays fast.
 robot_app = typer.Typer(
     name="robot",
-    help="Robot description assets — vendor a flat URDF from an upstream xacro (ADR-0057).",
+    help="Robot description assets — vendor a flat URDF from an upstream xacro (ADR-0058).",
     no_args_is_help=True,
 )
 app.add_typer(robot_app, name="robot")
@@ -2497,7 +2497,7 @@ def robot_vendor_urdf(
         ),
     ),
 ) -> None:
-    """Expand an upstream description to a flat, committed URDF (ADR-0057)."""
+    """Expand an upstream description to a flat, committed URDF (ADR-0058)."""
     from openral_cli.robot import vendor_urdf
 
     rename_pairs: list[tuple[str, str]] | None = None

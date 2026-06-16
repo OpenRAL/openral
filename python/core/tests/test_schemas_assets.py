@@ -1,6 +1,6 @@
 """Tests for the unified ``assets:`` block on :class:`RobotDescription`.
 
-Covers the schema-level ref-string grammar (ADR-0057 §4). The validator here
+Covers the schema-level ref-string grammar (ADR-0058 §4). The validator here
 only checks the ref *string* format; file resolution lives in
 :mod:`openral_core.assets`. The two must agree on the accepted schemes.
 """

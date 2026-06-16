@@ -30,7 +30,7 @@ base_frame: "ur10e_base_link"
 # Self-collision ACM source for the offline lowering tool (ADR-0030): the
 # UR MoveIt SRDF (ros-industrial). Regenerate via
 # `openral collision lower --robot robots/ur10e/robot.yaml --write`.
-# ADR-0057 — unified asset block (vendored URDF / MJCF / SRDF).
+# ADR-0058 — unified asset block (vendored URDF / MJCF / SRDF).
 assets:
   urdf:
     ref: "file:ur10e.urdf"
