@@ -245,7 +245,14 @@ Make sure you're building from the **repo root** (the `docker-compose.dev.yml` s
 Install the hooks once after cloning:
 
 ```bash
-uv run pre-commit install
+just install-hooks
 ```
 
-Then `git commit` will run ruff and mypy on changed files automatically.
+Then `git commit` runs ruff, ruff-format, mypy, codespell, and the
+conventional-commit check on changed files automatically, plus DCO auto-sign-off.
+
+Use `just install-hooks` rather than `pre-commit install`: the repo pins
+`core.hooksPath=.githooks` (for DCO sign-off), and `pre-commit install` refuses
+to run while `core.hooksPath` is set. `just install-hooks` instead wires the
+committed `.githooks/` wrappers (which call `pre-commit run`) and pre-builds the
+hook environments.

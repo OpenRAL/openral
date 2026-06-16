@@ -55,11 +55,17 @@ bootstrap:
     @echo "    or activate the venv directly with: source .venv/bin/activate"
     @ls -1d /opt/ros/*/setup.bash 2>/dev/null | head -1 | awk '{ if ($0) print "==> For ROS 2 commands also: source " $0 }'
 
-# Point git at the in-repo hooks so commits are auto-signed-off for DCO
-# (CONTRIBUTING.md). Idempotent; run by `just bootstrap`, safe to re-run.
+# Point git at the in-repo hooks (.githooks/) and build the pre-commit
+# environments. Installs BOTH: DCO auto-sign-off (prepare-commit-msg) and the
+# pre-commit framework — .githooks/pre-commit + .githooks/commit-msg delegate to
+# `pre-commit run` for ruff, ruff-format, mypy, codespell, clang-format, and the
+# conventional-commit check. We can't use `pre-commit install` because it
+# refuses to run with core.hooksPath set, so the wrappers are committed and this
+# recipe just pre-builds their environments. Idempotent; run by `just bootstrap`.
 install-hooks:
     @git config core.hooksPath .githooks
-    @echo "==> git hooks installed (.githooks) — commits are auto-signed-off for DCO"
+    @uv run pre-commit install-hooks
+    @echo "==> git hooks installed (.githooks): DCO auto-sign-off + pre-commit (ruff, ruff-format, mypy, codespell, conventional-commit)"
 
 # Write ~/.local/bin/openral so users can run `openral` (or `openral <cmd>`)
 # from any terminal without `just`. Also patches ~/.bashrc / ~/.zshrc to add
