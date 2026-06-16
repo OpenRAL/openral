@@ -347,6 +347,16 @@ class LaunchInvocation:
     a durable ADR-0038 SpatialMemory from the object-lift producer's
     ``WorldState.detected_objects`` so ``recall_object`` recalls what the robot
     has seen. Defaults to "auto" = enabled when the object detector is."""
+    enable_foxglove: bool
+    """ADR-0059 opt-in. Off by default. Set by ``openral deploy sim --foxglove``;
+    forwarded as ``enable_foxglove:=true``. Spawns the read-only
+    ``foxglove_bridge`` as part of the deploy-sim runtime graph so operators
+    can view the live scene (cameras, /tf, joint states, nav map) in
+    Foxglove Studio without an extra bring-up step. Cannot actuate the robot
+    (view-only; ``clientPublish``/``services`` capabilities omitted)."""
+    foxglove_port: int
+    """ADR-0059 — Foxglove WebSocket port. Forwarded as ``foxglove_port:=…``.
+    Default 8765 (the ``foxglove_bridge`` upstream default)."""
     argv_template: list[str]
     """``argv_template`` carries ``HAL_PARAMS_FILE_PLACEHOLDER`` where
     the temp HAL-params YAML path goes. The dispatcher substitutes it
@@ -481,6 +491,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
+    enable_foxglove: bool = False,
+    foxglove_port: int = 8765,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -747,6 +759,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         f"enable_reward_monitor:={'true' if enable_reward_monitor else 'false'}",
         f"spatial_memory_ingest:={'true' if spatial_memory_ingest else 'false'}",
         f"enable_dashboard:={'true' if enable_dashboard else 'false'}",
+        # ADR-0059 — read-only Foxglove live-scene bridge. Off by default;
+        # ``--foxglove`` opts in. The bridge starts after the topic producers
+        # (HAL, SLAM, octomap, robot_state_publisher) via a TimerAction in the
+        # launch to avoid the foxglove-sdk-cpp v0.18.0 stale-bridge bug.
+        f"enable_foxglove:={'true' if enable_foxglove else 'false'}",
+        f"foxglove_port:={foxglove_port}",
     ]
     # ``ros2 launch`` rejects an empty ``name:=`` argument, so only forward the
     # optional detector overrides when set; the launch file defaults both to "".
@@ -790,6 +808,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         hal_mode=hal_mode,
         reset_to_pose_service=service,
         approach_skill_id=approach_skill,
+        enable_foxglove=enable_foxglove,
+        foxglove_port=foxglove_port,
         argv_template=argv_template,
     )
 
@@ -1698,6 +1718,32 @@ def deploy_sim_command(
             "collector instead."
         ),
     ),
+    foxglove: bool = typer.Option(
+        False,
+        "--foxglove/--no-foxglove",
+        help=(
+            "ADR-0059 — spawn the read-only Foxglove WebSocket bridge "
+            "as part of the deploy-sim runtime graph. Default: off. "
+            "When enabled, open Foxglove Studio and connect via "
+            "``ws://127.0.0.1:<foxglove-port>`` to see live cameras, "
+            "joint states, /tf, and the navigation map. **View-only** "
+            "(cannot actuate the robot): ``clientPublish``, "
+            "``services``, and ``parameters`` capabilities are omitted "
+            "from the bridge. Only Bucket-1 topics are exposed "
+            "(safety/e-stop/action topics are never forwarded). "
+            "Requires ``foxglove_bridge`` installed in the workspace "
+            "(ros-${ROS_DISTRO}-foxglove-bridge)."
+        ),
+    ),
+    foxglove_port: int = typer.Option(
+        8765,
+        "--foxglove-port",
+        help=(
+            "ADR-0059 — Foxglove WebSocket port (ws://127.0.0.1:<port>). "
+            "Default 8765 (the foxglove_bridge upstream default). "
+            "Ignored unless ``--foxglove`` is set."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -1739,6 +1785,8 @@ def deploy_sim_command(
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,
+            enable_foxglove=foxglove,
+            foxglove_port=foxglove_port,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
@@ -1801,6 +1849,14 @@ def deploy_sim_command(
             f"[green]auto-spawn[/green] at http://127.0.0.1:{dashboard_port}/"
             if dashboard
             else "[dim]disabled[/dim] (pass --dashboard to auto-spawn)"
+        )
+    )
+    _console.print(
+        "  foxglove:      "
+        + (
+            f"[green]enabled[/green] (view-only, cannot actuate) at ws://127.0.0.1:{foxglove_port}"
+            if foxglove
+            else "[dim]disabled[/dim] (pass --foxglove to enable read-only live scene view)"
         )
     )
     _console.print("  envelope:      synthesised at launch time from robot.yaml (no envelope file)")
