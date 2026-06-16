@@ -8,7 +8,7 @@ Grammar (``resolve_asset(ref, kind)``):
 
 * ``rd:<module>`` — import ``robot_descriptions.<module>`` and read its
   ``URDF_PATH`` / ``MJCF_PATH`` / ``SRDF_PATH`` for the requested ``kind``.
-  Cache-misses download on first use (with a visible stderr progress line).
+  Cache-misses download on first use (with a structlog progress line).
 * ``file:<relpath>`` — resolved against the manifest dir, then the repo root.
 * ``gym_aloha:<scene>`` · ``openarm:<variant>`` · ``menagerie:<model>`` —
   robot-specific MJCF loaders (sim-only optional deps, lazy-imported).
@@ -19,9 +19,12 @@ Grammar (``resolve_asset(ref, kind)``):
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 from typing import Literal
+
+import structlog
+
+_log = structlog.get_logger(__name__)
 
 __all__ = ["AssetKind", "AssetRefError", "resolve_asset"]
 
@@ -84,10 +87,7 @@ def resolve_asset(ref: str, kind: AssetKind, *, manifest_dir: Path | None = None
 
 def _resolve_rd(module: str, kind: AssetKind) -> Path:
     """Resolve ``rd:<module>`` via the upstream ``robot_descriptions`` package."""
-    print(
-        f"[assets] resolving rd:{module} ({kind}; downloads on first use)…",
-        file=sys.stderr,
-    )
+    _log.info("assets.resolve_rd", module=module, kind=kind, note="downloads on first use")
     try:
         mod = importlib.import_module(f"robot_descriptions.{module}")
     except ImportError as exc:
