@@ -5,10 +5,18 @@ rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducibl
 ## Install & manage
 
 ```bash
+openral rskill search aloha                    # discover skills on the OpenRAL Hub org
+openral rskill search --kind detector          # …filter by kind/role/embodiment/license
 openral rskill install OpenRAL/rskill-smolvla-libero
 openral rskill list                # list installed rSkills
 openral rskill check               # which installed rSkills run on this host?
 ```
+
+`rskill install` expects an `org/name` Hub id. A bare name (e.g. `rskill-smolvla-libero`)
+fails fast with the canonical `OpenRAL/…` suggestion rather than a raw Hub 404 — use
+`rskill search` if you don't know the id. `rskill search` queries the OpenRAL HF Hub org
+(`HfApi.list_models`), validates each candidate's `rskill.yaml`, and prints a paste-able
+`repo_id` table (ADR-0055 D4).
 
 ## Discovery views (`SKILL.md`)
 

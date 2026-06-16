@@ -146,9 +146,14 @@ Two things to know:
 Anyone (including you, on another host) can now install it like a model:
 
 ```bash
-openral rskill install <owner>/rskill-pi05-pick-cube
+openral rskill search pick-cube          # discover it on the OpenRAL Hub org
+openral rskill install <owner>/rskill-pi05-pick-cube   # always org-qualified
 openral rskill list                      # see it in the local registry
 ```
+
+`rskill install` needs the full `owner/name` id — a bare name fails fast with an
+`OpenRAL/…` suggestion. Use `rskill search [QUERY] [--kind/--role/--embodiment/--license]`
+when you don't already know the id.
 
 In a `SimEnvironment` or `RobotEnvironment` YAML, reference it by its
 bare rSkill reference in `vla.weights_uri` (see the

@@ -2,10 +2,17 @@
 
 - **Status:** Proposed 2026-06-12. **Landed:** the two-tier model is already how the
   system works (this ADR names it); the first-party weightless `ros_action` skills are
-  on the Hub (ADR-0054 / the `OpenRAL/` namespace normalization); and the registry is
-  now uniformly **public** (D6 decided — all `OpenRAL/*` repos public). **Open:** the
-  deterministic tag projection (D3), the `rskill search` command (D4), and the
-  Collection (D5).
+  on the Hub (ADR-0054 / the `OpenRAL/` namespace normalization); the registry is
+  now uniformly **public** (D6 decided — all `OpenRAL/*` repos public); and **D4
+  `rskill search` shipped** (2026-06-16). **Open:** the deterministic tag projection
+  (D3) and the Collection (D5).
+- **D4 implementation note (2026-06-16):** the shipped command deviates from the "thin
+  `tags=[…]` wrapper" sketch below. Because D3's reserved-tag projection is still open
+  (tags are not reliably backfilled), `rskill search` fetches + validates each
+  candidate's `rskill.yaml` and filters on the parsed manifest fields, so faceting works
+  regardless of tag drift and the table renders authoritative `kind/role/license`. It
+  also pairs with a fail-fast org-less-id guard on `rskill install` (suggests
+  `OpenRAL/<name>` instead of surfacing a raw Hub 404).
 - **Date:** 2026-06-12
 - **ADR number:** `0055`. Renumbered from `0053` on merge with `master` (which claimed
   `0050`/`0051`/`0052`); the approach-to-pose ADR is `0053`, the `goal_builder` ADR
