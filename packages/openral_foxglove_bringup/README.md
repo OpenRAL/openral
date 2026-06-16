@@ -58,6 +58,29 @@ import the layout from `config/openral_layout.json`.
 > occupancy grids. `nav_msgs/OccupancyGrid` renders in the **3D panel** as a
 > ground layer — hence the top-down 3D panel instead of a Map panel.
 
+## Render `/tf` + the robot model
+
+deploy-sim publishes `/joint_states` but not dynamic `/tf`, so the 3D panel
+can't draw the robot. Opt in to a `robot_state_publisher` (turns
+`/joint_states` + URDF → `/tf` + `/robot_description`):
+
+```bash
+ros2 launch openral_foxglove_bringup foxglove.launch.py \
+  with_robot_state_publisher:=true \
+  robot_description_urdf:=/path/to/robot.urdf
+# Standalone (no sim) — also synthesise /joint_states (zeros):
+ros2 launch openral_foxglove_bringup foxglove.launch.py \
+  with_robot_state_publisher:=true with_joint_state_publisher:=true \
+  robot_description_urdf:=/path/to/robot.urdf
+```
+
+Under a real deploy-sim, set **only** `with_robot_state_publisher:=true` — the
+sim is the real `/joint_states` source; a second publisher would fight it.
+Resolve a manifest robot's URDF via `robot_descriptions` (e.g.
+`panda_description` for `franka_panda` / `panda_mobile`). `openarm` has no local
+URDF (ADR-0027). Meshes render only when the URDF's `package://` paths resolve
+to an ament package on the ROS path. See `VERIFICATION.md`.
+
 ## Escape hatch (debug only)
 
 ```bash

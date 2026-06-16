@@ -56,12 +56,67 @@ a misleading `400 Bad Request: Missing expected sec-websocket-protocol header`.
 - **Custom/CLI clients** (and older self-hosted Studio builds): must offer
   `foxglove.sdk.v1`. This is the one real compatibility caveat for the port.
 
-## Not provable without the running OpenRAL sim
+## Verified against a real OpenRAL deploy-sim graph
 
-The camera/`/map`/octomap panels need their real producers (HAL sim sensor
-bridge, slam_toolbox, octomap). Those weren't brought up headless. The render
-*mechanism* is identical to the verified TF path — a whitelisted topic with a
-native schema — so lighting them up is "run the sim", not "more bridge work".
-A `cam2image` stand-in could not be remapped onto the camera topic because
-this host's miniforge Python 3.13 shadows ROS's 3.12 and breaks ros2cli
-`--ros-args` remap forwarding (unrelated to this package).
+Built the ROS workspace (`just ros2-build`, 24 pkgs) and ran the real
+`openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
+--no-object-detector` graph (HAL + safety kernel + reasoner + dashboard, fully
+ACTIVE). Pointed the bridge at it.
+
+| Result | Evidence |
+|---|---|
+| Bridge exposes the real Bucket-1 topics | advertised `/joint_states`, `/tf`, `/tf_static`, `/map`, `/openral/cameras/{base,left_wrist,right_wrist}/image` |
+| **Safety topics excluded, live** | `/openral/estop`, `/openral/safe_action`, `/openral/candidate_action`, `/openral/failure/safety` were on the graph but **not advertised** — the allowlist holds against a real graph |
+| **Real cameras + joints deliver end-to-end** | through the bridge in 3 s: `/openral/cameras/base/image` 30 msgs/27 MB, `left_wrist` 30 msgs/27 MB, `/joint_states` 90 msgs (30 Hz) |
+| `/tf`, `/map` empty at idle | no `robot_state_publisher` in the deploy graph (see below); SLAM off for the fixed-base arm |
+
+### Idle-stepping is fixed (cameras stream with no skill running)
+
+Earlier I wrongly concluded cameras need a skill to step the sim — that was a
+premature reading taken seconds after boot. **Corrected:** master has an
+autonomous idle-step timer (`sim_sensor_bridge.py`, ADR-0034 idle-stepper
+amendment) gated **only** on the HAL exposing `idle_step`, *not* on
+`enable_sim_clock`. Empirically, the idle OpenArm graph (no skill, reasoner
+unable to dispatch — no LLM) streamed cameras (base ~6 Hz, wrists ~1-2 Hz) and
+`/joint_states` at 30 Hz. So the cameras populate Foxglove at idle.
+
+Note: raw uncompressed images are heavy (~9 MB/s/camera); enable image
+compression or fewer cameras on memory-constrained hosts.
+
+## /tf + robot-model rendering (`with_robot_state_publisher`)
+
+deploy-sim publishes `/joint_states` but not dynamic `/tf` (no
+`robot_state_publisher` in its graph), so the 3D panel had no frames and could
+not draw the robot. The launch now offers opt-in publishers:
+
+```bash
+ros2 launch openral_foxglove_bringup foxglove.launch.py \
+  with_robot_state_publisher:=true \
+  with_joint_state_publisher:=true \   # only WITHOUT a sim — else it fights real /joint_states
+  robot_description_urdf:=$(python -c "from robot_descriptions import panda_description; print(panda_description.URDF_PATH)")
+```
+
+**Verified (isolated, `ROS_DOMAIN_ID=42`, panda URDF):** rsp turned
+`/joint_states` + URDF into real panda link transforms — `/tf` carrying
+`panda_link0→panda_link1`, `panda_hand→panda_leftfinger`, … at 10 Hz — plus
+`/robot_description` and `/tf_static`. Delivered end-to-end through the bridge:
+`/tf` 30 msgs, `/robot_description` 1 msg (15 KB URDF), `/tf_static` 1 msg.
+
+Two caveats:
+- **Meshes:** the example-robot-data panda URDF references
+  `package://example-robot-data/...` meshes, which aren't an ament package on
+  the ROS path, so Foxglove renders link **frames/structure** but not textured
+  meshes. A URDF whose meshes resolve via `package://<ament-pkg>` (served by the
+  bridge's `assets` capability) would show full geometry.
+- **OpenArm has no local URDF** (`robots/openarm/robot.yaml`, ADR-0027:
+  `urdf_path` deliberately unset). This feature pairs with robots that resolve a
+  URDF — e.g. `franka_panda` / `panda_mobile` (`panda_description`), `ur5e`,
+  `so101_follower`. Under a real deploy-sim, set only
+  `with_robot_state_publisher:=true` (the sim is the `/joint_states` source).
+
+## Host note
+
+`cam2image` could not be remapped onto a camera topic in this environment
+because the host's miniforge Python 3.13 shadows ROS's 3.12 and breaks ros2cli
+`--ros-args` remap forwarding (unrelated to this package). The real deploy-sim
+above made that stand-in unnecessary.

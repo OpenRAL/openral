@@ -29,6 +29,10 @@
        this bringup wrapper. -->
   <exec_depend>foxglove_bridge</exec_depend>
   <exec_depend>rclpy</exec_depend>
+  <!-- Optional /tf + robot-model rendering (with_robot_state_publisher /
+       with_joint_state_publisher launch args). -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>

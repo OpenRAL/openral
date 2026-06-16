@@ -38,8 +38,9 @@ from __future__ import annotations
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 from openral_foxglove_bringup.topics import (
     BUCKET1_TOPIC_WHITELIST,
@@ -82,12 +83,62 @@ def generate_launch_description() -> LaunchDescription:
                 "or robot-connected run."
             ),
         ),
+        # --- /tf + robot-model rendering ----------------------------------
+        # deploy-sim publishes /joint_states but NOT dynamic /tf (no
+        # robot_state_publisher in its graph), so Foxglove's 3D panel has no
+        # frames and can't draw the robot. Opt in to a robot_state_publisher
+        # that turns /joint_states + a URDF into /tf + /tf_static +
+        # /robot_description — all already Bucket-1-whitelisted, so the model
+        # renders read-only with no other change.
+        DeclareLaunchArgument(
+            "with_robot_state_publisher",
+            default_value="false",
+            description=(
+                "Run a robot_state_publisher that converts /joint_states + the "
+                "``robot_description_urdf`` into /tf + /robot_description so the "
+                "3D panel can draw the robot. Requires ``robot_description_urdf``."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "with_joint_state_publisher",
+            default_value="false",
+            description=(
+                "Also run a joint_state_publisher (zeros) so the model renders "
+                "standalone WITHOUT a sim. Leave false under deploy-sim, which "
+                "is the real /joint_states source — two publishers would fight."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "robot_description_urdf",
+            default_value="",
+            description=(
+                "Filesystem path to a URDF for the state publishers. Resolve a "
+                "manifest robot's URDF with: ``python -c 'from "
+                "openral_core.urdf_resolve import resolve_urdf_path; "
+                "print(resolve_urdf_path(open(\"robots/<id>/robot.yaml\")...))'`` "
+                "or directly via robot_descriptions (e.g. panda_description). "
+                "NOTE: openarm has no local URDF (ADR-0027)."
+            ),
+        ),
     ]
 
     address = LaunchConfiguration("address")
     port = LaunchConfiguration("port")
     use_sim_time = LaunchConfiguration("use_sim_time")
     expose_all = LaunchConfiguration("expose_all_topics")
+    with_rsp = LaunchConfiguration("with_robot_state_publisher")
+    with_jsp = LaunchConfiguration("with_joint_state_publisher")
+    urdf_path = LaunchConfiguration("robot_description_urdf")
+
+    # URDF file content as the ``robot_description`` parameter. ``cat`` only
+    # runs when a state-publisher node is actually included (conditioned
+    # actions don't visit their substitutions otherwise).
+    robot_description = {
+        "robot_description": ParameterValue(
+            Command(["cat ", urdf_path]), value_type=str
+        ),
+        "use_sim_time": use_sim_time,
+    }
 
     common_params: dict[str, object] = {
         "address": address,
@@ -124,4 +175,25 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{**common_params, "topic_whitelist": [r".*"]}],
     )
 
-    return LaunchDescription([*args, bridge_safe, bridge_all])
+    # Optional /tf + robot-model publishers (off by default). Both are pure
+    # transforms of /joint_states + URDF → read-only; they publish no command.
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="openral_robot_state_publisher",
+        output="screen",
+        condition=IfCondition(with_rsp),
+        parameters=[robot_description],
+    )
+    joint_state_publisher = Node(
+        package="joint_state_publisher",
+        executable="joint_state_publisher",
+        name="openral_joint_state_publisher",
+        output="screen",
+        condition=IfCondition(with_jsp),
+        parameters=[robot_description],
+    )
+
+    return LaunchDescription(
+        [*args, bridge_safe, bridge_all, robot_state_publisher, joint_state_publisher]
+    )
