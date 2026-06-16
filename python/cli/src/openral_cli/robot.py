@@ -29,7 +29,7 @@ from typing import cast
 
 _PROVENANCE = (
     "<!-- Vendored by `openral robot vendor-urdf {id}` from {src}. "
-    "Upstream license applies — see docs/adr/0057. -->\n"
+    "Upstream license applies — see docs/adr/0058. -->\n"
 )
 
 # SO-ARM numeric-joint → semantic HAL-name map, applied by joint NUMBER (the
