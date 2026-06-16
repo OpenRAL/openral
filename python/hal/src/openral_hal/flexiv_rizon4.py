@@ -38,6 +38,7 @@ Example:
 from __future__ import annotations
 
 from openral_core.schemas import (
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -48,6 +49,7 @@ from openral_core.schemas import (
     RobotDescription,
     SafetyEnvelope,
     SimDescription,
+    UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -163,7 +165,12 @@ RIZON4_DESCRIPTION = RobotDescription(
     # ``make_real_description``, matching the UR / Franka / Sawyer /
     # ALOHA pattern.
     hal=HalEntrypoints(sim="openral_hal.flexiv_rizon4:Rizon4MujocoHAL", real=None),
-    sim=SimDescription(mjcf_uri="robot_descriptions:rizon4_mj_description"),
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="file:rizon4.urdf"),
+        mjcf="rd:rizon4_mj_description",
+        srdf="file:rizon4.srdf",
+    ),
+    sim=SimDescription(),
 )
 
 

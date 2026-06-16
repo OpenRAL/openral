@@ -43,6 +43,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -56,6 +57,7 @@ from openral_core.schemas import (
     SafetyEnvelope,
     SimDescription,
     SimGripperDescription,
+    UrdfAsset,
 )
 
 from openral_hal._base import HALBase
@@ -174,8 +176,11 @@ SO100_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim=None, real="openral_hal.so100_follower:SO100FollowerHAL"),
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="rd:so_arm100_description"),
+        mjcf="rd:so_arm100_mj_description",
+    ),
     sim=SimDescription(
-        mjcf_uri="robot_descriptions:so_arm100_mj_description",
         grippers=[
             SimGripperDescription(
                 joint="gripper",

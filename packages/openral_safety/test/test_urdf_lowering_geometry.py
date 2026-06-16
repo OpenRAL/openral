@@ -129,11 +129,11 @@ def test_cylinder_collision_fits_capsule(tmp_path) -> None:
 def test_lower_link_geometry_panda_arm_links() -> None:
     pytest.importorskip("yourdfpy")
     pytest.importorskip("robot_descriptions")
-    from openral_core.urdf_resolve import resolve_urdf_path
+    from openral_core.assets import resolve_asset
 
-    urdf = resolve_urdf_path("python:robot_descriptions.panda_description:URDF_PATH")
+    urdf = resolve_asset("rd:panda_description", "urdf")
     assert urdf is not None
-    geoms = lower_link_geometry(urdf)
+    geoms = lower_link_geometry(str(urdf))
     by_link = {g.link_name: g for g in geoms}
     assert any(name.startswith("panda_link") for name in by_link)
     for g in geoms:

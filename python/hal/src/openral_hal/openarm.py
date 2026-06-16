@@ -69,6 +69,7 @@ Example:
 from __future__ import annotations
 
 from openral_core.schemas import (
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -90,6 +91,7 @@ from openral_core.schemas import (
     SimDescription,
     SimGripperDescription,
     TopCameraDefaults,
+    UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -336,8 +338,11 @@ OPENARM_DESCRIPTION = RobotDescription(
     # actuators with per-class PD gains would drive every joint to ctrl=0
     # otherwise.  qpos[8] is the left follower finger (passive); qpos[17]
     # is the right follower finger — we skip both.  See ADR-0023.
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="file:openarm.urdf"),
+        mjcf="openarm:bimanual",
+    ),
     sim=SimDescription(
-        mjcf_uri="openarm_v2:bimanual",
         joint_qpos_addr={
             "left_joint1": 0,
             "left_joint2": 1,

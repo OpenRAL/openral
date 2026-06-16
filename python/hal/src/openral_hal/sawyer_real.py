@@ -42,6 +42,7 @@ import structlog
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_core.schemas import (
     Action,
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -183,6 +184,7 @@ SAWYER_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim=None, real="openral_hal.sawyer_real:SawyerRealHAL"),
+    assets=AssetRefs(mjcf="rd:sawyer_mj_description"),
 )
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 
 from openral_core.schemas import (
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -36,6 +37,7 @@ from openral_core.schemas import (
     RobotDescription,
     SafetyEnvelope,
     SimDescription,
+    UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -181,7 +183,16 @@ UR5e_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim="openral_hal.ur:UR5eHAL", real="openral_hal.ur_real:UR5eRealHAL"),
-    sim=SimDescription(mjcf_uri="robot_descriptions:ur5e_mj_description"),
+    assets=AssetRefs(
+        urdf=UrdfAsset(
+            ref="file:ur5e.urdf",
+            root_frame="base_link",
+            base_to_root_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        ),
+        mjcf="rd:ur5e_mj_description",
+        srdf="file:ur5e.srdf",
+    ),
+    sim=SimDescription(),
 )
 
 
@@ -216,7 +227,16 @@ UR10e_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim="openral_hal.ur:UR10eHAL", real="openral_hal.ur_real:UR10eRealHAL"),
-    sim=SimDescription(mjcf_uri="robot_descriptions:ur10e_mj_description"),
+    assets=AssetRefs(
+        urdf=UrdfAsset(
+            ref="file:ur10e.urdf",
+            root_frame="base_link",
+            base_to_root_xyz_rpy=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        ),
+        mjcf="rd:ur10e_mj_description",
+        srdf="file:ur10e.srdf",
+    ),
+    sim=SimDescription(),
 )
 
 
@@ -287,7 +307,7 @@ class UR5eHAL(MujocoArmHAL):
 
     Args:
         mjcf_path: Optional override for the MJCF file path.  When ``None``,
-            ``UR5e_DESCRIPTION.sim.mjcf_uri`` is resolved at construction
+            ``UR5e_DESCRIPTION.assets.mjcf`` is resolved at construction
             time (``robot_descriptions:ur5e_mj_description``).
         settle_steps: Number of MuJoCo physics steps performed in
             :meth:`send_action`.  Defaults to 1.

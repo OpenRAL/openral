@@ -65,6 +65,7 @@ from __future__ import annotations
 
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     HalEntrypoints,
@@ -74,6 +75,7 @@ from openral_core.schemas import (
     RobotDescription,
     SafetyEnvelope,
     SimDescription,
+    UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -329,8 +331,11 @@ G1_DESCRIPTION = RobotDescription(
     # Floating-base humanoid — qpos is offset by 7 (3 position + 4 quaternion);
     # qvel is offset by 6 (3 linear vel + 3 angular vel).  ``MujocoArmHAL``
     # derives both offsets from ``floating_base=True`` (ADR-0023).
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="rd:g1_description"),
+        mjcf="rd:g1_mj_description",
+    ),
     sim=SimDescription(
-        mjcf_uri="robot_descriptions:g1_mj_description",
         floating_base=True,
     ),
 )

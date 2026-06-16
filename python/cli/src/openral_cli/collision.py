@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from openral_core.exceptions import ROSError
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -211,7 +212,9 @@ def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> t
     from openral_safety.urdf_lowering import lower_robot
 
     robot = RobotDescription.from_yaml(str(robot_path))
-    model = lower_robot(robot, acm_only=acm_only, geometry_only=geometry_only)
+    model = lower_robot(
+        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
+    )
     geo_block, acm_block = render_blocks(model)
     current = robot_path.read_text(encoding="utf-8")
     # MJCF-sourced robots keep their hand-authored geometry (the tool reuses it,
@@ -306,7 +309,9 @@ def check(
     for t in targets:
         try:
             current, spliced = _lowered_text(t, acm_only=acm_only, geometry_only=geometry_only)
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, ROSError) as exc:
+            # ROSError covers ROSConfigError, now raised by lower_robot when a
+            # manifest declares no URDF/MJCF asset or an asset ref won't resolve.
             _console.print(f"[yellow]skip[/yellow] {t}: {exc}")
             continue
         if current != spliced:

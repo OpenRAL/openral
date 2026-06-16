@@ -76,11 +76,12 @@ def description(robot_id: str) -> RobotDescription:
 
 
 def test_manifest_has_sim_block(description: RobotDescription) -> None:
-    """Every robot in scope ships a ``sim:`` section with a resolvable mjcf_uri."""
+    """Every robot in scope ships a ``sim:`` section + a resolvable ``assets.mjcf``."""
     assert description.sim is not None
-    assert description.sim.mjcf_uri.startswith(
-        ("robot_descriptions:", "gym_aloha:", "openarm_v2:", "file:", "/")
-    ), f"unexpected mjcf_uri scheme: {description.sim.mjcf_uri!r}"
+    assert description.assets.mjcf is not None
+    assert description.assets.mjcf.startswith(
+        ("rd:", "gym_aloha:", "openarm:", "menagerie:", "file:")
+    ), f"unexpected mjcf ref scheme: {description.assets.mjcf!r}"
 
 
 def test_from_description_round_trips(description: RobotDescription) -> None:
@@ -174,9 +175,9 @@ def test_python_description_matches_yaml(robot_id: str, description: RobotDescri
     assert description.sim is not None
     # Compare the manifest-relevant fields field-by-field.  Equality on
     # the full SimDescription is too brittle (default fields appear as
-    # explicit None in YAML, etc.); the wiring that matters is the URI,
-    # the joint-index overrides, and the gripper configs.
-    assert py_desc.sim.mjcf_uri == description.sim.mjcf_uri
+    # explicit None in YAML, etc.); the wiring that matters is the MJCF
+    # ref, the joint-index overrides, and the gripper configs.
+    assert py_desc.assets.mjcf == description.assets.mjcf
     assert py_desc.sim.floating_base == description.sim.floating_base
     assert py_desc.sim.joint_qpos_addr == description.sim.joint_qpos_addr
     assert py_desc.sim.actuator_index == description.sim.actuator_index

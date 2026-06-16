@@ -23,6 +23,7 @@ Example:
 from __future__ import annotations
 
 from openral_core.schemas import (
+    AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -35,6 +36,7 @@ from openral_core.schemas import (
     SafetyEnvelope,
     SimDescription,
     SimGripperDescription,
+    UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
@@ -211,8 +213,12 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         sim="openral_hal.franka_panda:FrankaPandaHAL",
         real="openral_hal.franka_panda_real:FrankaPandaRealHAL",
     ),
+    assets=AssetRefs(
+        urdf=UrdfAsset(ref="rd:panda_description"),
+        mjcf="rd:panda_mj_description",
+        srdf="file:franka_panda.srdf",
+    ),
     sim=SimDescription(
-        mjcf_uri="robot_descriptions:panda_mj_description",
         grippers=[
             SimGripperDescription(
                 joint="panda_gripper",

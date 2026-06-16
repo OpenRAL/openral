@@ -17,7 +17,7 @@ returns the bound robot or ``None``):
 * **Multi-robot (free-axis)** — registered WITHOUT ``fixed_robot``. The robot
   is a flag: it comes from the YAML ``robot_id`` (or ``--robot``) and the scene
   composes around whatever compatible robot is named (the base MJCF resolved
-  from that robot's manifest ``sim.mjcf_uri``). **New robot-flexible scenes
+  from that robot's manifest ``assets.mjcf``). **New robot-flexible scenes
   belong here.** Today: ``tabletop_push`` (the greenfield robot-agnostic native
   scene — composes its table/cube/goal world onto any position-controlled arm
   via MjSpec; ADR-0033), ``maniskill3``, ``openarm_robosuite``, ``simpler_env``,

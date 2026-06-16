@@ -371,18 +371,28 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     excluded from ``joints`` — they are not URDF DOFs; the sidecar adds the base
     programmatically (M3).
     """
-    from openral_core.urdf_resolve import resolve_urdf_path
+    from openral_core.assets import AssetRefError, resolve_asset
 
-    if not desc.urdf_path:
+    if desc.assets.urdf is None:
         raise ROSConfigError(
-            f"robot {robot_id!r} has no urdf_path; the Isaac manifest scene "
+            f"robot {robot_id!r} has no assets.urdf; the Isaac manifest scene "
             "(--layout manifest) imports the robot from its URDF."
         )
-    urdf = resolve_urdf_path(desc.urdf_path)
-    if not urdf or not Path(urdf).is_file():
+    # ``file:`` URDFs (the vendored arms) resolve against the robot's manifest
+    # dir; ``rd:`` refs ignore it. The repo-root fallback in resolve_asset covers
+    # a relative run cwd, so deriving robots/<robot_id>/ is a safe primary root.
+    manifest_dir = Path("robots") / robot_id
+    try:
+        urdf_path = resolve_asset(desc.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
         raise ROSConfigError(
-            f"could not resolve urdf_path {desc.urdf_path!r} for {robot_id!r} to a file."
+            f"could not resolve assets.urdf.ref {desc.assets.urdf.ref!r} for {robot_id!r}: {exc}"
+        ) from exc
+    if urdf_path is None or not urdf_path.is_file():
+        raise ROSConfigError(
+            f"assets.urdf.ref {desc.assets.urdf.ref!r} for {robot_id!r} did not resolve to a file."
         )
+    urdf = str(urdf_path)
 
     base_joint_names = set(desc.base_joints or [])
 

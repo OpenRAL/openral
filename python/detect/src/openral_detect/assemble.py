@@ -49,6 +49,7 @@ from openral_core.schemas import (
     SensorBundle,
     SensorModality,
     SensorSpec,
+    UrdfAsset,
 )
 from openral_sensors import CATALOG, SensorSignature
 
@@ -398,8 +399,13 @@ def _enrich_ros2(description: RobotDescription, detection: DetectionReport) -> R
         update["middleware"] = "fastdds"
     elif "zenoh" in rmw:
         update["middleware"] = "zenoh"
-    if detection.ros2.has_robot_description and not description.urdf_path:
-        update["urdf_path"] = "ros2://robot_description"
+    if detection.ros2.has_robot_description and description.assets.urdf is None:
+        # The robot publishes its own URDF on /robot_description at runtime — mark
+        # it with the dynamic ros2:// asset ref (ADR-0057); no static file is
+        # vendored, the launch subscribes to the topic instead.
+        update["assets"] = description.assets.model_copy(
+            update={"urdf": UrdfAsset(ref="ros2://robot_description")}
+        )
     if not update:
         return description
     return description.model_copy(update=update)
