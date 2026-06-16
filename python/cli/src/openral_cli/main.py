@@ -2478,25 +2478,39 @@ def robot_vendor_urdf(
         "--out",
         help="Output directory; '<robot_id>.urdf' is written here.",
     ),
-    rename: str | None = typer.Option(
+    rename: list[str] | None = typer.Option(
         None,
         "--rename",
         help=(
-            "Optional joint/link rename as 'PATTERN=>REPL' (regex re.sub). "
-            "Defaults to the per-robot rule (openarm strips its 'openarm_' prefix)."
+            "Joint-name rename as 'PATTERN=>REPL' (regex re.sub). Repeatable — "
+            "applied in order (so100/so101 take 6, gr1/h1 take 1). Defaults to "
+            "the per-robot rule (openarm strips its 'openarm_' prefix)."
+        ),
+    ),
+    raw_text: bool = typer.Option(
+        False,
+        "--raw-text/--no-raw-text",
+        help=(
+            "Copy an already-flat upstream URDF verbatim and apply --rename to "
+            "the raw XML (no yourdfpy round-trip), preserving package:// mesh "
+            "paths byte-for-byte (so100/so101/gr1/h1)."
         ),
     ),
 ) -> None:
     """Expand an upstream description to a flat, committed URDF (ADR-0057)."""
     from openral_cli.robot import vendor_urdf
 
-    rename_pair: tuple[str, str] | None = None
-    if rename is not None:
-        if "=>" not in rename:
-            raise typer.BadParameter("--rename must be 'PATTERN=>REPL'", param_hint="--rename")
-        pat, _, repl = rename.partition("=>")
-        rename_pair = (pat, repl)
-    written = vendor_urdf(robot_id, upstream=upstream, out_dir=out, rename=rename_pair)
+    rename_pairs: list[tuple[str, str]] | None = None
+    if rename:
+        rename_pairs = []
+        for spec in rename:
+            if "=>" not in spec:
+                raise typer.BadParameter("--rename must be 'PATTERN=>REPL'", param_hint="--rename")
+            pat, _, repl = spec.partition("=>")
+            rename_pairs.append((pat, repl))
+    written = vendor_urdf(
+        robot_id, upstream=upstream, out_dir=out, rename=rename_pairs, raw_text=raw_text
+    )
     typer.echo(f"Wrote {written}")
 
 # ADR-0018 F10: `openral prompt "do X"` publishes a one-shot PromptStamped

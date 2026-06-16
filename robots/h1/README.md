@@ -11,6 +11,20 @@ The H1 is the **predecessor** to the Unitree G1 — bigger, taller,
 coarser-DoF (no wrists, no waist roll/pitch, single-DoF ankles). See
 the [`g1`](../g1/README.md) sibling for the newer humanoid.
 
+## Vendored URDF (`h1.urdf`)
+
+`assets.urdf` points at the committed `robots/h1/h1.urdf`, a vendored copy of
+`robot_descriptions`' `h1_description` (Unitree `unitree_ros`, **BSD-3-Clause**)
+with **only the joint names patched**: the upstream suffixes every joint with
+`_joint` (`torso_joint`, `left_knee_joint`, …), which would make
+`robot_state_publisher`'s `/tf` use names that don't match the HAL's
+`/joint_states` (the manifest's bare `torso`, `left_knee`, …). `openral robot
+vendor-urdf h1 --upstream rd:h1_description --out robots/h1 --raw-text` strips
+the `_joint` suffix from joint names **on the raw URDF text** — link names,
+geometry, inertials and the `package://h1_description/...` mesh paths are
+byte-identical to upstream (ADR-0057 §4). End users need no xacro tooling and
+no joint-name reconciliation at runtime.
+
 ## What this is — and what it isn't
 
 The MuJoCo digital twin is a **HAL contract validator**, not a useful
