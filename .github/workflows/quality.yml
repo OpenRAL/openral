@@ -1,5 +1,9 @@
 name: quality
-# Quality gate on every PR: ruff + mypy --strict + schema drift check. Fast (<3 min) and high signal.
+# Quality gate on every PR: ruff + mypy --strict + schema drift + docs build.
+# Fast (<3 min) and high signal. The `mkdocs build --strict` step runs here
+# (rather than as a separate docs-on-PR trigger) so it reuses this job's already
+# -synced --all-packages env — catching the `--strict` doc breakage that pages.yml
+# would otherwise only surface post-merge, at ~zero extra CI cost.
 on:
   workflow_dispatch:
   pull_request:
@@ -24,3 +28,5 @@ jobs:
       - run: uv run mypy --strict tools/
       - name: Check schema drift
         run: uv run python tools/schema_export.py --check
+      - name: Build docs (mkdocs --strict)
+        run: uv run mkdocs build --strict
