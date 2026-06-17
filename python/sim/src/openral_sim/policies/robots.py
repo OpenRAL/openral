@@ -33,34 +33,39 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.registry import ROBOTS
 
 
-def _find_repo_root() -> Path:
+def _find_repo_root() -> Path | None:
     """Walk up from this file looking for a ``robots/`` sibling of ``pyproject.toml``.
 
     Returns:
-        The absolute path to the OpenRAL repository root.
-
-    Raises:
-        ROSConfigError: If no suitable parent directory is found.
+        The absolute path to the OpenRAL repository root, or ``None`` when this
+        module runs outside a source checkout — e.g. installed as a wheel via
+        ``pip install openral-cli``, where no ``robots/`` ancestor exists.
+        Callers degrade gracefully (discovery registers zero robots); set
+        ``$OPENRAL_ROBOTS_DIR`` to supply out-of-tree manifests. Returning
+        ``None`` rather than raising keeps this module import-safe: it is
+        imported at CLI startup, so a hard raise here would crash every
+        ``openral`` command in a wheel install.
     """
     here = Path(__file__).resolve()
     for ancestor in (here, *here.parents):
         if (ancestor / "pyproject.toml").is_file() and (ancestor / "robots").is_dir():
             return ancestor
-    raise ROSConfigError(
-        f"could not locate OpenRAL repo root from {here} — set $OPENRAL_ROBOTS_DIR to override"
-    )
+    return None
 
 
-def _robots_search_dir() -> Path:
+def _robots_search_dir() -> Path | None:
     """Return the directory to scan for ``<id>/robot.yaml`` entries.
 
     Honours ``$OPENRAL_ROBOTS_DIR`` for tests / out-of-tree manifests;
-    otherwise falls back to ``<repo_root>/robots``.
+    otherwise falls back to ``<repo_root>/robots``. Returns ``None`` when there
+    is neither an override nor a source checkout (a wheel install) — discovery
+    then registers zero robots instead of crashing at import.
     """
     override = os.environ.get("OPENRAL_ROBOTS_DIR")
     if override:
         return Path(override)
-    return _find_repo_root() / "robots"
+    root = _find_repo_root()
+    return root / "robots" if root is not None else None
 
 
 def _discover_robot_ids() -> list[str]:
@@ -70,7 +75,7 @@ def _discover_robot_ids() -> list[str]:
     across machines (helps when reasoning about ``ROBOTS.names()`` in tests).
     """
     search_dir = _robots_search_dir()
-    if not search_dir.is_dir():
+    if search_dir is None or not search_dir.is_dir():
         return []
     return sorted(
         entry.name
@@ -86,11 +91,15 @@ def _resolve_manifest(robot_id: str) -> Path:
         candidate = Path(override) / robot_id / "robot.yaml"
         if candidate.is_file():
             return candidate
-    in_tree = _find_repo_root() / "robots" / robot_id / "robot.yaml"
-    if in_tree.is_file():
-        return in_tree
+    root = _find_repo_root()
+    if root is not None:
+        in_tree = root / "robots" / robot_id / "robot.yaml"
+        if in_tree.is_file():
+            return in_tree
+    looked = "$OPENRAL_ROBOTS_DIR" + (f" and {root / 'robots'}" if root is not None else "")
     raise ROSConfigError(
-        f"robot manifest for {robot_id!r} not found (looked at $OPENRAL_ROBOTS_DIR and {in_tree})"
+        f"robot manifest for {robot_id!r} not found (looked at {looked}); set "
+        "$OPENRAL_ROBOTS_DIR to a directory containing <id>/robot.yaml"
     )
 
 

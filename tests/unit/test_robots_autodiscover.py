@@ -79,3 +79,26 @@ def test_drop_in_robot_via_env_override(tmp_path: Path, monkeypatch: pytest.Monk
     factory = fresh_robots.get("test_drop_in_robot")
     desc = factory()
     assert desc.name == "test_drop_in_robot"
+
+
+def test_discovery_degrades_when_installed_as_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No repo root + no override (a ``pip install openral-cli`` wheel) →
+    discovery returns ``[]`` instead of raising at import.
+
+    Regression: ``openral_sim.policies.robots`` is imported at CLI startup, so
+    when ``_find_repo_root`` raised on a wheel install (no ``robots/`` ancestor)
+    it crashed *every* ``openral`` command — including ``--help`` / ``doctor`` —
+    before Typer ever ran. It must degrade to zero registered robots instead.
+    """
+    import openral_sim.policies.robots as robots_mod
+
+    monkeypatch.delenv("OPENRAL_ROBOTS_DIR", raising=False)
+    # Simulate the wheel layout: this module has no repo-root ancestor.
+    monkeypatch.setattr(robots_mod, "_find_repo_root", lambda: None)
+
+    assert robots_mod._robots_search_dir() is None
+    assert robots_mod._discover_robot_ids() == []  # must not raise
+
+    # A real robot lookup still fails loudly, with an actionable message.
+    with pytest.raises(Exception, match=r"OPENRAL_ROBOTS_DIR"):
+        robots_mod._resolve_manifest("panda_mobile")
