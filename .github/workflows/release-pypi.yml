@@ -1,51 +1,108 @@
 name: release-pypi
-# ADR-0021 — multi-package PyPI publishing scaffold.
+# ADR-0021 — multi-package PyPI publishing. CANONICAL release workflow.
 #
-# Status: SCAFFOLD ONLY. This workflow is intentionally DISABLED — the trigger
-# is `workflow_dispatch` plus a guard step that exits non-zero unless the
-# operator passes `confirm=YES`. Wiring it up to push to PyPI requires:
+# release.yml was dropped (2026-06-17): its root `uv build` was broken — the
+# workspace root has no [build-system], so it fell back to legacy setuptools
+# and errored on multi-package discovery — and its PyPI half duplicated this
+# matrix while building the wrong artifact (the meta-package). The ghcr
+# runtime-image + cosign path it also carried was non-functional
+# (Dockerfile.runtime COPYs the gitignored colcon `install/` space) and is
+# deferred until ROS-in-CI infra exists; it returns as a purpose-built
+# release-image.yml then. This file is the single source of truth for releases.
 #
-#   1. Registering each `openral-*` package on PyPI under the openral org.
-#   2. Configuring PyPI Trusted Publishing for this repo + this workflow file
-#      (https://docs.pypi.org/trusted-publishers/).
-#   3. Removing the `confirmation` guard step below.
-#   4. Optionally re-enabling the tag-push trigger.
+# Two ways to publish — both via Trusted Publishing (OIDC, no API token):
+#   • workflow_dispatch → choose `target`:
+#       - testpypi (default): trial release, no confirmation needed.
+#       - pypi:               requires confirm=YES (irreversible).
+#   • tag push `v*.*.*` → production release to real PyPI (the tag IS the
+#     deliberate confirmation).
 #
-# Until then, this file documents the SHAPE of the release pipeline so a
-# future PR can flip it on with a small diff and a Trusted Publishing
-# registration on the PyPI side.
+# One-time PyPI-side setup per index — register a trusted publisher for this
+# repo + this workflow file. Pending publishers are fine for names that don't
+# exist yet (https://docs.pypi.org/trusted-publishers/):
+#   - TestPyPI (https://test.pypi.org): set up now to exercise the path.
+#   - PyPI (https://pypi.org): blocked until the OpenRAL org / project names
+#     are approved; until then use the testpypi target (or a local twine
+#     upload) for trials.
 #
-# Every workspace package is pinned to 0.1.x — see CLAUDE.md "Keep ALL
-# versions to 0.1" directive (feat/cleaner-cli).
+# Every workspace package is pinned to 0.1.x — see CLAUDE.md.
 
 on:
   workflow_dispatch:
     inputs:
-      confirm:
-        description: 'Type YES to actually publish to PyPI (default no-op).'
+      target:
+        description: 'Index to publish to.'
         required: true
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+      confirm:
+        description: 'Type YES to publish to REAL PyPI (ignored for testpypi).'
+        required: false
         default: 'NO'
-  # Tag trigger is intentionally commented out until Trusted Publishing is
-  # registered on PyPI. Uncomment after the one-time setup.
-  # push:
-  #   tags: ["v*.*.*"]
+  push:
+    tags: ["v*.*.*"]
 
 permissions:
   contents: read
 
 jobs:
-  guard:
+  # Resolve the upload index and enforce the real-PyPI confirmation guard.
+  # Tag pushes always target real PyPI; a workflow_dispatch defaults to
+  # TestPyPI and must pass confirm=YES to reach real PyPI.
+  resolve:
     runs-on: ubuntu-24.04
+    outputs:
+      repository-url: ${{ steps.target.outputs.repository-url }}
+      index: ${{ steps.target.outputs.index }}
     steps:
-      - name: refuse to publish unless confirm=YES
+      - name: resolve target + guard
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          TARGET: ${{ inputs.target }}
+          CONFIRM: ${{ inputs.confirm }}
         run: |
-          if [[ "${{ github.event.inputs.confirm }}" != "YES" ]]; then
-            echo "::error::Release workflow is disabled. Pass confirm=YES via workflow_dispatch to override."
-            exit 1
+          set -euo pipefail
+          if [ "$EVENT" = "push" ] || [ "$TARGET" = "pypi" ]; then
+            if [ "$EVENT" != "push" ] && [ "$CONFIRM" != "YES" ]; then
+              echo "::error::Publishing to real PyPI requires confirm=YES."
+              exit 1
+            fi
+            echo "index=pypi" >> "$GITHUB_OUTPUT"
+            echo "repository-url=https://upload.pypi.org/legacy/" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release target = real PyPI."
+          else
+            echo "index=testpypi" >> "$GITHUB_OUTPUT"
+            echo "repository-url=https://test.pypi.org/legacy/" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release target = TestPyPI."
           fi
 
+  # Same fast, high-signal gate as the PR `quality` workflow. A release must
+  # not publish a broken tree — and a `v*.*.*` tag can be pushed off a commit
+  # that never went through a PR.
+  precheck:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy --strict -p openral_core -p openral_cli -p openral_hal
+      - run: uv run mypy --strict tools/
+      - name: Check schema drift
+        run: uv run python tools/schema_export.py --check
+      - name: Build docs (mkdocs --strict)
+        run: uv run mkdocs build --strict
+
   build-and-publish:
-    needs: guard
+    needs: [resolve, precheck]
     runs-on: ubuntu-24.04
     permissions:
       id-token: write   # PyPI trusted publishing — OIDC only, no API token.
@@ -78,10 +135,11 @@ jobs:
       - name: build sdist + wheel
         working-directory: ${{ matrix.package }}
         run: uv build --out-dir dist
-      - name: publish to PyPI (Trusted Publishing)
+      - name: publish (${{ needs.resolve.outputs.index }}, Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: ${{ matrix.package }}/dist
+          repository-url: ${{ needs.resolve.outputs.repository-url }}
           # Skip-existing lets a re-run of the matrix after a partial failure
           # skip the already-published packages instead of erroring out.
           skip-existing: true
