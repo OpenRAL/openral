@@ -29,7 +29,6 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | World Action Model (WAM) | 🟡 protocol shipped — `WorldModel` Protocol + `NullWorldModel`; Cosmos / UnifoLM-WMA-0 / IRASim adapters planned (v0.3) |
 | Object detection + spatial lift | ✅ shipped — `RosImageObjectDetectorNode`, 2D→3D object lift, RT-DETR + OmDet-Turbo detector rSkills, GStreamer perception bus; LocateAnything-3B wired via VLM sidecar + `locate_in_view` on-demand tool; scene-VLM `kind:vlm` (ADR-0035/0037/0043/0047/0051) |
 | Geometric safety + watchdog | 🟡 in flight — chunk-rate safety pass-through + envelope checks (✅), deadman/E-stop forwarders + human-estop (✅ `openral_safety_watchdog` / `openral_human_estop`); self/world/voxel collision + OctoMap→voxel bridge in dev (ADR-0030/0040) |
-| BehaviorTree v4 executor | 🔵 planned — future option behind `bt_executor_node` (ADR-0018 §4) |
 | C++ safety kernel | 🟡 in flight — deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; sim/HIL gate + LTTng pending (ADR-0020) |
 | Org / publishing | 🟡 in flight — public repo + `master` branch protection ✅; PyPI trusted-publishing + GHCR images wired (`release-pypi.yml` / `release.yml`) but nothing published yet |
 
