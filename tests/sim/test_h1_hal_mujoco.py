@@ -58,7 +58,6 @@ from openral_core import (
     JointState,
     JointType,
     ROSConfigError,
-    ROSPerceptionStale,
     ROSRuntimeError,
 )
 from openral_hal import H1_DESCRIPTION, H1MujocoHAL
@@ -265,14 +264,24 @@ class TestReadState:
         for q in state.position:
             assert abs(q) < 1e-3
 
-    def test_perception_stale_raises_when_old(self, monkeypatch) -> None:
+    def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
+        """A starved servicing gap warns once and returns live state — never latches.
+
+        Deploy-sim regression: ``read_state`` reads live in-process ``MjData``
+        (always current), so a gap > ``staleness_limit_s`` is executor
+        starvation, not bad data — it must NOT raise a latched
+        ``ROSPerceptionStale``, and the next read must self-heal.
+        """
         hal = H1MujocoHAL(gravity_enabled=False, settle_steps=1, staleness_limit_s=0.001)
         hal.connect()
         try:
             real_monotonic = time.monotonic
             monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + 10.0)
-            with pytest.raises(ROSPerceptionStale):
-                hal.read_state()
+            # Must return the live state, not raise.
+            state = hal.read_state()
+            assert state.position
+            # Recoverable: the clock was refreshed, so the next read is fresh.
+            assert hal.read_state().position
         finally:
             hal.disconnect()
 
