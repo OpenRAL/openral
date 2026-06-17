@@ -26,18 +26,20 @@ permissions:
 jobs:
   select-and-test:
     runs-on: ubuntu-24.04
-    # Pin every native threadpool to a single thread for the WHOLE job. Several
-    # tests fork lerobot's `compute_stats` multiprocessing pool; if the fork
-    # lands in an interpreter that already spun up numpy/torch/pyarrow thread
-    # pools (which happens whenever a broad diff packs many tests into one
-    # partition), a forked child / C-extension `atexit` handler crashes at
-    # Python finalization — the process exits non-zero *after* an all-green run
-    # (issue #24/#25). Forcing single-threaded execution makes every fork land
-    # in a single-threaded interpreter that finalizes cleanly, so this is a
-    # general fix for the whole class, not a per-test `isolate_globs` allowlist
-    # (which only covered two named forkers and missed any pulled in by a wide
-    # selection). The isolated-target loops below previously set these inline;
-    # the job-level env now covers them too.
+    # Pin every native threadpool to a single thread for the WHOLE job as
+    # DEFENSE-IN-DEPTH. Several tests fork lerobot's `compute_stats`
+    # multiprocessing pool; if the fork lands in an interpreter that already
+    # spun up numpy/torch/pyarrow threadpools, a forked child / C-extension
+    # `atexit` handler crashes at Python finalization — the process exits
+    # non-zero *after* an all-green run (issue #24/#25).
+    #
+    # NOTE: thread-pinning alone is NOT sufficient — a broad partition that
+    # includes a forker still exits non-zero despite these vars (verified on a
+    # real run). The reliable fix is RUNNING EACH FORKER ONE-PER-PROCESS via the
+    # `isolate_globs` list in tools/test_selection.toml (the selector peels them
+    # into `isolated_targets` and the loops below run each alone, in a fresh
+    # not-yet-threaded interpreter). These env vars stay as a cheap belt to
+    # reduce pollution; isolation is what actually prevents the crash.
     env:
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -105,11 +107,11 @@ jobs:
           # shellcheck disable=SC2086 -- intentional word-splitting of $ignore.
           uv run pytest tests/unit/ $ignore \
             -q -p no:launch_testing -p no:launch_ros || rc=1
-          # isolated_targets still run one-per-process (issue #24/#25): a fork
-          # packed with hundreds of other tests is the worst case, so keep them
-          # alone. Thread-pinning is now job-level (see the `env:` block on the
-          # job), which is what actually makes the fork finalize cleanly — no
-          # inline env prefix needed here anymore.
+          # isolated_targets run one-per-process (issue #24/#25): running each
+          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
+          # actually prevents the finalization crash. Thread-pinning (job-level
+          # `env:`) is only defense-in-depth, so no inline env prefix is needed
+          # here anymore.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
             uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
@@ -152,11 +154,11 @@ jobs:
               -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
-          # isolated_targets still run one-per-process (issue #24/#25): a fork
-          # packed with hundreds of other tests is the worst case, so keep them
-          # alone. Thread-pinning is now job-level (see the `env:` block on the
-          # job), which is what actually makes the fork finalize cleanly — no
-          # inline env prefix needed here anymore.
+          # isolated_targets run one-per-process (issue #24/#25): running each
+          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
+          # actually prevents the finalization crash. Thread-pinning (job-level
+          # `env:`) is only defense-in-depth, so no inline env prefix is needed
+          # here anymore.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
             uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
