@@ -88,6 +88,7 @@ nav:
     - Toolchain cheatsheet: contributing/toolchain.md
     - Selective testing: contributing/selective-testing.md
     - Test-suite audit: contributing/test-audit.md
+    - PyPI release setup: contributing/pypi-release.md
   - ADRs:
     - Index (clustered): adr/README.md
     - ADR-0001 Record decisions: adr/0001-record-architecture-decisions.md
