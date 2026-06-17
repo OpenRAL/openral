@@ -85,9 +85,20 @@ jobs:
           # shellcheck disable=SC2086 -- intentional word-splitting of $ignore.
           uv run pytest tests/unit/ $ignore \
             -q -p no:launch_testing -p no:launch_ros || rc=1
+          # Issue #24 (extends #25): file-level isolation alone is not enough —
+          # the fork test (test_cli_replay_record_profile.py) spins up
+          # numpy/torch/pyarrow threadpools across its OWN tests *before* it
+          # forks lerobot's compute_stats pool, so the fork still lands in a
+          # multi-threaded interpreter and a forked child / C-extension atexit
+          # handler crashes at finalization (all tests pass, process then exits
+          # non-zero). Pin every threadpool to a single thread so the fork lands
+          # single-threaded and finalizes cleanly.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
-            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 RAYON_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+              uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
           exit $rc
@@ -127,9 +138,20 @@ jobs:
               -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
+          # Issue #24 (extends #25): file-level isolation alone is not enough —
+          # the fork test (test_cli_replay_record_profile.py) spins up
+          # numpy/torch/pyarrow threadpools across its OWN tests *before* it
+          # forks lerobot's compute_stats pool, so the fork still lands in a
+          # multi-threaded interpreter and a forked child / C-extension atexit
+          # handler crashes at finalization (all tests pass, process then exits
+          # non-zero). Pin every threadpool to a single thread so the fork lands
+          # single-threaded and finalizes cleanly.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
-            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+            NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 RAYON_NUM_THREADS=1 \
+            TOKENIZERS_PARALLELISM=false \
+              uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
           exit $rc
