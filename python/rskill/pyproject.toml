@@ -2,6 +2,7 @@
 name = "openral-rskill"
 version = "0.1.0"
 description = "OpenRAL Skill base class — lifecycle state machine and mock skill"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
