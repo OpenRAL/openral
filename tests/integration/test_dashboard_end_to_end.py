@@ -193,6 +193,21 @@ def test_dashboard_system_health_card_receives_gpu_cpu_ram() -> None:
     )
     from openral_observability._sdk import _ENV_METRIC_INTERVAL_MS
 
+    # Isolate from any prior observability test that installed an OTel meter
+    # provider and left OTel's set-once guard tripped. A stale global provider
+    # makes the `configure_observability` call below silently no-op its
+    # `set_meter_provider` (the SDK warns and keeps the old provider), so the
+    # host sampler's gauges never reach *this* test's dashboard exporter and the
+    # System card stays empty — the exact intermittent CI failure this test hit
+    # when an earlier observability test ran first. The teardown already resets
+    # this for the *next* test; reset up front too so we aren't the victim of
+    # the *previous* one.
+    from opentelemetry.metrics import _internal as metrics_internal
+
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    metrics_internal._METER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    metrics_internal._METER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+
     store = TelemetryStore()
     app = create_app(store)
     port = _free_port()

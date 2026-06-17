@@ -16,7 +16,13 @@ jobs:
         # runner (GA since 2025). No GPU, but it catches aarch64-only import
         # bugs (e.g. the `tegra` library paths in `nvbufsurface.py`) that the
         # x86 lanes can't see.
-        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+        #
+        # macOS is intentionally not in the matrix: the shared macOS hosted
+        # runner can't honor the hot-loop timing budgets (`precise_sleep`
+        # overshoot, 30 Hz cadence) that CLAUDE.md §2 pins to the *reference
+        # host*, so a macOS lane only produces false-red timing flakes — not a
+        # valid signal. Linux x86 (+ aarch64) is the supported CI surface.
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
         python: ["3.12"]
     runs-on: ${{ matrix.os }}
     # PR 3/3 onboarding: keep aarch64 non-blocking for two weeks of warm-up,
