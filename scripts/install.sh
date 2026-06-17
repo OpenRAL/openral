@@ -25,10 +25,16 @@
 #   OPENRAL_INSTALL_SOURCE   pypi (default) | git+https://github.com/OpenRAL/openral
 #   OPENRAL_INSTALL_VERSION  PyPI version specifier (default: empty → latest).
 #   OPENRAL_INSTALL_INDEX    extra package index, appended as uv
-#                            `--extra-index-url` (e.g.
-#                            https://test.pypi.org/simple/ to install a
-#                            TestPyPI build). `openral-*` resolve from here;
-#                            third-party deps still come from real PyPI.
+#                            `--extra-index-url`. For a clean alternate index
+#                            (private devpi, or real PyPI) `openral-*` resolve
+#                            from here while deps come from PyPI.
+#                            CAVEAT: TestPyPI (test.pypi.org) does NOT resolve
+#                            cleanly — it hosts placeholder builds of common
+#                            deps (e.g. rich==0.0.0, fastapi==1.0) and uv's
+#                            default first-index guard won't fall through to
+#                            PyPI for them (`--index-strategy unsafe-best-match`
+#                            then pulls the broken placeholders instead). Use
+#                            TestPyPI to verify a *publish*, not a full install.
 #   OPENRAL_INSTALL_DEBUG    1 → set -x.
 
 set -euo pipefail
