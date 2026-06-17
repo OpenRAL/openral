@@ -36,7 +36,6 @@ from openral_core.assets import AssetRefError, resolve_asset
 from openral_core.exceptions import (
     ROSConfigError,
     ROSEStopRequested,
-    ROSPerceptionStale,
     ROSRuntimeError,
 )
 from openral_core.schemas import (
@@ -151,8 +150,10 @@ class MujocoArmHAL(HALBase):
         gravity_enabled: When ``False``, gravity is zeroed at ``connect()``
             time.  Useful for closed-loop tests where exact convergence is
             asserted.
-        staleness_limit_s: Maximum age (seconds) of the cached state
-            before ``ROSPerceptionStale`` is raised.
+        staleness_limit_s: Age (seconds) of the cached state above which
+            ``read_state`` emits a one-shot starvation WARNING (the
+            in-process read still returns live ``MjData`` — see
+            :meth:`read_state`).
 
     Raises:
         ROSConfigError: If ``description.joints`` is empty.
@@ -208,6 +209,15 @@ class MujocoArmHAL(HALBase):
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
+        # ADR-0049 / ADR-0034 — the idle-step hand-off timestamp the
+        # SimSensorBridge reads to decide when an idle scene may auto-step
+        # (``should_idle_step``). ``0`` = never actuated → idle-stepping starts
+        # immediately so a parked arm keeps its cameras + joint_state snapshot
+        # live. Stamped by every ``send_action``.
+        self._last_action_ns: int = 0
+        # One-shot guard so a sustained executor stall logs a single starvation
+        # WARNING from ``read_state`` instead of spamming one per tick.
+        self._starvation_warned: bool = False
         self._model: mujoco.MjModel | None = None
         self._data: mujoco.MjData | None = None
         # Lazily-created offscreen renderer for read_images() (issue #191
@@ -370,20 +380,44 @@ class MujocoArmHAL(HALBase):
 
         Raises:
             ROSRuntimeError: If not connected.
-            ROSPerceptionStale: If the cached state is older than
-                ``staleness_limit_s``.
 
         Returns:
             ``JointState`` with positions / velocities for every controllable
             joint in ``description.joints``.  The gripper position (if any) is
             reported in ``[0, 1]``.
+
+        Note:
+            The read below returns the live in-process ``MjData`` — always the
+            *current* simulator state — so a large gap since the last service is
+            never bad data. It means this HAL's publish loop was starved (e.g. a
+            slow camera render hogging the single-threaded executor). We surface
+            that as a one-shot diagnostic WARNING and refresh the clock, rather
+            than latching a fatal ``ROSPerceptionStale``: the previous behaviour
+            raised *before* refreshing the clock, so a single transient stall
+            bricked the HAL permanently (every subsequent read raised too). Live
+            joint feedback from an async source (a real robot) is policed by the
+            subscription-based HALs (``ros_control``/``aloha``), not here.
         """
         self._require_connected("read_state")
         age = time.monotonic() - self._last_state_time
         if age > self._staleness_limit_s:
-            raise ROSPerceptionStale(
-                f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
-            )
+            if not self._starvation_warned:
+                self._starvation_warned = True
+                log.warning(
+                    "hal.read_state.starved",
+                    robot=self.description.name,
+                    age_s=round(age, 3),
+                    limit_s=self._staleness_limit_s,
+                    note=(
+                        "publish loop starved > staleness_limit_s (likely the "
+                        "single-threaded executor blocked on rendering); serving "
+                        "live MjData and refreshing the clock — not latching stale"
+                    ),
+                )
+        else:
+            # Healthy read — re-arm the one-shot so a *later* starvation episode
+            # warns again rather than staying silent after the first.
+            self._starvation_warned = False
 
         assert self._data is not None  # guaranteed by _require_connected
         positions: list[float] = []
@@ -452,9 +486,11 @@ class MujocoArmHAL(HALBase):
         for _ in range(self._settle_steps):
             self._per_step_update(last_step)
             mj.mj_step(self._model, self._data)
-        # Refresh the staleness clock so multi-thousand-step settles
-        # don't trip ``ROSPerceptionStale`` on the next ``read_state``.
+        # Refresh the staleness clock so multi-thousand-step settles don't trip
+        # a starvation warning on the next ``read_state``, and stamp the
+        # idle-step hand-off so the SimSensorBridge yields to this real action.
         self._last_state_time = time.monotonic()
+        self._last_action_ns = time.monotonic_ns()
 
         log.debug(
             "hal.send_action",
@@ -539,6 +575,44 @@ class MujocoArmHAL(HALBase):
         self._data = None
         self._connected = False
         raise ROSEStopRequested(f"Emergency stop triggered on robot '{self.description.name}'.")
+
+    @property
+    def last_action_ns(self) -> int:
+        """``time.monotonic_ns()`` of the last :meth:`send_action` (``0`` if never).
+
+        The SimSensorBridge reads this (``should_idle_step``) to yield the idle
+        stepper to a recently-commanded skill. Mirrors the same surface on
+        :class:`~openral_hal.sim_attached.SimAttachedHAL`.
+        """
+        return self._last_action_ns
+
+    def idle_step(self) -> bool:
+        """Advance the sim one HOLD tick so cameras + state stay live while idle.
+
+        Gives a bare ``MujocoArmHAL`` the ADR-0034 (idle cameras) + ADR-0049
+        (off-executor joint_state via ``ProprioSnapshot``) treatment that the
+        lifecycle node gates on a *callable* ``idle_step``. ``ctrl`` is left
+        untouched — it already holds the last commanded / seeded pose, so a HOLD
+        step does not move the arm; it only re-integrates physics and refreshes
+        the staleness clock.
+
+        SAFETY: this is defined only on the sim-only ``MujocoArmHAL`` hierarchy
+        (no real HAL inherits it), and it is a no-op returning ``False`` once the
+        HAL has e-stopped (``estop()`` disconnects), so it can never autonomously
+        drive an e-stopped robot. ``False`` also signals the bridge to leave the
+        cached frame frozen.
+
+        Returns:
+            ``True`` if the sim advanced, ``False`` if the HAL is not connected
+            (e.g. after :meth:`estop`).
+        """
+        if not self._connected or self._data is None or self._model is None:
+            return False
+        import mujoco as mj  # reason: optional sim-only dep
+
+        mj.mj_step(self._model, self._data)
+        self._last_state_time = time.monotonic()
+        return True
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -819,8 +893,8 @@ class MujocoArmHAL(HALBase):
                 physics steps per :meth:`send_action`.
             gravity_enabled: When ``False``, gravity is zeroed at
                 :meth:`connect` time.
-            staleness_limit_s: Maximum age of a cached state before
-                :class:`ROSPerceptionStale` is raised.
+            staleness_limit_s: Age above which :meth:`read_state` emits a
+                one-shot starvation WARNING (it still returns live state).
 
         Raises:
             ROSConfigError: Propagated from :meth:`_sim_kwargs_for` /

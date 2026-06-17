@@ -56,6 +56,15 @@ isolate_globs = [
   "tests/unit/test_smolvla_processor_fallback.py",
   "tests/unit/test_cli_dataset_push.py",
   "tests/unit/test_hardware_runner_dataset_recording.py",
+  # Records a rollout into a LeRobotDataset v3 then re-opens it via the real
+  # lerobot reader (→ `compute_stats` fork). It lives under `tests/sim`, so a
+  # broad diff folds it into the single `tests` partition alongside the
+  # torch/mujoco/robosuite imports the sim suite pulls in; the fork then lands in
+  # an already-threaded interpreter and crashes at finalization (issue #24) — a
+  # non-zero exit after an all-pass summary. Its deps (gym_aloha/lerobot) are
+  # absent in most local checkouts so it skips there, which is why this only ever
+  # bit on CI. Run alone in a fresh interpreter it passes clean.
+  "tests/sim/test_dataset_emission.py",
 ]
 
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
