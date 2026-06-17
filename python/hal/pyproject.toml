@@ -10,6 +10,17 @@ dependencies = [
     "openral-sensors", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
     "lerobot>=0.5.0",  # reason: types.py module required; minimum version supporting 3.12+
     "structlog>=24.0", # reason: structured logging per CLAUDE.md §5.1
+    # torchcodec (pulled transitively via lerobot) ships per-torch-minor ABI
+    # builds: 0.9.x↔torch2.9, 0.10.x↔torch2.10. The dev workspace locks torch
+    # 2.9.1 on linux and caps torchcodec<0.10 in [tool.uv]; a *clean* install
+    # has no lock, so torch floats to 2.10 while lerobot still caps torchcodec
+    # at 0.9.x — the 0.9.x .so then links against torch 2.9's c10 ABI and every
+    # lerobot dataset-codec call dies with `undefined symbol`. Pin both to the
+    # validated linux pair so published-metadata installs stay ABI-consistent.
+    # Linux-scoped only: other platforms validly resolve the torch2.10/0.10
+    # pair (mirrors the root [tool.uv] constraint marker).
+    "torch<2.10; sys_platform == 'linux'",
+    "torchcodec<0.10; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
