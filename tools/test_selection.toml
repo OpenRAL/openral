@@ -49,6 +49,13 @@ ignore_globs = [
 isolate_globs = [
   "tests/unit/test_cli_dataset_from_bag.py",
   "tests/unit/test_cli_replay_record_profile.py",
+  # Also write/aggregate a LeRobotDataset (→ lerobot `compute_stats` fork), so
+  # they hit the same finalization crash when packed into a broad partition.
+  # (Job-level thread-pinning from #33 is NOT sufficient on its own — a broad
+  # selection that includes a forker still exits non-zero despite all-pass.)
+  "tests/unit/test_smolvla_processor_fallback.py",
+  "tests/unit/test_cli_dataset_push.py",
+  "tests/unit/test_hardware_runner_dataset_recording.py",
 ]
 
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
