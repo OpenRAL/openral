@@ -24,7 +24,7 @@ _No-LLM stub satisfying the `Reasoner` Protocol (for plumbing tests; not a produ
   - `plan(world_state, goal) -> Plan` — Return a context-free single-leaf `Plan`. (L74)
 
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
-_ADR-0018 F4 — typed LLM tool-use clients (direct-dispatch surface). CLAUDE.md §6.2 / §7.6 amended in the same PR; BT v4 XML is a future option behind a separate `bt_executor_node`._
+_ADR-0018 F4 — typed LLM tool-use clients (direct-dispatch surface). CLAUDE.md §6.2 / §7.6 amended in the same PR. The direct typed `ReasonerToolCall` surface is the sole planner output._
 
 - module constant `DEFAULT_SYSTEM_PROMPT: str` — Factual system prompt for the S2 reasoner: one-tool-per-tick semantics, goal fidelity, robot/scene-matched skill selection, the ADR-0044 go-see-then-act ladder — recall (recall_object, honouring Phase-4a 'approach BLOCKED') → navigate-to-approach (resolve_place / Nav2) → aim (the camera-aiming/look-at skill) → verify (locate_in_view, live vs remembered) → manipulate, each rung gated on its tool/skill being in the palette — progress evaluation, observe-but-never-bypass safety/e-stop handling, and exact-field-name discipline. Concrete deployments may override. (L74)
 - module constant `OPENROUTER_BASE_URL: str` — `https://openrouter.ai/api/v1`; pre-filled when `PROVIDER=openrouter` so users don't have to memorise it. (L443)

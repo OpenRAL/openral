@@ -9,7 +9,7 @@ OpenRAL uses an eight-layer architecture. Each layer has a single responsibility
 1  Sensors              python/sensors/                             ✓ shipped (catalog + vendor adapters)
 2  World State          python/world_state/, packages/world_state/  ✓ shipped (aggregator + lifecycle node)
 3  rSkill (S1)           python/rskill/, packages/openral_skill/     ✓ shipped (Python ABC + rSkill loader + openral_rskill_ros action server)
-4  Reasoning (S2)       python/reasoner/, packages/openral_reasoner_ros/  🟡 partial (ReasonerCore + reasoner/prompt-router nodes ship; BT v4 executor planned)
+4  Reasoning (S2)       python/reasoner/, packages/openral_reasoner_ros/  ✓ shipped (ReasonerCore + reasoner/prompt-router nodes + typed ReasonerToolCall dispatch; full replanning ladder in progress)
 5  World Action Model   python/wam/                                 ⏳ planned (optional layer)
 6  Safety               packages/openral_safety/, cpp/openral_safety_kernel/  🟡 partial (Python supervisor + deadman/E-stop forwarders ship; certifiable C++ kernel planned)
 7  Observability        python/observability/                       ✓ shipped (OTel SDK + OTLP exporter + structlog↔OTel bridge)
@@ -42,8 +42,8 @@ Every robot agent has:
 - **S1** — fast policy (VLA, 30–200 Hz), action-chunked.
 - **S2** — slow reasoning (event-driven, ~0.2 Hz heartbeat). The reasoner emits
   typed `ReasonerToolCall` structured tool-calls (`ExecuteSkill`,
-  `LifecycleTransition`, `EmitPrompt`, …); BehaviorTree.CPP v4 XML is a future
-  option behind `bt_executor_node`.
+  `LifecycleTransition`, `EmitPrompt`, …) as its sole planner output — the
+  direct typed-dispatch surface.
 - **S0** (humanoids only) — cerebellar layer (500–1000 Hz, C++, inside ros2_control).
 
 ## Safety architecture
