@@ -53,8 +53,12 @@ from openral_observability import (
     semconv,
 )
 from openral_sim.cli import sim_app
-from rich.console import Console
+from rich.box import MINIMAL, ROUNDED
+from rich.console import Console, Group, RenderableType
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
+from rich.text import Text
 
 from openral_cli.collision import collision_app
 from openral_cli.dataset import dataset_app
@@ -78,26 +82,171 @@ console = Console()
 
 # ── REPL ──────────────────────────────────────────────────────────────────────
 
-BANNER = "\n".join(
+# Solid-block OpenRAL logo mark (single white weight, no gradient), sized to the
+# wordmark's 6 rows: horns flaring out and down into a rounded head, eyes below.
+_LOGO_ART: Final[str] = "\n".join(
     [
-        "",
-        " ▒▒         ▒░     ██████╗ ██████╗ ███████╗███╗   ██╗██████╗  █████╗ ██╗     ",
-        " █▓         ▓█    ██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔══██╗██║     ",
-        " ██▓░     ░▓██    ██║   ██║██████╔╝█████╗  ██╔██╗ ██║██████╔╝███████║██║     ",
-        " ▒█████ █████▒    ██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██╔══██╗██╔══██║██║     ",
-        "   ▒▓█████▓▒      ╚██████╔╝██║     ███████╗██║ ╚████║██║  ██║██║  ██║███████╗",
-        "     ▓███▓         ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝",
-        "",
+        "█             █",
+        "██▄         ▄██",
+        "████▄▄   ▄▄████",
+        "▀██████ ██████▀",
+        "   ▀███████▀   ",
+        " ▀   ▀███▀   ▀ ",
     ]
 )
-SUBTITLE = "The open-source agentic layer for physical AI"
+# OPENRAL block-letter wordmark.
+_WORDMARK_ART: Final[str] = "\n".join(
+    [
+        " ██████╗ ██████╗ ███████╗███╗   ██╗██████╗  █████╗ ██╗",
+        "██╔═══██╗██╔══██╗██╔════╝████╗  ██║██╔══██╗██╔══██╗██║",
+        "██║   ██║██████╔╝█████╗  ██╔██╗ ██║██████╔╝███████║██║",
+        "██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║██╔══██╗██╔══██║██║",
+        "╚██████╔╝██║     ███████╗██║ ╚████║██║  ██║██║  ██║███████╗",
+        " ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝",
+    ]
+)
+_TAGLINE_TAIL: Final[str] = " — Open Robot Agentic Layer (harness) for embodied AI"
+_CAPABILITIES: Final[str] = "fast policies · slow reasoning · rewards · perception · control"
+# Community links rendered in the top-right cell.
+_LINKS: Final[tuple[tuple[str, str], ...]] = (
+    ("Discord", "discord.gg/3paXT2bVyB"),
+    ("GitHub", "github.com/OpenRAL/openral"),
+    ("Hugging Face", "huggingface.co/OpenRAL"),
+    ("Website", "openral.com"),
+)
+# Quick-start commands rendered in the bottom-right cell.
+_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
+    ("doctor", "diagnose your host setup"),
+    ("rskill search", "find installable skills"),
+    ("help", "list every command"),
+    ("exit", "leave the repl · Ctrl-D"),
+)
+
+# Minimum terminal columns each (content-sized) layout occupies — measured from
+# the rendered box so the richest layout that still fits the terminal is chosen and
+# the box never overflows. Below the side-by-side floor the logo stacks above the
+# wordmark; below the stacked width the terminal is simply too narrow to fit.
+_WIDE_MIN: Final[int] = 127  # two-column (logo|wordmark · links/divider/commands)
+_SIDE_BY_SIDE_MIN: Final[int] = 82  # single column, logo + wordmark share a line
+
+
+def _kv_grid(rows: tuple[tuple[str, str], ...], key_style: str) -> Table:
+    """A two-column ``key  value`` grid (styled key, dim value) with no borders."""
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style=key_style, no_wrap=True)
+    grid.add_column(style="dim")
+    for key, value in rows:
+        grid.add_row(key, value)
+    return grid
+
+
+def _logo_wordmark(*, stacked: bool) -> RenderableType:
+    """Logo mark + OPENRAL wordmark, side by side (wide) or stacked (narrow)."""
+    logo = Text(_LOGO_ART, style="bold white")
+    wordmark = Text(_WORDMARK_ART, style="bold white")
+    if stacked:
+        return Group(logo, wordmark)
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(vertical="middle")
+    grid.add_column(vertical="middle")
+    grid.add_row(logo, wordmark)
+    return grid
+
+
+def _identity(*, stacked: bool) -> RenderableType:
+    """Logo + wordmark above the centred tagline and capability strip."""
+    return Group(
+        _logo_wordmark(stacked=stacked),
+        Text(""),
+        Text.assemble(("OpenRAL", "bold white"), (_TAGLINE_TAIL, "white"), justify="center"),
+        Text(_CAPABILITIES, style="dim", justify="center"),
+    )
+
+
+def render_banner(version_str: str, *, width: int | None = None) -> RenderableType:
+    """Build the REPL welcome box as a rich renderable (Claude-Code style).
+
+    Returns a :class:`rich.panel.Panel` so the same renderable can be printed to
+    the live console *and* exported to plain text in tests, independent of
+    terminal/TTY/colour state. The white-bordered rounded box carries ``OPENRAL
+    v<version>`` inline in the top border and adapts to ``width``:
+
+    * **Wide** (``>= _WIDE_MIN``): two columns — the logo mark beside the OPENRAL
+      wordmark with the tagline below on the left; the community links above a
+      horizontal divider above the quick-start commands on the right, split by a
+      vertical divider.
+    * **Narrow**: a single stacked column keeping every section; the logo sits
+      beside the wordmark while it fits and stacks above it once it does not.
+
+    Args:
+        version_str: The installed ``openral-cli`` version, rendered as ``vX.Y.Z``.
+        width: Target terminal width in columns; defaults to a wide layout.
+
+    Example:
+        >>> from io import StringIO
+        >>> from rich.console import Console
+        >>> con = Console(file=StringIO(), width=120)
+        >>> con.print(render_banner("0.1.0", width=120))
+        >>> "OPENRAL v0.1.0" in con.file.getvalue()
+        True
+    """
+    cols = width if width is not None else _WIDE_MIN
+    links = _kv_grid(_LINKS, "bold white")
+    commands = _kv_grid(_COMMANDS, "bold cyan")
+
+    body: RenderableType
+    if cols >= _WIDE_MIN:
+        columns = Table(
+            box=MINIMAL,
+            show_header=False,
+            show_edge=False,
+            show_lines=False,
+            pad_edge=False,
+            padding=(0, 2),
+            border_style="dim",
+            expand=False,
+        )
+        columns.add_column(vertical="top")
+        columns.add_column(vertical="top")
+        columns.add_row(
+            _identity(stacked=False),
+            Group(links, Rule(style="dim"), commands),
+        )
+        body = columns
+    else:
+        body = Group(
+            _identity(stacked=cols < _SIDE_BY_SIDE_MIN),
+            Text(""),
+            links,
+            Rule(style="dim"),
+            commands,
+        )
+
+    # Size the box to its content (expand=False) rather than stretching it to the
+    # terminal: a compact box keeps slack on wide terminals and only breaks if the
+    # window is later dragged narrower than the box itself (printed output cannot
+    # reflow). The layout above is chosen so the content always fits ``cols``.
+    return Panel(
+        body,
+        box=ROUNDED,
+        border_style="white",
+        title=f"OPENRAL v{version_str}",
+        title_align="left",
+        padding=(1, 2),
+        expand=False,
+    )
+
+
+def _cli_version() -> str:
+    """Best-effort ``openral-cli`` version string for the banner (never raises)."""
+    with contextlib.suppress(PackageNotFoundError):
+        return version("openral-cli")
+    return "0.0.0"
 
 
 def _print_banner() -> None:
-    """Print the ASCII OpenRAL banner + subtitle to the REPL console."""
-    console.print(f"[bold cyan]{BANNER}[/bold cyan]")
-    console.print(f"  [dim]{SUBTITLE}[/dim]\n")
-    console.print("  Type [bold]help[/bold] for commands, [bold]exit[/bold] (or Ctrl-D) to quit.\n")
+    """Print the OpenRAL welcome box, sized to the live terminal width."""
+    console.print(render_banner(_cli_version(), width=console.width))
 
 
 def _dispatch_repl_line(line: str) -> None:
