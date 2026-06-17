@@ -20,11 +20,11 @@ import pytest
 import tomllib
 from openral_cli.install import _CONFLICTS, _GROUPS, _check_conflicts, install_app
 from openral_cli.main import (
-    BANNER,
     _dispatch_repl_line,
     _path_completer,
     _run_repl,
     app,
+    render_banner,
 )
 from openral_core.exceptions import ROSConfigError
 from typer.testing import CliRunner
@@ -130,11 +130,17 @@ class TestReplDispatch:
         assert app.info.name == "openral"
 
     def test_banner_is_non_empty_ascii_art(self) -> None:
-        # The REPL splash uses ASCII art for the project name; we don't
-        # pin the exact glyph layout (it may evolve), only that the
-        # banner is non-trivial multi-line ASCII.
-        assert BANNER.strip()
-        assert BANNER.count("\n") >= 4
+        # The REPL splash renders an ASCII logo + wordmark welcome box; we
+        # don't pin the exact layout (it may evolve), only that it is
+        # non-trivial multi-line output. Rendered via a recording console so
+        # the assertion is independent of terminal/TTY/colour state.
+        from rich.console import Console
+
+        console = Console(record=True, width=130, force_terminal=False)
+        console.print(render_banner("0.1.0", width=130))
+        text = console.export_text()
+        assert text.strip()
+        assert text.count("\n") >= 4
 
     def test_dispatch_repl_line_runs_install_list(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Bare subcommand path: "install list" inside the REPL is
