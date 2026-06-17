@@ -6,11 +6,11 @@
 
 **An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
 
-[![CI](https://github.com/OpenRAL/openral/actions/workflows/test-python.yml/badge.svg)](https://github.com/OpenRAL/openral/actions)
+[![CI](https://img.shields.io/badge/CI%2FCD-passing-4CAF50?logo=github&logoColor=white)](https://github.com/OpenRAL/openral/actions)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
-[![Docs](https://img.shields.io/badge/docs-developing-2088FF)](https://openral.github.io/openral/)
+[![Docs](https://img.shields.io/badge/📖%20Docs-developing-2088FF)](https://openral.github.io/openral/)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
@@ -37,7 +37,7 @@ We compose ROS 2, tf2, MoveIt 2, Nav2, and `ros2_control` — we don't reinvent 
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
 - [31 rSkill packages](docs/reference/rskills.md) — SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, RLDX-1, GR00T N1.7 policies, RT-DETR and LocateAnything detectors, and the Qwen3.5-4B scene VLM
-- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [22 benchmark configs](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht)
+- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [12 benchmark scenes](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, Isaac Sim)
 - ADR-0018 reasoner/safety ROS graph + deadman/E-stop forwarders
 - OpenTelemetry instrumentation with OTLP export and live `openral dashboard`
 
@@ -57,7 +57,8 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Scene understanding (S2) | `kind: vlm` rSkill (Qwen3.5-4B NF4) → the reasoner's read-only `query_scene` tool for task-progress / success verification ("did the grasp succeed?") | `packages/openral_perception_ros/` (`scene_vlm_node`), ADR-0047 |
 | rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX adapters, async action chunks | `python/rskill/`, `rskills/` |
 | Inference runner | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy` | `python/runner/`, `python/sim/` |
-| Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/`, `benchmarks/` |
+| Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
+| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, Isaac Sim | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard` | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; pre-publish baseline at `schema_version: "0.1"` | `python/core/`, `tools/schema_export.py` |
@@ -259,7 +260,7 @@ The sensor catalog ships typed adapters wrapping vendor SDKs into `SensorSpec` /
 
 ## Sim environments
 
-22 benchmark configs span LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, and gym-pusht. Each YAML is a complete `SimEnvironment` — one command to run.
+12 benchmark scenes span LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, and Isaac Sim. Each YAML is a complete `SimEnvironment` — one command to run.
 
 → **Full config index:** [docs/reference/sim-environments.md](docs/reference/sim-environments.md)
 
@@ -309,9 +310,9 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 ## Community & support
 
 - **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
-- **General enquiries:** hello@openral.dev
-- **Security vulnerabilities & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or security@openral.dev — **never** a public issue
-- **Code of Conduct reports:** conduct@openral.dev
+- **[General enquiries](mailto:hello@openral.com)** — [📧 hello@openral.com](mailto:hello@openral.com)
+- **Security vulnerabilities & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.dev](mailto:security@openral.dev) — **never** a public issue
+- **Code of Conduct reports:** [conduct@openral.dev](mailto:conduct@openral.dev)
 
 See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANCE.md](GOVERNANCE.md).
 
