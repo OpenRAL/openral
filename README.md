@@ -309,10 +309,10 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 
 ## Community & support
 
-- **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
-- **[General enquiries](mailto:hello@openral.com)** — [📧 hello@openral.com](mailto:hello@openral.com)
-- **Security vulnerabilities & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.dev](mailto:security@openral.dev) — **never** a public issue
-- **Code of Conduct reports:** [conduct@openral.dev](mailto:conduct@openral.dev)
+- 💬 **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
+- 📧 **[hello@openral.com](mailto:hello@openral.com)** — general enquiries
+- 🔒 **Security & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or [security@openral.com](mailto:security@openral.com) — **never** a public issue
+- 📋 **Code of Conduct reports:** [conduct@openral.com](mailto:conduct@openral.com)
 
 See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANCE.md](GOVERNANCE.md).
 
@@ -320,6 +320,6 @@ See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANC
 
 ## License
 
-OpenRAL is licensed entirely under **Apache-2.0** ([ADR-0012](docs/adr/0012-open-core-licensing.md)). Every package in this repository — contracts, runtime substrate, simulators, HAL & sensors, observability, safety code, the LLM reasoner, WAM adapters, dispatcher, skill catalog, fleet orchestration, examples, tests, tools, scripts, and manifests — ships under the same permissive license. There is no commercial, source-available, or otherwise non-open tier. See [LICENSE](LICENSE) and [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt).
+OpenRAL is licensed entirely under **Apache-2.0**. Every package in this repository — contracts, runtime substrate, simulators, HAL & sensors, observability, safety code, the LLM reasoner, WAM adapters, dispatcher, skill catalog, fleet orchestration, examples, tests, tools, scripts, and manifests — ships under the same permissive license. There is no commercial, source-available, or otherwise non-open tier. See [LICENSE](LICENSE).
 
-rSkill weights distributed via Hugging Face Hub remain governed by their own upstream licenses (Apache-2.0 / MIT / research-permissive / NVIDIA non-commercial / …); the loader surfaces each weight's posture at install time. This is third-party license lineage for models OpenRAL does not own — it does not affect the Apache-2.0 license of OpenRAL's own code.
+Third-party model weights on Hugging Face Hub keep their own upstream licenses (Apache-2.0, MIT, NVIDIA non-commercial, etc.). The loader surfaces each weight's license at install time. This does not affect OpenRAL's own Apache-2.0 code.
