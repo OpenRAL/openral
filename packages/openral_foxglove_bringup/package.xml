@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_foxglove_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Read-only live-scene visualisation surface for OpenRAL, wrapping upstream
+    foxglove_bridge (ADR-0059). Exposes only the "Bucket-1" topics (camera
+    images, /map occupancy grid, octomap point cloud, joint states, TF,
+    robot_description) plus the Bucket-2 converter outputs (collision-capsule
+    markers, voxel point cloud) over the Foxglove WebSocket protocol, with
+    client-publish, service, and parameter capabilities DISABLED so the surface
+    cannot actuate the robot. Ships a default Foxglove Studio layout in
+    config/openral_layout.json, an opt-in compressed-image republish path, a
+    Bucket-2 converter node, and an MCAP recorder.
+
+    ADR-0059 (docs/adr/0059-foxglove-live-scene-visualization.md) governs this
+    component as the live-scene half of a hybrid with the OTel dashboard
+    (ADR-0017, kept for traces/metrics). Any path that re-enables
+    clientPublish/services (e.g. an E-stop button) remains out of scope and
+    requires safety-WG review (CLAUDE.md §3).
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <!-- The upstream foxglove_bridge is the workhorse this package wraps.
+       exec_depend so `rosdep install` picks it up; not needed to BUILD
+       this bringup wrapper. -->
+  <exec_depend>foxglove_bridge</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <!-- Optional /tf + robot-model rendering (with_robot_state_publisher /
+       with_joint_state_publisher launch args). -->
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <!-- ADR-0059 Phase 2 — opt-in compressed-image republish path
+       (republish_compressed launch arg) to cut camera bandwidth ~10x. -->
+  <exec_depend>image_transport</exec_depend>
+  <exec_depend>compressed_image_transport</exec_depend>
+  <!-- ADR-0059 Phase 3 — Bucket-2 converter node: re-publishes the custom
+       openral_msgs world types as standard visualization_msgs / sensor_msgs
+       so Foxglove renders them natively. -->
+  <exec_depend>openral_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

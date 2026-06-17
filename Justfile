@@ -378,7 +378,14 @@ test-changed-run base="origin/master" head="HEAD":
     fi
     for t in $isolated; do
         echo "Running isolated target (own process): $t"
-        uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+        # Issue #24 (extends #25): pin every threadpool to one thread so the
+        # lerobot compute_stats fork lands in a single-threaded interpreter and
+        # finalizes cleanly (otherwise a forked child / C-ext atexit handler
+        # crashes after all tests pass, exiting non-zero). Mirrors CI.
+        OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+        NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 RAYON_NUM_THREADS=1 \
+        TOKENIZERS_PARALLELISM=false \
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
     done
     exit $rc
 

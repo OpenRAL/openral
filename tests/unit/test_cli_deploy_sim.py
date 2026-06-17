@@ -1403,3 +1403,64 @@ def test_panda_mobile_declares_real_footprint_polygon() -> None:
         (-0.35, -0.25),
         (0.35, -0.25),
     ]
+
+
+# ── ADR-0059 — Foxglove live-scene bridge ────────────────────────────────────
+
+
+def test_deploy_sim_foxglove_disabled_by_default() -> None:
+    """ADR-0059 — foxglove bridge is off by default (decision 3: default-off).
+
+    When ``--foxglove`` is not passed, ``enable_foxglove:=false`` must appear
+    in the launch argv and the dataclass field must be False. Default-off keeps
+    the headless/CI boot path and the OTel plane untouched.
+    """
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.enable_foxglove is False
+    assert invocation.foxglove_port == 8765
+    joined = " ".join(invocation.argv_template)
+    assert "enable_foxglove:=false" in joined
+    assert "foxglove_port:=8765" in joined
+
+
+def test_deploy_sim_foxglove_enabled_forwards_launch_args() -> None:
+    """ADR-0059 — ``--foxglove`` forwards ``enable_foxglove:=true`` + the port.
+
+    The launch file reads these args in ``compose_runtime_graph`` to decide
+    whether to append the bridge node wrapped in a ``TimerAction``.
+    """
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_foxglove=True,
+        foxglove_port=8765,
+    )
+    assert invocation.enable_foxglove is True
+    assert invocation.foxglove_port == 8765
+    joined = " ".join(invocation.argv_template)
+    assert "enable_foxglove:=true" in joined
+    assert "foxglove_port:=8765" in joined
+
+
+def test_deploy_sim_foxglove_custom_port_forwarded() -> None:
+    """ADR-0059 — a custom ``--foxglove-port`` is forwarded into the launch argv."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_foxglove=True,
+        foxglove_port=9999,
+    )
+    assert invocation.foxglove_port == 9999
+    assert "foxglove_port:=9999" in " ".join(invocation.argv_template)

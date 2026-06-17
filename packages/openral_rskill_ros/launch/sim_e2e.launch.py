@@ -52,6 +52,7 @@ from launch.actions import (
     ExecuteProcess,
     OpaqueFunction,
     RegisterEventHandler,
+    TimerAction,
 )
 from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration
@@ -60,6 +61,7 @@ from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
 from launch_ros.events.matchers import matches_node_name as _matches_node_name
 from lifecycle_msgs.msg import Transition
+from openral_foxglove_bringup.topics import BUCKET1_TOPIC_WHITELIST, READ_ONLY_CAPABILITIES
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _RSKILLS_DIR = str(_REPO_ROOT / "rskills")
@@ -370,6 +372,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         "true",
         "yes",
     )
+    # ADR-0059 — read-only Foxglove live-scene bridge. Off by default;
+    # ``openral deploy sim --foxglove`` opts in.
+    enable_foxglove = LaunchConfiguration("enable_foxglove").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    foxglove_port = LaunchConfiguration("foxglove_port").perform(context)
     # Graph-wide clock domain (single source of truth). deploy-sim has no
     # /clock publisher, so this is False by default and EVERY node below —
     # HAL, Nav2, slam_toolbox, robot_state_publisher, octomap, detector —
@@ -1190,6 +1200,41 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # if a previous run's dashboard still holds the port.
     if enable_dashboard:
         nodes.insert(0, dashboard)
+
+    # ADR-0059 — read-only Foxglove live-scene bridge. Off by default;
+    # ``openral deploy sim --foxglove`` opts in.
+    #
+    # STALE-BRIDGE ORDERING (ADR-0059 decision 3, VERIFICATION.md "Stale-bridge
+    # gotcha"): foxglove-sdk-cpp v0.18.0 advertises channels when a topic is
+    # first seen, but if the publisher disappears and reappears (e.g. because the
+    # bridge starts before the topic producer) the channel is re-advertised but
+    # no data flows. Wrapping the bridge in a TimerAction(period=5.0) ensures it
+    # starts AFTER the topic producers (HAL, SLAM, octomap, robot_state_publisher)
+    # have had time to advertise their topics on the ROS graph.
+    if enable_foxglove:
+        foxglove_bridge_node = Node(
+            package="foxglove_bridge",
+            executable="foxglove_bridge",
+            name="openral_foxglove_bridge",
+            output="screen",
+            parameters=[
+                {
+                    "address": "127.0.0.1",
+                    "port": int(foxglove_port),
+                    "tls": False,
+                    "capabilities": READ_ONLY_CAPABILITIES,
+                    "topic_whitelist": BUCKET1_TOPIC_WHITELIST,
+                    # Keep the upstream 10 MB send buffer for camera frames.
+                    "send_buffer_limit": 10_000_000,
+                    "max_qos_depth": 10,
+                    "include_hidden": False,
+                    # Graph-wide clock domain (see _resolve_sim_clock).
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+        )
+        nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
+
     return [*nodes, *autostart]
 
 
@@ -1483,6 +1528,27 @@ def generate_launch_description() -> LaunchDescription:
                 "the launch graph. Pass false for headless CI runs or "
                 "when the operator brings up `openral dashboard` "
                 "manually in a separate terminal."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_foxglove",
+            default_value="false",
+            description=(
+                "ADR-0059 — spawn the read-only foxglove_bridge as part of "
+                "the deploy-sim runtime graph. Default off. The bridge binds "
+                "to 127.0.0.1:<foxglove_port> and exposes only the Bucket-1 "
+                "topic allowlist (no safety/e-stop/action topics). View-only: "
+                "clientPublish, services, and parameters capabilities are "
+                "omitted. Pass true to enable."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "foxglove_port",
+            default_value="8765",
+            description=(
+                "ADR-0059 — Foxglove WebSocket port "
+                "(ws://127.0.0.1:<foxglove_port>). Default 8765. "
+                "Ignored unless enable_foxglove is true."
             ),
         ),
     ]

@@ -58,6 +58,7 @@ convention = "google"
 "python/hal/src/openral_hal/mobile_base_bridge.py" = ["PLC0415", "ANN401"]  # issue #191 Phase 3: rclpy / nav_msgs / geometry_msgs / tf2 deferred to keep the module import-safe without a sourced ROS 2 install; Any duck-types the node + HAL (mirrors sim_sensor_bridge.py)
 "examples/**" = ["ANN401", "PLC0415", "PLR0912", "PLR0915", "N806", "B905", "RUF001", "RUF002", "RUF003", "E501"]  # examples are runnable scripts: deferred imports, Any for untyped APIs, long main(), flexible formatting
 "tools/**" = ["D", "ANN401", "PLC0415", "PLR0912", "PLR0915", "PLR2004", "N806", "N814", "B905", "F841", "RUF001", "RUF002", "RUF003", "RUF046", "RUF059", "E501"]  # tools/ are one-shot conversion / debug scripts (cf. examples/**): deferred imports, Any for untyped APIs, lax docstrings, magic numbers, flexible formatting
+"packages/openral_foxglove_bringup/tools/**" = ["D", "ANN401"]  # demo_publisher.py is a stand-in dev publisher (cf. tools/**), not product API
 "rskills/**/_vendor/**" = ["D", "ANN", "PLC0415", "PLR0912", "PLR0915", "PLR2004", "N806", "N814", "B905", "F841", "RUF001", "RUF002", "RUF003", "RUF046", "RUF059", "E501", "E402", "SIM115", "B007"]  # _vendor/ holds one-shot research / provenance probes (cf. tools/**): same lax conventions — deferred imports, Any, lax docstrings, magic numbers, env-before-import, flexible formatting
 
 [format]
