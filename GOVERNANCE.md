@@ -26,8 +26,8 @@ Because OpenRAL drives physical actuators, the **Safety Working Group**
 reviewer, a hazard-log update, and tests proving the change is *at least as
 conservative* are required for any safety-touching change (see CLAUDE.md §3).
 Safety reviewers can block a change on safety grounds regardless of other
-approvals. Reach the Safety Working Group at safety@openral.dev for hazard
-reports or coordinated safety disclosure.
+approvals. For hazard reports or coordinated safety disclosure, email security@openral.dev
+with "[safety]" in the subject line.
 
 ### Contributors
 Anyone who opens an issue or PR. You do not need to be a maintainer to
@@ -62,8 +62,8 @@ All participation is governed by our
 ## Contact
 
 - General / project enquiries: hello@openral.dev
-- Safety Working Group: safety@openral.dev
-- Security vulnerabilities: see [SECURITY.md](SECURITY.md)
+- Partnerships & integrations: partner@openral.dev
+- Security vulnerabilities & safety disclosures: see [SECURITY.md](SECURITY.md)
 - Code of Conduct: conduct@openral.dev
 
 ## Changing this document
