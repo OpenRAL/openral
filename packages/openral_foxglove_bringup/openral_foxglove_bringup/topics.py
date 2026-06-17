@@ -16,7 +16,7 @@ BUCKET1_TOPIC_WHITELIST: list[str] = [
     # ADR-0059 decision 4: ``image_transport`` compressed sibling topics.
     # When the opt-in republisher is active these carry sensor_msgs/CompressedImage
     # at ~1/10th the raw bandwidth; Foxglove renders them natively in the Image panel.
-    r"/openral/cameras/.*/image/compressed",       # sensor_msgs/CompressedImage
+    r"/openral/cameras/.*/image/compressed",  # sensor_msgs/CompressedImage
     r"/openral/cameras/.*/image/compressedDepth",  # sensor_msgs/CompressedImage (depth)
     r"/map",  # nav_msgs/OccupancyGrid — 2D nav map
     r"/octomap_point_cloud_centers",  # sensor_msgs/PointCloud2 — voxels

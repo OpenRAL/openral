@@ -36,6 +36,7 @@ _LAYOUT = _PKG_DIR / "config" / "openral_layout.json"
 # Load topics.py by path (ament package not pip-installed under plain pytest).
 # ---------------------------------------------------------------------------
 
+
 def _load_topics() -> object:
     """Load ``topics.py`` by path so the test runs without the ament package installed."""
     spec = importlib.util.spec_from_file_location(
@@ -68,7 +69,7 @@ _FORBIDDEN_TOPIC_LITERALS = [
 _EXPECTED_ALLOWED: set[str] = {
     "/openral/cameras/0/image",
     "/openral/world_collisions_markers",  # Phase-3 Bucket-2 — coordinator adds to whitelist
-    "/openral/world_voxels_cloud",        # Phase-3 Bucket-2 — coordinator adds to whitelist
+    "/openral/world_voxels_cloud",  # Phase-3 Bucket-2 — coordinator adds to whitelist
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",
@@ -84,8 +85,14 @@ _EXPECTED_ALLOWED: set[str] = {
 # Load record.launch.py by path (same pattern as topics.py above).
 # ---------------------------------------------------------------------------
 
+
 def _load_record_launch() -> object:
     """Import record.launch.py by path, injecting the bringup package shim."""
+    # record.launch.py imports ``launch`` / ``launch_ros`` at module top. Those
+    # ship with a sourced ROS 2 install but are absent in the plain-pytest CI
+    # env (no ROS) — skip the launch-construction guards there, exactly as they
+    # run under ament_cmake_pytest with ROS sourced (CLAUDE.md §1.11).
+    pytest.importorskip("launch")
     # Ensure topics.py is importable under the name the launch file imports.
     import sys
     import types
@@ -111,6 +118,7 @@ def _load_record_launch() -> object:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_record_launch_has_execute_process() -> None:
     """``generate_launch_description()`` must contain an ``ExecuteProcess``."""
@@ -170,9 +178,7 @@ def test_record_scope_references_bucket1_patterns() -> None:
 
     ep: ExecuteProcess = next(a for a in ld.entities if isinstance(a, ExecuteProcess))
     cmd_tokens = _flatten_cmd(ep)
-    regex_idx = next(
-        (i for i, t in enumerate(cmd_tokens) if t in ("--regex", "-e")), None
-    )
+    regex_idx = next((i for i, t in enumerate(cmd_tokens) if t in ("--regex", "-e")), None)
     assert regex_idx is not None, "--regex / -e flag not found in cmd"
     # The alternation string is the very next token after the flag.
     regex_value = cmd_tokens[regex_idx + 1]

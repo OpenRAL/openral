@@ -126,13 +126,9 @@ def capsule_markers(
             f"radius and half_length must have the same length: {n} vs {len(half_length)}"
         )
     if len(origin_xyzrpy) != 6 * n:
-        raise ValueError(
-            f"origin_xyzrpy must have length 6*N={6 * n}, got {len(origin_xyzrpy)}"
-        )
+        raise ValueError(f"origin_xyzrpy must have length 6*N={6 * n}, got {len(origin_xyzrpy)}")
     if len(object_id) != n:
-        raise ValueError(
-            f"object_id must have the same length as radius: {n} vs {len(object_id)}"
-        )
+        raise ValueError(f"object_id must have the same length as radius: {n} vs {len(object_id)}")
 
     specs: list[MarkerSpec] = []
     for i in range(n):
@@ -198,9 +194,7 @@ def occupied_voxel_centers(
     sx, sy, sz = size
     expected = sx * sy * sz
     if len(occupancy) != expected:
-        raise ValueError(
-            f"occupancy length {len(occupancy)} != size_x*size_y*size_z={expected}"
-        )
+        raise ValueError(f"occupancy length {len(occupancy)} != size_x*size_y*size_z={expected}")
 
     centers: list[tuple[float, float, float]] = []
     for z in range(sz):

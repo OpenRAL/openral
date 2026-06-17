@@ -67,8 +67,18 @@ class TestCapsuleMarkers:
         half_length = [0.20, 0.00]  # second is a sphere (half_length == 0)
         # Obstacle 0: at (1, 2, 3), yaw=π/4; obstacle 1: at (0, 0, 0.5), no rotation
         origin_xyzrpy = [
-            1.0, 2.0, 3.0, 0.0, 0.0, math.pi / 4,
-            0.0, 0.0, 0.5, 0.0, 0.0, 0.0,
+            1.0,
+            2.0,
+            3.0,
+            0.0,
+            0.0,
+            math.pi / 4,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
         ]
         object_id = ["box_left", "sphere_right"]
 
@@ -123,9 +133,7 @@ class TestCapsuleMarkers:
 
     def test_empty_inputs_return_empty_list(self) -> None:
         """No obstacles → empty list, no crash."""
-        specs = capsule_markers(
-            radius=[], half_length=[], origin_xyzrpy=[], object_id=[]
-        )
+        specs = capsule_markers(radius=[], half_length=[], origin_xyzrpy=[], object_id=[])
         assert specs == []
 
     def test_mismatched_lengths_raise_value_error(self) -> None:
@@ -205,9 +213,9 @@ class TestOccupiedVoxelCenters:
 
         assert len(centers) == 1
         cx, cy, cz = centers[0]
-        assert _approx(cx, 10.0 + 1.5 * 0.5)   # 10.75
-        assert _approx(cy, 20.0 + 2.5 * 0.5)   # 21.25
-        assert _approx(cz, 30.0 + 0.5 * 0.5)   # 30.25
+        assert _approx(cx, 10.0 + 1.5 * 0.5)  # 10.75
+        assert _approx(cy, 20.0 + 2.5 * 0.5)  # 21.25
+        assert _approx(cz, 30.0 + 0.5 * 0.5)  # 30.25
 
     def test_all_free_returns_empty_list(self) -> None:
         occupancy = [0] * (2 * 2 * 2)
