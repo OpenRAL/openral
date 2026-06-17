@@ -310,7 +310,6 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 
 - **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
 - **General enquiries:** hello@openral.dev
-- **Partnerships & integrations:** partner@openral.dev
 - **Security vulnerabilities & safety disclosures:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or security@openral.dev — **never** a public issue
 - **Code of Conduct reports:** conduct@openral.dev
 
