@@ -320,6 +320,6 @@ See [SUPPORT.md](SUPPORT.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [GOVERNANC
 
 ## License
 
-OpenRAL is licensed entirely under **Apache-2.0**. Every package in this repository — contracts, runtime substrate, simulators, HAL & sensors, observability, safety code, the LLM reasoner, WAM adapters, dispatcher, skill catalog, fleet orchestration, examples, tests, tools, scripts, and manifests — ships under the same permissive license. There is no commercial, source-available, or otherwise non-open tier. See [LICENSE](LICENSE).
+OpenRAL is licensed entirely under **Apache-2.0**. The entire codebase ships under the same permissive license. See [LICENSE](LICENSE).
 
 Third-party model weights on Hugging Face Hub keep their own upstream licenses (Apache-2.0, MIT, NVIDIA non-commercial, etc.). The loader surfaces each weight's license at install time. This does not affect OpenRAL's own Apache-2.0 code.
