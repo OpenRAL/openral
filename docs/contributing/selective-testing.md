@@ -18,9 +18,12 @@ covered by `tests/unit/test_select_tests.py` and `tests/unit/test_audit_tests.py
 
 ### Why
 
-Every CI workflow is currently `workflow_dispatch`-only ("out of GitHub Actions
-credits" — see the headers in `.github/workflows/`). Running 2.9k tests on every
-push is the difference between affordable and not. Selective execution maps a
+The cheap, high-signal workflows run on every PR (`quality` — ruff + mypy +
+schema drift + `mkdocs --strict`; `test-selective`; `dco`), while the expensive
+full-matrix suites (`test-python`, `hal`) stay `workflow_dispatch`-only ("out of
+GitHub Actions credits" — see the headers in `.github/workflows/`). Running 2.9k
+tests on every push is the difference between affordable and not. Selective
+execution maps a
 git diff to the **minimal** set of pytest targets that can see the change, so a
 one-line edit to a leaf package runs a handful of tests instead of the whole
 suite.
