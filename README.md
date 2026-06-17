@@ -7,15 +7,14 @@
 **An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
 
 [![CI](https://github.com/OpenRAL/openral/actions/workflows/test-python.yml/badge.svg)](https://github.com/OpenRAL/openral/actions)
-[![codecov](https://codecov.io/gh/OpenRAL/openral/branch/master/graph/badge.svg)](https://codecov.io/gh/OpenRAL/openral)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](pyproject.toml)
 [![Docs](https://img.shields.io/badge/docs-developing-2088FF)](https://openral.github.io/openral/)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
-[![Discord](https://img.shields.io/discord/1512426527432900698?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/ZU5XGfTJYe)
+[![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/ZU5XGfTJYe) · [Docs](https://openral.github.io/openral/)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
 
 </div>
 
@@ -309,7 +308,7 @@ The engineering playbook (coding standards, layer discipline, PR checklist, exce
 
 ## Community & support
 
-- **[Discord](https://discord.gg/ZU5XGfTJYe)** — questions, help, design chat
+- **[Discord](https://discord.gg/3paXT2bVyB)** — questions, help, design chat
 - **General enquiries:** hello@openral.com
 - **Robot safety / coordinated disclosure:** safety@openral.com (see [SECURITY.md](SECURITY.md))
 - **Security vulnerabilities:** [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new) or security@openral.com — **never** a public issue
