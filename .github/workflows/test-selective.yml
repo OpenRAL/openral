@@ -26,6 +26,26 @@ permissions:
 jobs:
   select-and-test:
     runs-on: ubuntu-24.04
+    # Pin every native threadpool to a single thread for the WHOLE job. Several
+    # tests fork lerobot's `compute_stats` multiprocessing pool; if the fork
+    # lands in an interpreter that already spun up numpy/torch/pyarrow thread
+    # pools (which happens whenever a broad diff packs many tests into one
+    # partition), a forked child / C-extension `atexit` handler crashes at
+    # Python finalization — the process exits non-zero *after* an all-green run
+    # (issue #24/#25). Forcing single-threaded execution makes every fork land
+    # in a single-threaded interpreter that finalizes cleanly, so this is a
+    # general fix for the whole class, not a per-test `isolate_globs` allowlist
+    # (which only covered two named forkers and missed any pulled in by a wide
+    # selection). The isolated-target loops below previously set these inline;
+    # the job-level env now covers them too.
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -85,20 +105,14 @@ jobs:
           # shellcheck disable=SC2086 -- intentional word-splitting of $ignore.
           uv run pytest tests/unit/ $ignore \
             -q -p no:launch_testing -p no:launch_ros || rc=1
-          # Issue #24 (extends #25): file-level isolation alone is not enough —
-          # the fork test (test_cli_replay_record_profile.py) spins up
-          # numpy/torch/pyarrow threadpools across its OWN tests *before* it
-          # forks lerobot's compute_stats pool, so the fork still lands in a
-          # multi-threaded interpreter and a forked child / C-extension atexit
-          # handler crashes at finalization (all tests pass, process then exits
-          # non-zero). Pin every threadpool to a single thread so the fork lands
-          # single-threaded and finalizes cleanly.
+          # isolated_targets still run one-per-process (issue #24/#25): a fork
+          # packed with hundreds of other tests is the worst case, so keep them
+          # alone. Thread-pinning is now job-level (see the `env:` block on the
+          # job), which is what actually makes the fork finalize cleanly — no
+          # inline env prefix needed here anymore.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
-            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-            NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 RAYON_NUM_THREADS=1 \
-            TOKENIZERS_PARALLELISM=false \
-              uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
           exit $rc
@@ -138,20 +152,14 @@ jobs:
               -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
-          # Issue #24 (extends #25): file-level isolation alone is not enough —
-          # the fork test (test_cli_replay_record_profile.py) spins up
-          # numpy/torch/pyarrow threadpools across its OWN tests *before* it
-          # forks lerobot's compute_stats pool, so the fork still lands in a
-          # multi-threaded interpreter and a forked child / C-extension atexit
-          # handler crashes at finalization (all tests pass, process then exits
-          # non-zero). Pin every threadpool to a single thread so the fork lands
-          # single-threaded and finalizes cleanly.
+          # isolated_targets still run one-per-process (issue #24/#25): a fork
+          # packed with hundreds of other tests is the worst case, so keep them
+          # alone. Thread-pinning is now job-level (see the `env:` block on the
+          # job), which is what actually makes the fork finalize cleanly — no
+          # inline env prefix needed here anymore.
           for t in ${{ steps.select.outputs.isolated_targets }}; do
             echo "::group::pytest (isolated) ${t}"
-            OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-            NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 RAYON_NUM_THREADS=1 \
-            TOKENIZERS_PARALLELISM=false \
-              uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || rc=1
             echo "::endgroup::"
           done
           exit $rc
