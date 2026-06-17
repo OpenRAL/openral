@@ -62,7 +62,6 @@ All participation is governed by our
 ## Contact
 
 - General / project enquiries: hello@openral.dev
-- Partnerships & integrations: partner@openral.dev
 - Security vulnerabilities & safety disclosures: see [SECURITY.md](SECURITY.md)
 - Code of Conduct: conduct@openral.dev
 

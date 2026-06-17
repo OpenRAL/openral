@@ -12,7 +12,6 @@ Thanks for using OpenRAL! Here's where to go depending on what you need.
   [quick start](https://openral.github.io/openral/) and the
   [architecture overview](docs/architecture/overview.md).
 - **General enquiries** that don't fit Discord or an issue: hello@openral.dev.
-- **Partnerships & integrations:** partner@openral.dev.
 
 ## I think I found a bug
 
