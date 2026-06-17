@@ -12,6 +12,7 @@ Thanks for using OpenRAL! Here's where to go depending on what you need.
   [quick start](https://openral.github.io/openral/) and the
   [architecture overview](docs/architecture/overview.md).
 - **General enquiries** that don't fit Discord or an issue: hello@openral.dev.
+- **Partnerships & integrations:** partner@openral.dev.
 
 ## I think I found a bug
 
@@ -31,7 +32,7 @@ For anything that crosses a layer boundary, expect to be asked for an ADR
 use [private vulnerability reporting](https://github.com/OpenRAL/openral/security/advisories/new)
 or email security@openral.dev. Physical-safety defects (E-stop bypass,
 actuation-path bugs, safety-kernel issues) are treated as highest priority —
-you can also reach the Safety Working Group directly at safety@openral.dev.
+include "[safety]" in the subject line and we will route it to the Safety Working Group.
 
 ## I want to contribute
 

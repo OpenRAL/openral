@@ -28,5 +28,6 @@ We will respond within 48 hours and work with you on coordinated disclosure.
 ## Safety-critical issues
 
 For issues involving physical safety of robots or people (E-stop bypass, actuation path bugs,
-safety kernel defects), use the [Safety issue template](.github/ISSUE_TEMPLATE/safety.yml)
-after coordinating with us via email. These are treated as highest priority.
+safety kernel defects), email security@openral.dev with "[safety]" in the subject line before
+using the [Safety issue template](.github/ISSUE_TEMPLATE/safety.yml). These are treated as
+highest priority.
