@@ -451,6 +451,7 @@ ros2-build:
                           openral_rskill_ros \
                           openral_slam_bringup \
                           openral_nav2_bringup \
+                          openral_foxglove_bringup \
                           openral_octomap_bridge \
                           openral_perception_ros \
         --cmake-args -DPython3_EXECUTABLE="$(pwd)/.venv/bin/python" \
@@ -500,6 +501,7 @@ ros2-test:
                           openral_rskill_ros \
                           openral_slam_bringup \
                           openral_nav2_bringup \
+                          openral_foxglove_bringup \
                           openral_octomap_bridge \
                           openral_perception_ros
     colcon test-result --verbose

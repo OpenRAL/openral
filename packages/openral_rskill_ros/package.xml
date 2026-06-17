@@ -34,7 +34,7 @@
   <exec_depend>python3-openral-observability</exec_depend>
   <exec_depend>python3-openral-hal</exec_depend>
   <!-- ADR-0059 — the read-only Foxglove live-scene bridge, spawned into the
-       deploy-sim runtime graph by `openral deploy sim --foxglove`. -->
+       deploy-sim runtime graph by the `openral deploy sim` foxglove flag. -->
   <exec_depend>foxglove_bridge</exec_depend>
   <exec_depend>openral_foxglove_bringup</exec_depend>
 
