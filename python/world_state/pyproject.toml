@@ -2,6 +2,7 @@
 name = "openral-world-state"
 version = "0.1.0"
 description = "OpenRAL World State aggregator — tf2-aware snapshot producer"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [

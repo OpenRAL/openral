@@ -30,6 +30,10 @@ override-dependencies = [
 # even with FFmpeg correctly installed (CI test-selective, python/dataset
 # round-trip tests). Marker mirrors the lockfile's torch==2.9.1 resolution
 # split so the platforms that resolve torch 2.10 keep the matching 0.10.
+# NOTE: this is a dev-workspace constraint only — it is NOT carried in wheel
+# metadata. The same ABI pairing is pinned for *published* installs in
+# python/hal/pyproject.toml (torch<2.10 + torchcodec<0.10, linux-scoped), so a
+# clean `pip install openral-cli` (no lockfile) does not float torch to 2.10.
 constraint-dependencies = [
     "torchcodec<0.10; platform_machine != 's390x' and sys_platform == 'linux'",
 ]

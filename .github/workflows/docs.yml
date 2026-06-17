@@ -1,4 +1,8 @@
 name: docs
+# Standalone, manual `mkdocs build --strict` (full --all-packages env).
+# PR coverage for docs lives in quality.yml (folded in to reuse its synced env);
+# pages.yml builds + deploys on push to master. This workflow remains for
+# on-demand local-parity verification via the Actions UI.
 # Auto-triggers disabled: out of GitHub Actions credits.
 # Re-enable PR/push triggers once billing is restored. See issue tracker.
 on:

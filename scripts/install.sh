@@ -24,6 +24,17 @@
 # Environment knobs:
 #   OPENRAL_INSTALL_SOURCE   pypi (default) | git+https://github.com/OpenRAL/openral
 #   OPENRAL_INSTALL_VERSION  PyPI version specifier (default: empty → latest).
+#   OPENRAL_INSTALL_INDEX    extra package index, appended as uv
+#                            `--extra-index-url`. For a clean alternate index
+#                            (private devpi, or real PyPI) `openral-*` resolve
+#                            from here while deps come from PyPI.
+#                            CAVEAT: TestPyPI (test.pypi.org) does NOT resolve
+#                            cleanly — it hosts placeholder builds of common
+#                            deps (e.g. rich==0.0.0, fastapi==1.0) and uv's
+#                            default first-index guard won't fall through to
+#                            PyPI for them (`--index-strategy unsafe-best-match`
+#                            then pulls the broken placeholders instead). Use
+#                            TestPyPI to verify a *publish*, not a full install.
 #   OPENRAL_INSTALL_DEBUG    1 → set -x.
 
 set -euo pipefail
@@ -99,10 +110,22 @@ case "${OPENRAL_INSTALL_SOURCE}" in
         ;;
 esac
 
+# Optional extra index (e.g. TestPyPI). uv's default first-index strategy
+# resolves `openral-*` from this index while third-party deps still come from
+# real PyPI, since the openral names are absent from PyPI until the namespace
+# lands. Empty-array expansion is written `${arr[@]+"${arr[@]}"}` so it is
+# safe under `set -u` on bash 3.2 (macOS).
+extra_index_args=()
+if [[ -n "${OPENRAL_INSTALL_INDEX:-}" ]]; then
+    info "extra index: ${OPENRAL_INSTALL_INDEX}"
+    extra_index_args=(--extra-index-url "${OPENRAL_INSTALL_INDEX}")
+fi
+
 info "installing ${spec} (uv tool install)"
 # --force re-installs even when the tool is already present; matches the
 # `curl … | bash` muscle memory of "running it again gives me the latest".
-uv tool install --force --python 3.12 "${spec}"
+uv tool install --force --python 3.12 \
+    ${extra_index_args[@]+"${extra_index_args[@]}"} "${spec}"
 
 # ── 4. PATH guidance ───────────────────────────────────────────────────────────
 

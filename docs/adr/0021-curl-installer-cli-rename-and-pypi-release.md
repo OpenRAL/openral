@@ -86,21 +86,27 @@ The libero ↔ robocasa mutual-exclusion declared in the root
 `openral install` as a typed `ROSConfigError` with a `--force` escape
 hatch.
 
-### 3. Multi-package PyPI release scaffold (disabled)
+### 3. Multi-package PyPI release workflow
 
-`.github/workflows/release-pypi.yml` is added as a **disabled scaffold**:
+`.github/workflows/release-pypi.yml` is the **canonical, single** release
+workflow (see the 2026-06-17 amendment for the consolidation):
 
-* Trigger is `workflow_dispatch` with a `confirm: YES` guard step that
-  exits non-zero by default. The tag-push trigger is commented out.
+* Two ways to publish, both via PyPI Trusted Publishing
+  (`pypa/gh-action-pypi-publish@release/v1`, OIDC, no long-lived token):
+  * `workflow_dispatch` with a `target` choice — `testpypi` (default, no
+    confirmation) or `pypi` (requires `confirm=YES`).
+  * tag push `v*.*.*` — production release to real PyPI; the tag is the
+    deliberate confirmation.
+* A `resolve` job picks the index + enforces the real-PyPI guard; a
+  `precheck` job runs the same ruff + mypy + schema-drift + `mkdocs --strict`
+  gate as the PR `quality` workflow, so a release cannot publish a broken tree.
 * The publish matrix lists every distributable workspace member
-  (13 packages today).
-* Uses PyPI Trusted Publishing (`pypa/gh-action-pypi-publish@release/v1`,
-  OIDC, no long-lived token).
-* Will be enabled in a follow-up PR after:
+  (14 packages today, incl. `openral-state-adapter`).
+* The **TestPyPI** path is usable now (register a TestPyPI trusted publisher,
+  or upload locally with twine). The **real-PyPI** path remains blocked until:
   1. Registering each `openral-*` name on PyPI under the openral org.
   2. Configuring the Trusted Publisher entry on PyPI for this repo +
      this workflow file.
-  3. Removing the `guard` job and uncommenting the tag-push trigger.
 
 Until then the Tier-0 installer ships pointing at PyPI (`spec=openral-cli`).
 Operators bridging the pre-publish gap can override with
@@ -153,3 +159,15 @@ the Trusted Publishing wiring lands.
   `"0.1.0"`, additions land in place, real-fixture tests prove the
   shape change.
 * _2026-05-24_ — ADR index renumbering. ADR-0021 retains its number; former collisions renumbered to ADR-0022 (rSkill action vocabulary) and ADR-0023 (data-driven MuJoCo HAL).
+* _2026-06-17_ — Release-pipeline consolidation. The separate
+  `release.yml` (tag-triggered) was **dropped**: its root `uv build` was
+  broken (the workspace root has no `[build-system]`, so it fell back to
+  legacy setuptools and errored on multi-package discovery) and its PyPI half
+  duplicated `release-pypi.yml` while building the wrong artifact (the
+  meta-package). The ghcr runtime-image + cosign path it carried was
+  non-functional (`Dockerfile.runtime` `COPY`s the gitignored colcon
+  `install/` space) and is deferred to a future purpose-built
+  `release-image.yml` once ROS-in-CI infra exists. `release-pypi.yml` is now
+  the single source of truth (§3): tag-push trigger live, a `target` choice
+  adds a TestPyPI path, a `precheck` gate guards against publishing a broken
+  tree, and `openral-state-adapter` was added to the matrix (13 → 14).
