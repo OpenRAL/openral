@@ -28,6 +28,9 @@ from numpy.typing import NDArray
 # camera frame (x right, y up, z back): flip y and z.
 _OPTICAL_IN_MJCAM = np.diag([1.0, -1.0, -1.0])
 
+# Degenerate eye→lookat distance below which the azimuth/elevation are undefined.
+_MIN_EYE_DISTANCE_M = 1e-6
+
 
 def is_depth_sensor(spec: Any) -> bool:
     """True when ``spec`` is a depth/point-cloud camera with intrinsics.
@@ -327,6 +330,59 @@ def base_aligned_free_camera(
         base_yaw_deg + float(azimuth_offset_deg),
         float(elevation_deg),
     )
+
+
+def initial_viewer_camera(
+    *, model: Any, data: Any, description: Any = None
+) -> tuple[tuple[float, float, float], float, float, float]:
+    """Opening **free-camera** pose for the viewer ``(lookat, distance, az, el)``.
+
+    The viewer always uses a *free* camera (``mjCAMERA_FREE``) so the user keeps
+    full mouse control — drag to orbit, scroll to zoom; we only set the initial
+    viewpoint. A ``mjCAMERA_FIXED`` lock would have frozen those controls.
+
+    When the scene ships an authored overview camera
+    (:func:`preferred_viewer_camera_id`), the eye is placed at that camera's
+    world position with the orbit pivot on the robot base — so the opening view
+    matches the authored vantage (``agentview`` / ``top`` / …) yet stays
+    interactive, and dragging orbits around the robot. Otherwise falls back to
+    :func:`base_aligned_free_camera`.
+
+    The returned ``(lookat, distance, azimuth_deg, elevation_deg)`` reproduce the
+    eye exactly: MuJoCo places the eye at ``lookat - distance · f`` where the
+    unit forward ``f = (cos el cos az, cos el sin az, sin el)`` — so a camera at
+    ``eye`` looking at ``lookat`` recovers ``distance = ‖lookat - eye‖``,
+    ``azimuth = atan2(fy, fx)``, ``elevation = asin(fz)``.
+    """
+    import mujoco  # reason: defer optional sim dep
+
+    base_body = resolve_base_body_name(model, description=description)
+    cam_id = preferred_viewer_camera_id(model)
+    if cam_id >= 0:
+        eye = np.asarray(data.cam_xpos[cam_id], dtype=np.float64)
+        bid = (
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body)
+            if base_body is not None
+            else -1
+        )
+        lookat = (
+            np.asarray(data.xpos[bid], dtype=np.float64)
+            if bid >= 0
+            else np.asarray(model.stat.center, dtype=np.float64)
+        )
+        forward = lookat - eye
+        distance = float(np.linalg.norm(forward))
+        if distance > _MIN_EYE_DISTANCE_M:
+            forward /= distance
+            azimuth = float(np.degrees(np.arctan2(forward[1], forward[0])))
+            elevation = float(np.degrees(np.arcsin(np.clip(forward[2], -1.0, 1.0))))
+            return (
+                (float(lookat[0]), float(lookat[1]), float(lookat[2])),
+                distance,
+                azimuth,
+                elevation,
+            )
+    return base_aligned_free_camera(model=model, data=data, base_body_name=base_body)
 
 
 def camera_optical_tf_to_base(

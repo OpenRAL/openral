@@ -1253,10 +1253,11 @@ def _aim_viewer_camera(viewer: Any, env: SimRollout, mj_model: Any, mj_data: Any
     * Hides robosuite/RoboCasa collision shells (the red kitchen / green robot)
       via :func:`apply_robosuite_visual_geomgroups` so textures render; no-op on
       dm_control/gym scenes.
-    * Opens on an authored overview camera (``agentview`` / ``top`` / ``frontview``,
-      else any declared camera) via :func:`preferred_viewer_camera_id` so cluttered
-      scenes are framed properly; falls back to the base-aligned free camera
-      (:func:`base_aligned_free_camera`) only when the model declares no cameras.
+    * Sets the **free** camera's opening pose via :func:`initial_viewer_camera`
+      (eye at the authored overview camera, orbit pivot on the robot base, else
+      the base-aligned default). The camera stays ``mjCAMERA_FREE`` so the user
+      keeps full mouse control — drag to orbit, scroll to zoom; we only set the
+      initial viewpoint.
 
     Best effort: any failure leaves MuJoCo's default free camera untouched.
     """
@@ -1267,31 +1268,21 @@ def _aim_viewer_camera(viewer: Any, env: SimRollout, mj_model: Any, mj_data: Any
         # cost only at interactive viewer-open (mirrors openarm_robosuite assets).
         from openral_hal.depth_cloud import (
             apply_robosuite_visual_geomgroups,
-            base_aligned_free_camera,
-            preferred_viewer_camera_id,
-            resolve_base_body_name,
+            initial_viewer_camera,
         )
 
-        cam_id = preferred_viewer_camera_id(mj_model)
+        lookat, distance, azimuth, elevation = initial_viewer_camera(
+            model=mj_model, data=mj_data, description=getattr(env, "description", None)
+        )
         with viewer.lock():
             # Hide robosuite/RoboCasa collision shells so textures render (the
             # red kitchen / green robot are collision geoms); no-op elsewhere.
             apply_robosuite_visual_geomgroups(viewer.opt, mj_model)
             cam = viewer.cam
-            if cam_id >= 0:
-                cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
-                cam.fixedcamid = cam_id
-            else:
-                base_body = resolve_base_body_name(
-                    mj_model, description=getattr(env, "description", None)
-                )
-                lookat, distance, azimuth, elevation = base_aligned_free_camera(
-                    model=mj_model, data=mj_data, base_body_name=base_body
-                )
-                cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-                cam.lookat[:] = lookat
-                cam.distance = distance
-                cam.azimuth = azimuth
-                cam.elevation = elevation
+            cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            cam.lookat[:] = lookat
+            cam.distance = distance
+            cam.azimuth = azimuth
+            cam.elevation = elevation
     except Exception as exc:  # reason: camera aiming is cosmetic, never fatal
         _log.warning("viewer_camera_aim_failed", error=str(exc))

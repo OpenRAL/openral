@@ -276,6 +276,54 @@ def test_preferred_viewer_camera_falls_back_to_first_then_none() -> None:
     assert preferred_viewer_camera_id(no_cam) == -1
 
 
+# ── initial viewer camera (free-cam pose from a scene camera) ─────────────
+
+
+def test_initial_viewer_camera_places_free_eye_at_scene_camera() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    from openral_hal.depth_cloud import initial_viewer_camera
+
+    # base at origin; an agentview camera at (2, 0, 1.5). The free camera must
+    # open with its EYE at the camera pos and orbit pivot (lookat) on the base.
+    model = mujoco.MjModel.from_xml_string(
+        "<mujoco><worldbody>"
+        "<body name='base'><geom type='box' size='.1 .1 .1'/></body>"
+        "<camera name='robot0_agentview_left' pos='2 0 1.5'/>"
+        "</worldbody></mujoco>"
+    )
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    lookat, dist, az, el = initial_viewer_camera(model=model, data=data)
+    assert np.allclose(lookat, [0.0, 0.0, 0.0], atol=1e-6)  # orbit pivot = base
+    # Reconstruct the eye MuJoCo would place: lookat - distance * forward.
+    f = np.array(
+        [
+            np.cos(np.radians(el)) * np.cos(np.radians(az)),
+            np.cos(np.radians(el)) * np.sin(np.radians(az)),
+            np.sin(np.radians(el)),
+        ]
+    )
+    eye = np.asarray(lookat) - dist * f
+    assert np.allclose(eye, [2.0, 0.0, 1.5], atol=1e-5)
+
+
+def test_initial_viewer_camera_falls_back_to_base_aligned_without_cameras() -> None:
+    mujoco = pytest.importorskip("mujoco")
+    from openral_hal.depth_cloud import base_aligned_free_camera, initial_viewer_camera
+
+    model = mujoco.MjModel.from_xml_string(
+        "<mujoco><worldbody><body name='base'>"
+        "<geom type='box' size='.1 .1 .1'/></body></worldbody></mujoco>"
+    )
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    # No cameras → identical to the base-aligned fallback.
+    assert initial_viewer_camera(model=model, data=data) == base_aligned_free_camera(
+        model=model, data=data, base_body_name="base"
+    )
+
+
 # ── base-aligned free camera (real MuJoCo, no GL) ─────────────────────────
 
 _CAM_MJCF = """

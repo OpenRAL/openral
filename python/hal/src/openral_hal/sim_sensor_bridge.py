@@ -932,37 +932,27 @@ class SimSensorBridge:
         )
 
     def _aim_viewer_camera(self, model: Any, data: Any) -> None:
-        """Open the viewer on a 3rd-person scene camera, else the base camera.
+        """Set the viewer's opening **free-camera** pose (mouse stays live).
 
-        Prefers an authored overview camera (``agentview`` / ``top`` /
-        ``frontview``, else any declared camera) via
-        :func:`openral_hal.depth_cloud.preferred_viewer_camera_id` so cluttered
-        scenes are framed properly; falls back to the base-aligned free camera
-        (:func:`base_aligned_free_camera`) only when the model declares no
-        cameras. Best effort: any failure leaves the default free camera.
+        Sets the initial viewpoint via
+        :func:`openral_hal.depth_cloud.initial_viewer_camera` — eye at the
+        authored overview camera (``agentview`` / ``top`` / …) with the orbit
+        pivot on the robot base, else the base-aligned default. The camera stays
+        ``mjCAMERA_FREE`` so the user can drag to orbit and scroll to zoom; we
+        only set the initial view. Best effort: any failure leaves the default.
         """
         if self._viewer is None:
             return
         with contextlib.suppress(Exception):
             import mujoco  # reason: optional sim dep
 
-            from openral_hal.depth_cloud import (
-                base_aligned_free_camera,
-                preferred_viewer_camera_id,
-            )
+            from openral_hal.depth_cloud import initial_viewer_camera
 
-            cam_id = preferred_viewer_camera_id(model)
+            lookat, distance, azimuth, elevation = initial_viewer_camera(
+                model=model, data=data, description=getattr(self._hal, "description", None)
+            )
             with self._viewer.lock():
                 cam = self._viewer.cam
-                if cam_id >= 0:
-                    cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
-                    cam.fixedcamid = cam_id
-                    return
-                if self._depth_base_body is None and self._depth_base_body_id < 0:
-                    self._resolve_depth_base_body(model)
-                lookat, distance, azimuth, elevation = base_aligned_free_camera(
-                    model=model, data=data, base_body_name=self._depth_base_body
-                )
                 cam.type = mujoco.mjtCamera.mjCAMERA_FREE
                 cam.lookat[:] = lookat
                 cam.distance = distance
