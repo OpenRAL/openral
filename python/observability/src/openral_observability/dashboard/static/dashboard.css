@@ -6,88 +6,84 @@
      <script> data-binding — do not rename without updating it.
      ============================================================ */
   :root {
-    /* — surfaces — */
-    --bg:          #05070c;
-    --bg-2:        #070a11;
-    --panel:       #0a0e16;
-    --panel-2:     #0c1119;
-    --well:        #06080e;
-    --frame:       #04060a;
-    /* legacy aliases (referenced by component CSS + inline JS styles) */
-    --bg-card:     var(--panel);
-    --bg-card-2:   var(--panel-2);
-    --bg-input:    var(--well);
-    --bg-frame:    var(--frame);
+  /* ---- website monochrome tokens (canonical) ---- */
+  --bg:        #0e0f13;
+  --bg-2:      #121419;
+  --surface:   #16181e;
+  --surface-2: #1c1f26;
+  --hair:        #23262e;
+  --hair-strong: #2c313b;
+  --hair-soft:   rgba(255,255,255,0.045);
 
-    /* — ink — */
-    --fg:          #e9eff7;
-    --fg-dim:      #9aa8bb;
-    --fg-mute:     #5f6e82;
-    --fg-faint:    #394656;
-    --text-dim:    var(--fg-dim);   /* used by JS-injected meta rows */
+  --text:  #e8e9ed;   /* primary */
+  --text-2:#a9aeb8;   /* secondary */
+  --muted: #8c93a0;   /* faint (AA floor on Ink) */
 
-    /* — structure — */
-    --hair:        rgba(126,160,200,0.10);
-    --hair-soft:   rgba(126,160,200,0.055);
-    --hair-strong: rgba(126,160,200,0.20);
-    --line:        var(--hair);
-    --line-soft:   var(--hair-soft);
-    --line-strong: var(--hair-strong);
+  --accent:      #ffffff;
+  --accent-tint: rgba(255,255,255,0.82);
+  --accent-soft: rgba(255,255,255,0.10);
+  --accent-line: rgba(255,255,255,0.22);
 
-    /* — signal palette — */
-    --brand:       #3fd8ff;   /* electric cyan — chrome, brand, structure */
-    --ok:          #46f0a4;   /* phosphor green — live / healthy / skill */
-    --info:        #5cc8ff;   /* inference / commands */
-    --warn:        #ffb454;   /* caution / safety */
-    --err:         #ff5d6c;   /* violation / e-stop */
-    --violet:      #b79cff;   /* world model / reasoner */
-    --gold:        #ffd166;
+  /* ---- safety-status palette — the ONLY sanctioned chroma ---- */
+  --ok:         #4fb58b;  /* live / healthy / nominal */
+  --warn:       #d9b27c;  /* caution / safety-watch / deadline pressure */
+  --err:        #d98a8e;  /* fault / violation (text + border) */
+  --err-strong: #e5484d;  /* ACTIVE latched e-stop banner ONLY */
 
-    /* legacy accent aliases (component CSS + inline SVG in JS use these) */
-    --accent:        var(--ok);
-    --accent-soft:   rgba(70,240,164,0.12);
-    --accent-warm:   var(--warn);
-    --accent-error:  var(--err);
-    --accent-info:   var(--info);
-    --accent-mauve:  var(--violet);
-    --accent-world:  var(--violet);
-    --accent-skill:  var(--gold);
+  /* ---- type ---- */
+  --display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --sans:    "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius:    12px;
+  --radius-sm: 8px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 
-    --radius:    5px;
-    --radius-sm: 3px;
-    --mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    --display: "Chakra Petch", var(--mono);
-    --sans:    "Chakra Petch", -apple-system, "Segoe UI", system-ui, sans-serif;
-  }
+  /* ---- legacy aliases (keep every name the moved JS / CSS references) ---- */
+  --panel:   var(--surface);
+  --panel-2: var(--surface-2);
+  --frame:   var(--bg-2);
+  --well:    var(--bg-2);
+  --line:        var(--hair);
+  --line-soft:   var(--hair-soft);
+  --line-strong: var(--hair-strong);
+  --fg:       var(--text);
+  --fg-dim:   var(--text-2);
+  --fg-mute:  var(--muted);
+  --fg-faint: #6b717b;          /* neutral faint step */
+  --text-dim: var(--text-2);
+
+  /* decorative LAYER hues collapse to white emphasis (monochrome) */
+  --brand:        var(--accent);
+  --accent-color: var(--accent);
+  --accent-skill: var(--accent);
+  --accent-world: var(--accent);
+  --violet:       var(--accent);
+  --gold:         var(--accent);
+  --info:         var(--accent);
+
+  /* counters default neutral; CSS/JS overrides to status hue on non-nominal */
+  --counter-color: var(--text-2);
+}
 
   * { box-sizing: border-box; }
   html { scrollbar-color: var(--hair-strong) transparent; }
   body {
-    margin: 0; padding: 0;
-    color: var(--fg);
-    font-family: var(--mono);
-    font-size: 13px;
-    line-height: 1.45;
-    -webkit-font-smoothing: antialiased;
-    background-color: var(--bg);
-    /* blueprint grid + top instrument glow */
-    background-image:
-      radial-gradient(1300px 620px at 78% -160px, rgba(63,216,255,0.10), transparent 62%),
-      radial-gradient(900px 500px at 8% -120px, rgba(183,156,255,0.06), transparent 60%),
-      linear-gradient(rgba(126,160,200,0.030) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(126,160,200,0.030) 1px, transparent 1px),
-      linear-gradient(rgba(126,160,200,0.013) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(126,160,200,0.013) 1px, transparent 1px);
-    background-size: auto, auto, 96px 96px, 96px 96px, 24px 24px, 24px 24px;
-    background-attachment: fixed;
-    min-height: 100vh;
-  }
-  /* fine grain overlay for depth */
-  body::after {
-    content: ""; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
-    opacity: 0.04;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
+  margin: 0; padding: 0;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--bg);
+  /* single faint hairline grid — instrument-at-rest texture, static */
+  background-image:
+    linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: 96px 96px, 96px 96px;
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+/* (body::after fractal-noise overlay removed) */
 
   /* ------------------- HEADER (instrument deck top bar) ------------------- */
   header {
