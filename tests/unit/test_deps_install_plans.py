@@ -9,9 +9,10 @@ end-to-end runs of pi05 / rldx × LIBERO / GR1 / RC365 on an RTX 4070:
 3.   RLDX client deps gated by their own backend plan so a sibling
      ``uv sync --group robocasa`` does not silently strip them.
 4.   ``hf-libero==0.1.3`` distutils-installed-metadata uninstall barrier
-     bypassed via ``--reinstall-package hf-libero`` on the libero plan,
-     plus ``--inexact`` on the robocasa plans so they preserve
-     cross-backend deps instead of trying to uninstall them.
+     avoided by NOT forcing ``--reinstall-package hf-libero`` (which would
+     trigger the uninstall it can't do); a plain ``--inexact`` libero sync
+     overwrites/installs it cleanly, plus ``--inexact`` on the robocasa
+     plans so they preserve cross-backend deps instead of uninstalling.
 
 These are install-plan tests — they assert the plan SHAPE (argv flags,
 step ordering), not that the subprocess actually runs. Real-component
@@ -175,33 +176,36 @@ class TestRldxClientPlan:
         )
 
 
-# ─── Fix #4: hf-libero distutils workaround ───────────────────────────────
+# ─── Fix #4: hf-libero distutils barrier — plain --inexact sync ───────────
 
 
 class TestHfLiberoWorkaround:
-    def test_libero_plan_reinstalls_hf_libero(self) -> None:
-        """`--reinstall-package hf-libero` clears the distutils-installed-metadata wedge.
+    def test_libero_plan_does_not_force_reinstall_hf_libero(self) -> None:
+        """Plain `uv sync --group libero --inexact`, NOT `--reinstall-package hf-libero`.
 
-        Reason: ``hf-libero==0.1.3`` ships with distutils-installed
-        metadata. uv refuses to uninstall it during ANY subsequent
-        `uv sync` of a different group, breaking every cross-backend
-        install. Forcing a reinstall on this single package replaces
-        the distutils stub with proper modern metadata.
+        Reason: ``hf-libero==0.1.3`` ships distutils-installed metadata
+        with no RECORD. ``--reinstall-package hf-libero`` forces uv to
+        *uninstall* it first, which hits the exact barrier it was meant
+        to dodge (``error: Unable to uninstall hf-libero==0.1.3:
+        distutils-installed distributions do not include the metadata
+        required to uninstall safely``) and wedges the whole libero
+        install. A plain ``--inexact`` sync installs/overwrites hf-libero
+        with proper dist-info when absent and leaves it untouched when
+        already satisfied — it never forces an uninstall, so the barrier
+        never fires. hf-libero is pure-python (robosuite owns the C
+        extensions, swapped separately), so it needs no forced rebuild.
         """
         plan = _libero_plan()
         sync_step = plan.steps[0]
-        # Both flags present, in any order.
-        assert "--reinstall-package" in sync_step.argv
-        assert "hf-libero" in sync_step.argv
-        # And we use --inexact so installing libero on top of a venv
-        # that already has robocasa/metaworld does not strip them.
+        assert "--reinstall-package" not in sync_step.argv
         assert "--inexact" in sync_step.argv
+        assert "libero" in sync_step.argv
 
     def test_libero_manual_hint_carries_the_same_flags(self) -> None:
         """The manual_hint surfaced to the user mirrors the auto-installer's flags."""
         plan = _libero_plan()
         assert "--inexact" in plan.manual_hint
-        assert "--reinstall-package hf-libero" in plan.manual_hint
+        assert "--reinstall-package" not in plan.manual_hint
 
 
 class TestLiberoReadinessProbe:
