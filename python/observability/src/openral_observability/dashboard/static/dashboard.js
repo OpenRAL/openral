@@ -934,7 +934,7 @@
   //   live   = green          — data received within STALE_S
   //   paused = yellow         — was receiving, but latest data is stale
   //   error  = red            — the card reported an error span
-  const STALE_S = 12;
+  const STALE_S = 10;
   const _dotSeen = new Set();
   const DOT_LABEL = {
     wait: "waiting for data", live: "receiving data",
