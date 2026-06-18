@@ -197,8 +197,8 @@ async def test_index_serves_html() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/")
         assert resp.status_code == 200
-        assert "OpenRAL · Instrument Deck".encode() in resp.content
-        assert "<title>OpenRAL · Instrument Deck</title>".encode() in resp.content
+        assert "OpenRAL · Live Dashboard".encode() in resp.content
+        assert "<title>OpenRAL · Live Dashboard</title>".encode() in resp.content
 
 
 @pytest.mark.asyncio
