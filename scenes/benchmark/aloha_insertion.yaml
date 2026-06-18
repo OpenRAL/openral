@@ -17,11 +17,15 @@ task:
   scene_id: aloha_insertion
   instruction: "insert the peg"
   success_key: is_success
-  max_steps: 500
+  max_steps: 400         # ACT paper sim episode_len (Zhao et al. SIM_TASK_CONFIGS)
 
-n_episodes: 200
+n_episodes: 50           # ACT paper eval count
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/2304.13705"
-  honest_scope: "AlohaInsertion-v0 — harder than transfer cube. ACT paper reports ~50%."
+  honest_scope: >
+    AlohaInsertion-v0 — the harder ALOHA task in the original paper.
+    Official ACT sim protocol: episode_len=400 over 50 eval episodes
+    (gym-aloha's registration TimeLimit default is 300; we honour the
+    paper's 400). ACT paper reports ~50% success on insertion.
