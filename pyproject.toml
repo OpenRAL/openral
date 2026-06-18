@@ -82,9 +82,12 @@ openral-state-adapter = { workspace = true } # reason: ADR-0027 layout adapter r
 # Bumping the rev: pick the latest stable upstream master commit
 # (https://github.com/ARISE-Initiative/robosuite/commits/master) that
 # still has `mink` under `extras_require` (NOT in `install_requires`),
-# update both this rev and the explanatory comment in
-# `[dependency-groups] robocasa = [...]`, regenerate the lockfile,
-# and re-run `just sim-audit robocasa_pnp` to confirm no regression.
+# update this rev, the explanatory comment in
+# `[dependency-groups] robocasa = [...]`, AND `_ROBOSUITE_PIN` in
+# `python/sim/src/openral_sim/_deps.py` (the editable-clone steps pin to
+# the same SHA so they don't overwrite this `uv sync` install with
+# floating master — issue #44), regenerate the lockfile, and re-run
+# `just sim-audit robocasa_pnp` to confirm no regression.
 robosuite = { git = "https://github.com/ARISE-Initiative/robosuite.git", rev = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" }
 
 # The NVIDIA `tensorrt*` distributions are wheel_stub sdists whose build
