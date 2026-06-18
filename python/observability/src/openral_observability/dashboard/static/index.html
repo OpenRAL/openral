@@ -80,6 +80,12 @@
   <section>
     <h2>Operator prompt</h2>
     <div class="prompt-box">
+      <button id="prompt-mic" type="button" data-state="idle" aria-pressed="false" aria-label="Speak a prompt" title="Speak a prompt">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="11" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="19" x2="12" y2="22" />
+        </svg>
+      </button>
+      <span id="mic-meter" class="mic-meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
       <input id="prompt-input" type="text" placeholder='e.g. "pick the red cube"' autocomplete="off" spellcheck="false" />
       <button id="prompt-send" type="button">Send</button>
       <button id="estop-reset" type="button" title="Clear a latched safety e-stop so the robot can be re-tasked (calls /openral/estop_reset)">Reset e-stop</button>

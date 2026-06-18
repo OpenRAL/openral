@@ -724,6 +724,45 @@
   }
   #estop-reset:hover { background: var(--err); color: #0b0c10; }
   #estop-reset:focus-visible { outline: 2px solid var(--err); outline-offset: 2px; }
+  /* Voice-prompt mic — square ghost icon button, monochrome per the design
+     system (chroma stays reserved for safety state). It sits left of the input;
+     the listening state pulses white, the working state dims. */
+  #prompt-mic {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 38px; height: 38px; padding: 0;
+    background: var(--bg-2); color: var(--text-2);
+    border: 1px solid var(--hair-strong); border-radius: 9px;
+    cursor: pointer; transition: color .15s, border-color .15s, background .15s, box-shadow .15s;
+  }
+  #prompt-mic:hover { color: var(--text); border-color: var(--accent-line); }
+  #prompt-mic:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #prompt-mic[data-state="listening"] {
+    color: var(--accent); border-color: var(--accent);
+    animation: mic-pulse 1.3s var(--ease, ease-in-out) infinite;
+  }
+  #prompt-mic[data-state="working"] { color: var(--muted); border-color: var(--hair-strong); cursor: progress; }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+    50%      { box-shadow: 0 0 0 4px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #prompt-mic[data-state="listening"] { animation: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  }
+  /* Live recording level meter — equalizer bars that react to mic amplitude,
+     shown only while listening. Bars scale on the GPU (transform: scaleY) so
+     they never reflow the prompt row; JS sets the height per audio frame. */
+  .mic-meter { display: none; align-items: flex-end; gap: 2px; height: 22px; flex: 0 0 auto; }
+  .mic-meter.active { display: inline-flex; }
+  .mic-meter i {
+    width: 3px; height: 100%; border-radius: 2px;
+    background: var(--accent); transform: scaleY(0.18); transform-origin: bottom;
+    transition: transform .08s linear;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* No per-frame motion: show a steady mid-height meter as a static
+       "recording" affordance (the status text carries the live state). */
+    .mic-meter i { transform: scaleY(0.5) !important; transition: none; }
+  }
   /* legacy .prompt-box button fallback (non-id buttons) */
   .prompt-box button {
     background: var(--accent); color: #0b0c10; border: none; border-radius: 9px;

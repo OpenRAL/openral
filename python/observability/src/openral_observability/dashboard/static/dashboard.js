@@ -1045,7 +1045,18 @@
     promptStatus.textContent = text;
     promptStatus.className = "status" + (kind ? " " + kind : "");
   }
+  // The voice prompt "arms" a brief auto-send countdown after transcription so a
+  // mis-recognition can be caught before it reaches the robot. Any explicit send
+  // (Send / Enter), a cancel (Esc / editing the text), or starting a new
+  // recording clears it so it can never double-fire.
+  let autoSendTimer = null;
+  let autoSendTick = null;
+  function clearAutoSend() {
+    if (autoSendTimer) { clearTimeout(autoSendTimer); autoSendTimer = null; }
+    if (autoSendTick) { clearInterval(autoSendTick); autoSendTick = null; }
+  }
   async function sendPrompt() {
+    clearAutoSend();
     const text = promptInput.value.trim();
     if (!text) return;
     promptSend.disabled = true;
@@ -1073,7 +1084,245 @@
   promptSend.addEventListener("click", sendPrompt);
   promptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+    else if (e.key === "Escape" && autoSendTimer) {
+      clearAutoSend();
+      setPromptStatus("auto-send cancelled — edit, then press Send", "");
+    }
   });
+  // Typing into the transcript cancels the pending auto-send (you're correcting
+  // it). Programmatic fills set `.value` directly, which does not fire "input".
+  promptInput.addEventListener("input", () => {
+    if (autoSendTimer) {
+      clearAutoSend();
+      setPromptStatus("auto-send cancelled — press Send when ready", "");
+    }
+  });
+
+  // ── Voice prompt (mic → local STT) ──────────────────────────────────────────
+  // Click the mic to start: we lazy-load ricky0123/vad-web (Silero VAD) on first
+  // use and listen. Two ways to stop, both transcribe: the VAD auto-detects when
+  // you stop speaking (onSpeechEnd), OR you click the mic again to stop now (we
+  // accumulate frames via onFrameProcessed so a manual stop has audio to send).
+  // We encode the captured 16 kHz samples to a mono WAV and POST it to
+  // /api/transcribe, which runs a LOCAL faster-whisper model on the host. The
+  // returned text fills the prompt box and is sent via the normal sendPrompt().
+  // Fully offline: nothing leaves the machine and nothing is fetched from a CDN.
+  // The VAD library, Silero model, onnxruntime-web and its wasm are all vendored
+  // under /static/vendor/vad/ (see that directory's NOTICE.md for versions).
+  const VAD_VENDOR = "/static/vendor/vad/";
+  const VAD_WEB_SRC = `${VAD_VENDOR}bundle.min.js`;
+  const ORT_SRC = `${VAD_VENDOR}ort.wasm.min.js`;
+  const VAD_ASSET_BASE = VAD_VENDOR;   // worklet + silero_vad_*.onnx
+  const VAD_WASM_BASE = VAD_VENDOR;    // ort-wasm-simd-threaded.{wasm,mjs}
+
+  const promptMic = $("prompt-mic");
+  const micMeter = $("mic-meter");
+  const meterBars = micMeter ? Array.from(micMeter.querySelectorAll("i")) : [];
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let micVad = null;          // MicVAD instance, created once on first use.
+  let micListening = false;
+  let capturedFrames = [];   // every 16 kHz frame while listening — lets a manual stop transcribe.
+  let finalizing = false;    // guard so the auto- and manual-stop paths can't double-fire.
+  // Reliable auto-stop: rather than depend solely on the VAD's own onSpeechEnd
+  // (which can be slow or never fire in a noisy room), we watch the model's
+  // per-frame speech probability ourselves and finalize after a fixed silence
+  // window once speech has been seen.
+  const VOICE_PROB = 0.5;     // per-frame isSpeech above this = voice present
+  const SILENCE_MS = 1100;    // finalize after this much silence following speech
+  let speechSeen = false;
+  let lastVoiceAt = 0;
+
+  function setMicState(state) {  // "idle" | "listening" | "working"
+    if (!promptMic) return;
+    promptMic.dataset.state = state;
+    promptMic.setAttribute("aria-pressed", state === "listening" ? "true" : "false");
+    promptMic.title =
+      state === "listening" ? "Listening — click to stop"
+      : state === "working" ? "Transcribing…"
+      : "Speak a prompt";
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error("failed to load " + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  // Float32 PCM [-1,1] @ sampleRate (mono) → 16-bit WAV Blob — the container
+  // faster-whisper/PyAV ingests directly. Avoids depending on a vad-web util.
+  function encodeWav(samples, sampleRate) {
+    const n = samples.length;
+    const buf = new ArrayBuffer(44 + n * 2);
+    const view = new DataView(buf);
+    const str = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+    str(0, "RIFF"); view.setUint32(4, 36 + n * 2, true); str(8, "WAVE");
+    str(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    str(36, "data"); view.setUint32(40, n * 2, true);
+    let off = 44;
+    for (let i = 0; i < n; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      off += 2;
+    }
+    return new Blob([view], { type: "audio/wav" });
+  }
+
+  // Join the accumulated per-frame Float32Arrays into one contiguous buffer.
+  function concatFrames(frames) {
+    let len = 0;
+    for (const f of frames) len += f.length;
+    const out = new Float32Array(len);
+    let off = 0;
+    for (const f of frames) { out.set(f, off); off += f.length; }
+    return out;
+  }
+
+  // ── Live level meter: drive the equalizer bars from the mic's RMS so the
+  // operator can see the dashboard is hearing them. Animated only via
+  // transform: scaleY (no layout reflow); skipped under reduced-motion.
+  function frameRms(frame) {
+    let sum = 0;
+    for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+    return Math.sqrt(sum / frame.length);
+  }
+  function resetMeter() {
+    for (const bar of meterBars) bar.style.transform = "scaleY(0.18)";
+  }
+  function updateMeter(rms) {
+    if (!meterBars.length || reduceMotion) return;
+    const level = Math.min(1, rms * 7);   // map typical speech RMS (~0–0.15) to 0–1
+    for (let i = 0; i < meterBars.length; i++) {
+      // taller in the centre for a natural equalizer shape
+      const weight = 0.55 + 0.45 * Math.sin(((i + 1) / (meterBars.length + 1)) * Math.PI);
+      const s = 0.18 + level * weight * 0.82;
+      meterBars[i].style.transform = `scaleY(${Math.min(1, s).toFixed(3)})`;
+    }
+  }
+  function showMeter(on) {
+    if (!micMeter) return;
+    micMeter.classList.toggle("active", on);
+    if (on) resetMeter();
+  }
+
+  // Arm the cancellable auto-send countdown after a transcription fills the box.
+  function armAutoSend() {
+    clearAutoSend();
+    const DELAY_MS = 1500;
+    let remaining = DELAY_MS;
+    const render = () => setPromptStatus("sending in " + (remaining / 1000).toFixed(1) + "s — Esc to cancel", "");
+    render();
+    autoSendTick = setInterval(() => { remaining -= 100; if (remaining > 0) render(); }, 100);
+    autoSendTimer = setTimeout(() => { clearAutoSend(); sendPrompt(); }, DELAY_MS);
+  }
+
+  async function transcribeAndSend(samples) {
+    setMicState("working");
+    setPromptStatus("transcribing…", "");
+    try {
+      const resp = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "audio/wav" },
+        body: encodeWav(samples, 16000),
+      });
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) { setPromptStatus(body.error || ("HTTP " + resp.status), "err"); return; }
+      const text = (body.text || "").trim();
+      if (!text) { setPromptStatus("no speech recognized", "err"); return; }
+      promptInput.value = text;
+      promptInput.focus();
+      armAutoSend();               // fill the box, then auto-send unless cancelled.
+    } catch (e) {
+      setPromptStatus(String(e), "err");
+    } finally {
+      capturedFrames = [];
+      finalizing = false;
+      setMicState("idle");
+    }
+  }
+
+  // Single exit for both paths — silence detection (auto) and the operator
+  // clicking the mic to stop (manual). Pauses the VAD and transcribes
+  // `samples`; the guard keeps the two paths from racing into a double-send.
+  function finalizeCapture(samples) {
+    if (finalizing) return;
+    finalizing = true;
+    micListening = false;
+    if (micVad) micVad.pause();
+    showMeter(false);
+    if (!samples || samples.length === 0) {
+      capturedFrames = [];
+      finalizing = false;
+      setMicState("idle");
+      setPromptStatus("no speech recorded", "err");
+      return;
+    }
+    transcribeAndSend(samples);
+  }
+
+  async function ensureVad() {
+    if (micVad) return micVad;
+    setPromptStatus("loading speech model…", "");
+    await loadScript(ORT_SRC);
+    await loadScript(VAD_WEB_SRC);
+    micVad = await window.vad.MicVAD.new({
+      baseAssetPath: VAD_ASSET_BASE,
+      onnxWASMBasePath: VAD_WASM_BASE,
+      onFrameProcessed: (probs, frame) => {
+        if (!micListening || finalizing || !frame) return;
+        capturedFrames.push(frame.slice());   // so a manual stop has audio to send
+        updateMeter(frameRms(frame));          // live level meter
+        // Our own end-of-speech detector: once speech has been seen, finalize
+        // after SILENCE_MS of sub-threshold frames. Robust where the VAD's own
+        // onSpeechEnd is slow or never fires.
+        const now = Date.now();
+        if (probs && probs.isSpeech > VOICE_PROB) { speechSeen = true; lastVoiceAt = now; }
+        else if (speechSeen && now - lastVoiceAt > SILENCE_MS) {
+          finalizeCapture(concatFrames(capturedFrames));
+        }
+      },
+      onSpeechStart: () => { speechSeen = true; lastVoiceAt = Date.now(); setPromptStatus("listening…", ""); },
+      onSpeechEnd: (samples) => finalizeCapture(samples),  // VAD's own trimmed segment (whichever fires first)
+    });
+    return micVad;
+  }
+
+  async function startListening() {
+    try {
+      const v = await ensureVad();
+      clearAutoSend();
+      capturedFrames = [];
+      finalizing = false;
+      speechSeen = false;
+      lastVoiceAt = Date.now();
+      v.start();
+      micListening = true;
+      showMeter(true);
+      setMicState("listening");
+      setPromptStatus("listening… speak, then pause (or click the mic)", "");
+    } catch (e) {
+      setPromptStatus("mic unavailable: " + (e && e.message ? e.message : e), "err");
+      setMicState("idle");
+    }
+  }
+
+  // Operator clicked the mic to stop — finalize with everything captured so
+  // far, instead of waiting on (or depending on) the VAD's silence detector.
+  function manualStop() {
+    finalizeCapture(concatFrames(capturedFrames));
+  }
+
+  if (promptMic) {
+    promptMic.addEventListener("click", () => {
+      if (micListening) manualStop(); else startListening();
+    });
+  }
 
   // ── E-stop recovery (POST /api/estop_reset → ros2 service call) ──
   // A latched safety e-stop makes the kernel drop every command, so no prompt

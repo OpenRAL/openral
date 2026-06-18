@@ -374,3 +374,91 @@ async def test_post_prompt_returns_503_when_openral_missing(
         resp = await client.post("/api/prompt", json={"text": "go"})
         assert resp.status_code == 503
         assert "not on PATH" in resp.json()["error"]
+
+
+# ───────────────────────── POST /api/transcribe (STT) ────────────────────────
+#
+# Operator voice prompt: the dashboard mic POSTs captured audio here and the
+# endpoint runs a local faster-whisper model (ships with the dashboard extra).
+# Per CLAUDE.md §1.11 we use the real model on a real (public-domain) speech
+# clip — no mocked transcriber. The heavy end-to-end test importorskips
+# faster-whisper (it is a default dep, so it runs in a normal env; the skip is
+# only the CI-without-the-dashboard-extra path, §1.12); the contract tests
+# (empty body, dependency-stripped 503) run everywhere with no model download.
+
+_JFK_WAV = Path(__file__).parent / "fixtures" / "jfk.wav"
+
+
+@pytest.mark.asyncio
+async def test_post_transcribe_rejects_empty_body() -> None:
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/transcribe", content=b"")
+        assert resp.status_code == 400
+        assert "empty audio" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_post_transcribe_returns_503_when_faster_whisper_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real import failure (not a mocked transcriber): shadow `faster_whisper`
+    # with None in sys.modules so the in-function import raises ImportError,
+    # exercising the graceful-degradation path exactly as an uninstalled host.
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/transcribe", content=b"\x00\x01\x02\x03")
+        assert resp.status_code == 503
+        assert "speech-to-text unavailable" in resp.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_post_transcribe_real_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+    # End-to-end with the real model on a real public-domain JFK clip
+    # ("...ask not what your country can do for you..."). tiny.en keeps the
+    # one-time model download light; it transcribes this clean 16 kHz clip
+    # reliably. Skips only if faster-whisper is absent (non-dashboard install).
+    pytest.importorskip("faster_whisper")
+    monkeypatch.setenv("OPENRAL_STT_MODEL", "tiny.en")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://test", timeout=120.0
+    ) as client:
+        resp = await client.post(
+            "/api/transcribe",
+            content=_JFK_WAV.read_bytes(),
+            headers={"content-type": "audio/wav"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["model"] == "tiny.en"
+        assert "country" in body["text"].lower(), body["text"]
+
+
+@pytest.mark.asyncio
+async def test_vendored_vad_assets_served_offline() -> None:
+    # The voice prompt is fully offline: the VAD library, Silero model and
+    # onnxruntime-web wasm are vendored under static/vendor/vad/ (no CDN). Assert
+    # each asset serves 200 with a browser-loadable MIME — onnxruntime's ESM
+    # (.mjs) and wasm fail to load if the dashboard mounts them as text/plain.
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    expected = {
+        "bundle.min.js": "javascript",
+        "vad.worklet.bundle.min.js": "javascript",
+        "silero_vad_v5.onnx": None,
+        "ort.wasm.min.js": "javascript",
+        "ort-wasm-simd-threaded.mjs": "javascript",
+        "ort-wasm-simd-threaded.wasm": "application/wasm",
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for name, ctype in expected.items():
+            resp = await client.get(f"/static/vendor/vad/{name}")
+            assert resp.status_code == 200, name
+            if ctype is not None:
+                assert ctype in resp.headers["content-type"], (name, resp.headers["content-type"])

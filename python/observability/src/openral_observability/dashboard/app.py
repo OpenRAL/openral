@@ -23,13 +23,16 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import io
 import json
+import mimetypes
 import os
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -51,7 +54,84 @@ from openral_observability.dashboard.store import TelemetryStore
 
 __all__ = ["create_app"]
 
+_logger = structlog.get_logger(__name__)
+
 _STATIC_DIR = Path(__file__).parent / "static"
+
+# The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
+# WebAssembly (.wasm) served by StaticFiles. Browsers reject an ESM dynamic
+# import served as text/plain, and streaming wasm compilation wants
+# application/wasm — register both so onnxruntime-web loads offline cleanly.
+mimetypes.add_type("text/javascript", ".mjs")
+mimetypes.add_type("application/wasm", ".wasm")
+
+# ── Operator voice prompt (POST /api/transcribe) ──────────────────────────────
+# The dashboard's mic button records until the operator stops speaking
+# (browser-side Silero VAD) and POSTs the captured audio here. We transcribe it
+# with a local CPU Whisper model (faster-whisper / CTranslate2) and hand the
+# text back so the page drops it into the operator-prompt box and sends it. The
+# audio never leaves the host. faster-whisper ships with the dashboard extra so
+# this works out of the box; the endpoint still degrades to a 503 (rather than
+# crashing the dashboard) on the off chance the dependency is ever stripped.
+_STT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB guard — a 30 s 16 kHz mono WAV is ~1 MB.
+_STT_MODEL_CACHE: dict[str, Any] = {}  # name → WhisperModel; loaded once, reused.
+
+
+class _STTUnavailableError(RuntimeError):
+    """Raised when faster-whisper is not importable in this environment."""
+
+
+def _transcribe_sync(audio: bytes) -> tuple[str, str]:
+    """Load (once, cached) the local Whisper model and transcribe ``audio``.
+
+    Blocking CPU work — call via :func:`asyncio.to_thread`, never on the event
+    loop. Returns ``(text, model_name)``. The model, device and compute type
+    are env-selectable (``OPENRAL_STT_MODEL`` / ``_DEVICE`` / ``_COMPUTE``),
+    defaulting to ``base.en`` on CPU with int8 quantization so it runs on any
+    operator host. ``audio`` may be any container PyAV can decode (WAV, WebM/
+    Opus, …); faster-whisper resamples to 16 kHz internally.
+
+    Raises:
+        _STTUnavailableError: faster-whisper is not importable (it ships with the
+            dashboard extra, so this only fires if the dependency was stripped).
+    """
+    try:
+        # ships with the dashboard extra — untyped when present, ImportError if stripped.
+        import faster_whisper  # type: ignore[import-not-found,import-untyped,unused-ignore]
+    except ImportError as exc:  # ModuleNotFoundError + a shadowed/None sys.modules entry
+        raise _STTUnavailableError from exc
+    name = os.environ.get("OPENRAL_STT_MODEL", "base.en")
+    model = _STT_MODEL_CACHE.get(name)
+    if model is None:
+        device = os.environ.get("OPENRAL_STT_DEVICE", "cpu")
+        compute = os.environ.get("OPENRAL_STT_COMPUTE", "int8")
+        _logger.info("stt.model_load", model=name, device=device, compute_type=compute)
+        model = faster_whisper.WhisperModel(name, device=device, compute_type=compute)
+        _STT_MODEL_CACHE[name] = model
+    segments, _info = model.transcribe(io.BytesIO(audio), beam_size=1)
+    return " ".join(seg.text.strip() for seg in segments).strip(), name
+
+
+async def _transcribe_response(audio: bytes) -> JSONResponse:
+    """Transcribe captured operator speech to text (see module note above)."""
+    if not audio:
+        return JSONResponse({"error": "empty audio body"}, status_code=400)
+    if len(audio) > _STT_MAX_BYTES:
+        return JSONResponse(
+            {"error": f"audio too large ({len(audio)} bytes > {_STT_MAX_BYTES} limit)"},
+            status_code=413,
+        )
+    try:
+        text, model_name = await asyncio.to_thread(_transcribe_sync, audio)
+    except _STTUnavailableError:
+        return JSONResponse(
+            {"error": "speech-to-text unavailable — faster-whisper is not importable"},
+            status_code=503,
+        )
+    except Exception as exc:  # decode/runtime errors surface as 422 — logged, never swallowed
+        _logger.warning("stt.transcribe_failed", error=str(exc))
+        return JSONResponse({"error": f"transcription failed: {exc}"}, status_code=422)
+    return JSONResponse({"status": "ok", "text": text, "model": model_name})
 
 
 async def _prompt_response(text: str) -> JSONResponse:
@@ -268,6 +348,16 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
                 {"error": "field 'text' required (non-empty string)"}, status_code=400
             )
         return await _prompt_response(text)
+
+    @app.post("/api/transcribe")
+    async def post_transcribe(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Operator voice prompt — the mic button records until silence (browser
+        # VAD) and POSTs the raw audio blob (audio/wav). We transcribe it on the
+        # host with a local Whisper model and return the text; the page fills
+        # the prompt box and reuses the normal /api/prompt send path. Body lives
+        # in a module helper to keep create_app() under the statement cap.
+        audio = await _read_body(request)
+        return await _transcribe_response(audio)
 
     @app.post("/api/estop_reset")
     async def post_estop_reset(_request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
