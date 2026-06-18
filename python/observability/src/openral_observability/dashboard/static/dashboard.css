@@ -212,7 +212,7 @@
   .card.accent-world     { --accent-color: var(--accent); }
   .card.accent-system    { --accent-color: var(--accent); }
   .card.accent-ledger    { --accent-color: var(--accent); }
-  .card.error { border-color: rgba(255,93,108,0.55); }
+  .card.error { border-color: var(--err); }
   .card.error::before { background: var(--err); opacity: 1; }
   .card.pulse {
     border-color: color-mix(in srgb, var(--accent-line) 50%, var(--hair));
@@ -420,7 +420,7 @@
     color: var(--ok); padding: 2px 8px; border-radius: 3px;
     font-family: var(--mono); font-size: 9px; font-weight: 600;
     letter-spacing: 0.12em; text-transform: uppercase;
-    border: 1px solid rgba(70,240,164,0.3);
+    border: 1px solid rgba(79,181,139,0.3);
   }
   .camera .pill.neutral { color: var(--fg-dim); border-color: var(--hair); }
   .camera .crosshair {
@@ -480,8 +480,8 @@
     position: absolute; top: 50%; left: 4px; right: 4px;
     height: 2px; margin-top: -1px;
     background: linear-gradient(to right,
-      rgba(255,93,108,0.45) 0%, rgba(126,160,200,0.10) 14%,
-      rgba(126,160,200,0.10) 86%, rgba(255,93,108,0.45) 100%);
+      rgba(217,138,142,0.45) 0%, rgba(255,255,255,0.10) 14%,
+      rgba(255,255,255,0.10) 86%, rgba(217,138,142,0.45) 100%);
     border-radius: 1px;
   }
   .joint-row .bar .dot {
@@ -496,7 +496,7 @@
   }
   .joint-row .val { color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
   .joint-row .vel { color: var(--fg-mute); text-align: right; font-size: 10px; font-variant-numeric: tabular-nums; }
-  .joint-row .vel.neg { color: rgba(255,93,108,0.75); }
+  .joint-row .vel.neg { color: var(--fg-dim); }
   .joint-legend {
     margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--hair-soft);
     display: flex; gap: 18px; font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
