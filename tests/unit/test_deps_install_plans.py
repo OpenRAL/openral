@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from openral_sim import _deps
 from openral_sim._deps import (
+    _ROBOSUITE_PIN,
     _libero_plan,
     _openarm_robosuite_plan,
     _refresh_editable_finders,
@@ -335,6 +336,66 @@ class TestRobocasaPlansUseInexact:
         sync_step = plan.steps[0]
         assert sync_step.argv[0:3] == [sync_step.argv[0], "sync", "--all-packages"]
         assert "--inexact" in sync_step.argv
+
+
+# ─── Issue #44: both robocasa plans pin robosuite to one commit ───────────
+
+
+class TestRobocasaPlansPinRobosuite:
+    """Both robocasa forks must install robosuite at a *pinned* commit.
+
+    Regression for issue #44. The kitchen + GR1 forks share the editable
+    robosuite-master clone. The GR1 fork (robocasa-gr1-tabletop-tasks
+    0.2.0) only supports robosuite 1.5.0/1.5.1; riding floating master
+    means a future master commit that refactors the robot base-class API
+    breaks the GR1 env build with ``Invalid base type to add to robot!``
+    while the kitchen fork keeps working — and master always reports
+    ``"1.5.2"`` so the two are indistinguishable by version string.
+    Pinning both plans to one verified commit makes the build
+    deterministic and lets the forks share a single robosuite install.
+
+    These assert the plan SHAPE (the clone step pins a 40-char SHA, the
+    manual hint mirrors it). The commit itself is validated end-to-end on
+    the GPU host by ``tests/sim/test_gr1_rldx_robocasa.py``.
+    """
+
+    def test_pin_is_an_immutable_full_sha(self) -> None:
+        """The pin must be a 40-char hex commit, never a tag or branch.
+
+        A tag/branch would re-introduce the drift the pin exists to kill.
+        """
+        assert len(_ROBOSUITE_PIN) == 40, _ROBOSUITE_PIN
+        assert all(c in "0123456789abcdef" for c in _ROBOSUITE_PIN), _ROBOSUITE_PIN
+
+    @pytest.mark.parametrize(
+        "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
+    )
+    def test_robosuite_clone_step_pins_the_commit(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
+        """Exactly one step clones robosuite, and it checks out the pinned SHA.
+
+        Guards against a regression to the old floating-master clone
+        (``[ -d … ] || git clone --depth=1 …robosuite.git`` with no
+        subsequent checkout): the clone step must both clone *and* pin.
+        """
+        plan = plan_fn()
+        clone_cmds = [
+            s.argv[-1]
+            for s in plan.steps
+            if s.argv and "robosuite.git" in s.argv[-1] and "robosuite_models" not in s.argv[-1]
+        ]
+        assert len(clone_cmds) == 1, [s.description for s in plan.steps]
+        cmd = clone_cmds[0]
+        assert _ROBOSUITE_PIN in cmd, cmd
+        assert f"checkout --quiet --detach {_ROBOSUITE_PIN}" in cmd, cmd
+
+    @pytest.mark.parametrize(
+        "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
+    )
+    def test_manual_hint_mirrors_the_pin(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
+        """The user-facing manual hint must check out the same pinned commit."""
+        plan = plan_fn()
+        assert _ROBOSUITE_PIN in plan.manual_hint
+        assert f"checkout --detach {_ROBOSUITE_PIN}" in plan.manual_hint
 
 
 # ─── Fix #5: refresh sys.meta_path after an in-process editable swap ──────

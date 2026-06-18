@@ -289,7 +289,7 @@ def _has_openarm_robosuite() -> bool:
     try:
         major, minor, *_ = (int(p) for p in robosuite.__version__.split(".")[:2])
     except ValueError:
-        # Unparseable version string — treat as "needs reinstall" rather
+        # Unparsable version string — treat as "needs reinstall" rather
         # than silently accepting; the plan is cheap to re-run when
         # robosuite is actually fine.
         return False
@@ -451,6 +451,70 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
     )
 
 
+# Pin robosuite to a specific master commit instead of floating HEAD.
+#
+# Both robocasa forks install robosuite from an editable clone of
+# ARISE-Initiative/robosuite *master*. The kitchen fork (robocasa 1.0.1)
+# tracks recent master, but the GR1 fork (robocasa-gr1-tabletop-tasks
+# 0.2.0, NVIDIA's GR00T-N1 release) was authored against robosuite
+# 1.5.0/1.5.1 and only declares support for those. Riding floating
+# master means a future master commit that refactors the robot
+# base-class API silently breaks the GR1 env build with
+# ``ValueError: Invalid base type to add to robot!`` at
+# ``robot_model.py:add_base`` (issue #44) while the kitchen fork keeps
+# working — and the two cannot be told apart by version string because
+# master always reports ``"1.5.2"``. Pinning to a single verified commit
+# makes both forks deterministic and lets them share one robosuite
+# install (no per-scene robosuite swap).
+#
+# This SHA is validated end-to-end by ``openral sim run`` on
+# ``robocasa_gr1_pnp_cup_to_drawer`` (GR1 + RLDX-1-FT-GR1, full episode)
+# AND by the kitchen scenes. Bump it only after re-running both on the
+# new commit.
+#
+# MUST equal the ``[tool.uv.sources] robosuite = { rev = ... }`` pin in
+# ``pyproject.toml``: ``uv sync --group robocasa`` lands robosuite at the
+# uv.sources rev, then the steps below ``uv pip install -e`` the local
+# clone OVER it. If the clone rode floating master (the bug — issue #44)
+# the editable reinstall silently replaced the pinned tree with a
+# drifting one. Keep the two in lockstep when bumping.
+_ROBOSUITE_PIN = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"  # master @ 2026-05-09
+
+
+def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
+    """Clone robosuite (if absent) and pin it to :data:`_ROBOSUITE_PIN`.
+
+    Idempotent: a shallow master clone seeds the directory on first run,
+    then we shallow-fetch the pinned commit and check it out detached.
+    Re-running on an existing clone just re-asserts the checkout. Shared
+    by the kitchen and GR1 plans so both forks land on the same commit
+    (issue #44 — a drifting master broke the GR1 fork's ``add_base``).
+    """
+    return InstallStep(
+        description=(
+            f"git clone robosuite + pin to {_ROBOSUITE_PIN[:12]} → {rs_dir} "
+            "(idempotent; pinned commit instead of floating master — issue #44)"
+        ),
+        argv=[
+            "bash",
+            "-c",
+            f"set -e; [ -d {rs_dir}/.git ] || {git} clone --depth=1 "
+            f"https://github.com/ARISE-Initiative/robosuite.git {rs_dir}; "
+            f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN}; "
+            f"{git} -C {rs_dir} checkout --quiet --detach {_ROBOSUITE_PIN}",
+        ],
+    )
+
+
+def _robosuite_clone_hint(git: str, rs_dir: Path) -> str:
+    """Manual-install one-liner mirroring :func:`_robosuite_clone_step`."""
+    return (
+        f"{git} clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} ; "
+        f"{git} -C {rs_dir} fetch --depth=1 origin {_ROBOSUITE_PIN} && "
+        f"{git} -C {rs_dir} checkout --detach {_ROBOSUITE_PIN}"
+    )
+
+
 def _robocasa_kitchen_plan() -> BackendInstallPlan:
     uv = _uv()
     git = _git()
@@ -486,18 +550,7 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
                 description=f"mkdir -p {rs_dir.parent} (cache for editable installs)",
                 argv=["mkdir", "-p", str(rs_dir.parent)],
             ),
-            InstallStep(
-                description=(
-                    f"git clone --depth=1 robosuite (master) → {rs_dir} "
-                    "(idempotent: skipped if already cloned)"
-                ),
-                argv=[
-                    "bash",
-                    "-c",
-                    f"[ -d {rs_dir}/.git ] || {git} clone --depth=1 "
-                    f"https://github.com/ARISE-Initiative/robosuite.git {rs_dir}",
-                ],
-            ),
+            _robosuite_clone_step(git, rs_dir),
             InstallStep(
                 description=(
                     "patch robosuite clone: touch missing __init__.py under "
@@ -614,7 +667,7 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
         manual_hint=(
             "just sync --all-packages --group robocasa --inexact && "
             f"mkdir -p {rs_dir.parent} && "
-            f"git clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} && "
+            f"{_robosuite_clone_hint(git, rs_dir)} && "
             f"touch {rs_dir}/robosuite/examples/__init__.py "
             f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
             f"{rs_dir}/robosuite/macros_private.py && "
@@ -713,18 +766,7 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
                 description=f"mkdir -p {clone_parent} (cache for editable installs)",
                 argv=["mkdir", "-p", str(clone_parent)],
             ),
-            InstallStep(
-                description=(
-                    f"git clone --depth=1 robosuite (master) → {rs_dir} "
-                    "(idempotent: skipped if already cloned)"
-                ),
-                argv=[
-                    "bash",
-                    "-c",
-                    f"[ -d {rs_dir}/.git ] || {git} clone --depth=1 "
-                    f"https://github.com/ARISE-Initiative/robosuite.git {rs_dir}",
-                ],
-            ),
+            _robosuite_clone_step(git, rs_dir),
             InstallStep(
                 description=(
                     "patch robosuite clone: touch missing __init__.py under "
@@ -843,7 +885,7 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
         manual_hint=(
             "just sync --all-packages --group robocasa --inexact && "
             f"mkdir -p {clone_parent} && "
-            f"git clone --depth=1 https://github.com/ARISE-Initiative/robosuite.git {rs_dir} && "
+            f"{_robosuite_clone_hint(git, rs_dir)} && "
             f"touch {rs_dir}/robosuite/examples/__init__.py "
             f"{rs_dir}/robosuite/examples/third_party_controller/__init__.py "
             f"{rs_dir}/robosuite/macros_private.py && "
@@ -1315,7 +1357,7 @@ def _openarm_robosuite_plan() -> BackendInstallPlan:
     wrapper around a hand-composed bimanual scene; it does NOT use
     robocasa envs, OSC composite controllers, or WholeBodyMinkIK. The
     only place ``robosuite>=1.5`` is declared in the workspace is the
-    ``[project.optional-dependencies] robocasa`` extra, so we re-use
+    ``[project.optional-dependencies] robocasa`` extra, so we reuse
     that group — leaner steps than ``_robocasa_kitchen_plan`` (no
     robosuite-master clone, no mink / qpsolvers, no robocasa repo).
 
