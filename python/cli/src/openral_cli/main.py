@@ -2410,6 +2410,26 @@ def benchmark_scene(
         "--save-dir",
         help="Optional adapter-side artefact directory (videos, traces).",
     ),
+    save_video: Path | None = typer.Option(
+        None,
+        "--save-video",
+        help=(
+            "Write a clean single-view world MP4 per episode to this "
+            "directory, named <scene>_<rskill>_<success|fail>.mp4, plus a "
+            "videos.json manifest — for website hero clips (overlays are "
+            "rendered by the page, not burned into pixels). Enables per-step "
+            "frame capture. Pair with --n-episodes 1 for a single demo clip."
+        ),
+    ),
+    video_size: int = typer.Option(
+        1024,
+        "--video-size",
+        help=(
+            "Square edge (px) for --save-video output. Frames are "
+            "center-cropped to a square and resized to this size. Source "
+            "sharpness is bounded by the scene's native render resolution."
+        ),
+    ),
     n_episodes: int | None = typer.Option(
         None,
         "--n-episodes",
@@ -2522,6 +2542,19 @@ def benchmark_scene(
             save_dir=str(save_dir) if save_dir is not None else None,
             config_path=str(config),
             view=view,
+            record_video=save_video is not None,
+        )
+
+    if save_video is not None:
+        from openral_sim._website_video import write_world_videos
+
+        write_world_videos(
+            episodes,
+            save_video,
+            scene=scene.scene.id,
+            rskill=Path(rskill).name,
+            section=Path(config).parent.name,
+            size=video_size,
         )
 
     avg = result.results.get("avg_success_rate", 0.0)

@@ -87,14 +87,16 @@ weights_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Per-file URIs for the lerobot PolicyProcessorPipeline. The upstream
-# repo only ships the safetensors + config.json + train_config.json (no
-# stored `policy_*processor.json`); the SmolVLA adapter falls back to
-# building processors from `policy.config` via `make_pre_post_processors`
-# at load time. These URIs are left pointing at the canonical filenames
-# so a future re-upload that includes them is picked up automatically.
+# The upstream weights repo (Calvert0921/smolvla_franka_liftcube_1000) ships
+# only safetensors + config.json + train_config.json (no processor JSONs), so
+# the adapter previously fell back to rebuilding from dataset stats (correct
+# but logged a 404). We rebuilt the processor pair from the checkpoint's baked
+# normalization buffers (exact match, not approximate) and hosted them on the
+# OpenRAL-owned rskill repo. `materialize_processor_dir` auto-pulls the
+# `*_normalizer_processor.safetensors` siblings, so no 404 and no fallback.
 processors:
-  preprocessor_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000/policy_preprocessor.json"
-  postprocessor_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_postprocessor.json"
 # Per-checkpoint knobs the processor JSONs don't encode. The model was
 # trained on raw SAPIEN renders (no 180° flip); cameras need an alias
 # remap from the in-tree scene-side keys (camera1 / camera2) to the
@@ -122,6 +124,12 @@ latency_budget:
 paper_url: "https://arxiv.org/abs/2506.01844"
 dataset_uri: "hf://Calvert0921/SmolVLA_LiftCube_Franka_1000"
 source_repo: "hf://Calvert0921/smolvla_franka_liftcube_1000"
+# Task-data gate (ADR-0060): this checkpoint was trained on the *LiftCube*
+# dataset (lift the cube to a height), NOT PickCube (grasp + place at a goal +
+# stay static). Declaring the true task makes the benchmark runner refuse the
+# maniskill3/PickCube-v1 scene with ROSCapabilityMismatch instead of producing
+# a plausible-looking rollout that can never satisfy PickCube success.
+evaluated_tasks: ["maniskill3/LiftCube"]
 
 description: >
   SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on

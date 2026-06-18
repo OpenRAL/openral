@@ -23,6 +23,7 @@
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
 name: "OpenRAL/rskill-rldx1-ft-libero-nf4"
+evaluated_tasks: ["libero_spatial"]  # ADR-0060: benchmark task this checkpoint is validated for (gate)
 version: "0.1.0"
 license: "rlwrld_non_commercial"
 role: "s1"

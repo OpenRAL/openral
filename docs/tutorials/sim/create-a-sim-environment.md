@@ -92,7 +92,12 @@ runtime path.
 --device     {cpu, cuda:0, mps, auto}
                              Torch device for the policy.
 --save-dir   DIR             Where to write the JSON summary.
---save-video [PATH]          Write the 3-panel debug MP4 (also enables frame capture).
+--save-video [PATH]          Write a per-episode MP4 (also enables frame capture).
+--video-style {debug,world}  debug (default) = 3-panel montage; world = clean
+                             single-view world render named
+                             <scene>_<rskill>_<success|fail>.mp4 + videos.json
+                             (for website hero clips; overlays drawn by the page).
+--video-size INT             Square edge (px) for --video-style world (default 1024).
 --view / --no-view           Open a passive mujoco.viewer.
 --verbose / -v               DEBUG logging.
 ```

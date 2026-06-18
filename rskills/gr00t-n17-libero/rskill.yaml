@@ -1,5 +1,6 @@
 schema_version: "0.1"
 name: "OpenRAL/rskill-gr00t-n17-libero"
+evaluated_tasks: ["libero_spatial"]  # ADR-0060: benchmark task this checkpoint is validated for (gate)
 version: "0.1.0"
 # NVIDIA Open Model License — GR00T N1.7 permits commercial use, unlike the
 # OneWay Noncommercial License on N1 / N1.5 / N1.6 (see ADR-0046). The loader
