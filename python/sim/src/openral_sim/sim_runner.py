@@ -1236,7 +1236,62 @@ def _open_viewer_and_pacing(
         _log.warning("viewer_import_failed", error=str(exc))
         return None, None
     mj_model, mj_data = handles
-    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+    # Hide both side panels (left settings / right info) so the window shows
+    # only the simulation render; still toggleable at runtime via Tab/Shift+Tab.
+    viewer = mujoco.viewer.launch_passive(
+        mj_model, mj_data, show_left_ui=False, show_right_ui=False
+    )
+    _aim_viewer_camera(viewer, env, mj_model, mj_data)
     n_substeps = int(getattr(mj_model.opt, "nsubsteps", 1)) or 1
     frame_dt_s = float(mj_model.opt.timestep) * n_substeps
     return viewer, frame_dt_s
+
+
+def _aim_viewer_camera(viewer: Any, env: SimRollout, mj_model: Any, mj_data: Any) -> None:
+    """Set the viewer's opening camera + geom visibility.
+
+    * Hides robosuite/RoboCasa collision shells (the red kitchen / green robot)
+      via :func:`apply_robosuite_visual_geomgroups` so textures render; no-op on
+      dm_control/gym scenes.
+    * Opens on an authored overview camera (``agentview`` / ``top`` / ``frontview``,
+      else any declared camera) via :func:`preferred_viewer_camera_id` so cluttered
+      scenes are framed properly; falls back to the base-aligned free camera
+      (:func:`base_aligned_free_camera`) only when the model declares no cameras.
+
+    Best effort: any failure leaves MuJoCo's default free camera untouched.
+    """
+    try:
+        import mujoco
+
+        # Lazy import: openral_hal.__init__ pulls torch/lerobot, so we pay that
+        # cost only at interactive viewer-open (mirrors openarm_robosuite assets).
+        from openral_hal.depth_cloud import (
+            apply_robosuite_visual_geomgroups,
+            base_aligned_free_camera,
+            preferred_viewer_camera_id,
+            resolve_base_body_name,
+        )
+
+        cam_id = preferred_viewer_camera_id(mj_model)
+        with viewer.lock():
+            # Hide robosuite/RoboCasa collision shells so textures render (the
+            # red kitchen / green robot are collision geoms); no-op elsewhere.
+            apply_robosuite_visual_geomgroups(viewer.opt, mj_model)
+            cam = viewer.cam
+            if cam_id >= 0:
+                cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+                cam.fixedcamid = cam_id
+            else:
+                base_body = resolve_base_body_name(
+                    mj_model, description=getattr(env, "description", None)
+                )
+                lookat, distance, azimuth, elevation = base_aligned_free_camera(
+                    model=mj_model, data=mj_data, base_body_name=base_body
+                )
+                cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                cam.lookat[:] = lookat
+                cam.distance = distance
+                cam.azimuth = azimuth
+                cam.elevation = elevation
+    except Exception as exc:  # reason: camera aiming is cosmetic, never fatal
+        _log.warning("viewer_camera_aim_failed", error=str(exc))

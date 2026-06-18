@@ -721,24 +721,18 @@ class SimSensorBridge:
         prefixes (arm + base + gripper).
         """
         import mujoco  # reason: defer optional sim dep
-        from openral_core import extract_base_sim_joint_names
 
-        base_body = "base"
+        from openral_hal.depth_cloud import resolve_base_body_name, robot_self_body_ids
+
         description = getattr(self._hal, "description", None)
-        if description is not None:
-            base_names = extract_base_sim_joint_names(description)
-            if base_names:
-                first = base_names[0]
-                prefix = first.split("_joint_")[0] if "_joint_" in first else ""
-                if prefix:
-                    base_body = f"{prefix}_base"
-        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body)
-        if bid < 0:
-            bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
-        self._depth_base_body = base_body if bid >= 0 else None
-        self._depth_base_body_id = int(bid)
+        base_body = resolve_base_body_name(model, description=description)
+        self._depth_base_body = base_body
+        self._depth_base_body_id = (
+            int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, base_body))
+            if base_body is not None
+            else -1
+        )
         # Robot self-body set (arm + base + gripper) for the depth self-filter.
-        from openral_hal.depth_cloud import robot_self_body_ids
 
         sim_names = (
             [j.sim_joint_name for j in description.joints] if description is not None else []
@@ -905,7 +899,12 @@ class SimSensorBridge:
         try:
             import mujoco.viewer  # reason: optional dep — robosuite/mujoco ships it
 
-            self._viewer = mujoco.viewer.launch_passive(model, data)
+            # Hide both side panels (left settings / right info) so the window
+            # shows only the simulation render — the panels are still reachable
+            # at runtime via Tab / Shift+Tab.
+            self._viewer = mujoco.viewer.launch_passive(
+                model, data, show_left_ui=False, show_right_ui=False
+            )
             # Mirror RoboCasa's offscreen camera render config: hide geom group 0
             # (the collision shell, which RoboCasa colours dark red by convention)
             # and show group 1 (the textured visual geoms). The passive viewer
@@ -915,6 +914,9 @@ class SimSensorBridge:
             with contextlib.suppress(Exception):
                 self._viewer.opt.geomgroup[0] = 0  # collision — hide
                 self._viewer.opt.geomgroup[1] = 1  # visual — show
+            # Open the viewer on a 3rd-person scene camera (agentview/top/…),
+            # falling back to the base-aligned free camera for camera-less twins.
+            self._aim_viewer_camera(model, data)
         except Exception as exc:  # reason: GL/DISPLAY failures are non-fatal (headless)
             self._node.get_logger().warning(
                 f"SimSensorBridge: viewer launch failed ({exc!s}); continuing headless. "
@@ -928,6 +930,44 @@ class SimSensorBridge:
         self._node.get_logger().info(
             f"SimSensorBridge: MuJoCo viewer open @ {self._viewer_sync_rate_hz:.1f} Hz."
         )
+
+    def _aim_viewer_camera(self, model: Any, data: Any) -> None:
+        """Open the viewer on a 3rd-person scene camera, else the base camera.
+
+        Prefers an authored overview camera (``agentview`` / ``top`` /
+        ``frontview``, else any declared camera) via
+        :func:`openral_hal.depth_cloud.preferred_viewer_camera_id` so cluttered
+        scenes are framed properly; falls back to the base-aligned free camera
+        (:func:`base_aligned_free_camera`) only when the model declares no
+        cameras. Best effort: any failure leaves the default free camera.
+        """
+        if self._viewer is None:
+            return
+        with contextlib.suppress(Exception):
+            import mujoco  # reason: optional sim dep
+
+            from openral_hal.depth_cloud import (
+                base_aligned_free_camera,
+                preferred_viewer_camera_id,
+            )
+
+            cam_id = preferred_viewer_camera_id(model)
+            with self._viewer.lock():
+                cam = self._viewer.cam
+                if cam_id >= 0:
+                    cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+                    cam.fixedcamid = cam_id
+                    return
+                if self._depth_base_body is None and self._depth_base_body_id < 0:
+                    self._resolve_depth_base_body(model)
+                lookat, distance, azimuth, elevation = base_aligned_free_camera(
+                    model=model, data=data, base_body_name=self._depth_base_body
+                )
+                cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                cam.lookat[:] = lookat
+                cam.distance = distance
+                cam.azimuth = azimuth
+                cam.elevation = elevation
 
     def _sync_viewer(self) -> None:
         if self._viewer is None:

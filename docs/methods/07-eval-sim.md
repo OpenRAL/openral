@@ -66,7 +66,8 @@ _Per-step `InferenceRunner` for the simulation runtime (ADR-0010 amendment 1)._
 - `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L947)
 - `_build_env_and_policy(env_cfg) -> (SimRollout, PolicyAdapter)` — GH-134: build env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs structured `sim_init_parallel` / `sim_init_sequential` records with `env_ms` / `policy_ms` / `total_ms` / `saved_ms`. Exceptions from either side propagate verbatim — the helper does not catch `ROSError` (or anything else). (L1028)
 - `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1139)
-- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Open a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, compute the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1188)
+- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Open a passive `mujoco.viewer` against the adapter's `mujoco_handles()` with `show_left_ui=False, show_right_ui=False` (only the sim renders), set the camera + geom visibility via `_aim_viewer_camera`, and compute the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1188)
+- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Set the viewer's opening camera + geom visibility (lazily imports `openral_hal.depth_cloud.{apply_robosuite_visual_geomgroups, preferred_viewer_camera_id, base_aligned_free_camera, resolve_base_body_name}` — paying `openral_hal`'s torch/lerobot import cost only at interactive viewer-open, mirroring `openarm_robosuite/_assets.py`): hides robosuite collision shells so textures render, then opens on a 3rd-person scene camera (`agentview`/`top`/…), falling back to the base-aligned free camera only when the model has no cameras. Best effort — any failure logs `viewer_camera_aim_failed` and leaves MuJoCo's default camera. (L1250)
 
 ### `python/sim/src/openral_sim/benchmark.py`
 _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benchmark_suite` + `raise_on_invalid_suite`) and emits a `RSkillEvalResult` (ADR-0009 PR D + ADR-0042)._
@@ -351,4 +352,3 @@ _Shared boot scaffolding for the out-of-process VLA sidecars (`rldx` / `gr00t`):
 
 #### `python/sim/src/openral_sim/backends/__init__.py`
 - `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L36)
-
