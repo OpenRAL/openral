@@ -289,7 +289,7 @@ def _has_openarm_robosuite() -> bool:
     try:
         major, minor, *_ = (int(p) for p in robosuite.__version__.split(".")[:2])
     except ValueError:
-        # Unparseable version string — treat as "needs reinstall" rather
+        # Unparsable version string — treat as "needs reinstall" rather
         # than silently accepting; the plan is cheap to re-run when
         # robosuite is actually fine.
         return False
@@ -1315,7 +1315,7 @@ def _openarm_robosuite_plan() -> BackendInstallPlan:
     wrapper around a hand-composed bimanual scene; it does NOT use
     robocasa envs, OSC composite controllers, or WholeBodyMinkIK. The
     only place ``robosuite>=1.5`` is declared in the workspace is the
-    ``[project.optional-dependencies] robocasa`` extra, so we re-use
+    ``[project.optional-dependencies] robocasa`` extra, so we reuse
     that group — leaner steps than ``_robocasa_kitchen_plan`` (no
     robosuite-master clone, no mink / qpsolvers, no robocasa repo).
 
