@@ -1,5 +1,5 @@
 site_name: OpenRAL
-site_url: https://openral.github.io/openral
+site_url: https://docs.openral.com
 repo_url: https://github.com/OpenRAL/openral
 edit_uri: edit/master/docs/
 
@@ -13,12 +13,24 @@ not_in_nav: |
 
 theme:
   name: material
+  # Self-hosted fonts only (no Google Fonts request) — families are declared in
+  # docs/stylesheets/openral.css via @font-face, matching the marketing site.
+  font: false
+  logo: assets/openral-logo-white.svg
+  favicon: assets/openral-logo-white.svg
+  # Refined-dark, monochrome — locked to the slate scheme the override styles.
+  palette:
+    scheme: slate
+    primary: black
   features:
     - navigation.sections
     - navigation.indexes
     - content.code.copy
     - content.action.edit
     - search.suggest
+
+extra_css:
+  - stylesheets/openral.css
 
 plugins:
   - search

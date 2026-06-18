@@ -1,0 +1,298 @@
+/* ============================================================
+   OpenRAL docs — Material for MkDocs theme override.
+
+   Ports the marketing-site design system (website/DESIGN.md +
+   website/src/styles/tokens.css) onto Material: refined-dark,
+   fully monochrome, emphasis via bright white + translucency,
+   no colored accent. Self-hosted fonts, no third-party requests.
+   Keep token values in sync with the website's tokens.css.
+   ============================================================ */
+
+/* ---- Self-hosted fonts (mirror of website/src/styles/fonts.css) ---- */
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../fonts/space-grotesk.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("../fonts/plex-sans.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/plex-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/plex-mono-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/plex-mono-700.woff2") format("woff2");
+}
+
+/* ---- Design tokens (mirror of website tokens.css) ---- */
+:root {
+  --or-bg: #0e0f13;
+  --or-bg-2: #121419;
+  --or-surface: #16181e;
+  --or-surface-2: #1c1f26;
+  --or-hair: #23262e;
+  --or-hair-2: #2c313b;
+
+  --or-text: #e8e9ed;
+  --or-text-2: #a9aeb8;
+  --or-muted: #8c93a0;
+
+  --or-accent: #ffffff;
+  --or-accent-tint: rgba(255, 255, 255, 0.82);
+  --or-accent-soft: rgba(255, 255, 255, 0.1);
+  --or-accent-line: rgba(255, 255, 255, 0.22);
+
+  --or-red: #d98a8e;
+
+  --or-display: "Space Grotesk", "IBM Plex Sans", system-ui, sans-serif;
+  --or-body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --or-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --md-text-font-family: var(--or-body);
+  --md-code-font-family: var(--or-mono);
+}
+
+/* ---- Map tokens onto Material's [data-md-color-scheme=slate] ---- */
+[data-md-color-scheme="slate"] {
+  --md-hue: 232;
+
+  --md-default-bg-color: var(--or-bg);
+  --md-default-fg-color: var(--or-text);
+  --md-default-fg-color--light: var(--or-text-2);
+  --md-default-fg-color--lighter: var(--or-muted);
+  --md-default-fg-color--lightest: var(--or-hair);
+
+  --md-typeset-color: var(--or-text);
+
+  /* Header / footer / sidebars sit on the page ink, not a colored bar. */
+  --md-primary-fg-color: var(--or-bg);
+  --md-primary-fg-color--light: var(--or-bg-2);
+  --md-primary-fg-color--dark: var(--or-bg);
+  --md-primary-bg-color: var(--or-text);
+  --md-primary-bg-color--light: var(--or-text-2);
+
+  /* The "accent" is white — links, hovers, focus. */
+  --md-accent-fg-color: var(--or-accent);
+  --md-accent-fg-color--transparent: var(--or-accent-soft);
+  --md-accent-bg-color: var(--or-bg);
+
+  --md-typeset-a-color: var(--or-text);
+
+  /* Code — mono on a recessed surface. */
+  --md-code-bg-color: var(--or-bg-2);
+  --md-code-fg-color: var(--or-text);
+
+  --md-footer-bg-color: var(--or-bg);
+  --md-footer-bg-color--dark: var(--or-bg-2);
+  --md-footer-fg-color: var(--or-text-2);
+
+  --md-default-fg-color--lightest: var(--or-surface);
+}
+
+/* ---- Global surface + hairlines ---- */
+.md-main,
+.md-container {
+  background-color: var(--or-bg);
+}
+
+.md-header {
+  background-color: rgba(14, 15, 19, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--or-hair);
+  box-shadow: none;
+}
+
+.md-tabs {
+  background-color: transparent;
+  border-bottom: 1px solid var(--or-hair);
+}
+
+/* ---- Typography: headings in Space Grotesk, weight-driven ---- */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  font-family: var(--or-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--or-text);
+}
+
+.md-typeset h1 {
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: #f4f5f7;
+}
+
+.md-typeset h2 {
+  font-weight: 400;
+}
+
+/* One- or two-word emphasis: bold, pure white (never colored). */
+.md-typeset strong,
+.md-typeset h1 em,
+.md-typeset h2 em {
+  color: var(--or-accent);
+  font-weight: 700;
+  font-style: normal;
+}
+
+.md-nav,
+.md-typeset {
+  font-family: var(--or-body);
+}
+
+/* Eyebrows / labels / mono captions */
+.md-typeset code,
+.md-typeset kbd,
+.md-typeset pre {
+  font-family: var(--or-mono);
+}
+
+/* ---- Links: white with an underline, hover brightens ---- */
+.md-typeset a {
+  color: var(--or-text);
+  text-decoration: underline;
+  text-decoration-color: var(--or-accent-line);
+  text-underline-offset: 3px;
+  transition: color 150ms var(--md-ease, ease),
+    text-decoration-color 150ms var(--md-ease, ease);
+}
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: var(--or-accent);
+  text-decoration-color: var(--or-accent);
+}
+
+/* ---- Inline code chips ---- */
+.md-typeset code {
+  background-color: var(--or-accent-soft);
+  color: var(--or-text);
+  border-radius: 4px;
+}
+
+/* ---- Code blocks: recessed well, hairline border ---- */
+.md-typeset pre > code {
+  background-color: var(--or-bg-2);
+  border: 1px solid var(--or-hair);
+  border-radius: 10px;
+}
+.highlight .filename,
+.md-typeset .highlighttable .linenos {
+  background-color: var(--or-surface);
+}
+
+/* ---- Cards / nav / sidebar surfaces ---- */
+.md-nav__link--active,
+.md-nav__item .md-nav__link:focus {
+  color: var(--or-accent) !important;
+}
+
+/* ---- Tables ---- */
+.md-typeset table:not([class]) {
+  background-color: var(--or-surface);
+  border: 1px solid var(--or-hair);
+}
+.md-typeset table:not([class]) th {
+  background-color: var(--or-surface-2);
+  color: var(--or-text);
+  font-family: var(--or-mono);
+  font-weight: 500;
+}
+.md-typeset table:not([class]) td {
+  border-top: 1px solid var(--or-hair);
+}
+
+/* ---- Admonitions: hairline frames, white emphasis (no candy colors) ---- */
+.md-typeset .admonition,
+.md-typeset details {
+  background-color: var(--or-surface);
+  border: 1px solid var(--or-hair-2);
+  border-left-width: 3px;
+  border-radius: 10px;
+  box-shadow: none;
+  font-size: 0.74rem;
+}
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background-color: var(--or-surface-2);
+}
+
+/* ---- Buttons ---- */
+.md-typeset .md-button {
+  border-radius: 9px;
+  font-family: var(--or-mono);
+  border-color: var(--or-hair-2);
+  color: var(--or-text);
+}
+.md-typeset .md-button--primary {
+  background-color: var(--or-accent);
+  color: #0b0c10;
+  border-color: var(--or-accent);
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+}
+.md-typeset .md-button--primary:hover {
+  background-color: var(--or-accent-tint);
+  border-color: var(--or-accent-tint);
+}
+
+/* ---- Search ---- */
+.md-search__form {
+  background-color: var(--or-bg-2);
+  border: 1px solid var(--or-hair-2);
+  border-radius: 9px;
+  box-shadow: none;
+}
+.md-search__input::placeholder {
+  color: var(--or-muted);
+}
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  border-color: var(--or-accent-line);
+}
+
+/* ---- Focus rings: 2px white, always visible ---- */
+.md-typeset a:focus-visible,
+.md-nav__link:focus-visible,
+.md-button:focus-visible {
+  outline: 2px solid var(--or-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Footer ---- */
+.md-footer-meta {
+  background-color: var(--or-bg-2);
+  border-top: 1px solid var(--or-hair);
+}
+
+/* ---- Respect reduced-motion (parity with the website) ---- */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
