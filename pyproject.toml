@@ -70,7 +70,7 @@ openral-dataset = { workspace = true } # reason: ADR-0019 rosbag2 ↔ LeRobotDat
 openral-state-adapter = { workspace = true } # reason: ADR-0027 layout adapter registry — per-checkpoint state-vector assemblers
 
 # robosuite is pinned to the ARISE-Initiative master branch at commit
-# 232ce7d ("synchronize rendering context for envs", 2026-01-07).
+# 232ce7d ("synchronize rendering context for envs", 2026-05-09).
 # This commit is 1 commit ahead of the v1.5.2 PyPI tag and is what
 # `_robocasa_kitchen_plan` already installs editable at runtime.
 # Putting the pin here so the lockfile honestly reflects what we ship,
