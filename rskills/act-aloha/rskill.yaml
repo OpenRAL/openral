@@ -78,10 +78,14 @@ source_repo: "hf://lerobot/act_aloha_sim_transfer_cube_human"
 description: >
   Action Chunking Transformer (~52M-param encoder-decoder) finetuned on
   the ALOHA bimanual cube-transfer demonstration set. Action chunks of
-  length 100. The published checkpoint predates lerobot's
-  PolicyProcessorPipeline migration and ships without normalisation
-  buffers — see tests/sim/test_aloha_bimanual_act_aloha.py for the
-  resulting numerical-contract caveats.
+  length 100. The mean/std norm buffers live inside model.safetensors;
+  modern lerobot ACTPolicy drops them on load and the adapter re-applies
+  them — see tests/sim/test_aloha_bimanual_act_aloha.py.
+
+# Task-data gate (ADR-0060): trained + validated on the ALOHA sim
+# cube-transfer task, so the benchmark runner accepts the
+# aloha_transfer_cube scene and refuses task-mismatched scenes.
+evaluated_tasks: ["aloha_transfer_cube"]
 
 # ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
 # palette so it can pick this skill by what it does (action verb +
