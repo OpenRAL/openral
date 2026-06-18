@@ -19,13 +19,15 @@ task:
   scene_id: libero_spatial
   instruction: ""        # env.task_description from the LIBERO suite overrides this
   success_key: is_success
-  max_steps: 100         # canonical LIBERO eval budget
+  max_steps: 220         # OpenVLA run_libero_eval LIBERO-Spatial budget
 
-n_episodes: 500
+n_episodes: 50           # OpenVLA protocol: 50 rollouts per task
 seed: 42
 
 metadata:
-  paper: "https://arxiv.org/abs/2309.11500"
+  paper: "https://arxiv.org/abs/2306.03310"
   honest_scope: >
-    Task 0 of LIBERO-Spatial. The paper evaluates 10 tasks × 500 episodes each.
-    Pass --task libero_spatial/N (N=0–9) and --n-episodes 500 to reproduce per-task numbers.
+    Task 0 of LIBERO-Spatial (Liu et al., 2306.03310). Official VLA-eval
+    protocol (OpenVLA run_libero_eval): 10 tasks × 50 rollouts each (500
+    total), max 220 steps/episode for the Spatial suite. Pass
+    --task libero_spatial/N (N=0–9) to reproduce per-task numbers.
