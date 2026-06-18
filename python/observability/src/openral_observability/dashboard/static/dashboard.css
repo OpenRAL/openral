@@ -1,10 +1,12 @@
-  /* ============================================================
-     OpenRAL — INSTRUMENT DECK
-     A robotics mission-control aesthetic: blueprint atmosphere,
-     bezelled instrument panels, HUD typography, electric-cyan chrome.
-     NOTE: every class name below is also produced by the inline
-     <script> data-binding — do not rename without updating it.
-     ============================================================ */
+/* ============================================================
+   OpenRAL — dashboard, refined-dark monochrome
+   Matches the OpenRAL website design system: near-black Ink
+   canvas, soft-white emphasis, IBM Plex Mono / Space Grotesk.
+   The ONLY chroma is the functional safety-status palette
+   (--ok / --warn / --err / --err-strong). Class names below are
+   also produced by dashboard.js data-binding — do not rename
+   without updating it.
+   ============================================================ */
   :root {
   /* ---- website monochrome tokens (canonical) ---- */
   --bg:        #0e0f13;
@@ -85,15 +87,15 @@
 }
 /* (body::after fractal-noise overlay removed) */
 
-  /* ------------------- HEADER (instrument deck top bar) ------------------- */
+  /* ------------------- HEADER ------------------- */
   header {
     position: sticky; top: 0; z-index: 50;
     display: flex; align-items: center; gap: 16px;
     padding: 13px 24px;
     border-bottom: 1px solid var(--hair);
-    background: linear-gradient(180deg, rgba(8,12,19,0.92) 0%, rgba(6,9,14,0.78) 100%);
-    backdrop-filter: blur(10px) saturate(120%);
-    box-shadow: 0 1px 0 rgba(63,216,255,0.10), 0 14px 30px -22px #000;
+    background: linear-gradient(180deg, rgba(14,15,19,0.92) 0%, rgba(14,15,19,0.78) 100%);
+    backdrop-filter: blur(12px) saturate(110%);
+    box-shadow: 0 14px 30px -22px rgba(0,0,0,0.6);
   }
   header .logo {
     position: relative;
@@ -103,7 +105,7 @@
     background: #fff;
     flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 0 0 1px var(--hair-strong), 0 0 22px -6px rgba(63,216,255,0.6);
+    box-shadow: 0 0 0 1px var(--hair-strong);
   }
   header .logo img { width: 78%; height: 78%; display: block; object-fit: contain; }
   header .brand { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -137,12 +139,12 @@
     background: var(--fg-mute);
     transition: background 0.2s, box-shadow 0.2s;
   }
-  header .conn.live  { color: var(--ok);   border-color: rgba(70,240,164,0.35); }
-  header .conn.live  .dot { background: var(--ok); box-shadow: 0 0 12px var(--ok); animation: blink 1.8s infinite; }
-  header .conn.stale { color: var(--warn); border-color: rgba(255,180,84,0.35); }
-  header .conn.stale .dot { background: var(--warn); box-shadow: 0 0 9px var(--warn); }
-  header .conn.dead  { color: var(--err);  border-color: rgba(255,93,108,0.4); }
-  header .conn.dead  .dot { background: var(--err); box-shadow: 0 0 9px var(--err); }
+  header .conn.live  { color: var(--ok);   border-color: rgba(79,181,139,0.35); }
+  header .conn.live  .dot { background: var(--ok); animation: blink 1.8s infinite; }
+  header .conn.stale { color: var(--warn); border-color: rgba(217,178,124,0.35); }
+  header .conn.stale .dot { background: var(--warn); }
+  header .conn.dead  { color: var(--err);  border-color: rgba(217,138,142,0.40); }
+  header .conn.dead  .dot { background: var(--err); }
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
   /* ------------------- LAYOUT ------------------- */
