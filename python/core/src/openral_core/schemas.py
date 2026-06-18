@@ -3935,6 +3935,15 @@ class RSkillManifest(BaseModel):
             Empty (default) is permissive: legacy rSkills run with a warning.
             Matching: exact ``task.id``, a ``"<scene>/<...>"`` prefix family,
             or the bare ``scene.id``. See ADR-0060.
+        sim_env_control_mode: Optional simulator controller mode this policy
+            expects the env to run in, when the scene itself does not pin one.
+            Currently consumed by the LIBERO backend (``"relative"`` = OSC
+            delta-EE, the default for SmolVLA / π0.5 / rldx1 / molmoact2 /
+            GR00T; ``"absolute"`` = OSC absolute-EE, required by xVLA which
+            emits absolute end-effector targets). Lets an absolute-control
+            policy run on the canonical ``libero_spatial.yaml`` without a
+            duplicate per-policy scene; ``scene.backend_options.control_mode``
+            still overrides it. ``None`` (default) → backend default.
         paper_url: Canonical paper URL for this skill / family.
         dataset_uri: HF Hub URI for the training dataset.
         source_repo: HF Hub URI for the upstream weights repo (often
@@ -4046,6 +4055,7 @@ class RSkillManifest(BaseModel):
     fallback_skill_id: str | None = Field(default=None, pattern=_HF_HUB_ID_PATTERN)
     benchmarks: dict[BenchmarkName, float] = Field(default_factory=dict)
     evaluated_tasks: list[str] = Field(default_factory=list)
+    sim_env_control_mode: str | None = None
     paper_url: str | None = Field(default=None, pattern=_HTTPS_URL_PATTERN)
     dataset_uri: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)
     source_repo: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)
