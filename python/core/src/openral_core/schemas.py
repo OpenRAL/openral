@@ -3925,6 +3925,16 @@ class RSkillManifest(BaseModel):
             breakdown lives in the matching
             ``rskills/<id>/eval/<key>.json`` validated against
             :class:`RSkillEvalResult`.
+        evaluated_tasks: Benchmark task ids / families this checkpoint was
+            trained or validated for (e.g. ``["libero_spatial"]`` covering
+            ``libero_spatial/0..9``, or ``["maniskill3/PickCube-v1"]``). The
+            benchmark runner gates a scene's ``task.id`` against this list: a
+            non-empty list that does not cover the scene's task is refused with
+            :class:`ROSCapabilityMismatch` (prevents running a checkpoint on a
+            task it was not trained for — e.g. a LiftCube policy on PickCube).
+            Empty (default) is permissive: legacy rSkills run with a warning.
+            Matching: exact ``task.id``, a ``"<scene>/<...>"`` prefix family,
+            or the bare ``scene.id``. See ADR-0060.
         paper_url: Canonical paper URL for this skill / family.
         dataset_uri: HF Hub URI for the training dataset.
         source_repo: HF Hub URI for the upstream weights repo (often
@@ -4035,6 +4045,7 @@ class RSkillManifest(BaseModel):
     min_vram_gb: dict[QuantizationDtype, float] | None = None
     fallback_skill_id: str | None = Field(default=None, pattern=_HF_HUB_ID_PATTERN)
     benchmarks: dict[BenchmarkName, float] = Field(default_factory=dict)
+    evaluated_tasks: list[str] = Field(default_factory=list)
     paper_url: str | None = Field(default=None, pattern=_HTTPS_URL_PATTERN)
     dataset_uri: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)
     source_repo: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)

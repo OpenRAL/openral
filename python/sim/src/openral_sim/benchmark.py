@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from openral_core import (
         BenchmarkScene,
         RSkillEvalResult,
+        RSkillManifest,
         VLASpec,
     )
 
@@ -60,6 +61,66 @@ if TYPE_CHECKING:
 
 
 _log = structlog.get_logger(__name__)
+
+
+def _task_matches(task_id: str, scene_id: str, declared: list[str]) -> bool:
+    """Whether ``task_id`` / ``scene_id`` is covered by a ``declared`` entry.
+
+    An entry matches as an exact task id, a ``"<scene>/<...>"`` family prefix
+    (so ``"libero_spatial"`` covers ``"libero_spatial/0".."/9"``), or the bare
+    ``scene.id``.
+    """
+    for entry in declared:
+        e = entry.rstrip("/")
+        if task_id == e or task_id.startswith(f"{e}/") or scene_id == e:
+            return True
+    return False
+
+
+def check_benchmark_task_compatibility(
+    manifest: RSkillManifest,
+    *,
+    task_id: str,
+    scene_id: str,
+) -> None:
+    """Gate a benchmark scene's task against the rSkill's ``evaluated_tasks``.
+
+    Complements the embodiment/sensor gate (``rSkill.check_compatibility``) with
+    the missing *task-data* axis: a checkpoint trained for one task (e.g.
+    LiftCube) must not be silently run on a different benchmark task (PickCube),
+    where it produces a sensible-looking rollout that can never satisfy success.
+
+    Args:
+        manifest: The rSkill manifest being dispatched.
+        task_id: The benchmark scene's ``task.id`` (e.g. ``maniskill3/PickCube-v1``).
+        scene_id: The benchmark scene's ``scene.id`` (e.g. ``maniskill3``).
+
+    Raises:
+        ROSCapabilityMismatch: ``manifest.evaluated_tasks`` is non-empty and
+            none of its entries cover ``task_id`` / ``scene_id``.
+    """
+    declared = manifest.evaluated_tasks
+    if not declared:
+        _log.warning(
+            "rskill_task_compat_undeclared",
+            skill=manifest.name,
+            task=task_id,
+            scene=scene_id,
+        )
+        return
+    if _task_matches(task_id, scene_id, declared):
+        _log.info("rskill_task_compat_ok", skill=manifest.name, task=task_id, declared=declared)
+        return
+    from openral_core.exceptions import ROSCapabilityMismatch
+
+    raise ROSCapabilityMismatch(
+        f"rSkill {manifest.name!r} declares evaluated_tasks={declared}, which do "
+        f"not cover this benchmark's task {task_id!r} (scene {scene_id!r}). The "
+        "checkpoint was trained/validated for a different task; running it here "
+        "yields a plausible-looking rollout that cannot succeed. Pair the scene "
+        "with a task-matched rSkill, or add the task to the manifest's "
+        "evaluated_tasks if the checkpoint genuinely covers it."
+    )
 
 
 def run_benchmark(
@@ -299,6 +360,7 @@ def run_benchmark_scene(
     save_dir: str | None = None,
     config_path: str | None = None,
     view: bool | None = None,
+    record_video: bool = False,
 ) -> tuple[RSkillEvalResult, list[EpisodeResult]]:
     """Run a :class:`BenchmarkScene` end-to-end against one rSkill.
 
@@ -322,6 +384,10 @@ def run_benchmark_scene(
         config_path: Optional path to the BenchmarkScene YAML this scene
             was loaded from — embedded into ``RSkillEvalSource.reproduction_cli``
             so reviewers can re-run the exact eval from disk.
+        record_video: When True, capture per-step world frames into each
+            :class:`EpisodeResult.frames` so callers can write clean
+            website MP4s (``openral benchmark scene --save-video``). Off by
+            default — eval/CI runs stay allocation-light.
         view: Tri-state viewer flag, identical in meaning to ``openral sim
             run --view/--no-view``. ``None`` (default) keeps the headless
             behaviour benchmark rollouts have always had — eval artefacts
@@ -362,6 +428,24 @@ def run_benchmark_scene(
     assert success_key is not None
     assert max_steps is not None
 
+    # Task-data gate (ADR-0060): refuse a checkpoint trained for a different
+    # task than this benchmark evaluates (e.g. a LiftCube policy on PickCube).
+    # Fail fast — before the rollout. Skipped for the built-in mock policies
+    # (no manifest) and hf:// URIs (rejected by the sim runner anyway).
+    # Permissive when the manifest declares no evaluated_tasks (legacy rSkills
+    # warn, don't break).
+    from openral_sim.sim_runner import _MOCK_PLACEHOLDER_URI, _MOCK_POLICY_IDS
+
+    is_mock = vla.id in _MOCK_POLICY_IDS and vla.weights_uri == _MOCK_PLACEHOLDER_URI
+    if not is_mock and not vla.weights_uri.startswith("hf://"):
+        from openral_rskill.loader import load_rskill_manifest
+
+        check_benchmark_task_compatibility(
+            load_rskill_manifest(vla.weights_uri),
+            task_id=scene.task.id,
+            scene_id=scene.scene.id,
+        )
+
     # Default (``view is None``) preserves the headless behaviour benchmark
     # rollouts have always had — eval artefacts and CI/deploy runs must be
     # unaffected. Only an explicit ``--view``/``--no-view`` engages the
@@ -388,6 +472,7 @@ def run_benchmark_scene(
             seed=seed,
             n_episodes=1,
             save_dir=save_dir,
+            record_video=record_video,
         )
         runner = SimRunner(env_cfg, view=view_flag, strict_view=strict_view)
         try:

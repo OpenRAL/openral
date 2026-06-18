@@ -147,6 +147,28 @@ def _sim_run_callback(
             "also enables per-step frame capture for the run."
         ),
     ),
+    video_style: str = typer.Option(
+        "debug",
+        "--video-style",
+        help=(
+            "Style of the --save-video output. 'debug' (default) writes the "
+            "3-panel montage (rSkill input | rollout | joint plot). 'world' "
+            "writes a clean single-view MP4 of just the simulated viewer "
+            "(world render), named <scene>_<rskill>_<success|fail>.mp4 and "
+            "logged to videos.json — for website hero clips where overlays "
+            "are rendered by the page, not burned into pixels."
+        ),
+    ),
+    video_size: int = typer.Option(
+        1024,
+        "--video-size",
+        help=(
+            "Square edge (px) for --video-style world output. Frames are "
+            "center-cropped to a square and resized to this size. Source "
+            "sharpness is bounded by the scene's native render resolution; "
+            "this does not change the policy's observation resolution."
+        ),
+    ),
     dataset_out: Path | None = typer.Option(
         None,
         "--dataset-out",
@@ -226,6 +248,8 @@ def _sim_run_callback(
         device=device,
         save_dir=save_dir,
         save_video=_resolve_save_video(save_video),
+        video_style=video_style,
+        video_size=video_size,
         dataset_out=dataset_out,
         dataset_repo_id=dataset_repo_id,
         dataset_license=dataset_license,
@@ -758,6 +782,21 @@ def _write_videos(
     results: list[Any],
     env_cfg: SimEnvironment,
 ) -> None:
+    """Dispatch ``--save-video`` to the debug or world writer per ``--video-style``."""
+    style = getattr(args, "video_style", "debug")
+    if style == "world":
+        _write_website_videos(args, results, env_cfg)
+        return
+    if style != "debug":
+        raise ROSConfigError(f"--video-style must be 'debug' or 'world'; got {style!r}.")
+    _write_debug_videos(args, results, env_cfg)
+
+
+def _write_debug_videos(
+    args: SimpleNamespace,
+    results: list[Any],
+    env_cfg: SimEnvironment,
+) -> None:
     """Write one 3-panel debug MP4 per episode under ``args.save_video``.
 
     Resolution rules:
@@ -795,6 +834,31 @@ def _write_videos(
             path = out_dir / (f"{stem}.mp4" if len(results) == 1 else f"{stem}_ep{i}.mp4")
         out = save_episode_mp4(r, path, title=title)
         print(f"  wrote {out}")
+
+
+def _write_website_videos(
+    args: SimpleNamespace,
+    results: list[Any],
+    env_cfg: SimEnvironment,
+) -> None:
+    """Write clean single-view world MP4s + a ``videos.json`` manifest.
+
+    Files are named ``<scene>_<rskill>_<success|fail>.mp4`` (``_ep<i>`` inserted
+    for multi-episode runs) under the ``--save-video`` directory, plus a
+    ``videos.json`` manifest. See ``openral_sim._website_video:write_world_videos``.
+    """
+    from openral_sim._website_video import write_world_videos
+
+    target = args.save_video
+    out_dir = target.parent if target.suffix == ".mp4" else target
+    write_world_videos(
+        results,
+        out_dir,
+        scene=env_cfg.scene.id,
+        rskill=Path(args.rskill).name if args.rskill else env_cfg.vla.id,
+        section=Path(args.config).parent.name if args.config is not None else "sim",
+        size=int(getattr(args, "video_size", 1024)),
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

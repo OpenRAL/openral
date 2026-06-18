@@ -124,6 +124,11 @@ actions:
   - "pick"
   - "place"
   - "pick_and_place"
+# Task-data gate (ADR-0060): this is a pick-PLACE checkpoint. It was NOT trained
+# on insertion or pushing, so the benchmark runner refuses the so101_box/
+# tube_insertion and tabletop_push/push_to_goal scenes (different task → a
+# plausible-looking rollout that cannot succeed) with ROSCapabilityMismatch.
+evaluated_tasks: ["so101_box/pick_place"]
 objects: []
 scenes:
   - "tabletop"

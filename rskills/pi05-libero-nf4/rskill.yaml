@@ -24,6 +24,7 @@
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
 name: "OpenRAL/rskill-pi05-libero-nf4"
+evaluated_tasks: ["libero_spatial"]  # ADR-0060: benchmark task this checkpoint is validated for (gate)
 version: "0.1.0"
 license: "permissive_research"   # non-standard; weights are NOT apache-2.0
 role: "s1"
