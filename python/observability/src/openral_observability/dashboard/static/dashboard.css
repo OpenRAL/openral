@@ -139,8 +139,11 @@
     background: var(--fg-mute);
     transition: background 0.2s, box-shadow 0.2s;
   }
+  /* same 4-state logic as the card status dots */
+  header .conn.wait  { color: var(--fg-dim); }
+  header .conn.wait  .dot { background: var(--accent); animation: blink 1.4s infinite; }
   header .conn.live  { color: var(--ok);   border-color: rgba(79,181,139,0.35); }
-  header .conn.live  .dot { background: var(--ok); animation: blink 1.8s infinite; }
+  header .conn.live  .dot { background: var(--ok); }
   header .conn.stale { color: var(--warn); border-color: rgba(217,178,124,0.35); }
   header .conn.stale .dot { background: var(--warn); }
   header .conn.dead  { color: var(--err);  border-color: rgba(217,138,142,0.40); }
@@ -164,10 +167,6 @@
     margin: 0; padding-left: 0;
     display: flex; align-items: center; gap: 12px;
   }
-  section > h2 .ts {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em;
-    color: var(--fg-faint); text-transform: none;
-  }
   section > h2::after {
     content: ""; flex: 1; height: 1px;
     background: linear-gradient(90deg, var(--hair) 0%, transparent 100%);
@@ -187,10 +186,6 @@
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 34px -28px #000;
     transition: box-shadow 0.25s, border-color 0.25s, transform 0.25s;
   }
-  .card::before {
-    content: ""; position: absolute; left: 0; top: 0; bottom: 0;
-    width: 3px; background: var(--accent-line);
-  }
   /* corner tick — top-right registration mark */
   .card::after {
     content: ""; position: absolute; top: 9px; right: 9px;
@@ -207,7 +202,6 @@
   .card.accent-system    { --accent-color: var(--accent); }
   .card.accent-ledger    { --accent-color: var(--accent); }
   .card.error { border-color: var(--err); }
-  .card.error::before { background: var(--err); opacity: 1; }
   .card.pulse {
     border-color: color-mix(in srgb, var(--accent-line) 50%, var(--hair));
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.05),
@@ -230,18 +224,23 @@
     margin-bottom: 11px; gap: 10px;
   }
   .card .title {
+    position: relative; padding-left: 16px;
     font-family: var(--display);
     font-size: 10.5px; font-weight: 600; letter-spacing: 0.16em;
     text-transform: uppercase; color: var(--fg-dim);
   }
-  .card .title.live::before {
-    content: ""; display: inline-block; width: 6px; height: 6px;
-    border-radius: 50%; background: var(--accent);
-    margin-right: 7px; vertical-align: middle;
-    animation: blink 1.8s infinite;
+  /* universal status dot: one round mark per card, state set by dashboard.js.
+     wait = blinking white (no data yet), live = green (receiving),
+     paused = yellow (up but stale), error = red. */
+  .card .title::before {
+    content: ""; position: absolute; left: 0; top: 50%;
+    margin-top: -4px; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); animation: blink 1.4s infinite;  /* default = waiting */
   }
-  .card .title.live.info::before { background: var(--accent); }
-  .card .title.live.warn::before { background: var(--warn); }
+  .card .title.st-wait::before   { background: var(--accent); animation: blink 1.4s infinite; }
+  .card .title.st-live::before   { background: var(--ok);   animation: none; }
+  .card .title.st-paused::before { background: var(--warn); animation: none; }
+  .card .title.st-error::before  { background: var(--err);  animation: none; }
   .card .age {
     font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
     letter-spacing: 0.06em;
@@ -634,9 +633,14 @@
   .filter-chip .cnt { color: var(--fg-faint); font-weight: 400; margin-left: 6px; }
   .filter-chip.active { background: var(--accent); color: #0b0c10; border-color: var(--accent); }
   .filter-chip.active .cnt { color: rgba(11,12,16,0.55); }
-  .filter-chip.active.warn { background: var(--accent); color: #0b0c10; border-color: var(--accent); }
+  /* WARN = yellow, ERROR = red — mirrors the event-row severity colours */
+  .filter-chip.warn  { color: var(--warn); border-color: rgba(217,178,124,0.40); }
+  .filter-chip.error { color: var(--err);  border-color: rgba(217,138,142,0.40); }
+  .filter-chip.active.warn  { background: var(--warn); color: #1c1305; border-color: var(--warn); }
+  .filter-chip.active.warn  .cnt { color: rgba(28,19,5,0.6); }
+  .filter-chip.active.error { background: var(--err);  color: #1c0507; border-color: var(--err); }
+  .filter-chip.active.error .cnt { color: rgba(28,5,7,0.6); }
   .filter-chip.active.info { background: var(--accent); color: #0b0c10; border-color: var(--accent); }
-  .filter-chip.active.error { background: var(--accent); color: #0b0c10; border-color: var(--accent); }
   .filter-chip.active.debug { background: var(--accent); color: #0b0c10; border-color: var(--accent); }
   .metric-group-hd {
     font-family: var(--display);

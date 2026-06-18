@@ -928,6 +928,32 @@
     }
   }
 
+  // Per-card status dot (next to the title). Four states, derived from data
+  // freshness so every card reads at a glance like the header conn dot:
+  //   wait   = blinking white — no data has ever arrived
+  //   live   = green          — data received within STALE_S
+  //   paused = yellow         — was receiving, but latest data is stale
+  //   error  = red            — the card reported an error span
+  const STALE_S = 12;
+  const _dotSeen = new Set();
+  const DOT_LABEL = {
+    wait: "waiting for data", live: "receiving data",
+    paused: "data paused (stale)", error: "error",
+  };
+  function setDot(cardId, ts, isError) {
+    const el = document.getElementById(cardId);
+    if (!el) return;
+    const title = el.querySelector(".title");
+    if (!title) return;
+    let st;
+    if (isError) st = "error";
+    else if (ts) { _dotSeen.add(cardId); st = (Date.now() / 1000 - ts) < STALE_S ? "live" : "paused"; }
+    else st = _dotSeen.has(cardId) ? "paused" : "wait";
+    title.classList.remove("st-wait", "st-live", "st-paused", "st-error");
+    title.classList.add("st-" + st);
+    title.title = DOT_LABEL[st];  // a11y: state is not conveyed by colour alone
+  }
+
   function render(state) {
     renderIdentity(state);
     const cards = state.cards || {};
@@ -963,6 +989,20 @@
     pulseIfNew("card-scene-objects", topics.scene_objects && topics.scene_objects.ts_unix);
     pulseIfNew("card-reasoner", topics.reasoner && topics.reasoner.ts_unix);
 
+    // Status dot per card — same 4-state logic as the header conn dot.
+    setDot("card-rskill_execute", liveSkill && liveSkill.ts_unix, !!(liveSkill && liveSkill.status_code === 2));
+    setDot("card-inference", cards.inference && cards.inference.ts_unix, !!(cards.inference && cards.inference.status_code === 2));
+    setDot("card-safety", cards.safety && cards.safety.ts_unix, !!(cards.safety && cards.safety.status_code === 2));
+    setDot("card-robot-state", topics.robot_state && topics.robot_state.ts_unix, false);
+    setDot("card-commands", topics.commands && topics.commands.ts_unix, false);
+    setDot("card-world-state", topics.world_state && topics.world_state.ts_unix, false);
+    setDot("card-system", topics.system && topics.system.ts_unix, false);
+    setDot("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix, false);
+    setDot("card-slam-map", topics.slam && topics.slam.ts_unix, false);
+    setDot("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix, false);
+    setDot("card-scene-objects", topics.scene_objects && topics.scene_objects.ts_unix, false);
+    setDot("card-reasoner", topics.reasoner && topics.reasoner.ts_unix, false);
+
     renderCounters(state.counters || {});
     renderEvents(state.events || []);
     renderMetrics(state.metrics || []);
@@ -970,7 +1010,7 @@
     const conn = $("conn");
     const label = $("conn-label");
     if (!state.last_ingest_ts) {
-      conn.className = "conn"; label.textContent = "waiting…";
+      conn.className = "conn wait"; label.textContent = "waiting…";
     } else {
       const dt = Date.now() / 1000 - state.last_ingest_ts;
       if (dt < 10) { conn.className = "conn live"; label.textContent = "live"; }
@@ -987,7 +1027,7 @@
       try { render(JSON.parse(m.data)); } catch (e) { /* malformed: ignore */ }
     };
     es.onerror = () => {
-      $("conn").className = "conn"; $("conn-label").textContent = "reconnecting…";
+      $("conn").className = "conn stale"; $("conn-label").textContent = "reconnecting…";
       es.close();
       setTimeout(connect, 1500);
     };
