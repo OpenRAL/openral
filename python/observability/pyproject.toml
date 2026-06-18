@@ -21,6 +21,7 @@ dashboard = [
     "fastapi>=0.110",          # reason: ASGI app for openral dashboard (OTLP/HTTP receiver + SSE stream)
     "uvicorn[standard]>=0.27", # reason: ASGI server for openral dashboard
     "httpx>=0.27",             # reason: test transport for the embedded OTLP/HTTP receiver
+    "faster-whisper>=1.0",     # reason: local CPU speech-to-text (CTranslate2) behind POST /api/transcribe for the dashboard mic / operator voice prompt. MIT. Shipped with the dashboard so the voice prompt works out of the box; the endpoint still degrades to HTTP 503 if it is ever stripped.
 ]
 
 [build-system]
