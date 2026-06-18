@@ -39,6 +39,13 @@ actuators_required:
     control_mode_semantics:
       mode: "absolute"
 
+# xVLA emits ABSOLUTE end-effector targets, so the LIBERO OSC controller must
+# run in absolute mode (the default "relative"/delta saturates the arm into a
+# static pose). This lets xVLA run on the canonical scenes/benchmark/
+# libero_spatial.yaml without a duplicate libero_spatial_xvla.yaml scene; the
+# LIBERO backend reads this when scene.backend_options pins no control_mode.
+sim_env_control_mode: "absolute"
+
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
 quantization:
