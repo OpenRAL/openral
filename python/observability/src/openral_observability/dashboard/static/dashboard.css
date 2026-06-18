@@ -164,12 +164,6 @@
     margin: 0; padding-left: 0;
     display: flex; align-items: center; gap: 12px;
   }
-  section > h2 .ix {
-    font-family: var(--mono); font-size: 10px; font-weight: 600;
-    letter-spacing: 0.1em; color: var(--brand);
-    padding: 2px 7px; border: 1px solid var(--hair-strong);
-    border-radius: var(--radius-sm); background: var(--bg-2);
-  }
   section > h2 .ts {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em;
     color: var(--fg-faint); text-transform: none;

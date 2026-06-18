@@ -24,7 +24,7 @@
 
   <!-- ========== IDENTITY (immutable) ========== -->
   <section>
-    <h2><span class="ix">01</span> Identity <span class="ts">latched from resource attributes</span></h2>
+    <h2>Identity <span class="ts">latched from resource attributes</span></h2>
     <div class="identity">
       <div class="pair"><span class="k">service</span><span class="v empty" id="id-service">—</span></div>
       <div class="pair"><span class="k">run mode</span><span class="v empty" id="id-runmode">—</span></div>
@@ -43,7 +43,7 @@
 
   <!-- ========== COUNTERS ========== -->
   <section>
-    <h2><span class="ix">02</span> Alarms <span class="ts">cumulative since run start</span></h2>
+    <h2>Alarms <span class="ts">cumulative since run start</span></h2>
     <div class="counters" id="counters">
       <div class="counter danger zero" id="counter-safety">
         <div>
@@ -78,19 +78,19 @@
 
   <!-- ========== OPERATOR PROMPT ========== -->
   <section>
-    <h2><span class="ix">03</span> Operator prompt <span class="ts">ADR-0018 F10 · /openral/prompt_in/dashboard</span></h2>
+    <h2>Operator prompt <span class="ts">ADR-0018 F10 · /openral/prompt_in/dashboard</span></h2>
     <div class="prompt-box">
       <input id="prompt-input" type="text" placeholder='e.g. "pick the red cube"' autocomplete="off" spellcheck="false" />
       <button id="prompt-send" type="button">Send</button>
       <button id="estop-reset" type="button" title="Clear a latched safety e-stop so the robot can be re-tasked (calls /openral/estop_reset)">Reset e-stop</button>
       <span id="prompt-status" class="status"></span>
     </div>
-    <div class="prompt-hint">After a safety e-stop the kernel drops every command until reset — click <b>Reset e-stop</b>, then send a new prompt to resume.</div>
+    <div class="prompt-hint">After a safety e-stop the kernel drops every command until reset. Click <b>Reset e-stop</b>, then send a new prompt to resume.</div>
   </section>
 
   <!-- ========== CAMERAS ========== -->
   <section>
-    <h2><span class="ix">04</span> Perception · cameras <span class="ts">sensors.read_latest</span></h2>
+    <h2>Perception · cameras <span class="ts">sensors.read_latest</span></h2>
     <div class="cameras" id="cameras"></div>
   </section>
 
@@ -132,7 +132,7 @@
     </div>
   </section>
 
-  <!-- WORLD POINTCLOUD — robot view (ADR-0030) -->
+  <!-- WORLD POINTCLOUD · robot view (ADR-0030) -->
   <section id="card-world-cloud" class="card accent-world">
     <div class="hd">
       <span class="title">World · pointcloud (robot view)</span>
@@ -158,7 +158,7 @@
     </div>
   </section>
 
-  <!-- WORLD SCENE OBJECTS — durable spatial memory (ADR-0038) -->
+  <!-- WORLD SCENE OBJECTS · durable spatial memory (ADR-0038) -->
   <section id="card-scene-objects" class="card accent-world">
     <div class="hd">
       <span class="title">World · scene objects (memory)</span>
@@ -217,7 +217,7 @@
 
   <!-- ========== LIVE SIGNALS ========== -->
   <section>
-    <h2><span class="ix">05</span> Live signals <span class="ts">last span per family</span></h2>
+    <h2>Live signals <span class="ts">last span per family</span></h2>
     <div class="live-signals">
       <div class="card empty accent-skill" id="card-rskill_execute">
         <div class="hd"><span class="title live">rSkill.execute</span><span class="age">—</span></div>
@@ -236,7 +236,7 @@
 
   <!-- ========== EMBODIMENT ========== -->
   <section>
-    <h2><span class="ix">06</span> Embodiment <span class="ts">robot · commands · world</span></h2>
+    <h2>Embodiment <span class="ts">robot · commands · world</span></h2>
     <div class="embodiment">
 
       <!-- Robot state · joints — TALL -->
@@ -280,19 +280,19 @@
 
   <!-- ========== METRICS ========== -->
   <section>
-    <h2><span class="ix">07</span> Metrics <span class="ts">otlp/http · 5s collection</span></h2>
+    <h2>Metrics <span class="ts">otlp/http · 5s collection</span></h2>
     <div class="filter-bar" id="metric-filters">
       <span class="flbl">group</span>
       <!-- chips rendered dynamically by namespace (system / world_state / sdk / …) -->
     </div>
     <div class="panel" id="metrics">
-      <div class="empty-state">No metrics ingested yet — point a workload at this port with <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>.</div>
+      <div class="empty-state">No metrics ingested yet. Point a workload at this port with <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>.</div>
     </div>
   </section>
 
   <!-- ========== EVENT LOG ========== -->
   <section>
-    <h2><span class="ix">08</span> Event log <span class="ts">last 60 events</span></h2>
+    <h2>Event log <span class="ts">last 60 events</span></h2>
     <div class="filter-bar" id="event-filters">
       <span class="flbl">show</span>
       <span class="filter-chip debug" data-sev="debug">debug<span class="cnt">0</span></span>
@@ -309,7 +309,7 @@
 
   <!-- ========== TRACE ========== -->
   <section>
-    <h2><span class="ix">09</span> Trace</h2>
+    <h2>Trace</h2>
     <div class="trace-footer">
       <span class="lbl">latest trace</span>
       <span class="trace-id" id="trace-id" title="click to copy">—</span>
