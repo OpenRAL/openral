@@ -194,10 +194,8 @@
     transition: box-shadow 0.25s, border-color 0.25s, transform 0.25s;
   }
   .card::before {
-    content: ""; position: absolute; top: 0; bottom: 0; left: 0;
-    width: 2px; background: var(--accent-color, transparent);
-    box-shadow: 0 0 14px -1px var(--accent-color, transparent);
-    opacity: 0.85;
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px; background: var(--accent-line);
   }
   /* corner tick — top-right registration mark */
   .card::after {
@@ -206,21 +204,25 @@
     border-top: 1px solid var(--hair-strong); border-right: 1px solid var(--hair-strong);
     opacity: 0.7;
   }
-  .card.accent-skill     { --accent-color: var(--ok); }
-  .card.accent-inference { --accent-color: var(--info); }
-  .card.accent-safety    { --accent-color: var(--warn); }
-  .card.accent-robot     { --accent-color: var(--ok); }
-  .card.accent-cmd       { --accent-color: var(--info); }
-  .card.accent-world     { --accent-color: var(--violet); }
-  .card.accent-system    { --accent-color: var(--ok); }
-  .card.accent-ledger    { --accent-color: var(--warn); }
+  .card.accent-skill     { --accent-color: var(--accent); }
+  .card.accent-inference { --accent-color: var(--accent); }
+  .card.accent-safety    { --accent-color: var(--accent); }
+  .card.accent-robot     { --accent-color: var(--accent); }
+  .card.accent-cmd       { --accent-color: var(--accent); }
+  .card.accent-world     { --accent-color: var(--accent); }
+  .card.accent-system    { --accent-color: var(--accent); }
+  .card.accent-ledger    { --accent-color: var(--accent); }
   .card.error { border-color: rgba(255,93,108,0.55); }
-  .card.error::before { background: var(--err); box-shadow: 0 0 16px 0 var(--err); opacity: 1; }
+  .card.error::before { background: var(--err); opacity: 1; }
   .card.pulse {
-    border-color: color-mix(in srgb, var(--accent-color, var(--brand)) 50%, var(--hair));
+    border-color: color-mix(in srgb, var(--accent-line) 50%, var(--hair));
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.05),
-                0 0 0 1px var(--accent-color, var(--brand)),
-                0 0 30px -8px var(--accent-color, var(--brand));
+                0 18px 50px rgba(0,0,0,0.42);
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--hair-strong);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.42);
   }
 
   /* ADR-0030 — SLAM 2D map + robot-view pointcloud side by side. */
@@ -240,13 +242,12 @@
   }
   .card .title.live::before {
     content: ""; display: inline-block; width: 6px; height: 6px;
-    border-radius: 50%; background: var(--ok);
+    border-radius: 50%; background: var(--accent);
     margin-right: 7px; vertical-align: middle;
-    box-shadow: 0 0 7px var(--ok);
     animation: blink 1.8s infinite;
   }
-  .card .title.live.info::before { background: var(--info); box-shadow: 0 0 7px var(--info); }
-  .card .title.live.warn::before { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+  .card .title.live.info::before { background: var(--accent); }
+  .card .title.live.warn::before { background: var(--warn); }
   .card .age {
     font-family: var(--mono); font-size: 10px; color: var(--fg-mute);
     letter-spacing: 0.06em;
@@ -257,7 +258,7 @@
     word-break: break-all;
   }
   .card .latency {
-    font-family: var(--mono); font-size: 12px; color: var(--ok);
+    font-family: var(--mono); font-size: 12px; color: var(--fg-dim);
     margin-top: 5px; letter-spacing: 0.02em;
   }
   .card .latency.info { color: var(--info); }
@@ -305,7 +306,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .identity .pair .v.empty { color: var(--fg-faint); }
-  .identity .pair .v.accent { color: var(--ok); }
+  .identity .pair .v.accent { color: var(--accent); }
   .identity .pair .v.info { color: var(--info); }
   @media (max-width: 1100px) {
     .identity { grid-template-columns: repeat(3, 1fr); }
@@ -545,11 +546,10 @@
 
   /* ------------------- METRICS ------------------- */
   .panel {
-    background:
-      linear-gradient(180deg, rgba(255,255,255,0.014) 0%, transparent 12%),
-      var(--panel);
-    border: 1px solid var(--hair); border-radius: var(--radius);
+    background: linear-gradient(180deg, var(--surface), var(--bg-2));
+    border: 1px solid var(--hair-strong); border-radius: 14px;
     padding: 6px 0; overflow: hidden;
+    font-family: var(--mono);
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 34px -28px #000;
   }
   .metric-row {
@@ -572,6 +572,20 @@
   .metric-row .spark polyline {
     fill: none; stroke: var(--brand); stroke-width: 1;
     stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke;
+  }
+
+  /* console/terminal panel bodies — framed-window treatment */
+  #reasoner-body {
+    background: linear-gradient(180deg, var(--surface), var(--bg-2));
+    border: 1px solid var(--hair-strong); border-radius: 14px;
+    padding: 6px 0; overflow: hidden;
+    font-family: var(--mono);
+  }
+  #cameras {
+    background: linear-gradient(180deg, var(--surface), var(--bg-2));
+    border: 1px solid var(--hair-strong); border-radius: 14px;
+    padding: 12px; overflow: hidden;
+    font-family: var(--mono);
   }
 
   /* ------------------- EVENT LOG ------------------- */
