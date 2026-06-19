@@ -1,10 +1,10 @@
 """Sim test: real RoboTwin 2.0 dual-arm SAPIEN env via the out-of-process sidecar (ADR-0061).
 
 Exercises ``openral_sim.backends.robotwin`` end-to-end: the openral (py3.12) process
-auto-spawns the RoboTwin sidecar (py3.10 venv), which builds LeRobot's native
+auto-spawns the RoboTwin sidecar venv, which builds LeRobot's native
 ``robotwin`` SAPIEN env for the requested task and answers ``reset`` / ``step`` /
-``render`` over ZMQ. A ``random`` mock policy supplies 14-D actions so no VLA
-checkpoint is needed for the wiring check.
+``render`` over ZMQ. A random 14-D action source is used so no VLA checkpoint is
+needed for the wiring check.
 
 What is asserted
 ----------------
@@ -16,8 +16,8 @@ What is asserted
 
 Skip policy
 -----------
-RoboTwin's SAPIEN + lerobot-main + asset stack is an externally-provisioned py3.10
-venv (multi-GB, CUDA 12.1, Linux-only; CLAUDE.md §1.9 / ADR-0061). The test skips
+RoboTwin's SAPIEN + lerobot-main + asset stack is an externally-provisioned sidecar
+venv (multi-GB, CUDA-pinned, Linux-only; CLAUDE.md §1.9 / ADR-0061). The test skips
 unless BOTH pyzmq/msgpack are importable on the openral venv AND the sidecar
 interpreter is resolvable via ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (or the cache
 default exists). Hosts without the provisioned venv skip — the legitimate skip path
@@ -99,6 +99,7 @@ def test_reset_returns_populated_observation(robotwin_rollout) -> None:
     frame = obs["images"]["camera1"]
     assert frame.dtype == np.uint8
     assert frame.ndim == 3 and frame.shape[2] == 3
+    assert frame.shape[:2] == (256, 256)
     assert obs["state"].size > 0
 
 

@@ -28,13 +28,13 @@
 # this checkpoint's input_features and the robots/aloha_agilex sensors —
 # no per-skill alias remap needed.
 #
-# STATE NOTE (validated by live run): config.json declares
-# observation.state shape (6,), which DISAGREES with the
-# lerobot/robotwin_unified dataset meta/info.json (observation.state
-# shape (14,)) and the 14-DoF embodiment. The runtime contract is
-# whatever the loaded SmolVLA policy consumes; `state_contract.dim`
-# below mirrors config.json per repo convention. The single-task live
-# run on the SAPIEN sidecar is the arbiter (ADR-0061 §Live verification).
+# STATE NOTE: config.json declares observation.state shape (6,), which
+# DISAGREES with the lerobot/robotwin_unified dataset meta/info.json
+# (observation.state shape (14,)) and the 14-DoF embodiment. The live
+# RoboTwin sidecar reset returns a 14-D state vector; the OpenRAL SmolVLA
+# adapter truncates/pads observations to `state_contract.dim` before policy
+# forward. A full SmolVLA scored rollout is not yet reproduced locally
+# (ADR-0061 §Live verification).
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -119,8 +119,7 @@ description: >
   unified dataset (50 dual-arm tasks, aloha-agilex embodiment, SAPIEN).
   Multi-task: action chunks of length 50 across three RGB views
   (head + per-wrist) driving a 14-DoF dual-arm joint command. Runs on the
-  RoboTwin scene backend through the out-of-process py3.10 SAPIEN sidecar
-  (ADR-0061).
+  RoboTwin scene backend through the out-of-process SAPIEN sidecar (ADR-0061).
 
 # ── Task-data gate (ADR-0060) ──────────────────────────────────────────────
 # Multi-task checkpoint trained on the full robotwin_unified set, so it is

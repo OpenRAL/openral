@@ -21,6 +21,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -29,8 +30,11 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_core.schemas import BenchmarkScene, PhysicsBackend
 from openral_sim.backends.robotwin import (
     _ROBOTWIN_ROBOT_ID,
+    _ROBOTWIN_ROOT_ENV,
     _SIDECAR_PORT_MAX,
     _SIDECAR_PORT_MIN,
+    _build_robotwin_scene,
+    _robotwin_root,
     _robotwin_task_name,
     _scene_default_port,
 )
@@ -96,6 +100,68 @@ def test_sidecar_python_raises_with_recipe_when_unprovisioned(
     monkeypatch.setattr(robotwin, "_ROBOTWIN_SIDECAR_HOME", tmp_path / "robotwin-sidecar")
     with pytest.raises(ROSConfigError, match="RoboTwin sidecar venv not found"):
         robotwin._sidecar_python()
+
+
+def test_robotwin_root_resolves_assets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    assets = tmp_path / "assets" / "objects" / "objaverse"
+    assets.mkdir(parents=True)
+    (assets / "list.json").write_text("[]")
+    monkeypatch.setenv(_ROBOTWIN_ROOT_ENV, str(tmp_path))
+
+    assert _robotwin_root() == tmp_path.resolve()
+
+
+def test_robotwin_root_errors_without_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(_ROBOTWIN_ROOT_ENV, str(tmp_path))
+
+    with pytest.raises(ROSConfigError, match="RoboTwin assets not found"):
+        _robotwin_root()
+
+
+def test_robotwin_launch_argv_passes_checkout_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
+    from openral_sim import _deps
+    from openral_sim.backends import robotwin
+
+    captured: dict[str, list[str]] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["argv"] = list(cast(dict[str, Any], kwargs)["launch_argv"])
+
+        def connect(self) -> None:
+            return None
+
+    monkeypatch.setattr(_deps, "ensure_backend_deps", lambda _name: None)
+    monkeypatch.setattr(robotwin, "_sidecar_python", lambda: tmp_path / ".venv" / "bin" / "python")
+    monkeypatch.setattr(
+        robotwin, "_locate_sidecar_script", lambda: tmp_path / "robotwin_sidecar.py"
+    )
+    monkeypatch.setattr(robotwin, "_robotwin_root", lambda: tmp_path / "RoboTwin")
+    monkeypatch.setattr(robotwin, "SidecarClient", FakeClient)
+
+    env_cfg = SimEnvironment(
+        robot_id="aloha_agilex",
+        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN, cameras=["camera1"]),
+        task=TaskSpec(
+            id="robotwin/lift_pot",
+            scene_id="robotwin",
+            instruction="lift the pot",
+            success_key="is_success",
+            max_steps=300,
+        ),
+        vla=VLASpec(id="random", weights_uri="none"),
+    )
+
+    _build_robotwin_scene(env_cfg)
+
+    argv = captured["argv"]
+    assert "--robotwin-root" in argv
+    assert argv[argv.index("--robotwin-root") + 1] == str(tmp_path / "RoboTwin")
 
 
 # ─── shipped scene + suite YAMLs ─────────────────────────────────────────────

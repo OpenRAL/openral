@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""RoboTwin 2.0 scene sidecar — runs the SAPIEN dual-arm env in a py3.10 venv (ADR-0061).
+"""RoboTwin 2.0 scene sidecar — runs the SAPIEN dual-arm env in a separate venv (ADR-0061).
 
 This is the **RoboTwin side** of the RoboTwin benchmark backend. It is launched
 (auto-spawned) by :mod:`openral_sim.backends.robotwin` running under the openral
-py3.12 venv, and it runs under the separate RoboTwin py3.10 venv whose interpreter is
+py3.12 venv, and it runs under the separate RoboTwin venv whose interpreter is
 named by ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON``.
 
 It constructs LeRobot's native ``robotwin`` gym env (``lerobot-eval
@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -68,6 +70,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--episode-length", type=int, default=300)
     p.add_argument("--success-key", default="is_success")
+    p.add_argument(
+        "--robotwin-root",
+        default=os.environ.get("OPENRAL_ROBOTWIN_ROOT", ""),
+        help="path to the RoboTwin checkout; used as cwd so assets/... resolves",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
     return p.parse_args(argv)
@@ -86,10 +93,10 @@ _ENV_CAMERA_NAMES = ("head_camera", "left_camera", "right_camera")
 class _RoboTwinEnv:
     """Thin wrapper over LeRobot's ``robotwin`` gym env in the eval-layer shape.
 
-    Builds a single (non-vectorised) gym env from a ``RoboTwinEnvConfig`` and adapts
-    its observations to ``{"images", "state", "task"}``. LeRobot's robotwin obs is a
-    dict with ``pixels`` (per-camera HWC uint8) + ``agent_pos``; we re-key the env's
-    native cameras (:data:`_ENV_CAMERA_NAMES`) to the openral scene camera names
+    Builds a single gym env and adapts its observations to ``{"images", "state",
+    "task"}``. LeRobot's robotwin obs is a dict with ``pixels`` (per-camera HWC
+    uint8) + ``agent_pos``; we re-key the env's native cameras
+    (:data:`_ENV_CAMERA_NAMES`) to the openral scene camera names
     (camera1/camera2/camera3) in order and expose ``agent_pos`` as ``state``.
     """
 
@@ -109,11 +116,14 @@ class _RoboTwinEnv:
         # Map env-native camera keys -> requested openral scene keys, in order.
         self._cam_remap = dict(zip(_ENV_CAMERA_NAMES, cameras, strict=False))
         self._success_key = success_key
+        self._obs_height = obs_height
+        self._obs_width = obs_width
         self._env = self._make_env(
             obs_height=obs_height,
             obs_width=obs_width,
             episode_length=episode_length,
         )
+        self._is_vector_env = hasattr(self._env, "single_action_space")
         self._action_dim = int(np.prod(self._env.action_space.shape))
 
     def _make_env(
@@ -124,7 +134,20 @@ class _RoboTwinEnv:
         episode_length: int,
     ) -> Any:
         """Construct LeRobot's robotwin gym env for ``self._task`` (single env)."""
-        # Importing the module registers the gym ids and the env config.
+        try:
+            from lerobot.envs.robotwin import RoboTwinEnv  # type: ignore[import-not-found]
+
+            return RoboTwinEnv(
+                self._task,
+                camera_names=_ENV_CAMERA_NAMES,
+                observation_height=obs_height,
+                observation_width=obs_width,
+                episode_length=episode_length,
+            )
+        except ImportError:
+            pass
+
+        # Older LeRobot builds expose RoboTwin only through EnvConfig + make_env.
         from lerobot.envs.configs import RoboTwinEnvConfig  # type: ignore[import-not-found]
         from lerobot.envs.factory import make_env  # type: ignore[import-not-found]
 
@@ -136,9 +159,16 @@ class _RoboTwinEnv:
             observation_width=obs_width,
             episode_length=episode_length,
         )
-        # make_env returns a (vectorised) env; ask for a single, synchronous env so
-        # reset/step deal in a 1-element batch we squeeze in `_unwrap_obs`.
-        return make_env(cfg, n_envs=1, use_async_envs=False)
+        # Current LeRobot normalizes env factories to {suite: {task_id: vec_env}};
+        # older builds returned the vector env directly. Accept both so the sidecar
+        # stays pinned to the runtime env contract instead of a specific LeRobot SHA.
+        envs = make_env(cfg, n_envs=1, use_async_envs=False)
+        if isinstance(envs, dict):
+            suite_envs = envs.get("robotwin") or next(iter(envs.values()))
+            if isinstance(suite_envs, dict):
+                return suite_envs.get(0) or next(iter(suite_envs.values()))
+            return suite_envs
+        return envs
 
     @property
     def action_dim(self) -> int:
@@ -155,7 +185,8 @@ class _RoboTwinEnv:
         if isinstance(pixels, dict):
             for cam, frame in pixels.items():
                 out_key = self._cam_remap.get(str(cam), str(cam))
-                images[out_key] = np.asarray(_first(frame), dtype=np.uint8)
+                frame_np = np.asarray(_first(frame), dtype=np.uint8)
+                images[out_key] = self._resize_frame(frame_np)
         agent_pos = obs.get("agent_pos") if isinstance(obs, dict) else None
         state = (
             np.asarray(_first(agent_pos), dtype=np.float32).reshape(-1)
@@ -164,13 +195,24 @@ class _RoboTwinEnv:
         )
         return {"images": images, "state": state, "task": self._instruction}
 
+    def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+        if frame.shape[:2] == (self._obs_height, self._obs_width):
+            return frame
+        from PIL import Image
+
+        img = Image.fromarray(frame)
+        resized = img.resize((self._obs_width, self._obs_height), Image.Resampling.BILINEAR)
+        return np.asarray(resized, dtype=np.uint8)
+
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         obs, _info = self._env.reset(seed=seed)
         return self._unwrap_obs(obs)
 
     def step(self, action: np.ndarray) -> dict[str, Any]:
-        batched = np.asarray(action, dtype=np.float32).reshape(1, -1)
-        obs, reward, terminated, truncated, info = self._env.step(batched)
+        action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        if self._is_vector_env:
+            action_arr = action_arr.reshape(1, -1)
+        obs, reward, terminated, truncated, info = self._env.step(action_arr)
         success = bool(np.asarray(info.get(self._success_key, False)).any())
         return {
             "observation": self._unwrap_obs(obs),
@@ -189,6 +231,13 @@ class _RoboTwinEnv:
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    if args.robotwin_root:
+        root = Path(args.robotwin_root).expanduser().resolve()
+        assets = root / "assets" / "objects" / "objaverse" / "list.json"
+        if not assets.is_file():
+            raise FileNotFoundError(f"RoboTwin assets not found at {assets}")
+        os.chdir(root)
+        sys.path.insert(0, str(root))
     cameras = [c.strip() for c in args.cameras.split(",") if c.strip()]
     env = _RoboTwinEnv(
         task=args.task,

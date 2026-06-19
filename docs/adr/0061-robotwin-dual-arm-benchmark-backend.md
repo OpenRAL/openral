@@ -1,11 +1,9 @@
 # ADR-0061 — RoboTwin 2.0 dual-arm benchmark backend (SAPIEN, out-of-process sidecar)
 
-- **Status:** Accepted 2026-06-19. Scene backend + sidecar + task-matched rSkill landed
-  and unit-validated. **SAPIEN itself verified working on the 8 GB RTX 4070 reference host**
-  (installs, initializes a `Scene`, and renders a 256×256 frame offscreen); a full *scored*
-  rollout is gated on the externally-provisioned py3.10 lerobot-main + RoboTwin-assets venv,
-  which did not fit the reference host's near-full disk (see **Live verification**). Same
-  "code-ready, externally-provisioned" posture as the Isaac Sim backend (ADR-0045).
+- **Status:** Accepted 2026-06-19. Scene backend + sidecar + task-matched rSkill landed,
+  unit-validated, and **live reset/step verified on the 8 GB RTX 4070 reference host** with
+  the externally-provisioned RoboTwin assets + CuRobo sidecar (see **Live verification**).
+  Full SmolVLA scored eval/video is still not reproduced locally.
 - **Date:** 2026-06-19
 - **ADR number:** `0061`. `0060` (benchmark task-data gate) is the previous entry; the
   integer is not load-bearing — cross-refs use filenames.
@@ -61,7 +59,7 @@ the task logic.
 
 ## Decision
 
-Add RoboTwin 2.0 as a **SAPIEN scene backend run out-of-process via a py3.10 sidecar**,
+Add RoboTwin 2.0 as a **SAPIEN scene backend run out-of-process via a sidecar venv**,
 structurally identical to the Isaac Sim backend.
 
 1. **`PhysicsBackend.SAPIEN`** — new enum value (additive, backward-compatible, no
@@ -75,7 +73,7 @@ structurally identical to the Isaac Sim backend.
    the aloha-agilex embodiment because the LeRobot integration, dataset, and public
    checkpoints are all aloha-agilex; other RoboTwin embodiments are a future relaxation.
 
-3. **Sidecar** `tools/robotwin_sidecar.py` — runs under the externally-provisioned py3.10
+3. **Sidecar** `tools/robotwin_sidecar.py` — runs under the externally-provisioned
    venv, constructs LeRobot's `robotwin` gym env for the requested task, and serves the same
    `ping/reset/step/render/close` msgpack+ndarray protocol the openral side speaks.
    Observations cross the wire in the eval-layer shape (`images` dict of the three RoboTwin
@@ -123,29 +121,31 @@ structurally identical to the Isaac Sim backend.
 
 The scene backend, sidecar, robot manifest, dep plan, scenes/suite, and rSkill are landed
 and unit-tested (manifest validation, scene/suite YAML validation, ADR-0060 gate accepts the
-rSkill, SAPIEN `PhysicsBackend` enum). A **scored** single-task run requires the py3.10
-lerobot-main + RoboTwin venv; on hosts without it the sim tests `pytest.skip` (CLAUDE.md
-§1.11).
+rSkill, SAPIEN `PhysicsBackend` enum). Hosts without the externally-provisioned sidecar venv
+still `pytest.skip` (CLAUDE.md §1.11); hosts with it run a real SAPIEN reset/step.
 
 **Reference-host attempt (2026-06-19, 8 GB RTX 4070 Laptop):**
 
-- ✅ **SAPIEN works here.** A bounded probe installed `sapien==3.0.3` into a scratch py3.10
-  venv, created an `Engine`/`Scene`, and rendered a 256×256 frame offscreen
-  (`cam.take_picture()` → `(256, 256, 4)` float32). The simulator + camera path the backend
-  depends on are functional on this GPU.
-- ⚠️ **Full rollout not run — disk, not code.** The complete sidecar needs lerobot from git
-  `main` (PyPI `lerobot` 0.5.1 has **no** `robotwin` extra — confirmed against PyPI metadata),
-  the `RoboTwin-Platform/RoboTwin` task package on `PYTHONPATH`, and its multi-GB assets
-  (`script/_download_assets.sh`). The reference host's root partition was at **98% (≈26 GB
-  free)** with ~70 GB already in `~/.cache/openral`; pushing the ~8 GB lerobot/torch+CUDA
-  install plus the RoboTwin assets risked filling root, so the scored rollout was deliberately
-  not forced. It runs on a host with the provisioned venv + free disk via
+- ✅ **SAPIEN works here.** A bounded probe installed `sapien==3.0.3`, created a
+  `Scene`, and rendered a 256×256 frame offscreen (`cam.take_picture()` →
+  `(256, 256, 4)` float32).
+- ✅ **RoboTwin assets + CuRobo sidecar works here.** The sidecar cache was fully
+  provisioned under `~/.cache/openral/robotwin-sidecar`: LeRobot `main`, the
+  `RoboTwin-Platform/RoboTwin` checkout/assets (~16 GB), and NVLabs CuRobo `v0.7.8`
+  built from source against Torch cu128 using `cuda-toolkit=12.8.2` + GCC 13.
+- ✅ **Live `lift_pot` reset/step succeeded.** `tools/robotwin_sidecar._RoboTwinEnv`
+  built the native LeRobot `RoboTwinEnv`, reported `action_dim=14`, reset with
+  camera1/camera2/camera3 RGB observations plus a `(14,)` float32 state, and executed
+  one zero-action step (`reward=0.0`, `is_success=False`). The OpenRAL wrapper test
+  then passed end-to-end through ZMQ auto-spawn:
+  `pytest tests/unit/test_robotwin_backend.py tests/sim/test_aloha_agilex_smolvla_robotwin.py -q`
+  → 19 passed.
+- ⚠️ **Full SmolVLA scored eval/video still not reproduced.** The live verification is
+  simulator/sidecar/wire/action-contract verification, not a policy success number. The
+  `lerobot/smolvla_robotwin` checkpoint and eval JSON remain to be run via
   `openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml --rskill
-  rskills/smolvla-robotwin`.
-
-So the eval JSON / `benchmarks:` numbers are not yet reproduced locally; the scenes + suite +
-rSkill ship as verified-to-load infrastructure, with the SAPIEN engine independently confirmed
-on-host.
+  rskills/smolvla-robotwin` on a host with enough free disk for the policy cache and video
+  artifacts. No benchmark metric is invented.
 
 ## Alternatives considered
 

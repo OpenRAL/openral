@@ -1,4 +1,4 @@
-r"""RoboTwin 2.0 scene adapter — drives a SAPIEN dual-arm env through a py3.10 sidecar.
+r"""RoboTwin 2.0 scene adapter — drives a SAPIEN dual-arm env through a sidecar venv.
 
 ADR-0061. RoboTwin 2.0 (Chen et al., arXiv 2506.18088, MIT) is a large-scale
 **bimanual** benchmark: 50 dual-arm tasks on the SAPIEN physics engine, evaluated
@@ -8,7 +8,7 @@ RoboTwin's stack (SAPIEN, CuRobo, mplib, pytorch3d) pins **Python 3.10 + CUDA 12
 and an incompatible torch build — it cannot share the openral ``>=3.12`` venv. So,
 exactly like the Isaac Sim scene backend (:mod:`openral_sim.backends.isaac_sim`) and
 the RLDX-1 policy sidecar (:mod:`openral_sim.policies.rldx`), we run it in its own
-py3.10 venv and talk to it over ZMQ REQ/REP framed by msgpack
+sidecar venv and talk to it over ZMQ REQ/REP framed by msgpack
 (:class:`openral_sim.sidecar.SidecarClient`).
 
 This module is the **openral side**: a thin :class:`SimRollout` that marshals
@@ -27,8 +27,8 @@ manifest ships no URDF/MJCF — the sidecar's SAPIEN model is authoritative).
 Sidecar python resolution
 -------------------------
 The launcher runs under the **robotwin** venv, not this one. We resolve its
-interpreter from ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (absolute path to the py3.10
-venv's ``python``), else a cache default, else (opt-in
+interpreter from ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` (absolute path to the
+sidecar venv's ``python``), else a cache default, else (opt-in
 ``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) we provision it. The provisioning installs
 LeRobot + the RoboTwin SAPIEN stack + downloads assets (a multi-GB, ~20-minute,
 CUDA-12.1 / Linux-only job); without opt-in we raise a typed :class:`ROSConfigError`
@@ -70,6 +70,7 @@ _ROBOTWIN_ROBOT_ID = "aloha_agilex"
 _AUTO_SPAWN_ENV = "OPENRAL_ROBOTWIN_AUTO_SPAWN"
 _SIDECAR_PYTHON_ENV = "OPENRAL_ROBOTWIN_SIDECAR_PYTHON"
 _SIDECAR_SCRIPT_ENV = "OPENRAL_ROBOTWIN_SIDECAR_SCRIPT"
+_ROBOTWIN_ROOT_ENV = "OPENRAL_ROBOTWIN_ROOT"
 _AUTO_PROVISION_ENV = "OPENRAL_ROBOTWIN_AUTO_PROVISION"
 
 # Default sidecar venv location + pinned install. RoboTwin's SAPIEN stack is large,
@@ -82,10 +83,10 @@ _ROBOTWIN_SIDECAR_HOME = Path.home() / ".cache" / "openral" / "robotwin-sidecar"
 _ROBOTWIN_PYTHON = "3.10"
 # LeRobot's `robotwin` env lives on `main` (NOT the PyPI 0.5.1 release — that has no
 # `robotwin` extra), so auto-provision installs lerobot from git + SAPIEN + the
-# openral-side wire. This is the pip-installable core ONLY: the RoboTwin **task
-# package** (cloned from RoboTwin-Platform/RoboTwin and put on PYTHONPATH) and its
-# multi-GB **assets** (`script/_download_assets.sh`) are a separate manual step — see
-# the ROSConfigError recipe in `_sidecar_python` and ADR-0061. Auto-provision is a
+# openral-side wire. This is the pip-installable core ONLY: the RoboTwin checkout
+# (RoboTwin-Platform/RoboTwin, passed via OPENRAL_ROBOTWIN_ROOT) and its multi-GB
+# **assets** (`script/_download_assets.sh`) are a separate manual step — see the
+# ROSConfigError recipe in `_sidecar_python` and ADR-0061. Auto-provision is a
 # best-effort head start, not a complete install.
 _ROBOTWIN_DEPS = (
     "lerobot @ git+https://github.com/huggingface/lerobot.git",
@@ -311,7 +312,7 @@ def _sidecar_python() -> Path:
         "  git clone https://github.com/huggingface/lerobot.git && pip install -e ./lerobot\n"
         "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
         "  cd RoboTwin && bash script/_install.sh && bash script/_download_assets.sh\n"
-        "  export PYTHONPATH=$PYTHONPATH:$(pwd)  # RoboTwin task package importable\n"
+        f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
         "  export OPENRAL_ROBOTWIN_SIDECAR_PYTHON=$(which python)"
     )
 
@@ -335,9 +336,33 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+def _robotwin_root() -> Path:
+    """Resolve the RoboTwin checkout root the sidecar must run from.
+
+    RoboTwin imports use process-relative ``assets/...`` paths, and
+    :class:`SidecarClient` deliberately strips parent ``PYTHONPATH`` for ABI safety.
+    Pass the checkout root explicitly so the sidecar can chdir and add it to
+    ``sys.path`` before LeRobot imports the task package.
+    """
+    override = os.environ.get(_ROBOTWIN_ROOT_ENV)
+    root = Path(override).expanduser() if override else _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
+    if not root.is_dir():
+        raise ROSConfigError(
+            "RoboTwin checkout not found. Clone https://github.com/RoboTwin-Platform/RoboTwin "
+            f"and set {_ROBOTWIN_ROOT_ENV} to its path."
+        )
+    assets = root / "assets" / "objects" / "objaverse" / "list.json"
+    if not assets.is_file():
+        raise ROSConfigError(
+            f"RoboTwin assets not found at {assets}. Run script/_download_assets.sh in "
+            f"the RoboTwin checkout, then set {_ROBOTWIN_ROOT_ENV}={root}."
+        )
+    return root.resolve()
+
+
 @SCENES.register(_ROBOTWIN_SCENE_ID, fixed_robot=_ROBOTWIN_ROBOT_ID)
 def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
-    """Build a RoboTwin 2.0 SAPIEN scene behind the out-of-process py3.10 sidecar.
+    """Build a RoboTwin 2.0 SAPIEN scene behind the out-of-process sidecar.
 
     Lazy-imports pyzmq/msgpack (the openral-side wire) via the ``robotwin_client``
     install plan, resolves the sidecar interpreter + script, and connects (auto-
@@ -360,9 +385,7 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
     timeout_ms = _opt_num(opts, "timeout_ms", _DEFAULT_TIMEOUT_MS, int)
     boot_timeout_s = _opt_num(opts, "boot_timeout_s", _DEFAULT_BOOT_TIMEOUT_S, float)
     task_name = _robotwin_task_name(env_cfg.task.id)
-    port = _opt_num(
-        opts, "port", _scene_default_port(env_cfg.task.id, _ROBOTWIN_ROBOT_ID), int
-    )
+    port = _opt_num(opts, "port", _scene_default_port(env_cfg.task.id, _ROBOTWIN_ROBOT_ID), int)
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
     cameras = env_cfg.scene.cameras or ["head_camera", "left_camera", "right_camera"]
@@ -386,6 +409,8 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
         str(env_cfg.task.max_steps if env_cfg.task.max_steps is not None else _DEFAULT_MAX_STEPS),
         "--success-key",
         env_cfg.task.success_key or "is_success",
+        "--robotwin-root",
+        str(_robotwin_root()),
         "--host",
         host,
         "--port",
