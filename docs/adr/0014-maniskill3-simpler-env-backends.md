@@ -233,3 +233,46 @@ end-to-end). The `rldx1-ft-simpler-google-nf4` rSkill was removed (2026-06-13)
 since no Google-robot scene ships to run it on; the `simpler_google` obs-builder
 layout and the `robots/google_robot` manifest are kept so a Google-robot rSkill
 can be re-added when upstream registers the envs and the suite returns.
+
+## Amendment (2026-06-19): CALVIN evaluated for issue #52 — deferral reaffirmed
+
+GitHub issue [#52](https://github.com/OpenRAL/openral/issues/52) proposed adding
+**CALVIN** (Mees et al., 2022, [2112.03227](https://arxiv.org/abs/2112.03227)) —
+a long-horizon, language-conditioned Franka benchmark on the canonical ABC→D
+generalization split — as a follow-up to the benchmark-tier cleanup in PR #48.
+After evaluation the CALVIN backend is **not added now**; the deferral recorded
+in the context table above (`CALVIN | MIT | py3.8 only | gym | Declining`) is
+**reaffirmed**, with concrete reasoning:
+
+- **Python incompatibility / out-of-process sidecar required.** `calvin_env`
+  (the PyBullet environment CALVIN ships) targets Python 3.8 and does not import
+  under the repo's pinned 3.12 core (CLAUDE.md §2). Unlike the ManiSkill3 /
+  SimplerEnv backends in this ADR — which sit behind a lazy import in the same
+  process — CALVIN would have to run **out-of-process in a dedicated sidecar
+  venv**, the heavier pattern established for Isaac Sim (ADR-0045) and the GR00T
+  / RLDX policy backends. That is materially more infrastructure than the "one
+  opt-in extras group, one lazy-imported backend" shape this ADR establishes.
+
+- **No verified policy adapter.** None of the CALVIN policy families the issue
+  lists (HULC / HULC++, 3D Diffuser Actor, RoboFlamingo, GR-1 / Seer / MDT) has
+  an existing OpenRAL adapter or a checkpoint verified to run in our catalogue.
+  A benchmark with no task-matched, runnable rSkill fails the ADR-0060
+  compatibility gate and could only ship as unscoreable scaffolding — exactly
+  the "plausible-but-unscoreable 0s" that PR #48 set out to remove from the
+  benchmark tier.
+
+- **Declining citation share.** As the context table notes, CALVIN's share of
+  newly reported VLA results is declining relative to LIBERO / SimplerEnv /
+  ManiSkill3, all of which the catalogue already covers end-to-end. The marginal
+  credibility gain is low against the Tier-3 effort.
+
+- **No-mocks constraint.** CLAUDE.md §1.11 / §1.2 forbid shipping a backend
+  whose numbers we have not actually produced. A faithful CALVIN landing
+  therefore requires a real py3.8 sidecar install plus a real policy rollout on
+  a GPU host — out of scope for a docs-tier follow-up to PR #48.
+
+**Decision:** issue #52 is closed as *deferred / not-planned for now*. CALVIN
+remains a candidate. Reintroducing it would follow the Isaac/GR00T sidecar
+pattern (ADR-0045) and warrant its own ADR covering the sidecar boot, the chosen
+policy family's adapter, and the ABC→D suite — at which point this deferral is
+superseded.
