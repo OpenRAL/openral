@@ -1,0 +1,22 @@
+# RoboCasa NavigateKitchen — deploy playground (sim digital twin).
+# Same panda_mobile mobile-manipulator stack as robocasa_pnp.yaml, but the
+# prebuilt task is NavigateKitchen so the base actually DRIVES around the
+# kitchen (the deploy PnP scenes park at the counter; this one navigates).
+# Env-only DeployScene (no task / no success criterion) — the reasoner picks
+# the rSkill at runtime; robot auto-resolves to panda_mobile.
+# Run: openral deploy sim --config scenes/deploy/robocasa_navigate.yaml
+# Setup: just sync --all-packages --group robocasa
+
+scene:
+  id: robocasa/NavigateKitchen
+  backend: mujoco
+  observation_height: 128
+  observation_width: 128
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: NavigateKitchen
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    horizon: 600
+
+seed: 42
