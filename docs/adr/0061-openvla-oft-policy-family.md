@@ -1,6 +1,6 @@
 # ADR-0061 — OpenVLA / OpenVLA-OFT policy family
 
-- **Status:** Proposed 2026-06-19. First adapter + a verified WidowX rSkill land on
+- **Status:** Accepted 2026-06-19. First adapter + a verified WidowX rSkill land on
   `feat/maniskill3-openvla-oft` (draft PR onto PR #48); a Panda gap-closer rSkill is attempted
   on the same adapter.
 - **Date:** 2026-06-19
@@ -37,6 +37,15 @@ the issue's stated PickCube/Panda example**:
 - Running it on `maniskill3/PickCube-v1` (Panda) is exactly the task-mismatched, plausible-but-
   unsolvable rollout **ADR-0060 blocks** — it would score ~0 and the gate would (correctly) refuse
   it. Its honest home is the **SimplerEnv WidowX bridge** tasks OpenRAL already wires.
+- The public SimplerEnv `PutCarrotOnPlateInScene-v1` path verified non-zero success only when the
+  adapter mirrors RLinf's PPO eval path: `generate_action_verl`, right-padded prompt length 30,
+  temperature 0.6, torch seed 0 reapplied on each policy reset, first-six-dim action scale 2.0,
+  and binary gripper threshold 0.5. Seeded local validation on the 8 GB RTX 4070 Laptop host
+  scored **2/5 success (40%)** at the canonical 60-step horizon. The exact upstream
+  `PutOnPlateInScene25Main-v3` task registers from
+  RLinf source, but its `assets/carrot/more_carrot/...` files were not present in the public source
+  checkout or the normal ManiSkill/SimplerEnv asset cache, so those 25-object numbers are not
+  claimed.
 
 OpenVLA / OpenVLA-OFT ship as transformers *custom-code* models (`trust_remote_code`,
 `AutoModelForVision2Seq` → `OpenVLAForActionPrediction`). The 7.5 B backbone needs NF4 to fit an
@@ -57,10 +66,14 @@ Add an `"openvla"` `ModelFamily` (layer-3) + an in-process `openral_sim.policies
    provenance §3); NF4 + `expandable_segments` for 8 GB; builds the prompt
    `In: What action should the robot take to {instruction.lower()}?\nOut: `, runs the discrete-token
    head, de-normalizes with the embedded `unnorm_key` stats (`0.5*(x+1)*(q99-q01)+q01`, masked-False
-   gripper passthrough), and replays the action chunk closed-loop.
+   gripper passthrough), and replays the action chunk closed-loop. The adapter also accepts
+   manifest `policy_extras` for OpenVLA-family evaluation variants: `generate_action_verl`,
+   prompt padding length, sampling temperature, torch sampling seed, action scale, and gripper
+   binarization.
 3. **Verified rSkill (WidowX):** `rskills/openvla-oft-simpler-widowx-nf4` wraps the RLinf checkpoint
-   on the SimplerEnv WidowX put-on-plate tasks it actually solves; `evaluated_tasks` declares only
-   those tasks (ADR-0060 gate passes). It must verify **success > 0** live on the 8 GB host.
+   on the SimplerEnv WidowX carrot-on-plate task it locally solved; `evaluated_tasks` declares only
+   `simpler_env/widowx_carrot_on_plate` (ADR-0060 gate passes). It verified **success > 0** live on
+   the 8 GB host (2/5 seeded local episodes).
 4. **Panda gap-closer (attempt):** a second rSkill wraps a documented OpenVLA Panda checkpoint
    (candidate `FengQiuxuan/maniskill_three_robots_stack_cube_*`) on a core `maniskill3/*` Panda env
    in `maniskill3_panda.yaml`. If it verifies success > 0, issue #55's literal acceptance closes; if
@@ -69,7 +82,7 @@ Add an `"openvla"` `ModelFamily` (layer-3) + an in-process `openral_sim.policies
 ## Consequences
 
 - OpenRAL can run the entire OpenVLA / OpenVLA-OFT family for sim eval, in-process, on an 8 GB host.
-- The WidowX SimplerEnv suite gains a second, documented bridge policy alongside
+- The WidowX SimplerEnv carrot task gains a second, documented bridge policy alongside
   `rldx1-ft-simpler-widowx-nf4` — a genuine, verifiable MS3-registered-env win that exercises the
   new adapter end-to-end.
 - The `maniskill3_panda` (Panda) gap closes only if the Panda checkpoint verifies; either way the
@@ -80,10 +93,11 @@ Add an `"openvla"` `ModelFamily` (layer-3) + an in-process `openral_sim.policies
 
 ## Alternatives considered
 
-- **Reproduce the exact RL4VLA env `PutOnPlateInScene25Main-v3`** to match the checkpoint's reported
-  numbers. Rejected: it needs RL4VLA's env-registration package (an extra dependency outside our
-  generic `maniskill3/<env>` → `gym.make` backend); the in-tree SimplerEnv WidowX put-on-plate
-  tasks are the same embodiment/control/`bridge_orig` distribution and are already wired.
+- **Reproduce the exact RLinf env `PutOnPlateInScene25Main-v3`** to match the checkpoint's reported
+  numbers. Deferred: the RLinf task registrations import with a normal source checkout, but the
+  exact 25-object scene needs carrot asset files missing from that checkout and from the standard
+  ManiSkill/SimplerEnv asset cache. The public SimplerEnv WidowX carrot task is the same
+  embodiment/control/`bridge_orig` distribution and is already wired.
 - **Out-of-process ZMQ sidecar** (like GR00T/rldx). Rejected: OpenVLA loads fine in-process via
   transformers; a sidecar adds latency and a Py3.10 venv for no benefit here.
 - **Force the RLinf checkpoint onto PickCube/Panda anyway.** Rejected: it cannot solve it

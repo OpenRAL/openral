@@ -1,7 +1,7 @@
 ---
 name: openvla-oft-simpler-widowx-nf4
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place on object. OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge policy, evaluated on the SimplerEnv WidowX put-on-plate tasks. Loaded in-process via transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place on object. OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge policy, evaluated on SimplerEnv WidowX carrot-on-plate. Loaded in-process via transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -41,7 +41,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge policy, evaluated on the SimplerEnv WidowX put-on-plate tasks. Loaded in-process via transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge policy, evaluated on SimplerEnv WidowX carrot-on-plate. Loaded in-process via transformers custom-code (trust_remote_code), NF4 for 8 GB hosts. MIT license.
 
 ## Capabilities
 

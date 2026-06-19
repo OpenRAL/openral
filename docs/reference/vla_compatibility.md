@@ -96,7 +96,14 @@ Columns:
 | `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
 | `HollyTan/pi05_so101_pick_place-v2.2basev2.4_abs_nofreeze_8b` | `so101_box` (MuJoCo) | `so101_follower` | **6-D** joint positions ✓ | `top`+`wrist`+`front` (224×224); scene `oak_top`→`top`, `wrist`→`wrist`, `front` zero-padded via image mask ✓ | Yes — `policy_{pre,post}processor` sidecars (state=[6], action=[6]) ✓ | `rskills/pi05-so101-pickplace-nf4/` (nf4 mirror at `OpenRAL/rskill-pi05-so101-pickplace-nf4`) | Apache-2.0 | π0.5 (4.14 B); nf4 fits 8 GB. Pick-place finetune; validated to load + step on `so101_box` (not insertion-trained — expect drift on the tube task). `scenes/sim/so101_tube_insertion.yaml` |
 
-### 3.5 Other platforms
+### 3.5 SimplerEnv / ManiSkill3 Bridge (WidowX)
+
+| VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` | SimplerEnv `PutCarrotOnPlateInScene-v1` (ManiSkill3) | `widowx` | **8-D** `simpler_widowx` surfaced by env; checkpoint uses no proprio (`use_proprio=False`) ✓ | single 224×224 RGB (`camera1` / 3rd-view) ✓ | Yes — `config.json` `norm_stats.bridge_orig`, 7-D action, chunk 8 ✓ | `rskills/openvla-oft-simpler-widowx-nf4/` | MIT | OpenVLA-OFT custom-code model; NF4 fits 8 GB. Requires RLinf eval path in manifest `policy_extras` (`generate_action_verl`, padding length 30, temperature 0.6, torch seed 0, action scale 2.0, binary gripper). Locally verified 2/5 success on carrot, 60-step horizon. Keep in a dedicated transformers<5 runtime; the default lerobot workspace pins transformers 5.3. |
+| `RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX` | SimplerEnv `PutCarrotOnPlateInScene-v1` | `widowx` | **8-D** `simpler_widowx` ✓ | single RGB stream ✓ | Processor sidecars in rSkill ✓ | `rskills/rldx1-ft-simpler-widowx-nf4/` | RLWRLD non-commercial | Sidecar runtime; sibling Bridge baseline. |
+
+### 3.6 Other platforms
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -114,6 +121,7 @@ Columns:
 | RoboCasa | MuJoCo | TBD | Franka Panda | Kitchen manipulation | TBD |
 | SO-100 Digital Twin | MuJoCo (in-process, `python/sim/`) | `uv sync --group sim` | SO-100 | Smoke-test only (no task suite) | None — joint-space smoketest |
 | SO-101 Box (`so101_box`) | MuJoCo (raw, `python/sim/src/openral_sim/backends/so101_box/`) | `uv sync --group sim` | SO-101 | tube-insertion (geometric success: tube vertical + lower tip ≥ 10 mm below the slotted-block hole top) — both block and tube spawn at random (x, y, yaw) on the floor each `reset()` | OAK-D Pro overhead (RGB + depth, default 640×480) + wrist RGB parented to the gripper body |
+| SimplerEnv WidowX | ManiSkill3/SAPIEN via `simpler_env` | `uv sync --group simpler-env` + `uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"` | WidowX 250s | carrot-on-plate (`simpler_env/widowx_carrot_on_plate`) | 3rd-view RGB surfaced as `camera1` |
 | NVIDIA Arena | Isaac Sim | Requires NVIDIA Isaac Sim license | GR1 | microwave | TBD |
 
 ### 4.1 LIBERO eval CLI
@@ -171,6 +179,8 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 - **xvla is LIBERO-engine-only**: the xVLA adapter's env preprocessor (`LiberoProcessorStep`) consumes the nested LiberoEnv observation that the scene must expose as `observation['raw']`. Non-LIBERO scenes (e.g. the Isaac Sim Franka scenes) do not populate it, so `xvla` raises `ROSCapabilityMismatch` on the first step. Run xvla only on LIBERO scenes (`libero_spatial`, `franka_libero_pnp`, …).
 
 - **GR00T / RLDX sidecars have no single-camera fallback**: these checkpoints read a fixed number of *distinct* camera streams positionally — LIBERO=2 (agentview+wrist), RC365=3, GR1/Simpler=1 — set by the manifest's `state_contract.layout`. Unlike the in-process lerobot adapters (smolvla / pi05 / act), which resolve their camera list from `scene.cameras` and adapt, the `gr00t` / `rldx` factories reject a scene that declares **fewer** cameras than the layout needs with an upfront `ROSCapabilityMismatch` (before the multi-minute sidecar boot). A scene that omits `cameras:` is the adapter default (LIBERO renders camera1+camera2 itself) and is never rejected. Example: `gr00t-n17-libero` runs on `isaac_franka_bowl_plate` (`cameras: [camera1, camera2]`) but not `isaac_franka_lift` (`cameras: [camera1]`).
+
+- **OpenVLA-OFT / RLinf needs a transformers<5 runtime**: `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` loads through OpenVLA's custom `AutoModelForVision2Seq` code path, verified with `transformers==4.40.1` / `accelerate==0.33`. The default OpenRAL VLA workspace pins `transformers==5.3.0` for lerobot families, so do not sync OpenVLA into the same venv as LIBERO/π0.5/SmolVLA unless the upstream custom code is ported.
 
 - **π0.5 requires ≥8 GB VRAM**: The PaliGemma-3B backbone requires more memory than the 7-class GPU can provide in typical shared use. Use `--device cpu` for slow inference or a dedicated A100/H100 for production eval.
 

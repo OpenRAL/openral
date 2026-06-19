@@ -3957,6 +3957,11 @@ class RSkillManifest(BaseModel):
             policy run on the canonical ``libero_spatial.yaml`` without a
             duplicate per-policy scene; ``scene.backend_options.control_mode``
             still overrides it. ``None`` (default) → backend default.
+        policy_extras: Adapter-owned runtime knobs copied from the rSkill
+            manifest into :class:`VLASpec.extra` during CLI composition.
+            Used for family-specific generation, sampling, replay, or
+            transform settings that are part of the checkpoint contract but
+            should not become top-level manifest schema fields.
         paper_url: Canonical paper URL for this skill / family.
         dataset_uri: HF Hub URI for the training dataset.
         source_repo: HF Hub URI for the upstream weights repo (often
@@ -4206,6 +4211,7 @@ class RSkillManifest(BaseModel):
     # construction: ``spec_extra`` > manifest > schema default. See
     # ``openral_rskill._vla_core.resolve_image_preprocessing``,
     # ``resolve_state_dim``, ``resolve_camera_keys``, and ``apply_chunk_replay``.
+    policy_extras: dict[str, object] = Field(default_factory=dict)
     processors: RSkillProcessors | None = None
     image_preprocessing: ImagePreprocessing | None = None
     state_contract: StateContract | None = None

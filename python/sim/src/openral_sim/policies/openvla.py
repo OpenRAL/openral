@@ -17,7 +17,9 @@ policy. It ships as a transformers *custom-code* model (``trust_remote_code``,
   ``images`` dict) is turned into a single 224×224 RGB + the prompt
   ``In: What action should the robot take to {instruction.lower()}?\nOut: `` and
   passed to ``predict_action(**inputs, unnorm_key=...)``. The RLinf checkpoint
-  uses no proprio (``use_proprio=False``).
+  uses no proprio (``use_proprio=False``). RLinf-family checkpoints may instead
+  request ``generate_action_verl`` via ``policy_extras`` to mirror their PPO eval
+  path (right-padded prompt, temperature sampling).
 - ``predict_action`` decodes the 256-bin discrete action tokens and
   de-normalizes them with the checkpoint's embedded ``unnorm_key`` stats
   (``bridge_orig``: 6 EE deltas rescaled, gripper passed through). For
@@ -83,6 +85,9 @@ _DEFAULT_UNNORM_KEY = "bridge_orig"
 # (chunk, action_dim) chunk (OFT). 7-D bridge action: 3 EE pos Δ + 3 rot Δ + 1
 # gripper.
 _DEFAULT_ACTION_DIM = 7
+_DEFAULT_GENERATION_METHOD = "predict_action"
+_GENERATE_ACTION_VERL = "generate_action_verl"
+_ACTION_CHUNK_NDIM = 2
 
 _CUDA_ALLOC_ENV = "PYTORCH_CUDA_ALLOC_CONF"
 _EXPANDABLE_SEGMENTS = "expandable_segments:True"
@@ -97,9 +102,7 @@ def _decode_prompt(instruction: str) -> str:
     return _PROMPT_TEMPLATE.format(instr=instruction.strip().lower())
 
 
-def _unnormalize_action(
-    norm: NDArray[np.float32], stats: dict[str, Any]
-) -> NDArray[np.float32]:
+def _unnormalize_action(norm: NDArray[np.float32], stats: dict[str, Any]) -> NDArray[np.float32]:
     """Un-normalize an OpenVLA action in ``[-1, 1]`` with embedded q01/q99 stats.
 
     Implements OpenVLA's ``BOUNDS_Q99`` de-normalization, per masked dim::
@@ -125,6 +128,97 @@ def _unnormalize_action(
     norm = np.asarray(norm, dtype=np.float32)
     scaled = 0.5 * (norm + 1.0) * (q99 - q01) + q01
     return np.where(mask, scaled, norm).astype(np.float32)
+
+
+def _as_action_chunk(arr: Any, action_dim: int) -> NDArray[np.float32]:
+    """Normalize an OpenVLA action return value to ``(chunk, action_dim)``."""
+    if action_dim <= 0:
+        raise ROSConfigError(f"openvla_action_dim must be > 0, got {action_dim!r}.")
+    out = np.asarray(arr, dtype=np.float32)
+    if out.ndim == 0:
+        raise ROSConfigError("OpenVLA returned a scalar action; expected a vector or chunk.")
+    if out.ndim == 1 and out.shape[0] > action_dim and out.shape[0] % action_dim == 0:
+        out = out.reshape(-1, action_dim)
+    elif out.ndim == 1:
+        out = out[None, :]
+    elif out.ndim > _ACTION_CHUNK_NDIM:
+        out = out.reshape(-1, out.shape[-1])
+    if out.shape[-1] > action_dim:
+        out = out[:, :action_dim]
+    if out.shape[-1] != action_dim:
+        raise ROSConfigError(
+            f"OpenVLA returned action chunk with last dimension {out.shape[-1]}, "
+            f"expected openvla_action_dim={action_dim}."
+        )
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def _postprocess_action_chunk(
+    arr: NDArray[np.float32],
+    *,
+    action_scale: float,
+    binarize_gripper: bool,
+    gripper_threshold: float,
+) -> NDArray[np.float32]:
+    """Apply explicit env-side action transforms from ``policy_extras``."""
+    out = np.asarray(arr, dtype=np.float32).copy()
+    if action_scale != 1.0:
+        out[:, : min(6, out.shape[1])] *= np.float32(action_scale)
+    if binarize_gripper and out.shape[1] >= _DEFAULT_ACTION_DIM:
+        out[:, 6] = np.where(out[:, 6] > gripper_threshold, 1.0, -1.0).astype(np.float32)
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+
+def _extra_bool(extra: dict[str, object], key: str, default: bool) -> bool:
+    value = extra.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    raise ROSConfigError(f"OpenVLA policy_extras.{key} must be a bool, got {value!r}.")
+
+
+def _extra_float(extra: dict[str, object], key: str, default: float) -> float:
+    value = extra.get(key, default)
+    try:
+        out = float(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            f"OpenVLA policy_extras.{key} must be a finite float, got {value!r}."
+        ) from exc
+    if not np.isfinite(out):
+        raise ROSConfigError(f"OpenVLA policy_extras.{key} must be a finite float, got {value!r}.")
+    return out
+
+
+def _extra_int_or_none(extra: dict[str, object], key: str) -> int | None:
+    value = extra.get(key)
+    if value is None:
+        return None
+    try:
+        out = int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            f"OpenVLA policy_extras.{key} must be an integer, got {value!r}."
+        ) from exc
+    if out < 0:
+        raise ROSConfigError(f"OpenVLA policy_extras.{key} must be >= 0, got {out!r}.")
+    return out
+
+
+def _extra_positive_int_or_none(extra: dict[str, object], key: str) -> int | None:
+    out = _extra_int_or_none(extra, key)
+    if out == 0:
+        raise ROSConfigError(f"OpenVLA policy_extras.{key} must be > 0, got 0.")
+    return out
 
 
 # ── Load-phase helpers (per-adapter, mirroring pi05 / molmoact2 convention) ──
@@ -286,6 +380,14 @@ class _OpenVLAAdapter:
     # return normalized tokens (then the adapter applies _unnormalize_action).
     _actions_prenormalized: bool = False
     _autocast_dtype: Any = None
+    _generation_method: str = _DEFAULT_GENERATION_METHOD
+    _do_sample: bool = False
+    _temperature: float = 0.6
+    _padding_max_length: int | None = None
+    _action_scale: float = 1.0
+    _binarize_gripper: bool = False
+    _gripper_threshold: float = 0.5
+    _torch_seed: int | None = None
     _last_input_frame: NDArray[np.uint8] | None = None
     _action_queue: list[NDArray[np.float32]] = field(default_factory=list)
 
@@ -294,6 +396,7 @@ class _OpenVLAAdapter:
 
     def reset(self) -> None:
         self._action_queue = []
+        _seed_torch_for_sampling(self._torch, self._torch_seed)
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         if not self._action_queue:
@@ -330,7 +433,15 @@ class _OpenVLAAdapter:
         task = instruction or observation.get("task", "")
         prompt = _decode_prompt(task)
 
-        inputs = self._processor(prompt, image)
+        if self._generation_method == _GENERATE_ACTION_VERL:
+            proc_kwargs: dict[str, Any] = {"text": [prompt], "images": [image]}
+            if self._padding_max_length is not None:
+                proc_kwargs.update(
+                    {"padding": "max_length", "max_length": self._padding_max_length}
+                )
+            inputs = self._processor(**proc_kwargs)
+        else:
+            inputs = self._processor(prompt, image)
         inputs = inputs.to(self.device, dtype=self._autocast_dtype or torch.bfloat16)
 
         device_type = self.device.split(":", 1)[0]
@@ -342,22 +453,50 @@ class _OpenVLAAdapter:
             autocast_ctx = contextlib.nullcontext()
 
         with inference_span(kind="chunk"), torch.no_grad(), autocast_ctx:
-            out = self._model.predict_action(
-                **inputs, unnorm_key=self._unnorm_key, do_sample=False
-            )
+            if self._generation_method == _GENERATE_ACTION_VERL:
+                if not hasattr(self._model, _GENERATE_ACTION_VERL):
+                    raise ROSConfigError(
+                        "OpenVLA policy_extras.openvla_generation_method="
+                        f"{_GENERATE_ACTION_VERL!r} was requested, but the loaded model "
+                        "does not expose generate_action_verl()."
+                    )
+                padding_idx = getattr(
+                    getattr(self._processor, "tokenizer", None), "pad_token_id", None
+                )
+                if padding_idx is None:
+                    padding_idx = getattr(
+                        getattr(self._processor, "tokenizer", None), "eos_token_id", 2
+                    )
+                out = self._model.generate_action_verl(
+                    **inputs,
+                    unnorm_key=self._unnorm_key,
+                    do_sample=self._do_sample,
+                    temperature=self._temperature,
+                    padding_idx=padding_idx,
+                )
+            else:
+                out = self._model.predict_action(
+                    **inputs, unnorm_key=self._unnorm_key, do_sample=self._do_sample
+                )
 
-        arr = np.asarray(out, dtype=np.float32) if not hasattr(out, "detach") else np.asarray(
-            out.detach().to(torch.float32).cpu().numpy(), dtype=np.float32
-        )
-        # Normalize shape to a (chunk, action_dim) array.
-        if arr.ndim == 1:
-            arr = arr[None, :]
-        # Trim any padded action width to the embodiment's real action dim.
-        if arr.shape[-1] > self._action_dim:
-            arr = arr[:, : self._action_dim]
+        # OpenVLA-OFT ``predict_action`` returns a ``(actions, hidden_states)``
+        # tuple; the action half is the (already un-normalized) chunk, flattened
+        # to ``(num_chunk * action_dim,)`` (verified live 2026-06-19: 8*7=56).
+        act = out[0] if isinstance(out, (tuple, list)) else out
+        if hasattr(act, "detach"):
+            act = act.detach().to(torch.float32).cpu().numpy()
+        arr = _as_action_chunk(act, self._action_dim)
+        # Fallback de-norm only for checkpoints whose custom code returns
+        # *normalized* tokens (the stock OpenVLA path already un-normalizes).
         if self._actions_prenormalized:
             stats = self._model.config.norm_stats[self._unnorm_key]
             arr = np.stack([_unnormalize_action(row, stats) for row in arr])
+        arr = _postprocess_action_chunk(
+            arr,
+            action_scale=self._action_scale,
+            binarize_gripper=self._binarize_gripper,
+            gripper_threshold=self._gripper_threshold,
+        )
         return [np.ascontiguousarray(row, dtype=np.float32) for row in arr]
 
 
@@ -392,7 +531,11 @@ def _load_openvla_model(
             bnb_4bit_compute_dtype=torch.bfloat16,
         )
         # A 4-bit model is placed at load time; it cannot be .to()-moved after.
-        load_kwargs["device_map"] = {"": device}
+        # Use the integer CUDA index ({"": 0}) — accelerate's single-device
+        # dispatch path is sensitive to the device_map form for quantized
+        # custom-code models (verified live 2026-06-19 with accelerate 0.33).
+        cuda_index = int(device.split(":", 1)[1]) if ":" in device else 0
+        load_kwargs["device_map"] = {"": cuda_index}
 
     with _openvla_phase("from_pretrained", nf4=use_nf4):
         model = auto_model_cls.from_pretrained(repo_id, **load_kwargs)
@@ -401,7 +544,39 @@ def _load_openvla_model(
         with _openvla_phase("to_device", device=device):
             model = model.to(device)
     model.eval()
+    _patch_unnormalize_for_accelerate(model)
     return model, processor
+
+
+def _patch_unnormalize_for_accelerate(model: Any) -> None:
+    """Make OpenVLA's ``_unnormalize_actions`` tolerate a CUDA predicted tensor.
+
+    OpenVLA's custom ``_unnormalize_actions`` runs ``np.where(...)`` directly on
+    the predicted-action tensor, which assumes it is on CPU. Under accelerate's
+    device-map hooks (used for the 4-bit load) the tensor stays on CUDA, so the
+    implicit ``np.asarray`` raises "can't convert cuda tensor to numpy". Wrap the
+    bound method to move the tensor to CPU first (verified live 2026-06-19). A
+    no-op for checkpoints without this method.
+    """
+    orig = getattr(model, "_unnormalize_actions", None)
+    if orig is None:
+        return
+
+    def _cpu_first(normalized_actions: Any, unnorm_key: Any = None) -> Any:
+        if hasattr(normalized_actions, "detach"):
+            normalized_actions = normalized_actions.detach().cpu().numpy()
+        return orig(normalized_actions, unnorm_key)
+
+    model._unnormalize_actions = _cpu_first
+
+
+def _seed_torch_for_sampling(torch: Any, seed: int | None) -> None:
+    """Pin torch sampling for stochastic OpenVLA generation when requested."""
+    if seed is None:
+        return
+    torch.manual_seed(seed)
+    if hasattr(torch, "cuda") and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 @POLICIES.register("openvla")
@@ -440,12 +615,21 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         device=device,
         dtype_str=dtype_str,
     )
+    extra = getattr(spec, "extra", {}) or {}
+    torch_seed = _extra_int_or_none(extra, "openvla_torch_seed")
+    _seed_torch_for_sampling(torch, torch_seed)
 
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
 
-    extra = getattr(spec, "extra", {}) or {}
     action_dim = int(extra.get("openvla_action_dim", _DEFAULT_ACTION_DIM))
+    generation_method = str(extra.get("openvla_generation_method", _DEFAULT_GENERATION_METHOD))
+    if generation_method not in {_DEFAULT_GENERATION_METHOD, _GENERATE_ACTION_VERL}:
+        raise ROSConfigError(
+            "OpenVLA policy_extras.openvla_generation_method must be "
+            f"{_DEFAULT_GENERATION_METHOD!r} or {_GENERATE_ACTION_VERL!r}, got "
+            f"{generation_method!r}."
+        )
 
     return _OpenVLAAdapter(
         spec=spec,
@@ -458,4 +642,12 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _camera_keys=tuple(cam_keys) if cam_keys else ("camera1",),
         _actions_prenormalized=bool(extra.get("openvla_actions_prenormalized", False)),
         _autocast_dtype=torch.bfloat16 if device.startswith("cuda") else None,
+        _generation_method=generation_method,
+        _do_sample=_extra_bool(extra, "openvla_do_sample", False),
+        _temperature=_extra_float(extra, "openvla_temperature", 0.6),
+        _padding_max_length=_extra_positive_int_or_none(extra, "openvla_padding_max_length"),
+        _action_scale=_extra_float(extra, "openvla_action_scale", 1.0),
+        _binarize_gripper=_extra_bool(extra, "openvla_binarize_gripper", False),
+        _gripper_threshold=_extra_float(extra, "openvla_gripper_threshold", 0.5),
+        _torch_seed=torch_seed,
     )

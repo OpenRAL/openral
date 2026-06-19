@@ -27,14 +27,13 @@ version: "0.1.0"
 license: "mit"
 role: "s1"
 kind: "vla"  # learnable Vision-Language-Action policy
-# ADR-0060: declare only the SimplerEnv WidowX put-on-plate tasks this bridge
-# policy was trained/validated for, so the benchmark runner accepts those
-# scenes and refuses a mismatched (e.g. Panda PickCube) pairing.
+# ADR-0060: declare only the SimplerEnv WidowX task locally verified with
+# success > 0. The sibling Bridge tasks remain plausible checkpoint targets, but
+# they are not declared until reproduced locally.
 evaluated_tasks:
   - "simpler_env/widowx_carrot_on_plate"
-  - "simpler_env/widowx_spoon_on_towel"
-  - "simpler_env/widowx_stack_cube"
-  - "simpler_env/widowx_put_eggplant_in_basket"
+benchmarks:
+  simpler_env_widowx: 0.4
 
 # ── Policy identity ────────────────────────────────────────────────────────
 model_family: "openvla"
@@ -92,12 +91,25 @@ n_action_steps: 8
 latency_budget:
   per_chunk_ms: 2000.0
 
+# RLinf PPO eval path. These are adapter-owned knobs intentionally kept in the
+# manifest instead of scene YAML so the rollout trace records exactly how the
+# checkpoint was driven.
+policy_extras:
+  openvla_generation_method: "generate_action_verl"
+  openvla_do_sample: true
+  openvla_temperature: 0.6
+  openvla_padding_max_length: 30
+  openvla_action_scale: 2.0
+  openvla_binarize_gripper: true
+  openvla_gripper_threshold: 0.5
+  openvla_torch_seed: 0
+
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://huggingface.co/RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood"
 
 description: >
   OpenVLA-OFT (RLinf, PPO on ManiSkill3 PutOnPlateInScene25) WidowX bridge
-  policy, evaluated on the SimplerEnv WidowX put-on-plate tasks. Loaded
+  policy, evaluated on SimplerEnv WidowX carrot-on-plate. Loaded
   in-process via transformers custom-code (trust_remote_code), NF4 for 8 GB
   hosts. MIT license.
 
