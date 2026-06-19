@@ -131,10 +131,17 @@ paper_url: "https://arxiv.org/abs/2506.01844"
 dataset_uri: "hf://Calvert0921/SmolVLA_LiftCube_Franka_1000"
 source_repo: "hf://Calvert0921/smolvla_franka_liftcube_1000"
 # Task-data gate (ADR-0060): this checkpoint was trained on the *LiftCube*
-# dataset (lift the cube to a height), NOT PickCube (grasp + place at a goal +
-# stay static). Declaring the true task makes the benchmark runner refuse the
-# maniskill3/PickCube-v1 scene with ROSCapabilityMismatch instead of producing
-# a plausible-looking rollout that can never satisfy PickCube success.
+# dataset (a ManiSkill2-style "lift the cube to a height" task) which has NO
+# equivalent env in ManiSkill3 3.0.1 — MS3 ships PickCube-v1 (grasp + place at
+# a goal + stay static), a different task. Declaring the (MS3-absent) true task
+# makes the benchmark runner refuse every real MS3 scene with
+# ROSCapabilityMismatch. Verified empirically 2026-06-19: retargeted to
+# PickCube-v1 it runs (50 steps, ~15 ms/step real inference) and attempts the
+# cube but cannot satisfy PickCube's goal-placement success (success=False) —
+# exactly the plausible-but-unsolvable rollout the gate exists to block. This
+# rSkill therefore has no valid MS3 benchmark; replace with a PickCube-trained
+# policy (e.g. the author's PegInsertion checkpoint -> PegInsertionSide-v1, or
+# an MS3 OpenVLA-OFT policy) before pairing it with a maniskill scene.
 evaluated_tasks: ["maniskill3/LiftCube"]
 
 description: >
