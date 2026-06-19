@@ -15,9 +15,12 @@ task:
   success_key: is_success
   max_steps: 300
 
-n_episodes: 200
+n_episodes: 50           # standard PushT eval count (Diffusion Policy / lerobot)
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/2303.04137"
-  honest_scope: "Standard PushT eval (2-D). Paper reports ~0.91 coverage ratio."
+  honest_scope: >
+    Standard PushT eval (2-D pymunk), 50 episodes, max 300 steps each
+    (gym-pusht TimeLimit). Diffusion Policy (Chi et al.) reports ~0.91
+    coverage ratio.
