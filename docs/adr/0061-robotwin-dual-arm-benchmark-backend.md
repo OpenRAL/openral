@@ -144,14 +144,14 @@ still `pytest.skip` (CLAUDE.md §1.11); hosts with it run a real SAPIEN reset/st
   `policy_preprocessor.json` normalization stats expect `observation.state` shape `(14,)`,
   matching the live aloha-agilex state. `rskills/smolvla-robotwin/rskill.yaml` therefore
   pins `state_contract.dim: 14`.
-- ⚠️ **Full SmolVLA scored eval/video still not reproduced.** The live verification is
-  simulator/sidecar/wire/action-contract verification, not a policy success number. A bounded
-  non-mutating one-episode attempt loaded `lerobot/smolvla_robotwin` on CPU and initialized the
-  processors, then SAPIEN reset failed on this 8 GB host with
-  `vk::Queue::submit: ErrorDeviceLost` / svulkan2 `OIDN Error: out of memory`. The eval JSON
-  remains to be produced on a host with more Vulkan/SAPIEN headroom via
+- ⚠️ **One-episode SmolVLA website-video attempt runs, but does not succeed.** A retry after
+  clearing a stale RLDX sidecar loaded `lerobot/smolvla_robotwin` on CPU, initialized the
+  processors, reset the SAPIEN scene, and ran the official `lift_pot` horizon:
   `openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml --rskill
-  rskills/smolvla-robotwin`. No benchmark metric is invented.
+  rskills/smolvla-robotwin --n-episodes 1 --no-view --no-write-eval --no-update-manifest
+  --save-video /home/allopart/workspace/_website_videos --video-size 1024 --device cpu`.
+  It wrote `/home/allopart/workspace/_website_videos/robotwin_smolvla-robotwin_fail.mp4`
+  (`steps=300`, `success=False`). No successful benchmark metric is invented.
 
 ## Alternatives considered
 
