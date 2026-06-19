@@ -3357,7 +3357,7 @@ auto-filters per rSkill so a single run scores one ACT checkpoint's one task.
 """
 
 ModelFamily: TypeAlias = Literal[
-    "smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t"
+    "smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t", "openvla"
 ]
 """VLA / policy family the skill belongs to.
 
@@ -3369,6 +3369,12 @@ matching adapter under ``python/sim/src/openral_sim/adapters/``.
 ``gr00t`` (NVIDIA Isaac GR00T N1.x / N2) runs out-of-process via a ZMQ
 sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 ``rldx`` adapter (RLDX-1 is itself a GR00T-N1.5 finetune) — see ADR-0046.
+
+``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
+loaded in-process (``trust_remote_code``, gated by
+``OPENRAL_ALLOW_REMOTE_CODE=1``); the adapter de-normalizes the policy's
+discrete action tokens with the checkpoint's embedded ``unnorm_key`` stats
+and replays the action chunk closed-loop — see ADR-0061.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and
