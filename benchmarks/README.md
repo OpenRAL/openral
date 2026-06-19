@@ -46,13 +46,12 @@ for the pattern.
 
 | Suite YAML | Robot | Scene | Tasks | Per-scene `n_episodes` | `success_key` | `max_steps` | Total rollouts |
 |---|---|---|---|---|---|---|---|
-| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 10 | `is_success` | 280 | 100 |
-| `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 10 | `is_success` | 280 | 100 |
-| `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 10 | `is_success` | 300 | 100 |
-| `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 10 | `is_success` | 520 | 100 |
+| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 50 | `is_success` | 280 | 500 |
+| `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 50 | `is_success` | 280 | 500 |
+| `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 50 | `is_success` | 300 | 500 |
+| `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 50 | `is_success` | 520 | 500 |
 | `metaworld_mt50.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 50 |  5 | `success`    | 500 | 250 |
-| `aloha_transfer_cube.yaml` | aloha_bimanual | aloha_transfer_cube (gym-aloha) |  1 | 50 | `is_success` | 400 |  50 |
-| `aloha_insertion.yaml`    | aloha_bimanual | aloha_insertion (gym-aloha)     |  1 | 50 | `is_success` | 400 |  50 |
+| `aloha.yaml`              | aloha_bimanual | aloha_transfer_cube + aloha_insertion (gym-aloha) |  2 | 50 | `is_success` | 400 | 100 |
 | `pusht.yaml`              | pusht_2d       | pusht (gym-pusht pymunk)        |  1 | 50 | `is_success` | 300 |  50 |
 | `maniskill3_pick_place.yaml`       | google_robot   | maniskill3 (SAPIEN, GPU)                                                |  2 |  5 | `success`    | 100–200 |  10 |
 | `maniskill3_franka_pick_cube.yaml` | franka_panda   | maniskill3 PickCube-v1 (SAPIEN, GPU)                                    |  1 | 10 | `success`    | 100 |  10 |
