@@ -98,6 +98,10 @@ class TabletopOptions:
         wrist_camera_fovy: Wrist-camera vertical FoV, degrees.
         settle_steps: ``mj_step`` calls after each action write — the scene's
             position actuators are advanced this many steps per ``step()``.
+        initial_joint_positions: Optional reset pose in the same convention as
+            ``joint_units`` plus the calibration affine. Empty means use the
+            robot MJCF's default qpos. Values are clipped to the robot joint
+            limits before writing qpos/ctrl.
         joint_units: Unit convention for the robot joint state/action
             boundary. ``"radians"`` is sim-native; ``"degrees"`` is for
             LeRobot SO-100/SO-101 checkpoints that record servo degrees.
@@ -144,6 +148,7 @@ class TabletopOptions:
     wrist_camera_fovy: float = 75.0
 
     settle_steps: int = 5
+    initial_joint_positions: tuple[float, ...] = ()
     joint_units: str = "radians"
     joint_offsets_deg: tuple[float, ...] = ()
     joint_signs: tuple[float, ...] = ()

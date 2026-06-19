@@ -217,6 +217,45 @@ def test_tabletop_push_degree_trained_so101_action_converts_to_radians() -> None
         rollout.close()
 
 
+def test_tabletop_push_initial_joint_positions_seed_reset_pose() -> None:
+    """A configured policy-unit reset pose seeds qpos and ctrl before the first frame."""
+    initial_deg = [-4.90, -100.00, 90.00, 77.11, -96.76, 2.69]
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "initial_joint_positions": initial_deg,
+        },
+    )
+    try:
+        obs = rollout.reset(seed=0)
+        expected_rad = np.radians(np.asarray(initial_deg, dtype=np.float64))
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(expected_rad, rollout._act_clip_ranges[:, 0], rollout._act_clip_ranges[:, 1]),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(obs["state"], initial_deg, atol=1.0)
+    finally:
+        rollout.close()
+
+
+def test_tabletop_push_bad_initial_joint_positions_rejected() -> None:
+    """The reset pose is one value per actuator; wrong-width configs fail loudly."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    env = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "initial_joint_positions": [0.0, 0.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="initial_joint_positions"):
+        SCENES.get("tabletop_push")(env)
+
+
 def test_tabletop_push_random_spawn_varies_with_seed() -> None:
     """Different seeds produce different cube + goal spawns."""
     poses: dict[int, tuple] = {}

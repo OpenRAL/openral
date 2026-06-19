@@ -39,8 +39,10 @@ embodiment_tags:
 # The checkpoint ingests three RGB streams (`top` / `wrist` / `front`);
 # the canonical so101_follower robot declares two USB cameras
 # (`observation.images.camera1` overhead + `observation.images.camera2`
-# wrist). A scene that supplies only those two satisfies the contract —
-# the absent `front` stream is zero-padded by pi05's per-image mask.
+# wrist). A scene that supplies only those two satisfies the minimum robot
+# contract — the absent `front` stream is zero-padded by pi05's per-image
+# mask. Scenes with a real `front` camera should list it in `scene.cameras`
+# so the adapter feeds all three trained image features.
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
@@ -92,6 +94,7 @@ image_preprocessing:
   aliases:
     oak_top: "top"
     overhead: "top"
+    front: "front"
     wrist: "wrist"
 state_contract:
   dim: 6

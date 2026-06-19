@@ -10,7 +10,10 @@ scene:
   backend: mujoco
   observation_height: 480
   observation_width: 640
-  cameras: ["overhead", "wrist"]
+  # Order matters for debug video: the pi0.5 adapter records the last listed
+  # camera as the VLA input panel, so keep wrist last while still feeding the
+  # checkpoint's trained top/front/wrist streams.
+  cameras: ["overhead", "front", "wrist"]
   backend_options:
     # Table: 80 × 80 cm slab, top surface at z = 0 (robot base height).
     table_size_xy: [0.80, 0.80]
@@ -39,12 +42,17 @@ scene:
     wrist_camera_pos_local: [0.03, -0.02, -0.06]
     wrist_camera_fovy: 75.0
 
-    # SO-101 pi0.5 / MolmoAct2 checkpoints are LeRobot-degree-native, same
-    # calibration as the so101_box scene. Without this the absolute joint
-    # targets were interpreted as radians and clipped, causing oscillation.
+    # SO-101 pi0.5 checkpoints are LeRobot-degree-native. The HollyTan
+    # pi05 SO-101 pick-place dataset stores calibrated joint degrees directly
+    # (identity affine against this MJCF is the closest match); the MolmoAct2
+    # SO100/SO101 mixture uses a different offset convention, so do not reuse
+    # its so101_box offsets here.
     joint_units: degrees
-    joint_offsets_deg: [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
-    joint_signs: [1, 1, 1, 1, 1, 1]
+
+    # Reset near the pi05 pick-place first-frame distribution. The raw dataset
+    # mean is roughly [-4.9, -103.3, 96.1, 77.1, -96.8, 2.7] degrees; joints 2
+    # and 3 are clipped to this MJCF's physical limits (-100°, +90°).
+    initial_joint_positions: [-4.90, -100.00, 90.00, 77.11, -96.76, 2.69]
 
     settle_steps: 5
 
