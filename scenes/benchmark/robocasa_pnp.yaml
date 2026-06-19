@@ -17,20 +17,22 @@ scene:
     prebuilt_task: PickPlaceCounterToCabinet
     robots: ["PandaMobile"]
     controller: OSC_POSE
-    horizon: 600
+    horizon: 750            # RoboCasa official per-task horizon (dataset_registry.py)
 
 task:
   id: robocasa/PickPlaceCounterToCabinet/0
   scene_id: robocasa/PickPlaceCounterToCabinet
   instruction: "pick the object from the counter and place it into the cabinet"
   success_key: is_success
-  max_steps: 600
+  max_steps: 750           # RoboCasa official PickPlaceCounterToCabinet horizon
 
-n_episodes: 1
+n_episodes: 50             # RoboCasa eval protocol: 50 rollouts per task
 seed: 1
 
 metadata:
-  paper: "https://robocasa.ai"
+  paper: "https://arxiv.org/abs/2406.02523"
   honest_scope: >
-    1 episode of PickPlaceCounterToCabinet with PandaMobile (OSC_POSE, horizon=600).
-    No published canonical per-task success numbers; this is an OpenRAL local rollout.
+    PickPlaceCounterToCabinet — one of RoboCasa's 24 atomic kitchen tasks
+    (Nasiriany et al., 2406.02523), PandaMobile + OSC_POSE. Official protocol:
+    horizon 750 (robocasa dataset_registry), 50 rollouts per task. The paper
+    publishes BC-Transformer baseline success rates for the atomic tasks.
