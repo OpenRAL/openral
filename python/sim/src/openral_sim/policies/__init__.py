@@ -21,6 +21,7 @@ def _register_policies() -> None:
         gr00t,
         mock,
         molmoact2,
+        openvla,
         pi05,
         rldx,
         robots,
