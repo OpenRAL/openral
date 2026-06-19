@@ -321,6 +321,20 @@ isaacsim = [
     "pyzmq>=25",
     "msgpack>=1",
 ]
+robotwin = [
+    # ADR-0061 — opt-in RoboTwin 2.0 SAPIEN dual-arm benchmark backend.
+    #
+    # Same shape as the `isaacsim` / `rldx` groups: the RoboTwin SAPIEN env
+    # (`tools/robotwin_sidecar.py`, wrapping LeRobot's `robotwin` env) runs in its
+    # OWN Python 3.10 venv that this group does NOT touch — RoboTwin pins
+    # SAPIEN + CuRobo + mplib + pytorch3d against Python 3.10 / CUDA 12.1,
+    # incompatible with this repo's Python 3.12, and ships multi-GB assets, so it is
+    # externally provisioned (CLAUDE.md §1.9), never pinned here. What we install on
+    # the openral (py3.12) side is just the ZMQ + msgpack client used by
+    # `openral_sim.backends.robotwin`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
 locateanything = [
     # ADR-0037 — opt-in LocateAnything-3B open-vocab VLM detector.
     #

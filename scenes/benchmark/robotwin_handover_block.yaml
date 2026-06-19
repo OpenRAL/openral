@@ -1,0 +1,33 @@
+# RoboTwin 2.0 — handover_block (bimanual coordination), aloha-agilex, SAPIEN.
+# Run: openral benchmark scene --config scenes/benchmark/robotwin_handover_block.yaml \
+#                             --rskill rskills/smolvla-robotwin
+# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv (ADR-0061).
+
+robot_id: aloha_agilex
+
+scene:
+  id: robotwin
+  backend: sapien
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2", "camera3"]
+
+task:
+  id: robotwin/handover_block
+  scene_id: robotwin
+  instruction: "pick up the block with one arm and hand it over to the other arm"
+  success_key: is_success
+  max_steps: 300
+
+n_episodes: 100
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2506.18088"
+  display_name: "RoboTwin 2.0 — Handover Block"
+  simulator: "RoboTwin 2.0 (SAPIEN), aloha-agilex"
+  honest_scope: >
+    handover_block (RoboTwin 2.0, Chen et al. 2506.18088). Bimanual
+    arm-to-arm handover on the aloha-agilex embodiment. Official protocol:
+    100 episodes/task, sim built-in success, episode_length=300. Easy
+    (demo_clean) setting.

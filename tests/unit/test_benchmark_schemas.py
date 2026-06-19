@@ -479,6 +479,16 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "SimplerEnv (WidowX / Bridge V2)",
         "SimplerEnv (SAPIEN via ManiSkill)",
     ),
+    (
+        "robotwin",
+        "aloha_agilex",
+        "robotwin",
+        5,
+        100,
+        "is_success",
+        "RoboTwin 2.0 — dual-arm (aloha-agilex)",
+        "RoboTwin 2.0 (SAPIEN), aloha-agilex",
+    ),
 ]
 
 

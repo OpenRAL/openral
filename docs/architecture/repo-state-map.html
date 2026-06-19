@@ -511,7 +511,7 @@ const SCHEMAS = [
   { name: "RoboCasaBackendOptions", where: "core",  kind: "part", note: "Typed validator for SceneSpec.backend_options under the RoboCasa backend (ADR-0015). Prebuilt-vs-procedural XOR. Consumed by python/sim/.../adapters/robocasa.py (planned, issue #88 PR B)." },
   { name: "TaskSpec",               where: "core",  kind: "part" },
   { name: "VLASpec",                where: "core",  kind: "part" },
-  { name: "PhysicsBackend",         where: "core",  kind: "enum", note: "libero | metaworld | mock | mujoco — picks which adapter make_env() uses." },
+  { name: "PhysicsBackend",         where: "core",  kind: "enum", note: "mujoco | mujoco_mjx | pybullet | sapien | isaacsim | genesis | mock — declares the scene's physics engine (descriptive; the SCENES registry keys adapters by scene.id). sapien added for the RoboTwin 2.0 dual-arm benchmark backend (ADR-0061; ManiSkill3 scenes predate the slot and still declare mujoco)." },
 
   // ROS IDL (separate normative layer)
   { name: "msg/ActionChunk",        where: "packages/msgs/msg",    kind: "ros-msg",    note: "Wire format for action chunks on ROS topics — mirrors core.Action." },
