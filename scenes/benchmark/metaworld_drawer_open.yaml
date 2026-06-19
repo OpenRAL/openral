@@ -1,0 +1,32 @@
+# MetaWorld drawer-open-v3 — Sawyer fixed. Website-demo single scene for the
+# MT10 expansion (the full sweep lives in benchmarks/metaworld_mt10.yaml).
+# Run: openral benchmark scene --config scenes/benchmark/metaworld_drawer_open.yaml \
+#                        --rskill rskills/smolvla-metaworld
+# Setup: uv run pip install metaworld==3.0.0 --no-deps; note MUJOCO_GL=egl.
+
+robot_id: sawyer
+
+scene:
+  id: metaworld
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
+
+task:
+  id: metaworld/drawer-open-v3
+  scene_id: metaworld
+  instruction: "open the drawer"
+  success_key: success
+  max_steps: 500           # MetaWorld max_path_length (official fixed horizon)
+
+n_episodes: 50             # matches the metaworld MT10/MT50 per-task budget convention
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/1910.10897"
+  honest_scope: >
+    MetaWorld MT10 drawer-open-v3, solved by the multi-task
+    lerobot/smolvla_metaworld checkpoint (trained on metaworld_mt50).
+    One of the 10 tasks in benchmarks/metaworld_mt10.yaml; this single
+    scene is a website-demo entry. 500-step fixed horizon.

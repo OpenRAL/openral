@@ -3339,6 +3339,7 @@ BenchmarkName: TypeAlias = Literal[
     "maniskill3_franka_pick_cube",
     "maniskill3_panda",
     "maniskill3_pick_place",
+    "metaworld_mt10",
     "metaworld_mt50",
     "pusht",
     "robocasa_pnp",

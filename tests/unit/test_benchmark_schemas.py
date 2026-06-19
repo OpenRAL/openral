@@ -390,6 +390,16 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "LIBERO (MuJoCo)",
     ),
     (
+        "metaworld_mt10",
+        "sawyer",
+        "metaworld",
+        10,
+        10,
+        "success",
+        "MetaWorld MT10",
+        "MetaWorld v3 (MuJoCo via lerobot)",
+    ),
+    (
         "metaworld_mt50",
         "sawyer",
         "metaworld",

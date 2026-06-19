@@ -50,6 +50,7 @@ for the pattern.
 | `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 50 | `is_success` | 280 | 500 |
 | `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 50 | `is_success` | 300 | 500 |
 | `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 50 | `is_success` | 520 | 500 |
+| `metaworld_mt10.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 10 | 10 | `success`    | 500 | 100 |
 | `metaworld_mt50.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 50 |  5 | `success`    | 500 | 250 |
 | `aloha.yaml`              | aloha_bimanual | aloha_transfer_cube + aloha_insertion (gym-aloha) |  2 | 50 | `is_success` | 400 | 100 |
 | `pusht.yaml`              | pusht_2d       | pusht (gym-pusht pymunk)        |  1 | 50 | `is_success` | 300 |  50 |
