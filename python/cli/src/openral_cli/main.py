@@ -2368,7 +2368,11 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
-    return VLASpec(id=manifest.model_family, weights_uri=uri)
+    return VLASpec(
+        id=manifest.model_family,
+        weights_uri=uri,
+        extra=dict(manifest.policy_extras),
+    )
 
 
 def _default_benchmark_out_path(vla_spec: VLASpec, suite_id: str) -> Path:
