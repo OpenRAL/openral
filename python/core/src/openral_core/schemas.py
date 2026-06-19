@@ -3328,6 +3328,7 @@ on :class:`RSkillManifest` enforces this. ADR-0013.
 """
 
 BenchmarkName: TypeAlias = Literal[
+    "aloha",
     "aloha_insertion",
     "aloha_transfer_cube",
     "gr1_tabletop",
@@ -3336,17 +3337,23 @@ BenchmarkName: TypeAlias = Literal[
     "libero_object",
     "libero_spatial",
     "maniskill3_franka_pick_cube",
+    "maniskill3_panda",
     "maniskill3_pick_place",
     "metaworld_mt50",
     "pusht",
     "robocasa_pnp",
     "simpler_env_widowx",
 ]
-"""Canonical benchmark suite ids — one per ``benchmarks/<id>.yaml`` in tree.
+"""Canonical benchmark ids — one per ``benchmarks/<id>.yaml`` suite in tree.
 
 Used as keys in ``RSkillManifest.benchmarks``. Each value is the headline
 success rate ``[0.0, 1.0]`` the skill achieves on that suite. The full
 breakdown lives in the matching ``rskills/<id>/eval/<key>.json``.
+
+``aloha_insertion`` / ``aloha_transfer_cube`` are retained as task-level ids
+(the act-aloha* manifests cite their per-task paper numbers) even though the
+two single-task suites were unified into ``aloha.yaml`` — the unified suite
+auto-filters per rSkill so a single run scores one ACT checkpoint's one task.
 """
 
 ModelFamily: TypeAlias = Literal[

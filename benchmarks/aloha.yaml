@@ -1,0 +1,62 @@
+# ALOHA benchmark suite — both gym-aloha bimanual tasks in one suite.
+#
+# Unifies the former aloha_transfer_cube.yaml + aloha_insertion.yaml into a
+# single suite (suite id = "aloha"). The two tasks are distinct gym-aloha envs
+# (AlohaTransferCube-v0 / AlohaInsertion-v0) with their own scene.id, which a
+# suite allows — only robot_id / n_episodes / seed / metadata must be uniform
+# (raise_on_invalid_suite). Each task has its OWN ACT checkpoint, so the
+# benchmark runner's evaluated_tasks auto-filter routes per rSkill:
+#   openral benchmark run --suite aloha --rskill act-aloha            # transfer only
+#   openral benchmark run --suite aloha --rskill act-aloha-insertion  # insertion only
+#   openral benchmark run --suite aloha --rskill act-aloha --task aloha_insertion/0  # explicit
+# (act-aloha declares evaluated_tasks=["aloha_transfer_cube"], so the insertion
+# task is skipped+logged; and vice-versa.)
+#
+# Protocol: ACT paper (Zhao et al., 2304.13705) — episode_len 400, 50 eval
+# rollouts per task. gym-aloha's TimeLimit default is 300; the scene adapter
+# honours task.max_steps to lift it to the paper's 400.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes. Per-scene metadata is uniform
+# via the &meta anchor so raise_on_invalid_suite's metadata-equality check passes.
+
+- scene:
+    id: aloha_transfer_cube
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top"]
+  task:
+    id: aloha_transfer_cube/0
+    scene_id: aloha_transfer_cube
+    instruction: "transfer the cube from the left arm to the right arm"
+    max_steps: 400
+    success_key: is_success
+  robot_id: aloha_bimanual
+  n_episodes: 50
+  seed: 0
+  metadata: &meta
+    paper: "https://arxiv.org/abs/2304.13705"
+    display_name: "ALOHA bimanual (gym-aloha)"
+    simulator: "gym-aloha (MuJoCo)"
+    honest_scope: >
+      Both gym-aloha bimanual tasks (AlohaTransferCube-v0 +
+      AlohaInsertion-v0), ACT paper protocol: episode_len 400, 50 rollouts
+      per task. Each task has its own ACT checkpoint (act-aloha /
+      act-aloha-insertion); the suite auto-filters per rSkill evaluated_tasks,
+      so any single run executes the one task its checkpoint was trained for.
+- scene:
+    id: aloha_insertion
+    backend: mujoco
+    observation_height: 480
+    observation_width: 640
+    cameras: ["top"]
+  task:
+    id: aloha_insertion/0
+    scene_id: aloha_insertion
+    instruction: "insert the peg into the socket"
+    max_steps: 400
+    success_key: is_success
+  robot_id: aloha_bimanual
+  n_episodes: 50
+  seed: 0
+  metadata: *meta
