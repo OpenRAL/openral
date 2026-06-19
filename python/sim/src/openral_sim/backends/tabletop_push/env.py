@@ -123,7 +123,7 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions
                     f"'radians' or 'degrees'; got {units!r}",
                 )
             parsed[key] = units
-        elif key in ("initial_joint_positions", "joint_offsets_deg", "joint_signs"):
+        elif key in ("initial_joint_positions", "joint_offsets_deg", "joint_signs", "joint_scales"):
             if not isinstance(value, (list, tuple)):
                 raise ROSConfigError(
                     f"tabletop_push: scene.backend_options.{key} must be a numeric list; "
@@ -144,6 +144,30 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions
         else:
             parsed[key] = float(value)  # remaining keys are scalar floats
     return TabletopOptions(**parsed)
+
+
+def _validate_joint_unit_affine(options: TabletopOptions, n_act: int) -> None:
+    if options.joint_units != "degrees":
+        return
+
+    for name, values in (
+        ("joint_offsets_deg", options.joint_offsets_deg),
+        ("joint_signs", options.joint_signs),
+        ("joint_scales", options.joint_scales),
+    ):
+        if values and len(values) != n_act:
+            raise ROSConfigError(
+                "tabletop_push: degree-trained policy mode requires "
+                f"{name} to have length {n_act}; got {len(values)}.",
+            )
+    if any(s not in (1.0, -1.0) for s in options.joint_signs):
+        raise ROSConfigError(
+            "tabletop_push: scene.backend_options.joint_signs entries must be +1 or -1.",
+        )
+    if any(s <= 0.0 for s in options.joint_scales):
+        raise ROSConfigError(
+            "tabletop_push: scene.backend_options.joint_scales entries must be positive.",
+        )
 
 
 @dataclass
@@ -175,6 +199,7 @@ class _TabletopPushRollout:
     _joint_units: str = "radians"
     _joint_offsets_deg: NDArray[np.float64] = field(default_factory=lambda: np.zeros(0))
     _joint_signs: NDArray[np.float64] = field(default_factory=lambda: np.ones(0))
+    _joint_scales: NDArray[np.float64] = field(default_factory=lambda: np.ones(0))
     _step_count: int = 0
     _renderer_rgb: Any = None
     _last_rgb: NDArray[np.uint8] | None = None
@@ -310,7 +335,7 @@ class _TabletopPushRollout:
         )
         if self._joint_units == "degrees":
             return np.asarray(
-                self._joint_signs * np.degrees(qpos) + self._joint_offsets_deg,
+                self._joint_signs * self._joint_scales * np.degrees(qpos) + self._joint_offsets_deg,
                 dtype=np.float32,
             )
         return np.asarray(qpos, dtype=np.float32)
@@ -320,7 +345,9 @@ class _TabletopPushRollout:
     ) -> NDArray[np.float64]:
         """Convert policy-unit absolute joint targets to clipped MuJoCo radians."""
         if self._joint_units == "degrees":
-            cmd = np.radians(self._joint_signs * (targets - self._joint_offsets_deg))
+            cmd = np.radians(
+                self._joint_signs * (targets - self._joint_offsets_deg) / self._joint_scales
+            )
         else:
             cmd = targets
         lo = self._act_clip_ranges[:, 0]
@@ -462,22 +489,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             lo, hi = (-np.inf, np.inf)
         clip_ranges.append((lo, hi))
 
-    if options.joint_units == "degrees":
-        if options.joint_offsets_deg and len(options.joint_offsets_deg) != n_act:
-            raise ROSConfigError(
-                "tabletop_push: degree-trained policy mode requires "
-                f"joint_offsets_deg to have length {n_act}; "
-                f"got {len(options.joint_offsets_deg)}.",
-            )
-        if options.joint_signs and len(options.joint_signs) != n_act:
-            raise ROSConfigError(
-                "tabletop_push: degree-trained policy mode requires "
-                f"joint_signs to have length {n_act}; got {len(options.joint_signs)}.",
-            )
-        if any(s not in (1.0, -1.0) for s in options.joint_signs):
-            raise ROSConfigError(
-                "tabletop_push: scene.backend_options.joint_signs entries must be +1 or -1.",
-            )
+    _validate_joint_unit_affine(options, n_act)
     if options.initial_joint_positions and len(options.initial_joint_positions) != n_act:
         raise ROSConfigError(
             "tabletop_push: scene.backend_options.initial_joint_positions must have "
@@ -528,5 +540,6 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             options.joint_offsets_deg or (0.0,) * n_act, dtype=np.float64
         ),
         _joint_signs=np.asarray(options.joint_signs or (1.0,) * n_act, dtype=np.float64),
+        _joint_scales=np.asarray(options.joint_scales or (1.0,) * n_act, dtype=np.float64),
         _rng=np.random.default_rng(env_cfg.seed or 0),
     )

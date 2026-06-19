@@ -240,6 +240,76 @@ def test_tabletop_push_initial_joint_positions_seed_reset_pose() -> None:
         rollout.close()
 
 
+def test_tabletop_push_degree_affine_scales_policy_units() -> None:
+    """Degree mode supports servo-degree scale/offset calibration, not just offsets."""
+    offsets = np.array([-25.5832, -30.3170, 33.9902, 82.4531, -124.1312, 3.0111])
+    scales = np.array([0.3227, 0.8624, 0.8205, 0.2274, 0.2238, 0.2731])
+    initial_policy_deg = np.array([-4.90, -103.31, 96.09, 77.11, -96.76, 2.69])
+    action_policy_deg = initial_policy_deg + np.array([0.3, -1.0, 2.0, 1.0, -0.5, 0.5])
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_offsets_deg": offsets.tolist(),
+            "joint_scales": scales.tolist(),
+            "initial_joint_positions": initial_policy_deg.tolist(),
+        },
+    )
+    try:
+        obs = rollout.reset(seed=0)
+        expected_initial_rad = np.radians((initial_policy_deg - offsets) / scales)
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(
+                expected_initial_rad,
+                rollout._act_clip_ranges[:, 0],
+                rollout._act_clip_ranges[:, 1],
+            ),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(obs["state"], initial_policy_deg, atol=1.0)
+
+        rollout.step(action_policy_deg.astype(np.float32))
+        expected_action_rad = np.radians((action_policy_deg - offsets) / scales)
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(
+                expected_action_rad,
+                rollout._act_clip_ranges[:, 0],
+                rollout._act_clip_ranges[:, 1],
+            ),
+            atol=1e-6,
+        )
+    finally:
+        rollout.close()
+
+
+def test_tabletop_push_bad_joint_scales_rejected() -> None:
+    """Scale calibration is one positive value per actuator."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    bad_width = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_scales": [1.0, 1.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="joint_scales"):
+        SCENES.get("tabletop_push")(bad_width)
+
+    bad_zero = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_scales": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="joint_scales"):
+        SCENES.get("tabletop_push")(bad_zero)
+
+
 def test_tabletop_push_bad_initial_joint_positions_rejected() -> None:
     """The reset pose is one value per actuator; wrong-width configs fail loudly."""
     from openral_core.exceptions import ROSConfigError

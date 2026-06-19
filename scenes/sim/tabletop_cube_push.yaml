@@ -42,17 +42,19 @@ scene:
     wrist_camera_pos_local: [0.03, -0.02, -0.06]
     wrist_camera_fovy: 75.0
 
-    # SO-101 pi0.5 checkpoints are LeRobot-degree-native. The HollyTan
-    # pi05 SO-101 pick-place dataset stores calibrated joint degrees directly
-    # (identity affine against this MJCF is the closest match); the MolmoAct2
-    # SO100/SO101 mixture uses a different offset convention, so do not reuse
-    # its so101_box offsets here.
+    # SO-101 pi0.5 checkpoints are LeRobot-degree-native, but those calibrated
+    # servo degrees are not MuJoCo joint degrees. This affine maps the pi0.5
+    # observation.state q01-q99 range into 85% of the SO-101 MJCF limits:
+    #     policy_deg = sign * scale * mujoco_deg + offset
+    # Without the scales, joints 2 and 3 start on hard limits and every
+    # pi0.5 action clips, so the arm appears not to move.
     joint_units: degrees
+    joint_offsets_deg: [-25.5832, -30.3170, 33.9902, 82.4531, -124.1312, 3.0111]
+    joint_scales: [0.3227, 0.8624, 0.8205, 0.2274, 0.2238, 0.2731]
 
-    # Reset near the pi05 pick-place first-frame distribution. The raw dataset
-    # mean is roughly [-4.9, -103.3, 96.1, 77.1, -96.8, 2.7] degrees; joints 2
-    # and 3 are clipped to this MJCF's physical limits (-100°, +90°).
-    initial_joint_positions: [-4.90, -100.00, 90.00, 77.11, -96.76, 2.69]
+    # Reset at the pi0.5 pick-place first-frame mean, expressed in policy
+    # degrees. The affine above maps this to a reachable non-limit MuJoCo pose.
+    initial_joint_positions: [-4.90, -103.31, 96.09, 77.11, -96.76, 2.69]
 
     settle_steps: 5
 
