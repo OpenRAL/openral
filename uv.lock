@@ -3093,6 +3093,10 @@ robometer = [
     { name = "msgpack" },
     { name = "pyzmq" },
 ]
+robotwin = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 sim = [
     { name = "accelerate" },
     { name = "bitsandbytes" },
@@ -3215,6 +3219,10 @@ robocasa = [
     { name = "transformers", specifier = "==5.3.0" },
 ]
 robometer = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
+robotwin = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
 ]

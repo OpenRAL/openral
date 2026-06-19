@@ -203,6 +203,20 @@ _Isaac-side sidecar (runs under the py3.11 Isaac Sim venv only; ADR-0045). `isaa
 
 _All three layouts use Isaac Sim **core** (not Isaac Lab's env machinery, which the PyPI `isaaclab` wheel does not ship). NOT imported by the openral venv — invoked as a subprocess; the openral-side `backends/isaac_sim.py` forwards `scene.backend_options.layout` (and, for `manifest`, the `--robot-spec` JSON)._
 
+#### `python/sim/src/openral_sim/backends/robotwin.py`
+_RoboTwin 2.0 dual-arm SAPIEN scene adapter. ADR-0061. Single-robot (fixed) scene bound to the `aloha_agilex` embodiment (14-DoF), run in a separate py3.10 sidecar venv (RoboTwin pins SAPIEN/CuRobo/mplib/pytorch3d against py3.10/CUDA-12.1, incompatible with the openral py3.12 venv), over the shared `openral_sim.sidecar.SidecarClient`. Opt-in via the `robotwin` dependency group (pyzmq + msgpack on the openral side only); the heavy SAPIEN+RoboTwin stack is an externally-provisioned sidecar venv (large + CUDA-pinned, never vendored — CLAUDE.md §1.9; RoboTwin is MIT). The factory calls `ensure_backend_deps("robotwin_client")`, resolves the sidecar interpreter (`OPENRAL_ROBOTWIN_SIDECAR_PYTHON`) + script (`tools/robotwin_sidecar.py`), and auto-spawns on first use. Scene id `robotwin`. Task id `robotwin/<snake_case_task>`._
+- `_ROBOTWIN_SCENE_ID = "robotwin"` / `_ROBOTWIN_ROBOT_ID = "aloha_agilex"` — module constants; scene-registry key + fixed robot.
+- `class _RoboTwinSimSidecar` — `SimRollout` proxying `reset/step/render/close` to a `SidecarClient`; unwraps the eval-shaped Observation (`images` keyed `camera1/camera2/camera3` / `state` / `task`) via `client.require(...)`, caches the head frame for `render`, and exposes `action_dim` (14, read from the sidecar `ping`, cached) + `sim_time_ns`.
+- `_scene_default_port(task_id, robot_id) -> int` — deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)` (SHA-256 digest, not the salted builtin `hash`), so distinct tasks never share a sidecar endpoint; an explicit `backend_options.port` still wins.
+- `_robotwin_task_name(task_id) -> str` — strips the `robotwin/` namespace to the bare upstream task name the LeRobot env wants.
+- `_opt_num(opts, key, default, cast)` — coerce a `scene.backend_options` value (ignores `bool`, swallows `ValueError`/`TypeError`).
+- `_provision_robotwin_venv() -> Path` / `_sidecar_python() -> Path` / `_locate_sidecar_script() -> Path` — opt-in (`OPENRAL_ROBOTWIN_AUTO_PROVISION=1`) provisioning of the py3.10 venv (lerobot from git `main` + SAPIEN + wire — the RoboTwin task package + multi-GB assets remain a manual step), interpreter resolution (env override → cache default → opt-in provision → typed `ROSConfigError` carrying the full conda recipe), and `tools/robotwin_sidecar.py` location (env override → walk-up).
+- `_build_robotwin_scene(env_cfg) -> _RoboTwinSimSidecar` — factory: builds the launch argv (`--task`, `--cameras`, `--episode-length`, obs h/w, host/port), connects a `SidecarClient(name="robotwin", expected_identity={"env": "robotwin", "task": <name>})`.
+- Module side effect: `SCENES.register("robotwin", fixed_robot="aloha_agilex")(_build_robotwin_scene)` at import.
+
+#### `tools/robotwin_sidecar.py`
+_RoboTwin-side sidecar (runs under the py3.10 lerobot-main + RoboTwin + SAPIEN venv only; ADR-0061). Constructs LeRobot's native `robotwin` gym env (`RoboTwinEnvConfig` + `make_env`, single non-vectorised env) for the requested task and serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `_RoboTwinEnv` adapts the env's `{pixels, agent_pos}` obs to the eval-layer `{images, state, task}` shape, re-keying the env's native cameras (`head_camera`/`left_camera`/`right_camera`, `_ENV_CAMERA_NAMES`) to the openral scene's `camera1`/`camera2`/`camera3` in order. NOT imported by the openral venv — invoked as a subprocess._
+
 #### `python/sim/src/openral_sim/backends/aloha.py`
 _gym-aloha bimanual MuJoCo scene adapter. Opt-in via the `sim` dependency group (gym-aloha lives there alongside mujoco / gymnasium / lerobot); the scene factory calls `openral_sim._deps.ensure_backend_deps("aloha")` first so the user gets an interactive auto-install banner on first use._
 - `class _AlohaSim` — `SimRollout` wrapping a `gym_aloha` env. — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `env.unwrapped._env.physics.{model,data}.ptr` (dm_control wrapper) for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)` (ADR-0048 Phase 1).
@@ -367,4 +381,4 @@ _Shared boot scaffolding for the out-of-process VLA sidecars (`rldx` / `gr00t`):
 - `_register_policies() -> None` — Side-effect imports of the policy-adapter modules so each registers its factory in `openral_sim.POLICIES` at import time. (L15)
 
 #### `python/sim/src/openral_sim/backends/__init__.py`
-- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L36)
+- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L38)

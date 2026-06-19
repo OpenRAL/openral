@@ -1,0 +1,146 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/smolvla_robotwin            (Apache-2.0)
+# Base:  lerobot/smolvla_base                (arxiv:2506.01844)
+# Dataset: lerobot/robotwin_unified (== pepijn223/robotwin_unified_v3, renamed)
+#
+# Official LeRobot SmolVLA finetune on the RoboTwin 2.0 unified dataset
+# (Chen et al., arXiv 2506.18088). Multi-task across the 50 dual-arm
+# tasks on the aloha-agilex embodiment. Routed via the in-tree `smolvla`
+# adapter (model_family: smolvla).
+#
+# Wired from the checkpoint's config.json (the inference authority):
+#   type: smolvla
+#   input_features:
+#     observation.state              shape (6,)         — see STATE NOTE below
+#     observation.images.camera1     shape (3,256,256)  — head / overhead
+#     observation.images.camera2     shape (3,256,256)  — left wrist
+#     observation.images.camera3     shape (3,256,256)  — right wrist
+#   output_features:
+#     action                          shape (14,)        — 14-DoF dual-arm joints
+#   chunk_size: 50  n_action_steps: 50  flow-matching steps: 10
+#   normalization: STATE/ACTION MEAN_STD, VISUAL IDENTITY
+#
+# Camera-name mapping
+# -------------------
+# RoboTwin's native LeRobot env cameras are head_camera / left_camera /
+# right_camera; the RoboTwin sidecar (tools/robotwin_sidecar.py) re-keys
+# them to camera1 / camera2 / camera3 (head→left→right) so they match
+# this checkpoint's input_features and the robots/aloha_agilex sensors —
+# no per-skill alias remap needed.
+#
+# STATE NOTE: the RoboTwin sidecar reset returns a 14-D aloha-agilex state
+# vector, and the official policy_preprocessor.json normalization stats also
+# expect observation.state shape (14,). `state_contract.dim` therefore follows
+# the live env + processor contract.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-robotwin"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # learnable Vision-Language-Action policy
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# RoboTwin 2.0 default embodiment: AgileX dual-arm (robots/aloha_agilex).
+embodiment_tags:
+  - "aloha_agilex"
+
+# Three RGB streams matching the checkpoint's input_features. The
+# aloha_agilex RobotDescription declares matching camera1 / camera2 /
+# camera3 sensors so the compatibility check resolves cleanly.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 256
+    min_height: 256
+
+# Output side (ADR-0013). 14-DoF dual-arm joint command. For aloha_agilex
+# the loader auto-fills n_dof (14) + vla_action_key from
+# robots/aloha_agilex/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+weights_uri: "hf://lerobot/smolvla_robotwin"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# The official checkpoint ships the lerobot PolicyProcessorPipeline JSONs
+# (policy_preprocessor.json + policy_postprocessor.json) plus their
+# `*_normalizer_processor.safetensors` siblings, so we point at them directly —
+# `materialize_processor_dir` auto-pulls the sibling safetensors. No
+# dataset-stats rebuild fallback needed. Trained on raw SAPIEN renders (no flip).
+processors:
+  preprocessor_uri: "hf://lerobot/smolvla_robotwin/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_robotwin/policy_postprocessor.json"
+image_preprocessing:
+  flip_180: false
+state_contract:
+  dim: 14
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# Matches the checkpoint's config.json (chunk_size=50, n_action_steps=50).
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  per_chunk_ms: 250.0   # SmolVLA bf16 ≈ 80–150 ms/chunk + SAPIEN step headroom
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# No benchmarks shipped yet — see eval/.gitkeep. Populated by
+# `openral benchmark run --suite robotwin` once the SAPIEN sidecar venv is
+# provisioned (ADR-0061). RoboTwin leaderboard SmolVLA-class baselines for
+# reference (Pi0 46.4/16.3 Easy/Hard) are paper-cited, not reproduced here.
+paper_url: "https://arxiv.org/abs/2506.18088"
+dataset_uri: "hf://lerobot/robotwin_unified"
+source_repo: "hf://lerobot/smolvla_robotwin"
+
+description: >
+  SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on the RoboTwin 2.0
+  unified dataset (50 dual-arm tasks, aloha-agilex embodiment, SAPIEN).
+  Multi-task: action chunks of length 50 across three RGB views
+  (head + per-wrist) driving a 14-DoF dual-arm joint command. Runs on the
+  RoboTwin scene backend through the out-of-process SAPIEN sidecar (ADR-0061).
+
+# ── Task-data gate (ADR-0060) ──────────────────────────────────────────────
+# Multi-task checkpoint trained on the full robotwin_unified set, so it is
+# valid on every RoboTwin scene. Declaring the scene id `robotwin` makes the
+# benchmark runner accept all `robotwin/<task>` scenes (family match) and
+# refuse non-RoboTwin scenes.
+evaluated_tasks: ["robotwin"]
+
+# ── Action vocabulary (ADR-0022) ───────────────────────────────────────────
+# GENERALIST marks the multi-task foundation checkpoint; the specific verbs
+# cover the bimanual-coordination / pick-place / stacking task families.
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+  - "transfer"
+objects:
+  - "block"
+  - "pot"
+  - "cup"
+  - "hammer"
+scenes:
+  - "tabletop"
+
+# ── Per-checkpoint action contract (ADR-0019) ──────────────────────────────
+action_contract:
+  dim: 14

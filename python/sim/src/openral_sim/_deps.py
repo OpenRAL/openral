@@ -1060,6 +1060,49 @@ def _isaac_client_plan() -> BackendInstallPlan:
     )
 
 
+def _has_robotwin_client() -> bool:
+    """RoboTwin sidecar client side needs pyzmq + msgpack on the openral venv.
+
+    The heavy SAPIEN + RoboTwin install lives in a separate py3.10 sidecar venv
+    (ADR-0061), provisioned out-of-band; this probe only covers the openral-side
+    wire, same shape as :func:`_has_isaac_client`.
+    """
+    return _has_module("zmq") and _has_module("msgpack")
+
+
+def _robotwin_client_plan() -> BackendInstallPlan:
+    uv = _uv()
+    return BackendInstallPlan(
+        backend_id="robotwin_client",
+        display_name="RoboTwin adapter wire (pyzmq + msgpack on the openral venv)",
+        license_note=(
+            "Pulls pyzmq (LGPL+ZeroMQ exception → effectively permissive) and "
+            "msgpack (Apache-2.0). The SAPIEN + RoboTwin 2.0 sidecar itself is an "
+            "externally-provisioned py3.10 venv (SAPIEN/RoboTwin/CuRobo are large + "
+            "CUDA-12.1-pinned; ADR-0061 / CLAUDE.md §1.9) and is NOT installed by "
+            "this plan. RoboTwin is MIT-licensed."
+        ),
+        probe=_has_robotwin_client,
+        steps=(
+            InstallStep(
+                description=(
+                    "uv sync --group robotwin --inexact (adds pyzmq + msgpack to the "
+                    "openral venv; --inexact keeps other backend deps in place)"
+                ),
+                argv=[
+                    uv,
+                    "sync",
+                    "--all-packages",
+                    "--group",
+                    "robotwin",
+                    "--inexact",
+                ],
+            ),
+        ),
+        manual_hint="just sync --all-packages --group robotwin --inexact",
+    )
+
+
 def _rldx_client_plan() -> BackendInstallPlan:
     uv = _uv()
     return BackendInstallPlan(
@@ -1409,6 +1452,7 @@ _PLANS: dict[str, Callable[[], BackendInstallPlan]] = {
     "rldx_client": _rldx_client_plan,
     "rldx_sidecar_setup": _rldx_sidecar_setup_plan,
     "isaac_client": _isaac_client_plan,
+    "robotwin_client": _robotwin_client_plan,
 }
 
 

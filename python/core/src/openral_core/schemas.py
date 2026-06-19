@@ -3292,6 +3292,7 @@ class EmbodimentExtra(BaseModel):
 
 EmbodimentTag: TypeAlias = Literal[
     "aloha",
+    "aloha_agilex",
     "custom",
     "franka_panda",
     "g1",
@@ -3343,6 +3344,7 @@ BenchmarkName: TypeAlias = Literal[
     "metaworld_mt50",
     "pusht",
     "robocasa_pnp",
+    "robotwin",
     "simpler_env_widowx",
 ]
 """Canonical benchmark ids — one per ``benchmarks/<id>.yaml`` suite in tree.
@@ -4693,6 +4695,11 @@ class PhysicsBackend(str, Enum):
         MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld.
         MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).
         PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).
+        SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The
+            engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm
+            benchmark backend runs it out-of-process via a py3.10 sidecar
+            (ADR-0061). ManiSkill3 scenes predate this slot and historically
+            declared ``MUJOCO`` — new SAPIEN backends use this value.
         ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.
         GENESIS: Genesis (physics-language unification). Future.
         MOCK: In-process mock with no physics — used for wiring smoketests.
@@ -4701,6 +4708,7 @@ class PhysicsBackend(str, Enum):
     MUJOCO = "mujoco"
     MUJOCO_MJX = "mujoco_mjx"
     PYBULLET = "pybullet"
+    SAPIEN = "sapien"
     ISAACSIM = "isaacsim"
     GENESIS = "genesis"
     MOCK = "mock"

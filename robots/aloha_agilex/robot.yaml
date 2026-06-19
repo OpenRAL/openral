@@ -1,0 +1,265 @@
+# RobotDescription — AgileX "aloha-agilex" dual-arm (RoboTwin 2.0 embodiment).
+#
+# This describes the bimanual AgileX platform RoboTwin 2.0 evaluates by
+# default: two 6-DoF PiPER arms with parallel grippers (14-DoF action
+# space, 7 per arm) and three RGB cameras (head + per-wrist). It is the
+# embodiment behind `lerobot/robotwin_unified` and the public RoboTwin
+# checkpoints (e.g. `lerobot/smolvla_robotwin`).
+#
+# Like `robots/aloha_bimanual/robot.yaml`, this manifest ships NO on-disk
+# URDF/MJCF: the actual robot lives inside the SAPIEN env owned by the
+# RoboTwin sidecar (ADR-0061), so the openral side never instantiates it.
+# The manifest exists only so the eval layer can resolve the 14-D
+# action/state contract and run the embodiment/sensor compatibility gate.
+# Joint kinematics are therefore approximate (sufficient for capability
+# matching + SafetyEnvelope authoring); the SAPIEN model is authoritative.
+
+name: "aloha_agilex"
+embodiment_kind: "bimanual"
+
+base_frame: "world"
+
+# `assets` deliberately unset (ADR-0058 AssetRefs default) — the sidecar's
+# SAPIEN scene owns the geometry; nothing on the openral side loads it.
+
+joints:
+  # 14-DoF: 2 arms × (6 revolute joints + 1 gripper). AgileX PiPER limits
+  # are approximate; the SAPIEN model is authoritative (see header note).
+  - name: "left_joint1"
+    joint_type: "revolute"
+    parent_link: "world"
+    child_link: "left_link1"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-2.618, 2.618]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_joint2"
+    joint_type: "revolute"
+    parent_link: "left_link1"
+    child_link: "left_link2"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [0.0, 3.14]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_joint3"
+    joint_type: "revolute"
+    parent_link: "left_link2"
+    child_link: "left_link3"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-2.967, 0.0]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_joint4"
+    joint_type: "revolute"
+    parent_link: "left_link3"
+    child_link: "left_link4"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-1.745, 1.745]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_joint5"
+    joint_type: "revolute"
+    parent_link: "left_link4"
+    child_link: "left_link5"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.22, 1.22]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_joint6"
+    joint_type: "revolute"
+    parent_link: "left_link5"
+    child_link: "left_link6"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "left_gripper"
+    joint_type: "prismatic"
+    parent_link: "left_link6"
+    child_link: "left_finger"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [0.0, 0.07]
+    velocity_limit: 0.5
+    effort_limit: 30.0
+    actuator_kind: "servo"
+    role: "gripper"
+  - name: "right_joint1"
+    joint_type: "revolute"
+    parent_link: "world"
+    child_link: "right_link1"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-2.618, 2.618]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_joint2"
+    joint_type: "revolute"
+    parent_link: "right_link1"
+    child_link: "right_link2"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [0.0, 3.14]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_joint3"
+    joint_type: "revolute"
+    parent_link: "right_link2"
+    child_link: "right_link3"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-2.967, 0.0]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_joint4"
+    joint_type: "revolute"
+    parent_link: "right_link3"
+    child_link: "right_link4"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-1.745, 1.745]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_joint5"
+    joint_type: "revolute"
+    parent_link: "right_link4"
+    child_link: "right_link5"
+    axis_xyz: [0.0, 1.0, 0.0]
+    position_limits: [-1.22, 1.22]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_joint6"
+    joint_type: "revolute"
+    parent_link: "right_link5"
+    child_link: "right_link6"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [-3.14159, 3.14159]
+    velocity_limit: 3.0
+    effort_limit: 30.0
+    actuator_kind: "servo"
+  - name: "right_gripper"
+    joint_type: "prismatic"
+    parent_link: "right_link6"
+    child_link: "right_finger"
+    axis_xyz: [1.0, 0.0, 0.0]
+    position_limits: [0.0, 0.07]
+    velocity_limit: 0.5
+    effort_limit: 30.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "left_gripper"
+    kind: "parallel_gripper"
+    hand: "left"
+    n_dof: 1
+    max_grip_force_n: 30.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.6
+  - name: "right_gripper"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 30.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.6
+
+# Three RGB cameras: a head (overhead) view + per-wrist views. RoboTwin's
+# native keys are cam_high / cam_left_wrist / cam_right_wrist (480×640 in the
+# `lerobot/robotwin_unified` dataset), but the public `lerobot/smolvla_robotwin`
+# checkpoint's `config.json` consumes them as camera1 / camera2 / camera3 at
+# 256×256 (the same generic naming the franka_panda / ManiSkill rSkills use).
+# We expose the checkpoint-facing keys here so the rSkill sensor gate resolves
+# cleanly; the RoboTwin sidecar re-keys the env's three cameras to camera1/2/3
+# in head→left→right order.
+sensors:
+  - name: "camera1"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 25.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "sim"
+    model: "robotwin_cam_high"
+  - name: "camera2"
+    modality: "rgb"
+    frame_id: "left_link6"
+    rate_hz: 25.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera2"
+    vendor: "sim"
+    model: "robotwin_cam_left_wrist"
+  - name: "camera3"
+    modality: "rgb"
+    frame_id: "right_link6"
+    rate_hz: 25.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera3"
+    vendor: "sim"
+    model: "robotwin_cam_right_wrist"
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: true
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments: ["aloha_agilex", "aloha", "lerobot"]
+  embodiment_tags:
+    - "aloha_agilex"
+    - "aloha"
+    - "lerobot"
+
+safety:
+  max_ee_speed_m_s: 1.0
+  max_joint_speed_factor: 0.5
+  deadman_required: false
+
+# AgileX PiPER ROS 2 driver is Apache-2.0 / MIT (vendor-distributed); the
+# RoboTwin benchmark only ever drives the SAPIEN twin, so no real HAL is
+# wired here (sim-only embodiment).
+sdk_kind: "open"
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [14]
+  state_representation: "joint_positions"
+  image_flip_180: false
+
+action_spec:
+  dim: 14
+  representation: "joint_positions"
+  control_freq_hz: 25.0

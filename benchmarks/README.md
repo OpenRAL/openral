@@ -59,6 +59,7 @@ for the pattern.
 | `simpler_env_widowx.yaml`          | widowx         | simpler_env / Bridge V2 (SAPIEN via ManiSkill)                          |  4 |  5 | `success`    |  60 |  20 |
 | `robocasa_pnp.yaml`                | panda_mobile   | robocasa/PickPlaceCounterToCabinet (MuJoCo via robosuite + kitchen fork) |  1 | 10 | `is_success` | 500 |  10 |
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
+| `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.10 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
@@ -77,6 +78,17 @@ with the install hint. The simpler-env package has no PyPI release; after
 ```
 uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
 ```
+
+`robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN; ADR-0061). It
+runs out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
+RoboTwin's SAPIEN/CuRobo/pytorch3d stack is incompatible with the py3.12 workspace;
+`uv sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
+msgpack). The heavy lerobot-main + RoboTwin + asset venv is externally provisioned
+(`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual recipe in ADR-0061). Task-matched
+rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
+`lerobot/smolvla_robotwin` checkpoint). The shown 5-task slice is a representative
+subset of RoboTwin's 50 tasks; the `smolvla-robotwin` checkpoint is multi-task so it
+covers all of them.
 
 ## Adding a new benchmark
 

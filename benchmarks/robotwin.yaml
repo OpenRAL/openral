@@ -1,0 +1,67 @@
+# RoboTwin 2.0 benchmark suite — dual-arm SAPIEN tasks on the aloha-agilex
+# embodiment (Chen et al., arXiv 2506.18088, MIT). ADR-0061.
+#
+# Run a single task:
+#   openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml \
+#                           --rskill rskills/smolvla-robotwin
+# Run the suite:
+#   openral benchmark run --suite robotwin --vla smolvla:rskills/smolvla-robotwin
+#
+# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv (ADR-0061) and
+# `just sync --all-packages --group robotwin --inexact` for the openral-side wire.
+#
+# Official protocol: 100 episodes/task, seed 0 (single seed here; the paper
+# reports mean over seeds 0/1/2), sim built-in success, episode_length=300
+# (LeRobot robotwin env). A representative 5-task slice of the 50-task suite;
+# the smolvla-robotwin checkpoint is multi-task (trained on robotwin_unified),
+# so `evaluated_tasks: ["robotwin"]` covers every task here (ADR-0060 gate).
+
+- &scene
+  scene: &scene_block
+    id: robotwin
+    backend: sapien
+    observation_height: 256
+    observation_width: 256
+    cameras: ["camera1", "camera2", "camera3"]
+  task: &task_proto
+    id: robotwin/lift_pot
+    scene_id: robotwin
+    instruction: "lift the pot with both arms"
+    max_steps: 300
+    success_key: is_success
+  robot_id: aloha_agilex
+  n_episodes: 100
+  seed: 0
+  metadata: &meta
+    paper: "https://arxiv.org/abs/2506.18088"
+    display_name: "RoboTwin 2.0 — dual-arm (aloha-agilex)"
+    simulator: "RoboTwin 2.0 (SAPIEN), aloha-agilex"
+    honest_scope: >
+      RoboTwin 2.0 dual-arm benchmark (Chen et al. 2506.18088), aloha-agilex
+      embodiment, SAPIEN. Official protocol: 100 episodes/task, sim built-in
+      success, episode_length=300, Easy (demo_clean) setting. Representative
+      5-task slice of the 50-task suite.
+
+- <<: *scene
+  task:
+    <<: *task_proto
+    id: robotwin/handover_block
+    instruction: "pick up the block with one arm and hand it over to the other arm"
+
+- <<: *scene
+  task:
+    <<: *task_proto
+    id: robotwin/stack_blocks_two
+    instruction: "stack the two blocks"
+
+- <<: *scene
+  task:
+    <<: *task_proto
+    id: robotwin/beat_block_hammer
+    instruction: "pick up the hammer and beat the block"
+
+- <<: *scene
+  task:
+    <<: *task_proto
+    id: robotwin/place_empty_cup
+    instruction: "place the empty cup on the cup mat"
