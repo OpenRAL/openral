@@ -354,7 +354,7 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "franka_panda",
         "libero_spatial",
         10,
-        10,
+        50,
         "is_success",
         "LIBERO-Spatial",
         "LIBERO (MuJoCo)",
@@ -364,7 +364,7 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "franka_panda",
         "libero_object",
         10,
-        10,
+        50,
         "is_success",
         "LIBERO-Object",
         "LIBERO (MuJoCo)",
@@ -374,7 +374,7 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "franka_panda",
         "libero_goal",
         10,
-        10,
+        50,
         "is_success",
         "LIBERO-Goal",
         "LIBERO (MuJoCo)",
@@ -384,10 +384,20 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "franka_panda",
         "libero_10",
         10,
-        10,
+        50,
         "is_success",
         "LIBERO-Long",
         "LIBERO (MuJoCo)",
+    ),
+    (
+        "metaworld_mt10",
+        "sawyer",
+        "metaworld",
+        10,
+        10,
+        "success",
+        "MetaWorld MT10",
+        "MetaWorld v3 (MuJoCo via lerobot)",
     ),
     (
         "metaworld_mt50",
@@ -400,23 +410,15 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "MetaWorld v3 (MuJoCo via lerobot)",
     ),
     (
-        "aloha_transfer_cube",
+        # Unified suite (was aloha_transfer_cube.yaml + aloha_insertion.yaml);
+        # scenes[0] is the transfer-cube task, so scene_id asserts on that.
+        "aloha",
         "aloha_bimanual",
         "aloha_transfer_cube",
-        1,
+        2,
         50,
         "is_success",
-        "ALOHA bimanual cube transfer (gym-aloha)",
-        "gym-aloha (MuJoCo)",
-    ),
-    (
-        "aloha_insertion",
-        "aloha_bimanual",
-        "aloha_insertion",
-        1,
-        50,
-        "is_success",
-        "ALOHA bimanual peg insertion (gym-aloha)",
+        "ALOHA bimanual (gym-aloha)",
         "gym-aloha (MuJoCo)",
     ),
     (
@@ -535,5 +537,9 @@ def test_benchmarks_catalogue_fixture_loads_and_passes_invariants(
     # Suite invariants guarantee uniformity; cheap set-comprehension cross-check.
     assert {s.robot_id for s in scenes} == {robot_id}
     assert {s.n_episodes for s in scenes} == {n_episodes}
-    assert all(s.task.scene_id == scene_id for s in scenes)
+    # ``scene_id`` documents the leading scene; a suite MAY carry heterogeneous
+    # per-scene scene_ids (e.g. aloha bundles AlohaTransferCube-v0 +
+    # AlohaInsertion-v0), which raise_on_invalid_suite permits — so the
+    # leading scene's task must reference its own scene, no suite-wide equality.
+    assert first.task.scene_id == scene_id
     assert len({s.task.id for s in scenes}) == n_tasks  # ids unique

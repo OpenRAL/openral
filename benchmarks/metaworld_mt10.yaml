@@ -1,0 +1,71 @@
+# MetaWorld MT10 benchmark suite — 10 manipulation tasks.
+#
+# Mirrors the MT10 setting from Yu et al., 2019 (arXiv:1910.10897). The
+# 10 task names are the canonical MetaWorld v3 MT10 set
+# (`metaworld.env_dict.MT10_V3`, post-2024 Metaworld 3.x) and are a
+# subset of benchmarks/metaworld_mt50.yaml — same scene, robot and
+# instructions, so the two suites stay byte-consistent per task.
+#
+# Shape (ADR-0042): bare list of 10 BenchmarkScenes (one per task); suite
+# id = filename stem ("metaworld_mt10"). All share the same scene,
+# robot, episode budget and provenance — the YAML uses an anchor
+# (&mw_scene) to keep the file compact. Each task overrides only its
+# id + instruction. Suite-level invariants are enforced by
+# :func:`openral_core.raise_on_invalid_suite`.
+#
+# Protocol: 10 episodes per task = 100 total rollouts. Lighter than the
+# original paper protocol (50 goals/task) but enough to score the
+# headline MT10 set in well under an hour on a single GPU; raise
+# n_episodes for a paper-equivalent reproduction.
+#
+# Notes: the success key is "success" — the metaworld env reports it
+# under info["success"], not info["is_success"]. 500-step fixed horizon
+# = MetaWorld max_path_length.
+#
+# Run:
+#   openral benchmark run --suite metaworld_mt10 \
+#       --rskill smolvla-metaworld
+
+- &mw_scene
+  scene:
+    id: metaworld
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+    cameras: ["camera1"]
+  task: &task_proto
+    id: metaworld/button-press-topdown-v3
+    scene_id: metaworld
+    instruction: "press the button from above"
+    max_steps: 500          # MetaWorld max_path_length (official fixed horizon)
+    success_key: success
+  robot_id: sawyer
+  n_episodes: 10
+  seed: 0
+  metadata:
+    paper: "https://arxiv.org/abs/1910.10897"
+    display_name: "MetaWorld MT10"
+    simulator: "MetaWorld v3 (MuJoCo via lerobot)"
+    honest_scope: >
+      10 episodes per task across all 10 MetaWorld MT10 tasks
+      (100 rollouts total). Lighter than the paper protocol
+      (50 goals/task) but enough to score the headline MT10 set
+      in under an hour on a single GPU.
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/door-open-v3,            instruction: "open the door" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/drawer-close-v3,         instruction: "close the drawer" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/drawer-open-v3,          instruction: "open the drawer" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/peg-insert-side-v3,      instruction: "insert the peg into the side hole" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/pick-place-v3,           instruction: "pick the puck and place it on the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/push-v3,                 instruction: "push the puck to the goal" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/reach-v3,                instruction: "reach the target position" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/window-close-v3,         instruction: "close the window" }
+- <<: *mw_scene
+  task: { <<: *task_proto, id: metaworld/window-open-v3,          instruction: "open the window" }
