@@ -335,6 +335,21 @@ robotwin = [
     "pyzmq>=25",
     "msgpack>=1",
 ]
+rlbench = [
+    # ADR-0061 — opt-in RLBench (CoppeliaSim/PyRep) benchmark backend + the
+    # 3D Diffuser Actor keyframe policy.
+    #
+    # Both the RLBench scene (`tools/rlbench_sidecar.py`) and the 3D Diffuser
+    # Actor policy (`tools/rlbench_3dda_sidecar.py`) run in their OWN Python 3.10
+    # venv that this group does NOT touch — CoppeliaSim is proprietary (free EDU),
+    # never redistributable (CLAUDE.md §1.9), and the released 3D policies pin the
+    # MohitShridhar/RLBench@peract fork + an Ada-compatible torch build. All of
+    # that is externally provisioned. What we install on the openral (py3.12)
+    # side is just the ZMQ + msgpack client used by
+    # `openral_sim.backends.rlbench` + `openral_sim.policies.rlbench_3dda`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
 locateanything = [
     # ADR-0037 — opt-in LocateAnything-3B open-vocab VLM detector.
     #

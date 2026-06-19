@@ -22,6 +22,7 @@ def _register_policies() -> None:
         mock,
         molmoact2,
         pi05,
+        rlbench_3dda,
         rldx,
         robots,
         smolvla,

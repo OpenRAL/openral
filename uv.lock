@@ -3077,6 +3077,10 @@ qwen-vlm = [
     { name = "msgpack" },
     { name = "pyzmq" },
 ]
+rlbench = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 rldx = [
     { name = "msgpack" },
     { name = "pyzmq" },
@@ -3203,6 +3207,10 @@ onnx-export = [
     { name = "transformers", specifier = ">=4.45" },
 ]
 qwen-vlm = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
+rlbench = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
 ]
