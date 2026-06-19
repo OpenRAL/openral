@@ -40,7 +40,7 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   `APACHE_2_0, MIT, BSD, PERMISSIVE_RESEARCH, NVIDIA_NON_COMMERCIAL, NVIDIA_OPEN_MODEL, RLWRLD_NON_COMMERCIAL, PROPRIETARY, UNKNOWN` (NVIDIA_OPEN_MODEL = GR00T N1.7+, commercial OK — ADR-0046)
 - `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2389)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
-- `class PhysicsBackend(str, Enum)` — Sim backend. (L4671)
+- `class PhysicsBackend(str, Enum)` — Sim backend. (L4688)
   `MUJOCO, MUJOCO_MJX, PYBULLET, ISAACSIM, GENESIS, MOCK`
 
 **Pydantic models — robot manifest hierarchy**
