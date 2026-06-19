@@ -5,7 +5,7 @@
 # SO-100 / WidowX variants (PickCubeSO100-v1, SO100GraspCube-v1,
 # PickCubeWidowXAI-v1) belong in sibling per-embodiment suites.
 #
-# Run with `openral benchmark run --suite maniskill_panda --rskill <x>`: the
+# Run with `openral benchmark run --suite maniskill3_panda --rskill <x>`: the
 # runner auto-filters to the tasks the rSkill's evaluated_tasks cover (skips
 # the rest with a logged summary) and `--task maniskill3/<Env>` runs one.
 #
