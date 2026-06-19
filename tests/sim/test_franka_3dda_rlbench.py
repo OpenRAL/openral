@@ -137,6 +137,7 @@ def test_open_drawer_live_episode() -> None:
         task=bs.task,
         vla=VLASpec(id="diffuser_actor", weights_uri="rskills/3d-diffuser-actor-rlbench"),
         n_episodes=1,
+        record_video=True,
     )
     env = make_env(env_cfg)
     policy = make_policy(env_cfg)
@@ -151,6 +152,10 @@ def test_open_drawer_live_episode() -> None:
             result = env.step(action)
             obs = result.observation
             reward = max(reward, result.reward)
+            frames = result.info.get("_openral_video_frames")
+            if frames:
+                assert frames[0].ndim == 3
+                assert frames[0].shape[-1] == 3
             if result.terminated:
                 break
         # open_drawer is high-SR for 3D Diffuser Actor; the episode must at least

@@ -53,6 +53,7 @@ from numpy.typing import NDArray
 
 # Camera set the PerAct/3D-policy checkpoints were trained on (NOT overhead).
 _CAMERAS = ("left_shoulder", "right_shoulder", "wrist", "front")
+_RENDER_CAMERA = "front"
 # peract-fork action layout: [pose(7), gripper(1), ignore_collisions(1)] = 9-D.
 # The openral side sends 8-D (pose+gripper); we append ignore_collisions=1.
 _POSE_REACH_TOL_M = 5e-3
@@ -102,6 +103,8 @@ class _RLBenchScene:
         self._env: Any = None
         self._task: Any = None
         self._success_key = args.success_key
+        self._arm_action_mode: Any = None
+        self._motion_frames: list[NDArray[np.uint8]] = []
 
     @property
     def action_dim(self) -> int:
@@ -129,8 +132,9 @@ class _RLBenchScene:
         obs_config.gripper_open = True
         obs_config.joint_positions = True
 
+        self._arm_action_mode = EndEffectorPoseViaPlanning(collision_checking=False)
         action_mode = MoveArmThenGripper(
-            arm_action_mode=EndEffectorPoseViaPlanning(collision_checking=False),
+            arm_action_mode=self._arm_action_mode,
             gripper_action_mode=Discrete(),
         )
         # An empty dataset root is fine: we only run live tasks (no recorded demos).
@@ -153,7 +157,7 @@ class _RLBenchScene:
         self._instruction = descriptions[0] if descriptions else self._args.instruction
         return self._wrap_obs(obs)
 
-    def step(self, action: NDArray[np.float32]) -> dict[str, Any]:
+    def step(self, action: NDArray[np.float32], *, record_video: bool = False) -> dict[str, Any]:
         target = np.asarray(action, dtype=np.float64).reshape(-1)[:8]
         act9 = np.ones(9, dtype=np.float64)  # peract fork: pose7 + gripper1 + ignore_collisions1
         act9[:8] = target
@@ -161,19 +165,39 @@ class _RLBenchScene:
         obs = None
         reward = 0.0
         terminate = False
-        for _ in range(int(self._args.max_tries)):
-            obs, reward, terminate = self._task.step(act9)
-            reached = float(np.linalg.norm(target[:3] - obs.gripper_pose[:3]))
-            if reached < _POSE_REACH_TOL_M or reward == 1:
-                break
+        self._motion_frames = []
+        if self._arm_action_mode is not None:
+            self._arm_action_mode.set_callable_each_step(
+                self._record_motion_observation if record_video else None
+            )
+        try:
+            for _ in range(int(self._args.max_tries)):
+                obs, reward, terminate = self._task.step(act9)
+                reached = float(np.linalg.norm(target[:3] - obs.gripper_pose[:3]))
+                if reached < _POSE_REACH_TOL_M or reward == 1:
+                    break
+        finally:
+            if self._arm_action_mode is not None:
+                self._arm_action_mode.set_callable_each_step(None)
         success = bool(reward == 1)
-        return {
+        final_frame = self._frame_from_obs(obs)
+        if record_video and final_frame is not None:
+            self._motion_frames.append(final_frame)
+        reply = {
             "observation": self._wrap_obs(obs),
             "reward": float(reward),
             "terminated": bool(terminate or success),
             "truncated": False,
             "info": {self._success_key: success},
         }
+        if record_video:
+            reply["video_frames"] = self._motion_frames
+        return reply
+
+    def _record_motion_observation(self, obs: Any) -> None:
+        frame = self._frame_from_obs(obs)
+        if frame is not None:
+            self._motion_frames.append(frame)
 
     def _wrap_obs(self, obs: Any) -> dict[str, Any]:
         images: dict[str, NDArray[np.uint8]] = {}
@@ -188,6 +212,9 @@ class _RLBenchScene:
         gripper_pose = np.asarray(obs.gripper_pose, dtype=np.float32).reshape(-1)
         gripper_open = float(obs.gripper_open)
         state = np.concatenate([gripper_pose, [gripper_open]]).astype(np.float32)
+        frame = self._frame_from_images(images)
+        if frame is not None:
+            self._last_image = frame
         return {
             "images": images,
             "point_clouds": clouds,
@@ -196,6 +223,25 @@ class _RLBenchScene:
             "state": state,
             "task": getattr(self, "_instruction", self._args.instruction),
         }
+
+    def _frame_from_obs(self, obs: Any) -> NDArray[np.uint8] | None:
+        if obs is None:
+            return None
+        preferred = getattr(obs, f"{_RENDER_CAMERA}_rgb", None)
+        if preferred is not None:
+            return np.asarray(preferred, dtype=np.uint8)
+        for cam in self._cameras:
+            rgb = getattr(obs, f"{cam}_rgb", None)
+            if rgb is not None:
+                return np.asarray(rgb, dtype=np.uint8)
+        return None
+
+    def _frame_from_images(self, images: dict[str, NDArray[np.uint8]]) -> NDArray[np.uint8] | None:
+        if _RENDER_CAMERA in images:
+            return np.asarray(images[_RENDER_CAMERA], dtype=np.uint8)
+        for frame in images.values():
+            return np.asarray(frame, dtype=np.uint8)
+        return None
 
     def render(self) -> NDArray[np.uint8] | None:
         return None
@@ -240,7 +286,10 @@ def _serve(scene: _RLBenchScene, *, host: str, port: int, task: str) -> int:
             elif endpoint == "reset":
                 reply = {"observation": scene.reset(seed=data.get("seed"))}
             elif endpoint == "step":
-                reply = scene.step(np.asarray(data["action"], dtype=np.float32))
+                reply = scene.step(
+                    np.asarray(data["action"], dtype=np.float32),
+                    record_video=bool(data.get("record_video")),
+                )
             elif endpoint == "render":
                 reply = {"frame": scene.render()}
             elif endpoint == "close":

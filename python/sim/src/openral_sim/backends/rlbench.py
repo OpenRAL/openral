@@ -72,6 +72,8 @@ _PORT_MAX = 21_999
 # (seconds). Generous timeouts so a slow plan is not read as a dead sidecar.
 _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 300.0
+_VIDEO_FRAMES_INFO_KEY = "_openral_video_frames"
+_RENDER_CAMERA = "front"
 
 
 def _scene_default_port(rlbench_task: str, variation: int) -> int:
@@ -102,6 +104,7 @@ class _RLBenchSidecar:
     scene: SceneSpec
     task: TaskSpec
     _client: SidecarClient
+    _record_video: bool = False
     _last_image: NDArray[np.uint8] | None = None
 
     @property
@@ -115,13 +118,21 @@ class _RLBenchSidecar:
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
         action_np = np.asarray(action, dtype=np.float32).reshape(-1)
-        reply = self._client.call("step", {"action": action_np})
+        reply = self._client.call(
+            "step",
+            {"action": action_np, "record_video": self._record_video},
+        )
+        info = dict(reply.get("info", {}))
+        if self._record_video and "video_frames" in reply:
+            info[_VIDEO_FRAMES_INFO_KEY] = [
+                np.asarray(frame, dtype=np.uint8) for frame in reply["video_frames"]
+            ]
         return StepResult(
             observation=self._wrap_obs(self._client.require(reply, "observation")),
             reward=float(self._client.require(reply, "reward")),
             terminated=bool(self._client.require(reply, "terminated")),
             truncated=bool(self._client.require(reply, "truncated")),
-            info=dict(reply.get("info", {})),
+            info=info,
         )
 
     def render(self) -> NDArray[np.uint8] | None:
@@ -134,8 +145,9 @@ class _RLBenchSidecar:
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
         images = {k: np.asarray(v, dtype=np.uint8) for k, v in raw.get("images", {}).items()}
-        if images:
-            self._last_image = next(iter(images.values()))
+        frame = self._render_frame(images)
+        if frame is not None:
+            self._last_image = frame
         clouds = {
             k: np.asarray(v, dtype=np.float32) for k, v in raw.get("point_clouds", {}).items()
         }
@@ -151,6 +163,13 @@ class _RLBenchSidecar:
         if "gripper_open" in raw:
             obs["gripper_open"] = float(raw["gripper_open"])
         return obs
+
+    def _render_frame(self, images: dict[str, NDArray[np.uint8]]) -> NDArray[np.uint8] | None:
+        if _RENDER_CAMERA in images:
+            return images[_RENDER_CAMERA]
+        for frame in images.values():
+            return frame
+        return None
 
 
 def _sidecar_python() -> Path:
@@ -288,4 +307,9 @@ def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
         expected_identity={"task": env_cfg.task.id, "layout": "rlbench"},
     )
     client.connect()
-    return _RLBenchSidecar(scene=env_cfg.scene, task=env_cfg.task, _client=client)
+    return _RLBenchSidecar(
+        scene=env_cfg.scene,
+        task=env_cfg.task,
+        _client=client,
+        _record_video=env_cfg.record_video,
+    )
