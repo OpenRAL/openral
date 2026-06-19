@@ -91,13 +91,15 @@ def test_filter_undeclared_keeps_everything() -> None:
 
 
 def test_run_benchmark_raises_when_skill_matches_no_suite_task() -> None:
-    # smolvla-libero declares evaluated_tasks=["libero_spatial"]; pointed at the
-    # object suite it matches nothing, so run_benchmark fails fast (before any
-    # rollout) rather than running every object task to a silent 0.
+    # gr00t-n17-libero is spatial-only (ships the libero_spatial subfolder), so on
+    # the object suite it matches nothing — same embodiment (franka), task-suite
+    # mismatch. run_benchmark fails fast (before any rollout) rather than running
+    # every object task to a silent 0. (smolvla/pi05/xvla/molmoact2/rldx now cover
+    # all 4 suites, so they would NOT mismatch here — that is the gate working.)
     from openral_core import VLASpec
     from openral_sim.benchmark import run_benchmark
 
     scenes = load_benchmark_suite("benchmarks/libero_object.yaml")
-    vla = VLASpec(id="smolvla-libero", weights_uri="rskills/smolvla-libero")
+    vla = VLASpec(id="gr00t-n17-libero", weights_uri="rskills/gr00t-n17-libero")
     with pytest.raises(ROSCapabilityMismatch, match="match none"):
         run_benchmark(scenes, suite_id="libero_object", vla=vla)
