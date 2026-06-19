@@ -45,6 +45,7 @@ _GRIPPER_OPEN = 0.04  # Franka finger joint upper (m)
 _GRIPPER_CLOSED = 0.0
 _LIFT_SUCCESS_Z = 0.10  # cube CoM height (m) counted as "lifted"
 _CUBE_HALF = 0.025  # 5 cm cube → 2.5 cm half-extent
+_AGENT_CAMERA_POS = np.array([2.5, 0.0, 1.25], dtype=np.float64)
 
 
 class IsaacLiftScene(IsaacSceneBase):
@@ -108,7 +109,7 @@ class IsaacLiftScene(IsaacSceneBase):
         self._cam_wrist.initialize()
         # Look down at the workspace from front-right.
         self._camera.set_world_pose(
-            np.array([1.5, 0.0, 1.0]),
+            _AGENT_CAMERA_POS,
             rot_utils.euler_angles_to_quats(np.array([0, 35, 180]), degrees=True),
         )
         # Wrist camera: small forward+down offset from the hand frame, looking

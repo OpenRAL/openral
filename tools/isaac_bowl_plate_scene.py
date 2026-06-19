@@ -48,6 +48,8 @@ _OBJ_Z = 0.03
 _TASK_CENTER = np.array([0.50, 0.0, _OBJ_Z], dtype=np.float64)
 _WORKSPACE_LOW = np.array([0.32, -0.32, 0.07], dtype=np.float64)
 _WORKSPACE_HIGH = np.array([0.72, 0.32, 0.46], dtype=np.float64)
+_AGENT_CAMERA_POS = np.array([2.25, 0.0, 1.15], dtype=np.float64)
+_SECONDARY_CAMERA_POS = np.array([2.35, -0.90, 1.30], dtype=np.float64)
 
 
 def _quat_wxyz_to_axisangle(quat: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -156,10 +158,9 @@ class IsaacBowlPlateScene(IsaacSceneBase):
         self._world.reset()
         self._cam_agent.initialize()
         self._cam_wrist.initialize()
-        agent_pos = np.array([1.25, 0.0, 0.90], dtype=np.float64)
         self._cam_agent.set_world_pose(
-            agent_pos,
-            _look_at_quat_wxyz(agent_pos, _TASK_CENTER, [0.0, 0.0, 1.0], rot_utils),
+            _AGENT_CAMERA_POS,
+            _look_at_quat_wxyz(_AGENT_CAMERA_POS, _TASK_CENTER, [0.0, 0.0, 1.0], rot_utils),
             camera_axes="usd",
         )
 
@@ -171,8 +172,14 @@ class IsaacBowlPlateScene(IsaacSceneBase):
         kin.set_robot_base_pose(np.asarray(base_pos), np.asarray(base_quat))
 
         self._cam_wrist.set_world_pose(
-            np.array([1.50, 0.0, 1.00], dtype=np.float64),
-            rot_utils.euler_angles_to_quats(np.array([0, 45, 180]), degrees=True),
+            _SECONDARY_CAMERA_POS,
+            _look_at_quat_wxyz(
+                _SECONDARY_CAMERA_POS,
+                _TASK_CENTER + np.array([0.0, 0.0, 0.08], dtype=np.float64),
+                [0.0, 0.0, 1.0],
+                rot_utils,
+            ),
+            camera_axes="usd",
         )
 
     def _add_bowl(self, position: NDArray[np.float32]) -> None:
