@@ -28,13 +28,10 @@
 # this checkpoint's input_features and the robots/aloha_agilex sensors —
 # no per-skill alias remap needed.
 #
-# STATE NOTE: config.json declares observation.state shape (6,), which
-# DISAGREES with the lerobot/robotwin_unified dataset meta/info.json
-# (observation.state shape (14,)) and the 14-DoF embodiment. The live
-# RoboTwin sidecar reset returns a 14-D state vector; the OpenRAL SmolVLA
-# adapter truncates/pads observations to `state_contract.dim` before policy
-# forward. A full SmolVLA scored rollout is not yet reproduced locally
-# (ADR-0061 §Live verification).
+# STATE NOTE: the RoboTwin sidecar reset returns a 14-D aloha-agilex state
+# vector, and the official policy_preprocessor.json normalization stats also
+# expect observation.state shape (14,). `state_contract.dim` therefore follows
+# the live env + processor contract.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -96,7 +93,7 @@ processors:
 image_preprocessing:
   flip_180: false
 state_contract:
-  dim: 6   # mirrors checkpoint config.json (see STATE NOTE in header)
+  dim: 14
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # Matches the checkpoint's config.json (chunk_size=50, n_action_steps=50).

@@ -140,12 +140,18 @@ still `pytest.skip` (CLAUDE.md §1.11); hosts with it run a real SAPIEN reset/st
   then passed end-to-end through ZMQ auto-spawn:
   `pytest tests/unit/test_robotwin_backend.py tests/sim/test_aloha_agilex_smolvla_robotwin.py -q`
   → 19 passed.
+- ✅ **SmolVLA policy loads with the corrected 14-D state contract.** The official
+  `policy_preprocessor.json` normalization stats expect `observation.state` shape `(14,)`,
+  matching the live aloha-agilex state. `rskills/smolvla-robotwin/rskill.yaml` therefore
+  pins `state_contract.dim: 14`.
 - ⚠️ **Full SmolVLA scored eval/video still not reproduced.** The live verification is
-  simulator/sidecar/wire/action-contract verification, not a policy success number. The
-  `lerobot/smolvla_robotwin` checkpoint and eval JSON remain to be run via
+  simulator/sidecar/wire/action-contract verification, not a policy success number. A bounded
+  non-mutating one-episode attempt loaded `lerobot/smolvla_robotwin` on CPU and initialized the
+  processors, then SAPIEN reset failed on this 8 GB host with
+  `vk::Queue::submit: ErrorDeviceLost` / svulkan2 `OIDN Error: out of memory`. The eval JSON
+  remains to be produced on a host with more Vulkan/SAPIEN headroom via
   `openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml --rskill
-  rskills/smolvla-robotwin` on a host with enough free disk for the policy cache and video
-  artifacts. No benchmark metric is invented.
+  rskills/smolvla-robotwin`. No benchmark metric is invented.
 
 ## Alternatives considered
 

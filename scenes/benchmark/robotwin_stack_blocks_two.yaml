@@ -1,7 +1,7 @@
 # RoboTwin 2.0 — stack_blocks_two (stacking), aloha-agilex, SAPIEN.
 # Run: openral benchmark scene --config scenes/benchmark/robotwin_stack_blocks_two.yaml \
 #                             --rskill rskills/smolvla-robotwin
-# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv (ADR-0061).
+# Setup: provision the SAPIEN+RoboTwin sidecar venv (ADR-0061).
 
 robot_id: aloha_agilex
 

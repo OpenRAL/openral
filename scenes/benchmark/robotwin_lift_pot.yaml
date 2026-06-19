@@ -1,7 +1,7 @@
 # RoboTwin 2.0 — lift_pot (bimanual lift), aloha-agilex, SAPIEN backend.
 # Run: openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml \
 #                             --rskill rskills/smolvla-robotwin
-# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv (ADR-0061) and
+# Setup: provision the SAPIEN+RoboTwin sidecar venv (ADR-0061) and
 #        `just sync --all-packages --group robotwin --inexact` for the wire.
 
 robot_id: aloha_agilex

@@ -1,7 +1,7 @@
 # RoboTwin 2.0 — beat_block_hammer (tool use), aloha-agilex, SAPIEN.
 # Run: openral benchmark scene --config scenes/benchmark/robotwin_beat_block_hammer.yaml \
 #                             --rskill rskills/smolvla-robotwin
-# Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv (ADR-0061).
+# Setup: provision the SAPIEN+RoboTwin sidecar venv (ADR-0061).
 
 robot_id: aloha_agilex
 

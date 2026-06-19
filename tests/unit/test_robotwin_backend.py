@@ -234,6 +234,8 @@ def test_smolvla_robotwin_manifest_loads() -> None:
     assert m.model_family == "smolvla"
     assert m.embodiment_tags == ["aloha_agilex"]
     assert m.evaluated_tasks == ["robotwin"]
+    assert m.state_contract is not None
+    assert m.state_contract.dim == 14
     assert m.action_contract.dim == 14
 
 
