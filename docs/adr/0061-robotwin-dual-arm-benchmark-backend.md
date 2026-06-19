@@ -3,7 +3,8 @@
 - **Status:** Accepted 2026-06-19. Scene backend + sidecar + task-matched rSkill landed,
   unit-validated, and **live reset/step verified on the 8 GB RTX 4070 reference host** with
   the externally-provisioned RoboTwin assets + CuRobo sidecar (see **Live verification**).
-  Full SmolVLA scored eval/video is still not reproduced locally.
+  A 150-step GPU benchmark-scene smoke clip is recorded; a successful/full official SmolVLA
+  score is still not reproduced locally.
 - **Date:** 2026-06-19
 - **ADR number:** `0061`. `0060` (benchmark task-data gate) is the previous entry; the
   integer is not load-bearing — cross-refs use filenames.
@@ -144,14 +145,18 @@ still `pytest.skip` (CLAUDE.md §1.11); hosts with it run a real SAPIEN reset/st
   `policy_preprocessor.json` normalization stats expect `observation.state` shape `(14,)`,
   matching the live aloha-agilex state. `rskills/smolvla-robotwin/rskill.yaml` therefore
   pins `state_contract.dim: 14`.
-- ⚠️ **One-episode SmolVLA website-video attempt runs, but does not succeed.** A retry after
-  clearing a stale RLDX sidecar loaded `lerobot/smolvla_robotwin` on CPU, initialized the
-  processors, reset the SAPIEN scene, and ran the official `lift_pot` horizon:
-  `openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml --rskill
-  rskills/smolvla-robotwin --n-episodes 1 --no-view --no-write-eval --no-update-manifest
-  --save-video /home/allopart/workspace/_website_videos --video-size 1024 --device cpu`.
+- ⚠️ **One-episode SmolVLA website-video smoke runs, but does not succeed.** The requested
+  GPU rerun used `openral benchmark scene` with an uncommitted 150-step `BenchmarkScene`
+  variant of `robotwin_lift_pot.yaml` (the canonical scene remains at the official
+  `episode_length=300`), loaded `lerobot/smolvla_robotwin` on `cuda`, reset SAPIEN, and
+  completed 150 steps:
+  `openral benchmark scene --config scenes/benchmark/robotwin_lift_pot_150_tmp.yaml
+  --rskill rskills/smolvla-robotwin --n-episodes 1 --device cuda --no-view
+  --no-write-eval --no-update-manifest --save-video /home/allopart/workspace/_website_videos
+  --video-size 1024`.
   It wrote `/home/allopart/workspace/_website_videos/robotwin_smolvla-robotwin_fail.mp4`
-  (`steps=300`, `success=False`). No successful benchmark metric is invented.
+  (`1024x1024`, `150` frames, `steps=150`, `success=False`). No successful benchmark metric is
+  invented; the official 300-step / 100-episode eval JSON is still pending.
 
 ## Alternatives considered
 
