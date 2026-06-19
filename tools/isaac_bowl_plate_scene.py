@@ -138,7 +138,9 @@ class IsaacBowlPlateScene(IsaacSceneBase):
                 color=np.array([0.9, 0.9, 0.92]),
             )
         )
-        # Bowl: prefer the real YCB mesh; fall back to a primitive if offline.
+        # Bowl: high-contrast primitive. The YCB bowl asset is often too dark /
+        # low-profile in 256px headless videos, which made review clips look like
+        # the scene had no bowl.
         self._add_bowl(position=np.array([0.50, 0.18, _OBJ_Z]))
 
         self._franka = self._world.scene.add(Franka(prim_path="/World/Franka", name="franka"))
@@ -183,34 +185,19 @@ class IsaacBowlPlateScene(IsaacSceneBase):
         )
 
     def _add_bowl(self, position: NDArray[np.float32]) -> None:
-        """Reference the YCB bowl USD; fall back to a primitive bowl if offline."""
-        try:
-            from isaacsim.core.prims import SingleRigidPrim
-            from isaacsim.core.utils.stage import add_reference_to_stage
-            from isaacsim.storage.native import get_assets_root_path
+        """Add a visible primitive bowl for reviewable videos."""
+        from isaacsim.core.api.objects import DynamicCylinder
 
-            root = get_assets_root_path()
-            if root is None:
-                raise RuntimeError("no assets root")
-            usd = root + "/Isaac/Props/YCB/Axis_Aligned/024_bowl.usd"
-            add_reference_to_stage(usd, "/World/Bowl")
-            self._bowl = SingleRigidPrim(
-                "/World/Bowl", name="bowl", position=position, scale=np.array([1.0, 1.0, 1.0])
+        self._bowl = self._world.scene.add(
+            DynamicCylinder(
+                prim_path="/World/Bowl",
+                name="bowl",
+                position=position,
+                radius=0.11,
+                height=0.06,
+                color=np.array([0.0, 0.25, 1.0]),
             )
-            self._world.scene.add(self._bowl)
-        except Exception:
-            from isaacsim.core.api.objects import DynamicCylinder
-
-            self._bowl = self._world.scene.add(
-                DynamicCylinder(
-                    prim_path="/World/Bowl",
-                    name="bowl",
-                    position=position,
-                    radius=0.07,
-                    height=0.05,
-                    color=np.array([0.2, 0.4, 0.85]),
-                )
-            )
+        )
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
