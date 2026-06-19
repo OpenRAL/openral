@@ -192,6 +192,31 @@ def test_tabletop_push_nonzero_action_moves_arm() -> None:
     assert np.max(np.abs(q1 - q0)) > 0.1, "arm did not move toward the commanded target"
 
 
+def test_tabletop_push_degree_trained_so101_action_converts_to_radians() -> None:
+    """SO-101 LeRobot-degree checkpoints must not be interpreted as radians."""
+    offsets = [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_offsets_deg": offsets,
+            "joint_signs": [1, 1, 1, 1, 1, 1],
+        },
+    )
+    try:
+        rollout.reset(seed=0)
+        target_rad = np.asarray([0.1, 0.4, 0.35, 0.2, -0.15, 0.25], dtype=np.float64)
+        action_deg = np.degrees(target_rad) + np.asarray(offsets, dtype=np.float64)
+        rollout.step(action_deg.astype(np.float32))
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(target_rad, rollout._act_clip_ranges[:, 0], rollout._act_clip_ranges[:, 1]),
+            atol=1e-6,
+        )
+    finally:
+        rollout.close()
+
+
 def test_tabletop_push_random_spawn_varies_with_seed() -> None:
     """Different seeds produce different cube + goal spawns."""
     poses: dict[int, tuple] = {}

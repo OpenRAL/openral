@@ -2,7 +2,7 @@
 #
 # A real Isaac Sim *core* scene (no Isaac Lab) that mirrors the LIBERO obs/action
 # contract so a LIBERO-finetuned rSkill drives it through `openral sim run`:
-#   - camera1 (agent-view) + camera2 (eye-in-hand wrist), 256x256
+#   - camera1 (agent-view) + camera2 (secondary prop view), 256x256
 #   - 8-D state [eef_pos(3) | eef_axisangle(3) | gripper_qpos(2)]
 #   - 7-D OSC-pose-delta action -> Lula IK (core motion_generation) moves the arm
 #

@@ -115,6 +115,21 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions
             parsed[key] = _range2(value, key)
         elif key == "settle_steps":
             parsed[key] = int(value)
+        elif key == "joint_units":
+            units = str(value).lower()
+            if units not in ("radians", "degrees"):
+                raise ROSConfigError(
+                    f"tabletop_push: scene.backend_options.joint_units must be "
+                    f"'radians' or 'degrees'; got {units!r}",
+                )
+            parsed[key] = units
+        elif key in ("joint_offsets_deg", "joint_signs"):
+            if not isinstance(value, (list, tuple)):
+                raise ROSConfigError(
+                    f"tabletop_push: scene.backend_options.{key} must be a numeric list; "
+                    f"got {value!r}",
+                )
+            parsed[key] = tuple(float(v) for v in value)
         elif key == "wrist_camera_mount_body":
             parsed[key] = None if value is None else str(value)
         elif key == "instruction":
@@ -155,6 +170,9 @@ class _TabletopPushRollout:
     _render_width: int
     _settle_steps: int
     _resting_cube_z: float
+    _joint_units: str = "radians"
+    _joint_offsets_deg: NDArray[np.float64] = field(default_factory=lambda: np.zeros(0))
+    _joint_signs: NDArray[np.float64] = field(default_factory=lambda: np.ones(0))
     _step_count: int = 0
     _renderer_rgb: Any = None
     _last_rgb: NDArray[np.uint8] | None = None
@@ -205,9 +223,13 @@ class _TabletopPushRollout:
                 f"tabletop_push expects a {self._n_act}-D joint-position action "
                 f"(robot actuator count); got shape {a.shape}",
             )
+        if self._joint_units == "degrees":
+            cmd = np.radians(self._joint_signs * (a - self._joint_offsets_deg))
+        else:
+            cmd = a
         lo = self._act_clip_ranges[:, 0]
         hi = self._act_clip_ranges[:, 1]
-        self._data.ctrl[: self._n_act] = np.clip(a, lo, hi)
+        self._data.ctrl[: self._n_act] = np.clip(cmd, lo, hi)
 
         for _ in range(self._settle_steps):
             mujoco.mj_step(self._model, self._data)
@@ -272,11 +294,17 @@ class _TabletopPushRollout:
         }
 
     def _proprio_state(self) -> NDArray[np.float32]:
-        """Joint positions (radians) of the robot's actuated joints, in actuator order."""
-        return np.asarray(
+        """Joint positions in the policy unit convention, in actuator order."""
+        qpos = np.asarray(
             [float(self._data.qpos[a]) for a in self._act_qpos_addrs],
-            dtype=np.float32,
+            dtype=np.float64,
         )
+        if self._joint_units == "degrees":
+            return np.asarray(
+                self._joint_signs * np.degrees(qpos) + self._joint_offsets_deg,
+                dtype=np.float32,
+            )
+        return np.asarray(qpos, dtype=np.float32)
 
     def _render_named_rgb(self, camera_name: str) -> NDArray[np.uint8]:
         import mujoco
@@ -411,6 +439,18 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             lo, hi = (-np.inf, np.inf)
         clip_ranges.append((lo, hi))
 
+    if options.joint_units == "degrees":
+        if len(options.joint_offsets_deg) != n_act or len(options.joint_signs) != n_act:
+            raise ROSConfigError(
+                "tabletop_push: degree-trained policy mode requires "
+                f"joint_offsets_deg and joint_signs to have length {n_act}; "
+                f"got {len(options.joint_offsets_deg)} and {len(options.joint_signs)}.",
+            )
+        if any(s not in (1.0, -1.0) for s in options.joint_signs):
+            raise ROSConfigError(
+                "tabletop_push: scene.backend_options.joint_signs entries must be +1 or -1.",
+            )
+
     goal_site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "goal")
     cube_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cube")
     cube_joint = int(model.body_jntadr[cube_body])
@@ -448,5 +488,10 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
         _render_width=render_w,
         _settle_steps=options.settle_steps,
         _resting_cube_z=options.table_top_z + options.cube_size[2],
+        _joint_units=options.joint_units,
+        _joint_offsets_deg=np.asarray(
+            options.joint_offsets_deg or (0.0,) * n_act, dtype=np.float64
+        ),
+        _joint_signs=np.asarray(options.joint_signs or (1.0,) * n_act, dtype=np.float64),
         _rng=np.random.default_rng(env_cfg.seed or 0),
     )

@@ -91,6 +91,7 @@ image_preprocessing:
   flip_vertical: false
   aliases:
     oak_top: "top"
+    overhead: "top"
     wrist: "wrist"
 state_contract:
   dim: 6

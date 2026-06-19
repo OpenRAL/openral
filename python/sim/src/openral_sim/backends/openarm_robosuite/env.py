@@ -1,24 +1,19 @@
-"""OpenArm v2 bimanual tabletop scene with robosuite OSC controllers.
+"""OpenArm v2 bimanual tabletop scene with direct joint-position targets.
 
 Pairs with :mod:`._assets` (which generates the MJCF) to expose a
-:class:`SimRollout` driven by **two stand-alone robosuite
-``OperationalSpaceController`` instances** — one per arm — instead of
-hand-rolled IK. The 14-D action chunk emitted by
-``crislmfroes/pi05-openarm-bimanual-pick-exhaust-pipe-sim-v14`` flows in
-as ``[left_xyz, left_rpy, left_grip, right_xyz, right_rpy, right_grip]``;
-the env splits it per arm and feeds the 6-D pose delta through
-``set_goal`` / ``run_controller`` to get joint torques, then writes the
-torques into the matching ``ctrl`` slots and steps the MuJoCo sim.
+:class:`SimRollout` driven through the upstream OpenArm v2 MJCF position
+actuators. The 16-D action chunk emitted by the pi05 OpenArm checkpoints
+flows in as ``[left_j1..7, left_grip, right_j1..7, right_grip]``; the env
+splits it per arm, clips each joint target to the MJCF limits, writes
+``data.ctrl`` directly, and steps the MuJoCo sim.
 
 Honest scope note
 -----------------
 This is the first cut. The structural integration is verified by
 ``tests/sim/test_openarm_scene_pnp.py`` (loads the scene, runs zero
 actions, reads the observation dict, renders a frame). The closed-loop
-control numbers — OSC ``kp`` / ``output_max`` tuning, axis-angle vs
-RPY convention for the pose delta, gripper force range — will need a
-real VLA rollout pass to validate. Comments in the action handler
-flag the exact assumptions to verify first.
+task score still depends on the checkpoint being in-distribution for this
+simple drawer/cube layout.
 """
 
 from __future__ import annotations
@@ -30,6 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
+from openral_world_state.geometry import look_at_quat_wxyz
 
 # `mujoco` is imported lazily inside `_build_openarm_tabletop_scene` —
 # the parent `openral_sim` package eagerly registers every backend at
@@ -66,6 +62,10 @@ _DOF_PER_ARM = _ARM_JOINT_COUNT + _GRIPPER_CTRL_COUNT
 
 _DEFAULT_RENDER_WIDTH = 256
 _DEFAULT_RENDER_HEIGHT = 256
+_GRIPPER_ENCODER_DEADBAND = 0.05
+_WRIST_CAMERA_TARGET = np.asarray([0.58, 0.0, 0.08], dtype=np.float64)
+_WRIST_CAMERA_OFFSET = np.asarray([-0.10, 0.14, 0.10], dtype=np.float64)
+_WRIST_CAMERA_FOVY = 78.0
 
 
 def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | None:
@@ -100,6 +100,23 @@ def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | Non
 
 
 _IDENTITY_QUAT_TOL: float = 1e-6
+
+
+def _openarm_gripper_target(raw: float, ctrl_range: NDArray[np.float64]) -> float:
+    """Map OpenArm checkpoint gripper values to the MJCF hinge endpoint.
+
+    The pi05 OpenArm normalizer stores gripper slots in the upstream OpenArm
+    encoder convention, not in MuJoCo hinge radians. Values near/below zero are
+    the neutral open state in that dataset; clipping them as radians reset both
+    grippers closed and hid the wrist-camera view behind the fingers.
+    """
+    lo = float(ctrl_range[0])
+    hi = float(ctrl_range[1])
+    open_pos = hi if abs(hi) >= abs(lo) else lo
+    closed_pos = lo if open_pos == hi else hi
+    if raw < lo or raw > hi or abs(raw) <= _GRIPPER_ENCODER_DEADBAND:
+        return open_pos if raw <= 0.0 else closed_pos
+    return float(np.clip(raw, lo, hi))
 
 
 def _resolve_base_translation(env_cfg: SimEnvironment) -> tuple[float, float]:
@@ -400,7 +417,7 @@ def _build_arm_handles(
 
 @dataclass
 class _OpenArmTabletopRollout:
-    """Bimanual OpenArm tabletop scene driven by two robosuite OSC instances."""
+    """Bimanual OpenArm tabletop scene driven by MJCF position actuators."""
 
     scene: SceneSpec
     task: TaskSpec
@@ -481,9 +498,11 @@ class _OpenArmTabletopRollout:
                     lo, hi = self._model.actuator_ctrlrange[aid]
                     self._sim.data.qpos[qa] = float(np.clip(pose[slice_lo + slot], lo, hi))
                 # Gripper qpos sits immediately after the arm joints.
-                g_lo, g_hi = self._model.actuator_ctrlrange[handles.grip_actuator_id]
                 self._sim.data.qpos[handles.arm_qpos_ix[-1] + 1] = float(
-                    np.clip(pose[slice_lo + _ARM_JOINT_COUNT], g_lo, g_hi),
+                    _openarm_gripper_target(
+                        float(pose[slice_lo + _ARM_JOINT_COUNT]),
+                        self._model.actuator_ctrlrange[handles.grip_actuator_id],
+                    ),
                 )
         else:
             self._sim.data.qpos[self._left.arm_qpos_ix[3]] = float(np.pi / 2)
@@ -558,9 +577,11 @@ class _OpenArmTabletopRollout:
             lo = self._model.actuator_ctrlrange[handles.arm_actuator_ids, 0]
             hi = self._model.actuator_ctrlrange[handles.arm_actuator_ids, 1]
             self._sim.data.ctrl[handles.arm_actuator_ids] = np.clip(arm_targets, lo, hi)
-            g_lo, g_hi = self._model.actuator_ctrlrange[handles.grip_actuator_id]
             self._sim.data.ctrl[handles.grip_actuator_id] = float(
-                np.clip(grip_target, g_lo, g_hi),
+                _openarm_gripper_target(
+                    grip_target,
+                    self._model.actuator_ctrlrange[handles.grip_actuator_id],
+                ),
             )
 
         self._sim.step()
@@ -606,10 +627,46 @@ class _OpenArmTabletopRollout:
             )
         out: dict[str, NDArray[np.uint8]] = {}
         for cam_name in self._image_keys:
+            if cam_name in ("left_wrist", "right_wrist"):
+                self._update_dynamic_wrist_camera(mujoco, cam_name)
             # mujoco.Renderer wants the raw mujoco.MjData, not robosuite's wrapper.
             self._renderer.update_scene(self._sim.data._data, camera=cam_name)
             out[cam_name] = self._renderer.render().copy()
         return out
+
+    def _update_dynamic_wrist_camera(self, mujoco: Any, cam_name: str) -> None:
+        """Aim the named wrist streams at the live tabletop workspace.
+
+        The upstream OpenArm MJCF cameras are parented inside the hand. In the
+        tabletop reset pose they render mostly gripper shell/fingers, so the
+        policy never sees the cubes. Keep the dataset-facing names
+        (``left_wrist`` / ``right_wrist``) but move the compiled camera to a
+        world-space pose derived from the current end-effector site.
+        """
+        side = cam_name.split("_", 1)[0]
+        sign = 1.0 if side == "left" else -1.0
+        cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, cam_name)
+        site_id = mujoco.mj_name2id(
+            self._model,
+            mujoco.mjtObj.mjOBJ_SITE,
+            f"{side}_ee_control_point",
+        )
+        if cam_id < 0 or site_id < 0:
+            raise ROSConfigError(
+                f"openarm_tabletop_pnp could not resolve {cam_name!r} camera "
+                f"or {side!r} end-effector site in the composed MJCF.",
+            )
+        eef_pos = np.asarray(self._sim.data.site_xpos[site_id], dtype=np.float64)
+        offset = _WRIST_CAMERA_OFFSET * np.asarray([1.0, sign, 1.0], dtype=np.float64)
+        cam_pos = eef_pos + offset
+        self._model.cam_bodyid[cam_id] = 0
+        self._model.cam_pos[cam_id] = cam_pos
+        self._model.cam_quat[cam_id] = np.asarray(
+            look_at_quat_wxyz(cam_pos, _WRIST_CAMERA_TARGET, view_axis="-z"),
+            dtype=np.float64,
+        )
+        self._model.cam_fovy[cam_id] = _WRIST_CAMERA_FOVY
+        mujoco.mj_forward(self._model, self._sim.data._data)
 
     def _proprio_state(self) -> NDArray[np.float32]:
         """``state_dim``-D proprioception in the policy's expected layout + units.

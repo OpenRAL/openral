@@ -224,14 +224,11 @@ _SCENE_BODIES = dedent(
          placement matches the mddoai/openarm_2026-05-14_clean POV
          (camera between the two bases, looking forward + down at the
          tabletop). Per-checkpoint overrides flow through the YAML's
-         ``scene.backend_options.top_camera_*`` fields. The two wrist
-         cameras stay as-is: the upstream OpenArm v2 MJCF ships
-         ``camera_wrist_{left,right}`` parented inside each
-         ee_base_link with the calibration the upstream MJCF author
-         recorded; ``_rename_upstream_wrist_cameras`` just renames
-         them to ``{left,right}_wrist`` so the HAL + the pi05
-         manifest's ``image_preprocessing.aliases`` find them by
-         name. -->
+         ``scene.backend_options.top_camera_*`` fields. The two upstream
+         wrist camera tags are renamed here so the HAL + pi05 manifest find
+         the dataset-facing names; the runtime renderer re-aims those named
+         cameras at the tabletop because the physical hand-mounted pose is
+         occluded by the OpenArm gripper shell in this layout. -->
     """
 )
 
@@ -364,19 +361,13 @@ _WHITE_SKYBOX_ASSET = (
 def _rename_upstream_wrist_cameras(xml: str) -> str:
     """Rename upstream ``camera_wrist_{left,right}`` → ``{left,right}_wrist``.
 
-    The upstream OpenArm v2 MJCF already provides wrist-mounted cameras
-    parented inside each ``openarm_*_ee_base_link`` body, with the
-    pos/euler/fovy/resolution the pi05 LoRA's training dataset was
-    recorded with. The pi05 rskill manifest's
-    ``image_preprocessing.aliases`` keys and the HAL's ``camera_names``
-    parameter use the shorter ``left_wrist`` / ``right_wrist`` form
-    (matching the LeRobot dataset's
-    ``observation.images.{left,right}_wrist`` feature keys).
-
-    Renaming is preferable to defining a fresh ``trackcom`` camera in
-    the scene composer: a custom camera would need to re-derive the
-    upstream's calibrated pos / euler, which is dataset-specific
-    metadata we should not be guessing at.
+    The upstream OpenArm v2 MJCF already provides wrist-mounted camera tags
+    parented inside each ``openarm_*_ee_base_link`` body. The pi05 rSkill
+    manifest and HAL camera lists use the shorter ``left_wrist`` /
+    ``right_wrist`` dataset keys, so the composer preserves the upstream
+    camera IDs and only renames them. The rollout renderer may re-aim those
+    named cameras at runtime when the physical hand-mounted view is occluded
+    by the tabletop reset pose.
 
     No-op if the upstream camera names ever change — the caller still
     gets a syntactically valid MJCF, the wrist render path just won't

@@ -18,7 +18,9 @@
 # layout's 7-D EE-delta vs the manifest's JOINT_POSITION) — also a follow-up.
 #
 # Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar venv
-# (set OPENRAL_ISAAC_SIDECAR_PYTHON). See scenes/sim/isaac_franka_lift.yaml.
+# (set OPENRAL_ISAAC_SIDECAR_PYTHON). This deploy scene intentionally keeps the
+# lift_cube wire/bring-up layout; the task-level sim YAML was removed because no
+# in-tree or downloadable rSkill emits the required 8-D joint-delta Franka action.
 #
 # Run::
 #

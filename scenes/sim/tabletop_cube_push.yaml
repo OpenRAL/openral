@@ -39,6 +39,13 @@ scene:
     wrist_camera_pos_local: [0.03, -0.02, -0.06]
     wrist_camera_fovy: 75.0
 
+    # SO-101 pi0.5 / MolmoAct2 checkpoints are LeRobot-degree-native, same
+    # calibration as the so101_box scene. Without this the absolute joint
+    # targets were interpreted as radians and clipped, causing oscillation.
+    joint_units: degrees
+    joint_offsets_deg: [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+
     settle_steps: 5
 
 task:

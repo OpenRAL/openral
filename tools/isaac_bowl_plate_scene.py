@@ -13,7 +13,7 @@ OSC term:
 The scene mirrors the LIBERO contract so a LIBERO-finetuned rSkill (act-libero /
 smolvla-libero) can drive it through ``openral sim run`` unchanged:
 
-* obs ``images``: ``camera1`` = front agent-view, ``camera2`` = eye-in-hand wrist;
+* obs ``images``: ``camera1`` = front agent-view, ``camera2`` = secondary prop view;
 * obs ``state``: 8-D ``[eef_pos(3) ‖ eef_axisangle(3) ‖ gripper_qpos(2)]``
   (matches ``openral_sim.backends.libero._wrap_obs``);
 * action: 7-D OSC-pose delta ``[dx, dy, dz, drx, dry, drz, gripper]`` — the
@@ -45,6 +45,9 @@ _GRIPPER_OPEN = 0.04
 _GRIPPER_CLOSED = 0.0
 _TABLE_TOP_Z = 0.0  # table surface at the robot base height
 _OBJ_Z = 0.03
+_TASK_CENTER = np.array([0.50, 0.0, _OBJ_Z], dtype=np.float64)
+_WORKSPACE_LOW = np.array([0.32, -0.32, 0.07], dtype=np.float64)
+_WORKSPACE_HIGH = np.array([0.72, 0.32, 0.46], dtype=np.float64)
 
 
 def _quat_wxyz_to_axisangle(quat: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -57,6 +60,26 @@ def _quat_wxyz_to_axisangle(quat: NDArray[np.float32]) -> NDArray[np.float32]:
         axis = np.asarray(quat[1:], dtype=np.float32) / den
         return (axis * angle).astype(np.float32)
     return np.zeros(3, dtype=np.float32)
+
+
+def _look_at_quat_wxyz(
+    cam_pos: NDArray[np.float64],
+    target: NDArray[np.float64],
+    world_up: list[float],
+    rot_utils: Any,
+) -> NDArray[np.float64]:
+    """World (w,x,y,z) quat aiming a USD camera (view = local −Z, up = +Y) at ``target``."""
+    d = np.asarray(target, float) - np.asarray(cam_pos, float)
+    d = d / (np.linalg.norm(d) + 1e-9)  # forward = −Z_cam
+    up = np.asarray(world_up, float)
+    right = np.cross(d, up)
+    if np.linalg.norm(right) < 1e-6:
+        up = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
+        right = np.cross(d, up)
+    right = right / (np.linalg.norm(right) + 1e-9)
+    true_up = np.cross(right, d)
+    rot = np.column_stack([right, true_up, -d])  # cols: X=right, Y=up, Z=−forward
+    return np.asarray(rot_utils.rot_matrices_to_quats(rot.astype(np.float64)))
 
 
 class IsaacBowlPlateScene(IsaacSceneBase):
@@ -118,26 +141,25 @@ class IsaacBowlPlateScene(IsaacSceneBase):
 
         self._franka = self._world.scene.add(Franka(prim_path="/World/Franka", name="franka"))
 
-        # Front agent-view camera looking back at the arm + props.
+        # Front agent-view camera looking across the full bowl/plate workspace.
         self._cam_agent = Camera(
             prim_path="/World/AgentView", resolution=(self.obs_width, self.obs_height)
         )
-        # Eye-in-hand camera, parented to the gripper so it follows the arm.
+        # Secondary prop view. A true child wrist camera clips into the Franka hand
+        # in headless RTX, yielding black/hand-only frames; this stable view keeps
+        # the LIBERO two-camera contract while making both task props visible.
         self._cam_wrist = Camera(
-            prim_path="/World/Franka/panda_hand/WristCam",
+            prim_path="/World/WristView",
             resolution=(self.obs_width, self.obs_height),
         )
 
         self._world.reset()
         self._cam_agent.initialize()
         self._cam_wrist.initialize()
+        agent_pos = np.array([1.25, 0.0, 0.90], dtype=np.float64)
         self._cam_agent.set_world_pose(
-            np.array([1.5, 0.0, 0.9]),
-            rot_utils.euler_angles_to_quats(np.array([0, 28, 180]), degrees=True),
-        )
-        self._cam_wrist.set_local_pose(
-            np.array([0.05, 0.0, 0.02]),
-            rot_utils.euler_angles_to_quats(np.array([0, 90, 0]), degrees=True),
+            agent_pos,
+            _look_at_quat_wxyz(agent_pos, _TASK_CENTER, [0.0, 0.0, 1.0], rot_utils),
             camera_axes="usd",
         )
 
@@ -147,6 +169,11 @@ class IsaacBowlPlateScene(IsaacSceneBase):
         self._art_ik = ArticulationKinematicsSolver(self._franka, kin, "right_gripper")
         base_pos, base_quat = self._franka.get_world_pose()
         kin.set_robot_base_pose(np.asarray(base_pos), np.asarray(base_quat))
+
+        self._cam_wrist.set_world_pose(
+            np.array([1.50, 0.0, 1.00], dtype=np.float64),
+            rot_utils.euler_angles_to_quats(np.array([0, 45, 180]), degrees=True),
+        )
 
     def _add_bowl(self, position: NDArray[np.float32]) -> None:
         """Reference the YCB bowl USD; fall back to a primitive bowl if offline."""
@@ -183,7 +210,11 @@ class IsaacBowlPlateScene(IsaacSceneBase):
     def _apply_action(self, action: NDArray[np.float32]) -> None:
         pos, rot_mat = self._art_ik.compute_end_effector_pose()
         quat = self._rot_utils.rot_matrices_to_quats(np.asarray(rot_mat))
-        target = np.asarray(pos, dtype=np.float64) + action[:3].astype(np.float64) * _POS_SCALE
+        target = np.clip(
+            np.asarray(pos, dtype=np.float64) + action[:3].astype(np.float64) * _POS_SCALE,
+            _WORKSPACE_LOW,
+            _WORKSPACE_HIGH,
+        )
         ik_action, ok = self._art_ik.compute_inverse_kinematics(
             target_position=target, target_orientation=np.asarray(quat)
         )

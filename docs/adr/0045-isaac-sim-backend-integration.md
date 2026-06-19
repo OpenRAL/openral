@@ -229,6 +229,13 @@ control, and ran a real rSkill through `openral sim run`:
   bowl/plate task is out-of-distribution for a LIBERO policy); the check is that
   the pipeline runs and the arm is driven, not task success. ACT is preferred on
   an 8 GB GPU (tiny next to the ~2 GB Isaac sidecar).
+- **2026-06-19 SimScene cull:** the `isaac_franka_lift` task YAML was removed
+  from `scenes/sim/` after live evaluation showed the arm does not attempt the
+  lift task with any in-tree rSkill. The layout remains available for
+  deploy/wire bring-up (`scenes/deploy/isaac_franka.yaml`, `tools/isaac_scene.py`)
+  because it still proves sidecar boot, RTX render, and 8-D joint-position HAL
+  plumbing. Online policy search found no downloadable, license-compatible
+  Franka Isaac lift policy that emits the required 8-D joint-delta action.
 
 ## Follow-up — `openral deploy sim` minimal bring-up (2026-06-10)
 
@@ -451,7 +458,8 @@ pass a `RobotDescription` object across the boundary. Instead:
 ### Backward compatibility & safety
 
 The hardcoded `lift_cube` / `bowl_plate` layouts stay (selected by `--layout`); `--robot-spec`
-selects the new generic path, so the verified PoC scenes are untouched. **No schema change** —
+selects the new generic path. `lift_cube` is retained as deploy/wire bring-up, not
+as a task-level SimScene. **No schema change** —
 `PhysicsBackend.ISAACSIM` already exists; the robot spec is an IPC transport detail, never an
 on-disk schema. **No safety-kernel change** — Isaac stays behind `SimRollout`/`SimAttachedHAL`;
 the real-HW exclusion in `build_hal` (`mode="real"` + scene attach → `ROSConfigError`) still

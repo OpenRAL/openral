@@ -46,7 +46,7 @@ def _env_with_cameras(cameras: list[str]) -> SimEnvironment:
 def test_libero_layout_rejects_single_camera_scene() -> None:
     """gr00t/rldx LIBERO (2 cams) on a 1-camera scene → clear early mismatch.
 
-    Mirrors gr00t on ``isaac_franka_lift`` (renders only ``camera1``) vs
+    Mirrors gr00t on the single-camera Isaac ``lift_cube`` deploy/wire layout vs
     ``isaac_franka_bowl_plate`` (renders ``camera1``+``camera2``, which passes).
     """
     env_cfg = _env_with_cameras(["camera1"])
