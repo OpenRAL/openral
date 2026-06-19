@@ -203,6 +203,16 @@ _Isaac-side sidecar (runs under the py3.11 Isaac Sim venv only; ADR-0045). `isaa
 
 _All three layouts use Isaac Sim **core** (not Isaac Lab's env machinery, which the PyPI `isaaclab` wheel does not ship). NOT imported by the openral venv — invoked as a subprocess; the openral-side `backends/isaac_sim.py` forwards `scene.backend_options.layout` (and, for `manifest`, the `--robot-spec` JSON)._
 
+#### `python/sim/src/openral_sim/backends/rlbench.py`
+_RLBench (CoppeliaSim/PyRep) single-robot (fixed `franka_panda`) scene adapter. ADR-0061. Drives an RLBench task that runs in a separate externally-provisioned py3.10 sidecar venv (CoppeliaSim is proprietary, free-EDU, never vendored — CLAUDE.md §1.9; the released 3D policies pin the `MohitShridhar/RLBench@peract` fork), over the shared `openral_sim.sidecar.SidecarClient`. Opt-in via the `rlbench` dependency group (pyzmq + msgpack on the openral side only). The factory calls `ensure_backend_deps("rlbench_client")`, resolves the sidecar interpreter (`OPENRAL_RLBENCH_SIDECAR_PYTHON`) + `COPPELIASIM_ROOT` + script (`tools/rlbench_sidecar.py`), wraps the launch with `env VAR=…` to inject CoppeliaSim's runtime vars, and auto-spawns on first use. Scene id `rlbench`; `step` takes an 8-D keyframe `[x y z qx qy qz qw gripper_open]`._
+- `_RLBENCH_SCENE_ID = "rlbench"`; `_scene_default_port(rlbench_task, variation)` — deterministic per-task ZMQ port (SHA-256, range 21000–21999).
+- `_RLBenchSidecar(scene, task, _client)` — `SimRollout` proxy; `_wrap_obs` carries `images`/`point_clouds` (dict per camera) + `gripper_pose`/`gripper_open` for the 3D keyframe policy.
+- `_build_rlbench_scene(env_cfg) -> _RLBenchSidecar` — factory; reads `backend_options.{rlbench_task,variation,port,max_tries}`. Connects a `SidecarClient(name="rlbench", …)`.
+- Module side effect: `SCENES.register("rlbench", fixed_robot="franka_panda")(_build_rlbench_scene)` at import.
+
+#### `tools/rlbench_sidecar.py`
+_RLBench-side scene sidecar (runs under the externally-provisioned py3.10 venv only; ADR-0061; no openral import). Launches CoppeliaSim/PyRep headless via RLBench's `Environment` (peract fork, `EndEffectorPoseViaPlanning` + `Discrete` gripper), serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `step` appends the peract-fork 9-D `ignore_collisions` channel and executes the keyframe via a plan-and-retry mover (re-tries until the EE reaches the target pose < 5 mm). Cameras: left_shoulder/right_shoulder/wrist/front (RGB + point cloud)._
+
 #### `python/sim/src/openral_sim/backends/aloha.py`
 _gym-aloha bimanual MuJoCo scene adapter. Opt-in via the `sim` dependency group (gym-aloha lives there alongside mujoco / gymnasium / lerobot); the scene factory calls `openral_sim._deps.ensure_backend_deps("aloha")` first so the user gets an interactive auto-install banner on first use._
 - `class _AlohaSim` — `SimRollout` wrapping a `gym_aloha` env. — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `env.unwrapped._env.physics.{model,data}.ptr` (dm_control wrapper) for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)` (ADR-0048 Phase 1).
@@ -355,6 +365,14 @@ _Auto-managed sidecar adapter for RLWRLD/RLDX-1 (Qwen3-VL-8B + Multi-Stream Acti
 
 #### `python/sim/src/openral_sim/policies/gr00t.py`
 _NVIDIA Isaac GR00T policy adapter (ADR-0046) — reuses `_Gr00tFamilySidecarAdapter` with `family="gr00t"`, forking `tools/gr00t_sidecar.py` over the same ZMQ + msgpack wire (RLDX-1 is a GR00T-N1.5 finetune sharing the `PolicyServer` contract)._
+
+#### `python/sim/src/openral_sim/policies/rlbench_3dda.py`
+_3D Diffuser Actor RLBench keyframe policy adapter (ADR-0061). MIT. Proxies `tools/rlbench_3dda_sidecar.py` over the shared `SidecarClient`; the heavy `DiffuserActor` model + the 3-step obs history live in the externally-provisioned py3.10 venv (shared with the rlbench scene sidecar). `step(observation, instruction)` marshals the scene's multi-cam `images`/`point_clouds` + `gripper_pose`/`gripper_open` to the sidecar's `get_action` and returns an 8-D keyframe `[x y z qx qy qz qw gripper_open]` for `backends/rlbench.py` to plan + execute. Resolves repo/checkpoint/instructions/bounds via `OPENRAL_3DDA_*` env overrides (defaults to the provisioned cache locations)._
+- `_Diffuser3DActorAdapter(spec, device, _client)` — `PolicyAdapter`; `last_input_frame()` for episode-video capture.
+- `_build_diffuser_actor(env_cfg) -> _Diffuser3DActorAdapter` — `@POLICIES.register("diffuser_actor")` factory; reads `backend_options.{rlbench_task,variation,policy_port}` (the policy needs the task to pick the matching CLIP instruction embedding). Connects a `SidecarClient(name="rlbench-3dda", …)`.
+
+#### `tools/rlbench_3dda_sidecar.py`
+_3D Diffuser Actor policy sidecar (runs under the py3.10 venv only; ADR-0061; no openral import). Loads the published PerAct checkpoint into `trajectory_optimization.DiffuserActor` (embedding_dim 120, 256², 6D rot, wxyz, nhist 3, 100 DDIM steps), keeps per-episode obs history, serves `ping`/`reset`/`get_action`/`close`. Runs inference under `no_grad` (~0.43 GB VRAM). `dgl.geometry.farthest_point_sampler` is replaced by a pure-torch FPS shim; no flash-attn / pytorch3d needed._
 - `_build_gr00t(env_cfg) -> _Gr00tFamilySidecarAdapter` — `@POLICIES.register("gr00t")` factory. Reads the `OPENRAL_GR00T_*` env namespace + `vla.extra`; dispatches the obs/action layout via the shared `rldx._resolve_state_layout` (no longer hardcoded `"libero"` — a non-LIBERO GR00T finetune gets its own contract) and the port via `rldx._resolve_sidecar_port`. Embodiment tag stays GR00T-specific (`LIBERO_PANDA` default, overridable) since GR00T's tag enum differs from RLDX's `GENERAL_EMBODIMENT` family.
 
 #### `python/sim/src/openral_sim/_sidecar_common.py`
@@ -367,4 +385,4 @@ _Shared boot scaffolding for the out-of-process VLA sidecars (`rldx` / `gr00t`):
 - `_register_policies() -> None` — Side-effect imports of the policy-adapter modules so each registers its factory in `openral_sim.POLICIES` at import time. (L15)
 
 #### `python/sim/src/openral_sim/backends/__init__.py`
-- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L36)
+- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L38)

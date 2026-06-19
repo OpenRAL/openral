@@ -1,0 +1,108 @@
+# rSkill manifest — openral packaging format V1 (CLAUDE.md §6.4)
+# Wraps: katefgroup/3d_diffuser_actor  (diffuser_actor_peract.pth)
+# Paper: Ke et al., 2024 — "3D Diffuser Actor: Policy Diffusion with 3D Scene
+#        Representations" (arXiv:2402.10885). RLBench PerAct 18-task setup.
+#
+# LICENSE: MIT (code + released checkpoints) — commercially permissive. No
+# license guard needed (unlike RVT/RVT-2, which are NVIDIA non-commercial).
+#
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack), ADR-0061. The
+# policy AND the CoppeliaSim/PyRep RLBench scene run in their own externally-
+# provisioned py3.10 venv (CoppeliaSim is proprietary, free-EDU, NEVER vendored).
+# The openral adapter (openral_sim.policies.rlbench_3dda) forks
+# tools/rlbench_3dda_sidecar.py on first use; user workflow is one command:
+#
+#   openral benchmark scene --config scenes/benchmark/rlbench_open_drawer.yaml \
+#               --rskill rskills/3d-diffuser-actor-rlbench
+#
+# Verified live on an 8 GB Ada GPU host (2026-06-19): open_drawer 4/4,
+# meat_off_grill 3/3, close_jar solved. Inference VRAM peak ~0.43 GB.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-3d-diffuser-actor-rlbench"
+# ADR-0060: the benchmark tasks this checkpoint is validated for (gate). The
+# released PerAct checkpoint covers all 18 PerAct tasks; we ship + declare the
+# three live-verified starter tasks here (the rest are a follow-up).
+evaluated_tasks:
+  - "rlbench/open_drawer"
+  - "rlbench/meat_off_grill"
+  - "rlbench/close_jar"
+version: "0.1.0"
+license: "mit"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "diffuser_actor"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "franka_panda"
+
+# RLBench renders four fixed cameras (the PerAct set: left_shoulder /
+# right_shoulder / wrist / front) and the policy fuses their RGB-D point clouds
+# into a 3D scene representation. Those four are supplied by the SCENE backend
+# (openral_sim.backends.rlbench), NOT by the robot's real sensor list — so the
+# robot-capability gate uses a coarse modality-count requirement ("an RGB-vision
+# embodiment") rather than keyed camera1..4 the franka_panda manifest doesn't
+# declare. The per-camera 3D fusion happens inside the policy sidecar.
+sensors_required:
+  - modality: "rgb"
+    count: 1
+    min_width: 128
+    min_height: 128
+
+# The policy emits next-keyframe end-effector poses; RLBench executes each via
+# its sampling-based motion planner (EndEffectorPoseViaPlanning). Absolute EE
+# pose targets, not deltas.
+actuators_required:
+  - kind: "cartesian_pose"
+    control_mode_semantics:
+      mode: "absolute"
+      reference_frame: "panda_link0"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+min_vram_gb:
+  bf16: 2.0
+  fp32: 2.0
+weights_uri: "hf://katefgroup/3d_diffuser_actor"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# One macro-keypose per step (the scene's mover plans + executes it). 100 DDIM
+# denoising steps per keypose; ~1.2 s/keypose on an 8 GB Ada GPU.
+chunk_size: 1
+latency_budget:
+  per_chunk_ms: 3000.0
+
+# ── IO contract ────────────────────────────────────────────────────────────
+# 8-D keyframe action: [x y z qx qy qz qw gripper_open] (world frame). The scene
+# sidecar appends the peract fork's ignore_collisions channel + plans the motion.
+action_contract:
+  dim: 8
+  slots:
+    - {range: [0, 6], control_mode: "cartesian_pose", ee: "panda_hand", frame: "panda_link0"}
+    - {range: [7, 7], control_mode: "gripper_position", ee: "panda_gripper"}
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2402.10885"
+source_repo: "hf://katefgroup/3d_diffuser_actor"
+
+description: >
+  3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector
+  keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench
+  PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar
+  with the rlbench scene backend (ADR-0061). MIT code + checkpoints. The PerAct
+  checkpoint is loaded verbatim; ships three live-verified starter tasks.
+
+# ADR-0022 — action vocabulary surfaced to the reasoner LLM tool palette.
+actions:
+  - "generalist"
+  - "open"
+  - "close"
+  - "pick"
+  - "place"
+objects: []
+scenes:
+  - "tabletop"

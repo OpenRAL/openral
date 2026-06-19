@@ -1,0 +1,39 @@
+# RLBench — open_drawer (PerAct 18-task suite), CoppeliaSim/PyRep, Franka.
+# Run: openral benchmark scene --config scenes/benchmark/rlbench_open_drawer.yaml \
+#                              --rskill rskills/3d-diffuser-actor-rlbench
+# Setup: ADR-0061 — provision CoppeliaSim 4.1.0 + PyRep + RLBench@peract +
+#        the 3D Diffuser Actor checkpoint in the py3.10 sidecar venv.
+
+robot_id: franka_panda
+
+scene:
+  id: rlbench
+  backend: coppeliasim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+  backend_options:
+    rlbench_task: open_drawer
+    variation: 0
+
+task:
+  id: rlbench/open_drawer
+  scene_id: rlbench
+  instruction: "open the bottom drawer"
+  success_key: is_success
+  max_steps: 25          # official PerAct/3DDA eval: max 25 macro-keyposes per episode
+
+n_episodes: 25           # PerAct protocol: 25 evaluation episodes per task
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/1909.12271"
+  display_name: "RLBench open_drawer (PerAct suite)"
+  simulator: "CoppeliaSim 4.1.0 / PyRep (RLBench@peract)"
+  honest_scope: >
+    RLBench open_drawer from the PerAct 18-task multi-task benchmark
+    (Shridhar et al., 2209.05451), evaluated with 3D Diffuser Actor
+    (Ke et al., 2402.10885). Official protocol: 25 evaluation episodes per
+    task, max 25 macro-keyposes per episode (each keypose planned + executed
+    by RLBench's EndEffectorPoseViaPlanning mover). Verified live on an 8 GB
+    Ada GPU host (2026-06-19): policy solves open_drawer 4/4 via task.reset().

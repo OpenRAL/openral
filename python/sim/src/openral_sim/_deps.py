@@ -1060,6 +1060,43 @@ def _isaac_client_plan() -> BackendInstallPlan:
     )
 
 
+def _has_rlbench_client() -> bool:
+    """RLBench sidecar client side needs pyzmq + msgpack on the openral venv.
+
+    CoppeliaSim/PyRep + the peract RLBench fork live in a separate py3.10 sidecar
+    venv (ADR-0061), provisioned out-of-band (CoppeliaSim is proprietary and never
+    vendored); this probe only covers the openral-side wire, same shape as
+    :func:`_has_isaac_client`.
+    """
+    return _has_module("zmq") and _has_module("msgpack")
+
+
+def _rlbench_client_plan() -> BackendInstallPlan:
+    uv = _uv()
+    return BackendInstallPlan(
+        backend_id="rlbench_client",
+        display_name="RLBench adapter wire (pyzmq + msgpack on the openral venv)",
+        license_note=(
+            "Pulls pyzmq (LGPL+ZeroMQ exception → effectively permissive) and "
+            "msgpack (Apache-2.0). The CoppeliaSim/PyRep + peract-RLBench sidecar "
+            "(plus the 3D Diffuser Actor checkpoint) is an externally-provisioned "
+            "py3.10 venv — CoppeliaSim is proprietary, free-EDU, NEVER vendored "
+            "(ADR-0061 / CLAUDE.md §1.9) — and is NOT installed by this plan."
+        ),
+        probe=_has_rlbench_client,
+        steps=(
+            InstallStep(
+                description=(
+                    "uv sync --group rlbench --inexact (adds pyzmq + msgpack to the "
+                    "openral venv; --inexact keeps other backend deps in place)"
+                ),
+                argv=[uv, "sync", "--all-packages", "--group", "rlbench", "--inexact"],
+            ),
+        ),
+        manual_hint="just sync --all-packages --group rlbench --inexact",
+    )
+
+
 def _rldx_client_plan() -> BackendInstallPlan:
     uv = _uv()
     return BackendInstallPlan(
@@ -1409,6 +1446,7 @@ _PLANS: dict[str, Callable[[], BackendInstallPlan]] = {
     "rldx_client": _rldx_client_plan,
     "rldx_sidecar_setup": _rldx_sidecar_setup_plan,
     "isaac_client": _isaac_client_plan,
+    "rlbench_client": _rlbench_client_plan,
 }
 
 

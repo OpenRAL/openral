@@ -3341,6 +3341,7 @@ BenchmarkName: TypeAlias = Literal[
     "maniskill3_pick_place",
     "metaworld_mt50",
     "pusht",
+    "rlbench",
     "robocasa_pnp",
     "simpler_env_widowx",
 ]
@@ -3357,7 +3358,7 @@ auto-filters per rSkill so a single run scores one ACT checkpoint's one task.
 """
 
 ModelFamily: TypeAlias = Literal[
-    "smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t"
+    "smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t", "diffuser_actor"
 ]
 """VLA / policy family the skill belongs to.
 
@@ -4693,6 +4694,8 @@ class PhysicsBackend(str, Enum):
         MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).
         PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).
         ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.
+        COPPELIASIM: CoppeliaSim/PyRep — the RLBench benchmark backend, driven
+            out-of-process via a py3.10 sidecar (ADR-0061).
         GENESIS: Genesis (physics-language unification). Future.
         MOCK: In-process mock with no physics — used for wiring smoketests.
     """
@@ -4701,6 +4704,7 @@ class PhysicsBackend(str, Enum):
     MUJOCO_MJX = "mujoco_mjx"
     PYBULLET = "pybullet"
     ISAACSIM = "isaacsim"
+    COPPELIASIM = "coppeliasim"
     GENESIS = "genesis"
     MOCK = "mock"
 

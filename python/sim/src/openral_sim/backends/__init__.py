@@ -27,7 +27,9 @@ returns the bound robot or ``None``):
   ``--robot``. These reproduce a specific embodiment + reward. Today:
   ``libero`` / ``libero_custom_bddl`` (franka), ``metaworld`` (sawyer),
   ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
-  box/tube task is coupled to the so_arm101 MJCF schema; ADR-0033 finding).
+  box/tube task is coupled to the so_arm101 MJCF schema; ADR-0033 finding),
+  ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
+  py3.10 sidecar; ADR-0061).
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ def _register_backends() -> None:
         metaworld,
         openarm_robosuite,
         pusht,
+        rlbench,
         robocasa,
         simpler_env,
         so101_box,

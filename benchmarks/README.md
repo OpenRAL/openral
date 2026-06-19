@@ -59,6 +59,7 @@ for the pattern.
 | `simpler_env_widowx.yaml`          | widowx         | simpler_env / Bridge V2 (SAPIEN via ManiSkill)                          |  4 |  5 | `success`    |  60 |  20 |
 | `robocasa_pnp.yaml`                | panda_mobile   | robocasa/PickPlaceCounterToCabinet (MuJoCo via robosuite + kitchen fork) |  1 | 10 | `is_success` | 500 |  10 |
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
+| `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
@@ -77,6 +78,16 @@ with the install hint. The simpler-env package has no PyPI release; after
 ```
 uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
 ```
+
+The `rlbench.yaml` row (ADR-0061) runs RLBench on **CoppeliaSim/PyRep** — a
+proprietary (free-EDU) simulator that is **never vendored** (CLAUDE.md §1.9) and
+the released 3D keyframe policies pin the `MohitShridhar/RLBench@peract` fork.
+Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-rlbench`,
+MIT) run in an externally-provisioned py3.10 sidecar venv; the openral side only
+needs `uv sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
+typed `ROSConfigError` with the full provisioning recipe when the sidecar venv /
+`COPPELIASIM_ROOT` are absent. Verified live on an 8 GB Ada GPU host
+(open_drawer 4/4, meat_off_grill 3/3, close_jar solved).
 
 ## Adding a new benchmark
 
