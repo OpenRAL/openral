@@ -17,11 +17,15 @@ task:
   scene_id: simpler_env
   instruction: "put the carrot on the plate"
   success_key: is_success
-  max_steps: 400
+  max_steps: 60          # official SimplerEnv WidowX carrot horizon (MS3 TimeLimit)
 
-n_episodes: 200
+n_episodes: 24           # SimplerEnv WidowX protocol: 24 trials per task
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/2405.05941"
-  honest_scope: "carrot_on_plate task. SimplerEnv reports per-task success rates."
+  honest_scope: >
+    SimplerEnv WidowX+Bridge carrot-on-plate (Li et al., 2405.05941).
+    Official protocol: 24 trials per task, 60-step horizon (MS3 canonical
+    max_episode_steps for the carrot/spoon/cube bridge tasks). SimplerEnv
+    reports per-task visual-matching success rates.

@@ -9,6 +9,9 @@ version: "0.1.0"
 license: "rlwrld_non_commercial"
 role: "s1"
 kind: "vla"  # ADR-00XX: rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+# ADR-0060: this is the SIMPLER WidowX carrot-on-plate finetune, so the
+# benchmark runner accepts the simpler_env/widowx_carrot_on_plate scene.
+evaluated_tasks: ["simpler_env/widowx_carrot_on_plate"]
 
 # ── Policy identity ────────────────────────────────────────────────────────
 model_family: "rldx"
