@@ -404,4 +404,4 @@ _Shared boot scaffolding for the out-of-process VLA sidecars (`rldx` / `gr00t`):
 - `_register_policies() -> None` — Side-effect imports of the policy-adapter modules so each registers its factory in `openral_sim.POLICIES` at import time. (L15)
 
 #### `python/sim/src/openral_sim/backends/__init__.py`
-- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L38)
+- `_register_backends() -> None` — Side-effect imports of the scene-backend modules so each registers its factory in `openral_sim.SCENES` at import time. (L39)

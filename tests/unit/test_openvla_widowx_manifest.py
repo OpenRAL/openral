@@ -23,6 +23,9 @@ from openral_sim.cli import _load_or_build_env
 _MANIFEST = Path("rskills/openvla-oft-simpler-widowx-nf4/rskill.yaml")
 _EVAL = Path("rskills/openvla-oft-simpler-widowx-nf4/eval/simpler_env_widowx.json")
 _SCENE = Path("scenes/sim/widowx_carrot_on_plate.yaml")
+_WEIGHTS_URI = (
+    "hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood@3697bf84eaa7a7c6072e07b9451ca4c780cf7bed"
+)
 
 
 _DEFAULT_CLI_ARGS: dict[str, Any] = {
@@ -51,7 +54,7 @@ def test_manifest_loads_as_openvla_family() -> None:
     m = _load()
     assert m.model_family == "openvla"
     assert m.kind == "vla"
-    assert m.weights_uri == "hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood"
+    assert m.weights_uri == _WEIGHTS_URI
 
 
 def test_manifest_declares_widowx_bridge_tasks() -> None:
