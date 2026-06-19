@@ -1,0 +1,41 @@
+# ManiSkill3 PushCube-v1 — Panda arm, SAPIEN backend (mujoco enum slot reused).
+# Run: openral benchmark scene --config scenes/benchmark/maniskill_push_cube.yaml \
+#                              --rskill rskills/<maniskill-rskill>
+# Setup: just sync --all-packages --group maniskill3
+#
+# Same generic ManiSkill3 backend as maniskill_pick_cube.yaml; only task.id
+# (env) and max_steps differ — the backend reaches the whole MS3 catalogue
+# via gym.make. control_mode / robot_uids are policy-dependent (pd_joint_pos
+# 8-D + panda_wristcam mirror the PickCube scene); override per rSkill.
+# The rSkill must declare evaluated_tasks=["maniskill3/PushCube-v1"] (ADR-0060) —
+# this is scaffolding until a task-matched MS3 policy exists.
+
+robot_id: franka_panda
+
+scene:
+  id: maniskill3
+  backend: mujoco            # SAPIEN under the hood; mujoco enum slot reused
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2"]
+  backend_options:
+    control_mode: "pd_joint_pos"   # 8-D (7 arm joints + 1 gripper); override per policy
+    robot_uids: "panda_wristcam"   # adds hand_camera -> camera2 / wrist stream
+
+task:
+  id: maniskill3/PushCube-v1
+  scene_id: maniskill3
+  instruction: "push the cube to the target"
+  success_key: is_success
+  max_steps: 50             # ManiSkill3 official max_episode_steps for PushCube-v1
+
+n_episodes: 100            # ManiSkill3 standard eval (>=100 episodes)
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2410.00425"
+  honest_scope: >
+    PushCube-v1 (ManiSkill3, Mu et al. 2410.00425). Official env
+    max_episode_steps=50. Scaffolding scene: runnable once a
+    task-matched rSkill declaring evaluated_tasks=["maniskill3/PushCube-v1"]
+    exists. Standard MS3 eval is >=100 episodes.
