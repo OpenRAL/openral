@@ -1,0 +1,38 @@
+# LIBERO-Goal benchmark — franka_panda fixed by the scene registry.
+# Run with any LIBERO-Goal-compatible rSkill:
+#
+#   openral benchmark scene --config scenes/benchmark/libero_goal.yaml \
+#                           --rskill rskills/<libero-goal-rskill>
+#
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+#
+# Same LiberoEnv backend + Franka panda as libero_spatial; only the suite
+# (scene.id) and the eval horizon differ. The rSkill must declare
+# evaluated_tasks=["libero_goal"] (ADR-0060) — a LIBERO-Spatial-only
+# checkpoint is refused here.
+
+robot_id: franka_panda
+
+scene:
+  id: libero_goal
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+
+task:
+  id: libero_goal/0
+  scene_id: libero_goal
+  instruction: ""        # env.task_description from the LIBERO suite overrides this
+  success_key: is_success
+  max_steps: 300         # OpenVLA run_libero_eval LIBERO-Goal budget
+
+n_episodes: 50           # OpenVLA protocol: 50 rollouts per task
+seed: 42
+
+metadata:
+  paper: "https://arxiv.org/abs/2306.03310"
+  honest_scope: >
+    Task 0 of LIBERO-Goal (Liu et al., 2306.03310). Official VLA-eval
+    protocol (OpenVLA run_libero_eval): 10 tasks × 50 rollouts each (500
+    total), max 300 steps/episode for the Goal suite. Pass
+    --task libero_goal/N (N=0–9) to reproduce per-task numbers.

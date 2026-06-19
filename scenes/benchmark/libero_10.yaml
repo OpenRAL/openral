@@ -1,0 +1,39 @@
+# LIBERO-Long (LIBERO-10) benchmark — franka_panda fixed by the scene registry.
+# Run with any LIBERO-Long-compatible rSkill:
+#
+#   openral benchmark scene --config scenes/benchmark/libero_10.yaml \
+#                           --rskill rskills/<libero-long-rskill>
+#
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+#
+# LIBERO-Long is the 10 long-horizon multi-step tasks (the "libero_10"
+# suite name in the LiberoEnv backend). Same LiberoEnv + Franka panda as
+# libero_spatial; the eval horizon is much longer. The rSkill must declare
+# evaluated_tasks=["libero_10"] (ADR-0060).
+
+robot_id: franka_panda
+
+scene:
+  id: libero_10
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+
+task:
+  id: libero_10/0
+  scene_id: libero_10
+  instruction: ""        # env.task_description from the LIBERO suite overrides this
+  success_key: is_success
+  max_steps: 520         # OpenVLA run_libero_eval LIBERO-Long (libero_10) budget
+
+n_episodes: 50           # OpenVLA protocol: 50 rollouts per task
+seed: 42
+
+metadata:
+  paper: "https://arxiv.org/abs/2306.03310"
+  honest_scope: >
+    Task 0 of LIBERO-Long / LIBERO-10 (Liu et al., 2306.03310): 10
+    long-horizon multi-step tasks. Official VLA-eval protocol (OpenVLA
+    run_libero_eval): 10 tasks × 50 rollouts each (500 total), max 520
+    steps/episode. Pass --task libero_10/N (N=0–9) to reproduce per-task
+    numbers.
