@@ -38,7 +38,7 @@
     id: metaworld/assembly-v3
     scene_id: metaworld
     instruction: "assemble the nut onto the peg"
-    max_steps: 200
+    max_steps: 500          # MetaWorld max_path_length (official fixed horizon)
     success_key: success
   robot_id: sawyer
   n_episodes: 5
