@@ -537,8 +537,19 @@ if _ROS2_AVAILABLE:
                 # a failure there is FATAL (abort the goal, never start the policy
                 # from an unreachable/colliding state). The legacy ResetToPose snap
                 # stays best-effort (a failure only warns).
+                # Record the wall-clock instant just before the starting-pose
+                # reset. /joint_states is timer-published (~30 Hz, ADR-0049) and
+                # the world_state node re-stamps each JointState with its
+                # wall-clock ARRIVAL time, so the aggregator cache the first
+                # inference reads can still hold the PRE-reset pose for up to one
+                # publish period + DDS + cross-node latency after ResetToPose
+                # returns → the policy's first observation would be stale (OOD →
+                # self-collision wedge). Gate the first tick on a joint state
+                # stamped at/after this instant.
+                reset_wall_ns = time.time_ns()
                 if self._apply_starting_pose_or_abort(skill, goal_handle, result):
                     return result
+                self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
 
                 try:
                     self._run_until_done_or_deadline(
@@ -789,6 +800,44 @@ if _ROS2_AVAILABLE:
             goal_handle.abort()
             self._reset_active_goal()
             return True
+
+        def _wait_for_post_reset_joint_state(self, skill: Any, reset_wall_ns: int) -> None:
+            """Block until the aggregator's joint state is newer than the reset.
+
+            Closes the cross-node staleness race after a ``starting_pose`` reset:
+            the HAL refreshes its proprio snapshot inside the ResetToPose handler,
+            but ``/joint_states`` is only re-published on the next publisher-thread
+            tick (~30 Hz, ADR-0049) and must transit DDS + the world_state node's
+            ``_on_joint_state`` callback before it lands in the
+            ``WorldStateAggregator`` cache the first inference reads.
+            ``WorldState.joint_state.stamp_ns`` is the world_state node's
+            wall-clock ARRIVAL time, so any value ``>= reset_wall_ns`` was
+            published from the reset snapshot. No-op unless a ``starting_pose``
+            reset actually fired; bounded by a short deadline → best-effort
+            (mirrors the reset's own posture; never wedges the goal).
+            """
+            manifest = getattr(skill, "manifest", None)
+            pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
+            if not pose:
+                return
+            if not self.get_parameter("reset_to_pose_service").get_parameter_value().string_value:
+                return
+            if self._aggregator is None:
+                return
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                js = self._aggregator.snapshot().joint_state
+                if js is not None and int(js.stamp_ns) >= reset_wall_ns:
+                    self.get_logger().info(
+                        "rskill_runner.post_reset_joint_state_fresh "
+                        f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
+                    )
+                    return
+                time.sleep(0.005)
+            self.get_logger().warning(
+                "rskill_runner.post_reset_joint_state_timeout: no joint state newer "
+                "than the reset within 1.0 s; proceeding with current cache."
+            )
 
         def _apply_starting_pose(self, skill: Any) -> str | None:
             """Move the HAL to the manifest ``starting_pose`` (ADR-0053 dispatch).
