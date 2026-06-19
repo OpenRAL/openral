@@ -211,11 +211,29 @@ class SimSensorBridge:
         # ADR-0035 cross-frame lift — RGB cameras whose optical-frame TF failed
         # to resolve (no MJCF camera); warned once, then skipped.
         self._camera_tf_disabled: set[str] = set()
+        # Offscreen "cinecam" recorder (website-video capture): when
+        # OPENRAL_CINECAM_DIR is set, render the pulled-back free-camera view
+        # (same pose as the onscreen viewer) to numbered JPGs each tick. Robust
+        # vs the onscreen GLFW window, which the desktop WM can unmap.
+        self._cinecam_renderer: Any = None
+        self._cinecam_cam: Any = None
+        self._cinecam_opt: Any = None
+        self._cinecam_timer: Any = None
+        self._cinecam_frame: int = 0
+        self._cinecam_out_dir: str = ""
+        self._cinecam_model: Any = None
+        self._cinecam_w: int = 0
+        self._cinecam_h: int = 0
+        self._cinecam_base_body: Any = None
+        self._cinecam_setup_az: float = 0.0
+        self._cinecam_setup_el: float = 0.0
+        self._cinecam_setup_dist: float = 1.0
 
     def setup(self) -> None:
         """Activate every stream the manifest + HAL support. Idempotent-safe per activate."""
         self._setup_cameras()
         self._setup_idle_stepper()
+        self._setup_cinecam()
         self._setup_viewer()
         self._setup_scan()
         self._setup_depth()
@@ -227,6 +245,7 @@ class SimSensorBridge:
             self._camera_tf_timer,
             self._idle_timer,
             self._viewer_timer,
+            self._cinecam_timer,
             self._scan_timer,
             self._depth_timer,
         ):
@@ -234,6 +253,11 @@ class SimSensorBridge:
                 t.cancel()
         self._image_timer = self._idle_timer = self._camera_tf_timer = None
         self._viewer_timer = self._scan_timer = self._depth_timer = None
+        self._cinecam_timer = None
+        if self._cinecam_renderer is not None:
+            with contextlib.suppress(Exception):  # reason: renderer GL ctx may be gone
+                self._cinecam_renderer.close()
+            self._cinecam_renderer = None
         for pub in self._image_pubs.values():
             self._node.destroy_publisher(pub)
         self._image_pubs.clear()
@@ -970,3 +994,166 @@ class SimSensorBridge:
                 self._viewer_timer.cancel()
                 self._viewer_timer = None
             self._viewer = None
+
+    # -- offscreen cinecam recorder (website-video capture) --
+    def _configure_cinecam_camera(self, mujoco: Any, model: Any, data: Any) -> Any:
+        """Build the free-camera pose from the viewer default + env overrides.
+
+        Resolves the opening pose via :func:`initial_viewer_camera`, then applies
+        absolute overrides (``OPENRAL_CINECAM_AZ_DEG`` / ``_EL_DEG`` / ``_DIST_M``)
+        and deltas (``_AZ_OFFSET_DEG`` / ``_EL_OFFSET_DEG`` / ``_DIST_DELTA_M``),
+        resolves the base body for the follow-cam, and snapshots the final pose
+        as the baseline for the live ``OPENRAL_CINECAM_TUNE`` deltas.
+        """
+        import os  # reason: env-gated capture feature
+
+        from openral_hal.depth_cloud import initial_viewer_camera, resolve_base_body_name
+
+        cam = mujoco.MjvCamera()
+        lookat, distance, azimuth, elevation = initial_viewer_camera(
+            model=model, data=data, description=getattr(self._hal, "description", None)
+        )
+        cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        cam.lookat[:] = lookat
+        cam.distance = distance
+        cam.azimuth = azimuth
+        cam.elevation = elevation
+        for env_key, attr in (
+            ("OPENRAL_CINECAM_AZ_DEG", "azimuth"),
+            ("OPENRAL_CINECAM_EL_DEG", "elevation"),
+            ("OPENRAL_CINECAM_DIST_M", "distance"),
+        ):
+            val = os.environ.get(env_key)
+            if val:
+                setattr(cam, attr, float(val))
+        az_off = os.environ.get("OPENRAL_CINECAM_AZ_OFFSET_DEG")
+        if az_off:
+            cam.azimuth = float(cam.azimuth) + float(az_off)
+        el_off = os.environ.get("OPENRAL_CINECAM_EL_OFFSET_DEG")  # +ve = less top-down
+        if el_off:
+            cam.elevation = float(cam.elevation) + float(el_off)
+        dist_delta = os.environ.get("OPENRAL_CINECAM_DIST_DELTA_M")  # -ve = closer
+        if dist_delta:
+            cam.distance = max(0.3, float(cam.distance) + float(dist_delta))
+        self._cinecam_base_body = resolve_base_body_name(
+            model, description=getattr(self._hal, "description", None)
+        )
+        self._cinecam_setup_az = float(cam.azimuth)
+        self._cinecam_setup_el = float(cam.elevation)
+        self._cinecam_setup_dist = float(cam.distance)
+        return cam
+
+    def _setup_cinecam(self) -> None:
+        """Render the pulled-back free-camera view to JPGs when OPENRAL_CINECAM_DIR is set.
+
+        Offscreen (EGL) render — robust against the onscreen GLFW viewer being
+        unmapped/throttled by the desktop WM. Frame pose matches the viewer
+        (:func:`openral_hal.depth_cloud.initial_viewer_camera`); collision shells
+        are hidden so RoboCasa textures show. ``OPENRAL_CINECAM_SIZE`` (``WxH``,
+        default ``1280x960``) and ``OPENRAL_CINECAM_FPS`` (default ``12``) tune it.
+        """
+        import os  # reason: env-gated debug/capture feature
+
+        out_dir = os.environ.get("OPENRAL_CINECAM_DIR")
+        if not out_dir:
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return
+        model, data = handles
+        try:
+            import mujoco  # reason: optional sim dep
+
+            from openral_hal.depth_cloud import apply_robosuite_visual_geomgroups
+
+            size = os.environ.get("OPENRAL_CINECAM_SIZE", "1280x960")
+            width, height = (int(v) for v in size.lower().split("x"))
+            fps = float(os.environ.get("OPENRAL_CINECAM_FPS", "12"))
+            os.makedirs(out_dir, exist_ok=True)
+            self._cinecam_out_dir = out_dir
+            # The MJCF offscreen framebuffer defaults to 640x480; enlarge it so
+            # the cinecam can render at the requested (higher) resolution.
+            with contextlib.suppress(Exception):
+                model.vis.global_.offwidth = max(int(model.vis.global_.offwidth), width)
+                model.vis.global_.offheight = max(int(model.vis.global_.offheight), height)
+            try:
+                self._cinecam_renderer = mujoco.Renderer(model, height=height, width=width)
+            except Exception:  # reason: offscreen framebuffer smaller than request
+                width = int(model.vis.global_.offwidth)
+                height = int(model.vis.global_.offheight)
+                self._cinecam_renderer = mujoco.Renderer(model, height=height, width=width)
+            self._cinecam_model = model
+            self._cinecam_w = width
+            self._cinecam_h = height
+            self._cinecam_opt = mujoco.MjvOption()
+            apply_robosuite_visual_geomgroups(self._cinecam_opt, model)
+            self._cinecam_cam = self._configure_cinecam_camera(mujoco, model, data)
+        except Exception as exc:  # reason: GL/render failure is non-fatal
+            self._node.get_logger().warning(
+                f"SimSensorBridge: cinecam setup failed ({exc!s}); no offscreen capture."
+            )
+            self._cinecam_renderer = None
+            return
+        self._cinecam_timer = self._node.create_timer(1.0 / max(fps, 1.0), self._render_cinecam)
+        self._node.get_logger().info(
+            f"SimSensorBridge: cinecam recording {width}x{height} @ {fps:.0f} Hz → {out_dir}"
+        )
+
+    def _render_cinecam(self) -> None:
+        if self._cinecam_renderer is None or self._cinecam_cam is None:
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return
+        model, data = handles
+        try:
+            import mujoco  # reason: optional sim dep
+            from PIL import Image  # reason: optional dep — present in the sim env
+
+            # robosuite rebuilds its sim (a fresh MjModel) on env reset, so the
+            # renderer bound to the setup-time model would render a frozen scene.
+            # Rebuild it (same size + scene opts) whenever the live model changes.
+            if model is not self._cinecam_model:
+                with contextlib.suppress(Exception):
+                    self._cinecam_renderer.close()
+                self._cinecam_renderer = mujoco.Renderer(
+                    model, height=self._cinecam_h, width=self._cinecam_w
+                )
+                from openral_hal.depth_cloud import apply_robosuite_visual_geomgroups
+
+                apply_robosuite_visual_geomgroups(self._cinecam_opt, model)
+                self._cinecam_model = model
+            # Ensure derived kinematics (geom_xpos) reflect the latest qpos.
+            mujoco.mj_forward(model, data)
+            # Follow-cam: re-pin lookat to the live base position so a navigating
+            # robot stays centred (OPENRAL_CINECAM_FOLLOW=1). Lift the pivot to
+            # ~torso height for a nicer frame.
+            import os  # reason: env-gated
+
+            if os.environ.get("OPENRAL_CINECAM_FOLLOW") and self._cinecam_base_body:
+                bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self._cinecam_base_body)
+                if bid >= 0:
+                    self._cinecam_cam.lookat[0] = float(data.xpos[bid][0])
+                    self._cinecam_cam.lookat[1] = float(data.xpos[bid][1])
+                    self._cinecam_cam.lookat[2] = float(data.xpos[bid][2]) + 0.5
+            # Live tuning: re-read "az_delta el_delta dist_delta" from the tune
+            # file each tick so framing can be dialed in without a relaunch.
+            tune_path = os.environ.get("OPENRAL_CINECAM_TUNE")
+            if tune_path and os.path.exists(tune_path):
+                with contextlib.suppress(Exception):
+                    with open(tune_path) as _tf:
+                        parts = _tf.read().split()
+                    az_d, el_d, dist_d = (float(parts[0]), float(parts[1]), float(parts[2]))
+                    self._cinecam_cam.azimuth = self._cinecam_setup_az + az_d
+                    self._cinecam_cam.elevation = self._cinecam_setup_el + el_d
+                    self._cinecam_cam.distance = max(0.3, self._cinecam_setup_dist + dist_d)
+            self._cinecam_renderer.update_scene(
+                data, camera=self._cinecam_cam, scene_option=self._cinecam_opt
+            )
+            rgb = self._cinecam_renderer.render()
+            self._cinecam_frame += 1
+            path = f"{self._cinecam_out_dir}/f_{self._cinecam_frame:05d}.jpg"
+            Image.fromarray(rgb).save(path, quality=88)
+        except Exception as exc:  # reason: a dropped frame must not crash the HAL
+            with contextlib.suppress(Exception):
+                self._node.get_logger().warning(f"cinecam frame failed: {exc!s}")

@@ -29,7 +29,7 @@ from __future__ import annotations
 import contextlib
 import time
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import structlog
 from openral_core.assets import AssetRefError, resolve_asset
@@ -294,6 +294,18 @@ class MujocoArmHAL(HALBase):
         self._model = None
         self._data = None
         self._connected = False
+
+    def mujoco_handles(self) -> tuple[Any, Any] | None:
+        """Expose the live MuJoCo ``(model, data)`` for the bare-twin arm.
+
+        Mirrors :meth:`SimAttachedHAL.mujoco_handles` so
+        :class:`~openral_hal.sim_sensor_bridge.SimSensorBridge`'s offscreen
+        cinecam can render a 3rd-person view of a composed-scene arm (openarm /
+        so101 / franka bare twins). Returns ``None`` until connected.
+        """
+        if self._model is None or self._data is None:
+            return None
+        return self._model, self._data
 
     def read_images(self) -> dict[str, object]:
         """Render the manifest's RGB cameras off the live MJCF (issue #191 Phase 3b).
