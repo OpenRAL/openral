@@ -31,15 +31,15 @@
     max_steps: 520
     success_key: is_success
   robot_id: franka_panda
-  n_episodes: 10
+  n_episodes: 50
   seed: 0
   metadata:
     paper: "https://arxiv.org/abs/2306.03310"
     display_name: "LIBERO-Long"
     simulator: "LIBERO (MuJoCo)"
     honest_scope: >
-      10 episodes per task across all 10 LIBERO-Long tasks (100 rollouts
-      total). Matches the SmolVLA / pi0.5 / xVLA published protocols.
+      Official LIBERO/OpenVLA protocol: 50 episodes per task across all 10
+      LIBERO-Long tasks (500 rollouts total), max 520 steps/episode. Matches the SmolVLA / pi0.5 / xVLA published protocols.
 - <<: *libero_scene
   task:
     <<: *task_proto
