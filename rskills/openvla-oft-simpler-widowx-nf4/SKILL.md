@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 2000.0}
   license_code: Apache-2.0
   license_weights: mit
-  weights_uri: hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood
+  weights_uri: hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood@3697bf84eaa7a7c6072e07b9451ca4c780cf7bed
   source_repo: hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood
   paper_url: https://huggingface.co/RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood
 ---

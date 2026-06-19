@@ -63,7 +63,7 @@ min_vram_gb:
   # (int4 matches bf16 task accuracy). int4 + expandable_segments fits an 8 GB card.
   bf16: 16.8
   int4: 7.0
-weights_uri: "hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood"
+weights_uri: "hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood@3697bf84eaa7a7c6072e07b9451ca4c780cf7bed"
 source_repo: "hf://RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood"
 
 # No `processors` block: OpenVLA is not a lerobot modern-processor family. Its
