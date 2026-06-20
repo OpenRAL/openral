@@ -1,7 +1,7 @@
 ---
 name: act-aloha-insertion
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: insert, pick, place on peg, socket. ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion demonstration set. Like the transfer-cube sibling, the published checkpoint predates lerobot's PolicyProcessorPipeline migration and ships without normalisation buffers. Insertion is the harder ALOHA task in the original paper; the 0.20 success rate reflects that. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: insert, pick, place on peg, socket. ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion demonstration set. Insertion is the harder ALOHA task in the original paper; the 0.20 success rate reflects that. See the norm-stats note above re: the legacy safetensors-resident buffers. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -38,7 +38,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion demonstration set. Like the transfer-cube sibling, the published checkpoint predates lerobot's PolicyProcessorPipeline migration and ships without normalisation buffers. Insertion is the harder ALOHA task in the original paper; the 0.20 success rate reflects that.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual sim-insertion demonstration set. Insertion is the harder ALOHA task in the original paper; the 0.20 success rate reflects that. See the norm-stats note above re: the legacy safetensors-resident buffers.
 
 ## Capabilities
 
