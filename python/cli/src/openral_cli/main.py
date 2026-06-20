@@ -2368,7 +2368,11 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
-    return VLASpec(id=manifest.model_family, weights_uri=uri)
+    return VLASpec(
+        id=manifest.model_family,
+        weights_uri=uri,
+        extra=dict(manifest.policy_extras),
+    )
 
 
 def _default_benchmark_out_path(vla_spec: VLASpec, suite_id: str) -> Path:
@@ -2440,10 +2444,12 @@ def benchmark_scene(
         "--save-video",
         help=(
             "Write a clean single-view world MP4 per episode to this "
-            "directory, named <scene>_<rskill>_<success|fail>.mp4, plus a "
+            "directory, named <task>_<rskill>_<success|fail>.mp4, plus a "
             "videos.json manifest — for website hero clips (overlays are "
-            "rendered by the page, not burned into pixels). Enables per-step "
-            "frame capture. Pair with --n-episodes 1 for a single demo clip."
+            "rendered by the page, not burned into pixels). The task slug "
+            "keeps benchmark scenes sharing one backend from overwriting each "
+            "other. Enables per-step frame capture. Pair with --n-episodes 1 "
+            "for a single demo clip."
         ),
     ),
     video_size: int = typer.Option(
@@ -2576,7 +2582,7 @@ def benchmark_scene(
         write_world_videos(
             episodes,
             save_video,
-            scene=scene.scene.id,
+            scene=scene.task.id,
             rskill=Path(rskill).name,
             section=Path(config).parent.name,
             size=video_size,

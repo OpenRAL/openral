@@ -85,6 +85,12 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
         "policy itself runs in tools/gr00t_sidecar.py's own Python 3.10 venv "
         "(ADR-0046)."
     ),
+    "diffuser_actor": (
+        "Install the rlbench extras: `just sync --all-packages --group rlbench` "
+        "(adds pyzmq + msgpack for the 3D Diffuser Actor sidecar client). The "
+        "policy + the CoppeliaSim/PyRep RLBench env run in tools/rlbench_*"
+        "_sidecar.py's own externally-provisioned Python 3.10 venv (ADR-0061)."
+    ),
     # `mock` has no external deps — included so a smoke that mentions a
     # mock-family rSkill never gets filtered out.
     "mock": "No extras required.",
@@ -104,6 +110,7 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
     "xvla": ("sim",),
     "rldx": ("rldx",),
     "gr00t": ("gr00t",),
+    "diffuser_actor": ("rlbench",),
     "mock": (),
 }
 
@@ -124,6 +131,11 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     # only needs the ZMQ + msgpack wire (the 3B policy lives in the sidecar's
     # own Py3.10 venv). See openral_sim.policies.gr00t / ADR-0046.
     "gr00t": ("zmq", "msgpack"),
+    # 3D Diffuser Actor shares the out-of-process sidecar contract; the
+    # openral-side client only needs the ZMQ + msgpack wire (the policy + the
+    # CoppeliaSim/PyRep RLBench env live in the sidecar's own py3.10 venv).
+    # See openral_sim.policies.rlbench_3dda / ADR-0061.
+    "diffuser_actor": ("zmq", "msgpack"),
     "mock": (),
 }
 

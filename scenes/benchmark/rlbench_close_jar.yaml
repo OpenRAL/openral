@@ -1,0 +1,37 @@
+# RLBench — close_jar (PerAct 18-task suite), CoppeliaSim/PyRep, Franka.
+# Run: openral benchmark scene --config scenes/benchmark/rlbench_close_jar.yaml \
+#                              --rskill rskills/3d-diffuser-actor-rlbench
+# Setup: ADR-0061 (see rlbench_open_drawer.yaml header).
+
+robot_id: franka_panda
+
+scene:
+  id: rlbench
+  backend: coppeliasim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+  backend_options:
+    rlbench_task: close_jar
+    variation: 0
+
+task:
+  id: rlbench/close_jar
+  scene_id: rlbench
+  instruction: "close the jar"
+  success_key: is_success
+  max_steps: 25
+
+n_episodes: 25
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/1909.12271"
+  display_name: "RLBench close_jar (PerAct suite)"
+  simulator: "CoppeliaSim 4.1.0 / PyRep (RLBench@peract)"
+  honest_scope: >
+    RLBench close_jar from the PerAct 18-task benchmark (Shridhar et al.,
+    2209.05451), evaluated with 3D Diffuser Actor (Ke et al., 2402.10885).
+    Official protocol: 25 evaluation episodes per task, max 25 macro-keyposes.
+    The peract RLBench fork carries the corrected close_jar success condition.
+    Verified live on an 8 GB Ada GPU host (2026-06-19): policy solves the task.

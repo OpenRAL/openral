@@ -3292,6 +3292,7 @@ class EmbodimentExtra(BaseModel):
 
 EmbodimentTag: TypeAlias = Literal[
     "aloha",
+    "aloha_agilex",
     "custom",
     "franka_panda",
     "g1",
@@ -3339,9 +3340,12 @@ BenchmarkName: TypeAlias = Literal[
     "maniskill3_franka_pick_cube",
     "maniskill3_panda",
     "maniskill3_pick_place",
+    "metaworld_mt10",
     "metaworld_mt50",
     "pusht",
+    "rlbench",
     "robocasa_pnp",
+    "robotwin",
     "simpler_env_widowx",
 ]
 """Canonical benchmark ids — one per ``benchmarks/<id>.yaml`` suite in tree.
@@ -3357,7 +3361,16 @@ auto-filters per rSkill so a single run scores one ACT checkpoint's one task.
 """
 
 ModelFamily: TypeAlias = Literal[
-    "smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t"
+    "smolvla",
+    "pi05",
+    "xvla",
+    "act",
+    "diffusion",
+    "rldx",
+    "molmoact2",
+    "gr00t",
+    "diffuser_actor",
+    "openvla",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -3369,6 +3382,12 @@ matching adapter under ``python/sim/src/openral_sim/adapters/``.
 ``gr00t`` (NVIDIA Isaac GR00T N1.x / N2) runs out-of-process via a ZMQ
 sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 ``rldx`` adapter (RLDX-1 is itself a GR00T-N1.5 finetune) — see ADR-0046.
+
+``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
+loaded in-process (``trust_remote_code``, gated by
+``OPENRAL_ALLOW_REMOTE_CODE=1``); the adapter de-normalizes the policy's
+discrete action tokens with the checkpoint's embedded ``unnorm_key`` stats
+and replays the action chunk closed-loop — see ADR-0061.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and
@@ -3951,6 +3970,11 @@ class RSkillManifest(BaseModel):
             policy run on the canonical ``libero_spatial.yaml`` without a
             duplicate per-policy scene; ``scene.backend_options.control_mode``
             still overrides it. ``None`` (default) → backend default.
+        policy_extras: Adapter-owned runtime knobs copied from the rSkill
+            manifest into :class:`VLASpec.extra` during CLI composition.
+            Used for family-specific generation, sampling, replay, or
+            transform settings that are part of the checkpoint contract but
+            should not become top-level manifest schema fields.
         paper_url: Canonical paper URL for this skill / family.
         dataset_uri: HF Hub URI for the training dataset.
         source_repo: HF Hub URI for the upstream weights repo (often
@@ -4200,6 +4224,7 @@ class RSkillManifest(BaseModel):
     # construction: ``spec_extra`` > manifest > schema default. See
     # ``openral_rskill._vla_core.resolve_image_preprocessing``,
     # ``resolve_state_dim``, ``resolve_camera_keys``, and ``apply_chunk_replay``.
+    policy_extras: dict[str, object] = Field(default_factory=dict)
     processors: RSkillProcessors | None = None
     image_preprocessing: ImagePreprocessing | None = None
     state_contract: StateContract | None = None
@@ -4692,7 +4717,14 @@ class PhysicsBackend(str, Enum):
         MUJOCO: Vanilla MuJoCo (CPU / single-env). Default for LIBERO, MetaWorld.
         MUJOCO_MJX: MuJoCo MJX (XLA, GPU-batched headless rollouts).
         PYBULLET: PyBullet (legacy adapters, contact-rich tabletop).
+        SAPIEN: SAPIEN (Hillbot/UCSD physics + ray-traced rendering). The
+            engine under ManiSkill3 and RoboTwin 2.0; the RoboTwin dual-arm
+            benchmark backend runs it out-of-process via a py3.10 sidecar
+            (ADR-0061). ManiSkill3 scenes predate this slot and historically
+            declared ``MUJOCO`` — new SAPIEN backends use this value.
         ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.
+        COPPELIASIM: CoppeliaSim/PyRep — the RLBench benchmark backend, driven
+            out-of-process via a py3.10 sidecar (ADR-0061).
         GENESIS: Genesis (physics-language unification). Future.
         MOCK: In-process mock with no physics — used for wiring smoketests.
     """
@@ -4700,7 +4732,9 @@ class PhysicsBackend(str, Enum):
     MUJOCO = "mujoco"
     MUJOCO_MJX = "mujoco_mjx"
     PYBULLET = "pybullet"
+    SAPIEN = "sapien"
     ISAACSIM = "isaacsim"
+    COPPELIASIM = "coppeliasim"
     GENESIS = "genesis"
     MOCK = "mock"
 

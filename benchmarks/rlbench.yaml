@@ -1,0 +1,91 @@
+# RLBench benchmark suite — 3 tasks from the PerAct 18-task multi-task suite.
+#
+# RLBench (James et al., 2020, 1909.12271): 100 Franka tasks on CoppeliaSim/PyRep
+# — the standard 3D/keyframe-policy benchmark. This suite ships a starter subset
+# of the canonical PerAct 18-task set (Shridhar et al., 2209.05451); the released
+# 3D keyframe policies (3D Diffuser Actor, RVT-2, PerAct) are evaluated on it.
+#
+# Run:
+#   openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench
+#
+# Setup (ADR-0061): CoppeliaSim is proprietary (free EDU), never vendored. The
+# RLBench scene + the 3D Diffuser Actor policy run in their own externally-
+# provisioned py3.10 sidecar venv (CoppeliaSim 4.1.0 + PyRep + RLBench@peract +
+# the diffuser_actor_peract.pth checkpoint). The openral side only needs
+# `--group rlbench` (pyzmq + msgpack).
+#
+# Protocol: 25 evaluation episodes per task, max 25 macro-keyposes per episode
+# (each keypose planned + executed by RLBench's EndEffectorPoseViaPlanning mover).
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename stem
+# ("rlbench"). All three tasks share scene.id "rlbench" (one backend) and differ
+# only by backend_options.rlbench_task + task.id. Per-scene metadata is uniform
+# via the &meta anchor so raise_on_invalid_suite's metadata-equality check passes.
+
+- scene:
+    id: rlbench
+    backend: coppeliasim
+    observation_height: 256
+    observation_width: 256
+    cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+    backend_options:
+      rlbench_task: open_drawer
+      variation: 0
+  task:
+    id: rlbench/open_drawer
+    scene_id: rlbench
+    instruction: "open the bottom drawer"
+    max_steps: 25
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 25
+  seed: 0
+  metadata: &meta
+    paper: "https://arxiv.org/abs/1909.12271"
+    display_name: "RLBench (PerAct 18-task subset)"
+    simulator: "CoppeliaSim 4.1.0 / PyRep (RLBench@peract)"
+    honest_scope: >
+      Starter subset (open_drawer, meat_off_grill, close_jar) of the PerAct
+      18-task RLBench benchmark (Shridhar et al., 2209.05451), evaluated with
+      3D Diffuser Actor (Ke et al., 2402.10885, MIT). Official protocol: 25
+      evaluation episodes per task, max 25 macro-keyposes. Verified live on an
+      8 GB Ada GPU host (2026-06-19). CoppeliaSim is proprietary, never vendored
+      (ADR-0061). The remaining 15 PerAct tasks are a follow-up.
+- scene:
+    id: rlbench
+    backend: coppeliasim
+    observation_height: 256
+    observation_width: 256
+    cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+    backend_options:
+      rlbench_task: meat_off_grill
+      variation: 0
+  task:
+    id: rlbench/meat_off_grill
+    scene_id: rlbench
+    instruction: "take the chicken off the grill"
+    max_steps: 25
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 25
+  seed: 0
+  metadata: *meta
+- scene:
+    id: rlbench
+    backend: coppeliasim
+    observation_height: 256
+    observation_width: 256
+    cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+    backend_options:
+      rlbench_task: close_jar
+      variation: 0
+  task:
+    id: rlbench/close_jar
+    scene_id: rlbench
+    instruction: "close the jar"
+    max_steps: 25
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 25
+  seed: 0
+  metadata: *meta

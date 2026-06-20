@@ -1,0 +1,36 @@
+# RLBench — meat_off_grill (PerAct 18-task suite), CoppeliaSim/PyRep, Franka.
+# Run: openral benchmark scene --config scenes/benchmark/rlbench_meat_off_grill.yaml \
+#                              --rskill rskills/3d-diffuser-actor-rlbench
+# Setup: ADR-0061 (see rlbench_open_drawer.yaml header).
+
+robot_id: franka_panda
+
+scene:
+  id: rlbench
+  backend: coppeliasim
+  observation_height: 256
+  observation_width: 256
+  cameras: ["left_shoulder", "right_shoulder", "wrist", "front"]
+  backend_options:
+    rlbench_task: meat_off_grill
+    variation: 0
+
+task:
+  id: rlbench/meat_off_grill
+  scene_id: rlbench
+  instruction: "take the chicken off the grill"
+  success_key: is_success
+  max_steps: 25
+
+n_episodes: 25
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/1909.12271"
+  display_name: "RLBench meat_off_grill (PerAct suite)"
+  simulator: "CoppeliaSim 4.1.0 / PyRep (RLBench@peract)"
+  honest_scope: >
+    RLBench meat_off_grill from the PerAct 18-task benchmark (Shridhar et al.,
+    2209.05451), evaluated with 3D Diffuser Actor (Ke et al., 2402.10885).
+    Official protocol: 25 evaluation episodes per task, max 25 macro-keyposes.
+    Verified live on an 8 GB Ada GPU host (2026-06-19): policy solves 3/3.

@@ -46,6 +46,7 @@ def save_world_mp4(
     *,
     fps: int = 20,
     size: int = _DEFAULT_SIZE,
+    min_duration_s: float = 2.0,
 ) -> Path:
     """Write a clean square world-view MP4 for one :class:`EpisodeResult`.
 
@@ -57,6 +58,8 @@ def save_world_mp4(
         fps: Playback frame rate.
         size: Output square edge in pixels. Each frame is center-cropped to a
             square and resized to ``size × size``.
+        min_duration_s: Minimum playback length. Short successful rollouts
+            hold the final frame so website clips remain watchable.
 
     Returns:
         The output path.
@@ -84,6 +87,8 @@ def save_world_mp4(
         )
     if size <= 0:
         raise ValueError(f"size must be positive; got {size}")
+    if min_duration_s < 0.0:
+        raise ValueError(f"min_duration_s must be non-negative; got {min_duration_s}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     import imageio.v2 as iio
@@ -98,7 +103,11 @@ def save_world_mp4(
         pixelformat="yuv420p",
     )
     try:
-        for frame in result.frames:
+        frames = list(result.frames)
+        min_frames = int(np.ceil(float(fps) * min_duration_s))
+        if frames and len(frames) < min_frames:
+            frames.extend([frames[-1]] * (min_frames - len(frames)))
+        for frame in frames:
             writer.append_data(_square(frame, size))
     finally:
         writer.close()

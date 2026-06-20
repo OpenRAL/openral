@@ -68,7 +68,18 @@ Columns:
 | `lerobot/xvla-libero` | LIBERO | `libero`, `franka_panda` | **8-D** same `eef_pos+axisangle+gripper_qpos`; padded to max_state_dim=20 internally ✓ | `image`+`image2` (**224×224**, flip 180°) + `empty_camera_0` (224×224 zeros) ✓ | IDENTITY norm (no stats file) ✓; action output [20] (first 7 elements = LIBERO 7-D) ✓ | `rskills/xvla-libero/` | Apache-2.0 | xVLA (Florence-2 backbone, flow-matching). `scenes/benchmark/libero_spatial.yaml` (with `--rskill rskills/xvla-libero`) |
 | `ar0s/groot_libero` | LIBERO | `libero`, `franka_panda` | TBD | TBD | TBD | — | Apache-2.0 (fine-tune) | GR00T on LIBERO; base model is NVIDIA AI Foundation **non-commercial** — guard required |
 
-### 3.2 MetaWorld (Sawyer, MuJoCo)
+### 3.2 RLBench (Franka Panda, CoppeliaSim/PyRep)
+
+> RLBench tasks are fixed to the Franka Panda in CoppeliaSim/PyRep. OpenRAL
+> runs both the simulator and 3D keyframe policy out-of-process in an
+> externally-provisioned py3.10 sidecar venv (ADR-0061); CoppeliaSim is
+> proprietary (free EDU) and is never vendored.
+
+| VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in checkpoint | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `katefgroup/3d_diffuser_actor` (`diffuser_actor_peract.pth`) | RLBench PerAct subset | `franka_panda` | **8-D** `gripper_pose(7)+gripper_open(1)` history, policy emits an **8-D** absolute EE keyframe | `left_shoulder`, `right_shoulder`, `wrist`, `front` RGB-D point clouds at 256×256 | Precomputed CLIP instruction embeddings (`instructions.pkl`) + task bounds JSON | `rskills/3d-diffuser-actor-rlbench/` | MIT | ADR-0061 starter set: `rlbench_open_drawer.yaml`, `rlbench_meat_off_grill.yaml`, `rlbench_close_jar.yaml`; live-verified on an 8 GB Ada host. |
+
+### 3.3 MetaWorld (Sawyer, MuJoCo)
 
 > The OpenRAL embodiment for MetaWorld is `sawyer` — see
 > [`robots/sawyer/`](https://github.com/OpenRAL/openral/tree/master/robots/sawyer). The MetaWorld benchmark
@@ -81,13 +92,13 @@ Columns:
 |---|---|---|---|---|---|---|---|---|
 | `lerobot/smolvla_metaworld` | MetaWorld MT50 | `franka_panda`, `manipulator` | **4-D** `agent_pos` (XYZ + gripper) ✓ | `observation.image`→`camera1` (256×256, flip+resize from 480×480) ✓ | Yes — `step_5_normalizer_processor.safetensors` (state=[4], action=[4]) ✓ | `rskills/smolvla-metaworld/` | Apache-2.0 | Action: 4-D delta (XYZ + gripper). Sawyer robot in MetaWorld (not Franka despite tag). `scenes/benchmark/metaworld_push.yaml` (with `--rskill rskills/smolvla-metaworld`) |
 
-### 3.3 RoboCasa (Franka Panda, MuJoCo)
+### 3.4 RoboCasa (Franka Panda, MuJoCo)
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
 | `lerobot/smolvla_robocasa` | RoboCasa | `franka_panda`, `manipulator` | TBD | TBD | TBD | — | Apache-2.0 | Kitchen manipulation; no rSkill stub yet |
 
-### 3.4 SO-100 / SO-101 (real robot or sim)
+### 3.5 SO-100 / SO-101 (real robot or sim)
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -95,7 +106,14 @@ Columns:
 | `TakuyaHiraoka/act_so101_pick_diverse_objects` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | ACT policy; diverse object pick task |
 | `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
 
-### 3.5 Other platforms
+### 3.6 SimplerEnv / ManiSkill3 Bridge (WidowX)
+
+| VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` | SimplerEnv `PutCarrotOnPlateInScene-v1` (ManiSkill3) | `widowx` | **8-D** `simpler_widowx` surfaced by env; checkpoint uses no proprio (`use_proprio=False`) ✓ | single 224×224 RGB (`camera1` / 3rd-view) ✓ | Yes — `config.json` `norm_stats.bridge_orig`, 7-D action, chunk 8 ✓ | `rskills/openvla-oft-simpler-widowx-nf4/` | MIT | OpenVLA-OFT custom-code model; NF4 fits 8 GB. Requires RLinf eval path in manifest `policy_extras` (`generate_action_verl`, padding length 30, temperature 0.6, torch seed 0, action scale 2.0, binary gripper). Locally verified 2/5 success on carrot, 60-step horizon. Keep in a dedicated transformers<5 runtime; the default lerobot workspace pins transformers 5.3. |
+| `RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX` | SimplerEnv `PutCarrotOnPlateInScene-v1` | `widowx` | **8-D** `simpler_widowx` ✓ | single RGB stream ✓ | Processor sidecars in rSkill ✓ | `rskills/rldx1-ft-simpler-widowx-nf4/` | RLWRLD non-commercial | Sidecar runtime; sibling Bridge baseline. |
+
+### 3.7 Other platforms
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -109,10 +127,12 @@ Columns:
 | Sim env | Backend | Install | Robot(s) | Task suites | Camera setup |
 |---|---|---|---|---|---|
 | LIBERO | MuJoCo (robosuite) | `CC=/usr/bin/gcc uv sync --group libero` + fix `~/.libero/config.yaml` to point at conda/pip libero data dirs | Franka Panda | libero_spatial, libero_object, libero_goal, libero_10 (= LIBERO-Long) | agentview + wrist 256×256; raw keys `image`/`image2` renamed to `camera1`/`camera2` by stored preprocessor; flip 180° |
+| RLBench | CoppeliaSim/PyRep sidecar | `uv sync --group rlbench` for the openral-side ZMQ wire; CoppeliaSim 4.1.0 + PyRep + RLBench@peract live in an external py3.10 venv | Franka Panda | RLBench PerAct starter subset (`open_drawer`, `meat_off_grill`, `close_jar`) | left/right shoulder + wrist + front RGB-D point clouds at 256×256 |
 | MetaWorld | MuJoCo | `uv run pip install metaworld==3.0.0 --no-deps` | Sawyer (MT50) | MT50 (50 tasks, v3) | 1 camera `corner2` 480×480 → resize to 256×256; `observation.image` key renamed to `camera1` |
 | RoboCasa | MuJoCo | TBD | Franka Panda | Kitchen manipulation | TBD |
 | SO-100 Digital Twin | MuJoCo (in-process, `python/sim/`) | `uv sync --group sim` | SO-100 | Smoke-test only (no task suite) | None — joint-space smoketest |
 | SO-101 Box (`so101_box`) | MuJoCo (raw, `python/sim/src/openral_sim/backends/so101_box/`) | `uv sync --group sim` | SO-101 | tube-insertion (geometric success: tube vertical + lower tip ≥ 10 mm below the slotted-block hole top) — both block and tube spawn at random (x, y, yaw) on the floor each `reset()` | OAK-D Pro overhead (RGB + depth, default 640×480) + wrist RGB parented to the gripper body |
+| SimplerEnv WidowX | ManiSkill3/SAPIEN via `simpler_env` | `uv sync --group simpler-env` + `uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"` | WidowX 250s | carrot-on-plate (`simpler_env/widowx_carrot_on_plate`) | 3rd-view RGB surfaced as `camera1` |
 | NVIDIA Arena | Isaac Sim | Requires NVIDIA Isaac Sim license | GR1 | microwave | TBD |
 
 ### 4.1 LIBERO eval CLI
@@ -170,6 +190,10 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 - **xvla is LIBERO-engine-only**: the xVLA adapter's env preprocessor (`LiberoProcessorStep`) consumes the nested LiberoEnv observation that the scene must expose as `observation['raw']`. Non-LIBERO scenes (e.g. the Isaac Sim Franka scenes) do not populate it, so `xvla` raises `ROSCapabilityMismatch` on the first step. Run xvla only on LIBERO scenes (`libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, …).
 
 - **GR00T / RLDX sidecars have no single-camera fallback**: these checkpoints read a fixed number of *distinct* camera streams positionally — LIBERO=2 (agentview+wrist), RC365=3, GR1/Simpler=1 — set by the manifest's `state_contract.layout`. Unlike the in-process lerobot adapters (smolvla / pi05 / act), which resolve their camera list from `scene.cameras` and adapt, the `gr00t` / `rldx` factories reject a scene that declares **fewer** cameras than the layout needs with an upfront `ROSCapabilityMismatch` (before the multi-minute sidecar boot). A scene that omits `cameras:` is the adapter default (LIBERO renders camera1+camera2 itself) and is never rejected. Example: `gr00t-n17-libero` runs on `isaac_franka_bowl_plate` (`cameras: [camera1, camera2]`) but not the single-camera Isaac `lift_cube` deploy/wire layout.
+
+- **RLBench requires a separately-provisioned CoppeliaSim/PyRep sidecar**: `uv sync --group rlbench` installs only the openral-side ZMQ/msgpack client. CoppeliaSim 4.1.0 (proprietary, free EDU), PyRep, the `MohitShridhar/RLBench@peract` fork, and 3D Diffuser Actor live in `~/.cache/openral/rlbench-policy/.venv` (or `OPENRAL_RLBENCH_SIDECAR_PYTHON`). The adapter raises a typed `ROSConfigError` with the recipe when that venv or `COPPELIASIM_ROOT` is missing.
+
+- **OpenVLA-OFT / RLinf needs a transformers<5 runtime**: `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` loads through OpenVLA's custom `AutoModelForVision2Seq` code path, verified with `transformers==4.40.1` / `accelerate==0.33`. The default OpenRAL VLA workspace pins `transformers==5.3.0` for lerobot families, so do not sync OpenVLA into the same venv as LIBERO/π0.5/SmolVLA unless the upstream custom code is ported.
 
 - **π0.5 requires ≥8 GB VRAM**: The PaliGemma-3B backbone requires more memory than the 7-class GPU can provide in typical shared use. Use `--device cpu` for slow inference or a dedicated A100/H100 for production eval.
 

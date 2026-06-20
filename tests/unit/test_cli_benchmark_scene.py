@@ -91,7 +91,7 @@ def test_benchmark_scene_accepts_benchmark_yaml_in_dry_run() -> None:
     assert "scene pusht" in flat
     assert "task=pusht/0" in flat
     # n_episodes from the YAML, not the protocol default.
-    assert "n_episodes=200" in flat
+    assert "n_episodes=50" in flat
     # robot_id added in Task 9.5 — assert it surfaces in the dry-run output.
     assert "robot=pusht_2d" in flat
 

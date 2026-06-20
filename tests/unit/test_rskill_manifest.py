@@ -341,7 +341,8 @@ class TestEmbodimentTags:
 
 class TestModelFamily:
     @pytest.mark.parametrize(
-        "fam", ["smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t"]
+        "fam",
+        ["smolvla", "pi05", "xvla", "act", "diffusion", "rldx", "molmoact2", "gr00t", "openvla"],
     )
     def test_supported_families_accepted(self, fam: str) -> None:
         d = _minimal_manifest_dict()
@@ -349,7 +350,7 @@ class TestModelFamily:
         RSkillManifest.model_validate(d)
 
     # "groot" (single-zero typo) stays rejected — the canonical spelling is "gr00t".
-    @pytest.mark.parametrize("fam", ["openvla", "groot", "custom", "smolvla2", ""])
+    @pytest.mark.parametrize("fam", ["groot", "custom", "smolvla2", ""])
     def test_unsupported_family_rejected(self, fam: str) -> None:
         d = _minimal_manifest_dict()
         d["model_family"] = fam

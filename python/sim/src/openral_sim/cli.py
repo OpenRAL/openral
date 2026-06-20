@@ -359,7 +359,7 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
     # adapter id is the manifest's `model_family` — historically a separate
     # `policy_id` field carried the same value, but every in-tree skill set
     # them equal and the duplication has been removed.
-    extra: dict[str, object] = {}
+    extra: dict[str, object] = dict(manifest.policy_extras)
     if args.n_action_steps is not None:
         extra["n_action_steps"] = args.n_action_steps
     vla_spec = VLASpec(

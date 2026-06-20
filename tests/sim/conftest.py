@@ -74,6 +74,7 @@ def compose_sim_env(
         id=manifest.model_family,
         weights_uri=rskill_uri,
         device="auto",
+        extra=dict(manifest.policy_extras),
     )
     task = scene_env.task
     if max_steps is not None:

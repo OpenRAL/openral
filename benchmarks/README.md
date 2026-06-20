@@ -46,19 +46,21 @@ for the pattern.
 
 | Suite YAML | Robot | Scene | Tasks | Per-scene `n_episodes` | `success_key` | `max_steps` | Total rollouts |
 |---|---|---|---|---|---|---|---|
-| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 10 | `is_success` | 280 | 100 |
-| `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 10 | `is_success` | 280 | 100 |
-| `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 10 | `is_success` | 300 | 100 |
-| `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 10 | `is_success` | 520 | 100 |
+| `libero_spatial.yaml`     | franka_panda   | libero_spatial (MuJoCo)         | 10 | 50 | `is_success` | 280 | 500 |
+| `libero_object.yaml`      | franka_panda   | libero_object (MuJoCo)          | 10 | 50 | `is_success` | 280 | 500 |
+| `libero_goal.yaml`        | franka_panda   | libero_goal (MuJoCo)            | 10 | 50 | `is_success` | 300 | 500 |
+| `libero_10.yaml`          | franka_panda   | libero_10 / LIBERO-Long (MuJoCo) | 10 | 50 | `is_success` | 520 | 500 |
+| `metaworld_mt10.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 10 | 10 | `success`    | 500 | 100 |
 | `metaworld_mt50.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 50 |  5 | `success`    | 500 | 250 |
-| `aloha_transfer_cube.yaml` | aloha_bimanual | aloha_transfer_cube (gym-aloha) |  1 | 50 | `is_success` | 400 |  50 |
-| `aloha_insertion.yaml`    | aloha_bimanual | aloha_insertion (gym-aloha)     |  1 | 50 | `is_success` | 400 |  50 |
+| `aloha.yaml`              | aloha_bimanual | aloha_transfer_cube + aloha_insertion (gym-aloha) |  2 | 50 | `is_success` | 400 | 100 |
 | `pusht.yaml`              | pusht_2d       | pusht (gym-pusht pymunk)        |  1 | 50 | `is_success` | 300 |  50 |
 | `maniskill3_pick_place.yaml`       | google_robot   | maniskill3 (SAPIEN, GPU)                                                |  2 |  5 | `success`    | 100–200 |  10 |
 | `maniskill3_franka_pick_cube.yaml` | franka_panda   | maniskill3 PickCube-v1 (SAPIEN, GPU)                                    |  1 | 10 | `success`    | 100 |  10 |
 | `simpler_env_widowx.yaml`          | widowx         | simpler_env / Bridge V2 (SAPIEN via ManiSkill)                          |  4 |  5 | `success`    |  60 |  20 |
 | `robocasa_pnp.yaml`                | panda_mobile   | robocasa/PickPlaceCounterToCabinet (MuJoCo via robosuite + kitchen fork) |  1 | 10 | `is_success` | 500 |  10 |
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
+| `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.10 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
+| `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
@@ -68,8 +70,8 @@ for a paper-equivalent reproduction. `maniskill3_pick_place` has two scenes with
 different `max_steps` per task (PickCube-v1=100, StackCube-v1=200) — the suite
 aggregator uses `max(scene.task.max_steps)` for the suite-level bound (Task 10).
 
-The four SAPIEN rows (`maniskill3_*` and `simpler_env_*`) require opt-in extras
-(ADR-0010). Without `uv sync --group maniskill3` (or `simpler-env`)
+The ManiSkill/SimplerEnv SAPIEN rows (`maniskill3_*` and `simpler_env_*`) require
+opt-in extras (ADR-0010). Without `uv sync --group maniskill3` (or `simpler-env`)
 `openral benchmark run` will raise a typed `ROSConfigError` at lazy import time
 with the install hint. The simpler-env package has no PyPI release; after
 `uv sync --group simpler-env` users must also run:
@@ -77,6 +79,27 @@ with the install hint. The simpler-env package has no PyPI release; after
 ```
 uv run pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"
 ```
+
+`robotwin.yaml` is the first **dual-arm** suite (RoboTwin 2.0, SAPIEN; ADR-0061). It
+runs out-of-process through a py3.10 sidecar (`tools/robotwin_sidecar.py`) because
+RoboTwin's SAPIEN/CuRobo/pytorch3d stack is incompatible with the py3.12 workspace;
+`uv sync --group robotwin --inexact` installs only the openral-side wire (pyzmq +
+msgpack). The heavy lerobot-main + RoboTwin + asset venv is externally provisioned
+(`OPENRAL_ROBOTWIN_AUTO_PROVISION=1` or the manual recipe in ADR-0061). Task-matched
+rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
+`lerobot/smolvla_robotwin` checkpoint). The shown 5-task slice is a representative
+subset of RoboTwin's 50 tasks; the `smolvla-robotwin` checkpoint is multi-task so it
+covers all of them.
+
+The `rlbench.yaml` row (ADR-0061) runs RLBench on **CoppeliaSim/PyRep** — a
+proprietary (free-EDU) simulator that is **never vendored** (CLAUDE.md §1.9) and
+the released 3D keyframe policies pin the `MohitShridhar/RLBench@peract` fork.
+Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-rlbench`,
+MIT) run in an externally-provisioned py3.10 sidecar venv; the openral side only
+needs `uv sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
+typed `ROSConfigError` with the full provisioning recipe when the sidecar venv /
+`COPPELIASIM_ROOT` are absent. Verified live on an 8 GB Ada GPU host
+(open_drawer 4/4, meat_off_grill 3/3, close_jar solved).
 
 ## Adding a new benchmark
 

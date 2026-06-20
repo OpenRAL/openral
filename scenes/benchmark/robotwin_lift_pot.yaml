@@ -1,0 +1,34 @@
+# RoboTwin 2.0 — lift_pot (bimanual lift), aloha-agilex, SAPIEN backend.
+# Run: openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml \
+#                             --rskill rskills/smolvla-robotwin
+# Setup: provision the SAPIEN+RoboTwin sidecar venv (ADR-0061) and
+#        `just sync --all-packages --group robotwin --inexact` for the wire.
+
+robot_id: aloha_agilex
+
+scene:
+  id: robotwin
+  backend: sapien
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2", "camera3"]
+
+task:
+  id: robotwin/lift_pot
+  scene_id: robotwin
+  instruction: "lift the pot with both arms"
+  success_key: is_success
+  max_steps: 300            # LeRobot robotwin env episode_length
+
+n_episodes: 100             # RoboTwin official protocol: 100 episodes/task
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2506.18088"
+  display_name: "RoboTwin 2.0 — Lift Pot"
+  simulator: "RoboTwin 2.0 (SAPIEN), aloha-agilex"
+  honest_scope: >
+    lift_pot (RoboTwin 2.0, Chen et al. 2506.18088). Bimanual lift on the
+    aloha-agilex embodiment. Official protocol: 100 episodes/task, sim
+    built-in success, episode_length=300 (LeRobot robotwin env). Easy
+    (demo_clean) setting.

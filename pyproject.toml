@@ -321,6 +321,35 @@ isaacsim = [
     "pyzmq>=25",
     "msgpack>=1",
 ]
+robotwin = [
+    # ADR-0061 — opt-in RoboTwin 2.0 SAPIEN dual-arm benchmark backend.
+    #
+    # Same shape as the `isaacsim` / `rldx` groups: the RoboTwin SAPIEN env
+    # (`tools/robotwin_sidecar.py`, wrapping LeRobot's `robotwin` env) runs in its
+    # OWN Python 3.10 venv that this group does NOT touch — RoboTwin pins
+    # SAPIEN + CuRobo + mplib + pytorch3d against Python 3.10 / CUDA 12.1,
+    # incompatible with this repo's Python 3.12, and ships multi-GB assets, so it is
+    # externally provisioned (CLAUDE.md §1.9), never pinned here. What we install on
+    # the openral (py3.12) side is just the ZMQ + msgpack client used by
+    # `openral_sim.backends.robotwin`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
+rlbench = [
+    # ADR-0061 — opt-in RLBench (CoppeliaSim/PyRep) benchmark backend + the
+    # 3D Diffuser Actor keyframe policy.
+    #
+    # Both the RLBench scene (`tools/rlbench_sidecar.py`) and the 3D Diffuser
+    # Actor policy (`tools/rlbench_3dda_sidecar.py`) run in their OWN Python 3.10
+    # venv that this group does NOT touch — CoppeliaSim is proprietary (free EDU),
+    # never redistributable (CLAUDE.md §1.9), and the released 3D policies pin the
+    # MohitShridhar/RLBench@peract fork + an Ada-compatible torch build. All of
+    # that is externally provisioned. What we install on the openral (py3.12)
+    # side is just the ZMQ + msgpack client used by
+    # `openral_sim.backends.rlbench` + `openral_sim.policies.rlbench_3dda`.
+    "pyzmq>=25",
+    "msgpack>=1",
+]
 locateanything = [
     # ADR-0037 — opt-in LocateAnything-3B open-vocab VLM detector.
     #

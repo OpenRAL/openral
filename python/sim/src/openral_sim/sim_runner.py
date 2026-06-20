@@ -50,6 +50,45 @@ def _tracer() -> trace.Tracer:
 
 
 _log = structlog.get_logger(__name__)
+_VIDEO_FRAMES_INFO_KEY = "_openral_video_frames"
+_IMAGE_NDIM = 3
+_GRAYSCALE_CHANNELS = 1
+_RGB_CHANNELS = 3
+_RGBA_CHANNELS = 4
+
+
+def _append_adapter_video_frames(
+    target: list[NDArray[np.uint8]],
+    payload: object,
+) -> None:
+    """Append adapter-provided intra-step frames to the episode video buffer."""
+    if payload is None:
+        return
+    if not isinstance(payload, list):
+        _log.warning(
+            "adapter_video_frames_invalid",
+            reason="payload_not_list",
+            payload_type=type(payload).__name__,
+        )
+        return
+    for frame in payload:
+        arr = np.asarray(frame, dtype=np.uint8)
+        if arr.ndim != _IMAGE_NDIM or arr.shape[2] not in (
+            _GRAYSCALE_CHANNELS,
+            _RGB_CHANNELS,
+            _RGBA_CHANNELS,
+        ):
+            _log.warning(
+                "adapter_video_frame_invalid",
+                shape=tuple(arr.shape),
+                dtype=str(arr.dtype),
+            )
+            continue
+        if arr.shape[2] == _GRAYSCALE_CHANNELS:
+            arr = np.repeat(arr, _RGB_CHANNELS, axis=2)
+        elif arr.shape[2] == _RGBA_CHANNELS:
+            arr = arr[:, :, :_RGB_CHANNELS]
+        target.append(np.ascontiguousarray(arr, dtype=np.uint8))
 
 
 def _dump_obs_for_step(
@@ -604,6 +643,11 @@ class SimRunner(InferenceRunnerBase):
                 step_result = self._env.step(action)
                 physics_ms = (time.perf_counter() - physics_t0) * 1000.0
                 physics_span.set_attribute("physics.step_ms", physics_ms)
+            if record:
+                _append_adapter_video_frames(
+                    self._buf.frames,
+                    step_result.info.get(_VIDEO_FRAMES_INFO_KEY),
+                )
             self._obs = step_result.observation
             self._buf.total_reward += step_result.reward
             self._buf.max_step_reward = max(self._buf.max_step_reward, step_result.reward)

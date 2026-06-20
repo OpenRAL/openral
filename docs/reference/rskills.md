@@ -53,10 +53,12 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`act-aloha`](../../rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
 | [`act-aloha-insertion`](../../rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
 | [`diffusion-pusht`](../../rskills/diffusion-pusht/) | Diffusion Policy | `pusht_2d` | Apache-2.0 |
+| [`3d-diffuser-actor-rlbench`](../../rskills/3d-diffuser-actor-rlbench/) | 3D Diffuser Actor keyframe policy for RLBench PerAct tasks | `franka_panda` | MIT — CoppeliaSim/PyRep sidecar runtime (ADR-0061) |
 | [`rldx1-ft-libero-nf4`](../../rskills/rldx1-ft-libero-nf4/) | RLWRLD RLDX-1 (Qwen3-VL-8B + MSAT, ~6.9 B) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-gr1-nf4`](../../rskills/rldx1-ft-gr1-nf4/) | RLDX-1 (GR1 bimanual) | `gr1` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-rc365-nf4`](../../rskills/rldx1-ft-rc365-nf4/) | RLDX-1 (RoboCasa365 fine-tune) | `panda_mobile` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-simpler-widowx-nf4`](../../rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
+| [`openvla-oft-simpler-widowx-nf4`](../../rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
 | [`rldx1-pt-nf4`](../../rskills/rldx1-pt-nf4/) | RLDX-1 (foundation pretrain) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
 | [`gr00t-n17-libero`](../../rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — out-of-process sidecar (ADR-0046) |
 
