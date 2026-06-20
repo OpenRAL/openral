@@ -272,20 +272,14 @@ def test_tick_results_increment_tick_idx() -> None:
 # ── Per-step instruction precedence (--instruction override) ─────────────────
 #
 # Regression for the silent `--instruction` override loss: a scene whose
-# env exposes a per-episode `obs["task"]` language (RoboCasa sampled object
-# name, or a custom BDDL `:language` clause) used to unconditionally beat
-# the user's explicit `--instruction`. An explicit override MUST win; the
-# env/BDDL language must still win when the user passed nothing.
+# env exposes a per-episode `obs["task"]` language (for example, RoboCasa
+# sampled object name) used to unconditionally beat the user's explicit
+# `--instruction`. An explicit override MUST win; the env language must still
+# win when the user passed nothing.
 
 
 def test_explicit_override_beats_env_language() -> None:
-    """An explicit ``--instruction`` wins over a scene's BDDL/env language.
-
-    This is the milk-vs-orange-juice bug: the custom BDDL ``:language``
-    clause reaches the policy via ``obs["task"]``; without the override
-    signal the policy was prompted with the milk goal regardless of
-    ``--instruction``.
-    """
+    """An explicit ``--instruction`` wins over a scene's env language."""
     instr = _resolve_step_instruction(
         instruction_override="Pick up orange juice and place in the basket",
         obs_task="Pick the milk and place it in the basket",

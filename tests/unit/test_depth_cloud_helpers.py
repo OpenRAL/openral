@@ -281,10 +281,17 @@ def test_preferred_viewer_camera_falls_back_to_first_then_none() -> None:
 
 def test_initial_viewer_camera_places_free_eye_at_scene_camera() -> None:
     mujoco = pytest.importorskip("mujoco")
-    from openral_hal.depth_cloud import initial_viewer_camera
+    from openral_hal.depth_cloud import (
+        _VIEWER_LOOKAT_LIFT_M,
+        _VIEWER_PULLBACK_M,
+        initial_viewer_camera,
+    )
 
-    # base at origin; an agentview camera at (2, 0, 1.5). The free camera must
-    # open with its EYE at the camera pos and orbit pivot (lookat) on the base.
+    # base at origin; an agentview camera at (2, 0, 1.5). initial_viewer_camera
+    # opens looking from the authored camera's direction, but applies the
+    # deploy-video framing (commit 5e3cd084): the orbit pivot is lifted off the
+    # base by _VIEWER_LOOKAT_LIFT_M and the eye pulled back by _VIEWER_PULLBACK_M
+    # so cluttered scenes show the whole robot, not a floor-filling close-up.
     model = mujoco.MjModel.from_xml_string(
         "<mujoco><worldbody>"
         "<body name='base'><geom type='box' size='.1 .1 .1'/></body>"
@@ -295,8 +302,12 @@ def test_initial_viewer_camera_places_free_eye_at_scene_camera() -> None:
     mujoco.mj_forward(model, data)
 
     lookat, dist, az, el = initial_viewer_camera(model=model, data=data)
-    assert np.allclose(lookat, [0.0, 0.0, 0.0], atol=1e-6)  # orbit pivot = base
-    # Reconstruct the eye MuJoCo would place: lookat - distance * forward.
+    # Pivot = base ([0,0,0]) lifted by the framing constant.
+    assert np.allclose(lookat, [0.0, 0.0, _VIEWER_LOOKAT_LIFT_M], atol=1e-6)
+    # The camera→base ray has length 2.5 (‖(2,0,1.5)‖); the opening distance pulls
+    # the eye back by the pullback constant beyond it.
+    assert dist == pytest.approx(2.5 + _VIEWER_PULLBACK_M, abs=1e-5)
+    # The lift/pullback don't rotate the view: az/el still point camera→base.
     f = np.array(
         [
             np.cos(np.radians(el)) * np.cos(np.radians(az)),
@@ -304,8 +315,7 @@ def test_initial_viewer_camera_places_free_eye_at_scene_camera() -> None:
             np.sin(np.radians(el)),
         ]
     )
-    eye = np.asarray(lookat) - dist * f
-    assert np.allclose(eye, [2.0, 0.0, 1.5], atol=1e-5)
+    assert np.allclose(f, [-0.8, 0.0, -0.6], atol=1e-5)  # unit camera→base ray
 
 
 def test_initial_viewer_camera_falls_back_to_base_aligned_without_cameras() -> None:

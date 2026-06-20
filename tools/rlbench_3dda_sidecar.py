@@ -1,6 +1,6 @@
 r"""3D Diffuser Actor policy sidecar — RLBench keyframe inference over ZMQ.
 
-ADR-0061. 3D Diffuser Actor (Ke et al., 2024, arXiv:2402.10885, MIT) is a
+ADR-0062. 3D Diffuser Actor (Ke et al., 2024, arXiv:2402.10885, MIT) is a
 diffusion policy over end-effector keyposes for RLBench. Its released PerAct
 18-task checkpoint pins an older stack (the ``MohitShridhar/RLBench@peract``
 fork + CLIP + a torch build that must be Ada-compatible) that cannot live in the

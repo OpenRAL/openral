@@ -46,8 +46,8 @@ We compose ROS 2, tf2, MoveIt 2, Nav2, and `ros2_control` — we don't reinvent 
 - HAL adapters for [16 robot platforms](docs/reference/robots.md) — manipulators, bimanual arms, humanoids
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
-- [31 rSkill packages](docs/reference/rskills.md) — SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, RLDX-1, GR00T N1.7 policies, RT-DETR and LocateAnything detectors, and the Qwen3.5-4B scene VLM
-- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [12 benchmark scenes](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, Isaac Sim)
+- [32 rSkill packages](docs/reference/rskills.md) — SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7 policies, RT-DETR and LocateAnything detectors, and the Qwen3.5-4B scene VLM
+- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [the benchmark scene catalogue](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, Isaac Sim, RLBench/CoppeliaSim)
 - ADR-0018 reasoner/safety ROS graph + deadman/E-stop forwarders
 - OpenTelemetry instrumentation with OTLP export and live `openral dashboard`
 
@@ -68,7 +68,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX adapters, async action chunks | `python/rskill/`, `rskills/` |
 | Inference runner | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy` | `python/runner/`, `python/sim/` |
 | Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
-| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, Isaac Sim | `python/sim/`, `docs/reference/sim-environments.md` |
+| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard` | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; pre-publish baseline at `schema_version: "0.1"` | `python/core/`, `tools/schema_export.py` |
@@ -280,7 +280,7 @@ The sensor catalog ships typed adapters wrapping vendor SDKs into `SensorSpec` /
 
 rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducible `eval/` — installed and run with the `openral rskill` CLI.
 
-Policy rSkills (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, RLDX-1), 3 perception detector rSkills (RT-DETR and LocateAnything), and the Qwen3.5-4B scene VLM (`kind: vlm`, drives the read-only `query_scene` tool) are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; Qwen3.5-4B is Apache-2.0. The GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) ships in-tree and loads upstream `nvidia/GR00T-N1.7-LIBERO` weights via an out-of-process sidecar (ADR-0046).
+Policy rSkills (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, RLDX-1, OpenVLA-OFT), 3 perception detector rSkills (RT-DETR and LocateAnything), and the Qwen3.5-4B scene VLM (`kind: vlm`, drives the read-only `query_scene` tool) are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; Qwen3.5-4B is Apache-2.0. The GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) ships in-tree and loads upstream `nvidia/GR00T-N1.7-LIBERO` weights via an out-of-process sidecar (ADR-0046). The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code model (NF4, loaded in a dedicated `transformers<5` runtime) that solves the SimplerEnv WidowX carrot-on-plate ManiSkill3 task (ADR-0063, issue #55).
 
 → **Full table + license notes:** [docs/reference/rskills.md](docs/reference/rskills.md)
 

@@ -215,5 +215,4 @@ commercial use is permitted; review the upstream LICENSE before deployment.
 - [`robots/so100_follower/README.md`](../../robots/so100_follower/README.md) — SO-100 variant.
 - [`scenes/sim/so101_tube_insertion.yaml`](../../scenes/sim/so101_tube_insertion.yaml) — SO-101 sim scene config.
 - [`rskills/molmoact2-libero-nf4/README.md`](../molmoact2-libero-nf4/README.md) — MolmoAct2 LIBERO variant (Franka Panda).
-- [`rskills/pi05-so101-pickplace-nf4/README.md`](../pi05-so101-pickplace-nf4/README.md) — π0.5 SO-101 pick-place alternative.
 - [CLAUDE.md §6.4](../../CLAUDE.md) — rSkill packaging contract.

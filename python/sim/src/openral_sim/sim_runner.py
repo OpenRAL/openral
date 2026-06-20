@@ -165,14 +165,13 @@ def _resolve_step_instruction(
     1. ``instruction_override`` — the user's explicit ``--instruction`` CLI
        flag (``None`` when not passed). An explicit override ALWAYS wins,
        even over a scene's per-episode language. ``--instruction`` was
-       previously silent on scenes that publish ``obs["task"]`` (custom
-       BDDL ``:language`` clause, RoboCasa sampled-object language), so the
+       previously silent on scenes that publish ``obs["task"]`` (for example,
+       RoboCasa sampled-object language), so the
        robot ignored it (CLAUDE.md §1.4 — explicit beats implicit).
     2. ``obs["task"]`` — the env's per-episode language, when the scene
        adapter populated it with a non-empty ``str``. RoboCasa interpolates
        the *sampled* object name here, so it is genuinely more correct than
-       the static YAML for those scenes; the custom BDDL adapter writes its
-       ``:language`` clause here.
+       the static YAML for those scenes.
     3. ``task_instruction`` — the static YAML ``task.instruction`` fallback.
 
     Args:
@@ -286,7 +285,7 @@ class SimRunner(InferenceRunnerBase):
             strict_view: Raise on missing viewer handles instead of warning.
             instruction_override: An explicit ``--instruction`` CLI value that
                 must win over a scene's per-episode ``obs["task"]`` language
-                (custom BDDL ``:language`` clause, RoboCasa sampled object).
+                (for example, RoboCasa sampled object).
                 ``None`` when the user passed nothing — the env/YAML language
                 then takes over. See :func:`_resolve_step_instruction`.
             deadline_overrun_policy: Forwarded to the base class.
@@ -601,8 +600,7 @@ class SimRunner(InferenceRunnerBase):
             # Resolve the instruction the policy is prompted with. An explicit
             # ``--instruction`` override wins over everything; otherwise the
             # env's per-episode ``obs["task"]`` language (e.g. RoboCasa
-            # interpolates the sampled object name into ``get_ep_meta()["lang"]``,
-            # the custom BDDL adapter writes its ``:language`` clause) wins,
+            # interpolates the sampled object name into ``get_ep_meta()["lang"]``) wins,
             # falling back to the static YAML instruction. See
             # :func:`_resolve_step_instruction`.
             obs_task = self._obs.get("task") if isinstance(self._obs, dict) else None
@@ -1029,7 +1027,7 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 #    is not a supported ScalarType for its image path. Symptom is
 #    ``TypeError: Got unsupported ScalarType BFloat16 was raised from
 #    the environment creator for PickCube-v1`` (or any SAPIEN env).
-#    ``openral benchmark run --suite maniskill3_franka_pick_cube`` and
+#    ``openral benchmark run --suite maniskill3_panda`` and
 #    ``openral sim run --config scenes/simpler_env_widowx_*``
 #    both trip this when the policy is bf16; sequential init avoids
 #    the dtype window overlap entirely.

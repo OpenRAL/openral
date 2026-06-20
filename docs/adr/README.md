@@ -88,6 +88,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0042](0042-drop-benchmarkspec.md) | Drop `BenchmarkSpec` for a bare `list[BenchmarkScene]` | Accepted | supersedes 0041 item 10 |
 | [0045](0045-isaac-sim-backend-integration.md) | NVIDIA Isaac Sim as an optional sim backend | Proposed | refs 0034 idle-step amendment |
 | [0061](0061-robotwin-dual-arm-benchmark-backend.md) | RoboTwin 2.0 dual-arm benchmark backend (SAPIEN, out-of-process sidecar) | Accepted | reuses 0045 sidecar; refs 0060 gate, 0009 producers |
+| [0062](0062-rlbench-benchmark-backend.md) | RLBench (CoppeliaSim/PyRep) benchmark backend + 3D Diffuser Actor | Accepted | renumbered from 0061; reuses 0045 sidecar; refs 0060 gate |
 
 ## F · Deploy path & runtime
 
@@ -97,6 +98,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0032](0032-deploy-run-ros-graph.md) | `deploy run` runs the ROS launch graph against real hardware | Proposed | builds on 0031 |
 | [0034](0034-deploy-sim-scene-attach-for-arms.md) | Deploy-sim scene-attach + sim-sensor bridge for manifest-driven arms | Accepted | supersedes 0033 §Decision-4 |
 | [0046](0046-nvidia-gr00t-backend.md) | NVIDIA Isaac GR00T as an out-of-process VLA backend | Accepted | reuses 0010 RLDX-1 sidecar; refs 0019 contract dims |
+| [0063](0063-openvla-oft-policy-family.md) | OpenVLA / OpenVLA-OFT policy family (in-process custom-code, token de-norm) | Accepted | renumbered from 0061; new `ModelFamily`; refs 0046, 0060 gate |
 | [0048](0048-deploy-sim-clock-publisher.md) | A sim `/clock` publisher for the deploy-sim graph | Proposed | refs 0034 idle-stepper; safety-WG-gated |
 | [0050](0050-single-resident-skill-vram-eviction.md) | Single-resident-skill VRAM eviction (unload-on-switch) | Proposed | — |
 

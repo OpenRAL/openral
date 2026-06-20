@@ -1,10 +1,9 @@
-"""LIBERO milk scene loads via the deploy-sim HAL path; cameras + joint state real (ADR-0034).
+"""LIBERO scene loads via the deploy-sim HAL path; cameras + joint state real (ADR-0034).
 
 Resolves spec risk #1 (the robosuite ``robot0_joint*`` mapping) and the camera-key
 fix (scene obs keyed ``camera1``/``camera2``, mapped to the ``agentview``/``wrist``
-topics by ``SimSensorBridge`` at publish time) on the REAL LIBERO milk scene — the
-command the user originally ran. Drives raw HAL reads (no VLA) so it is
-GPU-independent for inference.
+topics by ``SimSensorBridge`` at publish time) on a REAL LIBERO SimScene. Drives
+raw HAL reads (no VLA) so it is GPU-independent for inference.
 
 Environment gate: the LIBERO backend pulls ``lerobot[libero]`` → robosuite 1.4.0,
 which conflicts with RoboCasa's robosuite>=1.5 (ADR-0011) — the two cannot coexist
@@ -24,18 +23,16 @@ from openral_core import RobotDescription
 from openral_hal import build_hal
 
 _FRANKA = "robots/franka_panda/robot.yaml"
-_MILK = "scenes/sim/franka_libero_pnp.yaml"
-# A STANDARD LIBERO suite scene (routes to openral_sim.backends.libero._LiberoSim,
-# not the custom-BDDL backend) — the path `openral deploy sim` takes for every
-# benchmark LIBERO scene. Regression guard for the `_LiberoSim.action_dim` probe
-# gap that broke SimAttachedHAL.connect() on the suite scenes (custom-BDDL had
-# the property; the suite backend did not).
-_SUITE = "scenes/benchmark/libero_spatial.yaml"
+_LIBERO_SIM = "scenes/sim/libero_spatial.yaml"
+# A standard LIBERO suite scene (routes to openral_sim.backends.libero._LiberoSim).
+# Regression guard for the `_LiberoSim.action_dim` probe gap that broke
+# SimAttachedHAL.connect() on suite scenes.
+_SUITE = _LIBERO_SIM
 
 
 def test_franka_libero_scene_attach_state_and_images() -> None:
     desc = RobotDescription.from_yaml(_FRANKA)
-    hal = build_hal(desc, mode="sim", sim_env_yaml=_MILK)
+    hal = build_hal(desc, mode="sim", sim_env_yaml=_LIBERO_SIM)
     hal.connect()
     try:
         # Joint state: 8 DoF (7 arm + gripper). The LIBERO robosuite model names
@@ -63,12 +60,12 @@ def test_franka_libero_scene_attach_state_and_images() -> None:
 def test_franka_libero_suite_scene_attach_resolves_action_dim() -> None:
     """A standard LIBERO suite scene attaches via the deploy-sim HAL path.
 
-    Reproduces the `openral deploy sim --config scenes/benchmark/libero_spatial.yaml`
+    Reproduces the `openral deploy sim --config scenes/sim/libero_spatial.yaml`
     failure: `SimAttachedHAL.connect()` probes `env.action_dim` to size the
     cartesian action packer, and the suite backend (`_LiberoSim`) exposed no
     such property — so connect raised `ROSConfigError` and the franka HAL never
-    configured. The custom-BDDL backend already had `action_dim`; this guards the
-    suite backend so both LIBERO paths resolve the LIBERO OSC_POSE width (7).
+    configured. This guards the suite backend so LIBERO resolves the OSC_POSE
+    width (7).
     """
     desc = RobotDescription.from_yaml(_FRANKA)
     hal = build_hal(desc, mode="sim", sim_env_yaml=_SUITE)

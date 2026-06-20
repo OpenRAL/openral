@@ -122,6 +122,7 @@ image_preprocessing:
   image_max_crops: 4
   aliases:
     oak_top: "top"
+    overhead: "top"
     wrist: "side"
 state_contract:
   dim: 6

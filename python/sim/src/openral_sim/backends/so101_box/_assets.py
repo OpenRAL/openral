@@ -170,7 +170,7 @@ class BoxSceneOptions:
     # Joint-units convention for the scene's proprio state + action contract.
     # ``"radians"`` (default) keeps MuJoCo-native units; ``"degrees"`` makes
     # the env emit state and accept actions in degrees — the convention
-    # LeRobot-trained SO-100/101 checkpoints (MolmoAct2-SO100_101, pi05-so101)
+    # LeRobot-trained SO-100/101 checkpoints (for example MolmoAct2-SO100_101)
     # were recorded in. Consumed by the env factory, not the MJCF composer.
     joint_units: str = "radians"
 

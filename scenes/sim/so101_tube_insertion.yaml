@@ -35,8 +35,8 @@
 #       aliases:
 #         oak_top: top      # → observation.images.top
 #         wrist: wrist      # → observation.images.wrist
-# e.g. an SO-101 pick-place finetune whose checkpoint expects `top` / `wrist` /
-# `front`; the absent `front` camera is zero-padded via the image mask. The
+# e.g. a checkpoint that expects `top` / `wrist` / `front`; the absent `front`
+# camera is zero-padded via the image mask. The
 # depth stream is exposed as `oak_top_depth` (HxW float32 metres) for
 # skills with a depth-aware tower; depth-blind skills can ignore it.
 
@@ -48,7 +48,7 @@ scene:
   cameras: ["oak_top", "wrist"]
   backend_options:
     # Proprio state + action units. LeRobot-trained SO-100/101 checkpoints
-    # (MolmoAct2-SO100_101, pi05-so101) were recorded in degrees; the env
+    # (for example MolmoAct2-SO100_101) were recorded in degrees; the env
     # converts MuJoCo-native radians ↔ degrees at the policy boundary so the
     # checkpoint's norm_stats line up. Use "radians" for a sim-native policy.
     joint_units: degrees

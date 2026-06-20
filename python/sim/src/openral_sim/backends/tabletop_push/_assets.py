@@ -54,7 +54,7 @@ class TabletopOptions:
 
     Lengths are metres, angles are radians unless suffixed ``_deg``. Defaults
     suit a small tabletop arm (the SO-101 proof-of-concept robot); a larger arm
-    (Franka, UR) typically wants the table and spawn ranges retuned via the
+    (Franka, UR) typically wants the table and spawn ranges tuned via the
     YAML ``scene.backend_options`` — the composition mechanism is identical
     either way.
 
@@ -98,6 +98,19 @@ class TabletopOptions:
         wrist_camera_fovy: Wrist-camera vertical FoV, degrees.
         settle_steps: ``mj_step`` calls after each action write — the scene's
             position actuators are advanced this many steps per ``step()``.
+        initial_joint_positions: Optional reset pose in the same convention as
+            ``joint_units`` plus the calibration affine. Empty means use the
+            robot MJCF's default qpos. Values are clipped to the robot joint
+            limits before writing qpos/ctrl.
+        joint_units: Unit convention for the robot joint state/action
+            boundary. ``"radians"`` is sim-native; ``"degrees"`` is for
+            LeRobot SO-100/SO-101 checkpoints that record servo degrees.
+        joint_offsets_deg: Per-actuator affine offset used only when
+            ``joint_units == "degrees"``:
+            ``policy_deg = sign * scale * mujoco_deg + offset``.
+        joint_signs: Per-actuator affine sign, each ``+1`` or ``-1``.
+        joint_scales: Per-actuator affine scale (policy degrees per MuJoCo
+            degree), positive values only. Empty means identity scale.
         ambient_light: Headlight ambient RGB lifted into the scene so the
             table top renders with even illumination.
         instruction: Default natural-language task instruction (the YAML
@@ -137,6 +150,11 @@ class TabletopOptions:
     wrist_camera_fovy: float = 75.0
 
     settle_steps: int = 5
+    initial_joint_positions: tuple[float, ...] = ()
+    joint_units: str = "radians"
+    joint_offsets_deg: tuple[float, ...] = ()
+    joint_signs: tuple[float, ...] = ()
+    joint_scales: tuple[float, ...] = ()
     ambient_light: tuple[float, float, float] = (0.4, 0.4, 0.4)
 
     instruction: str = "push the red cube onto the green goal marker"

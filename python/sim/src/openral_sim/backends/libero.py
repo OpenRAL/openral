@@ -143,8 +143,7 @@ class _LiberoSim:
         ``connect`` and the franka HAL never configured.
 
         robosuite exposes the per-robot action width on each ``robots`` entry.
-        Unlike the custom-BDDL backend (which holds robosuite directly), the
-        suite backend's ``self._env`` is lerobot's ``LiberoEnv``, which wraps
+        The suite backend's ``self._env`` is lerobot's ``LiberoEnv``, which wraps
         robosuite's ``OffScreenRenderEnv`` on its private ``_env`` attr — so we
         walk the same wrapper chain ``mujoco_handles`` uses to find the env that
         carries ``robots``, robust to robosuite's cross-release re-layering.

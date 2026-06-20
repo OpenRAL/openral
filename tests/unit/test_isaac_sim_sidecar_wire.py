@@ -254,9 +254,9 @@ class TestSceneRegistration:
 class TestMockActionDimByLayout:
     """The mock policy default action dim is layout-, not scene.id-, determined.
 
-    Both isaac_sim YAMLs share scene.id="isaac_sim" but lift_cube is 8-D
-    (joint-delta) and bowl_plate is the LIBERO 7-D OSC-pose delta. Keying only on
-    scene.id silently fed an 8-D action into the 7-D bowl_plate scene.
+    Isaac layouts share scene.id="isaac_sim", but lift_cube is 8-D (joint-delta)
+    and bowl_plate is the LIBERO 7-D OSC-pose delta. Keying only on scene.id
+    silently fed an 8-D action into the 7-D bowl_plate scene.
     """
 
     def _env(self, layout: str | None, action_dim: int | None = None):

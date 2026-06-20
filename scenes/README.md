@@ -132,7 +132,7 @@ supplied at the CLI via `--rskill <name>`.
 
 | Backend             | Built-in scene IDs                                                                                                                                                                                                                                                                          | Adapter file                              |
 |---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------|
-| LIBERO              | `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, `franka_libero_custom_bddl` (custom BDDL → robosuite `OffScreenRenderEnv`; see [`sim/franka_libero_pnp.yaml`](sim/franka_libero_pnp.yaml))                                                                                       | `python/sim/.../backends/libero*.py`      |
+| LIBERO              | `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`                                                                                                                                                                                                                                      | `python/sim/.../backends/libero*.py`      |
 | MetaWorld           | `metaworld` (passes `<env_id>` through to `gym.make`)                                                                                                                                                                                                                                       | `python/sim/.../backends/metaworld.py`    |
 | gym-aloha           | `aloha_transfer_cube`, `aloha_insertion`                                                                                                                                                                                                                                                    | `python/sim/.../backends/aloha.py`        |
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
@@ -142,7 +142,7 @@ supplied at the CLI via `--rskill <name>`.
 | SimplerEnv (SAPIEN) | `simpler_env` (Bridge V2 digital twin: 4 WidowX tasks on MS3 v3.0.x)                                                                                                                                                                                                                        | `python/sim/.../backends/simpler_env.py`  |
 | Custom OpenArm      | `openarm_tabletop_pnp` (bimanual; default top camera matches the mddoai dataset POV)                                                                                                                                                                                                        | `python/sim/.../backends/openarm_*/env.py`|
 | Custom SO-101       | `so101_box` (100 × 61.5 × 75 cm box arena + OAK-D Pro overhead RGB-D + wrist camera + tube-insertion task — geometry/sensors/spawn ranges configurable via `BoxSceneOptions`)                                                                                                               | `python/sim/.../backends/so101_box/env.py`|
-| Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`)                                                                                                                                                                                                              | `python/sim/.../backends/tabletop_push/env.py` |
+| Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`; SO-101 sim YAML pins pi0.5-style degree reset pose + top/front/wrist camera routing)                                                                                                                        | `python/sim/.../backends/tabletop_push/env.py` |
 
 `openral sim list` walks both subdirectories and prints every scene + every
 in-tree rSkill (paste-able `--rskill` tokens).
@@ -153,7 +153,7 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 
 | Scene                                            | Fixed robot         |
 |--------------------------------------------------|---------------------|
-| `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` / `franka_libero_custom_bddl` | `franka_panda`    |
+| `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` | `franka_panda`    |
 | `metaworld`                                      | `sawyer`            |
 | `pusht`                                          | `pusht_2d`          |
 | `aloha_transfer_cube` / `aloha_insertion`        | `aloha_bimanual`    |

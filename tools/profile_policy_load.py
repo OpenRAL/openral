@@ -21,12 +21,12 @@ rSkill manifest you point it at, captures every
 Usage::
 
     uv run tools/profile_policy_load.py \\
-        --rskill rskills/pi05-openarm-vision-nf4
+        --rskill rskills/pi05-robocasa365-human300-nf4
 
     # Or to bypass HF cache validation entirely for the inner lerobot
     # calls our `local_files_only=True` fast-path does not cover:
     HF_HUB_OFFLINE=1 uv run tools/profile_policy_load.py \\
-        --rskill rskills/pi05-openarm-vision-nf4
+        --rskill rskills/pi05-robocasa365-human300-nf4
 
 The script captures the same events ``openral dashboard`` ingests via OTel,
 so the numbers here match what an operator would see live; it just

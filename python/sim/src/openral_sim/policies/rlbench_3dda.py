@@ -1,6 +1,6 @@
 r"""3D Diffuser Actor policy adapter — RLBench keyframe inference via a sidecar.
 
-ADR-0061. 3D Diffuser Actor (Ke et al., 2024, arXiv:2402.10885, MIT) predicts
+ADR-0062. 3D Diffuser Actor (Ke et al., 2024, arXiv:2402.10885, MIT) predicts
 end-effector keyposes for RLBench by diffusion. Its released PerAct 18-task
 checkpoint pins an older stack (the ``MohitShridhar/RLBench@peract`` fork + CLIP
 + an Ada-compatible torch build) incompatible with the openral py3.12 workspace,
@@ -75,7 +75,7 @@ def _resolve_file(env_name: str, default: Path, what: str) -> Path:
     if not p.exists():
         raise ROSConfigError(
             f"3D Diffuser Actor {what} not found at {p}. Set {env_name}. "
-            "See docs/adr/0061-rlbench-benchmark-backend.md for the provisioning recipe."
+            "See docs/adr/0062-rlbench-benchmark-backend.md for the provisioning recipe."
         )
     return p
 
@@ -142,7 +142,7 @@ def _sidecar_python() -> Path:
         return default
     raise ROSConfigError(
         "3D Diffuser Actor sidecar venv not found. It shares the rlbench-policy "
-        f"py3.10 venv. Provision it and set {_SIDECAR_PYTHON_ENV} (ADR-0061)."
+        f"py3.10 venv. Provision it and set {_SIDECAR_PYTHON_ENV} (ADR-0062)."
     )
 
 

@@ -89,7 +89,7 @@ _ROBOSUITE_GROUP_PREFIX = re.compile(r"^[a-z]+[0-9]+_")  # robot0_ / gripper0_ /
 # robosuite's post-terminal step guard (``environments/base.py``) raises
 # ``ValueError("executing action in terminated episode")`` whenever ``step`` is
 # called after the episode ended and ``ignore_done=False`` — the configuration
-# the raw-robosuite backends (``libero_custom_bddl``, ``so100_robosuite``) use.
+# raw robosuite-backed adapters can use.
 # Matched by message substring (stable across robosuite releases) so
 # ``_step_and_cache`` can recover by resetting; see ADR-0036.
 _TERMINATED_EPISODE_MARKER = "terminated episode"
@@ -745,9 +745,8 @@ class SimAttachedHAL:
         try:
             step_result = self._env.step(env_action)
         except Exception as exc:
-            # ADR-0036 (amended) — raw-robosuite backends (``libero_custom_bddl``,
-            # ``so100_robosuite``; ``ignore_done=False``) HARD-RAISE "executing
-            # action in terminated episode" on a post-terminal step instead of
+            # ADR-0036 (amended) — raw robosuite-backed adapters can HARD-RAISE
+            # "executing action in terminated episode" on a post-terminal step instead of
             # returning a terminal ``StepResult``, so the returned-flag latch
             # above never fired and ``_episode_done`` is still False. Treat a
             # *raised* terminal exactly like a *returned* one: reset once and

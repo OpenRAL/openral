@@ -112,7 +112,7 @@ def _build_libero_hal() -> object:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
     env, seed = build_sim_env_from_yaml(
-        "scenes/sim/franka_libero_pnp.yaml", robot_id_fallback="franka_panda"
+        "scenes/sim/libero_spatial.yaml", robot_id_fallback="franka_panda"
     )
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
@@ -263,7 +263,7 @@ def test_real_hal_has_no_idle_step_and_sim_yaml_on_real_raises() -> None:
 
     # Secondary backstop: a sim scene can never attach to a real-hardware HAL.
     with pytest.raises(ROSConfigError):
-        build_hal(desc, mode="real", sim_env_yaml="scenes/sim/franka_libero_pnp.yaml")
+        build_hal(desc, mode="real", sim_env_yaml="scenes/sim/libero_spatial.yaml")
 
 
 class _RecordingTimer:

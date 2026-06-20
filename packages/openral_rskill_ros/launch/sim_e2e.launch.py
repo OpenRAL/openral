@@ -693,7 +693,33 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     )
 
     autostart: list = []
-    autostart += _autostart_lifecycle(safety_kernel, "openral_safety_kernel")
+    # The safety_kernel MUST reliably reach ACTIVE: if it stays INACTIVE it
+    # publishes neither /openral/safe_action (so the HAL never steps the sim →
+    # the runner feeds the policy a FROZEN observation.state → blind open-loop
+    # arm fold) nor /openral/estop (so no E-stop fires). The launch_ros
+    # ``OnStateTransition`` matcher hits the same Jazzy race documented for the
+    # HAL below and intermittently drops the ACTIVATE on slow first-boots, so
+    # route the kernel through the active-polling ``tools/lifecycle_autostart.py``
+    # exactly like the HAL — a missed transition event can no longer leave the
+    # safety kernel (and therefore the whole graph) running unprotected.
+    _kernel_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
+    autostart.append(
+        ExecuteProcess(
+            cmd=[
+                sys.executable,
+                _kernel_autostart_path,
+                "--node",
+                "/openral_safety_kernel",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "60.0",
+                "--transition-timeout-s",
+                "120.0",
+            ],
+            output="log",
+        )
+    )
     autostart += _autostart_lifecycle(reasoner, "openral_reasoner")
     autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
     # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather

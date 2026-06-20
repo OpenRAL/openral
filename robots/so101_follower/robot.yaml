@@ -16,10 +16,11 @@
 # Manifest joint order is the kinematic chain order:
 #   shoulder_pan → shoulder_lift → elbow_flex → wrist_flex → wrist_roll → gripper
 # which is also the order the SO-101 MJCF declares its <position>
-# actuators (named "1"…"6") and its hinge joints (named "1"…"6") —
+# actuators (named "1"…"6") and hinge joints (sim_joint_name "1"…"6") —
 # :func:`MujocoArmHAL._sim_kwargs_for` resolves the manifest-to-MJCF
-# mapping by INDEX, so the manifest's logical joint names need not
-# match the MJCF's numeric names.
+# mapping by INDEX, while SimAttachedHAL reads live joint state by
+# sim_joint_name so deploy-sim publishes the same non-zero state as
+# direct `openral sim run`.
 
 name: "so101_follower"
 embodiment_kind: "manipulator"
@@ -36,6 +37,7 @@ assets:
 
 joints:
   - name: "shoulder_pan"
+    sim_joint_name: "1"
     origin_xyz: [0.0207909, -0.0230745, 0.0948817]
     origin_rpy: [-3.14159, 0, 1.5708]
     axis_xyz: [0, 0, 1]
@@ -47,6 +49,7 @@ joints:
     effort_limit: 3.35
     actuator_kind: "servo"
   - name: "shoulder_lift"
+    sim_joint_name: "2"
     origin_xyz: [-0.0303992, -0.0182778, -0.0542]
     origin_rpy: [1.5707927, -1.5707927, 3.1415927]
     axis_xyz: [0, 0, 1]
@@ -58,6 +61,7 @@ joints:
     effort_limit: 3.35
     actuator_kind: "servo"
   - name: "elbow_flex"
+    sim_joint_name: "3"
     origin_xyz: [-0.11257, -0.028, 0]
     origin_rpy: [0, 0, 1.5708]
     axis_xyz: [0, 0, 1]
@@ -69,6 +73,7 @@ joints:
     effort_limit: 3.35
     actuator_kind: "servo"
   - name: "wrist_flex"
+    sim_joint_name: "4"
     origin_xyz: [-0.1349, 0.0052, 0]
     origin_rpy: [0, 0, -1.5708]
     axis_xyz: [0, 0, 1]
@@ -80,6 +85,7 @@ joints:
     effort_limit: 3.35
     actuator_kind: "servo"
   - name: "wrist_roll"
+    sim_joint_name: "5"
     joint_type: "revolute"
     parent_link: "wrist"
     child_link: "gripper_base"
@@ -89,6 +95,7 @@ joints:
     effort_limit: 3.35
     actuator_kind: "servo"
   - name: "gripper"
+    sim_joint_name: "6"
     joint_type: "revolute"
     parent_link: "gripper_base"
     child_link: "moving_jaw"

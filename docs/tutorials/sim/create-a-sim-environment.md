@@ -30,12 +30,9 @@ It covers six things, in increasing depth:
 2. Authoring a `SimScene` YAML for an **existing** robot, scene, task,
    and pairing it with an rSkill.
 3. Bringing a **new** robot manifest (`robots/<id>/robot.yaml`) into sim.
-4. **Recommended path for pi0.5-LIBERO custom scenes**: write a BDDL file
-   and drive it through the `franka_libero_custom_bddl` adapter.
-5. Writing a **new scene adapter** (a new task suite or simulator wrapper)
-   in Python, for cases that don't fit BDDL (custom robot, custom physics,
-   non-LIBERO backend).
-6. Writing a **new policy adapter** (a new VLA backend) and matching it to an
+4. Writing a **new scene adapter** (a new task suite or simulator wrapper)
+   in Python, for cases that need custom robot, task, or physics behavior.
+5. Writing a **new policy adapter** (a new VLA backend) and matching it to an
    rSkill.
 
 The companion cookbook is [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md);
@@ -84,8 +81,7 @@ runtime path.
 --task  ID                   Override task.id (e.g. libero_spatial/3).
 --instruction TEXT           Override the natural-language task instruction.
                              Wins over a scene's per-episode language (a
-                             custom BDDL `:language` clause, a RoboCasa
-                             sampled-object string) — see §4.
+                             RoboCasa sampled-object string) — see §4.
 --max-steps  N               Override task.max_steps.
 --n-episodes N               Override SimScene.n_episodes.
 --seed       N               Override the global seed.
@@ -388,165 +384,16 @@ it, or (b) the `mock` scene, which accepts any action dimensionality (see §4).
 
 ---
 
-## 4. Custom pi0.5-LIBERO scenes via BDDL (recommended)
+## 4. When the existing scene adapters are **not** enough
 
-If you want **pi0.5-LIBERO** to drive a custom Franka Panda pick-and-place
-scene — different objects, different start positions, a different goal
-predicate, different language instruction — the cleanest path is to
-**write a BDDL file** and drive it through the
-[`franka_libero_custom_bddl`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/backends/libero_custom_bddl.py)
-adapter. That adapter routes through robosuite + LIBERO's
-`OffScreenRenderEnv`, so the controller (OSC_POSE), the renderer, and the
-state encoding are bit-identical to what pi0.5-LIBERO was trained on. No
-custom Python adapter needed.
-
-This path is **strongly preferred** for pi0.5 use cases over writing a
-raw-mujoco scene adapter (Section 5). The pi0.5 vision tower is highly
-sensitive to pixel-level rendering details (sRGB framebuffer, panda mesh
-appearance, lighting model) that are non-trivial to replicate outside
-robosuite's pipeline.
-
-### Anatomy of a custom BDDL file
-
-LIBERO's BDDL is a Lisp-style task definition. The four blocks you'll edit:
-
-```lisp
-(define (problem LIBERO_Floor_Manipulation)
-  (:domain robosuite)
-  (:language Pick the alphabet soup and place it in the basket)
-
-  (:regions
-    ;; Named spawn regions on the floor — (min_x min_y max_x max_y).
-    (bin_region (:target floor)
-        (:ranges ((-0.01 0.25 0.01 0.27))))
-    (target_object_region (:target floor)
-        (:ranges ((-0.145 -0.265 -0.095 -0.215))))
-    ;; ... additional regions for distractors
-  )
-
-  (:fixtures
-    main_floor - floor      ;; the workspace plane
-  )
-
-  (:objects
-    ;; Any object registered under libero/envs/objects/. Common ones:
-    ;;   alphabet_soup, basket, salad_dressing, cream_cheese, milk,
-    ;;   tomato_sauce, butter, bbq_sauce, ketchup, ...
-    alphabet_soup_1 - alphabet_soup
-    basket_1         - basket
-    ;; ... distractors if you want them visible
-  )
-
-  (:init
-    ;; Where each object spawns relative to a region.
-    (On alphabet_soup_1 floor_target_object_region)
-    (On basket_1         floor_bin_region)
-  )
-
-  (:goal
-    ;; The success predicate. Common forms:
-    ;;   (On X Y)  → X ends up resting on Y
-    ;;   (In X Y)  → X ends up contained in Y
-    (On alphabet_soup_1 basket_1)
-  )
-)
-```
-
-The existing `libero/bddl_files/libero_object/*.bddl` files (shipped with the
-`libero` PyPI package) are the canonical reference — copy one as a starting
-point and edit.
-
-### Wiring the BDDL into a YAML
-
-```yaml
-# scenes/sim/my_custom_task.yaml
-robot_id: franka_panda
-
-scene:
-  id: franka_libero_custom_bddl
-  backend: mujoco
-  observation_height: 256
-  observation_width: 256
-  backend_options:
-    # Absolute path to your authored BDDL file.
-    bddl_file: "/abs/path/to/my_task.bddl"
-    # Optional — path to a .pruned_init file with hand-tuned starting
-    # qpos (a (N, ?) numpy array, torch.save-pickled). Omit to let
-    # robosuite use the BDDL's default randomised spawn.
-    init_state_file: "/abs/path/to/my_task.pruned_init"
-    init_state_index: 0   # which row of init_state_file to use
-
-task:
-  id: my_task/0
-  scene_id: franka_libero_custom_bddl
-  instruction: ""           # the adapter reads from the BDDL's :language clause
-  max_steps: 300
-  success_key: is_success
-
-# Policy is supplied at the CLI via --rskill rskills/<id>.
-# Adapter-specific knobs (e.g. n_action_steps, flip_images_180, camera_keys)
-# live in the rSkill manifest's `policy_extras:` block, not the YAML.
-```
-
-#### Instruction precedence (what the policy is actually prompted with)
-
-Each step the policy is prompted with the first non-blank of, in order:
-
-1. an explicit `--instruction "<text>"` on the CLI,
-2. the scene's per-episode language — the BDDL `:language` clause for this
-   adapter (exposed as `env.language_instruction` → `obs["task"]`),
-3. the static YAML `task.instruction`.
-
-So leaving `task.instruction: ""` defers to the `:language` clause, but
-passing `--instruction` overrides it — useful for probing how the policy
-reacts to a different command without re-authoring the BDDL.
-
-> **Note — instruction vs. success.** `--instruction` only changes what the
-> policy is *told*; the success predicate is still the BDDL `:goal`. Telling
-> the policy to "pick the orange juice" on a BDDL whose `:goal` is
-> `(On milk_1 basket_1)` will steer the arm toward the juice but the episode
-> can only succeed on the milk. To change the *task*, edit `:obj_of_interest`
-> / `:goal` (and the `:language`) in the BDDL itself.
-
-Run it:
-
-```bash
-openral sim run --config scenes/sim/my_custom_task.yaml \
-            --rskill rskills/<your-skill>
-```
-
-### Worked examples in the repo
-
-A minimal demo lives at `scenes/sim/`:
-
-| YAML | What it customises |
-|---|---|
-| [`franka_libero_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_libero_pnp.yaml) (+ sibling [`franka_libero_pnp.bddl`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_libero_pnp.bddl)) | Custom BDDL routed through `franka_libero_custom_bddl` → robosuite `OffScreenRenderEnv` — picks `milk_1` into a basket from a HOPE-library distractor mix (`cream_cheese`, `tomato_sauce`, `butter`, `orange_juice`, `chocolate_pudding`). |
-
-The customisation is entirely in the choice of target + distractor
-objects assembled from LIBERO's HOPE library; the policy generalises
-across these combinations because it was trained on many similar
-permutations. (Two near-identical sibling demos — salad-dressing and
-bbq-sauce — were removed as replications of the same target-swap
-concept; author your own `:obj_of_interest` / `:objects` to make new
-ones.) The `pi05-libero-nf4` rSkill is nf4-quantised, so this runs on a
-CUDA device (nf4 has no CPU path) — invoke with
-`openral sim run --config scenes/sim/franka_libero_pnp.yaml --rskill pi05-libero-nf4`.
-
-### When BDDL is **not** enough
-
-Reach for the Python adapter path (Section 5) when:
+Reach for the Python adapter path (Section 5) when the registered scene
+catalogue cannot express the task you need. Common reasons:
 
 - You want a completely different arena (no LIBERO floor / table).
-- You want a different robot (LIBERO's BDDL is panda-only).
-- You want to add objects that don't exist in LIBERO's
-  `envs/objects/` registry — adding new HOPE / scanned objects is
-  upstream LIBERO work.
+- You want a different robot than a benchmark suite hard-wires.
+- You want objects or fixtures the existing suite adapter cannot spawn.
 - You want physics independent of robosuite (e.g. a mock scene or a
   non-MuJoCo backend).
-
-For everything else inside the "panda + floor + HOPE objects" envelope, the
-BDDL path gives you full pi0.5 fidelity for ~50 lines of Lisp.
 
 ---
 

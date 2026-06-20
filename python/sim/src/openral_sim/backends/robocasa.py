@@ -294,10 +294,7 @@ class _RoboCasaSim:
             terminated = bool(terminated_raw)
             truncated = bool(truncated_raw)
 
-        if hasattr(self._env, "_check_success"):
-            success = bool(self._env._check_success())
-        else:
-            success = terminated
+        success = self._check_success_fallback(terminated)
         self._debug_step += 1
         self._log_eef_distance(raw, step=self._debug_step, action=action_arr)
         step_info: dict[str, object] = dict(info)
@@ -310,6 +307,17 @@ class _RoboCasaSim:
             truncated=truncated and not success,
             info=step_info,
         )
+
+    def _check_success_fallback(self, terminated: bool) -> bool:
+        """Read task success from raw RoboCasa envs and gymnasium-wrapped GR1 envs."""
+        check = getattr(self._env, "_check_success", None)
+        if callable(check):
+            return bool(check())
+        inner = getattr(getattr(self._env, "unwrapped", self._env), "env", None)
+        check = getattr(inner, "_check_success", None)
+        if callable(check):
+            return bool(check())
+        return bool(terminated)
 
     def _split_gr1_action(
         self, action_arr: NDArray[np.float32]

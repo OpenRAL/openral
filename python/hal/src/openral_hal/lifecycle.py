@@ -1095,6 +1095,23 @@ if _ROS2_AVAILABLE:
                 response.success = False  # type: ignore[attr-defined]
                 response.failure_reason = f"{type(exc).__name__}: {exc!s}"  # type: ignore[attr-defined]
                 return response
+            # ADR-0049 — reset_to_pose mutates MjData directly but is neither an
+            # idle_step nor a send_action, so the proprio snapshot the
+            # /joint_states publisher serves would otherwise stay at the
+            # PRE-reset pose. The policy's first inference fires ~20 ms after the
+            # reset (inside the idle-hold window, before any post-reset
+            # idle_step) and would read that stale state → out-of-distribution
+            # first action → self-collision wedge. Refresh the snapshot now; this
+            # handler runs on the MjData-owning callback group (same thread
+            # _capture_proprio requires), so it is safe + synchronous before the
+            # runner unblocks on the service response and ticks step 1.
+            if self._proprio is not None:
+                self._capture_proprio()
+                # Push the fresh pose onto /joint_states immediately (don't wait
+                # for the next publisher-thread tick) so the runner's post-reset
+                # freshness gate passes ASAP. Safe: reads the just-set snapshot +
+                # thread-safe publish; touches no MjData.
+                self._publish_joint_state()
             response.success = True  # type: ignore[attr-defined]
             response.failure_reason = ""  # type: ignore[attr-defined]
             return response

@@ -31,6 +31,12 @@ _OPTICAL_IN_MJCAM = np.diag([1.0, -1.0, -1.0])
 # Degenerate eye→lookat distance below which the azimuth/elevation are undefined.
 _MIN_EYE_DISTANCE_M = 1e-6
 
+# Deploy-viewer framing on an authored scene camera: lift the orbit pivot off the
+# floor onto the robot body, and pull the eye back, so cluttered mobile-manip
+# scenes show the whole robot instead of a floor-filling counter close-up.
+_VIEWER_LOOKAT_LIFT_M = 0.7
+_VIEWER_PULLBACK_M = 2.0
+
 
 def is_depth_sensor(spec: Any) -> bool:
     """True when ``spec`` is a depth/point-cloud camera with intrinsics.
@@ -376,6 +382,11 @@ def initial_viewer_camera(
             forward /= distance
             azimuth = float(np.degrees(np.arctan2(forward[1], forward[0])))
             elevation = float(np.degrees(np.arcsin(np.clip(forward[2], -1.0, 1.0))))
+            # Frame the robot *body* (not the floor its base sits on) and pull the
+            # eye back so cluttered deploy scenes (RoboCasa) show the whole robot
+            # rather than a floor-filling close-up of the authored counter cam.
+            lookat = lookat + np.array([0.0, 0.0, _VIEWER_LOOKAT_LIFT_M])
+            distance += _VIEWER_PULLBACK_M
             return (
                 (float(lookat[0]), float(lookat[1]), float(lookat[2])),
                 distance,

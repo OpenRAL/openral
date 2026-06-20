@@ -88,6 +88,30 @@ def _build_or_skip(robot_id: str, **env_kwargs):
         raise
 
 
+def _build_yaml_or_skip(path: str):
+    """Build a rollout from a real SimScene YAML, preserving its backend options."""
+    from openral_core import SimEnvironment, SimScene, VLASpec
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    cfg = SimScene.from_yaml(path)
+    env = SimEnvironment(
+        robot_id=cfg.robot_id or "so101_follower",
+        scene=cfg.scene,
+        task=cfg.task,
+        vla=VLASpec(id="mock-noop", weights_uri="mock-noop", device="cpu"),
+        base_pose=cfg.base_pose,
+        seed=cfg.seed,
+        n_episodes=cfg.n_episodes,
+    )
+    try:
+        return cfg, SCENES.get(cfg.scene.id)(env)
+    except ROSConfigError as exc:
+        if "robot_descriptions" in str(exc) or "could not load" in str(exc):
+            pytest.skip(f"{cfg.robot_id} MJCF unavailable: {exc}")
+        raise
+
+
 def test_tabletop_push_registered_free_axis() -> None:
     """The scene is registered WITHOUT a fixed robot (it's a flag)."""
     from openral_sim import SCENES
@@ -192,6 +216,140 @@ def test_tabletop_push_nonzero_action_moves_arm() -> None:
     assert np.max(np.abs(q1 - q0)) > 0.1, "arm did not move toward the commanded target"
 
 
+def test_tabletop_push_degree_trained_so101_action_converts_to_radians() -> None:
+    """SO-101 LeRobot-degree checkpoints must not be interpreted as radians."""
+    offsets = [3.07, 123.16, 124.40, 57.89, -11.04, 9.24]
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_offsets_deg": offsets,
+            "joint_signs": [1, 1, 1, 1, 1, 1],
+        },
+    )
+    try:
+        rollout.reset(seed=0)
+        target_rad = np.asarray([0.1, 0.4, 0.35, 0.2, -0.15, 0.25], dtype=np.float64)
+        action_deg = np.degrees(target_rad) + np.asarray(offsets, dtype=np.float64)
+        rollout.step(action_deg.astype(np.float32))
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(target_rad, rollout._act_clip_ranges[:, 0], rollout._act_clip_ranges[:, 1]),
+            atol=1e-6,
+        )
+    finally:
+        rollout.close()
+
+
+def test_tabletop_push_initial_joint_positions_seed_reset_pose() -> None:
+    """A configured policy-unit reset pose seeds qpos and ctrl before the first frame."""
+    initial_deg = [-4.90, -100.00, 90.00, 77.11, -96.76, 2.69]
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "initial_joint_positions": initial_deg,
+        },
+    )
+    try:
+        obs = rollout.reset(seed=0)
+        expected_rad = np.radians(np.asarray(initial_deg, dtype=np.float64))
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(expected_rad, rollout._act_clip_ranges[:, 0], rollout._act_clip_ranges[:, 1]),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(obs["state"], initial_deg, atol=1.0)
+    finally:
+        rollout.close()
+
+
+def test_tabletop_push_degree_affine_scales_policy_units() -> None:
+    """Degree mode supports servo-degree scale/offset calibration, not just offsets."""
+    offsets = np.array([-25.5832, -30.3170, 33.9902, 82.4531, -124.1312, 3.0111])
+    scales = np.array([0.3227, 0.8624, 0.8205, 0.2274, 0.2238, 0.2731])
+    initial_policy_deg = np.array([-4.90, -103.31, 96.09, 77.11, -96.76, 2.69])
+    action_policy_deg = initial_policy_deg + np.array([0.3, -1.0, 2.0, 1.0, -0.5, 0.5])
+    rollout = _build_or_skip(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_offsets_deg": offsets.tolist(),
+            "joint_scales": scales.tolist(),
+            "initial_joint_positions": initial_policy_deg.tolist(),
+        },
+    )
+    try:
+        obs = rollout.reset(seed=0)
+        expected_initial_rad = np.radians((initial_policy_deg - offsets) / scales)
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(
+                expected_initial_rad,
+                rollout._act_clip_ranges[:, 0],
+                rollout._act_clip_ranges[:, 1],
+            ),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(obs["state"], initial_policy_deg, atol=1.0)
+
+        rollout.step(action_policy_deg.astype(np.float32))
+        expected_action_rad = np.radians((action_policy_deg - offsets) / scales)
+        np.testing.assert_allclose(
+            rollout._data.ctrl[: rollout._n_act],
+            np.clip(
+                expected_action_rad,
+                rollout._act_clip_ranges[:, 0],
+                rollout._act_clip_ranges[:, 1],
+            ),
+            atol=1e-6,
+        )
+    finally:
+        rollout.close()
+
+
+def test_tabletop_push_bad_joint_scales_rejected() -> None:
+    """Scale calibration is one positive value per actuator."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    bad_width = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_scales": [1.0, 1.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="joint_scales"):
+        SCENES.get("tabletop_push")(bad_width)
+
+    bad_zero = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "joint_scales": [1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="joint_scales"):
+        SCENES.get("tabletop_push")(bad_zero)
+
+
+def test_tabletop_push_bad_initial_joint_positions_rejected() -> None:
+    """The reset pose is one value per actuator; wrong-width configs fail loudly."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    env = _make_env(
+        "so101_follower",
+        backend_options={
+            "joint_units": "degrees",
+            "initial_joint_positions": [0.0, 0.0],
+        },
+    )
+    with pytest.raises(ROSConfigError, match="initial_joint_positions"):
+        SCENES.get("tabletop_push")(env)
+
+
 def test_tabletop_push_random_spawn_varies_with_seed() -> None:
     """Different seeds produce different cube + goal spawns."""
     poses: dict[int, tuple] = {}
@@ -205,6 +363,57 @@ def test_tabletop_push_random_spawn_varies_with_seed() -> None:
         poses[s] = (cube_xy, goal_xy)
         rollout.close()
     assert len({repr(v) for v in poses.values()}) == 3
+
+
+def test_tabletop_cube_push_yaml_places_workspace_on_initial_gripper_side() -> None:
+    """SO-101 pi0.5 reset pose and cube-push workspace must share the same side."""
+    cfg, rollout = _build_yaml_or_skip("scenes/sim/tabletop_cube_push.yaml")
+    try:
+        rollout.reset(seed=cfg.seed)
+        model, data = rollout.mujoco_handles()
+
+        base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
+        gripper_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+        assert base_id >= 0
+        assert gripper_id >= 0
+
+        base_y = float(data.xpos[base_id, 1])
+        gripper_y = float(data.xpos[gripper_id, 1])
+        cube_y = float(data.qpos[rollout._cube_qpos_addr + 1])
+        goal_y = float(model.site_pos[rollout._goal_site_id][1])
+        table_y = float(cfg.scene.backend_options["table_center_xy"][1])
+
+        gripper_side = gripper_y - base_y
+        assert abs(gripper_side) > 1e-3
+        for y in (cube_y, goal_y, table_y):
+            assert (y - base_y) * gripper_side > 0.0
+        assert abs(goal_y - base_y) > abs(cube_y - base_y)
+    finally:
+        rollout.close()
+
+
+def test_tabletop_cube_push_sim_attached_hal_reads_so101_joint_state() -> None:
+    """Deploy-sim HAL state must use SO-101 MJCF joint aliases, not zeros."""
+    from openral_core import RobotDescription
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    cfg, rollout = _build_yaml_or_skip("scenes/sim/tabletop_cube_push.yaml")
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    hal = SimAttachedHAL(rollout, desc, env_reset_seed=cfg.seed)
+    try:
+        hal.connect()
+        state = hal.read_state()
+        expected_rad = np.asarray(
+            [rollout._data.qpos[addr] for addr in rollout._act_qpos_addrs],
+            dtype=np.float64,
+        )
+
+        assert state.name == [joint.name for joint in desc.joints]
+        np.testing.assert_allclose(state.position, expected_rad, atol=1e-6)
+        assert np.linalg.norm(np.asarray(state.position, dtype=np.float64)) > 0.1
+    finally:
+        hal.disconnect()
+        rollout.close()
 
 
 def test_tabletop_push_wrist_camera_opt_in() -> None:

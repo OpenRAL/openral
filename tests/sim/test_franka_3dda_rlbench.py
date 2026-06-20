@@ -1,4 +1,4 @@
-"""Sim test: RLBench (CoppeliaSim/PyRep) + 3D Diffuser Actor via the sidecars (ADR-0061).
+"""Sim test: RLBench (CoppeliaSim/PyRep) + 3D Diffuser Actor via the sidecars (ADR-0062).
 
 Two tiers:
 
@@ -119,7 +119,7 @@ _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is
 @pytest.mark.sim
 @pytest.mark.skipif(
     bool(_WIRE_MISSING) or not (_sidecar_python_available() and _coppeliasim_available()),
-    reason="RLBench/CoppeliaSim sidecar not provisioned (ADR-0061)",
+    reason="RLBench/CoppeliaSim sidecar not provisioned (ADR-0062)",
 )
 def test_open_drawer_live_episode() -> None:
     import openral_sim.backends

@@ -703,12 +703,13 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """openarm + missing pi05 extras + non-TTY → drop-and-proceed with the hint.
+    """franka + missing pi05 extras + non-TTY → drop-and-proceed with the hint.
 
-    Real fixture: ``robots/openarm/robot.yaml`` matches two in-tree
-    rSkills via ``build_tool_palette`` — ``rskill-pi05-openarm-vision-nf4``
-    (``model_family=pi05``, imports ``transformers`` gated behind ``uv sync
-    --group sim``) and the family-less ``rskill-moveit-joints``
+    Real fixture: ``robots/franka_panda/robot.yaml`` matches several in-tree
+    rSkills via ``build_tool_palette`` — the policy-extras-gated
+    ``rskill-pi05-libero-nf4`` (``model_family=pi05``, imports
+    ``transformers`` gated behind ``uv sync --group sim``/``--group libero``)
+    and the family-less ``rskill-moveit-joints``
     (``kind: ros_action``, no policy extras, always importable). Because a
     dispatchable skill survives a pi05 miss, the advisory preflight does
     NOT hard-fail: it drops the blocked pi05 skill and proceeds, printing
@@ -729,9 +730,9 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     """
     from openral_sim.policy_deps import can_import_policy_family
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
     ok, _ = can_import_policy_family("pi05")
     if ok:
         pytest.skip(
@@ -745,8 +746,8 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     # preflight skips the typer.confirm prompt entirely.
     import sys as _sys
 
-    # The pi05 miss blocks rskill-pi05-openarm-vision-nf4, but the
-    # family-less rskill-moveit-joints stays dispatchable → palette is
+    # The pi05 miss blocks rskill-pi05-libero-nf4, but the family-less
+    # rskill-moveit-joints stays dispatchable → palette is
     # non-empty → the advisory preflight drops the blocked skill and
     # proceeds (no Exit). Disable auto-install (default=1) so the test
     # exercises the warn-and-proceed path without calling `just sync`.
@@ -755,7 +756,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     # A surviving dispatchable skill means the preflight returns cleanly.
-    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
 
     out = capsys.readouterr().out
     assert "proceeding" in out and "dropped from the reasoner palette" in out, (
@@ -797,9 +798,9 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     import typer
     from openral_sim import policy_deps as _pd
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
 
     monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
     monkeypatch.setattr(
@@ -809,7 +810,7 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     with pytest.raises(typer.Exit) as ei:
-        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
     assert ei.value.exit_code == 1
 
     out = capsys.readouterr().out
@@ -873,9 +874,14 @@ def test_bh_preflight_accept_propagates_auto_install_consent(
     # whose prompt path that var would silently bypass).
     monkeypatch.delenv("OPENRAL_AUTO_INSTALL_DEPS", raising=False)
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    # franka_panda matches rSkills with concrete model families (pi05, smolvla,
+    # rldx, act, …) that have known install groups, so install_cmd is built and
+    # the install/consent path is exercised. openarm only matches moveit rSkills
+    # (model_family='') which have no install groups after pi05-openarm-vision
+    # was removed, leaving install_cmd=None and the consent path unreachable.
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
 
     # No pre-set consent; interactive TTY; user accepts; the install subprocess
     # "succeeds" (process-boundary fake). monkeypatch.delenv restores the absent
@@ -896,7 +902,7 @@ def test_bh_preflight_accept_propagates_auto_install_consent(
     # All matched skills stay blocked after the faked install → preflight raises
     # typer.Exit; the consent env var must have been set BEFORE that.
     with contextlib.suppress(typer.Exit):
-        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
 
     assert os.environ.get("OPENRAL_AUTO_INSTALL_DEPS") == "1"
 
@@ -961,9 +967,13 @@ def test_bh_preflight_auto_installs_when_env_set(
     from openral_cli import deploy_sim as _ds
     from openral_sim import policy_deps as _pd
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    # franka_panda has rSkills with concrete model families → install_cmd built.
+    # openarm only matches moveit rSkills (model_family='') with no install
+    # groups after pi05-openarm-vision was removed, so install_cmd=None and
+    # the auto-install path is unreachable.
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
 
     state = {"installed": False}
     calls: list[list[str]] = []
@@ -983,7 +993,7 @@ def test_bh_preflight_auto_installs_when_env_set(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     # Must NOT raise — install runs, re-probe clears the block.
-    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
 
     assert calls, "auto-install should have shelled out to `just sync`"
     assert calls[0][:3] == ["just", "sync", "--all-packages"], calls[0]
@@ -1002,9 +1012,14 @@ def test_bh_preflight_auto_install_failure_exits_with_code(
     from openral_cli import deploy_sim as _ds
     from openral_sim import policy_deps as _pd
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    # franka_panda has rSkills with concrete model families → install_cmd built
+    # and the failed-install exit-code path is reachable. openarm only matches
+    # moveit rSkills (model_family='') with no install groups after
+    # pi05-openarm-vision was removed, so install_cmd=None and the failure path
+    # would exit(1) for "palette empty", not exit(7) for "just sync failed".
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
 
     def fake_run(cmd: list[str], *, check: bool = False, cwd: str | None = None) -> object:
         return types.SimpleNamespace(returncode=7)
@@ -1018,7 +1033,7 @@ def test_bh_preflight_auto_install_failure_exits_with_code(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     with pytest.raises(typer.Exit) as ei:
-        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
     assert ei.value.exit_code == 7
 
 

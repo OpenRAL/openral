@@ -72,12 +72,12 @@ Columns:
 
 > RLBench tasks are fixed to the Franka Panda in CoppeliaSim/PyRep. OpenRAL
 > runs both the simulator and 3D keyframe policy out-of-process in an
-> externally-provisioned py3.10 sidecar venv (ADR-0061); CoppeliaSim is
+> externally-provisioned py3.10 sidecar venv (ADR-0062); CoppeliaSim is
 > proprietary (free EDU) and is never vendored.
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in checkpoint | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `katefgroup/3d_diffuser_actor` (`diffuser_actor_peract.pth`) | RLBench PerAct subset | `franka_panda` | **8-D** `gripper_pose(7)+gripper_open(1)` history, policy emits an **8-D** absolute EE keyframe | `left_shoulder`, `right_shoulder`, `wrist`, `front` RGB-D point clouds at 256×256 | Precomputed CLIP instruction embeddings (`instructions.pkl`) + task bounds JSON | `rskills/3d-diffuser-actor-rlbench/` | MIT | ADR-0061 starter set: `rlbench_open_drawer.yaml`, `rlbench_meat_off_grill.yaml`, `rlbench_close_jar.yaml`; live-verified on an 8 GB Ada host. |
+| `katefgroup/3d_diffuser_actor` (`diffuser_actor_peract.pth`) | RLBench PerAct subset | `franka_panda` | **8-D** `gripper_pose(7)+gripper_open(1)` history, policy emits an **8-D** absolute EE keyframe | `left_shoulder`, `right_shoulder`, `wrist`, `front` RGB-D point clouds at 256×256 | Precomputed CLIP instruction embeddings (`instructions.pkl`) + task bounds JSON | `rskills/3d-diffuser-actor-rlbench/` | MIT | ADR-0062 starter set: `rlbench_open_drawer.yaml`, `rlbench_meat_off_grill.yaml`, `rlbench_close_jar.yaml`; live-verified on an 8 GB Ada host. |
 
 ### 3.3 MetaWorld (Sawyer, MuJoCo)
 
@@ -105,7 +105,6 @@ Columns:
 | `chamborgir/smolvla_pickplace_20k` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | 20k steps pick-and-place fine-tune |
 | `TakuyaHiraoka/act_so101_pick_diverse_objects` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | ACT policy; diverse object pick task |
 | `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
-| `HollyTan/pi05_so101_pick_place-v2.2basev2.4_abs_nofreeze_8b` | `so101_box` (MuJoCo) | `so101_follower` | **6-D** joint positions ✓ | `top`+`wrist`+`front` (224×224); scene `oak_top`→`top`, `wrist`→`wrist`, `front` zero-padded via image mask ✓ | Yes — `policy_{pre,post}processor` sidecars (state=[6], action=[6]) ✓ | `rskills/pi05-so101-pickplace-nf4/` (nf4 mirror at `OpenRAL/rskill-pi05-so101-pickplace-nf4`) | Apache-2.0 | π0.5 (4.14 B); nf4 fits 8 GB. Pick-place finetune; validated to load + step on `so101_box` (not insertion-trained — expect drift on the tube task). `scenes/sim/so101_tube_insertion.yaml` |
 
 ### 3.6 SimplerEnv / ManiSkill3 Bridge (WidowX)
 
@@ -188,9 +187,9 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **xvla action output is 20-D (padded)**: xVLA pads actions to `max_state_dim=20`. LIBERO's env.step expects 7-D. Slice `action_np = action_tensor.squeeze(0).cpu().numpy()[:7]` to extract the real 7-D action.
 
-- **xvla is LIBERO-engine-only**: the xVLA adapter's env preprocessor (`LiberoProcessorStep`) consumes the nested LiberoEnv observation that the scene must expose as `observation['raw']`. Non-LIBERO scenes (e.g. the Isaac Sim Franka scenes) do not populate it, so `xvla` raises `ROSCapabilityMismatch` on the first step. Run xvla only on LIBERO scenes (`libero_spatial`, `franka_libero_pnp`, …).
+- **xvla is LIBERO-engine-only**: the xVLA adapter's env preprocessor (`LiberoProcessorStep`) consumes the nested LiberoEnv observation that the scene must expose as `observation['raw']`. Non-LIBERO scenes (e.g. the Isaac Sim Franka scenes) do not populate it, so `xvla` raises `ROSCapabilityMismatch` on the first step. Run xvla only on LIBERO scenes (`libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, …).
 
-- **GR00T / RLDX sidecars have no single-camera fallback**: these checkpoints read a fixed number of *distinct* camera streams positionally — LIBERO=2 (agentview+wrist), RC365=3, GR1/Simpler=1 — set by the manifest's `state_contract.layout`. Unlike the in-process lerobot adapters (smolvla / pi05 / act), which resolve their camera list from `scene.cameras` and adapt, the `gr00t` / `rldx` factories reject a scene that declares **fewer** cameras than the layout needs with an upfront `ROSCapabilityMismatch` (before the multi-minute sidecar boot). A scene that omits `cameras:` is the adapter default (LIBERO renders camera1+camera2 itself) and is never rejected. Example: `gr00t-n17-libero` runs on `isaac_franka_bowl_plate` (`cameras: [camera1, camera2]`) but not `isaac_franka_lift` (`cameras: [camera1]`).
+- **GR00T / RLDX sidecars have no single-camera fallback**: these checkpoints read a fixed number of *distinct* camera streams positionally — LIBERO=2 (agentview+wrist), RC365=3, GR1/Simpler=1 — set by the manifest's `state_contract.layout`. Unlike the in-process lerobot adapters (smolvla / pi05 / act), which resolve their camera list from `scene.cameras` and adapt, the `gr00t` / `rldx` factories reject a scene that declares **fewer** cameras than the layout needs with an upfront `ROSCapabilityMismatch` (before the multi-minute sidecar boot). A scene that omits `cameras:` is the adapter default (LIBERO renders camera1+camera2 itself) and is never rejected. Example: `gr00t-n17-libero` runs on `isaac_franka_bowl_plate` (`cameras: [camera1, camera2]`) but not the single-camera Isaac `lift_cube` deploy/wire layout.
 
 - **RLBench requires a separately-provisioned CoppeliaSim/PyRep sidecar**: `uv sync --group rlbench` installs only the openral-side ZMQ/msgpack client. CoppeliaSim 4.1.0 (proprietary, free EDU), PyRep, the `MohitShridhar/RLBench@peract` fork, and 3D Diffuser Actor live in `~/.cache/openral/rlbench-policy/.venv` (or `OPENRAL_RLBENCH_SIDECAR_PYTHON`). The adapter raises a typed `ROSConfigError` with the recipe when that venv or `COPPELIASIM_ROOT` is missing.
 

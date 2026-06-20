@@ -133,7 +133,7 @@ wheel, so `flash-attn==2.7.4.post1` installed from a prebuilt wheel. (The base
 Booting the shipped `tools/gr00t_sidecar.py` against the local
 `GR00T-N1.7-LIBERO/libero_spatial` checkpoint (`--embodiment-tag LIBERO_PANDA
 --quantization nf4`) and driving it with `openral sim run --config
-scenes/sim/franka_libero_pnp.yaml --rskill rskills/gr00t-n17-libero` got the
+scenes/sim/libero_spatial.yaml --rskill rskills/gr00t-n17-libero` got the
 **full stack to connect**: the `run_gr00t_server` PolicyServer loaded the LIBERO
 checkpoint NF4 (3.5 GB), the gr00t adapter connected (`mode=existing`), and the
 LIBERO MuJoCo env initialized. Two outcomes:
@@ -161,7 +161,7 @@ LIBERO MuJoCo env initialized. Two outcomes:
 
 **Net (verified end-to-end):** with the codec bridge + `video_offsets` fix, the
 **closed-loop LIBERO rollout runs** — `openral sim run` on
-`franka_libero_pnp.yaml` connects to the NF4 sidecar, the GR00T policy returns
+`libero_spatial.yaml` connects to the NF4 sidecar, the GR00T policy returns
 7-D action chunks (`action_dim=7`, ~0.2 s/inference), and a 50-step episode
 completes (`budget_violations=0`, `mean_lat_ms≈39`, video + `summary.json`
 written). The smoke episode reports `success=False` — expected: it is a single

@@ -90,7 +90,6 @@ scenes/
 │   ├── robocasa_pnp.yaml
 │   └── so101_box.yaml
 ├── sim/                         # SimScene YAMLs — env + task, no metadata
-│   ├── franka_libero_pnp.yaml
 │   ├── libero_spatial.yaml
 │   ├── openarm_tabletop.yaml
 │   ├── robocasa_gr1_pnp_cup_to_drawer.yaml
@@ -175,7 +174,7 @@ class BenchmarkSpec(BaseModel):
   `metadata: BenchmarkMetadata`
 
 Per-task `success_key` and `task.max_steps` *may* differ across scenes
-(maniskill3_pick_place ships `PickCube-v1=100` + `StackCube-v1=200`,
+(maniskill3_panda ships `PickCube-v1=50` … `PlugCharger-v1=200`,
 which the aggregator now reports as a worst-case `max_steps=200` in the
 `RSkillEvalResult.protocol`). The standalone `ProtocolSpec` schema is
 retained for ADR-0009 report tooling but no longer embedded in

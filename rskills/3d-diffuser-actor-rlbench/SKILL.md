@@ -1,7 +1,7 @@
 ---
 name: 3d-diffuser-actor-rlbench
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: generalist, open, close, pick, place. 3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar with the rlbench scene backend (ADR-0061). MIT code + checkpoints. The PerAct checkpoint is loaded verbatim; ships three live-verified starter tasks. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: generalist, open, close, pick, place. 3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar with the rlbench scene backend (ADR-0062). MIT code + checkpoints. The PerAct checkpoint is loaded verbatim; ships three live-verified starter tasks. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -36,7 +36,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). 3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar with the rlbench scene backend (ADR-0061). MIT code + checkpoints. The PerAct checkpoint is loaded verbatim; ships three live-verified starter tasks.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). 3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar with the rlbench scene backend (ADR-0062). MIT code + checkpoints. The PerAct checkpoint is loaded verbatim; ships three live-verified starter tasks.
 
 ## Capabilities
 

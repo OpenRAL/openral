@@ -1,11 +1,12 @@
-# ADR-0061 — OpenVLA / OpenVLA-OFT policy family
+# ADR-0063 — OpenVLA / OpenVLA-OFT policy family
 
 - **Status:** Accepted 2026-06-19. First adapter + a verified WidowX rSkill land on
   `feat/maniskill3-openvla-oft` (draft PR onto PR #48); a Panda gap-closer rSkill is attempted
   on the same adapter.
 - **Date:** 2026-06-19
-- **ADR number:** `0061`. `0058` (standardized-description-assets), `0059`
-  (foxglove-live-scene-visualization), `0060` (benchmark task-data gate) precede it; the integer
+- **ADR number:** `0063`. Originally drafted as `0061`; renumbered to resolve a three-way
+  collision with the RoboTwin (`0061`, issue #54) and RLBench (`0062`, issue #53) ADRs that were
+  authored independently on parallel branches off PR #48. `0058`–`0060` precede those; the integer
   is not load-bearing — cross-refs use filenames.
 - **Related:**
   - **ADR-0060** — the benchmark task-data gate (`evaluated_tasks`). This ADR is the first to add

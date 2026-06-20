@@ -94,6 +94,7 @@ class IsaacSceneBase:
         self._world.reset()
         self._step_idx = 0
         for _ in range(self.warmup_steps):
+            self._before_render()
             self._world.step(render=True)
         return self._observe()
 
@@ -106,6 +107,7 @@ class IsaacSceneBase:
         # Render only the final substep — it is the frame the obs reads.
         for _ in range(max(0, self.physics_substeps - 1)):
             self._world.step(render=False)
+        self._before_render()
         self._world.step(render=True)
         self._step_idx += 1
         reward, terminated = self._reward_terminated()
@@ -170,6 +172,9 @@ class IsaacSceneBase:
     def _extra_info(self) -> dict[str, Any]:
         """Extra keys merged into the step ``info`` dict. Default: none."""
         return {}
+
+    def _before_render(self) -> None:
+        """Hook for camera poses that must be updated before a rendered frame."""
 
     def _joint_positions(self) -> NDArray[np.float32] | None:
         """Robot joint angles in the host manifest's joint order, or None.
