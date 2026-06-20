@@ -1,0 +1,72 @@
+{
+  "_comment": "Live single-episode verification of 3D Diffuser Actor (katefgroup/3d_diffuser_actor, MIT) on three RLBench PerAct tasks, reproduced locally on an 8 GB Ada GPU host (2026-06-19) via the CoppeliaSim/PyRep + 3DDA py3.10 sidecars (ADR-0061). This is the starter-PR proof, NOT the full official protocol: the canonical RLBench/PerAct/3DDA protocol is 25 evaluation episodes per task (seed 0, max 25 macro-keyposes) — run the full suite to overwrite these blocks (see source.reproduction_planned). Per-task paper baselines are reported in Ke et al. 2402.10885 Table 1 and are intentionally NOT transcribed here to avoid mis-citation.",
+  "schema_version": "0.1",
+  "source": {
+    "paper": "3D Diffuser Actor: Policy Diffusion with 3D Scene Representations (Ke et al., 2024)",
+    "arxiv": "https://arxiv.org/abs/2402.10885",
+    "model_variant": "3D Diffuser Actor (PerAct multi-task checkpoint, diffuser_actor_peract.pth)",
+    "evaluated_by": "OpenRAL: openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": "Full official protocol (25 episodes/task, seed 0, max 25 keyposes) deferred to a dedicated benchmark session — run `openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench` against the provisioned CoppeliaSim sidecar and overwrite the results block.",
+    "reproduction_cli": {
+      "description": "ADR-0009 PR D: `openral benchmark run` / `openral benchmark scene` is the canonical producer of RSkillEvalResult JSONs. Requires the externally-provisioned CoppeliaSim 4.1.0 + PyRep + RLBench@peract + 3D Diffuser Actor py3.10 sidecar venv (ADR-0061).",
+      "single_scene_example": "openral benchmark scene --config scenes/benchmark/rlbench_open_drawer.yaml --rskill rskills/3d-diffuser-actor-rlbench --n-episodes 1",
+      "all_suites": "openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench",
+      "suite_max_steps": 25,
+      "notes": [
+        "CoppeliaSim is proprietary / free-EDU and is NEVER vendored; provision it yourself per ADR-0061.",
+        "The 3D Diffuser Actor checkpoint and code are MIT-licensed — no install-time license guard.",
+        "Inference VRAM peak ~0.43 GB; the policy + RLBench scene share one py3.10 ZMQ sidecar.",
+        "results below are reproduced_locally=true at n_episodes=1 per task (live verification); flip to the full 25-episode protocol via the all_suites command above."
+      ]
+    },
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "RLBench",
+    "dataset": null,
+    "protocol": "Live verification: 1 episode per task, seed=0, success_key=is_success, max 25 macro-keyposes/episode (each planned + executed by RLBench EndEffectorPoseViaPlanning). Official PerAct/3DDA protocol is 25 episodes/task.",
+    "robot": "franka_panda",
+    "simulator": "CoppeliaSim 4.1.0 / PyRep (RLBench@peract fork)"
+  },
+  "eval_config": {
+    "n_episodes_per_task": 1,
+    "seeds": [0],
+    "success_key": "is_success",
+    "max_steps": 25,
+    "vla_id": "diffuser_actor",
+    "weights_uri": "hf://katefgroup/3d_diffuser_actor",
+    "denoising_steps": 100,
+    "cameras": ["left_shoulder", "right_shoulder", "wrist", "front"],
+    "observation_size": [256, 256],
+    "action_dim": 8,
+    "inference_vram_gb_peak": 0.43
+  },
+  "results": {
+    "rlbench/open_drawer": {
+      "success_rate": 1.0,
+      "n_episodes": 1,
+      "keyposes": 3,
+      "mean_keypose_latency_ms": 1006.0
+    },
+    "rlbench/meat_off_grill": {
+      "success_rate": 1.0,
+      "n_episodes": 1,
+      "keyposes": 5,
+      "mean_keypose_latency_ms": 974.0
+    },
+    "rlbench/close_jar": {
+      "success_rate": 1.0,
+      "n_episodes": 1,
+      "keyposes": 6,
+      "mean_keypose_latency_ms": 964.0
+    },
+    "avg_success_rate": 1.0,
+    "n_tasks": 3,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 3
+  },
+  "baselines": {},
+  "trace_id": null
+}

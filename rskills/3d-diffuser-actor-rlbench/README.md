@@ -1,3 +1,19 @@
+---
+tags:
+  - OpenRAL
+  - rskill
+  - diffuser-actor
+  - 3d-diffuser-actor
+  - rlbench
+  - coppeliasim
+  - peract
+  - manipulation
+  - franka
+license: mit
+language:
+  - en
+---
+
 <!--
   rSkill README — 3D Diffuser Actor (RLBench PerAct setup).
   Discovery + provenance card; mirrors rskill.yaml. ADR-0061.
@@ -104,12 +120,22 @@ externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0061).
 
 ## Evaluation
 
-No full 25-episode `eval/rlbench.json` artifact is shipped in this starter PR.
-The package is live-qualified on the three declared starter tasks and records the
-proof in ADR-0061: `open_drawer` 4/4, `meat_off_grill` 3/3, and `close_jar`
-solved on an 8 GB Ada host. Run the reproduction command above with
-`--no-write-eval` for a non-mutating smoke run, or run the full suite to produce
-`rskills/3d-diffuser-actor-rlbench/eval/rlbench.json`.
+[`eval/rlbench.json`](eval/rlbench.json) ships the **live single-episode
+verification** that qualifies this starter PR (`reproduced_locally: true`):
+`open_drawer`, `meat_off_grill`, and `close_jar` each succeed (success_rate
+`1.0`, 3 / 5 / 6 macro-keyposes, ~1.0 s/keypose) on an 8 GB Ada host
+(2026-06-19, seed 0). This is **not** the full official protocol — RLBench /
+PerAct / 3DDA evaluate **25 episodes per task** (seed 0, max 25 keyposes). To
+produce the full artifact and overwrite the `results` block, run the suite
+against the provisioned CoppeliaSim sidecar:
+
+```bash
+openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench
+```
+
+(`openral benchmark run` is the canonical `RSkillEvalResult` producer — ADR-0009
+PR D.) Per-task paper baselines are reported in Ke et al. (2402.10885, Table 1)
+and are intentionally not transcribed into the artifact to avoid mis-citation.
 
 ## License
 
