@@ -134,13 +134,14 @@ viewer. On a warm cache the policy lifts the cube within ~200 steps
 
 ## Evaluation
 
-No benchmarks shipped yet (`eval/.gitkeep` only). The headline LiftCube
-success rate will be populated by `openral benchmark run` once a paired
-benchmark suite lands in `benchmarks/`:
+The shipped LiftCube checkpoint scores **0.0** on PickCube-v1 (task
+mismatch — see the LiftCube gap above); the headline will lift once a
+PickCube-trained policy replaces it. Re-run via the curated franka_panda
+suite (it auto-filters to this rSkill's task):
 
 ```bash
 openral benchmark run \
-    --suite maniskill3_pick_place \
+    --suite maniskill3_panda \
     --vla smolvla:rskills/smolvla-maniskill-franka
 ```
 

@@ -276,3 +276,25 @@ remains a candidate. Reintroducing it would follow the Isaac/GR00T sidecar
 pattern (ADR-0045) and warrant its own ADR covering the sidecar boot, the chosen
 policy family's adapter, and the ABC→D suite — at which point this deferral is
 superseded.
+
+### 2026-06-20 — ManiSkill3 suites consolidated to one per embodiment
+
+The two ManiSkill3 suite YAMLs this ADR originally shipped —
+`benchmarks/maniskill3_pick_place.yaml` (PickCube + StackCube starter) and
+`benchmarks/maniskill3_franka_pick_cube.yaml` (single-task 10-seed eval
+producer) — were **deleted and consolidated into the curated
+`benchmarks/maniskill3_panda.yaml`** (all 7 Franka-Panda tabletop tasks).
+Rationale: all three suites targeted the *same* `franka_panda` embodiment and
+differed only by task-count / episode-budget, so per-embodiment is the right
+split (ManiSkill3 has no single canonical suite). `maniskill3_panda`
+auto-filters via `--rskill` to whatever tasks a policy declares, so it serves
+both the "run one task" and "run the curated set" needs; `--task` /
+`n_episodes` cover the per-protocol cases the two deleted files used to encode.
+The single-task convenience scene `scenes/benchmark/maniskill_pick_cube.yaml`
+and the `backends/maniskill3.py` adapter are retained. The
+`smolvla-maniskill-franka` rSkill (still the only MS3 policy in tree) now
+records its PickCube result under `maniskill3_panda`. The redundant
+`maniskill_{push,pull,stack,peg_insertion_side,plug_charger,pick_single_ycb}`
+single-task scenes were removed (the suite covers those tasks). Reads of the
+old `--suite maniskill3_pick_place` / `maniskill3_franka_pick_cube` commands
+in the body above are historical — substitute `maniskill3_panda`.

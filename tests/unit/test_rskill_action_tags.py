@@ -89,8 +89,8 @@ def test_specialist_skill_actions_match_curation() -> None:
     assert RSkillAction.INSERT in aloha_insert.actions
     assert "peg" in aloha_insert.objects
 
-    generalist = RSkillManifest.from_yaml(str(_RSKILLS_DIR / "rldx1-pt-nf4" / "rskill.yaml"))
-    assert generalist.actions == [RSkillAction.GENERALIST]
+    generalist = RSkillManifest.from_yaml(str(_RSKILLS_DIR / "rldx1-ft-gr1-nf4" / "rskill.yaml"))
+    assert RSkillAction.GENERALIST in generalist.actions
 
 
 @given(st.text(min_size=1, max_size=32).filter(lambda s: s not in {a.value for a in RSkillAction}))

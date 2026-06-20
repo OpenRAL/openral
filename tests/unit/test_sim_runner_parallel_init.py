@@ -209,7 +209,7 @@ def test_race_prone_prefix_catalogue_is_non_empty() -> None:
         ("so101_box/tube_insertion", False),
         # SAPIEN-backed scenes were promoted to race-prone after a
         # `Got unsupported ScalarType BFloat16` failure surfaced in
-        # `openral benchmark run --suite maniskill3_franka_pick_cube`
+        # `openral benchmark run --suite maniskill3_panda`
         # — the policy thread's transient `torch.set_default_dtype(bfloat16)`
         # leaks into the env thread's SAPIEN gym.make. See
         # `_RACE_PRONE_SCENE_PREFIXES` for the full diagnosis.

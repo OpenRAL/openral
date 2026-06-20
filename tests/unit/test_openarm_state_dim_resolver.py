@@ -8,9 +8,9 @@ backend now derives the action / observation width from the manifest
 at backend init.
 
 CLAUDE.md §1.11: real schemas, real rSkill manifests, no mocks. We
-exercise the resolver against the in-tree
-``rskills/pi05-openarm-vision-nf4/rskill.yaml`` fixture and against
-the openarm robot.yaml's joint count as the fallback.
+exercise the resolver against a real on-disk rSkill manifest fixture
+(its ``state_contract.dim``) and against the openarm robot.yaml's joint
+count as the fallback.
 """
 
 from __future__ import annotations
@@ -49,16 +49,53 @@ def test_state_dim_uses_fallback_when_rskill_unresolvable() -> None:
     )
 
 
-def test_state_dim_from_rskill_pi05_openarm_vision() -> None:
-    """The in-tree pi05 OpenArm vision rskill declares dim=16."""
+def test_state_dim_from_rskill_state_contract(tmp_path) -> None:
+    """A real on-disk rSkill manifest's ``state_contract.dim`` wins over fallback.
+
+    Builds a minimal openarm rskill.yaml (16-D state == 16-D action, matching
+    the OpenArm v2 16-joint embodiment) and resolves it via the loader's
+    local-directory path — exercises the manifest-resolve branch without
+    depending on any shipped checkpoint.
+    """
     pytest.importorskip("openral_rskill")
-    # The rskill manifest is local — ``pi05-openarm-vision-nf4``
-    # resolves via ``rskills/pi05-openarm-vision-nf4/rskill.yaml``.
-    result = _resolve_state_dim(
-        weights_uri="pi05-openarm-vision-nf4",
-        fallback=0,
+    rskill_dir = tmp_path / "test-openarm-state-dim"
+    rskill_dir.mkdir()
+    (rskill_dir / "rskill.yaml").write_text(
+        """
+schema_version: "0.1"
+name: "test/rskill-openarm-state-dim"
+version: "0.0.1"
+license: "apache-2.0"
+role: "s1"
+kind: vla
+model_family: "act"
+embodiment_tags: ["openarm"]
+actions: ["pick"]
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.base"
+    min_width: 64
+    min_height: 64
+actuators_required:
+  - kind: "joint_position"
+    n_dof: 8
+    vla_action_key: "action.joint.left"
+    control_mode_semantics:
+      mode: "absolute"
+runtime: "pytorch"
+weights_uri: "hf://test/rskill-openarm-state-dim"
+state_contract:
+  dim: 16
+action_contract:
+  dim: 16
+chunk_size: 50
+latency_budget:
+  per_chunk_ms: 1000.0
+paper_url: "https://example.com"
+description: "fixture for state_contract.dim resolution"
+""".strip()
     )
-    assert result == 16
+    assert _resolve_state_dim(weights_uri=str(rskill_dir), fallback=0) == 16
 
 
 def test_state_dim_matches_openarm_robot_joint_count() -> None:

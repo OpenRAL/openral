@@ -48,7 +48,6 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`act-libero`](../../rskills/act-libero/) | ACT | `franka_panda` | Apache-2.0 |
 | [`molmoact2-libero-nf4`](../../rskills/molmoact2-libero-nf4/) | MolmoAct2 NF4 (Molmo2-ER VLM + flow-matching, ~5.5 B) | `franka_panda` | Apache-2.0 |
 | [`pi05-libero-nf4`](../../rskills/pi05-libero-nf4/) | π0.5 NF4 | `franka_panda` | Permissive research (weights non-Apache) |
-| [`pi05-openarm-vision-nf4`](../../rskills/pi05-openarm-vision-nf4/) | π0.5 NF4 (bimanual, absolute joint targets) | `openarm` | Apache-2.0 |
 | [`pi05-robocasa365-human300-nf4`](../../rskills/pi05-robocasa365-human300-nf4/) | π0.5 NF4 (RoboCasa365 + 300 human eps fine-tune) | `panda_mobile` | Apache-2.0 (weights: research) |
 | [`act-aloha`](../../rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
 | [`act-aloha-insertion`](../../rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
@@ -59,7 +58,6 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`rldx1-ft-rc365-nf4`](../../rskills/rldx1-ft-rc365-nf4/) | RLDX-1 (RoboCasa365 fine-tune) | `panda_mobile` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-simpler-widowx-nf4`](../../rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
 | [`openvla-oft-simpler-widowx-nf4`](../../rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
-| [`rldx1-pt-nf4`](../../rskills/rldx1-pt-nf4/) | RLDX-1 (foundation pretrain) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
 | [`gr00t-n17-libero`](../../rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — out-of-process sidecar (ADR-0046) |
 
 ## Perception rSkills (`kind: detector`)

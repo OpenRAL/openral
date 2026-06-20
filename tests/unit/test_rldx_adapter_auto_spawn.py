@@ -42,7 +42,6 @@ _RSKILLS = (
     _REPO_ROOT / "rskills" / "rldx1-ft-libero-nf4",
     _REPO_ROOT / "rskills" / "rldx1-ft-gr1-nf4",
     _REPO_ROOT / "rskills" / "rldx1-ft-rc365-nf4",
-    _REPO_ROOT / "rskills" / "rldx1-pt-nf4",
     _REPO_ROOT / "rskills" / "rldx1-ft-simpler-widowx-nf4",
 )
 

@@ -703,12 +703,13 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """openarm + missing pi05 extras + non-TTY → drop-and-proceed with the hint.
+    """franka + missing pi05 extras + non-TTY → drop-and-proceed with the hint.
 
-    Real fixture: ``robots/openarm/robot.yaml`` matches two in-tree
-    rSkills via ``build_tool_palette`` — ``rskill-pi05-openarm-vision-nf4``
-    (``model_family=pi05``, imports ``transformers`` gated behind ``uv sync
-    --group sim``) and the family-less ``rskill-moveit-joints``
+    Real fixture: ``robots/franka_panda/robot.yaml`` matches several in-tree
+    rSkills via ``build_tool_palette`` — the policy-extras-gated
+    ``rskill-pi05-libero-nf4`` (``model_family=pi05``, imports
+    ``transformers`` gated behind ``uv sync --group sim``/``--group libero``)
+    and the family-less ``rskill-moveit-joints``
     (``kind: ros_action``, no policy extras, always importable). Because a
     dispatchable skill survives a pi05 miss, the advisory preflight does
     NOT hard-fail: it drops the blocked pi05 skill and proceeds, printing
@@ -729,9 +730,9 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     """
     from openral_sim.policy_deps import can_import_policy_family
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
     ok, _ = can_import_policy_family("pi05")
     if ok:
         pytest.skip(
@@ -745,8 +746,8 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     # preflight skips the typer.confirm prompt entirely.
     import sys as _sys
 
-    # The pi05 miss blocks rskill-pi05-openarm-vision-nf4, but the
-    # family-less rskill-moveit-joints stays dispatchable → palette is
+    # The pi05 miss blocks rskill-pi05-libero-nf4, but the family-less
+    # rskill-moveit-joints stays dispatchable → palette is
     # non-empty → the advisory preflight drops the blocked skill and
     # proceeds (no Exit). Disable auto-install (default=1) so the test
     # exercises the warn-and-proceed path without calling `just sync`.
@@ -755,7 +756,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     # A surviving dispatchable skill means the preflight returns cleanly.
-    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
 
     out = capsys.readouterr().out
     assert "proceeding" in out and "dropped from the reasoner palette" in out, (
@@ -797,9 +798,9 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     import typer
     from openral_sim import policy_deps as _pd
 
-    openarm_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    if not openarm_yaml.is_file():
-        pytest.skip(f"missing fixture: {openarm_yaml}")
+    franka_yaml = _REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"
+    if not franka_yaml.is_file():
+        pytest.skip(f"missing fixture: {franka_yaml}")
 
     monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
     monkeypatch.setattr(
@@ -809,7 +810,7 @@ def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     monkeypatch.setattr(_sys.stdout, "isatty", lambda: False)
 
     with pytest.raises(typer.Exit) as ei:
-        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=openarm_yaml)
+        _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=franka_yaml)
     assert ei.value.exit_code == 1
 
     out = capsys.readouterr().out

@@ -383,10 +383,10 @@ OPENARM_DESCRIPTION = RobotDescription(
     ),
     # Default top-camera POV for the ``openarm_tabletop_pnp`` MJCF
     # composer.  Matches the ``mddoai/openarm_2026-05-14_clean``
-    # dataset POV the OpenRAL/rskill-pi05-openarm-vision-nf4
-    # checkpoint was trained on (camera between the two robot bases,
-    # looking forward + down at the tabletop). Sim YAMLs override via
-    # ``scene.backend_options.top_camera_*``; this is the default.
+    # dataset POV an OpenArm vision policy would train on (camera between
+    # the two robot bases, looking forward + down at the tabletop). Sim
+    # YAMLs override via ``scene.backend_options.top_camera_*``; this is
+    # the default.
     scene_defaults=SceneDefaults(
         top_camera=TopCameraDefaults(
             pos=(0.20, 0.0, 0.95),
