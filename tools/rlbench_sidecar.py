@@ -58,6 +58,30 @@ _RENDER_CAMERA = "front"
 # The openral side sends 8-D (pose+gripper); we append ignore_collisions=1.
 _POSE_REACH_TOL_M = 5e-3
 
+# RLBench / PyRep motion-planner path-finding failures. EndEffectorPoseViaPlanning
+# is sampling-based and raises one of these when a predicted keypose is
+# unreachable (no path / IK could not solve / no collision-free config path). The
+# reference 3D Diffuser Actor evaluator counts such a step as a *failed episode*
+# and continues, so a single stochastic miss does not abort a whole multi-episode
+# benchmark run. Matched by class name (incl. base classes) so the openral side
+# never needs to import the externally-provisioned rlbench/pyrep venv.
+_PLANNER_FAILURE_EXC_NAMES = frozenset(
+    {
+        "InvalidActionError",  # rlbench.backend.exceptions — planner found no path
+        "IKError",  # pyrep.errors — IK could not solve for the target pose
+        "ConfigurationPathError",  # pyrep.errors — no collision-free config path
+    }
+)
+
+
+def _is_planner_path_failure(exc: BaseException) -> bool:
+    """True when *exc* is a RLBench/PyRep motion-planner path-finding failure.
+
+    See :data:`_PLANNER_FAILURE_EXC_NAMES`. Walks the exception's MRO so
+    subclasses of the known planner errors are matched too.
+    """
+    return any(t.__name__ in _PLANNER_FAILURE_EXC_NAMES for t in type(exc).__mro__)
+
 
 def _encode_ndarray(obj: Any) -> Any:
     if isinstance(obj, np.ndarray):
@@ -105,6 +129,10 @@ class _RLBenchScene:
         self._success_key = args.success_key
         self._arm_action_mode: Any = None
         self._motion_frames: list[NDArray[np.uint8]] = []
+        # Last wrapped observation (from reset / a successful step). Returned
+        # verbatim when a planner path-failure ends an episode — there is no
+        # fresh obs on a failed mover step.
+        self._last_wrapped_obs: dict[str, Any] = {}
 
     @property
     def action_dim(self) -> int:
@@ -155,7 +183,8 @@ class _RLBenchScene:
         self._task.set_variation(self._args.variation)
         descriptions, obs = self._task.reset()
         self._instruction = descriptions[0] if descriptions else self._args.instruction
-        return self._wrap_obs(obs)
+        self._last_wrapped_obs = self._wrap_obs(obs)
+        return self._last_wrapped_obs
 
     def step(self, action: NDArray[np.float32], *, record_video: bool = False) -> dict[str, Any]:
         target = np.asarray(action, dtype=np.float64).reshape(-1)[:8]
@@ -170,21 +199,52 @@ class _RLBenchScene:
             self._arm_action_mode.set_callable_each_step(
                 self._record_motion_observation if record_video else None
             )
+        planner_failed = False
         try:
             for _ in range(int(self._args.max_tries)):
                 obs, reward, terminate = self._task.step(act9)
                 reached = float(np.linalg.norm(target[:3] - obs.gripper_pose[:3]))
                 if reached < _POSE_REACH_TOL_M or reward == 1:
                     break
+        except BaseException as exc:
+            # A genuine fault must still surface; only the sampling-based
+            # planner's path-finding misses are downgraded to a failed episode.
+            if not _is_planner_path_failure(exc):
+                raise
+            planner_failed = True
+            print(
+                f"[rlbench_sidecar] planner path-failure ({type(exc).__name__}: {exc}) "
+                "-> ending episode as a failure (not crashing the run)",
+                flush=True,
+            )
         finally:
             if self._arm_action_mode is not None:
                 self._arm_action_mode.set_callable_each_step(None)
+
+        if planner_failed:
+            # EndEffectorPoseViaPlanning could not reach the predicted keypose
+            # (unreachable target / collision). End the episode as a failure —
+            # matching the reference 3DDA evaluator — so a single stochastic
+            # planner miss can't abort a whole multi-episode benchmark run
+            # (ADR-0062). No fresh obs exists; return the last wrapped one.
+            reply = {
+                "observation": self._last_wrapped_obs,
+                "reward": 0.0,
+                "terminated": True,
+                "truncated": False,
+                "info": {self._success_key: False},
+            }
+            if record_video:
+                reply["video_frames"] = self._motion_frames
+            return reply
+
         success = bool(reward == 1)
         final_frame = self._frame_from_obs(obs)
         if record_video and final_frame is not None:
             self._motion_frames.append(final_frame)
+        self._last_wrapped_obs = self._wrap_obs(obs)
         reply = {
-            "observation": self._wrap_obs(obs),
+            "observation": self._last_wrapped_obs,
             "reward": float(reward),
             "terminated": bool(terminate or success),
             "truncated": False,

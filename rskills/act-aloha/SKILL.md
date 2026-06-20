@@ -1,7 +1,7 @@
 ---
 name: act-aloha
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: transfer, pick, place on cube. Action Chunking Transformer (~52M-param encoder-decoder) finetuned on the ALOHA bimanual cube-transfer demonstration set. Action chunks of length 100. The published checkpoint predates lerobot's PolicyProcessorPipeline migration and ships without normalisation buffers — see tests/sim/test_aloha_bimanual_act_aloha.py for the resulting numerical-contract caveats. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: transfer, pick, place on cube. Action Chunking Transformer (~52M-param encoder-decoder) finetuned on the ALOHA bimanual cube-transfer demonstration set. Action chunks of length 100. The mean/std norm buffers live inside model.safetensors; modern lerobot ACTPolicy drops them on load and the adapter re-applies them — see tests/sim/test_aloha_bimanual_act_aloha.py. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -38,7 +38,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Action Chunking Transformer (~52M-param encoder-decoder) finetuned on the ALOHA bimanual cube-transfer demonstration set. Action chunks of length 100. The published checkpoint predates lerobot's PolicyProcessorPipeline migration and ships without normalisation buffers — see tests/sim/test_aloha_bimanual_act_aloha.py for the resulting numerical-contract caveats.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). Action Chunking Transformer (~52M-param encoder-decoder) finetuned on the ALOHA bimanual cube-transfer demonstration set. Action chunks of length 100. The mean/std norm buffers live inside model.safetensors; modern lerobot ACTPolicy drops them on load and the adapter re-applies them — see tests/sim/test_aloha_bimanual_act_aloha.py.
 
 ## Capabilities
 
