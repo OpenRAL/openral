@@ -94,7 +94,6 @@ Columns:
 | `chamborgir/smolvla_pickplace_20k` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | 20k steps pick-and-place fine-tune |
 | `TakuyaHiraoka/act_so101_pick_diverse_objects` | SO-101 real | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | ACT policy; diverse object pick task |
 | `edge-inference/smolvla-so101-pick-orange` | Isaac Sim | `so101_follower` | TBD | TBD | TBD | — | Apache-2.0 | Isaac Sim backend; requires Isaac Sim license for reproduction |
-| `HollyTan/pi05_so101_pick_place-v2.2basev2.4_abs_nofreeze_8b` | `so101_box` (MuJoCo) | `so101_follower` | **6-D** joint positions ✓ | `top`+`wrist`+`front` (224×224); scene `oak_top`→`top`, `wrist`→`wrist`, `front` zero-padded via image mask ✓ | Yes — `policy_{pre,post}processor` sidecars (state=[6], action=[6]) ✓ | `rskills/pi05-so101-pickplace-nf4/` (nf4 mirror at `OpenRAL/rskill-pi05-so101-pickplace-nf4`) | Apache-2.0 | π0.5 (4.14 B); nf4 fits 8 GB. Pick-place finetune; validated to load + step on `so101_box` (not insertion-trained — expect drift on the tube task). `scenes/sim/so101_tube_insertion.yaml` |
 
 ### 3.5 Other platforms
 

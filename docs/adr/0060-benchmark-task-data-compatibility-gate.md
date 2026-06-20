@@ -23,8 +23,8 @@ different benchmark task and produced a *plausible-looking but unsolvable* rollo
 - `smolvla-maniskill-franka` wraps `Calvert0921/smolvla_franka_**liftcube**_1000` (trained to
   *lift* a cube) but was paired with `maniskill3/**PickCube-v1**` (grasp **and place at a
   goal** + stay static). Frames show a clean grasp/lift; success is never satisfied → 0/40.
-- `pi05-so101-**pickplace**-nf4` was paired with `so101_box/**tube_insertion**` and
-  `tabletop_push/**push_to_goal**` — neither is pick-place. 0/40 each.
+- an SO-101 pick-place checkpoint was paired with `so101_box/**tube_insertion**`
+  and `tabletop_push/**push_to_goal**` — neither is pick-place. 0/40 each.
 
 These wasted GPU time and, worse, would have reported meaningless success numbers if run as
 paper-comparison evals. The embodiment gate could not catch them (the robot matches fine).

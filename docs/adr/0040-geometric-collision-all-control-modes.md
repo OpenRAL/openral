@@ -215,7 +215,7 @@ Before implementing, the in-tree rSkills + robots were audited for the
 
 | ControlMode | Emitted by | Through kernel? | Build now? |
 | --- | --- | --- | --- |
-| `JOINT_POSITION` | act-aloha, pi05-so101, molmoact2-so101, smolvla-maniskill/metaworld, pi05-openarm, rldx1-gr1, ACT/diffusion legacy | yes | already (ADR-0030) |
+| `JOINT_POSITION` | act-aloha, molmoact2-so101, smolvla-maniskill/metaworld, pi05-openarm, rldx1-gr1, ACT/diffusion legacy | yes | already (ADR-0030) |
 | `CARTESIAN_DELTA` (+`GRIPPER_POSITION`) | **12 rSkills** — all LIBERO (act/smolvla/pi05/xvla/rldx), SIMPLER (widowx/google), DROID, **+ the robocasa arm chunk** (rldx-rc365/robocasa, pi05-robocasa365) | yes | **YES — Phase 3 (reactive floor + Jacobian predictive look-ahead)** |
 | `JOINT_VELOCITY` | robocasa **base** chunk (rldx-rc365/robocasa, pi05-robocasa365 slot 7:9) | yes | **YES — Phase 2** |
 | `COMPOSITE_MODE` | robocasa mux flag (same 3 skills, slot 11, n_dof=1 scalar) | yes | **no geom** — scalar flag, no arm geometry; passes the `n_dof≥required` gate; the arm is the companion CARTESIAN_DELTA chunk |

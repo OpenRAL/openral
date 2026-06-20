@@ -50,7 +50,6 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`pi05-libero-nf4`](../../rskills/pi05-libero-nf4/) | π0.5 NF4 | `franka_panda` | Permissive research (weights non-Apache) |
 | [`pi05-openarm-vision-nf4`](../../rskills/pi05-openarm-vision-nf4/) | π0.5 NF4 (bimanual, absolute joint targets) | `openarm` | Apache-2.0 |
 | [`pi05-robocasa365-human300-nf4`](../../rskills/pi05-robocasa365-human300-nf4/) | π0.5 NF4 (RoboCasa365 + 300 human eps fine-tune) | `panda_mobile` | Apache-2.0 (weights: research) |
-| [`pi05-so101-pickplace-nf4`](../../rskills/pi05-so101-pickplace-nf4/) | π0.5 NF4 (SO-101 pick-place fine-tune, 3 RGB streams) | `so101_follower` | Apache-2.0 |
 | [`act-aloha`](../../rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
 | [`act-aloha-insertion`](../../rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
 | [`diffusion-pusht`](../../rskills/diffusion-pusht/) | Diffusion Policy | `pusht_2d` | Apache-2.0 |

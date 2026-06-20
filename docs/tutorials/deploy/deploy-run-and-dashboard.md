@@ -45,8 +45,8 @@ task:
   scene_id: pick_cube/red
   instruction: "pick up the red cube"   # becomes the VLA's language prompt
 vla:
-  id: pi05
-  weights_uri: rskills/pi05-so101-pickplace-nf4   # skill reference (bare name or rskills/<name>)
+  id: molmoact2
+  weights_uri: rskills/molmoact2-so101-nf4   # skill reference (bare name or rskills/<name>)
 rate_hz: 30.0
 ```
 

@@ -181,8 +181,8 @@ class _So101BoxRollout:
     # Joint-units convention for the proprio state the policy reads and the
     # action it returns. ``"radians"`` (default) keeps MuJoCo-native units;
     # ``"degrees"`` makes the env emit state in degrees and accept actions in
-    # degrees — the convention LeRobot-trained SO-100/101 checkpoints (e.g.
-    # MolmoAct2-SO100_101, pi05-so101) were recorded in. Mirrors the
+    # degrees — the convention LeRobot-trained SO-100/101 checkpoints (for
+    # example MolmoAct2-SO100_101) were recorded in. Mirrors the
     # openarm_robosuite scene's ``scene.backend_options.joint_units`` knob.
     _joint_units: str = "radians"
     # Per-joint calibration affine (degrees mode only), bridging the MuJoCo URDF
