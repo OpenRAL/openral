@@ -154,8 +154,8 @@
     .flow .step .hz { color: var(--text-dim); font-size: 10px; }
     .flow .step::after {
       content: ""; position: absolute; right: -7px; top: 50%; transform: translateY(-50%);
-      width: 0; height: 0; border-left: 7px solid var(--line-strong);
-      border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+      width: 7px; height: 12px; background: var(--line-strong);
+      clip-path: polygon(0 0, 100% 50%, 0 100%);
       z-index: 2;
     }
     .flow .step:last-child::after { display: none; }
