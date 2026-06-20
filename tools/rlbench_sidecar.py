@@ -1,6 +1,6 @@
 r"""RLBench scene sidecar — drives a CoppeliaSim/PyRep RLBench task over ZMQ.
 
-ADR-0061. RLBench (James et al., 2020, arXiv:1909.12271) runs on CoppeliaSim +
+ADR-0062. RLBench (James et al., 2020, arXiv:1909.12271) runs on CoppeliaSim +
 PyRep, a heavy, externally-provisioned, ~py3.10 stack that cannot be loaded into
 the openral py3.12 workspace (PyRep builds a Cython extension against a specific
 CoppeliaSim 4.1.0 install; the released 3D keyframe policies pin the

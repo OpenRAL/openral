@@ -93,7 +93,7 @@ rSkill: [`rskills/smolvla-robotwin`](../rskills/smolvla-robotwin) (the official
 subset of RoboTwin's 50 tasks; the `smolvla-robotwin` checkpoint is multi-task so it
 covers all of them.
 
-The `rlbench.yaml` row (ADR-0061) runs RLBench on **CoppeliaSim/PyRep** — a
+The `rlbench.yaml` row (ADR-0062) runs RLBench on **CoppeliaSim/PyRep** — a
 proprietary (free-EDU) simulator that is **never vendored** (CLAUDE.md §1.9) and
 the released 3D keyframe policies pin the `MohitShridhar/RLBench@peract` fork.
 Both the scene and the **3D Diffuser Actor** policy (`rskills/3d-diffuser-actor-rlbench`,

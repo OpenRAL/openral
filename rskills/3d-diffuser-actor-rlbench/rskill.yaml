@@ -6,7 +6,7 @@
 # LICENSE: MIT (code + released checkpoints) — commercially permissive. No
 # license guard needed (unlike RVT/RVT-2, which are NVIDIA non-commercial).
 #
-# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack), ADR-0061. The
+# RUNTIME: auto-managed out-of-process sidecar (ZMQ + msgpack), ADR-0062. The
 # policy AND the CoppeliaSim/PyRep RLBench scene run in their own externally-
 # provisioned py3.10 venv (CoppeliaSim is proprietary, free-EDU, NEVER vendored).
 # The openral adapter (openral_sim.policies.rlbench_3dda) forks
@@ -93,7 +93,7 @@ description: >
   3D Diffuser Actor (Ke et al., 2024) — a diffusion policy over end-effector
   keyposes fusing multi-view RGB-D into a 3D scene representation, on the RLBench
   PerAct 18-task benchmark. Shares the out-of-process CoppeliaSim/PyRep sidecar
-  with the rlbench scene backend (ADR-0061). MIT code + checkpoints. The PerAct
+  with the rlbench scene backend (ADR-0062). MIT code + checkpoints. The PerAct
   checkpoint is loaded verbatim; ships three live-verified starter tasks.
 
 # ADR-0022 — action vocabulary surfaced to the reasoner LLM tool palette.

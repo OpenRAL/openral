@@ -6,7 +6,7 @@ action head — and its OFT fine-tuning recipe (arXiv:2502.19645). The first
 in-tree checkpoint is ``RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood``: an
 OpenVLA-OFT bridge policy RL-tuned (PPO) on ManiSkill3 ``PutOnPlateInScene25``,
 run here on the SimplerEnv WidowX put-on-plate tasks it actually solves
-(``unnorm_key=bridge_orig``) — see ADR-0061 for the WidowX-vs-Panda rationale.
+(``unnorm_key=bridge_orig``) — see ADR-0063 for the WidowX-vs-Panda rationale.
 
 Like MolmoAct2 (and unlike the lerobot adapters), OpenVLA is **not** a lerobot
 policy. It ships as a transformers *custom-code* model (``trust_remote_code``,

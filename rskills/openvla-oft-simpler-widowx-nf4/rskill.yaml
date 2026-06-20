@@ -6,7 +6,7 @@
 # PutOnPlateInScene25 task with a WidowX 250 S. Its honest evaluation home is
 # the SimplerEnv WidowX put-on-plate tasks OpenRAL already wires (same
 # embodiment / EE-delta control / bridge_orig normalization) — NOT the Panda
-# PickCube scenes (ADR-0060 would correctly block that pairing; see ADR-0061
+# PickCube scenes (ADR-0060 would correctly block that pairing; see ADR-0063
 # for the WidowX-vs-Panda rationale).
 #
 # IO contract (from the checkpoint's config.json + RLinf eval, 2026-06-19):
@@ -16,7 +16,7 @@
 #   output: 256-bin discrete action tokens -> [-1,1] -> de-normalized with the
 #           embedded unnorm_key=bridge_orig (BOUNDS_Q99): 6 EE deltas rescaled,
 #           gripper (mask False) passthrough. Action chunk 8 x 7-D.
-# The in-tree `openvla` adapter (ADR-0061) loads this via transformers
+# The in-tree `openvla` adapter (ADR-0063) loads this via transformers
 # AutoModelForVision2Seq + trust_remote_code (gated by
 # OPENRAL_ALLOW_REMOTE_CODE=1), NF4 for the 8 GB host.
 
