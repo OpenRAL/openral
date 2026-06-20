@@ -83,7 +83,11 @@ ADR-0042) under
 | [`aloha_transfer_cube.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/aloha_transfer_cube.yaml) | `aloha_bimanual` *(scene-fixed)* | `aloha_transfer_cube` | `aloha_transfer_cube/0` | 200 | [ALOHA / ACT](https://arxiv.org/abs/2304.13705) |
 | [`libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/libero_spatial.yaml) | `franka_panda` *(scene-fixed)* | `libero_spatial` | `libero_spatial/0` | 500 | [LIBERO](https://arxiv.org/abs/2309.11500) |
 | [`maniskill_pick_cube.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/maniskill_pick_cube.yaml) | `franka_panda` *(free-axis)* | `maniskill3` | `maniskill3/PickCube-v1` | 500 | [ManiSkill3](https://arxiv.org/abs/2410.00425) |
-| [`metaworld_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_push.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/push` | 200 | [MetaWorld MT50](https://arxiv.org/abs/1910.10897) |
+| [`metaworld_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_push.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/push-v3` | 50 | [MetaWorld MT10/MT50](https://arxiv.org/abs/1910.10897) |
+| [`metaworld_pick_place.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_pick_place.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/pick-place-v3` | 50 | [MetaWorld MT10/MT50](https://arxiv.org/abs/1910.10897) |
+| [`metaworld_button_press.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_button_press.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/button-press-v3` | 50 | [MetaWorld MT10/MT50](https://arxiv.org/abs/1910.10897) |
+| [`metaworld_door_open.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_door_open.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/door-open-v3` | 50 | [MetaWorld MT10/MT50](https://arxiv.org/abs/1910.10897) |
+| [`metaworld_drawer_open.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/metaworld_drawer_open.yaml) | `sawyer` *(scene-fixed)* | `metaworld` | `metaworld/drawer-open-v3` | 50 | [MetaWorld MT10/MT50](https://arxiv.org/abs/1910.10897) |
 | [`pusht.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/pusht.yaml) | `pusht_2d` *(scene-fixed; 2-D pymunk)* | `pusht` | `pusht/0` | 200 | [Diffusion Policy](https://arxiv.org/abs/2303.04137) |
 | [`rlbench_open_drawer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/rlbench_open_drawer.yaml) | `franka_panda` *(scene-fixed)* | `rlbench` | `rlbench/open_drawer` | 25 | [RLBench](https://arxiv.org/abs/1909.12271) / [3D Diffuser Actor](https://arxiv.org/abs/2402.10885) |
 | [`rlbench_meat_off_grill.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/rlbench_meat_off_grill.yaml) | `franka_panda` *(scene-fixed)* | `rlbench` | `rlbench/meat_off_grill` | 25 | [RLBench](https://arxiv.org/abs/1909.12271) / [3D Diffuser Actor](https://arxiv.org/abs/2402.10885) |
@@ -95,8 +99,10 @@ value. Overriding `--n-episodes` on `openral benchmark scene` is allowed
 (useful for cheap smoke runs that don't claim paper-reproduction); the
 resulting `RSkillEvalResult` records the lowered count.
 
-Multi-scene aggregations (e.g. all 10 LIBERO-Spatial tasks, all 50 MetaWorld
-tasks, all 4 SimplerEnv WidowX tasks) live in
+Multi-scene aggregations (e.g. all 10 LIBERO-Spatial tasks, the MetaWorld MT10
+and MT50 task sets — `benchmarks/metaworld_mt10.yaml` (10 tasks) and
+`benchmarks/metaworld_mt50.yaml` (50 tasks) — all 4 SimplerEnv WidowX tasks)
+live in
 [`benchmarks/`](https://github.com/OpenRAL/openral/tree/master/benchmarks).
 A suite YAML is a bare `list[BenchmarkScene]` at the YAML root (ADR-0042);
 suite-level invariants (uniform `robot_id`, `seed`, `n_episodes`, and full
