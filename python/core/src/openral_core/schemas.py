@@ -3385,7 +3385,7 @@ sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 loaded in-process (``trust_remote_code``, gated by
 ``OPENRAL_ALLOW_REMOTE_CODE=1``); the adapter de-normalizes the policy's
 discrete action tokens with the checkpoint's embedded ``unnorm_key`` stats
-and replays the action chunk closed-loop — see ADR-0061.
+and replays the action chunk closed-loop — see ADR-0063.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and
@@ -4722,7 +4722,7 @@ class PhysicsBackend(str, Enum):
             declared ``MUJOCO`` — new SAPIEN backends use this value.
         ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.
         COPPELIASIM: CoppeliaSim/PyRep — the RLBench benchmark backend, driven
-            out-of-process via a py3.10 sidecar (ADR-0061).
+            out-of-process via a py3.10 sidecar (ADR-0062).
         GENESIS: Genesis (physics-language unification). Future.
         MOCK: In-process mock with no physics — used for wiring smoketests.
     """

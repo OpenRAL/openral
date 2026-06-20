@@ -1,12 +1,12 @@
 <!--
   rSkill README — 3D Diffuser Actor (RLBench PerAct setup).
-  Discovery + provenance card; mirrors rskill.yaml. ADR-0061.
+  Discovery + provenance card; mirrors rskill.yaml. ADR-0062.
 -->
 
 # rskill-3d-diffuser-actor-rlbench
 
 3D Diffuser Actor — a diffusion policy over end-effector **keyposes** for RLBench,
-running on the CoppeliaSim/PyRep RLBench benchmark backend (ADR-0061).
+running on the CoppeliaSim/PyRep RLBench benchmark backend (ADR-0062).
 
 ## What this skill does
 
@@ -92,7 +92,7 @@ supervision).
 
 ```bash
 # One-time: provision CoppeliaSim 4.1.0 + PyRep + RLBench@peract + the checkpoint
-# in the py3.10 sidecar venv (see docs/adr/0061-rlbench-benchmark-backend.md).
+# in the py3.10 sidecar venv (see docs/adr/0062-rlbench-benchmark-backend.md).
 openral benchmark scene \
   --config scenes/benchmark/rlbench_open_drawer.yaml \
   --rskill rskills/3d-diffuser-actor-rlbench
@@ -100,13 +100,13 @@ openral benchmark scene \
 
 Inference VRAM peaks ~0.43 GB; runs comfortably on an 8 GB GPU. CoppeliaSim is
 proprietary (free EDU license) and is **never** vendored — it is an
-externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0061).
+externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0062).
 
 ## Evaluation
 
 No full 25-episode `eval/rlbench.json` artifact is shipped in this starter PR.
 The package is live-qualified on the three declared starter tasks and records the
-proof in ADR-0061: `open_drawer` 4/4, `meat_off_grill` 3/3, and `close_jar`
+proof in ADR-0062: `open_drawer` 4/4, `meat_off_grill` 3/3, and `close_jar`
 solved on an 8 GB Ada host. Run the reproduction command above with
 `--no-write-eval` for a non-mutating smoke run, or run the full suite to produce
 `rskills/3d-diffuser-actor-rlbench/eval/rlbench.json`.
@@ -124,4 +124,4 @@ uses `license: mit` for the consumer-visible weight/runtime posture.
 - `scenes/benchmark/rlbench_meat_off_grill.yaml`
 - `scenes/benchmark/rlbench_close_jar.yaml`
 - `benchmarks/rlbench.yaml`
-- `docs/adr/0061-rlbench-benchmark-backend.md`
+- `docs/adr/0062-rlbench-benchmark-backend.md`

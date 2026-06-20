@@ -72,12 +72,12 @@ Columns:
 
 > RLBench tasks are fixed to the Franka Panda in CoppeliaSim/PyRep. OpenRAL
 > runs both the simulator and 3D keyframe policy out-of-process in an
-> externally-provisioned py3.10 sidecar venv (ADR-0061); CoppeliaSim is
+> externally-provisioned py3.10 sidecar venv (ADR-0062); CoppeliaSim is
 > proprietary (free EDU) and is never vendored.
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in checkpoint | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `katefgroup/3d_diffuser_actor` (`diffuser_actor_peract.pth`) | RLBench PerAct subset | `franka_panda` | **8-D** `gripper_pose(7)+gripper_open(1)` history, policy emits an **8-D** absolute EE keyframe | `left_shoulder`, `right_shoulder`, `wrist`, `front` RGB-D point clouds at 256×256 | Precomputed CLIP instruction embeddings (`instructions.pkl`) + task bounds JSON | `rskills/3d-diffuser-actor-rlbench/` | MIT | ADR-0061 starter set: `rlbench_open_drawer.yaml`, `rlbench_meat_off_grill.yaml`, `rlbench_close_jar.yaml`; live-verified on an 8 GB Ada host. |
+| `katefgroup/3d_diffuser_actor` (`diffuser_actor_peract.pth`) | RLBench PerAct subset | `franka_panda` | **8-D** `gripper_pose(7)+gripper_open(1)` history, policy emits an **8-D** absolute EE keyframe | `left_shoulder`, `right_shoulder`, `wrist`, `front` RGB-D point clouds at 256×256 | Precomputed CLIP instruction embeddings (`instructions.pkl`) + task bounds JSON | `rskills/3d-diffuser-actor-rlbench/` | MIT | ADR-0062 starter set: `rlbench_open_drawer.yaml`, `rlbench_meat_off_grill.yaml`, `rlbench_close_jar.yaml`; live-verified on an 8 GB Ada host. |
 
 ### 3.3 MetaWorld (Sawyer, MuJoCo)
 

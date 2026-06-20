@@ -29,7 +29,7 @@ returns the bound robot or ``None``):
   ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
   box/tube task is coupled to the so_arm101 MJCF schema; ADR-0033 finding),
   ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
-  py3.10 sidecar; ADR-0061), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
+  py3.10 sidecar; ADR-0062), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
   SAPIEN dual-arm benchmark behind a py3.10 sidecar; ADR-0061).
 """
 

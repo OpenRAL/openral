@@ -4,7 +4,7 @@ Validates that ``rskills/openvla-oft-simpler-widowx-nf4`` loads as a real
 ``openvla`` manifest and that the benchmark task-compatibility gate accepts the
 SimplerEnv WidowX put-on-plate tasks it declares while refusing the Panda
 PickCube pairing it must never run (the WidowX-vs-Panda honesty contract,
-ADR-0061).
+ADR-0063).
 """
 
 from __future__ import annotations
