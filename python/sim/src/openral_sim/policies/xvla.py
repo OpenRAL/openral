@@ -80,8 +80,8 @@ class _XVLAAdapter:
                 "(LiberoProcessorStep) consumes the nested LiberoEnv obs that the "
                 "scene must expose as observation['raw']. This scene does not "
                 f"populate it (got observation['raw'] of type {type(raw).__name__}), "
-                "so xvla cannot run here — use a LIBERO scene (e.g. libero_spatial / "
-                "franka_libero_pnp) or a non-LIBERO-bound checkpoint."
+                "so xvla cannot run here — use a LIBERO scene (e.g. libero_spatial) "
+                "or a non-LIBERO-bound checkpoint."
             )
         batch = self._build_raw_batch(raw, observation, instruction)
         # Stage 1: env preprocessor (LiberoProcessorStep + image normalize + domain id).

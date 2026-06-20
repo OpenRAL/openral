@@ -1,9 +1,8 @@
 """SimAttachedHAL probes the LIBERO env's true action width (7), not the robocasa fallback (11).
 
 ADR-0036 — a cartesian rSkill's slot-packed action must be sized to the env's
-action space. The franka-LIBERO env (``franka_libero_custom_bddl`` →
-robosuite ``OffScreenRenderEnv`` with an OSC_POSE controller) accepts a 7-D
-action (6-D end-effector delta + gripper). Before this fix
+action space. The LIBERO Franka env (robosuite with an OSC_POSE controller)
+accepts a 7-D action (6-D end-effector delta + gripper). Before this fix
 ``_probe_env_action_dim`` missed it (the action width is only reachable as
 ``sum(r.action_dim for r in env._env.robots)``, not via the two ``_env.action_dim``
 probe paths) and fell back to 11, so ``env.step`` rejected the packed action
@@ -125,7 +124,7 @@ def test_is_terminated_episode_error_matches_robosuite_guard_only() -> None:
 
 
 @_requires_renderer
-def test_libero_custom_bddl_action_dim_is_seven() -> None:
+def test_libero_action_dim_is_seven() -> None:
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
     pytest.importorskip("robosuite")
@@ -135,7 +134,7 @@ def test_libero_custom_bddl_action_dim_is_seven() -> None:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
     env, seed = build_sim_env_from_yaml(
-        "scenes/sim/franka_libero_pnp.yaml", robot_id_fallback="franka_panda"
+        "scenes/sim/libero_spatial.yaml", robot_id_fallback="franka_panda"
     )
     # The backend exposes its true action width (LIBERO OSC_POSE = 7).
     assert env.action_dim == 7
@@ -166,7 +165,7 @@ def test_send_action_auto_resets_after_episode_termination() -> None:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
     env, seed = build_sim_env_from_yaml(
-        "scenes/sim/franka_libero_pnp.yaml", robot_id_fallback="franka_panda"
+        "scenes/sim/libero_spatial.yaml", robot_id_fallback="franka_panda"
     )
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
@@ -192,7 +191,7 @@ def test_send_action_auto_resets_after_episode_termination() -> None:
 def test_send_action_recovers_when_env_terminal_but_latch_clear() -> None:
     """ADR-0036 follow-up — recover from a *raised* terminal, not just a returned one.
 
-    Raw-robosuite backends (``franka_libero_custom_bddl``, ``so100_robosuite``)
+    Raw-robosuite backends (LIBERO, ``so100_robosuite``)
     run with ``ignore_done=False`` and HARD-RAISE
     ``ValueError("executing action in terminated episode")`` on a post-terminal
     ``step`` (robosuite ``environments/base.py``) instead of returning a terminal
@@ -200,7 +199,7 @@ def test_send_action_recovers_when_env_terminal_but_latch_clear() -> None:
     ``_episode_done`` stays ``False`` while robosuite is internally ``done`` —
     and every subsequent ``send_action`` re-raises, freezing the arm and spamming
     ``send_action … env.step failed: executing action in terminated episode``
-    (the ``openral deploy sim`` symptom on the custom-milk scene).
+    (the ``openral deploy sim`` symptom on LIBERO scenes).
 
     The HAL must treat a *raised* terminal the same as a *returned* one: reset
     once and re-step so the continuous deploy-sim twin keeps driving. Gymnasium /
@@ -216,7 +215,7 @@ def test_send_action_recovers_when_env_terminal_but_latch_clear() -> None:
     from openral_hal.sim_bringup import build_sim_env_from_yaml
 
     env, seed = build_sim_env_from_yaml(
-        "scenes/sim/franka_libero_pnp.yaml", robot_id_fallback="franka_panda"
+        "scenes/sim/libero_spatial.yaml", robot_id_fallback="franka_panda"
     )
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
     hal = SimAttachedHAL(env, desc, env_reset_seed=seed)
@@ -227,7 +226,7 @@ def test_send_action_recovers_when_env_terminal_but_latch_clear() -> None:
     # ``done`` is set, and reset() clears it (environments/base.py). This is the
     # genuine desync the deploy-sim flow hits — NOT a returned terminal, so the
     # HAL's returned-flag latch is (correctly) still clear.
-    robosuite_env = hal._env._env.env  # _LiberoCustomBDDLSim → OffScreenRenderEnv → robosuite
+    robosuite_env = hal._env._env.env  # _LiberoSim → LiberoEnv → robosuite
     robosuite_env.done = True
     assert hal._episode_done is False  # the latch never saw this terminal
 

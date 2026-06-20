@@ -57,7 +57,6 @@ Consumed by `openral sim run`.
 
 | Config | Fixed / declared robot | `scene.id` | `task.id` | Notes |
 |---|---|---|---|---|
-| [`franka_libero_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_libero_pnp.yaml) | `franka_panda` *(scene-fixed)* | `franka_libero_custom_bddl` | `custom_milk/0` | Custom BDDL ([`franka_libero_pnp.bddl`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_libero_pnp.bddl)) → robosuite `OffScreenRenderEnv`; pick milk into basket |
 | [`libero_spatial.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/libero_spatial.yaml) | `franka_panda` *(scene-fixed)* | `libero_spatial` | `libero_spatial/0` | LIBERO-Spatial smoke; ad-hoc sibling of `scenes/benchmark/libero_spatial.yaml` |
 | [`openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/openarm_tabletop.yaml) | `openarm` *(free-axis)* | `openarm_tabletop_pnp` | `openarm/pnp_cube_to_drawer` | Bimanual cube-to-drawer; mirrors the mddoai dataset POV |
 | [`robocasa_gr1_pnp_cup_to_drawer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/robocasa_gr1_pnp_cup_to_drawer.yaml) | `gr1` *(scene-fixed)* | `robocasa/gr1/PnPCupToDrawerClose` | `robocasa/gr1/PnPCupToDrawerClose/0` | RoboCasa GR1 humanoid tabletop pnp |

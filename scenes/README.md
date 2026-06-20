@@ -132,7 +132,7 @@ supplied at the CLI via `--rskill <name>`.
 
 | Backend             | Built-in scene IDs                                                                                                                                                                                                                                                                          | Adapter file                              |
 |---------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------|
-| LIBERO              | `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, `franka_libero_custom_bddl` (custom BDDL → robosuite `OffScreenRenderEnv`; see [`sim/franka_libero_pnp.yaml`](sim/franka_libero_pnp.yaml))                                                                                       | `python/sim/.../backends/libero*.py`      |
+| LIBERO              | `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`                                                                                                                                                                                                                                      | `python/sim/.../backends/libero*.py`      |
 | MetaWorld           | `metaworld` (passes `<env_id>` through to `gym.make`)                                                                                                                                                                                                                                       | `python/sim/.../backends/metaworld.py`    |
 | gym-aloha           | `aloha_transfer_cube`, `aloha_insertion`                                                                                                                                                                                                                                                    | `python/sim/.../backends/aloha.py`        |
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
@@ -152,7 +152,7 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 
 | Scene                                            | Fixed robot         |
 |--------------------------------------------------|---------------------|
-| `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` / `franka_libero_custom_bddl` | `franka_panda`    |
+| `libero_spatial` / `libero_object` / `libero_goal` / `libero_10` | `franka_panda`    |
 | `metaworld`                                      | `sawyer`            |
 | `pusht`                                          | `pusht_2d`          |
 | `aloha_transfer_cube` / `aloha_insertion`        | `aloha_bimanual`    |

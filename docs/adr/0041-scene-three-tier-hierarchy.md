@@ -90,7 +90,6 @@ scenes/
 │   ├── robocasa_pnp.yaml
 │   └── so101_box.yaml
 ├── sim/                         # SimScene YAMLs — env + task, no metadata
-│   ├── franka_libero_pnp.yaml
 │   ├── libero_spatial.yaml
 │   ├── openarm_tabletop.yaml
 │   ├── robocasa_gr1_pnp_cup_to_drawer.yaml

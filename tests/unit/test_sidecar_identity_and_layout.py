@@ -184,7 +184,7 @@ def rc365_env_cfg() -> SimEnvironment:
     from tests.sim.conftest import compose_sim_env
 
     return compose_sim_env(
-        _REPO_ROOT / "scenes" / "sim" / "franka_libero_pnp.yaml",
+        _REPO_ROOT / "scenes" / "sim" / "libero_spatial.yaml",
         "rskills/rldx1-ft-rc365-nf4",
         n_episodes=1,
         max_steps=1,

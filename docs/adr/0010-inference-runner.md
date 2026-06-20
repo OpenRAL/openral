@@ -469,14 +469,7 @@ above as `aloha_pickup_glass`, registered by
 **removed** as part of consolidating the OpenRAL custom-scene
 authoring story onto a single adapter.
 
-The replacement is
-`python/sim/src/openral_sim/backends/libero_custom_bddl.py`
-(scene id `franka_libero_custom_bddl`), which drives **pi0.5-LIBERO ×
-Franka Panda × robosuite OSC_POSE** custom scenes from user-authored
-BDDL files. A worked example lives at
-`scenes/sim/franka_libero_pnp.yaml` (+ companion
-`scenes/sim/franka_libero_pnp.bddl`; picks the milk); two
-near-identical siblings (salad-dressing / bbq-sauce) were removed as
+The near-identical salad-dressing / bbq-sauce examples were also removed as
 replications of the same target-swap concept.
 
 What was removed:
@@ -932,14 +925,9 @@ writer linkage) remain deferred to their own ADRs / amendments.
 ### 2026-06-08 — Three-tier scene paths (ADR-0041)
 
 ADR-0041 split `scenes/` into deploy/sim/benchmark tiers and stripped
-rSkill names from filenames. The custom-BDDL LIBERO worked example in
-the 2026-05-21 amendment (and its companion BDDL) moved from
-`scenes/native/pi05_libero_custom_milk.yaml` /
-`scenes/native/pi05_libero_custom_milk.bddl` to
-`scenes/sim/franka_libero_pnp.yaml` /
-`scenes/sim/franka_libero_pnp.bddl`. The "what was removed" list above
-keeps the historical `scenes/benchmarks/...` paths as a factual record
-of the pre-refactor state. Schema, runner contract, and decision text
-are unchanged — only on-disk paths are renamed. See ADR-0041 and
+rSkill names from filenames. The "what was removed" list above keeps the
+historical `scenes/benchmarks/...` paths as a factual record of the
+pre-refactor state. Schema, runner contract, and decision text are unchanged.
+See ADR-0041 and
 [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) for the tier hierarchy and
 per-tier authoring guide.

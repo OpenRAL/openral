@@ -72,14 +72,11 @@ def libero_env_cfg() -> SimEnvironment:
     """
     from tests.sim.conftest import compose_sim_env
 
-    # ADR-0041: scenes/benchmarks/rldx1_libero_spatial.yaml was retired; the
-    # SimScene-tier LIBERO fixture is now scenes/sim/franka_libero_pnp.yaml
-    # (custom BDDL routed through franka_libero_custom_bddl → robosuite, fixed
-    # franka_panda). compose_sim_env loads strict SimScene, so the canonical
-    # scenes/benchmark/libero_spatial.yaml (BenchmarkScene) cannot be used.
-    # The --rskill override selects the FT-LIBERO rldx checkpoint regardless.
+    # compose_sim_env loads strict SimScene, so the canonical
+    # scenes/benchmark/libero_spatial.yaml (BenchmarkScene) cannot be used. The
+    # --rskill override selects the FT-LIBERO rldx checkpoint regardless.
     return compose_sim_env(
-        _REPO_ROOT / "scenes" / "sim" / "franka_libero_pnp.yaml",
+        _REPO_ROOT / "scenes" / "sim" / "libero_spatial.yaml",
         "rskills/rldx1-ft-libero-nf4",
         n_episodes=1,
         max_steps=1,

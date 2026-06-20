@@ -192,15 +192,15 @@ episodic backend behave like a continuous digital twin, `SimAttachedHAL._step_an
 episode termination: the prior step's `StepResult.terminated/truncated` is latched as `_episode_done`,
 and the next step resets the env before stepping. This handles backends that **return** a terminal.
 
-**Gap this amendment closes.** The raw-robosuite backends — `franka_libero_custom_bddl` (custom-BDDL
-milk/soup scenes) and `so100_robosuite` — construct `robosuite.OffScreenRenderEnv` with
+**Gap this amendment closes.** Raw robosuite-backed scene adapters such as
+`so100_robosuite` construct `robosuite.OffScreenRenderEnv` with
 `ignore_done=False`. Such envs do not *return* a terminal forever; once `done` is set (task success or
 `horizon == task.max_steps`), the **next** `env.step` **HARD-RAISES**
 `ValueError("executing action in terminated episode")` (`robosuite/environments/base.py`). Because the
 terminal arrives as a *raise*, not a returned flag, the `_episode_done` latch never fires, the deferred
 reset never runs, and **every** subsequent `send_action`/`idle_step` re-raises — the arm freezes and the
-log spams `send_action (safe_action) failed: … env.step failed: executing action in terminated episode`
-(observed live on `scenes/sim/franka_libero_pnp.yaml`). This was invisible to the existing
+log spams `send_action (safe_action) failed: … env.step failed: executing action in terminated episode`.
+This was invisible to the existing
 returned-terminal test, which forces `_episode_done = True` and so never exercises the raise.
 
 This is **not** the same as the robocasa path: `sim_bringup._maybe_force_ignore_done` injects
@@ -234,11 +234,7 @@ robosuite's message only (real faults propagate). The pre-existing returned-term
 ## Amendment 2026-06-08 — three-tier scene paths (ADR-0041)
 
 ADR-0041 split `scenes/` into deploy/sim/benchmark tiers and stripped
-rSkill names from filenames. The bug-observation note in the 2026-06-05
-amendment ("observed live on …") now points at
-`scenes/sim/franka_libero_pnp.yaml`, the renamed successor to the
-pre-refactor `scenes/native/pi05_libero_custom_milk.yaml` (the file
-content — custom-BDDL milk-pick scene against `franka_libero_custom_bddl`
-— is the same; only the on-disk path was renamed). The raised-terminal
-bug, the predicate, and the auto-reset fix are unchanged. See ADR-0041
-and [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md) for the tier hierarchy.
+rSkill names from filenames. The raised-terminal bug, the predicate, and the
+auto-reset fix are unchanged. See ADR-0041 and
+[`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md)
+for the tier hierarchy.

@@ -235,12 +235,8 @@ def test_cli_rejects_hf_uri(capsys: pytest.CaptureFixture[str]) -> None:
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[2]
-    # ADR-0041: scenes/benchmarks/smolvla_libero_spatial.yaml + pi05_libero_spatial.yaml
-    # were merged into scenes/benchmark/libero_spatial.yaml (BenchmarkScene, rejected
-    # by `openral sim run` on the tier guard). This test needs a SimScene-tier fixture
-    # so the --rskill hf:// guard fires next; scenes/sim/franka_libero_pnp.yaml is
-    # the SimScene-tier custom-BDDL LIBERO route.
-    cfg = repo_root / "scenes" / "sim" / "franka_libero_pnp.yaml"
+    # This test needs a SimScene-tier fixture so the --rskill hf:// guard fires next.
+    cfg = repo_root / "scenes" / "sim" / "libero_spatial.yaml"
     if not cfg.exists():
         pytest.skip(f"{cfg} missing")
 

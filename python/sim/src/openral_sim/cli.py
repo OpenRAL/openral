@@ -716,8 +716,8 @@ def _run(args: SimpleNamespace) -> int:
     recorder = _maybe_build_recorder(args, env_cfg)
     # ``args.instruction`` is ``None`` unless the user passed ``--instruction``.
     # Thread it as an explicit override so it wins over a scene's per-episode
-    # ``obs["task"]`` language (custom BDDL ``:language``, RoboCasa sampled
-    # object); without this the flag was silently ignored on such scenes.
+    # ``obs["task"]`` language (for example, RoboCasa sampled object); without
+    # this the flag was silently ignored on such scenes.
     runner = SimRunner(
         env_cfg,
         view=view,

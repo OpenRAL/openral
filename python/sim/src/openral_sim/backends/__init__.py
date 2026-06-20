@@ -25,7 +25,7 @@ returns the bound robot or ``None``):
 * **Single-robot (fixed)** — registered WITH ``fixed_robot="<id>"``. The robot
   is baked into the scene (its own MJCF / a benchmark world); the CLI rejects
   ``--robot``. These reproduce a specific embodiment + reward. Today:
-  ``libero`` / ``libero_custom_bddl`` (franka), ``metaworld`` (sawyer),
+  ``libero`` (franka), ``metaworld`` (sawyer),
   ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
   box/tube task is coupled to the so_arm101 MJCF schema; ADR-0033 finding).
 """
@@ -44,7 +44,6 @@ def _register_backends() -> None:
         aloha,
         isaac_sim,
         libero,
-        libero_custom_bddl,
         maniskill3,
         metaworld,
         openarm_robosuite,

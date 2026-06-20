@@ -36,12 +36,9 @@ from typer.testing import CliRunner
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Use a SimScene-tier fixed_robot YAML for the base_pose CLI guard test.
-# `scenes/benchmark/libero_spatial.yaml` is a BenchmarkScene (has metadata +
-# n_episodes + seed) so `openral sim run` rejects it on the tier guard before
-# the base_pose check fires. `scenes/sim/franka_libero_pnp.yaml` is a SimScene
-# with `franka_libero_custom_bddl` (hard-fixes franka_panda), which is exactly
-# what the base_pose guard needs to reject.
-LIBERO_CFG = REPO_ROOT / "scenes" / "sim" / "franka_libero_pnp.yaml"
+# `scenes/sim/libero_spatial.yaml` is a SimScene with a scene-fixed
+# `franka_panda`, which is exactly what the base_pose guard needs to reject.
+LIBERO_CFG = REPO_ROOT / "scenes" / "sim" / "libero_spatial.yaml"
 LIBERO_RSKILL = "rskills/smolvla-libero"
 
 _IDENTITY_QUAT = (0.0, 0.0, 0.0, 1.0)
