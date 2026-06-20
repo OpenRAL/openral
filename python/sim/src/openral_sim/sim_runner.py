@@ -1027,7 +1027,7 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 #    is not a supported ScalarType for its image path. Symptom is
 #    ``TypeError: Got unsupported ScalarType BFloat16 was raised from
 #    the environment creator for PickCube-v1`` (or any SAPIEN env).
-#    ``openral benchmark run --suite maniskill3_franka_pick_cube`` and
+#    ``openral benchmark run --suite maniskill3_panda`` and
 #    ``openral sim run --config scenes/simpler_env_widowx_*``
 #    both trip this when the policy is bf16; sequential init avoids
 #    the dtype window overlap entirely.

@@ -64,17 +64,17 @@ the detector before grabbing.
 
 ---
 
-## Clip 2 — MuJoCo · OpenArm tabletop · pick   [CONFIG REAL, e2e NOT verified this session]
+## Clip 2 — MuJoCo · OpenArm tabletop · scene only   [no shipped VLA — perception/MoveIt only]
 ```bash
 openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
 chromium --new-window --app=http://127.0.0.1:4318/ &
-tools/record_demo.sh clip2_openarm_pick 300
-ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-  "{rskill_id: 'OpenRAL/rskill-pi05-openarm-vision-nf4', \
-    prompt: 'Pick up the object on the table.', deadline_s: 120.0}"
+tools/record_demo.sh clip2_openarm 300
 ```
-The reasoner picks the rSkill at runtime, or dispatch directly as above. If the dashboard cards
-stay empty, fall back to the `openral sim run ... --video` 3-panel MP4 for this one.
+> **No in-tree VLA drives OpenArm.** The `pi05-openarm-vision-nf4` policy was
+> removed (real-trained checkpoint, sim-to-real gap, no verified grasp). The
+> OpenArm scene is retained for perception (detector) and MoveIt (`rskill-moveit-*`)
+> demos; dispatch one of those, or skip this clip until a task-matched OpenArm
+> policy lands.
 
 ---
 

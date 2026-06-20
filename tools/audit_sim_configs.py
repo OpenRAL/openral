@@ -117,12 +117,6 @@ CATALOGUE: Final[tuple[ConfigSpec, ...]] = (
         "sim",
     ),
     ConfigSpec(
-        "scenes/sim/openarm_tabletop.yaml",
-        "rskills/pi05-openarm-vision-nf4",
-        "sim",
-        "sim",
-    ),
-    ConfigSpec(
         "scenes/sim/robocasa_pnp.yaml",
         "rskills/pi05-robocasa365-human300-nf4",
         "robocasa",

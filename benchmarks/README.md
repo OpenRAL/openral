@@ -54,8 +54,7 @@ for the pattern.
 | `metaworld_mt50.yaml`     | sawyer         | metaworld (MuJoCo via lerobot)  | 50 |  5 | `success`    | 500 | 250 |
 | `aloha.yaml`              | aloha_bimanual | aloha_transfer_cube + aloha_insertion (gym-aloha) |  2 | 50 | `is_success` | 400 | 100 |
 | `pusht.yaml`              | pusht_2d       | pusht (gym-pusht pymunk)        |  1 | 50 | `is_success` | 300 |  50 |
-| `maniskill3_pick_place.yaml`       | google_robot   | maniskill3 (SAPIEN, GPU)                                                |  2 |  5 | `success`    | 100–200 |  10 |
-| `maniskill3_franka_pick_cube.yaml` | franka_panda   | maniskill3 PickCube-v1 (SAPIEN, GPU)                                    |  1 | 10 | `success`    | 100 |  10 |
+| `maniskill3_panda.yaml`            | franka_panda   | maniskill3 — Panda tabletop, 7 tasks (SAPIEN, GPU)                      |  7 | 100 | `is_success` | 50–200 | 700 |
 | `simpler_env_widowx.yaml`          | widowx         | simpler_env / Bridge V2 (SAPIEN via ManiSkill)                          |  4 |  5 | `success`    |  60 |  20 |
 | `robocasa_pnp.yaml`                | panda_mobile   | robocasa/PickPlaceCounterToCabinet (MuJoCo via robosuite + kitchen fork) |  1 | 10 | `is_success` | 500 |  10 |
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
@@ -66,9 +65,12 @@ Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_S
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
 the others. `metaworld_mt50` runs with 5 episodes per scene by default to keep
 the wall-clock under ~4 h on a single GPU; bump per-scene `n_episodes` together
-for a paper-equivalent reproduction. `maniskill3_pick_place` has two scenes with
-different `max_steps` per task (PickCube-v1=100, StackCube-v1=200) — the suite
+for a paper-equivalent reproduction. `maniskill3_panda` has per-task `max_steps`
+that differ across its 7 scenes (PickCube-v1=50 … PlugCharger-v1=200) — the suite
 aggregator uses `max(scene.task.max_steps)` for the suite-level bound (Task 10).
+It is OpenRAL-curated (ManiSkill3 has no single canonical suite); `--rskill`
+auto-filters to the tasks a policy declares, so it stays runnable as task-matched
+MS3 Panda policies land.
 
 The ManiSkill/SimplerEnv SAPIEN rows (`maniskill3_*` and `simpler_env_*`) require
 opt-in extras (ADR-0010). Without `uv sync --group maniskill3` (or `simpler-env`)

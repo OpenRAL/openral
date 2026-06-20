@@ -170,4 +170,9 @@ action_contract:
   dim: 8
 
 benchmarks:
-  maniskill3_franka_pick_cube: 0.1
+  # PickCube-v1 via the curated franka_panda suite `maniskill3_panda`
+  # (auto-filters to this rSkill's task). 0.0 = the shipped LiftCube
+  # checkpoint cannot satisfy PickCube's goal-placement success (task
+  # mismatch — see the MS3 LiftCube-gap note above); replace with a
+  # PickCube-trained policy to lift this.
+  maniskill3_panda: 0.0

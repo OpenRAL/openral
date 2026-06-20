@@ -8,10 +8,14 @@ via ``openral_sim.cli`` → ``SimRunner`` → ``backends`` registration —
 stays free of mujoco / robosuite. The regression guard lives in
 ``tests/unit/test_cli_sim_run.py::test_bh_cli_import_is_light``.
 
-Drive via::
+Load via::
 
-    openral sim run --config scenes/sim/openarm_tabletop.yaml \
-                    --rskill pi05-openarm-vision-nf4
+    openral sim run --config scenes/sim/openarm_tabletop.yaml --rskill <vla>
+
+No in-tree VLA currently targets OpenArm (the ``pi05-openarm-vision-nf4``
+policy was removed — real-trained checkpoint, sim-to-real gap, no verified
+grasp); the scene is retained for the dataset bridge and as the embodiment
+fixture for a future task-matched OpenArm policy.
 
 See :mod:`._assets` for the MJCF composer and :mod:`.env` for the
 :class:`SimRollout` implementation.

@@ -420,9 +420,9 @@ sim:
 # SceneEnvironment YAML does not override ``scene.backend_options.top_camera_*``.
 # The placement matches the ``mddoai/openarm_2026-05-14_clean`` dataset
 # POV (camera between the two robot bases, looking forward + down at the
-# tabletop) so the OpenRAL/rskill-pi05-openarm-vision-nf4 rollout
-# inherits its training-distribution viewpoint by default. Backend
-# overrides still win — this block is the *default*.
+# tabletop) so an OpenArm vision policy trained on that dataset inherits
+# its training-distribution viewpoint by default. Backend overrides still
+# win — this block is the *default*.
 scene_defaults:
   top_camera:
     pos: [0.20, 0.0, 0.95]

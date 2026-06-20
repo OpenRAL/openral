@@ -37,7 +37,6 @@ _SWEPT_SKILLS: dict[str, str] = {
     "xvla-libero": "franka_panda",
     "molmoact2-libero-nf4": "franka_panda",
     "rldx1-ft-libero-nf4": "franka_panda",
-    "rldx1-pt-nf4": "franka_panda",
 }
 
 # Already declared before this sweep — the reference manifest.
