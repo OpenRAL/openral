@@ -1,6 +1,7 @@
-# MetaWorld push-v3 — Sawyer fixed.
-# Run: openral benchmark --config scenes/benchmark/metaworld_push.yaml \
-#                        --rskill rskill://rskills/smolvla-metaworld
+# MetaWorld push-v3 — Sawyer fixed. Website-demo single scene for the
+# MT10/MT50 expansion (the full sweeps live in benchmarks/metaworld_mt{10,50}.yaml).
+# Run: openral benchmark scene --config scenes/benchmark/metaworld_push.yaml \
+#                        --rskill rskills/smolvla-metaworld
 # Setup: uv run pip install metaworld==3.0.0 --no-deps; note MUJOCO_GL=egl.
 
 robot_id: sawyer
@@ -8,17 +9,25 @@ robot_id: sawyer
 scene:
   id: metaworld
   backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1"]
 
 task:
   id: metaworld/push-v3
   scene_id: metaworld
   instruction: "push the puck to the goal"
-  success_key: is_success
-  max_steps: 500
+  success_key: success      # metaworld reports info["success"], not info["is_success"]
+  max_steps: 500            # MetaWorld max_path_length (official fixed horizon)
 
-n_episodes: 200
+n_episodes: 50              # matches the metaworld MT10/MT50 per-task budget convention
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/1910.10897"
-  honest_scope: "push-v3 task only. Full MT50 requires iterating over all 50 tasks."
+  honest_scope: >
+    MetaWorld push-v3, solved by the multi-task lerobot/smolvla_metaworld
+    checkpoint (trained on metaworld_mt50; push-v3 success_rate 1.0 at
+    seed 0 in eval/metaworld_mt50.json). One of the 10 tasks in
+    benchmarks/metaworld_mt10.yaml; this single scene is a website-demo
+    entry. 500-step fixed horizon.
