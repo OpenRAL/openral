@@ -87,6 +87,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0041](0041-scene-three-tier-hierarchy.md) | Scene three-tier hierarchy (Deploy/Sim/Benchmark Scene) | Accepted | item-10 superseded by 0042 |
 | [0042](0042-drop-benchmarkspec.md) | Drop `BenchmarkSpec` for a bare `list[BenchmarkScene]` | Accepted | supersedes 0041 item 10 |
 | [0045](0045-isaac-sim-backend-integration.md) | NVIDIA Isaac Sim as an optional sim backend | Proposed | refs 0034 idle-step amendment |
+| [0061](0061-robotwin-dual-arm-benchmark-backend.md) | RoboTwin 2.0 dual-arm benchmark backend (SAPIEN, out-of-process sidecar) | Accepted | reuses 0045 sidecar; refs 0060 gate, 0009 producers |
 
 ## F · Deploy path & runtime
 

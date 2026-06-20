@@ -128,6 +128,11 @@ _KNOWN_DEFERRED: dict[str, str] = {
         "MetaWorld 3-D EE delta+gripper needs ADR-0036 follow-up "
         "DELTA_EE_3D_PLUS_GRIPPER; tracked separately"
     ),
+    "OpenRAL/rskill-3d-diffuser-actor-rlbench": (
+        "3D Diffuser Actor emits end-effector cartesian_pose trajectories; the "
+        "deploy-sim OSC path executes delta/joint modes only (ADR-0036). RLBench "
+        "runs it via its own Mover, not the deploy-sim OSC path; tracked separately"
+    ),
 }
 
 

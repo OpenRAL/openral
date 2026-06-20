@@ -7,8 +7,12 @@
 # from the same paper. Both skills share the ALOHA 14-DoF action space and
 # the single 480x640 top camera contract.
 #
-# LEGACY PROCESSOR PATH: same shape as rskills/act-aloha — norm stats live
-# inside model.safetensors; the schema processors block is omitted.
+# LEGACY PROCESSOR PATH: same shape as rskills/act-aloha — the mean/std
+# norm stats live inside model.safetensors and the schema processors block
+# is omitted. Modern lerobot ACTPolicy no longer hosts normalize_inputs/
+# unnormalize_outputs modules, so it drops those keys on load ("Unexpected
+# key(s)") — the ACT adapter re-reads them from the safetensors and applies
+# them manually. Without that the policy runs unnormalised and flails.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -69,11 +73,14 @@ source_repo: "hf://lerobot/act_aloha_sim_insertion_human"
 
 description: >
   ACT (~52M params, chunk=100) finetuned on the ALOHA bimanual
-  sim-insertion demonstration set. Like the transfer-cube sibling, the
-  published checkpoint predates lerobot's PolicyProcessorPipeline
-  migration and ships without normalisation buffers. Insertion is the
-  harder ALOHA task in the original paper; the 0.20 success rate
-  reflects that.
+  sim-insertion demonstration set. Insertion is the harder ALOHA task
+  in the original paper; the 0.20 success rate reflects that. See the
+  norm-stats note above re: the legacy safetensors-resident buffers.
+
+# Task-data gate (ADR-0060): trained + validated on the ALOHA sim
+# insertion task, so the benchmark runner accepts the aloha_insertion
+# scene and refuses task-mismatched scenes with ROSCapabilityMismatch.
+evaluated_tasks: ["aloha_insertion"]
 
 # ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
 # palette so it can pick this skill by what it does (action verb +

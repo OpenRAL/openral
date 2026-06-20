@@ -3077,6 +3077,10 @@ qwen-vlm = [
     { name = "msgpack" },
     { name = "pyzmq" },
 ]
+rlbench = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 rldx = [
     { name = "msgpack" },
     { name = "pyzmq" },
@@ -3090,6 +3094,10 @@ robocasa = [
     { name = "transformers" },
 ]
 robometer = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
+robotwin = [
     { name = "msgpack" },
     { name = "pyzmq" },
 ]
@@ -3202,6 +3210,10 @@ qwen-vlm = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
 ]
+rlbench = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
 rldx = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
@@ -3215,6 +3227,10 @@ robocasa = [
     { name = "transformers", specifier = "==5.3.0" },
 ]
 robometer = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
+robotwin = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
 ]

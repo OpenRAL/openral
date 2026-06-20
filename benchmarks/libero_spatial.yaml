@@ -4,9 +4,9 @@
 # (PR D of ADR-0009); writes a RSkillEvalResult JSON to
 # rskills/<vla>/eval/libero_spatial.json with reproduced_locally=true.
 #
-# Protocol mirrors the published LIBERO protocol used by SmolVLA / pi0.5 /
-# xVLA in their papers: 10 tasks, 10 episodes per task, success_key
-# is_success, max_steps 280 (per lerobot src/lerobot/envs/libero.py).
+# Protocol mirrors the official LIBERO/OpenVLA eval (run_libero_eval):
+# 10 tasks, 50 episodes per task, success_key is_success, max_steps 220
+# for the Spatial suite (object 280 / goal 300 / long 520).
 #
 # Render resolution is 256x256 — matches the canonical lerobot LIBERO
 # pipeline the smolvla-libero / pi05-libero-nf4 rSkills were finetuned
@@ -40,18 +40,18 @@
     id: libero_spatial/0  # placeholder; overridden by index below
     scene_id: libero_spatial
     instruction: ""
-    max_steps: 280
+    max_steps: 220
     success_key: is_success
   robot_id: franka_panda
-  n_episodes: 10
+  n_episodes: 50
   seed: 0
   metadata: &meta_block
     paper: "https://arxiv.org/abs/2306.03310"
     display_name: "LIBERO-Spatial"
     simulator: "LIBERO (MuJoCo)"
     honest_scope: >
-      10 episodes per task across all 10 LIBERO-Spatial tasks (100 rollouts
-      total). Matches the SmolVLA / pi0.5 / xVLA published protocols.
+      Official LIBERO/OpenVLA protocol: 50 episodes per task across all 10
+      LIBERO-Spatial tasks (500 rollouts total), max 220 steps/episode.
 - <<: *libero_scene
   task:
     <<: *task_proto

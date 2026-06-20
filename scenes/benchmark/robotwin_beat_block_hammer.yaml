@@ -1,0 +1,33 @@
+# RoboTwin 2.0 — beat_block_hammer (tool use), aloha-agilex, SAPIEN.
+# Run: openral benchmark scene --config scenes/benchmark/robotwin_beat_block_hammer.yaml \
+#                             --rskill rskills/smolvla-robotwin
+# Setup: provision the SAPIEN+RoboTwin sidecar venv (ADR-0061).
+
+robot_id: aloha_agilex
+
+scene:
+  id: robotwin
+  backend: sapien
+  observation_height: 256
+  observation_width: 256
+  cameras: ["camera1", "camera2", "camera3"]
+
+task:
+  id: robotwin/beat_block_hammer
+  scene_id: robotwin
+  instruction: "pick up the hammer and beat the block"
+  success_key: is_success
+  max_steps: 300
+
+n_episodes: 100
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2506.18088"
+  display_name: "RoboTwin 2.0 — Beat Block with Hammer"
+  simulator: "RoboTwin 2.0 (SAPIEN), aloha-agilex"
+  honest_scope: >
+    beat_block_hammer (RoboTwin 2.0, Chen et al. 2506.18088). Tool-use task
+    on the aloha-agilex embodiment (the canonical RoboTwin collection
+    example). Official protocol: 100 episodes/task, sim built-in success,
+    episode_length=300. Easy (demo_clean) setting.

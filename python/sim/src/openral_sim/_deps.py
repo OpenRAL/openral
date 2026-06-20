@@ -911,14 +911,19 @@ def _libero_plan() -> BackendInstallPlan:
     # up a flag set the C extension rejects. Pinning CC=gcc mirrors
     # the existing install hint and the bootstrap script.
     cc = shutil.which("gcc") or "/usr/bin/gcc"
-    # hf-libero==0.1.3 ships with distutils-installed metadata, which uv
-    # refuses to uninstall on a subsequent `uv sync` of any other group
-    # (`error: Unable to uninstall hf-libero: distutils-installed
-    # distributions do not include the metadata required to uninstall
-    # safely`). Forcing a reinstall on this single package gives uv a
-    # clean metadata stub it CAN later uninstall, so the next
-    # cross-backend sync (--group robocasa, --group metaworld, etc.)
-    # does not wedge here. Idempotent and cheap.
+    # hf-libero==0.1.3 ships distutils-installed metadata with no RECORD.
+    # We deliberately do NOT pass `--reinstall-package hf-libero`: that
+    # forces uv to *uninstall* hf-libero first, hitting the very barrier
+    # it was meant to dodge (`error: Unable to uninstall hf-libero==0.1.3:
+    # distutils-installed distributions do not include the metadata
+    # required to uninstall safely`) and wedging the whole libero install
+    # — exactly what happens when swapping in from a robocasa (robosuite
+    # 1.5) venv. A plain `--inexact` sync installs/overwrites hf-libero
+    # with proper dist-info when it's absent and leaves it untouched when
+    # already satisfied; it never forces an uninstall, so the barrier
+    # never fires. hf-libero is pure-python — robosuite owns the C
+    # extensions and is version-swapped separately — so no forced rebuild
+    # is needed. --inexact preserves other backend groups in the venv.
     libero_args = [
         uv,
         "sync",
@@ -926,8 +931,6 @@ def _libero_plan() -> BackendInstallPlan:
         "--group",
         "libero",
         "--inexact",
-        "--reinstall-package",
-        "hf-libero",
     ]
     return BackendInstallPlan(
         backend_id="libero",
@@ -941,19 +944,16 @@ def _libero_plan() -> BackendInstallPlan:
         steps=(
             InstallStep(
                 description=(
-                    "CC=gcc uv sync --group libero --inexact --reinstall-package hf-libero "
-                    "(compiles robosuite==1.4 C extensions; --inexact preserves "
-                    "other backend groups already in the venv; --reinstall-package "
-                    "hf-libero clears its distutils-installed-metadata uninstall barrier)"
+                    "CC=gcc uv sync --group libero --inexact (compiles robosuite==1.4 "
+                    "C extensions; --inexact preserves other backend groups already in "
+                    "the venv and avoids the hf-libero distutils-uninstall barrier that "
+                    "--reinstall-package hf-libero would trigger)"
                 ),
                 argv=libero_args,
                 env={"CC": cc},
             ),
         ),
-        manual_hint=(
-            f"CC={cc} just sync --all-packages --group libero --inexact "
-            "--reinstall-package hf-libero"
-        ),
+        manual_hint=(f"CC={cc} just sync --all-packages --group libero --inexact"),
     )
 
 
@@ -1057,6 +1057,86 @@ def _isaac_client_plan() -> BackendInstallPlan:
             ),
         ),
         manual_hint="just sync --all-packages --group isaacsim --inexact",
+    )
+
+
+def _has_robotwin_client() -> bool:
+    """RoboTwin sidecar client side needs pyzmq + msgpack on the openral venv.
+
+    The heavy SAPIEN + RoboTwin install lives in a separate py3.10 sidecar venv
+    (ADR-0061), provisioned out-of-band; this probe only covers the openral-side
+    wire, same shape as :func:`_has_isaac_client`.
+    """
+    return _has_module("zmq") and _has_module("msgpack")
+
+
+def _has_rlbench_client() -> bool:
+    """RLBench sidecar client side needs pyzmq + msgpack on the openral venv.
+
+    CoppeliaSim/PyRep + the peract RLBench fork live in a separate py3.10 sidecar
+    venv (ADR-0061), provisioned out-of-band (CoppeliaSim is proprietary and never
+    vendored); this probe only covers the openral-side wire, same shape as
+    :func:`_has_isaac_client`.
+    """
+    return _has_module("zmq") and _has_module("msgpack")
+
+
+def _robotwin_client_plan() -> BackendInstallPlan:
+    uv = _uv()
+    return BackendInstallPlan(
+        backend_id="robotwin_client",
+        display_name="RoboTwin adapter wire (pyzmq + msgpack on the openral venv)",
+        license_note=(
+            "Pulls pyzmq (LGPL+ZeroMQ exception → effectively permissive) and "
+            "msgpack (Apache-2.0). The SAPIEN + RoboTwin 2.0 sidecar itself is an "
+            "externally-provisioned py3.10 venv (SAPIEN/RoboTwin/CuRobo are large + "
+            "CUDA-12.1-pinned; ADR-0061 / CLAUDE.md §1.9) and is NOT installed by "
+            "this plan. RoboTwin is MIT-licensed."
+        ),
+        probe=_has_robotwin_client,
+        steps=(
+            InstallStep(
+                description=(
+                    "uv sync --group robotwin --inexact (adds pyzmq + msgpack to the "
+                    "openral venv; --inexact keeps other backend deps in place)"
+                ),
+                argv=[
+                    uv,
+                    "sync",
+                    "--all-packages",
+                    "--group",
+                    "robotwin",
+                    "--inexact",
+                ],
+            ),
+        ),
+        manual_hint="just sync --all-packages --group robotwin --inexact",
+    )
+
+
+def _rlbench_client_plan() -> BackendInstallPlan:
+    uv = _uv()
+    return BackendInstallPlan(
+        backend_id="rlbench_client",
+        display_name="RLBench adapter wire (pyzmq + msgpack on the openral venv)",
+        license_note=(
+            "Pulls pyzmq (LGPL+ZeroMQ exception → effectively permissive) and "
+            "msgpack (Apache-2.0). The CoppeliaSim/PyRep + peract-RLBench sidecar "
+            "(plus the 3D Diffuser Actor checkpoint) is an externally-provisioned "
+            "py3.10 venv — CoppeliaSim is proprietary, free-EDU, NEVER vendored "
+            "(ADR-0061 / CLAUDE.md §1.9) — and is NOT installed by this plan."
+        ),
+        probe=_has_rlbench_client,
+        steps=(
+            InstallStep(
+                description=(
+                    "uv sync --group rlbench --inexact (adds pyzmq + msgpack to the "
+                    "openral venv; --inexact keeps other backend deps in place)"
+                ),
+                argv=[uv, "sync", "--all-packages", "--group", "rlbench", "--inexact"],
+            ),
+        ),
+        manual_hint="just sync --all-packages --group rlbench --inexact",
     )
 
 
@@ -1409,6 +1489,8 @@ _PLANS: dict[str, Callable[[], BackendInstallPlan]] = {
     "rldx_client": _rldx_client_plan,
     "rldx_sidecar_setup": _rldx_sidecar_setup_plan,
     "isaac_client": _isaac_client_plan,
+    "rlbench_client": _rlbench_client_plan,
+    "robotwin_client": _robotwin_client_plan,
 }
 
 

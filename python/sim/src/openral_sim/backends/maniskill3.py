@@ -17,13 +17,16 @@ cross-field validation to succeed.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
@@ -50,6 +53,92 @@ def _parse_task_id(task_id: str) -> str:
     if len(parts) != expected_parts or parts[0] != _MANISKILL3_SCENE_ID:
         raise ROSConfigError(f"maniskill3 task id must be 'maniskill3/<env_id>', got {task_id!r}")
     return parts[1]
+
+
+def _reconcile_robot_uids(env_id: str, robot_uids: str) -> None:
+    """Validate ``robot_uids`` against a ManiSkill3 task's ``SUPPORTED_ROBOTS``.
+
+    MS3's per-task ``SUPPORTED_ROBOTS`` lists *base* agent uids only, so a
+    registered camera-variant subclass (e.g. ``panda_wristcam``, a ``Panda``
+    that only adds a ``hand_camera``) trips a false "not in the task's list of
+    supported robots" warning even though it is genuinely usable. We walk the
+    requested agent's MRO: if any base uid is supported, the variant is
+    accepted; otherwise raise a typed :class:`ROSCapabilityMismatch` at the
+    scene boundary instead of MS3's vague warning + downstream crash.
+
+    Args:
+        env_id: The bare ManiSkill3 env id (e.g. ``"PickCube-v1"``).
+        robot_uids: The agent uid requested via
+            ``scene.backend_options.robot_uids``.
+
+    Raises:
+        ROSCapabilityMismatch: ``robot_uids`` is neither a supported base
+            robot nor a registered subclass of one for ``env_id``.
+    """
+    from mani_skill.agents.registration import (  # type: ignore[import-untyped,unused-ignore]  # reason: opt-in dep, no py.typed
+        REGISTERED_AGENTS,
+    )
+    from mani_skill.utils.registration import (  # type: ignore[import-untyped,unused-ignore]  # reason: opt-in dep, no py.typed
+        REGISTERED_ENVS,
+    )
+
+    env_spec = REGISTERED_ENVS.get(env_id)
+    if env_spec is None:
+        # Unknown env id — let gym.make raise its own (clearer) error.
+        return
+    supported = getattr(env_spec.cls, "SUPPORTED_ROBOTS", None)
+    if not supported:
+        # Task imposes no allowlist — any robot is acceptable.
+        return
+    # Entries may be tuples (multi-agent tasks); flatten to a uid set.
+    supported_uids: set[str] = set()
+    for entry in supported:
+        if isinstance(entry, (list, tuple)):
+            supported_uids.update(entry)
+        else:
+            supported_uids.add(entry)
+    if robot_uids in supported_uids:
+        return
+    agent_spec = REGISTERED_AGENTS.get(robot_uids)
+    if agent_spec is not None:
+        for base in agent_spec.agent_cls.__mro__:
+            if getattr(base, "uid", None) in supported_uids:
+                # Registered camera-variant of a supported base — usable.
+                return
+    raise ROSCapabilityMismatch(
+        f"ManiSkill3 task {env_id!r} does not support robot_uids={robot_uids!r}. "
+        f"Supported base robots: {sorted(supported_uids)}. Set "
+        "scene.backend_options.robot_uids to one of these, or to a registered "
+        "camera-variant subclass of one (e.g. 'panda_wristcam' for 'panda')."
+    )
+
+
+_UNSUPPORTED_ROBOT_WARNING = "not in the task's list of supported robots"
+
+
+class _DropUnsupportedRobotWarning(logging.Filter):
+    """Drops MS3's false "unsupported robot" warning for validated variants."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _UNSUPPORTED_ROBOT_WARNING not in record.getMessage()
+
+
+@contextlib.contextmanager
+def _suppress_unsupported_robot_warning() -> Iterator[None]:
+    """Silence MS3's false "not in the task's list of supported robots" warning.
+
+    Used around ``gym.make`` *after* :func:`_reconcile_robot_uids` has already
+    validated the requested robot (so the warning is provably a false positive
+    about a registered camera-variant). Only that one message is dropped; every
+    other ``mani_skill`` log record passes through untouched.
+    """
+    logger = logging.getLogger("mani_skill")
+    filt = _DropUnsupportedRobotWarning()
+    logger.addFilter(filt)
+    try:
+        yield
+    finally:
+        logger.removeFilter(filt)
 
 
 @dataclass
@@ -295,8 +384,13 @@ def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
     }
     robot_uids = env_cfg.scene.backend_options.get("robot_uids")
     if robot_uids is not None:
+        # Reconcile against the task's SUPPORTED_ROBOTS: accept registered
+        # camera-variants of a supported base (silencing MS3's false warning),
+        # raise ROSCapabilityMismatch for genuinely-unsupported robots.
+        _reconcile_robot_uids(env_id, str(robot_uids))
         make_kwargs["robot_uids"] = robot_uids
-    env = gym.make(env_id, **make_kwargs)
+    with _suppress_unsupported_robot_warning():
+        env = gym.make(env_id, **make_kwargs)
     return _ManiSkill3Sim(
         scene=env_cfg.scene,
         task=env_cfg.task,

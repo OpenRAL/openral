@@ -18,6 +18,16 @@
 
 </div>
 
+<div align="center">
+
+### See it run
+
+![A randomized grid of 24 real OpenRAL runs across benchmarks, simulation and on-hardware deployment](https://huggingface.co/datasets/OpenRAL/website-media/resolve/main/readme/showcase-collage.gif)
+
+<sub>A randomized grid of real eval runs — benchmarks, simulation, and on-hardware deployment. Watch the full scored showcase (SUCCESS / FAIL, per rSkill) at <a href="https://openral.com/#showcase">openral.com</a>.</sub>
+
+</div>
+
 ---
 
 ## What is OpenRAL?

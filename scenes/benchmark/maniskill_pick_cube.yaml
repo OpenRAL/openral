@@ -21,11 +21,13 @@ task:
   scene_id: maniskill3
   instruction: "pick up the cube"
   success_key: is_success
-  max_steps: 200             # ManiSkill3 official default for PickCube-v1
+  max_steps: 50              # ManiSkill3 official max_episode_steps for PickCube-v1
 
-n_episodes: 500
+n_episodes: 100            # ManiSkill3 standard eval (>=100 episodes)
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/2410.00425"
-  honest_scope: "PickCube-v1 single episode. ManiSkill3 evaluates 100 episodes minimum."
+  honest_scope: >
+    PickCube-v1 (ManiSkill3, Mu et al. 2410.00425). Official env
+    max_episode_steps=50; standard eval is >=100 episodes.

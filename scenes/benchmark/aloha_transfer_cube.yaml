@@ -18,13 +18,15 @@ task:
   scene_id: aloha_transfer_cube
   instruction: "transfer the cube"
   success_key: is_success
-  max_steps: 500         # ACT paper eval budget
+  max_steps: 400         # ACT paper sim episode_len (Zhao et al. SIM_TASK_CONFIGS)
 
-n_episodes: 200
+n_episodes: 50           # ACT paper eval count
 seed: 0
 
 metadata:
   paper: "https://arxiv.org/abs/2304.13705"
   honest_scope: >
-    Single task (AlohaTransferCube-v0). ACT paper reports 90%+ over 50 episodes.
-    n_episodes: 200 for statistical reliability.
+    Single task (AlohaTransferCube-v0). Official ACT sim protocol:
+    episode_len=400 over 50 eval episodes (gym-aloha's registration
+    TimeLimit default is 300; we honour the paper's 400). ACT paper
+    reports 90%+ success on cube transfer.

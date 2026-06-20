@@ -1,0 +1,61 @@
+# ManiSkill3 Panda tabletop benchmark suite — OpenRAL-curated.
+#
+# ManiSkill3 has no single canonical task suite (74 heterogeneous envs), so
+# OpenRAL curates one per embodiment. This is the Franka-Panda tabletop set;
+# SO-100 / WidowX variants (PickCubeSO100-v1, SO100GraspCube-v1,
+# PickCubeWidowXAI-v1) belong in sibling per-embodiment suites.
+#
+# Run with `openral benchmark run --suite maniskill3_panda --rskill <x>`: the
+# runner auto-filters to the tasks the rSkill's evaluated_tasks cover (skips
+# the rest with a logged summary) and `--task maniskill3/<Env>` runs one.
+#
+# Shape (ADR-0042): bare list of BenchmarkScenes; suite id = filename stem.
+# The shared scene/robot/episode/seed/metadata fields come from the
+# `*ms3_scene` anchor; each entry overrides only the task (id + per-env
+# official max_steps + instruction). max_steps is each env's official
+# `max_episode_steps` from the MS3 registry (mani_skill==3.0.1).
+#
+# control_mode / robot_uids are policy-dependent placeholders (pd_joint_pos
+# 8-D + panda_wristcam); override per rSkill. This suite is scaffolding until
+# task-matched MS3 Panda policies exist (declaring
+# evaluated_tasks=["maniskill3/<Env>"]).
+
+- &ms3_scene
+  scene: &scene_block
+    id: maniskill3
+    backend: mujoco
+    observation_height: 256
+    observation_width: 256
+    cameras: ["camera1", "camera2"]
+    backend_options:
+      control_mode: "pd_joint_pos"
+      robot_uids: "panda_wristcam"
+  task: &task_proto
+    id: maniskill3/PickCube-v1
+    scene_id: maniskill3
+    instruction: "pick up the cube"
+    max_steps: 50
+    success_key: is_success
+  robot_id: franka_panda
+  n_episodes: 100
+  seed: 0
+  metadata: &meta_block
+    paper: "https://arxiv.org/abs/2410.00425"
+    display_name: "ManiSkill3 — Panda tabletop"
+    simulator: "ManiSkill3 (SAPIEN)"
+    honest_scope: >
+      OpenRAL-curated Panda tabletop set. Per-env official max_episode_steps;
+      100 rollouts per task (MS3 standard >=100). Scaffolding suite: runnable
+      once task-matched MS3 Panda rSkills exist.
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/PushCube-v1, instruction: "push the cube to the target", max_steps: 50 }
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/PullCube-v1, instruction: "pull the cube to the target", max_steps: 50 }
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/StackCube-v1, instruction: "stack the red cube on the green cube", max_steps: 50 }
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/PegInsertionSide-v1, instruction: "insert the peg into the hole", max_steps: 100 }
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/PlugCharger-v1, instruction: "plug the charger into the receptacle", max_steps: 200 }
+- <<: *ms3_scene
+  task: { <<: *task_proto, id: maniskill3/PickSingleYCB-v1, instruction: "pick up the object", max_steps: 50 }

@@ -1,0 +1,23 @@
+# SimplerEnv WidowX — single-run carrot-on-plate scene.
+# Run: openral sim run --config scenes/sim/widowx_carrot_on_plate.yaml \
+#                       --rskill rskills/openvla-oft-simpler-widowx-nf4
+# Setup: use a dedicated OpenVLA runtime (transformers<5) plus SimplerEnv.
+
+robot_id: widowx
+
+scene:
+  id: simpler_env
+  backend: mujoco            # SAPIEN/ManiSkill3 under the hood
+  observation_height: 480
+  observation_width: 640
+  cameras: ["camera1"]
+
+task:
+  id: simpler_env/widowx_carrot_on_plate
+  scene_id: simpler_env
+  instruction: "put the carrot on the plate"
+  success_key: is_success
+  max_steps: 60
+
+n_episodes: 1
+seed: 0

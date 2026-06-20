@@ -24,6 +24,7 @@
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
 name: "OpenRAL/rskill-pi05-libero-nf4"
+evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # ADR-0060: trained on the full LIBERO set (all 4 suites, 40 tasks)
 version: "0.1.0"
 license: "permissive_research"   # non-standard; weights are NOT apache-2.0
 role: "s1"

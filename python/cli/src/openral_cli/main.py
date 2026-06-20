@@ -2138,6 +2138,16 @@ def benchmark_run(
         "--benchmarks-dir",
         help="Search directory for built-in benchmark suite YAMLs.",
     ),
+    task: str | None = typer.Option(
+        None,
+        "--task",
+        help=(
+            "Run only this single task id from the suite (e.g. "
+            "'libero_spatial/3' or 'maniskill3/PushCube-v1'). Omit to run "
+            "every task the rSkill supports (the suite is auto-filtered to "
+            "the rSkill's evaluated_tasks)."
+        ),
+    ),
     n_episodes: int | None = typer.Option(
         None,
         "--n-episodes",
@@ -2198,6 +2208,21 @@ def benchmark_run(
     """
     scenes, suite_id = _resolve_benchmark_suite(suite, benchmarks_dir)
     vla_spec = _parse_rskill_cli_arg(rskill)
+
+    # --task selects a single explicit task from the suite. The rSkill's
+    # evaluated_tasks auto-filter (in run_benchmark) still applies, so an
+    # explicitly-picked task the rSkill was not trained for is rejected — same
+    # contract as `openral benchmark scene`.
+    if task is not None:
+        matched = [s for s in scenes if s.task.id == task]
+        if not matched:
+            available = [s.task.id for s in scenes]
+            console.print(
+                f"[red]--task {task!r} is not in suite {suite_id!r}.[/red] "
+                f"Available tasks: {available}"
+            )
+            raise typer.Exit(1)
+        scenes = matched
 
     # Apply --n-episodes override to every scene before dry-run or real run.
     if n_episodes is not None:
@@ -2343,7 +2368,11 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
-    return VLASpec(id=manifest.model_family, weights_uri=uri)
+    return VLASpec(
+        id=manifest.model_family,
+        weights_uri=uri,
+        extra=dict(manifest.policy_extras),
+    )
 
 
 def _default_benchmark_out_path(vla_spec: VLASpec, suite_id: str) -> Path:
@@ -2409,6 +2438,28 @@ def benchmark_scene(
         None,
         "--save-dir",
         help="Optional adapter-side artefact directory (videos, traces).",
+    ),
+    save_video: Path | None = typer.Option(
+        None,
+        "--save-video",
+        help=(
+            "Write a clean single-view world MP4 per episode to this "
+            "directory, named <task>_<rskill>_<success|fail>.mp4, plus a "
+            "videos.json manifest — for website hero clips (overlays are "
+            "rendered by the page, not burned into pixels). The task slug "
+            "keeps benchmark scenes sharing one backend from overwriting each "
+            "other. Enables per-step frame capture. Pair with --n-episodes 1 "
+            "for a single demo clip."
+        ),
+    ),
+    video_size: int = typer.Option(
+        1024,
+        "--video-size",
+        help=(
+            "Square edge (px) for --save-video output. Frames are "
+            "center-cropped to a square and resized to this size. Source "
+            "sharpness is bounded by the scene's native render resolution."
+        ),
     ),
     n_episodes: int | None = typer.Option(
         None,
@@ -2522,6 +2573,19 @@ def benchmark_scene(
             save_dir=str(save_dir) if save_dir is not None else None,
             config_path=str(config),
             view=view,
+            record_video=save_video is not None,
+        )
+
+    if save_video is not None:
+        from openral_sim._website_video import write_world_videos
+
+        write_world_videos(
+            episodes,
+            save_video,
+            scene=scene.task.id,
+            rskill=Path(rskill).name,
+            section=Path(config).parent.name,
+            size=video_size,
         )
 
     avg = result.results.get("avg_success_rate", 0.0)

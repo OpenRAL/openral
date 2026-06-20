@@ -136,6 +136,7 @@ supplied at the CLI via `--rskill <name>`.
 | MetaWorld           | `metaworld` (passes `<env_id>` through to `gym.make`)                                                                                                                                                                                                                                       | `python/sim/.../backends/metaworld.py`    |
 | gym-aloha           | `aloha_transfer_cube`, `aloha_insertion`                                                                                                                                                                                                                                                    | `python/sim/.../backends/aloha.py`        |
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
+| RLBench (CoppeliaSim/PyRep) | `rlbench` (scene-fixed Franka Panda; task selected by `backend_options.rlbench_task`) | `python/sim/.../backends/rlbench.py` |
 | RoboCasa (MuJoCo)   | `robocasa` (procedural) + ~19 curated kitchen tasks (e.g. `robocasa/PickPlaceCounterToCabinet`) + 24 GR1 tabletop tasks (e.g. `robocasa/gr1/PnPCupToDrawerClose`)                                                                                                                            | `python/sim/.../backends/robocasa.py`     |
 | ManiSkill3 (SAPIEN) | `maniskill3` (free-axis; passes `<env_id>` to `gym.make`)                                                                                                                                                                                                                                   | `python/sim/.../backends/maniskill3.py`   |
 | SimplerEnv (SAPIEN) | `simpler_env` (Bridge V2 digital twin: 4 WidowX tasks on MS3 v3.0.x)                                                                                                                                                                                                                        | `python/sim/.../backends/simpler_env.py`  |
@@ -156,6 +157,7 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 | `metaworld`                                      | `sawyer`            |
 | `pusht`                                          | `pusht_2d`          |
 | `aloha_transfer_cube` / `aloha_insertion`        | `aloha_bimanual`    |
+| `rlbench`                                       | `franka_panda`      |
 | `so101_box`                                      | `so101_follower`    |
 | `robocasa/*` (kitchen)                           | `panda_mobile`      |
 | `robocasa/gr1/*` (humanoid tabletop)             | `gr1`               |
@@ -238,6 +240,7 @@ Per-adapter viewer support:
 | `so101_box`     | ✅                 | Direct MJCF compile.                                                                                   |
 | `tabletop_push` | ✅                 | Direct MJCF compile.                                                                                   |
 | `robocasa/*`    | ✅                 | robosuite physics handles.                                                                             |
+| `rlbench`       | ❌                 | CoppeliaSim/PyRep sidecar; `render()` returns the latest RGB frame for video capture, not MuJoCo handles. |
 | `pusht`         | ❌                 | gym-pusht is 2D; no MuJoCo. Runs offscreen even with default `--view`.                                 |
 | `maniskill3`    | ❌                 | SAPIEN backend; use `--view` with SAPIEN's own GUI window (separate from `mujoco.viewer`).             |
 | `simpler_env`   | ❌                 | Same — SAPIEN-backed.                                                                                  |

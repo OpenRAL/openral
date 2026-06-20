@@ -40,6 +40,43 @@ if TYPE_CHECKING:
 _LIBERO_SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
 
 
+def _load_manifest_for_spec(spec: Any) -> Any:
+    """Load the rSkill manifest from ``spec.weights_uri`` (bare rSkill reference).
+
+    Mirrors :func:`openral_sim.policies.act._load_manifest_for_spec`. Returns
+    ``None`` for explicit-scheme URIs (``hf://`` etc.) which carry no local
+    manifest, so a raw-repo VLASpec still works.
+    """
+    weights_uri = str(getattr(spec, "weights_uri", "") or "")
+    if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
+        return None
+    from openral_rskill.loader import load_rskill_manifest
+
+    return load_rskill_manifest(weights_uri)
+
+
+def _resolve_control_mode(env_cfg: SimEnvironment) -> str:
+    """Resolve the LIBERO OSC controller mode for this (scene, policy) pair.
+
+    Precedence (explicit beats implicit, CLAUDE.md §1.4):
+
+    1. ``scene.backend_options["control_mode"]`` — an explicit per-scene pin.
+    2. The policy manifest's ``sim_env_control_mode`` — lets an absolute-control
+       policy (xVLA) declare it needs ``"absolute"`` so it runs on the canonical
+       ``libero_spatial.yaml`` without a duplicate per-policy scene.
+    3. ``"relative"`` — LiberoEnv's OSC delta-EE default (SmolVLA / π0.5 / rldx1
+       / molmoact2 / GR00T).
+    """
+    explicit = env_cfg.scene.backend_options.get("control_mode")
+    if explicit is not None:
+        return str(explicit)
+    manifest = _load_manifest_for_spec(env_cfg.vla)
+    declared = getattr(manifest, "sim_env_control_mode", None) if manifest is not None else None
+    if declared:
+        return str(declared)
+    return "relative"
+
+
 def _parse_task_id(task_id: str, scene_id: str) -> int:
     """Parse ``"<suite>/<int>"`` and validate ``<suite> == scene_id``.
 
@@ -252,7 +289,10 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
     suite = _get_suite(env_cfg.scene.id)
     # ``control_mode`` is policy-dependent: SmolVLA / π0.5 emit deltas
     # (LiberoEnv default ``"relative"``) while xVLA emits absolute targets.
-    control_mode = str(env_cfg.scene.backend_options.get("control_mode", "relative"))
+    # Resolved from the scene pin, else the policy manifest's
+    # ``sim_env_control_mode``, else the relative default — so xVLA runs on the
+    # canonical libero_spatial.yaml without a per-policy scene variant.
+    control_mode = _resolve_control_mode(env_cfg)
     env = LiberoEnv(
         task_suite=suite,
         task_id=task_index,

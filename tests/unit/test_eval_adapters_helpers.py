@@ -164,6 +164,43 @@ class TestLiberoBuilder:
             libero_mod._build_libero_scene(env_cfg)
 
 
+class TestLiberoControlModeResolution:
+    """`_resolve_control_mode` picks scene pin > manifest > relative default."""
+
+    def _env(self, *, backend_options: dict[str, Any] | None, weights_uri: str) -> SimEnvironment:
+        return SimEnvironment(
+            robot_id="franka_panda",
+            scene=SceneSpec(
+                id="libero_spatial",
+                backend=PhysicsBackend.MUJOCO,
+                backend_options=backend_options or {},
+            ),
+            task=TaskSpec(
+                id="libero_spatial/0", scene_id="libero_spatial", instruction="", max_steps=220
+            ),
+            vla=VLASpec(id="x", weights_uri=weights_uri),
+        )
+
+    def test_scene_pin_wins(self) -> None:
+        env_cfg = self._env(
+            backend_options={"control_mode": "absolute"}, weights_uri="rskills/smolvla-libero"
+        )
+        assert libero_mod._resolve_control_mode(env_cfg) == "absolute"
+
+    def test_xvla_manifest_declares_absolute(self) -> None:
+        # No scene pin: xVLA's manifest sim_env_control_mode drives the env.
+        # Under the old (scene-only) behaviour this returned "relative" and the
+        # arm saturated static — the exact bug the deleted libero_spatial_xvla
+        # scene worked around.
+        env_cfg = self._env(backend_options=None, weights_uri="rskills/xvla-libero")
+        assert libero_mod._resolve_control_mode(env_cfg) == "absolute"
+
+    def test_delta_policy_defaults_relative(self) -> None:
+        # smolvla-libero declares no sim_env_control_mode → OSC delta default.
+        env_cfg = self._env(backend_options=None, weights_uri="rskills/smolvla-libero")
+        assert libero_mod._resolve_control_mode(env_cfg) == "relative"
+
+
 # ── metaworld helpers ────────────────────────────────────────────────────────
 
 

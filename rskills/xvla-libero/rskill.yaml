@@ -5,6 +5,7 @@
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
 name: "OpenRAL/rskill-xvla-libero"
+evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # ADR-0060: trained on the full LIBERO set (all 4 suites, 40 tasks)
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -37,6 +38,13 @@ actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
       mode: "absolute"
+
+# xVLA emits ABSOLUTE end-effector targets, so the LIBERO OSC controller must
+# run in absolute mode (the default "relative"/delta saturates the arm into a
+# static pose). This lets xVLA run on the canonical scenes/benchmark/
+# libero_spatial.yaml without a duplicate libero_spatial_xvla.yaml scene; the
+# LIBERO backend reads this when scene.backend_options pins no control_mode.
+sim_env_control_mode: "absolute"
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
