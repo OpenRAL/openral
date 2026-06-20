@@ -33,11 +33,18 @@
 # `task.max_steps` to MS3's `max_episode_steps` so the rollout isn't
 # silently truncated at MS3's default 50 steps.
 #
-# The upstream model repo doesn't ship `policy_*processor.json`. The
-# SmolVLA adapter (also this PR) detects that and rebuilds the
-# lerobot processors from `dataset_uri`'s `meta/episodes_stats.jsonl`
-# — same path applies to any community finetune uploaded without
-# processors.
+# The upstream model repo (Calvert0921/smolvla_franka_liftcube_1000)
+# ships only config.json + model.safetensors + train_config.json — no
+# `policy_*processor.json`. Rather than rely on the SmolVLA adapter's
+# dataset-stats fallback at every load (a 404 + recompute against
+# `dataset_uri`'s `meta/episodes_stats.jsonl`), the processor pair was
+# rebuilt once via `make_pre_post_processors(policy.config,
+# dataset_stats=...)` and uploaded to THIS rSkill's own HF repo
+# (OpenRAL/rskill-smolvla-maniskill-franka). The rebuilt normalizer
+# stats match the checkpoint's baked `normalize_inputs` /
+# `normalize_targets` buffers exactly, so the processors are faithful to
+# how the model was trained. The fallback path still exists for any
+# other community finetune uploaded without processors.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -87,13 +94,12 @@ weights_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 # Per-file URIs for the lerobot PolicyProcessorPipeline. The upstream
-# The upstream weights repo (Calvert0921/smolvla_franka_liftcube_1000) ships
-# only safetensors + config.json + train_config.json (no processor JSONs), so
-# the adapter previously fell back to rebuilding from dataset stats (correct
-# but logged a 404). We rebuilt the processor pair from the checkpoint's baked
-# normalization buffers (exact match, not approximate) and hosted them on the
-# OpenRAL-owned rskill repo. `materialize_processor_dir` auto-pulls the
-# `*_normalizer_processor.safetensors` siblings, so no 404 and no fallback.
+# weights repo ships no `policy_*processor.json`, so the pair (plus the
+# normalizer/unnormalizer `*.safetensors` state files referenced by the
+# JSON `steps`) was rebuilt from the checkpoint config + training-dataset
+# stats and uploaded to this rSkill's own HF repo. `materialize_processor_dir`
+# downloads exactly these files (and their `state_file` siblings) — no 404,
+# no dataset-stats recompute at load time.
 processors:
   preprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_preprocessor.json"
   postprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_postprocessor.json"
