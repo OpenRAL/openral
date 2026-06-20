@@ -88,6 +88,30 @@ def _build_or_skip(robot_id: str, **env_kwargs):
         raise
 
 
+def _build_yaml_or_skip(path: str):
+    """Build a rollout from a real SimScene YAML, preserving its backend options."""
+    from openral_core import SimEnvironment, SimScene, VLASpec
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    cfg = SimScene.from_yaml(path)
+    env = SimEnvironment(
+        robot_id=cfg.robot_id or "so101_follower",
+        scene=cfg.scene,
+        task=cfg.task,
+        vla=VLASpec(id="mock-noop", weights_uri="mock-noop", device="cpu"),
+        base_pose=cfg.base_pose,
+        seed=cfg.seed,
+        n_episodes=cfg.n_episodes,
+    )
+    try:
+        return cfg, SCENES.get(cfg.scene.id)(env)
+    except ROSConfigError as exc:
+        if "robot_descriptions" in str(exc) or "could not load" in str(exc):
+            pytest.skip(f"{cfg.robot_id} MJCF unavailable: {exc}")
+        raise
+
+
 def test_tabletop_push_registered_free_axis() -> None:
     """The scene is registered WITHOUT a fixed robot (it's a flag)."""
     from openral_sim import SCENES
@@ -339,6 +363,57 @@ def test_tabletop_push_random_spawn_varies_with_seed() -> None:
         poses[s] = (cube_xy, goal_xy)
         rollout.close()
     assert len({repr(v) for v in poses.values()}) == 3
+
+
+def test_tabletop_cube_push_yaml_places_workspace_on_initial_gripper_side() -> None:
+    """SO-101 pi0.5 reset pose and cube-push workspace must share the same side."""
+    cfg, rollout = _build_yaml_or_skip("scenes/sim/tabletop_cube_push.yaml")
+    try:
+        rollout.reset(seed=cfg.seed)
+        model, data = rollout.mujoco_handles()
+
+        base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base")
+        gripper_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+        assert base_id >= 0
+        assert gripper_id >= 0
+
+        base_y = float(data.xpos[base_id, 1])
+        gripper_y = float(data.xpos[gripper_id, 1])
+        cube_y = float(data.qpos[rollout._cube_qpos_addr + 1])
+        goal_y = float(model.site_pos[rollout._goal_site_id][1])
+        table_y = float(cfg.scene.backend_options["table_center_xy"][1])
+
+        gripper_side = gripper_y - base_y
+        assert abs(gripper_side) > 1e-3
+        for y in (cube_y, goal_y, table_y):
+            assert (y - base_y) * gripper_side > 0.0
+        assert abs(goal_y - base_y) > abs(cube_y - base_y)
+    finally:
+        rollout.close()
+
+
+def test_tabletop_cube_push_sim_attached_hal_reads_so101_joint_state() -> None:
+    """Deploy-sim HAL state must use SO-101 MJCF joint aliases, not zeros."""
+    from openral_core import RobotDescription
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    cfg, rollout = _build_yaml_or_skip("scenes/sim/tabletop_cube_push.yaml")
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    hal = SimAttachedHAL(rollout, desc, env_reset_seed=cfg.seed)
+    try:
+        hal.connect()
+        state = hal.read_state()
+        expected_rad = np.asarray(
+            [rollout._data.qpos[addr] for addr in rollout._act_qpos_addrs],
+            dtype=np.float64,
+        )
+
+        assert state.name == [joint.name for joint in desc.joints]
+        np.testing.assert_allclose(state.position, expected_rad, atol=1e-6)
+        assert np.linalg.norm(np.asarray(state.position, dtype=np.float64)) > 0.1
+    finally:
+        hal.disconnect()
+        rollout.close()
 
 
 def test_tabletop_push_wrist_camera_opt_in() -> None:

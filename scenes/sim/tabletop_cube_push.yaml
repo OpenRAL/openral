@@ -18,22 +18,25 @@ scene:
     # Table: 80 × 80 cm slab, top surface at z = 0 (robot base height).
     table_size_xy: [0.80, 0.80]
     table_top_z: 0.0
-    table_center_xy: [0.0, 0.30]
+    table_center_xy: [0.0, -0.30]
 
-    # SO-101 sits at the world origin (the manifest MJCF's home orientation
-    # faces the table). base_pose: in the YAML would override this with a full
-    # 6-DOF mount; the yaw-only fallback is enough for a single tabletop arm.
+    # SO-101 sits at the world origin. In the pi0.5 reset pose the arm faces
+    # world -Y, so the tabletop and object spawns are mirrored onto that side.
+    # base_pose: in the YAML would override this with a full 6-DOF mount; the
+    # yaw-only fallback is enough for a single tabletop arm.
     robot_base_xyz: [0.0, 0.0, 0.0]
     robot_base_yaw_deg: 0.0
 
     # 5 cm red cube, ~0.05 kg.
     cube_size: [0.025, 0.025, 0.025]
     cube_mass: 0.05
-    cube_spawn_xy_range: [[-0.12, 0.12], [0.16, 0.26]]
-    goal_spawn_xy_range: [[-0.12, 0.12], [0.30, 0.42]]
+    cube_spawn_xy_range: [[-0.12, 0.12], [-0.26, -0.16]]
+    goal_spawn_xy_range: [[-0.12, 0.12], [-0.42, -0.30]]
     goal_radius: 0.05
     goal_min_separation: 0.12
     off_table_z_tol: 0.04
+    overhead_camera_pos: [0.0, -0.30, 0.90]
+    front_camera_pos: [0.0, -1.05, 0.45]
 
     # Wrist camera parented to the SO-101 end-effector body. This body name is
     # robot-specific (so101/so100 → "gripper", Franka → "hand"); drop this key
