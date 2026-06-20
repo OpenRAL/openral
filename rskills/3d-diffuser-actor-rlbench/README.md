@@ -120,22 +120,31 @@ externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0061).
 
 ## Evaluation
 
-[`eval/rlbench.json`](eval/rlbench.json) ships the **live single-episode
-verification** that qualifies this starter PR (`reproduced_locally: true`):
-`open_drawer`, `meat_off_grill`, and `close_jar` each succeed (success_rate
-`1.0`, 3 / 5 / 6 macro-keyposes, ~1.0 s/keypose) on an 8 GB Ada host
-(2026-06-19, seed 0). This is **not** the full official protocol — RLBench /
-PerAct / 3DDA evaluate **25 episodes per task** (seed 0, max 25 keyposes). To
-produce the full artifact and overwrite the `results` block, run the suite
-against the provisioned CoppeliaSim sidecar:
+[`eval/rlbench.json`](eval/rlbench.json) is the **full official protocol**
+result (`reproduced_locally: true`), produced by the canonical
+`openral benchmark run` (ADR-0009 PR D) on an 8 GB Ada host (2026-06-20) —
+**25 episodes per task**, seeds 0–24, max 25 macro-keyposes:
+
+| Task | Success rate |
+|---|---|
+| `open_drawer` | 22/25 = **0.88** |
+| `meat_off_grill` | 24/25 = **0.96** |
+| `close_jar` | 19/25 = **0.76** |
+| **Average** | **0.867** |
+
+(~946 ms mean step latency; in line with the 3D Diffuser Actor paper's ~0.81
+RLBench PerAct average.) Reproduce with:
 
 ```bash
 openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench
 ```
 
-(`openral benchmark run` is the canonical `RSkillEvalResult` producer — ADR-0009
-PR D.) Per-task paper baselines are reported in Ke et al. (2402.10885, Table 1)
-and are intentionally not transcribed into the artifact to avoid mis-citation.
+> **Note on variance.** RLBench's sampling-based `EndEffectorPoseViaPlanning`
+> mover is non-deterministic, so per-task rates vary run-to-run; 3 of the 75
+> episodes hit a planner path-failure and are counted as failed episodes (the
+> sidecar handles them gracefully rather than aborting the run — ADR-0061).
+> Per-task paper baselines (Ke et al., 2402.10885, Table 1) are intentionally
+> not transcribed into the artifact to avoid mis-citation.
 
 ## License
 
