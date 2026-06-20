@@ -5,7 +5,11 @@
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
 name: "OpenRAL/rskill-smolvla-metaworld"
-evaluated_tasks: ["metaworld"]  # ADR-0060: benchmark task this checkpoint is validated for (gate)
+evaluated_tasks: ["metaworld"]  # ADR-0060 task-data gate. A *family* entry: the
+# matcher (openral_sim.benchmark._task_matches) covers every "metaworld/<task>-v3"
+# task id and the bare "metaworld" scene id, so this multi-task MT50 checkpoint is
+# gated to the whole MetaWorld family (MT10 + MT50 suites, all 5 demo scenes) and
+# blocked elsewhere — mirroring how the LIBERO rSkills declare "libero_spatial".
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -68,8 +72,10 @@ latency_budget:
   per_chunk_ms: 150.0   # SmolVLA inference at bf16 on a desktop GPU ≈ 80–120 ms
 
 # ── Provenance ─────────────────────────────────────────────────────────────
-# Headline success rate from skills/smolvla-metaworld/eval/metaworld_mt50.json
-# (50 tasks × 5 seeds via `openral benchmark run`).
+# Headline success rate from rskills/smolvla-metaworld/eval/metaworld_mt50.json,
+# a locally reproduced `openral benchmark run --suite metaworld_mt50` rollout
+# (50 tasks, 1 episode/seed-0; 16/50 solved → avg 0.30). Raise n_episodes for a
+# paper-equivalent number.
 benchmarks:
   metaworld_mt50: 0.3
 
@@ -78,11 +84,13 @@ dataset_uri: "hf://lerobot/metaworld_mt50"
 source_repo: "hf://lerobot/smolvla_metaworld"
 
 description: >
-  SmolVLA finetuned on the MetaWorld MT50 benchmark (50 diverse
-  manipulation tasks on a Rethink Sawyer arm, MuJoCo backend). State
-  dimensions, camera names, and normalisation statistics for this
-  checkpoint have not been locally verified — see
-  docs/reference/vla_compatibility.md §3.2.
+  SmolVLA (0.45 B) finetuned on MetaWorld MT50 — 50 manipulation tasks on a
+  Rethink Sawyer arm (MuJoCo via lerobot). Runs the MT10/MT50 suites
+  (benchmarks/metaworld_mt{10,50}.yaml) and 5 demo scenes
+  (scenes/benchmark/metaworld_*.yaml). Locally reproduced on MT50: 16/50
+  solved at 1 ep/seed-0 (avg 0.30); see eval/metaworld_mt50.json. 4-D
+  proprio / camera1 contract verified against the checkpoint (no adapter flip —
+  lerobot's MetaworldEnv already corrects the corner camera's 180° inversion).
 
 # ADR-0022 — action vocabulary surfaced to the reasoner LLM tool
 # palette so it can pick this skill by what it does (action verb +
