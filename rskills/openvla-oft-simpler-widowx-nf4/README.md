@@ -32,7 +32,7 @@ declared in `evaluated_tasks` until locally reproduced.
 **Why WidowX and not Panda/PickCube:** this checkpoint is a *bridge* policy. The
 ManiSkill3 Panda `PickCube-v1` scenes are a different embodiment and task; the
 ADR-0060 task-data gate correctly refuses that pairing (it would produce a
-plausible-but-unsolvable rollout). See [ADR-0061](../../docs/adr/0061-openvla-oft-policy-family.md)
+plausible-but-unsolvable rollout). See [ADR-0063](../../docs/adr/0063-openvla-oft-policy-family.md)
 for the full rationale.
 
 ## How it works
@@ -128,6 +128,6 @@ yet implemented — ADR-0006).
 
 ## See also
 
-- [ADR-0061 — OpenVLA / OpenVLA-OFT policy family](../../docs/adr/0061-openvla-oft-policy-family.md)
+- [ADR-0063 — OpenVLA / OpenVLA-OFT policy family](../../docs/adr/0063-openvla-oft-policy-family.md)
 - [ADR-0060 — benchmark task-data compatibility gate](../../docs/adr/0060-benchmark-task-data-compatibility-gate.md)
 - [`rldx1-ft-simpler-widowx-nf4`](../rldx1-ft-simpler-widowx-nf4) — the sibling WidowX bridge rSkill.

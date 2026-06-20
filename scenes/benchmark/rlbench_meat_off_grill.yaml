@@ -1,7 +1,7 @@
 # RLBench — meat_off_grill (PerAct 18-task suite), CoppeliaSim/PyRep, Franka.
 # Run: openral benchmark scene --config scenes/benchmark/rlbench_meat_off_grill.yaml \
 #                              --rskill rskills/3d-diffuser-actor-rlbench
-# Setup: ADR-0061 (see rlbench_open_drawer.yaml header).
+# Setup: ADR-0062 (see rlbench_open_drawer.yaml header).
 
 robot_id: franka_panda
 

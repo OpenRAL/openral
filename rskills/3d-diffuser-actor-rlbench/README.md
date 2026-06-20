@@ -16,13 +16,13 @@ language:
 
 <!--
   rSkill README — 3D Diffuser Actor (RLBench PerAct setup).
-  Discovery + provenance card; mirrors rskill.yaml. ADR-0061.
+  Discovery + provenance card; mirrors rskill.yaml. ADR-0062.
 -->
 
 # rskill-3d-diffuser-actor-rlbench
 
 3D Diffuser Actor — a diffusion policy over end-effector **keyposes** for RLBench,
-running on the CoppeliaSim/PyRep RLBench benchmark backend (ADR-0061).
+running on the CoppeliaSim/PyRep RLBench benchmark backend (ADR-0062).
 
 ## What this skill does
 
@@ -108,7 +108,7 @@ supervision).
 
 ```bash
 # One-time: provision CoppeliaSim 4.1.0 + PyRep + RLBench@peract + the checkpoint
-# in the py3.10 sidecar venv (see docs/adr/0061-rlbench-benchmark-backend.md).
+# in the py3.10 sidecar venv (see docs/adr/0062-rlbench-benchmark-backend.md).
 openral benchmark scene \
   --config scenes/benchmark/rlbench_open_drawer.yaml \
   --rskill rskills/3d-diffuser-actor-rlbench
@@ -116,7 +116,7 @@ openral benchmark scene \
 
 Inference VRAM peaks ~0.43 GB; runs comfortably on an 8 GB GPU. CoppeliaSim is
 proprietary (free EDU license) and is **never** vendored — it is an
-externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0061).
+externally-provisioned dependency (CLAUDE.md §1.9 / ADR-0062).
 
 ## Evaluation
 
@@ -142,7 +142,7 @@ openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench
 > **Note on variance.** RLBench's sampling-based `EndEffectorPoseViaPlanning`
 > mover is non-deterministic, so per-task rates vary run-to-run; 3 of the 75
 > episodes hit a planner path-failure and are counted as failed episodes (the
-> sidecar handles them gracefully rather than aborting the run — ADR-0061).
+> sidecar handles them gracefully rather than aborting the run — ADR-0062).
 > Per-task paper baselines (Ke et al., 2402.10885, Table 1) are intentionally
 > not transcribed into the artifact to avoid mis-citation.
 
@@ -159,4 +159,4 @@ uses `license: mit` for the consumer-visible weight/runtime posture.
 - `scenes/benchmark/rlbench_meat_off_grill.yaml`
 - `scenes/benchmark/rlbench_close_jar.yaml`
 - `benchmarks/rlbench.yaml`
-- `docs/adr/0061-rlbench-benchmark-backend.md`
+- `docs/adr/0062-rlbench-benchmark-backend.md`

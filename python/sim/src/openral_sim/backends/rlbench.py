@@ -1,6 +1,6 @@
 r"""RLBench scene adapter — drives a CoppeliaSim/PyRep task through a sidecar.
 
-ADR-0061. RLBench (James et al., 2020, arXiv:1909.12271) is the standard
+ADR-0062. RLBench (James et al., 2020, arXiv:1909.12271) is the standard
 benchmark for 3D/keyframe manipulation policies: 100 Franka tasks on CoppeliaSim
 via PyRep. CoppeliaSim is the heaviest sim dependency in the tree — a proprietary
 (free-EDU) ~py3.10 stack whose PyRep Cython extension links a specific
@@ -185,14 +185,14 @@ def _sidecar_python() -> Path:
         return default
     raise ROSConfigError(
         "RLBench sidecar venv not found. RLBench needs CoppeliaSim (proprietary, "
-        "free EDU license; NEVER vendored — ADR-0061) + PyRep + the peract RLBench "
+        "free EDU license; NEVER vendored — ADR-0062) + PyRep + the peract RLBench "
         "fork in a py3.10 venv. Provision it (one-time) and point "
         f"{_SIDECAR_PYTHON_ENV} at its python:\n"
         "  # 1) CoppeliaSim 4.1.0 (Ubuntu20_04 build) -> set COPPELIASIM_ROOT\n"
         "  # 2) uv venv --python 3.10 ~/.cache/openral/rlbench-policy/.venv\n"
         "  # 3) uv pip install (with COPPELIASIM_ROOT set): PyRep (stepjam) +\n"
         "  #    RLBench (MohitShridhar@peract, editable) + gymnasium==1.0.0a2\n"
-        "See docs/adr/0061-rlbench-benchmark-backend.md for the full recipe."
+        "See docs/adr/0062-rlbench-benchmark-backend.md for the full recipe."
     )
 
 
@@ -202,7 +202,7 @@ def _coppeliasim_root() -> Path:
     if not root.is_dir():
         raise ROSConfigError(
             f"CoppeliaSim root not found at {root}. Set {_COPPELIASIM_ROOT_ENV} to the "
-            "CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 directory (ADR-0061)."
+            "CoppeliaSim_Edu_V4_1_0_Ubuntu20_04 directory (ADR-0062)."
         )
     return root
 

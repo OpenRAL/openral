@@ -1,7 +1,10 @@
-# ADR-0061: RLBench (CoppeliaSim/PyRep) benchmark backend + 3D Diffuser Actor
+# ADR-0062: RLBench (CoppeliaSim/PyRep) benchmark backend + 3D Diffuser Actor
 
 - Status: **Accepted**
 - Date: 2026-06-19
+- ADR number: `0062`. Renumbered from `0061` to resolve a three-way collision with the RoboTwin
+  (`0061`, issue #54) and OpenVLA-OFT (`0063`, issue #55) ADRs authored on parallel branches off
+  PR #48; the integer is not load-bearing — cross-refs use filenames.
 - Related: [ADR-0002](0002-eval-and-sim-environments.md) (eval & sim environments);
   [ADR-0045](0045-isaac-sim-backend-integration.md) (Isaac Sim sidecar — the direct
   precedent for a heavy, externally-provisioned, out-of-process scene backend);

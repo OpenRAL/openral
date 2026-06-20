@@ -1,7 +1,7 @@
 # RLBench — open_drawer (PerAct 18-task suite), CoppeliaSim/PyRep, Franka.
 # Run: openral benchmark scene --config scenes/benchmark/rlbench_open_drawer.yaml \
 #                              --rskill rskills/3d-diffuser-actor-rlbench
-# Setup: ADR-0061 — provision CoppeliaSim 4.1.0 + PyRep + RLBench@peract +
+# Setup: ADR-0062 — provision CoppeliaSim 4.1.0 + PyRep + RLBench@peract +
 #        the 3D Diffuser Actor checkpoint in the py3.10 sidecar venv.
 
 robot_id: franka_panda

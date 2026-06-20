@@ -1,7 +1,7 @@
 """Regression test: the RLBench scene sidecar must NOT crash a benchmark run
 when RLBench's sampling-based motion planner fails to reach a predicted keypose.
 
-ADR-0061. ``EndEffectorPoseViaPlanning`` is stochastic — on some seeds it raises
+ADR-0062. ``EndEffectorPoseViaPlanning`` is stochastic — on some seeds it raises
 ``InvalidActionError`` / ``IKError`` / ``ConfigurationPathError`` because the
 keypose is unreachable (no path / IK failure / collision). The reference 3D
 Diffuser Actor evaluator counts that as a *failed episode* and keeps going; if
