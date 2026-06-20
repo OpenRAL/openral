@@ -18,5 +18,3 @@ scene:
     robots: ["PandaMobile"]
     controller: OSC_POSE
     horizon: 600
-
-seed: 42
