@@ -123,6 +123,10 @@ def test_robotwin_root_errors_without_assets(
 def test_robotwin_launch_argv_passes_checkout_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # _build_robotwin_scene gates on the robotwin wire deps (msgpack/pyzmq), an
+    # opt-in group absent from the base test env — skip if unavailable (§1.11).
+    pytest.importorskip("msgpack", reason="robotwin wire deps (msgpack/pyzmq) not installed")
+    pytest.importorskip("zmq", reason="robotwin wire deps (msgpack/pyzmq) not installed")
     from openral_core import SceneSpec, SimEnvironment, TaskSpec, VLASpec
     from openral_sim import _deps
     from openral_sim.backends import robotwin

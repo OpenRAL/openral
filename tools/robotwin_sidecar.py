@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 # ── msgpack ndarray codec (matches openral_sim.sidecar) ───────────────────────
 
@@ -135,7 +136,9 @@ class _RoboTwinEnv:
     ) -> Any:
         """Construct LeRobot's robotwin gym env for ``self._task`` (single env)."""
         try:
-            from lerobot.envs.robotwin import RoboTwinEnv  # type: ignore[import-not-found]
+            from lerobot.envs.robotwin import (
+                RoboTwinEnv,  # type: ignore[import-not-found,import-untyped,unused-ignore]
+            )
 
             return RoboTwinEnv(
                 self._task,
@@ -148,8 +151,12 @@ class _RoboTwinEnv:
             pass
 
         # Older LeRobot builds expose RoboTwin only through EnvConfig + make_env.
-        from lerobot.envs.configs import RoboTwinEnvConfig  # type: ignore[import-not-found]
-        from lerobot.envs.factory import make_env  # type: ignore[import-not-found]
+        from lerobot.envs.configs import (
+            RoboTwinEnvConfig,  # type: ignore[import-not-found,import-untyped,unused-ignore]
+        )
+        from lerobot.envs.factory import (
+            make_env,  # type: ignore[import-not-found,import-untyped,unused-ignore]
+        )
 
         cfg = RoboTwinEnvConfig(
             task=self._task,
@@ -180,7 +187,7 @@ class _RoboTwinEnv:
             arr = np.asarray(x)
             return arr[0] if arr.ndim and arr.shape[0] == 1 else arr
 
-        images: dict[str, np.ndarray] = {}
+        images: dict[str, npt.NDArray[np.uint8]] = {}
         pixels = obs.get("pixels") if isinstance(obs, dict) else None
         if isinstance(pixels, dict):
             for cam, frame in pixels.items():
@@ -195,7 +202,7 @@ class _RoboTwinEnv:
         )
         return {"images": images, "state": state, "task": self._instruction}
 
-    def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+    def _resize_frame(self, frame: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
         if frame.shape[:2] == (self._obs_height, self._obs_width):
             return frame
         from PIL import Image
@@ -208,8 +215,8 @@ class _RoboTwinEnv:
         obs, _info = self._env.reset(seed=seed)
         return self._unwrap_obs(obs)
 
-    def step(self, action: np.ndarray) -> dict[str, Any]:
-        action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+    def step(self, action: npt.NDArray[np.float32]) -> dict[str, Any]:
+        action_arr: npt.NDArray[np.float32] = np.asarray(action, dtype=np.float32).reshape(-1)
         if self._is_vector_env:
             action_arr = action_arr.reshape(1, -1)
         obs, reward, terminated, truncated, info = self._env.step(action_arr)
@@ -222,7 +229,7 @@ class _RoboTwinEnv:
             "info": {self._success_key: success},
         }
 
-    def render(self) -> np.ndarray | None:
+    def render(self) -> npt.NDArray[np.uint8] | None:
         return None
 
     def close(self) -> None:

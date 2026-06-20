@@ -35,6 +35,11 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         "act-aloha",
         "act-aloha-insertion",
         "gr00t-n17-libero",
+        # Non-lerobot VLAs: 3D Diffuser Actor (RLBench — own point-cloud/pose
+        # pipeline) and OpenVLA-OFT (own HF-transformers processor) carry no
+        # lerobot PolicyProcessorPipeline, so `processors is None` is correct.
+        "3d-diffuser-actor-rlbench",
+        "openvla-oft-simpler-widowx-nf4",
     }
 )
 
