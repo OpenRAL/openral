@@ -22,6 +22,7 @@ The same ASGI app serves three things on one port:
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
 import io
 import json
@@ -318,6 +319,27 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/api/camera/{source}/stream")
+    async def get_camera_stream(  # pyright: ignore[reportUnusedFunction]
+        source: str, request: Request
+    ) -> Response:
+        # Re-serve the per-camera OTLP thumbnail as a continuous MJPEG stream
+        # (issue #75a). 404 only when the source is entirely unknown — a known
+        # camera with no frame yet still opens and waits.
+        cameras = (
+            request.app.state.store.snapshot()
+            .get("topics", {})
+            .get("perception", {})
+            .get("cameras", {})
+        )
+        if source not in cameras:
+            return JSONResponse({"error": f"unknown camera source {source!r}"}, status_code=404)
+        return StreamingResponse(
+            _mjpeg_stream(request, source),
+            media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.get("/api/config")
     async def get_config() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         """Dashboard-level config (Jaeger UI url, …) sourced from env.
@@ -405,6 +427,59 @@ def _bad_request(detail: str) -> Response:
         media_type="application/json",
         status_code=400,
     )
+
+
+_MJPEG_BOUNDARY = "frame"
+
+
+def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
+    """Return the latest base64 JPEG thumbnail for ``source``, or ``None``."""
+    cameras = store.snapshot().get("topics", {}).get("perception", {}).get("cameras", {})
+    entry = cameras.get(source)
+    if not isinstance(entry, dict):
+        return None
+    thumb = entry.get("thumbnail_jpeg_b64")
+    return thumb if isinstance(thumb, str) and thumb else None
+
+
+def _mjpeg_part(thumb_b64: str) -> bytes:
+    """Frame one base64 JPEG as a multipart/x-mixed-replace part."""
+    jpeg = base64.b64decode(thumb_b64)
+    head = (
+        f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
+    ).encode("ascii")
+    return head + jpeg + b"\r\n"
+
+
+async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
+    """Push the store's latest thumbnail for ``source`` as it changes.
+
+    Subscribes to the store (same primitive as the SSE stream), emits the
+    current frame immediately, then a new multipart part on each *changed*
+    thumbnail. MJPEG has no keepalive frame, so on idle we just re-check
+    client disconnect. Always unsubscribes on exit.
+    """
+    store: TelemetryStore = request.app.state.store
+    queue = store.subscribe()
+    last: str | None = None
+    try:
+        thumb = _camera_thumb(store, source)
+        if thumb is not None:
+            last = thumb
+            yield _mjpeg_part(thumb)
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                await asyncio.wait_for(queue.get(), timeout=15.0)
+            except TimeoutError:
+                continue
+            thumb = _camera_thumb(store, source)
+            if thumb is not None and thumb != last:
+                last = thumb
+                yield _mjpeg_part(thumb)
+    finally:
+        store.unsubscribe(queue)
 
 
 async def _sse_stream(request: Request) -> AsyncIterator[bytes]:
