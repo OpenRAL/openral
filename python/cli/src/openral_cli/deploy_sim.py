@@ -488,6 +488,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_reward_monitor: bool = False,
     reward_monitor_manifest: str | None = None,
     reward_monitor_task: str | None = None,
+    enable_critic: bool = False,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
@@ -757,6 +758,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # ADR-0057 — reward monitor co-active with the VLA; the reasoner polls
         # /openral/perception/query_task_progress when task_progress_available.
         f"enable_reward_monitor:={'true' if enable_reward_monitor else 'false'}",
+        # ADR-0064 — Tier-C critic producer; emits FailureTrigger on
+        # /openral/failure/critic when a reward model's score stalls.
+        f"enable_critic:={'true' if enable_critic else 'false'}",
         f"spatial_memory_ingest:={'true' if spatial_memory_ingest else 'false'}",
         f"enable_dashboard:={'true' if enable_dashboard else 'false'}",
         # ADR-0059 — read-only Foxglove live-scene bridge. Off by default;
@@ -1670,6 +1674,18 @@ def deploy_sim_command(
             "co-resident with a VLA wants a small NF4 VLA on an 8 GB GPU (~3.3 GB)."
         ),
     ),
+    enable_critic: bool = typer.Option(
+        False,
+        "--enable-critic/--no-enable-critic",
+        help=(
+            "ADR-0064 — bring up the Tier-C critic producer "
+            "(openral_reasoner_ros/critic_producer_node). It watches the generic "
+            "/openral/critic/score topic that reward models publish (Robometer, a "
+            "future SARM, success classifiers) and emits a Tier-C FailureTrigger on "
+            "/openral/failure/critic when a critic stalls — the reasoner already maps "
+            "that to a forced Tier-C tick (replanning). Advisory-only. Default off."
+        ),
+    ),
     reward_monitor_manifest: str | None = typer.Option(
         None,
         "--reward-monitor-manifest",
@@ -1782,6 +1798,7 @@ def deploy_sim_command(
             enable_reward_monitor=enable_reward_monitor,
             reward_monitor_manifest=reward_monitor_manifest,
             reward_monitor_task=reward_monitor_task,
+            enable_critic=enable_critic,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,

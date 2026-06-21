@@ -340,6 +340,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reward_monitor_sidecar_port = LaunchConfiguration("reward_monitor_sidecar_port").perform(
         context
     )
+    # ADR-0064 — Tier-C critic-producer leg. Off by default; when on, a
+    # critic_producer_node watches the generic /openral/critic/score topic and
+    # turns a critic stall into a Tier-C FailureTrigger on /openral/failure/critic
+    # (the reasoner already subscribes it). Advisory-only — never actuates.
+    enable_critic = LaunchConfiguration("enable_critic").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    critic_stall_patience = LaunchConfiguration("critic_stall_patience").perform(context)
     # ADR-0056 — comma-separated on-demand locator manifest paths. Each becomes a
     # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
     # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment
@@ -1211,6 +1221,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         extra_nodes.append(reward_monitor)
 
+    if enable_critic:
+        # ADR-0064 — Tier-C critic producer. Plain Node co-active with the graph:
+        # subscribes /openral/critic/score (any reward model — Robometer, a future
+        # SARM — publishes there), routes each sample through a CriticWatchdogGroup,
+        # and emits a Tier-C FailureTrigger on /openral/failure/critic on a stall.
+        critic_producer = Node(
+            package="openral_reasoner_ros",
+            executable="critic_producer_node.py",
+            name="openral_critic_producer",
+            namespace="",
+            parameters=[
+                {
+                    "stall_patience": int(critic_stall_patience),
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            additional_env=otel_env,
+            output="screen",
+        )
+        extra_nodes.append(critic_producer)
+
     nodes: list = [
         safety_kernel,
         runtime,
@@ -1495,6 +1526,28 @@ def generate_launch_description() -> LaunchDescription:
                 "built and a provisioned Robometer sidecar venv "
                 "(OPENRAL_ROBOMETER_SIDECAR_VENV); co-resident with a VLA needs ~3.3 GB "
                 "free VRAM (use a small NF4 VLA on an 8 GB GPU)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_critic",
+            default_value="false",
+            description=(
+                "ADR-0064 — bring up the Tier-C critic producer "
+                "(openral_reasoner_ros/critic_producer_node). It watches the generic "
+                "/openral/critic/score topic that reward models publish (Robometer "
+                "ADR-0057, a future SARM, success classifiers), and emits a Tier-C "
+                "FailureTrigger on /openral/failure/critic when a critic stalls — the "
+                "reasoner already maps that to a forced Tier-C tick. Advisory-only — "
+                "never actuates. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "critic_stall_patience",
+            default_value="5",
+            description=(
+                "ADR-0064 — consecutive below-threshold, non-improving critic-score "
+                "samples (per critic_id) before the producer fires. Ignored unless "
+                "enable_critic."
             ),
         ),
         DeclareLaunchArgument(
