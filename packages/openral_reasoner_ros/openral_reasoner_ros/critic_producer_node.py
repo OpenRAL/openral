@@ -25,7 +25,9 @@ Parameters:
     stall_patience (int): consecutive stalled samples per critic before firing.
         Default 5. Must be ``>= 1``.
     min_delta (float): minimum strict improvement over a critic's running best
-        counted as progress. Default 0.0.
+        counted as progress. Default 0.02 — a small positive floor so sub-threshold
+        reward-model noise (e.g. Robometer progress jittering 0.620↔0.622) does not
+        keep re-arming the watchdog after it has latched.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ class CriticProducerNode(Node):
         super().__init__("openral_critic_producer")
         self.declare_parameter("score_topic", "/openral/critic/score")
         self.declare_parameter("stall_patience", 5)
-        self.declare_parameter("min_delta", 0.0)
+        self.declare_parameter("min_delta", 0.02)
 
         gp = self.get_parameter
         topic = gp("score_topic").get_parameter_value().string_value
