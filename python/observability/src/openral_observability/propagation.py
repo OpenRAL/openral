@@ -13,10 +13,15 @@ The implementation is a thin wrapper over OTel's stock
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping
+import os
+from collections.abc import Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
+from contextvars import Token
+from typing import cast
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
+from opentelemetry.context.context import Context
 from opentelemetry.propagators.textmap import (
     DefaultGetter,
     DefaultSetter,
@@ -24,14 +29,25 @@ from opentelemetry.propagators.textmap import (
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
 __all__ = [
+    "attach_traceparent_from_env",
     "current_traceparent",
     "extract_traceparent",
     "inject_traceparent",
+    "remote_parent_from_env",
+    "traceparent_env",
 ]
 
 _PROPAGATOR = TraceContextTextMapPropagator()
 _TRACEPARENT_HEADER = "traceparent"
 _TRACESTATE_HEADER = "tracestate"
+
+# Environment-variable carrier names. These mirror the OTel SDK's own
+# ``OTEL_TRACEPARENT`` / ``OTEL_TRACESTATE`` convention so a worker spawned
+# with this dict in its environment is correlated the same way a manually
+# attached one is. The W3C *header* names (``traceparent`` / ``tracestate``)
+# are lowercase by spec; the *env-var* names are uppercase by convention.
+_ENV_TRACEPARENT = "OTEL_TRACEPARENT"
+_ENV_TRACESTATE = "OTEL_TRACESTATE"
 
 
 def current_traceparent() -> str | None:
@@ -113,6 +129,140 @@ def extract_traceparent(traceparent: str, tracestate: str | None = None) -> otel
     if tracestate:
         carrier[_TRACESTATE_HEADER] = tracestate
     return _PROPAGATOR.extract(carrier, getter=DefaultGetter())
+
+
+def traceparent_env(carrier: MutableMapping[str, str] | None = None) -> dict[str, str]:
+    """Return an environment-variable dict carrying the active span's trace context.
+
+    This is the cross-process bootstrap for spawning a worker (the
+    dispatcher, the future fleet supervisor) so its logs and spans land in
+    the *parent* trace. Pass the returned dict as ``env=`` to
+    :mod:`subprocess` / :mod:`multiprocessing`; the worker recovers the
+    parent context with :func:`attach_traceparent_from_env` (or, more
+    conveniently, :func:`openral_observability.configure_worker_observability`).
+
+    The keys are ``OTEL_TRACEPARENT`` and — only when the active span
+    carries a non-empty ``tracestate`` — ``OTEL_TRACESTATE``. The values
+    are the standard W3C strings produced by :func:`inject_traceparent`,
+    re-keyed from the W3C header names to the env-var names.
+
+    Args:
+        carrier: Optional dict the env vars are *also* written into as a
+            side effect (handy for merging into an existing ``os.environ``
+            copy). A fresh dict is returned regardless.
+
+    Returns:
+        A dict suitable for ``env=`` injection, or ``{}`` when no valid span
+        is in scope (no-op observability mode, or called outside any span).
+
+    Example:
+        >>> from opentelemetry import trace
+        >>> from opentelemetry.sdk.trace import TracerProvider
+        >>> from openral_observability.propagation import traceparent_env
+        >>> tracer = TracerProvider().get_tracer("doctest")
+        >>> with trace.use_span(tracer.start_span("demo"), end_on_exit=True):
+        ...     env = traceparent_env()
+        >>> "OTEL_TRACEPARENT" in env
+        True
+    """
+    headers = inject_traceparent()
+    out: dict[str, str] = {}
+    if _TRACEPARENT_HEADER in headers:
+        out[_ENV_TRACEPARENT] = headers[_TRACEPARENT_HEADER]
+    tracestate = headers.get(_TRACESTATE_HEADER)
+    if tracestate:
+        out[_ENV_TRACESTATE] = tracestate
+    if carrier is not None:
+        carrier.update(out)
+    return out
+
+
+def attach_traceparent_from_env(env: Mapping[str, str] | None = None) -> object | None:
+    """Attach the trace context carried in ``OTEL_TRACEPARENT`` env vars, if any.
+
+    The worker-side counterpart of :func:`traceparent_env`. Reads
+    ``OTEL_TRACEPARENT`` / ``OTEL_TRACESTATE`` from ``env`` (default
+    :data:`os.environ`) and, when a ``traceparent`` is present, calls
+    :func:`opentelemetry.context.attach` so subsequent spans become
+    children of the parent process's span.
+
+    The caller owns the returned detach token: pass it to
+    :func:`opentelemetry.context.detach` to restore the previous context.
+    Use :func:`remote_parent_from_env` instead when a ``with`` block scopes
+    the attach/detach for you.
+
+    Args:
+        env: Mapping to read the env-var carrier from. Defaults to
+            :data:`os.environ`.
+
+    Returns:
+        The detach token from :func:`opentelemetry.context.attach`, or
+        ``None`` when no (non-empty) ``OTEL_TRACEPARENT`` is present.
+
+    Example:
+        >>> from opentelemetry import context as otel_context, trace
+        >>> from opentelemetry.sdk.trace import TracerProvider
+        >>> from openral_observability.propagation import (
+        ...     attach_traceparent_from_env,
+        ...     traceparent_env,
+        ... )
+        >>> tracer = TracerProvider().get_tracer("doctest")
+        >>> with trace.use_span(tracer.start_span("demo"), end_on_exit=True):
+        ...     env = traceparent_env()
+        >>> token = attach_traceparent_from_env(env)
+        >>> token is not None
+        True
+        >>> otel_context.detach(token)
+    """
+    source = env if env is not None else os.environ
+    traceparent = source.get(_ENV_TRACEPARENT)
+    if not traceparent:
+        return None
+    tracestate = source.get(_ENV_TRACESTATE)
+    ctx = extract_traceparent(traceparent, tracestate)
+    return otel_context.attach(ctx)
+
+
+@contextmanager
+def remote_parent_from_env(env: Mapping[str, str] | None = None) -> Iterator[object | None]:
+    """Scope the parent trace context carried in env vars for a worker ``main()``.
+
+    Attaches the context from :func:`attach_traceparent_from_env` on enter
+    and detaches it on exit, so a worker entrypoint can wrap its body and be
+    sure the global OTel context is restored afterwards (relevant when the
+    same process later runs unrelated work). A no-op — yielding ``None`` and
+    detaching nothing — when no ``OTEL_TRACEPARENT`` is present.
+
+    Args:
+        env: Mapping to read the env-var carrier from. Defaults to
+            :data:`os.environ`.
+
+    Yields:
+        The detach token (or ``None`` when nothing was attached).
+
+    Example:
+        >>> from opentelemetry import trace
+        >>> from opentelemetry.sdk.trace import TracerProvider
+        >>> from openral_observability.propagation import (
+        ...     remote_parent_from_env,
+        ...     traceparent_env,
+        ... )
+        >>> tracer = TracerProvider().get_tracer("doctest")
+        >>> with trace.use_span(tracer.start_span("demo"), end_on_exit=True):
+        ...     env = traceparent_env()
+        >>> with remote_parent_from_env(env) as token:
+        ...     token is not None
+        True
+    """
+    token = attach_traceparent_from_env(env)
+    try:
+        yield token
+    finally:
+        if token is not None:
+            # ``attach_traceparent_from_env`` widens the token to ``object``
+            # to keep the OTel ``Token`` type off the public surface; narrow
+            # it back for ``detach``, which is the value ``attach`` returned.
+            otel_context.detach(cast("Token[Context]", token))
 
 
 def _extract_from_mapping(carrier: Mapping[str, str]) -> otel_context.Context:
