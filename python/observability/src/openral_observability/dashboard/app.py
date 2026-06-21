@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import gzip
 import io
 import json
@@ -58,6 +59,7 @@ __all__ = ["create_app"]
 _logger = structlog.get_logger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_MJPEG_BOUNDARY = "frame"
 
 # The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
 # WebAssembly (.wasm) served by StaticFiles. Browsers reject an ESM dynamic
@@ -429,9 +431,6 @@ def _bad_request(detail: str) -> Response:
     )
 
 
-_MJPEG_BOUNDARY = "frame"
-
-
 def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
     """Return the latest base64 JPEG thumbnail for ``source``, or ``None``."""
     cameras = store.snapshot().get("topics", {}).get("perception", {}).get("cameras", {})
@@ -443,8 +442,12 @@ def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
 
 
 def _mjpeg_part(thumb_b64: str) -> bytes:
-    """Frame one base64 JPEG as a multipart/x-mixed-replace part."""
-    jpeg = base64.b64decode(thumb_b64)
+    """Frame one base64 JPEG as a multipart/x-mixed-replace part.
+
+    Raises:
+        binascii.Error: ``thumb_b64`` is not valid base64.
+    """
+    jpeg = base64.b64decode(thumb_b64, validate=True)
     head = (
         f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
     ).encode("ascii")
@@ -465,8 +468,13 @@ async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
     try:
         thumb = _camera_thumb(store, source)
         if thumb is not None:
-            last = thumb
-            yield _mjpeg_part(thumb)
+            try:
+                part = _mjpeg_part(thumb)
+            except binascii.Error:
+                _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+            else:
+                last = thumb
+                yield part
         while True:
             if await request.is_disconnected():
                 return
@@ -476,8 +484,13 @@ async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
                 continue
             thumb = _camera_thumb(store, source)
             if thumb is not None and thumb != last:
+                try:
+                    part = _mjpeg_part(thumb)
+                except binascii.Error:
+                    _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+                    continue
                 last = thumb
-                yield _mjpeg_part(thumb)
+                yield part
     finally:
         store.unsubscribe(queue)
 

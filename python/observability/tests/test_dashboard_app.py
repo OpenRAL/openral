@@ -477,8 +477,11 @@ async def test_camera_stream_emits_jpeg_part() -> None:
     # so a true infinite MJPEG StreamingResponse deadlocks it (same limitation
     # noted in test_subscriber_queue_receives_ingest_payload for SSE). We
     # therefore exercise the two helpers directly — the same bytes the live
-    # server would push over the wire — and confirm the route returns 200 +
-    # the correct Content-Type header (non-streaming GET terminates instantly).
+    # server would push over the wire — confirming the store ingest → b64
+    # thumbnail → MJPEG part bytes round-trip produces valid framing.
+    # Wire-format coverage (route response headers, Content-Type boundary,
+    # 404 for unknown sources over a real socket) lives in
+    # test_dashboard_mjpeg_integration.py which launches a real uvicorn server.
     import base64
 
     from openral_observability.dashboard.app import _camera_thumb, _mjpeg_part
@@ -496,6 +499,7 @@ async def test_camera_stream_emits_jpeg_part() -> None:
     assert thumb == thumb_b64
     chunk = _mjpeg_part(thumb)
     assert b"Content-Type: image/jpeg" in chunk
+    assert b"Content-Length: " in chunk
     assert jpeg in chunk
 
 
