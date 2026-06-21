@@ -1193,6 +1193,15 @@ const LAYERS = [
         schemas: ["msg/PromptStamped", "msg/WorldStateStamped", "msg/FailureTrigger", "action/ExecuteRskill", "ReasonerToolCall", "ControllerEvidence", "TimeoutEvidence"],
       },
       {
+        title: "critic_producer_node (Tier-C producer)",
+        pkg: "packages/openral_reasoner_ros",
+        status: "green",
+        desc: "ADR-0064 / observability audit P1 R3. Default producer for the reserved Tier-C /openral/failure/critic source. Subscribes the generic /openral/critic/score topic (openral_msgs/CriticScore; RELIABLE+VOLATILE+KL=10) that any reward model publishes — Robometer today (ADR-0057), a future SARM, success classifiers — routes each self-describing (critic_id, score, threshold) sample through openral_reasoner.CriticWatchdogGroup (one watchdog per critic_id, lazily created), and on a stall publishes a FailureTrigger (KIND_CRITIC / SEVERITY_FAIL, the emitted CriticEvidence, score's trace_id propagated) via openral_observability.FailureBusPublisher. The watchdog latches (one event per stall, not per frame); reasoner_node maps the critic FAIL onto a forced Tier-C tick. Params: score_topic, stall_patience (default 5), min_delta. Advisory only (CLAUDE.md §1.1) — no actuation, no kernel/E-stop. Verified live on ROS 2 Jazzy via tests/integration/test_critic_producer_node.py (stalled CriticScore → FailureTrigger → reasoner preemption).",
+        inputs: ["CriticScore on /openral/critic/score"],
+        outputs: ["FailureTrigger on /openral/failure/critic (KIND_CRITIC / SEVERITY_FAIL)"],
+        schemas: ["msg/CriticScore", "msg/FailureTrigger", "CriticEvidence"],
+      },
+      {
         title: "prompt_router_node (F10)",
         pkg: "packages/openral_prompt_router",
         status: "green",
