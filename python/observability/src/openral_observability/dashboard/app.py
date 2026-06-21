@@ -241,6 +241,9 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
     store = store if store is not None else TelemetryStore()
     app = FastAPI(title="OpenRAL Dashboard", docs_url=None, redoc_url=None)
     app.state.store = store
+    # Set by run_dashboard when mDNS discovery is wired; None in tests / when
+    # the 'mdns' extra is absent. The /api/robots endpoint tolerates both.
+    app.state.discovery = None
 
     @app.post(
         "/v1/traces",
@@ -340,6 +343,20 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
             _mjpeg_stream(request, source),
             media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/robots")
+    async def get_robots(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # issue #75b — mDNS-discovered OpenRAL services for the "Add Robot"
+        # panel. Read-only. Returns the disabled shape when discovery is off.
+        discovery = getattr(request.app.state, "discovery", None)
+        if discovery is None:
+            return JSONResponse({"enabled": False, "robots": []})
+        return JSONResponse(
+            {
+                "enabled": discovery.enabled,
+                "robots": [r.model_dump() for r in discovery.robots()],
+            }
         )
 
     @app.get("/api/config")

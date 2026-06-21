@@ -513,6 +513,37 @@ async def test_camera_stream_unknown_source_404() -> None:
 
 
 @pytest.mark.asyncio
+async def test_api_robots_disabled_when_no_discovery() -> None:
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/robots")
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": False, "robots": []}
+
+
+@pytest.mark.asyncio
+async def test_api_robots_lists_registry() -> None:
+    from openral_observability.dashboard.discovery import DiscoveredRobot, Discovery, RobotRegistry
+
+    reg = RobotRegistry()
+    reg.upsert(
+        DiscoveredRobot(name="arm", addresses=["10.0.0.5"], port=4318, properties={}, last_seen=1.0)
+    )
+    disc = Discovery(registry=reg)
+    disc.enabled = True
+    app = create_app(TelemetryStore())
+    app.state.discovery = disc
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/robots")
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["robots"][0]["name"] == "arm"
+    assert body["robots"][0]["port"] == 4318
+
+
+@pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and
     # onnxruntime-web wasm are vendored under static/vendor/vad/ (no CDN). Assert
