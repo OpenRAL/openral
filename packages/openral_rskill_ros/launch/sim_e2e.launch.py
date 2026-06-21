@@ -1213,6 +1213,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "image_topic": reward_image_topic,
                     "task": reward_monitor_task,
                     "sidecar_port": int(reward_monitor_sidecar_port),
+                    # ADR-0064 — when the critic producer is also up, feed it real
+                    # Robometer progress as a CriticScore stream (else stay query-only).
+                    "enable_critic_score": enable_critic,
                     "use_sim_time": use_sim_time,
                 }
             ],

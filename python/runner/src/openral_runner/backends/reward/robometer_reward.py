@@ -17,6 +17,7 @@ import contextlib
 import os
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,40 @@ if TYPE_CHECKING:
 _DEFAULT_PORT = 5769
 # |progress trend per sample| below this reads as "stalled" (no meaningful change).
 _STALL_TREND_EPS = 0.002
+
+
+def critic_score_from_assessment(
+    assessment: Mapping[str, object], *, threshold: float
+) -> tuple[float, float]:
+    """Map a reward-monitor assessment to a generic critic ``(score, threshold)``.
+
+    The Tier-C critic bus (ADR-0064) consumes a higher-is-better scalar per
+    sample; a reward model's per-window ``progress_now`` (∈ [0, 1]) is exactly
+    that. The producer's ``CriticWatchdogGroup`` decides when the score has
+    *stalled* — this helper only normalises one :meth:`RobometerReward.assess`
+    result into the ``openral_msgs/CriticScore`` ``(score, threshold)`` pair,
+    clamping the score to ``[0, 1]`` and defaulting a missing/non-numeric
+    ``progress_now`` to ``0.0`` (a conservative "no progress").
+
+    Args:
+        assessment: A :meth:`RobometerReward.assess` result. Reads
+            ``progress_now``.
+        threshold: The pass bar to stamp on the CriticScore — the watchdog fires
+            when the score stays below it without improving.
+
+    Returns:
+        ``(score, threshold)`` ready for an ``openral_msgs/CriticScore``.
+
+    Example:
+        >>> critic_score_from_assessment({"progress_now": 0.42}, threshold=0.8)
+        (0.42, 0.8)
+        >>> critic_score_from_assessment({"progress_now": 1.5}, threshold=0.8)
+        (1.0, 0.8)
+    """
+    raw = assessment.get("progress_now", 0.0)
+    score = 0.0 if isinstance(raw, bool) or not isinstance(raw, (int, float)) else float(raw)
+    score = max(0.0, min(1.0, score))
+    return score, float(threshold)
 
 
 def _evenly_spaced_indices(n: int, k: int) -> list[int]:
