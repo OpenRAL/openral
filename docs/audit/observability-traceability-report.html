@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenRAL — Observability &amp; Traceability Report</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-2: #161a22;
+    --panel: #1c212c;
+    --panel-2: #232a37;
+    --line: #2b3242;
+    --line-strong: #3a4358;
+    --text: #e6edf3;
+    --text-dim: #9aa4b2;
+    --text-faint: #6b7382;
+    --accent: #8ab4ff;
+
+    --green: #1f6f3a;  --green-fg: #6ee7a4;  --green-edge: #2ea25a;
+    --yellow: #6e5b16; --yellow-fg: #f7d35a; --yellow-edge: #b48717;
+    --blue: #1e3a6e;   --blue-fg: #7aa9ff;   --blue-edge: #3a6cc8;
+    --red: #6c1f24;    --red-fg: #ff8c8c;    --red-edge: #b53236;
+    --schema: #6f3aa8; --schema-fg: #c8a3ff;
+
+    --p0: #b53236; --p1: #b48717; --p2: #3a6cc8;
+
+    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", Segoe UI, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.55; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; color: #cdd9e5; }
+
+  header {
+    padding: 28px 40px 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #11141b, #0f1115);
+  }
+  header h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.2px; }
+  header .sub { color: var(--text-dim); font-size: 13.5px; }
+  header .sub b { color: var(--text); font-weight: 600; }
+  .headline {
+    margin: 16px 0 2px; padding: 14px 16px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line-strong);
+    border-left: 4px solid var(--green-edge); font-size: 14.5px; color: var(--text);
+  }
+  .headline b { color: var(--green-fg); }
+  .headline .warn { color: var(--yellow-fg); }
+  .headline .bad { color: var(--red-fg); }
+
+  .wrap { display: grid; grid-template-columns: 240px 1fr; gap: 0; align-items: start; }
+  nav.toc {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--line); padding: 22px 16px 60px; background: var(--bg);
+  }
+  nav.toc h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-faint); }
+  nav.toc a { display: block; color: var(--text-dim); font-size: 13px; padding: 4px 8px; border-radius: 6px; }
+  nav.toc a:hover { background: var(--panel); color: var(--text); text-decoration: none; }
+  nav.toc .sec { margin-top: 14px; }
+
+  main { padding: 28px 40px 120px; max-width: 1180px; }
+  section { margin-bottom: 40px; scroll-margin-top: 14px; }
+  h2 { font-size: 20px; margin: 0 0 6px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h2 .num { color: var(--text-faint); font-weight: 500; margin-right: 8px; }
+  h3 { font-size: 15.5px; margin: 22px 0 8px; color: var(--text); }
+  p { color: var(--text); font-size: 14px; }
+  .lead { color: var(--text-dim); font-size: 14px; }
+
+  /* status chips */
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
+    padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line-strong); white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; }
+  .c-green  { color: var(--green-fg);  background: rgba(46,162,90,.10); border-color: var(--green-edge); }
+  .c-green::before  { background: var(--green-edge); }
+  .c-yellow { color: var(--yellow-fg); background: rgba(180,135,23,.12); border-color: var(--yellow-edge); }
+  .c-yellow::before { background: var(--yellow-edge); }
+  .c-blue   { color: var(--blue-fg);   background: rgba(58,108,200,.12); border-color: var(--blue-edge); }
+  .c-blue::before   { background: var(--blue-edge); }
+  .c-red    { color: var(--red-fg);    background: rgba(181,50,54,.12);  border-color: var(--red-edge); }
+  .c-red::before    { background: var(--red-edge); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 6px; }
+  .legend div { font-size: 13px; color: var(--text-dim); }
+
+  /* dashboard cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: 12px; margin-top: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; }
+  .card .big { font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }
+  .card .lbl { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .card.g .big { color: var(--green-fg); }
+  .card.y .big { color: var(--yellow-fg); }
+  .card.r .big { color: var(--red-fg); }
+  .card.b .big { color: var(--blue-fg); }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  tbody tr:hover { background: var(--panel); }
+  td.mono, td .mono { color: #cdd9e5; }
+
+  /* layer block */
+  .layer { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 14px 0; }
+  .layer > .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .layer > .head .lid { font-family: var(--mono); font-size: 12px; color: var(--text-faint); border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; }
+  .layer > .head h3 { margin: 0; font-size: 15.5px; }
+  .layer .desc { color: var(--text-dim); font-size: 13.5px; margin: 8px 0 4px; }
+  .kv { margin: 8px 0; }
+  .kv .k { color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { font-size: 13.5px; margin: 3px 0; }
+  .gap { color: var(--yellow-fg); }
+  .gap::before { content: "△ "; }
+
+  /* priority badges */
+  .pri { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 6px; color: #fff; white-space: nowrap; }
+  .P0 { background: var(--p0); }
+  .P1 { background: var(--p1); color: #1a1405; }
+  .P2 { background: var(--p2); }
+
+  .filterbar { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  .filterbar button {
+    font-family: var(--sans); font-size: 12.5px; color: var(--text-dim); cursor: pointer;
+    background: var(--panel); border: 1px solid var(--line-strong); border-radius: 999px; padding: 5px 13px;
+  }
+  .filterbar button.active { color: var(--text); border-color: var(--accent); background: var(--panel-2); }
+
+  .foot { color: var(--text-faint); font-size: 12px; border-top: 1px solid var(--line); padding-top: 16px; margin-top: 30px; }
+  .pathnote { color: var(--text-faint); font-size: 12px; margin-top: 4px; }
+
+  @media (max-width: 880px) {
+    .wrap { grid-template-columns: 1fr; }
+    nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+    main { padding: 22px 18px 80px; }
+    header { padding: 22px 18px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenRAL — Observability &amp; Traceability Report</h1>
+  <div class="sub">
+    <b>Branch:</b> <code>claude/observability-traceability-report-d8a5j8</code> &nbsp;·&nbsp;
+    <b>Date:</b> 2026-06-21 &nbsp;·&nbsp;
+    <b>Scope:</b> all 8 layers (HAL → Observability) + cross-cutting trace spine &nbsp;·&nbsp;
+    <b>Method:</b> source-grounded audit (every claim carries a <code>file:line</code> reference)
+  </div>
+  <div class="headline">
+    <b>Headline.</b> OpenRAL's observability layer is <b>production-grade and unusually complete</b> — a
+    full OpenTelemetry pipeline (traces + metrics + logs), W3C context propagation across Python ↔ ROS&nbsp;2 ↔ C++,
+    a typed failure bus, a self-hosted live dashboard, and end-to-end <i>trace&nbsp;↔ dataset&nbsp;↔ eval</i> correlation.
+    The principal <span class="bad">gap is provenance</span>: rSkill weight <b>signing/verification is specified but not
+    implemented</b> (ADR-0006), so the §8 "replayable from the trace alone" guarantee is <span class="warn">forensic,
+    not cryptographically verifiable</span>. Secondary gaps are scoped, not structural: multiprocess log correlation,
+    the Tier-C critic producer, and richer quantization/model-lineage provenance fields.
+  </div>
+</header>
+
+<div class="wrap">
+<nav class="toc">
+  <h4>Contents</h4>
+  <a href="#summary">1 · Executive summary</a>
+  <a href="#dashboard">2 · Maturity dashboard</a>
+  <a href="#layers">3 · Per-layer inventory</a>
+  <a href="#spine">4 · Traceability spine</a>
+  <a href="#repro">5 · Reproducibility audit</a>
+  <a href="#recs">6 · Prioritized recommendations</a>
+  <a href="#refs">7 · ADR &amp; reference index</a>
+  <a href="#appendix">8 · Appendix</a>
+  <div class="sec"></div>
+  <h4>Status legend</h4>
+  <a><span class="chip c-green">shipped</span></a>
+  <a><span class="chip c-yellow">partial</span></a>
+  <a><span class="chip c-blue">planned</span></a>
+  <a><span class="chip c-red">missing</span></a>
+</nav>
+
+<main>
+
+<!-- ============================= 1 ============================= -->
+<section id="summary">
+  <h2><span class="num">1</span>Executive summary</h2>
+  <p class="lead">
+    OpenRAL treats observability as a first-class layer (Layer&nbsp;7, <code>python/openral_observability/</code>),
+    not an afterthought. Two CLAUDE.md operating principles set the bar this report measures against:
+    <b>§4 Explicit-beats-implicit</b> ("replanning, dispatcher fallback, quantization, and license posture must show up
+    in logs/traces") and <b>§8 Reproducibility</b> ("a skill execution must be replayable from the trace alone —
+    weights revision pinned, prompts logged, sensor frames captured").
+  </p>
+
+  <h3>What's strong</h3>
+  <ul>
+    <li><b>Full OTel pipeline.</b> Idempotent SDK bring-up wires a <code>TracerProvider</code> + <code>MeterProvider</code>
+      + <code>LoggerProvider</code>, no-op until <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> is set
+      (<code>_sdk.py:107</code>), with head-based sampling and batch tuning via env.</li>
+    <li><b>Domain span helpers.</b> <code>rskill_span</code>, <code>inference_span</code>, <code>safety_span</code>,
+      <code>reasoner_span</code> (<code>tracing.py:40–187</code>) + a <code>cli.command</code> root span
+      (<code>cli.py:52</code>) seed a single trace per CLI invocation.</li>
+    <li><b>Cross-process trace context.</b> W3C <code>traceparent</code> inject/extract (<code>propagation.py:37–115</code>)
+      flows the same <code>trace_id</code> through ROS IDL fields into the C++ safety kernel.</li>
+    <li><b>Typed failure bus + diagnostics.</b> Rate-limited <code>FailureBusPublisher</code>
+      (<code>failure_bus.py:213</code>) on six namespaced topics, plus a 1&nbsp;Hz <code>DiagnosticsHeartbeat</code>
+      (<code>diagnostics.py:49</code>).</li>
+    <li><b>Self-hosted dashboard.</b> Embedded OTLP/HTTP receiver, SSE stream, bounded trace index, offline voice
+      prompt (<code>dashboard/app.py</code>, <code>dashboard/store.py:283</code>) — no external Jaeger/Tempo required.</li>
+    <li><b>End-to-end correlation.</b> <code>trace_id</code> threads execution → dataset rows
+      (<code>frame_trace.py:28</code>) → eval JSON (<code>RSkillEvalResult.trace_id</code>,
+      <code>schemas.py:4672</code>) → replay timeline (<code>replay/correlator.py:95</code>).</li>
+    <li><b>Real tests, no mocks.</b> ~2,700 LOC of tests over in-memory OTel exporters and real <code>.mcap</code>
+      fixtures, honoring CLAUDE.md §1.11.</li>
+  </ul>
+
+  <h3>What's missing or partial</h3>
+  <ul>
+    <li class="gap"><b>Provenance signing (P0).</b> Sigstore signing/verification from ADR-0006 is unimplemented —
+      no <code>signature</code> manifest field, no verify-on-load; loader only emits an
+      <code>rskill.unverified_provenance</code> warning (<code>loader.py:748</code>).</li>
+    <li class="gap"><b>Multiprocess log correlation (P1).</b> The structlog→OTel bridge is single-process
+      (<code>logging.py:47</code>); dispatcher/fleet workers aren't wired.</li>
+    <li class="gap"><b>Tier-C critic producer (P1).</b> The <code>/openral/failure/critic</code> contract exists,
+      but no default progress watchdog publishes to it.</li>
+    <li class="gap"><b>Provenance depth (P2).</b> Quantization is a boolean flag (no bits/algo); no model-family/lineage
+      field on the execution path; prompt history relies on bag capture rather than a first-class archive.</li>
+    <li class="gap"><b>Layer coverage drift (P2).</b> WAM observability is protocol-only (adapters pending v0.3);
+      C++ safety-kernel LTTng + sim/HIL gates pending; spatial-memory persistence Phase&nbsp;5 pending.</li>
+  </ul>
+</section>
+
+<!-- ============================= 2 ============================= -->
+<section id="dashboard">
+  <h2><span class="num">2</span>Maturity dashboard</h2>
+  <p class="lead">Status vocabulary mirrors <a href="../architecture/repo-state-map.html">repo-state-map.html</a>:
+    <b>green</b> = source <i>and</i> tests shipped; <b>yellow</b> = partial / in-flight; <b>blue</b> = planned;
+    <b>red</b> = missing / contract-only.</p>
+
+  <div class="legend">
+    <div><span class="chip c-green">shipped</span> production, tested</div>
+    <div><span class="chip c-yellow">partial</span> works, with caveats / in-flight</div>
+    <div><span class="chip c-blue">planned</span> designed, not built</div>
+    <div><span class="chip c-red">missing</span> needed, absent</div>
+  </div>
+
+  <div class="cards">
+    <div class="card g"><div class="big">~5.2k</div><div class="lbl">LOC observability source</div></div>
+    <div class="card g"><div class="big">~2.7k</div><div class="lbl">LOC tests (no mocks)</div></div>
+    <div class="card g"><div class="big">28</div><div class="lbl">metric instruments (semconv.py:211–236)</div></div>
+    <div class="card g"><div class="big">168</div><div class="lbl">semantic-convention constants</div></div>
+    <div class="card g"><div class="big">6</div><div class="lbl">failure-bus sources</div></div>
+    <div class="card y"><div class="big">1</div><div class="lbl">P0 gap (provenance signing)</div></div>
+    <div class="card y"><div class="big">2</div><div class="lbl">P1 gaps</div></div>
+    <div class="card b"><div class="big">F1–F10</div><div class="lbl">ADR-0018 features (F1–F10 landed)</div></div>
+  </div>
+
+  <h3>Capability matrix</h3>
+  <table>
+    <thead><tr><th>Capability</th><th>Status</th><th>Anchor</th></tr></thead>
+    <tbody>
+      <tr><td>Tracing (OTel spans)</td><td><span class="chip c-green">shipped</span></td><td class="mono">tracing.py, _sdk.py:107</td></tr>
+      <tr><td>Metrics (histograms/counters/gauges)</td><td><span class="chip c-green">shipped</span></td><td class="mono">metrics.py, semconv.py:211</td></tr>
+      <tr><td>Structured logs → OTel</td><td><span class="chip c-green">shipped</span> (single-proc)</td><td class="mono">logging.py:31,47</td></tr>
+      <tr><td>W3C context propagation (PY/ROS/C++)</td><td><span class="chip c-green">shipped</span></td><td class="mono">propagation.py:37–115</td></tr>
+      <tr><td>Failure bus (typed, rate-limited)</td><td><span class="chip c-green">shipped</span></td><td class="mono">failure_bus.py:213</td></tr>
+      <tr><td>Diagnostics heartbeat (1 Hz)</td><td><span class="chip c-green">shipped</span></td><td class="mono">diagnostics.py:49</td></tr>
+      <tr><td>Live dashboard (OTLP receiver + SSE)</td><td><span class="chip c-green">shipped</span></td><td class="mono">dashboard/app.py, store.py:283</td></tr>
+      <tr><td>Record / replay (mcap + correlator)</td><td><span class="chip c-green">shipped</span></td><td class="mono">replay/bag_reader.py:144, correlator.py:95</td></tr>
+      <tr><td>Dataset trace correlation (ISSUE-109)</td><td><span class="chip c-green">shipped</span></td><td class="mono">frame_trace.py:28, sinks.py:93</td></tr>
+      <tr><td>Eval ↔ trace linkage</td><td><span class="chip c-green">shipped</span></td><td class="mono">schemas.py:4672</td></tr>
+      <tr><td>Weights revision pinning (HF SHA)</td><td><span class="chip c-green">shipped</span></td><td class="mono">loader.py:128</td></tr>
+      <tr><td>LTTng kernel tracing (opt-in)</td><td><span class="chip c-green">shipped</span></td><td class="mono">tracing_lttng.py</td></tr>
+      <tr><td>WAM observability</td><td><span class="chip c-yellow">partial</span> protocol-only</td><td class="mono">/openral/failure/wam</td></tr>
+      <tr><td>Multiprocess log correlation</td><td><span class="chip c-yellow">partial</span></td><td class="mono">logging.py:12 (note)</td></tr>
+      <tr><td>Tier-C critic producer</td><td><span class="chip c-red">missing</span> contract-only</td><td class="mono">/openral/failure/critic</td></tr>
+      <tr><td>Weight signature verification</td><td><span class="chip c-red">missing</span></td><td class="mono">loader.py:748 (ADR-0006)</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================= 3 ============================= -->
+<section id="layers">
+  <h2><span class="num">3</span>Per-layer observability &amp; traceability inventory</h2>
+  <p class="lead">The eight architectural layers (CLAUDE.md §3). For each: what telemetry/traceability exists today,
+    where it lives, and the layer-local gaps.</p>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 0</span><h3>HAL — hardware abstraction</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc">Joint/actuator I/O instrumented at the hot-path boundary; per-call timing and proprio snapshots
+      flow onto spans. E-stop events are counted, not just logged.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li>Read/send timing histograms: <code>openral.hal.read_state.duration</code>,
+        <code>openral.hal.send_action.duration</code> (<code>semconv.py:218–219</code>); E-stop counter
+        <code>openral.hal.estop.count</code> (<code>semconv.py:220</code>).</li>
+      <li>Hot-path attribute encoders flatten joint state and the next-applied action onto spans with cardinality
+        guards (≤64 joints, ≤8 EEs, 3-dp rounding, ±inf clamp): <code>producer.record_joint_state</code>,
+        <code>record_action</code>, <code>record_ee_poses</code> (<code>producer.py</code>).</li>
+      <li>Multithreaded executor + proprio snapshot timing per ADR-0049.</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">No HAL-side latency budget on the <code>read→infer→write</code> round-trip exposed as a metric
+        (tick-level budget exists; per-HAL does not).</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 1</span><h3>Sensors</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc">Frame freshness is treated as a safety-relevant signal: age and staleness are both metric and span
+      attributes, and stale reads raise <code>ROSPerceptionStale</code>.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li>Frame age histogram <code>openral.sensors.age_ms</code> + stale-read counter
+        <code>openral.sensors.stale_reads</code> (<code>semconv.py:221–222</code>).</li>
+      <li>Per-frame span attrs (modality/encoding/W×H×C/age + JPEG thumbnail for the dashboard):
+        <code>producer.record_sensor_frame_attrs</code>, <code>encode_frame_thumbnail</code> (<code>producer.py</code>);
+        attribute keys at <code>semconv.py:115–121</code>.</li>
+      <li><code>SensorFrame</code> captures the raw payload for replay — inline <code>data</code>, a <code>topic</code>
+        reference, or an opaque <code>handle</code> (<code>schemas.py:1716</code>).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Thumbnail capture is dashboard-oriented; full-resolution frame replay depends on bag/topic capture,
+        not the trace itself.</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 2</span><h3>World State</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc">Aggregated state carries per-component staleness and a latched-error flag; the scene graph emits its
+      own span for spatial debugging.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li>Staleness histogram + stale-component up-down counter + latched-error attr:
+        <code>openral.world_state.staleness_ms</code>, <code>.components_stale</code>, <code>.has_latched_error</code>
+        (<code>semconv.py:135–138, 223–224</code>).</li>
+      <li><code>world.scene_objects</code> span with object list/count/frame/source (<code>semconv.py:144–147</code>),
+        rendered as a dashboard card + SLAM-map markers (ADR-0038/0039).</li>
+      <li><code>WorldStateStamped</code> IDL carries <code>trace_id</code>, per-component staleness, and (ADR-0035)
+        detected-object parallel arrays; published fast (30&nbsp;Hz) / slow (5&nbsp;Hz).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Spatial-memory persistence is Phase&nbsp;4 (in-memory + CLIP embed); durable sqlite-vec store +
+        ROS feeder are Phase&nbsp;5 (planned).</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 3</span><h3>rSkill (S1 fast policy)</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc">Skill lifecycle and each VLA chunk inference are spanned; tick records are serializable and carry
+      their own trace context for offline join. Weights are revision-pinned.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li><code>rskill_span</code> (configure/activate/execute) and <code>inference_span</code> (foreground vs prefetch,
+        chunk index) — <code>tracing.py:40, 70</code>.</li>
+      <li><code>TickResult</code> with per-stage timings + <code>trace_context</code> (full W3C traceparent persisted
+        for offline replay, <code>schemas.py:5730</code>); <code>RunResult.trace_id</code> links the run to its root
+        span (<code>schemas.py:5761</code>).</li>
+      <li>Revision pinning: <code>InstalledRSkillEntry.revision</code> stores the HF commit SHA
+        (<code>loader.py:128</code>); <code>from_pretrained(..., revision=...)</code> (<code>loader.py:181</code>).</li>
+      <li>License/posture guard at load (non-commercial gate, unsafe-pickle gate, remote-code gate):
+        <code>_check_provenance</code> (<code>loader.py:748</code>).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Quantization surfaces only as a boolean <code>info.quantized</code> — bits/algorithm/schedule are
+        not standardized on the inference span.</li>
+      <li class="gap">No model-family/lineage field on the execution path (present only in
+        <code>RSkillEvalSource</code>, <code>schemas.py:4570</code>).</li>
+      <li class="gap">Weight <b>signature verification absent</b> — see P0 below.</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 4</span><h3>Reasoning (S2 LLM supervisor)</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc">Every reasoner pass is a span with model/tool/tier/error attribution; tool calls are typed
+      (no free-form JSON), and the bounded replanning ladder is observable per failure kind.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li><code>reasoner_span</code> per <code>ReasonerCore.tick()</code> with <code>tick_idx</code>, <code>model</code>,
+        <code>force</code>, and (ADR-0018 amendment) <code>reasoner.tier</code> (<code>tracing.py:132</code>).</li>
+      <li><code>ReasonerTickResult</code> records <code>tool_call</code>, <code>error</code>, <code>elapsed_s</code>,
+        <code>suppressed_reason</code> and the active <code>traceparent</code> (<code>core.py:43</code>).</li>
+      <li>Typed tool palette: <code>ReasonerToolCall</code> discriminated union validated via
+        <code>TypeAdapter</code> before dispatch (<code>tool_use.py:225, 412</code>).</li>
+      <li>Bounded ladder: per-kind retry cap + 100&nbsp;ms min-interval gate, both surfaced as
+        <code>suppressed_reason</code> values (<code>core.py:43–90</code>).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Prompts flow over <code>/openral/prompt</code> and onto spans, but there is no first-class prompt
+        archive/playback — auditing prompt history depends on bag capture.</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 5</span><h3>World Action Model (WAM)</h3><span class="chip c-yellow">partial</span></div>
+    <div class="desc">The observability contract is defined (failure source + evidence), but concrete adapters that would
+      emit rollout spans are not yet shipped.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li>Failure source <code>/openral/failure/wam</code> with <code>WamEvidence</code> (horizon, error) in the
+        failure-bus evidence union; <code>WorldModel</code> Protocol + <code>NullWorldModel</code>.</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">No <code>wam.rollout</code> span emitter shipped; Cosmos / UnifoLM-WMA-0 / IRASim adapters are
+        v0.3 (planned). Mental-simulation gating is therefore not yet traced.</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 6</span><h3>Safety</h3><span class="chip c-green">shipped</span> <span class="chip c-yellow">kernel gates partial</span></div>
+    <div class="desc">Safety checks are spanned and severity-counted; the C++ kernel re-parents under the Python tick via
+      W3C context, and violations raise typed exceptions for the supervisor incident log.</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li><code>safety_span</code> (check_name, severity ∈ info/warn/violation) — <code>tracing.py:98</code>;
+        violation/clamp counters <code>openral.safety.violations</code>, <code>.clamps</code>
+        (<code>semconv.py:216–217</code>).</li>
+      <li>C++ kernel resumes the trace from the <code>traceparent</code> packed in <code>ActionChunk</code> via
+        <code>extract_traceparent</code> (<code>propagation.py:82</code>).</li>
+      <li>Failure source <code>/openral/failure/safety</code> is the Tier-A preempting signal (ADR-0018 amendment);
+        <code>ROSSafetyViolation</code> drives the structured incident log at the supervisor boundary (CLAUDE.md §5).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Kernel-side LTTng tracepoints + sim/HIL gating are in-flight (ADR-0020); kernel timing breakdown
+        not yet a first-class metric.</li>
+    </ul>
+  </div>
+
+  <div class="layer">
+    <div class="head"><span class="lid">Layer 7</span><h3>Observability (the platform itself)</h3><span class="chip c-green">shipped</span></div>
+    <div class="desc"><code>python/openral_observability/</code> + the <code>python/openral_dataset/</code> bridge. The richest
+      layer in the repo; details in §4 (spine) and §8 (appendix).</div>
+    <div class="kv"><span class="k">Exists</span></div>
+    <ul>
+      <li>SDK lifecycle (<code>_sdk.py:107, 280</code>), span helpers (<code>tracing.py</code>), 28 metric instruments
+        (<code>metrics.py</code>/<code>semconv.py:211</code>), propagation (<code>propagation.py</code>),
+        structlog bridge (<code>logging.py</code>), failure bus (<code>failure_bus.py</code>), diagnostics
+        (<code>diagnostics.py</code>), lifecycle error logging (<code>lifecycle.py:39</code>), system metrics sampler
+        (<code>system_metrics.py:45</code>), LTTng (<code>tracing_lttng.py</code>), CLI root span (<code>cli.py:52</code>).</li>
+      <li>Dashboard (<code>dashboard/app.py</code>, <code>store.py:283</code>) and replay
+        (<code>replay/bag_reader.py:144</code>, <code>correlator.py:95</code>, <code>trace_query.py</code>).</li>
+      <li>Dataset bridge: <code>RolloutRecorder</code> (<code>recorder.py:167</code>), <code>Rosbag2Sink</code>
+        (<code>bag.py:143</code>), <code>LeRobotDatasetSink</code> (<code>sinks.py:93</code>),
+        <code>Rosbag2ToLeRobotConverter</code> (<code>converter.py:96</code>), <code>read_frame_trace</code>
+        (<code>frame_trace.py:28</code>).</li>
+    </ul>
+    <div class="kv"><span class="k">Gaps</span></div>
+    <ul>
+      <li class="gap">Multiprocess log correlation not wired (<code>logging.py:12</code> note) — see P1.</li>
+      <li class="gap">No export-failure alerting beyond the <code>openral.observability.export_failures</code> counter
+        (<code>semconv.py:225</code>) — the counter exists but nothing acts on it.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================= 4 ============================= -->
+<section id="spine">
+  <h2><span class="num">4</span>Cross-cutting traceability spine</h2>
+  <p class="lead">The mechanisms that make a single <code>trace_id</code> meaningful from CLI invocation all the way to
+    a training-dataset row.</p>
+
+  <h3>OTel SDK, exporters &amp; sampling</h3>
+  <p><code>configure_observability()</code> (<code>_sdk.py:107</code>) is idempotent and a no-op until
+    <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> is set (CLAUDE.md §1.12-friendly for CI). It supports OTLP/gRPC (default)
+    and HTTP/protobuf (for the dashboard receiver), head-based sampling via <code>OPENRAL_OTEL_SAMPLE_RATIO</code>
+    (ParentBased + TraceIdRatio, ADR-0010), and batch tuning via <code>OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS</code>
+    (~33&nbsp;Hz default) / <code>OPENRAL_OTEL_METRIC_INTERVAL_MS</code>. <code>shutdown_observability()</code>
+    (<code>_sdk.py:280</code>) drains all three pipelines via an <code>atexit</code> hook.</p>
+
+  <h3>W3C context propagation (Python ↔ ROS&nbsp;2 ↔ C++)</h3>
+  <p>The truth is the OTel context; ROS message fields are populated <i>from</i> it (ADR-0018 §6).
+    <code>current_traceparent()</code> (<code>propagation.py:37</code>) reads the active span;
+    <code>inject_traceparent()</code> / <code>extract_traceparent()</code> (<code>propagation.py:52, 82</code>) move it
+    across the wire. The same <code>trace_id</code> appears on <code>ActionChunk</code>, <code>FailureTrigger</code>,
+    <code>PromptStamped</code>, and <code>WorldStateStamped</code>, so a single trace spans the fast loop, the failure
+    bus, and the C++ kernel.</p>
+
+  <h3>Structured logging</h3>
+  <p><code>trace_context_processor()</code> stamps <code>trace_id</code>/<code>span_id</code> on every log record
+    (<code>logging.py:31</code>); <code>install_structlog_bridge()</code> routes structlog → stdlib → OTel
+    <code>LoggerProvider</code> → OTLP (<code>logging.py:47</code>). Logs land in the dashboard event log alongside the
+    spans that produced them.</p>
+
+  <h3>Live dashboard</h3>
+  <p>A self-contained FastAPI app (<code>dashboard/app.py</code>) hosts the OTLP/HTTP receiver
+    (<code>/v1/traces</code> · <code>/v1/metrics</code> · <code>/v1/logs</code>), an SSE live stream
+    (<code>/api/stream</code>), a bounded trace index (<code>/api/traces</code>, <code>/api/spans/{trace_id}</code> —
+    F7), and an offline voice-prompt path (local <code>faster-whisper</code>). The <code>TelemetryStore</code>
+    (<code>store.py:283</code>) is a thread-safe, ring-buffered aggregator (bounded events/metrics/traces). No external
+    collector is required (ADR-0017).</p>
+
+  <h3>Record / replay</h3>
+  <p><code>read_bag()</code> (<code>replay/bag_reader.py:144</code>) iterates <code>.mcap</code> without a
+    <code>rosbag2_py</code> dependency, extracting <code>traceparent</code> from both JSON-schema payloads and CDR
+    bytes. <code>build_timeline()</code> (<code>correlator.py:95</code>) query-joins bag messages with dashboard spans
+    by <code>trace_id</code> into a chronological timeline. Replay is <b>forensic</b> — it reconstructs causality, not
+    bit-identical re-execution (see §5).</p>
+
+  <h3>Dataset ↔ trace ↔ eval correlation</h3>
+  <p><code>RolloutRecorder</code> (<code>recorder.py:167</code>) stamps each frame with the active tick span's
+    <code>(trace_id, span_id)</code>; <code>LeRobotDatasetSink</code> (<code>sinks.py:93</code>) writes them as parquet
+    columns and a <code>meta/openral_traces.json</code> episode→trace map (ISSUE-109).
+    <code>read_frame_trace()</code> (<code>frame_trace.py:28</code>) pivots any <code>(episode, frame)</code> back to its
+    trace. <code>RSkillEvalResult.trace_id</code> (<code>schemas.py:4672</code>) closes the loop from a benchmark number
+    to the trace tree that produced it.</p>
+</section>
+
+<!-- ============================= 5 ============================= -->
+<section id="repro">
+  <h2><span class="num">5</span>Reproducibility audit (CLAUDE.md §8 &amp; §4)</h2>
+  <p class="lead">Scoring the two normative principles against the implementation.</p>
+
+  <h3>§8 — "Replayable from the trace alone"</h3>
+  <table>
+    <thead><tr><th>Requirement</th><th>Status</th><th>Evidence / caveat</th></tr></thead>
+    <tbody>
+      <tr><td>Weights revision pinned</td><td><span class="chip c-green">shipped</span></td>
+        <td>HF commit SHA on <code>InstalledRSkillEntry.revision</code> (<code>loader.py:128</code>);
+          <code>from_pretrained(revision=...)</code> + unpinned-weights warning.</td></tr>
+      <tr><td>Prompts logged</td><td><span class="chip c-yellow">partial</span></td>
+        <td>On <code>reasoner.tick</code> span + <code>/openral/prompt</code>, but no first-class archive — replay needs
+          the bag (see P2).</td></tr>
+      <tr><td>Sensor frames captured</td><td><span class="chip c-green">shipped</span></td>
+        <td><code>SensorFrame.data</code>/<code>topic</code>/<code>handle</code> (<code>schemas.py:1716</code>);
+          full-res replay via bag/topic.</td></tr>
+      <tr><td>Cryptographic integrity of weights</td><td><span class="chip c-red">missing</span></td>
+        <td>Sigstore unimplemented (ADR-0006) — trust rests on HF transport only. <b>P0.</b></td></tr>
+      <tr><td>Trace persisted for offline join</td><td><span class="chip c-green">shipped</span></td>
+        <td><code>TickResult.trace_context</code> (<code>schemas.py:5730</code>) + dataset trace columns.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>§4 — "Explicit beats implicit" (must appear in logs/traces)</h3>
+  <table>
+    <thead><tr><th>Signal</th><th>Status</th><th>Evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Replanning</td><td><span class="chip c-green">shipped</span></td>
+        <td><code>suppressed_reason</code>, per-kind retry cap, tier preemption (<code>core.py:43</code>).</td></tr>
+      <tr><td>License posture</td><td><span class="chip c-green">shipped</span></td>
+        <td>Manifest license + install-time gates (<code>loader.py:748</code>).</td></tr>
+      <tr><td>Quantization</td><td><span class="chip c-yellow">partial</span></td>
+        <td>Boolean <code>info.quantized</code> + compile-skip log; no bits/algo/schedule (P2).</td></tr>
+      <tr><td>Dispatcher fallback</td><td><span class="chip c-blue">planned</span></td>
+        <td>Cloud dispatch is a future ADR; not on the v1 execution path.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Replay-determinism caveat (document, don't "fix")</h3>
+  <p>Bit-identical re-execution is <b>not</b> a goal: GPU kernels/quantization are non-deterministic and diffusion-based
+    VLAs intentionally sample. The trace/bag are a <b>forensic record</b> (what happened, with full causality), not a
+    deterministic-replay engine. This should be stated explicitly in the glossary and roadmap so the §8 guarantee is not
+    over-read.</p>
+</section>
+
+<!-- ============================= 6 ============================= -->
+<section id="recs">
+  <h2><span class="num">6</span>Prioritized recommendations</h2>
+  <p class="lead">Each gap with severity, impact, and a concrete fix. <b>P0</b> = correctness/trust blocker before a
+    public "verified" claim; <b>P1</b> = materially improves operability/coverage; <b>P2</b> = depth &amp; polish.</p>
+
+  <div class="filterbar" id="prifilter">
+    <button data-f="all" class="active">All</button>
+    <button data-f="P0">P0</button>
+    <button data-f="P1">P1</button>
+    <button data-f="P2">P2</button>
+  </div>
+
+  <table id="rectable">
+    <thead><tr><th>#</th><th>Pri</th><th>Gap</th><th>Impact</th><th>Suggested fix</th><th>Owner / refs</th></tr></thead>
+    <tbody>
+      <tr data-p="P0">
+        <td>R1</td><td><span class="pri P0">P0</span></td>
+        <td>rSkill weight <b>signing/verification unimplemented</b></td>
+        <td>§8 "replayable from the trace alone" is unverifiable; cannot honestly call skills "signed/verified"
+          (CLAUDE.md §1.2). <code>OPENRAL_REQUIRE_SIGNED_SKILLS=1</code> fails closed today.</td>
+        <td>Add a <code>signature</code> field to <code>RSkillManifest</code>; sign-on-publish in
+          <code>tools/rskill_publisher.py</code>; verify-on-load in <code>_check_provenance</code>; record verification
+          outcome as a span attribute. Bump on-disk <code>schema_version</code> + migrator.</td>
+        <td>ADR-0006 · <code>loader.py:748</code> · <code>schemas.py:3848</code></td>
+      </tr>
+      <tr data-p="P1">
+        <td>R2</td><td><span class="pri P1">P1</span></td>
+        <td><b>Multiprocess log/trace correlation</b> not wired</td>
+        <td>Dispatcher / fleet-supervisor workers don't share the trace context, so cross-process logs aren't
+          correlated — gaps in any split/cloud deployment.</td>
+        <td>Extend <code>install_structlog_bridge</code> for worker processes; propagate <code>traceparent</code> across
+          the process boundary at spawn; add an integration test over two processes.</td>
+        <td><code>logging.py:12,47</code></td>
+      </tr>
+      <tr data-p="P1">
+        <td>R3</td><td><span class="pri P1">P1</span></td>
+        <td><b>Tier-C critic producer</b> missing (contract-only)</td>
+        <td>"Progress stalled" has no structured signal, so the replanning ladder can't react to silent failure — a
+          robot can wedge without a trace event.</td>
+        <td>Ship a default progress watchdog publishing <code>FailureTrigger</code> with <code>CriticEvidence</code> on
+          <code>/openral/failure/critic</code> (reuse the Robometer reward rSkill, ADR-0057); emit a
+          <code>reasoner.tier=C</code> span on preemption.</td>
+        <td>ADR-0018 §4 amendment · ADR-0057 · <code>failure_bus.py:118</code></td>
+      </tr>
+      <tr data-p="P2">
+        <td>R4</td><td><span class="pri P2">P2</span></td>
+        <td>Quantization provenance is a <b>boolean only</b></td>
+        <td>§4 wants quantization to "show up in traces"; bits/algorithm/schedule aren't queryable from a trace, so two
+          differently-quantized runs look identical.</td>
+        <td>Add <code>openral.inference.quant.*</code> span attributes (algo, bits, calib) in <code>semconv.py</code>;
+          populate from the adapter at load.</td>
+        <td><code>semconv.py</code> · rSkill adapter base</td>
+      </tr>
+      <tr data-p="P2">
+        <td>R5</td><td><span class="pri P2">P2</span></td>
+        <td>No <b>model-family / lineage</b> field on the execution path</td>
+        <td>Revision SHA pins <i>which checkpoint</i> but not <i>which base model</i>; cross-run analysis can't group by
+          "SmolVLA" vs "GR00T N1.5" without parsing eval JSON.</td>
+        <td>Promote the lineage field from <code>RSkillEvalSource</code> (<code>schemas.py:4570</code>) onto
+          <code>RSkillManifest</code>; stamp <code>openral.rskill.model_family</code> on the inference span.</td>
+        <td><code>schemas.py:3848,4570</code></td>
+      </tr>
+      <tr data-p="P2">
+        <td>R6</td><td><span class="pri P2">P2</span></td>
+        <td><b>Prompt archive/playback</b> not first-class</td>
+        <td>Auditing the LLM prompt history (a §8 input) requires the bag; there's no queryable prompt store.</td>
+        <td>Add a bounded prompt ring to <code>TelemetryStore</code> with a <code>/api/prompts</code> endpoint, keyed by
+          <code>trace_id</code>; persist to the dataset <code>meta/</code> on finalize.</td>
+        <td><code>dashboard/store.py:283</code> · ADR-0018 F6/F10</td>
+      </tr>
+      <tr data-p="P2">
+        <td>R7</td><td><span class="pri P2">P2</span></td>
+        <td><b>WAM observability</b> protocol-only</td>
+        <td>Mental-simulation gating / failure-anticipation aren't traced because no adapter emits rollout spans.</td>
+        <td>Define a <code>wam.rollout</code> span (latency, horizon, confidence) in <code>semconv.py</code> now, so the
+          v0.3 adapters emit it from day one.</td>
+        <td>roadmap v0.3 · <code>/openral/failure/wam</code></td>
+      </tr>
+      <tr data-p="P2">
+        <td>R8</td><td><span class="pri P2">P2</span></td>
+        <td><b>Export-failure</b> counter is unobserved</td>
+        <td><code>openral.observability.export_failures</code> increments but nothing surfaces it — silent telemetry loss
+          is possible during long runs.</td>
+        <td>Surface the counter as a dashboard health card; raise a <code>DiagnosticsHeartbeat</code> WARN when non-zero
+          over a window.</td>
+        <td><code>semconv.py:225</code> · <code>diagnostics.py:49</code></td>
+      </tr>
+      <tr data-p="P2">
+        <td>R9</td><td><span class="pri P2">P2</span></td>
+        <td>C++ safety-kernel <b>LTTng + sim/HIL gates</b> pending</td>
+        <td>Kernel-side µs timing isn't yet correlated with OTel in CI/HIL, limiting realtime regression detection.</td>
+        <td>Wire kernel LTTng tracepoints to the existing <code>otel_trace_id</code> join (already done Python-side in
+          <code>tracing_lttng.py</code>); add sim/HIL gate.</td>
+        <td>ADR-0020 · <code>tracing_lttng.py</code></td>
+      </tr>
+      <tr data-p="P2">
+        <td>R10</td><td><span class="pri P2">P2</span></td>
+        <td>Replay-determinism semantics <b>under-documented</b></td>
+        <td>Readers may over-read §8 as bit-exact replay; the forensic-vs-deterministic distinction isn't stated.</td>
+        <td>Add a "Trace / Replay (forensic, not deterministic)" entry to <code>docs/reference/glossary.md</code> and a
+          note on the roadmap.</td>
+        <td><code>docs/reference/glossary.md</code></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================= 7 ============================= -->
+<section id="refs">
+  <h2><span class="num">7</span>ADR &amp; reference index</h2>
+  <table>
+    <thead><tr><th>Ref</th><th>Subject</th><th>Status vs report</th></tr></thead>
+    <tbody>
+      <tr><td><a href="../adr/0006-hf-hub-skill-packaging.md">ADR-0006</a></td><td>HF Hub rSkill packaging; sigstore provenance</td><td><span class="chip c-red">signing missing (P0)</span></td></tr>
+      <tr><td><a href="../adr/0010-inference-runner.md">ADR-0010</a></td><td>Inference runner; head-based sampling rationale</td><td><span class="chip c-green">shipped</span></td></tr>
+      <tr><td><a href="../adr/0017-dashboard-otlp-receiver.md">ADR-0017</a></td><td><code>openral dashboard</code> OTLP/HTTP receiver</td><td><span class="chip c-green">shipped</span></td></tr>
+      <tr><td><a href="../adr/0018-ros2-reasoner-supervisor.md">ADR-0018</a></td><td>Reasoner + supervisor graph (F1–F10, tier taxonomy)</td><td><span class="chip c-green">shipped</span> <span class="chip c-red">Tier-C producer (P1)</span></td></tr>
+      <tr><td><a href="../adr/0019-rosbag2-lerobot-dataset-bridge.md">ADR-0019</a></td><td>rosbag2 ↔ LeRobotDataset v3 + trace columns</td><td><span class="chip c-green">shipped</span></td></tr>
+      <tr><td><a href="../adr/0020-cpp-safety-kernel.md">ADR-0020</a></td><td>C++ safety kernel</td><td><span class="chip c-yellow">LTTng/HIL gates pending (P2)</span></td></tr>
+      <tr><td><a href="../adr/0038-persistent-semantic-spatial-memory.md">ADR-0038</a> / <a href="../adr/0039-llm-task-planning-active-search.md">0039</a></td><td>Spatial memory; <code>world.scene_objects</code> span</td><td><span class="chip c-yellow">Phase 5 pending</span></td></tr>
+      <tr><td><a href="../adr/0057-robometer-reward-rskill.md">ADR-0057</a></td><td>Robometer reward rSkill (critic candidate)</td><td><span class="chip c-yellow">reusable for R3</span></td></tr>
+      <tr><td><a href="../methods/06-reasoning-wam-safety-observability.md">methods/06</a></td><td>Public-symbol inventory (Layers 5–8)</td><td>reference</td></tr>
+      <tr><td><a href="../architecture/repo-state-map.html">repo-state-map.html</a></td><td>Per-module status canvas</td><td>reference</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ============================= 8 ============================= -->
+<section id="appendix">
+  <h2><span class="num">8</span>Appendix</h2>
+
+  <h3>A · Configuration environment variables</h3>
+  <table>
+    <thead><tr><th>Variable</th><th>Purpose</th><th>Default</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">OTEL_EXPORTER_OTLP_ENDPOINT</td><td>Collector/dashboard address; unset ⇒ no-op</td><td>(unset)</td><td class="mono">_sdk.py:48</td></tr>
+      <tr><td class="mono">OTEL_EXPORTER_OTLP_PROTOCOL</td><td><code>grpc</code> or <code>http/protobuf</code></td><td>grpc</td><td class="mono">_sdk.py:49</td></tr>
+      <tr><td class="mono">OPENRAL_OTEL_SAMPLE_RATIO</td><td>Head-based sampling ratio</td><td>always-on</td><td class="mono">_sdk.py:52</td></tr>
+      <tr><td class="mono">OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS</td><td>Batch span flush interval</td><td>30 (~33 Hz)</td><td class="mono">_sdk.py:53</td></tr>
+      <tr><td class="mono">OPENRAL_OTEL_METRIC_INTERVAL_MS</td><td>Metric export cadence</td><td>5000</td><td class="mono">_sdk.py:50</td></tr>
+      <tr><td class="mono">OPENRAL_ROS2_TRACING</td><td>LTTng kernel tracing opt-in</td><td>disabled</td><td class="mono">tracing_lttng.py</td></tr>
+      <tr><td class="mono">OPENRAL_REQUIRE_SIGNED_SKILLS</td><td>Fail-closed on unsigned weights (fails today)</td><td>off</td><td class="mono">loader.py:82</td></tr>
+      <tr><td class="mono">OPENRAL_STT_MODEL / _DEVICE / _COMPUTE</td><td>Dashboard offline voice-prompt model</td><td>base.en / cpu / int8</td><td class="mono">dashboard/app.py</td></tr>
+    </tbody>
+  </table>
+
+  <h3>B · Metric instruments (semconv.py:211–236)</h3>
+  <table>
+    <thead><tr><th>Instrument</th><th>Kind</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">openral.tick.duration</td><td>histogram (ms)</td></tr>
+      <tr><td class="mono">openral.inference.duration</td><td>histogram (ms)</td></tr>
+      <tr><td class="mono">openral.hal.read_state.duration / send_action.duration</td><td>histogram (ms)</td></tr>
+      <tr><td class="mono">openral.sensors.age_ms / world_state.staleness_ms</td><td>histogram (ms)</td></tr>
+      <tr><td class="mono">openral.tick.budget_violations / deadline_misses</td><td>counter</td></tr>
+      <tr><td class="mono">openral.inference.timeouts</td><td>counter</td></tr>
+      <tr><td class="mono">openral.safety.violations / clamps</td><td>counter</td></tr>
+      <tr><td class="mono">openral.hal.estop.count</td><td>counter</td></tr>
+      <tr><td class="mono">openral.sensors.stale_reads</td><td>counter</td></tr>
+      <tr><td class="mono">openral.sim.episode.count / success</td><td>counter</td></tr>
+      <tr><td class="mono">openral.observability.export_failures</td><td>counter</td></tr>
+      <tr><td class="mono">openral.world_state.components_stale</td><td>up-down counter</td></tr>
+      <tr><td class="mono">openral.system.gpu.memory_used_mb / memory_total_mb / utilization_pct</td><td>gauge</td></tr>
+      <tr><td class="mono">openral.system.cpu.utilization_pct / ram.used_mb / ram.total_mb</td><td>gauge</td></tr>
+    </tbody>
+  </table>
+
+  <h3>C · Dependency license posture</h3>
+  <p>All observability dependencies are permissive (Apache-2.0 / MIT / BSD), consistent with CLAUDE.md §1.9:
+    <code>opentelemetry-{api,sdk,exporter-otlp-proto-grpc,proto}</code> (Apache-2.0), <code>structlog</code>,
+    <code>mcap</code>, <code>nvidia-ml-py</code> (MIT), <code>psutil</code> (BSD); dashboard extra
+    <code>fastapi</code>/<code>faster-whisper</code> (MIT), <code>uvicorn</code>/<code>httpx</code> (BSD). Vendored
+    browser assets (Silero VAD Apache-2.0, onnxruntime-web MIT) inventoried in
+    <code>dashboard/static/vendor/vad/NOTICE.md</code>.</p>
+
+  <div class="foot">
+    Generated as a source-grounded audit on the feature branch. Status vocabulary follows
+    <code>docs/architecture/repo-state-map.html</code>. This document is a report artifact: it adds no public symbols,
+    schemas, or packages, so <code>docs/METHODS.md</code> and the repo-state-map data arrays are intentionally
+    unchanged (CLAUDE.md §1.14). Recommendations R1–R10 are proposals, not commitments.
+  </div>
+</section>
+
+</main>
+</div>
+
+<script>
+  // Priority filter for the recommendations table (vanilla, no deps).
+  (function () {
+    var bar = document.getElementById("prifilter");
+    if (!bar) return;
+    var rows = Array.prototype.slice.call(
+      document.querySelectorAll("#rectable tbody tr")
+    );
+    bar.addEventListener("click", function (e) {
+      var btn = e.target.closest("button");
+      if (!btn) return;
+      var f = btn.getAttribute("data-f");
+      Array.prototype.forEach.call(bar.querySelectorAll("button"), function (b) {
+        b.classList.toggle("active", b === btn);
+      });
+      rows.forEach(function (r) {
+        r.style.display = f === "all" || r.getAttribute("data-p") === f ? "" : "none";
+      });
+    });
+  })();
+</script>
+</body>
+</html>
