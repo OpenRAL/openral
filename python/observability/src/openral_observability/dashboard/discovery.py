@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -103,12 +104,15 @@ class Discovery:
         """
         return self.registry.list_robots()
 
-    def start(self, *, host: str, port: int, ts_now: float) -> None:
-        """Start browsing always; advertise only on a non-loopback bind.
+    def start(self, *, host: str, port: int) -> None:
+        """Start browsing always; advertise only on a non-loopback, non-wildcard bind.
 
-        ``ts_now`` is the current unix time (passed in — scripts/tests must not
-        call ``time.time`` implicitly here; the caller stamps it).
+        Args:
+            host: The IP address the dashboard HTTP server is bound to.
+            port: The port the dashboard HTTP server is listening on.
         """
+        if self._zc is not None:
+            return
         try:
             from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
         except ImportError:
@@ -118,28 +122,42 @@ class Discovery:
         self._browser = ServiceBrowser(
             self._zc,
             SERVICE_TYPE,
-            _RegistryListener(self.registry, ts_now),  # type: ignore[arg-type] # reason: _RegistryListener satisfies ServiceListener structurally but mypy can't verify duck-typing across a guarded import
+            _RegistryListener(self.registry),  # type: ignore[arg-type] # reason: _RegistryListener satisfies ServiceListener structurally but mypy can't verify duck-typing across a guarded import
         )
-        if host.strip().lower() not in _LOOPBACK_HOSTS:
-            self._service_info = ServiceInfo(
-                SERVICE_TYPE,
-                f"openral-dashboard-{socket.gethostname()}.{SERVICE_TYPE}",
-                addresses=[socket.inet_aton(host)],
-                port=port,
-                properties={b"path": b"/v1", b"role": b"dashboard"},
-            )
-            self._zc.register_service(self._service_info)
-            _logger.info("discovery.advertising", host=host, port=port)
+        _no_advertise = _LOOPBACK_HOSTS | {"0.0.0.0", "::"}
+        if host.strip().lower() not in _no_advertise:
+            try:
+                addr_bytes = socket.inet_aton(host)
+            except OSError:
+                _logger.warning(
+                    "discovery.advertise_skipped",
+                    host=host,
+                    reason="non-IPv4 address; browse-only",
+                )
+            else:
+                self._service_info = ServiceInfo(
+                    SERVICE_TYPE,
+                    f"openral-dashboard-{socket.gethostname()}.{SERVICE_TYPE}",
+                    addresses=[addr_bytes],
+                    port=port,
+                    properties={b"path": b"/v1", b"role": b"dashboard"},
+                )
+                self._zc.register_service(self._service_info)
+                _logger.info("discovery.advertising", host=host, port=port)
         else:
-            _logger.info("discovery.browse_only", reason="loopback bind not advertised")
+            _logger.info("discovery.browse_only", reason="loopback/wildcard bind not advertised")
         self.enabled = True
 
     def stop(self) -> None:
-        """Unregister the advertised service and close the Zeroconf socket."""
+        """Unregister the advertised service, cancel the browser, and close Zeroconf."""
         if self._zc is None:
             return
         if self._service_info is not None:
             self._zc.unregister_service(self._service_info)
+            self._service_info = None
+        if self._browser is not None:
+            self._browser.cancel()
+            self._browser = None
         self._zc.close()
         self._zc = None
         self.enabled = False
@@ -148,9 +166,8 @@ class Discovery:
 class _RegistryListener:
     """zeroconf ServiceListener → RobotRegistry adapter."""
 
-    def __init__(self, registry: RobotRegistry, ts_now: float) -> None:
+    def __init__(self, registry: RobotRegistry) -> None:
         self._registry = registry
-        self._ts = ts_now
 
     def _resolve(self, zc: Zeroconf, name: str) -> None:
         info = zc.get_service_info(SERVICE_TYPE, name, timeout=2000)
@@ -159,13 +176,13 @@ class _RegistryListener:
         self._registry.upsert(
             DiscoveredRobot(
                 name=name,
-                addresses=[addr for addr in info.parsed_addresses()],
+                addresses=list(info.parsed_addresses()),
                 port=info.port or 0,
                 properties={
                     k.decode("utf-8", "replace"): (v or b"").decode("utf-8", "replace")
                     for k, v in (info.properties or {}).items()
                 },
-                last_seen=self._ts,
+                last_seen=time.time(),
             )
         )
 

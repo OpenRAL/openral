@@ -7,6 +7,8 @@ need neither.
 
 from __future__ import annotations
 
+import sys
+
 from openral_observability.dashboard.discovery import (
     DiscoveredRobot,
     Discovery,
@@ -43,3 +45,16 @@ def test_discovery_robots_delegates_to_registry() -> None:
     disc = Discovery(registry=reg)
     assert disc.enabled is False  # not started
     assert [r.name for r in disc.robots()] == ["a"]
+
+
+def test_discovery_start_graceful_without_zeroconf(monkeypatch: object) -> None:
+    """start() must not raise and must leave enabled=False when zeroconf is absent."""
+    import pytest
+
+    # monkeypatch is typed as object above to keep mypy happy with the narrow
+    # structural use below; we rely on pytest's runtime injection.
+    mp: pytest.MonkeyPatch = monkeypatch  # type: ignore[assignment] # reason: pytest injects a MonkeyPatch at runtime
+    mp.setitem(sys.modules, "zeroconf", None)  # type: ignore[arg-type] # reason: None sentinel forces ImportError on `import zeroconf`
+    disc = Discovery()
+    disc.start(host="127.0.0.1", port=4318)
+    assert disc.enabled is False
