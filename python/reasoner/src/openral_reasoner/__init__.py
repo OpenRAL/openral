@@ -33,6 +33,7 @@ from openral_reasoner.context import (
     PromptRecord,
 )
 from openral_reasoner.core import ReasonerCore, ReasonerTickResult
+from openral_reasoner.critic_watchdog import CriticWatchdog
 from openral_reasoner.null_reasoner import NullReasoner
 from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.plan import Plan, ToolCall
@@ -66,6 +67,7 @@ __all__ = [
     "SYSTEM_PROMPT_ENV_VAR",
     "AnthropicToolUseClient",
     "ContextRenderer",
+    "CriticWatchdog",
     "FailureEventRecord",
     "LLMClient",
     "NullReasoner",
