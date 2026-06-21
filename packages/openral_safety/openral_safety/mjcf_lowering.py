@@ -222,14 +222,19 @@ def _neutral_pose_collisions(params: dict[str, object], threshold: float) -> lis
     return sorted(extra)
 
 
-def _body_joint(
-    mj: Any, model: Any, body: int, dof_of_joint: dict[str, int]
-) -> tuple[int, int, _Vec]:
-    """(joint_kind, dof_index, axis) for the single hinge/slide joint on ``body``.
+def _body_joint(mj: Any, model: Any, body: int) -> tuple[int, _Vec]:
+    """(joint_kind, axis) for the single hinge/slide joint on ``body``.
 
-    Fixed/welded or free/ball bodies → (0, -1, +Z): the kernel treats them as a
+    Fixed/welded or free/ball bodies → (0, +Z): the kernel treats them as a
     fixed transform (a floating base is a rigid transform that can't change
     inter-link distances).
+
+    The ``dof_index`` (the commanded-joint column this link tracks) is NOT
+    decided here — it is assigned by movable-joint order in
+    :func:`lower_collision_params`, because the MJCF's own joint names do not
+    match the manifest's (e.g. ``Rotation`` vs ``shoulder_pan``); matching by
+    name silently froze every link's FK at the rest pose (see
+    ``tests/sim/safety/test_mjcf_lowering_dof_index.py``).
     """
     for ji in range(int(model.njnt)):
         if int(model.jnt_bodyid[ji]) != body:
@@ -241,9 +246,8 @@ def _body_joint(
             kind = 2
         else:
             break  # free / ball joint → fixed root
-        jname = mj.mj_id2name(model, mj.mjtObj.mjOBJ_JOINT, ji) or ""
-        return kind, dof_of_joint.get(jname, -1), [float(v) for v in model.jnt_axis[ji]]
-    return 0, -1, [0.0, 0.0, 1.0]
+        return kind, [float(v) for v in model.jnt_axis[ji]]
+    return 0, [0.0, 0.0, 1.0]
 
 
 def _static_allowed_pairs(
@@ -287,7 +291,14 @@ def lower_collision_params(
     import mujoco as mj
 
     n_bodies = int(model.nbody)
-    dof_of_joint = {name: idx for idx, name in enumerate(joint_names)}
+    # The manifest enumerates joints in the same order as the robot's MuJoCo
+    # actuators (``python/hal/.../_mujoco_arm.py`` docstring), so the i-th movable
+    # MJCF joint (in body order) maps to manifest/qpos column ``i``. ``n_cols``
+    # caps that: a movable joint past the commanded vector (e.g. a robot's second,
+    # mimic, gripper finger) gets ``dof_index = -1`` rather than indexing out of
+    # bounds. ``next_dof`` is the running movable-joint ordinal.
+    n_cols = len(joint_names)
+    next_dof = 0
 
     # Body id → contiguous link index (skip the world body 0).
     link_index = {b: b - 1 for b in range(1, n_bodies)}
@@ -313,9 +324,14 @@ def lower_collision_params(
         broll, bpitch, byaw = _quat_wxyz_to_rpy(mj, model.body_quat[body])
         origin_xyzrpy.extend([bpos[0], bpos[1], bpos[2], broll, bpitch, byaw])
 
-        kind, dof, jaxis = _body_joint(mj, model, body, dof_of_joint)
+        kind, jaxis = _body_joint(mj, model, body)
         joint_kind.append(kind)
-        dof_index.append(dof)
+        if kind == 0:
+            # Fixed/welded or free/ball: no commanded column, no FK angle.
+            dof_index.append(-1)
+        else:
+            dof_index.append(next_dof if next_dof < n_cols else -1)
+            next_dof += 1
         axis.extend(jaxis)
 
         # Every collidable primitive on the body becomes one capsule tagged with

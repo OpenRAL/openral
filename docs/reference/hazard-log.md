@@ -166,3 +166,98 @@ byte-identical regression evidence across the fleet, including that the vendored
 xacro path produced.
 
 - [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).
+
+---
+
+## Entry 003 — MJCF collision lowering assigns `dof_index` by joint order (issue #77)
+
+**Date:** 2026-06-21
+**PR:** chore/safety_kernel_improvements (issue #77 — finish the safety kernel)
+**Files changed:**
+- `packages/openral_safety/openral_safety/mjcf_lowering.py`
+
+### What changed
+
+`lower_collision_params` lowers a compiled `mujoco.MjModel` to the kernel's
+collision ROS parameters. Each movable (hinge/slide) link needs a `dof_index` —
+the column of the commanded joint vector (`ActionChunk.flat`, the actuated qpos
+order) that drives that link — so the kernel's allocation-free forward
+kinematics can place the link at the *commanded* configuration. `dof_index = -1`
+marks an immovable joint: FK never reads its angle and freezes the link at its
+rest transform.
+
+**Before:** the lowering built its dof lookup keyed by the *manifest* joint
+names (`{name: i for i, name in enumerate(joint_names)}`) but resolved it with
+the *MJCF's own* joint names. Real robots name their MJCF joints differently
+from the manifest (`panda_joint1` vs `joint1`; `shoulder_pan` vs `Rotation`),
+so every lookup missed and **every `dof_index` collapsed to `-1`**.
+
+**After:** the i-th movable MJCF joint (in body order) is assigned manifest
+column `i`, capped at `len(joint_names)` (a joint past the commanded vector — a
+robot's second, mimic, gripper finger — maps to `-1` rather than out of bounds).
+This follows the normative convention that `RobotDescription.joints` enumerates
+joints in the same order as the robot's MuJoCo actuators
+(`python/hal/src/openral_hal/_mujoco_arm.py` docstring), i.e. the same order the
+HAL already uses to dispatch actions. Joint *names* are no longer consulted.
+
+### Hazard analysis
+
+**This is a latent-failure repair, and is strictly more conservative.**
+
+The pre-fix behaviour was a **silent no-op**: with `dof_index` all `-1`, the
+kernel FK'd the whole arm at its rest pose regardless of the commanded chunk, so
+the geometric self/world/voxel collision check could *never* reject a colliding
+configuration. `openral deploy sim` *prefers* the MJCF-lowered model
+(`sim_e2e.launch.py`), so for every MJCF robot whose joint names differ from its
+manifest (franka, so100, so101 — verified; UR-series coincidentally matched and
+were unaffected) the kernel logged "self-collision check enabled" while
+providing **no geometric protection at all**. Surfaced by a live
+`openral deploy sim --config scenes/deploy/libero_pnp.yaml` run (kernel log:
+`ADR-0040 … fk_dofs=0`).
+
+**Conservatism argument:** the change moves the geometric check from "never
+fires" (a no-op) to "fires on a real overlap". It cannot make the kernel *less*
+safe:
+- It adds no path that *passes* a chunk the old code would have *rejected*. The
+  old code's geometric stage rejected nothing (frozen FK ⇒ a fixed rest pose
+  that the in-tree manifests are authored collision-free), so every newly
+  computed verdict is either an unchanged pass or a *new* rejection.
+- The scalar envelope checks (n_dof / position / velocity / torque / workspace /
+  EE-speed) are untouched — they already enforced independently of `dof_index`.
+- A *wrong* mapping could only cause a **false-positive** estop on a valid
+  motion (fail-safe: the kernel drops + latches; the operator clears via
+  `/openral/estop_reset`). It cannot wave through a real collision the scalar
+  checks miss, because the geometric stage only ever *adds* rejections.
+- Verified live that the corrected mapping does **not** false-positive at rest:
+  the real franka and so100 MJCF-lowered models pass their rest configuration
+  through the real kernel (`dof_index` now `[-1,0,1,2,3,4,5,6,-1,7,-1]` and
+  `[-1,0,1,2,3,4,5]` respectively).
+
+**Cannot leave motors energised:** no actuation path, no E-stop firing logic,
+and no process-teardown path is touched. This is a configuration-lowering
+(build/launch-time) change; the kernel's hot path and latch logic are unchanged.
+
+### Mitigation — tests (regression + end-to-end enforcement)
+
+- `tests/sim/safety/test_mjcf_lowering_dof_index.py` — unit: an MJCF whose joint
+  names do not match the manifest still lowers to ordered `dof_index`
+  (`[0, 1]`), a joint past the commanded count maps to `-1`, and a welded link
+  consumes no column. **These fail on the pre-fix code** (all `-1`).
+- `tests/sim/safety/test_kernel_mjcf_lowered_self_collision.py` — end-to-end
+  through the **real** `safety_kernel_node`: a 3-link MJCF with mismatched joint
+  names returns *different* verdicts for straight (`q=[0,0,0]` pass), bent-clear
+  (`q=[0,2.4,0]` pass) and folded (`q=[0,π,0]` → `KIND_COLLISION`, link1↔link3).
+  A differential verdict is only possible when the FK tracks the commanded
+  joints — the decisive proof the no-op is repaired.
+- The existing `tests/sim/safety/test_mjcf_lowering_mesh_only.py` (mesh-only
+  sentinel) still passes unchanged.
+
+### Safety-WG reviewer gate
+
+**This change requires explicit sign-off from a safety-WG reviewer before
+merge**, per CLAUDE.md §3. The reviewer must independently verify (a) the
+"strictly more conservative — only adds rejections" argument and (b) that the
+ordinal mapping matches the actuator/qpos order the HAL dispatches for every
+in-tree MJCF robot (no off-by-one against `RobotDescription.joints`).
+
+- [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).
