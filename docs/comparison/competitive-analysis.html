@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenRAL vs. EMOS vs. OpenMind OM1 — Competitive Analysis</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --ink:#e6edf3; --mut:#9aa7b4;
+    --line:#2a3340; --accent:#4ea1ff; --ral:#5ad1a0; --emos:#f2b347; --om1:#c08cff;
+    --good:#3fb950; --warn:#d29922; --plan:#58a6ff; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:48px 24px 32px;text-align:center;
+    background:radial-gradient(900px 320px at 50% -40%,rgba(78,161,255,.18),transparent 70%);
+    border-bottom:1px solid var(--line);}
+  header h1{margin:0 0 8px;font-size:30px;letter-spacing:-.4px}
+  header .sub{color:var(--mut);max-width:760px;margin:0 auto;font-size:15px}
+  header .meta{color:var(--mut);font-size:12.5px;margin-top:14px;opacity:.8}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px 80px}
+  nav{position:sticky;top:0;z-index:5;background:rgba(13,17,23,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+  nav a{color:var(--mut);text-decoration:none;font-size:13px;padding:5px 11px;border-radius:7px;border:1px solid transparent}
+  nav a:hover{color:var(--ink);background:var(--panel2);border-color:var(--line)}
+  section{margin-top:40px}
+  h2{font-size:21px;border-left:3px solid var(--accent);padding-left:12px;margin:0 0 6px}
+  h2 .n{color:var(--mut);font-weight:400;font-size:15px;margin-right:6px}
+  .lead{color:var(--mut);margin:0 0 18px;padding-left:15px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 18px 20px}
+  .card.ral{border-top:3px solid var(--ral)}
+  .card.emos{border-top:3px solid var(--emos)}
+  .card.om1{border-top:3px solid var(--om1)}
+  .card h3{margin:0 0 4px;font-size:17px}
+  .card .tag{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+  .card p{margin:10px 0 0;color:var(--mut);font-size:13.5px}
+  .card .bet{margin-top:12px;font-size:13px;color:var(--ink);background:var(--panel2);border-radius:8px;padding:10px 12px}
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13.5px;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  caption{caption-side:top;text-align:left;color:var(--mut);font-size:12.5px;margin-bottom:8px}
+  th,td{padding:11px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:var(--panel2);font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut)}
+  thead th.ral{color:var(--ral)} thead th.emos{color:var(--emos)} thead th.om1{color:var(--om1)}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:rgba(255,255,255,.02)}
+  td.dim{color:var(--mut)} th[scope=row]{color:var(--ink);font-weight:600;width:170px}
+  .star{color:var(--accent);font-weight:700}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line);color:var(--mut)}
+  .pill.good{color:var(--good);border-color:rgba(63,185,80,.4)}
+  .pill.warn{color:var(--warn);border-color:rgba(210,153,34,.4)}
+  .pill.plan{color:var(--plan);border-color:rgba(88,166,255,.4)}
+  .winrow{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:18px}
+  .win{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .win h4{margin:0 0 8px;font-size:15px}
+  .win.ral h4{color:var(--ral)} .win.emos h4{color:var(--emos)} .win.om1 h4{color:var(--om1)}
+  .win p{margin:0;color:var(--mut);font-size:13.5px}
+  ol.recs{counter-reset:r;list-style:none;padding:0;margin:18px 0 0}
+  ol.recs li{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 16px 16px 58px;margin-bottom:12px}
+  ol.recs li::before{counter-increment:r;content:counter(r);position:absolute;left:14px;top:14px;
+    width:30px;height:30px;border-radius:50%;background:var(--accent);color:#04121f;font-weight:700;
+    display:flex;align-items:center;justify-content:center;font-size:14px}
+  ol.recs li b{color:var(--ink)} ol.recs li{color:var(--mut);font-size:13.8px}
+  ol.recs li .pri{float:right;font-size:11px}
+  .net{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+    border-radius:12px;padding:18px 20px;margin-top:18px}
+  .net b{color:var(--accent)}
+  footer{border-top:1px solid var(--line);margin-top:50px;padding:22px 0 0;color:var(--mut);font-size:12.5px}
+  footer a{color:var(--accent);text-decoration:none}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:10px 0 0 15px}
+  @media(max-width:820px){.cards,.winrow{grid-template-columns:1fr}
+    th[scope=row]{width:auto} nav{overflow-x:auto;justify-content:flex-start}}
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenRAL &nbsp;vs&nbsp; EMOS &nbsp;vs&nbsp; OpenMind&nbsp;OM1</h1>
+  <p class="sub">A competitive analysis of three "operating layer for embodied AI" projects — comparing
+  features, architecture, frameworks and stacks, with recommendations to improve OpenRAL.</p>
+  <p class="meta">Prepared 2026-06-21 · Sources: project repos &amp; docs (linked in footer)</p>
+</header>
+
+<nav>
+  <a href="#identity">Identity</a>
+  <a href="#arch">Architecture</a>
+  <a href="#stack">Tech Stack</a>
+  <a href="#models">AI / Models</a>
+  <a href="#safety">Safety &amp; Trust</a>
+  <a href="#hw">Hardware</a>
+  <a href="#wins">Who wins where</a>
+  <a href="#recs">Recommendations</a>
+</nav>
+
+<div class="wrap">
+
+  <div class="cards">
+    <div class="card ral">
+      <span class="tag">Engineering-discipline play</span>
+      <h3>OpenRAL</h3>
+      <p>A typed, traceable, <b>safety-first</b> operating layer for embodied AI. 8 explicit layers with
+      Pydantic/IDL contracts, a C++ deny-by-default safety kernel, and reproducible VLA deployment.</p>
+      <div class="bet"><b>Bet:</b> Correctness &amp; safety win the deployment race.</div>
+    </div>
+    <div class="card emos">
+      <span class="tag">Edge-cognition play</span>
+      <h3>EMOS</h3>
+      <p>A ROS 2-native orchestration stack (Sugarcoat + Kompass + EmbodiedAgents) from Automatika Robotics
+      + Inria. Offline/edge cognition, GPU navigation, write-once Python "Recipes."</p>
+      <div class="bet"><b>Bet:</b> Edge-first cognition + portability win the developer.</div>
+    </div>
+    <div class="card om1">
+      <span class="tag">Platform / network play</span>
+      <h3>OpenMind&nbsp;OM1</h3>
+      <p>An "Android for robots": a Go runtime fusing multimodal models via a natural-language internal bus,
+      plus a blockchain trust/identity layer (FABRIC). $20M VC-backed.</p>
+      <div class="bet"><b>Bet:</b> Network effects + decentralized trust win the platform.</div>
+    </div>
+  </div>
+
+  <section id="identity">
+    <h2><span class="n">1</span>Identity &amp; Strategic Bet</h2>
+    <p class="lead">Same ambition, three philosophies.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">One-liner</th><td>Typed, safety-first operating <i>layer</i> for embodied AI</td><td>ROS 2-native orchestration stack for Physical AI</td><td>Universal, robot-agnostic OS ("Android for robots")</td></tr>
+        <tr><th scope="row">Backing</th><td class="dim">Open-source project</td><td class="dim">Automatika Robotics + Inria (research + industry)</td><td class="dim">VC startup — $20M (Pantera, Sequoia China, Coinbase Ventures)</td></tr>
+        <tr><th scope="row">License</th><td><span class="pill good">Apache-2.0</span> (whole codebase)</td><td><span class="pill good">MIT</span></td><td><span class="pill good">MIT</span></td></tr>
+        <tr><th scope="row">Maturity</th><td>v0.1.0 — deep core shipped, pre-PyPI</td><td>v0.7.x — modest stars (~60–66)</td><td>v1.0.x-beta — ~2.8k stars, biggest mindshare</td></tr>
+        <tr><th scope="row">Differentiator</th><td><span class="star">8-layer typed contracts + C++ safety kernel + S1/S2 dual-system</span></td><td>Recipes (write-once Python), GPU nav (Kompass), auto web dashboard</td><td>NL "internal monologue" bus + FABRIC blockchain identity/trust</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="arch">
+    <h2><span class="n">2</span>Architecture &amp; Approach</h2>
+    <p class="lead">OpenRAL is the most structured; OM1 the lightest.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Structure</th><td>8 explicit layers (HAL→Sensors→World&nbsp;State→S1→S2→WAM→Safety→Observability); ADR required to cross</td><td>3 stacked libs: Sugarcoat (primitives), Kompass (nav), EmbodiedAgents (cognition)</td><td>Modular pipeline: Inputs → Processing → LLM fusion → Actions over a HAL</td></tr>
+        <tr><th scope="row">Cognition model</th><td><span class="star">Dual-system</span>: S1 VLA (30–200 Hz) + S2 LLM planner (0.2 Hz) + S0 cerebellar C++</td><td>Agentic graphs of ML components, event-driven reconfiguration, semantic routing</td><td>Multiple models fused via a <b>natural-language bus</b></td></tr>
+        <tr><th scope="row">Contracts / API</th><td>Pydantic v2 + ROS 2 IDL — normative &amp; enforced</td><td>Typed ROS topics; declarative Python component graph</td><td>Plugin/HAL config; endpoint-based</td></tr>
+        <tr><th scope="row">Reconfiguration</th><td>Lifecycle nodes; reasoner manages graph via typed tool-calls</td><td>"Self-referential" runtime — components start/stop on events</td><td>Plug-and-play inputs / actions / plugins</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="stack">
+    <h2><span class="n">3</span>Technology Stack</h2>
+    <p class="lead">Python+C++ vs. Go.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Language</th><td>Python 3.12 (strict mypy) + C++17 (hot path)</td><td>Go (CLI) + Python (Recipes); EmbodiedAgents ~99% Python</td><td><b>Go</b> single binary (Python origins)</td></tr>
+        <tr><th scope="row">Robotics base</th><td>ROS 2 Jazzy, tf2, ros2_control, MoveIt 2, Nav2</td><td>ROS 2 (Humble→Rolling), lifecycle nodes</td><td>ROS 2 / CycloneDDS / Zenoh / websockets / USB-serial</td></tr>
+        <tr><th scope="row">Middleware</th><td>Cyclone DDS default; Zenoh for fleet</td><td>DDS via ROS 2</td><td>Zenoh + ROS 2 + CycloneDDS</td></tr>
+        <tr><th scope="row">ML backend</th><td>PyTorch, Transformers, ONNX Runtime, bitsandbytes (NF4/int8)</td><td>RoboML, Ollama, vLLM, SGLang, LeRobot</td><td>Endpoint-based (cloud + Ollama local)</td></tr>
+        <tr><th scope="row">Deploy</th><td>uv + colcon; ROS graph (sim/real)</td><td>Docker / native / Pixi; auto web dashboard (mDNS)</td><td>Single Go binary; Docker; Prometheus + Grafana built-in</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="models">
+    <h2><span class="n">4</span>AI / Model Support</h2>
+    <p class="lead">OpenRAL leads on VLA depth; EMOS on offline edge; OM1 on LLM breadth.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">VLA (action) models</th><td><span class="star">Deep — 32 rSkill pkgs</span>: SmolVLA, π0.5, xVLA, ACT, Diffusion Policy, MolmoAct2, GR00T N1.7, RLDX-1, OpenVLA-OFT, 3D Diffuser Actor</td><td>VLA via LeRobot/RoboML (manipulation recipe), less curated</td><td>Assumes robot SDK exposes high-level motions; VLA not the focus</td></tr>
+        <tr><th scope="row">LLM reasoning</th><td>Provider-agnostic (Anthropic / OpenAI-compat / OpenRouter / local), typed tool-calling, bounded replanning ladder</td><td>LLM components via Ollama/vLLM, semantic routing, tool calling</td><td>OpenAI, Anthropic, Gemini, xAI, DeepSeek, Meta, NearAI, Ollama</td></tr>
+        <tr><th scope="row">Perception / VLM</th><td>RT-DETR, OmDet-Turbo, LocateAnything, Qwen-VL scene, Robometer reward</td><td>VLM, STT, TTS, multimodal — offline-capable</td><td>VLM endpoints, STT/TTS, face detect + privacy anonymization</td></tr>
+        <tr><th scope="row">Offline / edge</th><td>NF4/int8 quant, local LLM (Ollama); <span class="pill plan">Jetson Dockerfile planned</span></td><td><span class="star">Strong</span> — "no server required," Jetson-optimized, local LLM/VLM/STT/TTS</td><td>Thor/Orin/Mac/Pi targets; leans on cloud + local Ollama</td></tr>
+        <tr><th scope="row">License posture</th><td><span class="star">Rigorous per-model weight matrix + env-var guards</span></td><td>MIT framework; models per upstream</td><td>MIT; models per provider</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="safety">
+    <h2><span class="n">5</span>Safety, Observability &amp; Trust</h2>
+    <p class="lead">OpenRAL owns safety + reproducibility; OM1 owns identity/trust.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Safety</th><td><span class="star">Strongest</span> — C++ deny-by-default kernel (separate process), E-stop/deadman/watchdog, typed <code>ROSSafetyViolation</code>, hazard logs, never-silent-catch</td><td class="dim">Not a headline feature; relies on ROS 2 + Kompass control</td><td class="dim">Not a headline feature; HAL passes commands to robot SDK</td></tr>
+        <tr><th scope="row">Observability</th><td>OTel SDK + OTLP, per-tick spans, live dashboard, W3C trace correlation</td><td>Web dashboard (telemetry, video, config)</td><td>Prometheus + Grafana, latency monitoring, web telemetry</td></tr>
+        <tr><th scope="row">Reproducibility</th><td><span class="star">Weights SHA-pinned, seeds frozen, prompts logged, rosbag2↔LeRobot bridge</span></td><td>Recipe portability; less replay emphasis</td><td>Less emphasis</td></tr>
+        <tr><th scope="row">Identity / trust</th><td class="dim">None (not the focus)</td><td class="dim">None</td><td><span class="star">FABRIC</span> blockchain — cryptographic robot identity, proof-of-location/workload/custody</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="hw">
+    <h2><span class="n">6</span>Hardware &amp; Embodiment</h2>
+    <p class="lead">OpenRAL is manipulation-heavy; EMOS &amp; OM1 lean navigation/locomotion.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="ral">OpenRAL</th><th class="emos">EMOS</th><th class="om1">OpenMind OM1</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Robots</th><td>16 platforms (SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Rizon4, Sawyer, GR1, H1, G1, mobile) — <b>manipulation-heavy</b></td><td>Quadrupeds, humanoids, wheeled AMRs — <b>navigation-heavy</b></td><td>Unitree G1/Go2, TurtleBot 4, drones, phone, sim — <b>locomotion-heavy</b></td></tr>
+        <tr><th scope="row">Simulators</th><td>MuJoCo, LIBERO, MetaWorld, gym-aloha/pusht, ManiSkill3, SimplerEnv, RoboCasa, Isaac/RLBench sidecars</td><td>Via ROS 2; nav-focused</td><td>Gazebo, NVIDIA Isaac Sim</td></tr>
+        <tr><th scope="row">Navigation</th><td>Nav2 reused (manipulation is the strength)</td><td><span class="star">Kompass</span> — GPU-accelerated, cross-vendor SYCL (NVIDIA/AMD/Intel)</td><td>Autonomous nav, SLAM (BrainPack), auto-charging</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="wins">
+    <h2><span class="n">7</span>Where each one wins</h2>
+    <div class="winrow">
+      <div class="win ral"><h4>OpenRAL</h4><p>Manipulation/VLA depth, type safety, the C++ safety kernel, and reproducibility. The most <b>engineering-disciplined</b> — the only one treating actuation safety and replayability as first-class.</p></div>
+      <div class="win emos"><h4>EMOS</h4><p>Edge/offline cognition, GPU navigation (Kompass), and developer ergonomics (write-once Recipes + auto dashboard). Best "deploy cognition on a Jetson today" story.</p></div>
+      <div class="win om1"><h4>OpenMind OM1</h4><p>Mindshare, ecosystem breadth, plug-and-play multi-LLM, and the trust/identity layer (FABRIC). The most ambitious <b>platform/network</b> play, though architecturally the lightest.</p></div>
+    </div>
+  </section>
+
+  <section id="recs">
+    <h2><span class="n">8</span>Recommendations to improve OpenRAL</h2>
+    <p class="lead">Ranked by leverage.</p>
+    <ol class="recs">
+      <li><span class="pri pill warn">highest leverage</span><b>Close the "time-to-first-robot" gap.</b> Competitors nail onboarding (OM1 = single Go binary; EMOS = auto web dashboard + Pixi/Docker). Ship the PyPI release, add an EMOS-style declarative <i>recipe/quickstart</i> bringing up sensor→S1→safety→reasoner in &lt;10 lines, and wrap your OTLP stream in a zero-config browser console.</li>
+      <li><span class="pri pill plan">edge</span><b>Make offline/edge a headline, not a roadmap item.</b> You have the pieces (NF4/int8, Ollama provider) but the Jetson Dockerfile is still planned. Prioritize the L4T multi-arch image and publish a "fully-offline G1/Franka" reference deployment.</li>
+      <li><span class="pri pill">navigation</span><b>Add or integrate GPU-accelerated navigation.</b> Kompass (cross-vendor SYCL nav) is a real differentiator OpenRAL lacks — you only reuse Nav2. Deepen Nav2 with GPU planning or document a clean bridge for mobile/humanoid embodiments.</li>
+      <li><span class="pri pill good">moat</span><b>Lean harder into safety + reproducibility as the moat.</b> Neither competitor has a deny-by-default kernel or trace-replay determinism. Finish and certify the C++ kernel (LTTng tracing, formal property proofs) and market "the only embodied-AI runtime with a verifiable safety kernel and replay-from-trace."</li>
+      <li><span class="pri pill">trust</span><b>Build an identity/provenance story (watch FABRIC).</b> No blockchain needed, but OM1's proof-of-location/workload/custody points at a real fleet-trust need. Ship your planned sigstore rSkill signing and extend signed provenance to deployments and operators — a centralized, auditable alternative to FABRIC.</li>
+      <li><span class="pri pill">UX</span><b>Broaden LLM provider presets.</b> OM1 ships pre-configured Gemini, xAI, DeepSeek, Meta, NearAI. Your provider-agnostic design already supports these via OpenAI-compat — add named presets so users don't hand-configure base URLs.</li>
+      <li><span class="pri pill">DX</span><b>Cross-pollinate the "agentic graph" ergonomics.</b> EMOS's component-graph + semantic routing is a cleaner mental model than wiring ROS topics by hand. Offer a thin declarative graph builder over your typed nodes — keep the contracts, lower the wiring cost.</li>
+    </ol>
+    <div class="net">
+      <b>Net:</b> OpenRAL is the most technically rigorous of the three (safety, types, VLA depth, reproducibility)
+      but the least <i>accessible</i> and <i>visible</i>. The biggest wins are <b>onboarding/UX</b>, <b>shipped
+      offline-edge support</b>, and turning <b>safety + reproducibility</b> into loud, finished, marketed
+      differentiators before better-funded competitors close the technical gap.
+    </div>
+  </section>
+
+  <footer>
+    <p><b>Sources:</b>
+      <a href="https://github.com/automatika-robotics/emos">EMOS</a> ·
+      <a href="https://github.com/automatika-robotics/embodied-agents">EmbodiedAgents</a> ·
+      <a href="https://github.com/OpenmindAGI/OM1">OM1 repo</a> ·
+      <a href="https://www.therobotreport.com/openmind-launches-om1-open-source-robot-agnostic-operating-system/">The Robot Report (OM1)</a> ·
+      <a href="https://techcrunch.com/2025/08/04/openmind-wants-to-be-the-android-operating-system-of-humanoid-robots/">TechCrunch (OpenMind)</a> ·
+      <a href="https://reports.tiger-research.com/p/openmind-eng">Tiger Research (OpenMind/FABRIC)</a> ·
+      OpenRAL: local repository (<code>README.md</code>, <code>CLAUDE.md</code>, <code>docs/adr/</code>).</p>
+    <p>OpenRAL competitive analysis · self-contained HTML, no build step · 2026-06-21.</p>
+  </footer>
+</div>
+</body>
+</html>
