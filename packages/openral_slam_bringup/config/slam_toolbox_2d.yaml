@@ -41,8 +41,17 @@
     minimum_time_interval: 0.5
 
     # ── Operating ranges ───────────────────────────────────────────
-    minimum_travel_distance: 0.5
-    minimum_travel_heading: 0.5
+    # 0.0 so slam_toolbox commits a scan (and thus brings up + refines the
+    # map→odom transform) even when the base is stationary — the common
+    # deploy-sim case (RoboCasa: the VLA moves the arm, the holonomic base
+    # holds still). With the upstream 0.5 m / 0.5 rad gate, a stationary base
+    # that misses its first scan's odom→base_link lookup at startup never
+    # re-triggers the travel gate, so map→odom is never published and the TF
+    # tree splits (map disconnected from odom/base_link → Nav2 + the dashboard
+    # map-frame robot marker break). Continuous processing also self-heals a
+    # transient startup odom-TF race.
+    minimum_travel_distance: 0.0
+    minimum_travel_heading: 0.0
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1
