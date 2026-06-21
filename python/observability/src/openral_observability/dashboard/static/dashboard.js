@@ -211,9 +211,12 @@
     const entries = Object.entries(cams).sort((a, b) => a[0].localeCompare(b[0]));
     for (const [name, cam] of entries) {
       const isLive = cam.ts_unix && (Date.now() / 1000 - cam.ts_unix) < 2;
-      const imgInner = cam.thumbnail_jpeg_b64
-        ? `<img src="data:image/jpeg;base64,${cam.thumbnail_jpeg_b64}" alt="${name}" />`
-        : `<div class="camera-placeholder">no thumb · ${cam.modality || "?"}</div>`;
+      const hasFrame = cam.thumbnail_jpeg_b64 || cam.width;
+      const imgInner = hasFrame
+        ? `<img src="/api/camera/${encodeURIComponent(name)}/stream" alt="${name}"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),
+               {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
+        : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`;
       const ageMs = cam.age_ms != null ? num(cam.age_ms, 0) + " ms" : "—";
       const label = (cam.role || cam.modality || "cam").toString();
       const dims = `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
