@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 from openral_core import CriticEvidence
-from openral_reasoner import CriticWatchdog
+from openral_reasoner import CriticWatchdog, CriticWatchdogGroup
 
 
 def _watchdog(
@@ -132,3 +132,67 @@ def test_reset_clears_latch() -> None:
     wd.reset()
     # After reset the latch is gone → it can fire again immediately.
     assert isinstance(wd.observe(0.3), CriticEvidence)
+
+
+# ── CriticWatchdogGroup — multiplexing several reward models ────────────────────
+
+
+def test_group_rejects_bad_params() -> None:
+    with pytest.raises(ValueError):
+        CriticWatchdogGroup(stall_patience=0)
+    with pytest.raises(ValueError):
+        CriticWatchdogGroup(stall_patience=2, min_delta=-0.1)
+
+
+def test_group_watches_critics_independently() -> None:
+    g = CriticWatchdogGroup(stall_patience=2)
+    # robometer stalls below its bar; sarm holds above its own bar.
+    assert g.observe(critic_id="robometer", score=0.3, threshold=0.8) is None
+    assert g.observe(critic_id="sarm", score=0.95, threshold=0.9) is None
+    fired = g.observe(critic_id="robometer", score=0.3, threshold=0.8)
+    assert isinstance(fired, CriticEvidence)
+    assert fired.critic_id == "robometer"
+    assert fired.threshold == pytest.approx(0.8)
+    # sarm, fed only healthy scores, never fires.
+    assert g.observe(critic_id="sarm", score=0.95, threshold=0.9) is None
+
+
+def test_group_creates_watchdogs_lazily() -> None:
+    g = CriticWatchdogGroup(stall_patience=1)
+    assert g.known_critics() == frozenset()
+    g.observe(critic_id="robometer", score=0.5, threshold=0.9)
+    g.observe(critic_id="sarm", score=0.5, threshold=0.9)
+    assert g.known_critics() == frozenset({"robometer", "sarm"})
+
+
+def test_group_binds_threshold_on_first_sample() -> None:
+    g = CriticWatchdogGroup(stall_patience=1)
+    # First sample binds threshold=0.8; a later sample's 0.2 threshold is ignored.
+    first = g.observe(critic_id="robometer", score=0.5, threshold=0.8)
+    assert isinstance(first, CriticEvidence)
+    assert first.threshold == pytest.approx(0.8)
+    # 0.5 would be a *recovery* under threshold=0.2, but the bound 0.8 stands,
+    # so it stays a stall and (after unlatch via reset) still uses 0.8.
+    g.reset("robometer")
+    again = g.observe(critic_id="robometer", score=0.5, threshold=0.2)
+    # reset rebinds → now threshold 0.2 applies and 0.5 is a recovery, no fire.
+    assert again is None
+
+
+def test_group_reset_single_critic_rebinds() -> None:
+    g = CriticWatchdogGroup(stall_patience=2)
+    assert g.observe(critic_id="robometer", score=0.3, threshold=0.8) is None  # stall 1
+    g.reset("robometer")  # drop just robometer
+    assert g.known_critics() == frozenset()
+    # Fresh patience countdown after the rebind.
+    assert g.observe(critic_id="robometer", score=0.3, threshold=0.8) is None  # stall 1
+    assert isinstance(g.observe(critic_id="robometer", score=0.3, threshold=0.8), CriticEvidence)
+
+
+def test_group_reset_all_clears_every_critic() -> None:
+    g = CriticWatchdogGroup(stall_patience=1)
+    g.observe(critic_id="robometer", score=0.3, threshold=0.8)
+    g.observe(critic_id="sarm", score=0.3, threshold=0.8)
+    assert g.known_critics() == frozenset({"robometer", "sarm"})
+    g.reset()
+    assert g.known_critics() == frozenset()
