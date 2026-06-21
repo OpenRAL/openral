@@ -8,6 +8,7 @@ stays rclpy-free in :mod:`openral_reasoner.core`.
 
 from __future__ import annotations
 
+from openral_reasoner_ros.critic_producer_node import CriticProducerNode
 from openral_reasoner_ros.reasoner_node import ReasonerNode
 
-__all__ = ["ReasonerNode"]
+__all__ = ["CriticProducerNode", "ReasonerNode"]

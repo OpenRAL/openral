@@ -2,6 +2,7 @@
 
 Public API:
     configure_observability — idempotent SDK setup (no-op when no endpoint).
+    configure_worker_observability — SDK setup + parent-trace attach for a spawned worker.
     shutdown_observability  — drain and shut down providers.
     rskill_span             — span for Skill lifecycle (configure / activate / execute).
     inference_span          — span for one VLA chunk inference (foreground or prefetch).
@@ -33,6 +34,7 @@ from openral_observability import (
 )
 from openral_observability._sdk import (
     configure_observability,
+    configure_worker_observability,
     shutdown_observability,
 )
 from openral_observability.cli import cli_command_span
@@ -57,6 +59,7 @@ __all__ = [
     "Level",
     "cli_command_span",
     "configure_observability",
+    "configure_worker_observability",
     "failure_bus",
     "inference_span",
     "log_lifecycle_errors",

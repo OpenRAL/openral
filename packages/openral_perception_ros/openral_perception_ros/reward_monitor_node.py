@@ -31,6 +31,14 @@ Parameters:
     task (str): default task instruction (used when a request leaves ``task`` empty).
     sidecar_host (str): ZMQ host of the reward sidecar. Default 127.0.0.1.
     sidecar_port (int): ZMQ port of the reward sidecar. Default 5769.
+    enable_critic_score (bool): also publish a generic ``openral_msgs/CriticScore``
+        per window (ADR-0064) to feed the Tier-C critic producer. Default False
+        (query-only).
+    critic_score_topic (str): topic for the CriticScore stream. Default
+        ``/openral/critic/score``.
+    critic_score_threshold (float): pass bar stamped on each CriticScore (the
+        producer's watchdog fires when progress stays below it). Default 0.8.
+    critic_score_period_s (float): CriticScore publish cadence. Default 1.0 s.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the reward-monitor node, shut down cleanly."""
     import rclpy
     from openral_runner.backends.reward.frame_source import Frame, RollingFrameBuffer
+    from openral_runner.backends.reward.robometer_reward import critic_score_from_assessment
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import (
@@ -67,6 +76,14 @@ def main(args: Any = None) -> None:
             self.declare_parameter("task", "")
             self.declare_parameter("sidecar_host", "127.0.0.1")
             self.declare_parameter("sidecar_port", 5769)
+            # ADR-0064 — opt-in: also publish a generic openral_msgs/CriticScore per
+            # window so the Tier-C critic producer (critic_producer_node) can fire a
+            # /openral/failure/critic on a progress stall. Off by default — the node
+            # stays query-only unless asked.
+            self.declare_parameter("enable_critic_score", False)
+            self.declare_parameter("critic_score_topic", "/openral/critic/score")
+            self.declare_parameter("critic_score_threshold", 0.8)
+            self.declare_parameter("critic_score_period_s", 1.0)
 
             gp = self.get_parameter
             manifest_path = gp("manifest_path").get_parameter_value().string_value
@@ -110,10 +127,45 @@ def main(args: Any = None) -> None:
                     "query_task_progress service disabled"
                 )
 
+            # ADR-0064 — optional CriticScore publishing leg (Tier-C source).
+            self._critic_pub = None
+            self._critic_timer = None
+            self._critic_msg_cls: Any = None
+            self._critic_threshold = 0.0
+            if gp("enable_critic_score").get_parameter_value().bool_value:
+                self._critic_threshold = (
+                    gp("critic_score_threshold").get_parameter_value().double_value
+                )
+                critic_topic = gp("critic_score_topic").get_parameter_value().string_value
+                critic_period = gp("critic_score_period_s").get_parameter_value().double_value
+                try:
+                    from openral_msgs.msg import CriticScore
+
+                    critic_qos = QoSProfile(
+                        history=QoSHistoryPolicy.KEEP_LAST,
+                        depth=10,
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.VOLATILE,
+                    )
+                    self._critic_msg_cls = CriticScore
+                    self._critic_pub = self.create_publisher(CriticScore, critic_topic, critic_qos)
+                    self._critic_timer = self.create_timer(
+                        critic_period, self._publish_critic_score
+                    )
+                    self.get_logger().info(
+                        f"critic_score: publishing progress on {critic_topic!r} "
+                        f"(threshold={self._critic_threshold}, every {critic_period}s)"
+                    )
+                except ImportError:
+                    self.get_logger().warning(
+                        "openral_msgs/CriticScore not built; critic_score publishing disabled"
+                    )
+
             self.get_logger().info(
                 f"reward_monitor: cameras={self._cameras} primary={self._primary_id!r} "
                 f"window_s={window_s} fps={fps} manifest={manifest_path}, "
-                f"query_task_progress={'on' if self._srv else 'off'}"
+                f"query_task_progress={'on' if self._srv else 'off'}, "
+                f"critic_score={'on' if self._critic_pub else 'off'}"
             )
 
         def _resolve_cameras(self) -> dict[str, str]:
@@ -147,6 +199,7 @@ def main(args: Any = None) -> None:
                 port=gp("sidecar_port").get_parameter_value().integer_value,
             )
             self.get_logger().info(f"reward backend model={manifest.name}")
+            self._critic_id = manifest.name
             return monitor, manifest.reward.frame_window_s, manifest.reward.target_fps
 
         def _make_cache_cb(self, cid: str) -> Callable[[Any], None]:
@@ -207,6 +260,37 @@ def main(args: Any = None) -> None:
                 f"succeeded={response.succeeded} frames={response.frames_seen}"
             )
             return response
+
+        def _publish_critic_score(self) -> None:
+            """Timer (ADR-0064): score the buffer, publish a generic CriticScore.
+
+            Best-effort and advisory — skips quietly when there is no task or the
+            buffer is stale/empty, and never crashes the timer on an assess error.
+            The producer's watchdog detects the stall from the score stream.
+            """
+            if self._critic_pub is None:
+                return
+            task = self._default_task
+            buf = self._buffers[self._primary_id]
+            now_ns = self.get_clock().now().nanoseconds
+            if not task or buf.is_stale(now_ns) or len(buf) == 0:
+                return
+            try:
+                a = self._monitor.assess(buf.window(1e9), task)
+            except Exception as exc:  # best-effort; never crash the timer
+                self.get_logger().debug(f"critic_score assess failed: {exc}")
+                return
+            from openral_observability.propagation import current_traceparent
+
+            score, threshold = critic_score_from_assessment(a, threshold=self._critic_threshold)
+            msg = self._critic_msg_cls()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = self._critic_id
+            msg.critic_id = self._critic_id
+            msg.score = score
+            msg.threshold = threshold
+            msg.trace_id = current_traceparent() or ""
+            self._critic_pub.publish(msg)
 
     rclpy.init(args=args)
     node = RewardMonitorNode()
