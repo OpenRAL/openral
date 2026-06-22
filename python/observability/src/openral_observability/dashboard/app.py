@@ -263,16 +263,19 @@ async def _estop_reset_response() -> JSONResponse:
 
 
 def _config_response() -> JSONResponse:
-    """Dashboard-level config (Jaeger UI url, …) sourced from env.
+    """Dashboard-level config (Jaeger UI url, write-controls flag, …) sourced from env.
 
     The UI fetches this once on load to decide whether to enable the
-    "open in jaeger" link. Returning ``""`` (the default) leaves the
-    link disabled with a helpful tooltip — the previous behaviour of
+    "open in jaeger" link and whether to reveal the operator write-controls
+    panel (ADR-0064). Returning ``""`` (the default) leaves the Jaeger link
+    disabled with a helpful tooltip — the previous behaviour of
     unconditionally linking to ``localhost:16686`` produced a
     broken-link click for every user who doesn't run Jaeger locally.
     """
     jaeger_url = os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/")
-    return JSONResponse({"jaeger_ui_url": jaeger_url})
+    return JSONResponse(
+        {"jaeger_ui_url": jaeger_url, "write_controls_enabled": _write_controls_enabled()}
+    )
 
 
 async def _skill_execute_from_request(request: Request) -> JSONResponse:

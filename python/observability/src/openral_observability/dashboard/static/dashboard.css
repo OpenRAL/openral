@@ -811,3 +811,9 @@
   }
   .robot-row button:hover { color: var(--fg); border-color: var(--hair-strong); }
   .robots-hint { opacity: 0.6; font-size: 11px; margin: 6px 0 0; }
+
+/* ── Write-controls panel (issue #75c / ADR-0064) ── */
+.write-banner { background: #2a1a00; color: #ffcc66; padding: 6px 10px; border-radius: 4px;
+                font-size: 12px; margin-bottom: 8px; }
+.controls-result { font-family: var(--mono, monospace); font-size: 11px; opacity: 0.8; }
+#controls-panel form { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }

@@ -221,12 +221,15 @@ async def test_api_config_defaults_to_empty_jaeger_url(monkeypatch: pytest.Monke
     guessed ``localhost:16686``.
     """
     monkeypatch.delenv("OPENRAL_JAEGER_UI_URL", raising=False)
+    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
     app = create_app(TelemetryStore())
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/config")
         assert resp.status_code == 200
-        assert resp.json() == {"jaeger_ui_url": ""}
+        body = resp.json()
+        assert body["jaeger_ui_url"] == ""
+        assert body["write_controls_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -238,7 +241,7 @@ async def test_api_config_reflects_env_url(monkeypatch: pytest.MonkeyPatch) -> N
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/config")
         assert resp.status_code == 200
-        assert resp.json() == {"jaeger_ui_url": "https://jaeger.example"}
+        assert resp.json()["jaeger_ui_url"] == "https://jaeger.example"
 
 
 @pytest.mark.asyncio
@@ -722,3 +725,16 @@ async def test_vendored_vad_assets_served_offline() -> None:
             assert resp.status_code == 200, name
             if ctype is not None:
                 assert ctype in resp.headers["content-type"], (name, resp.headers["content-type"])
+
+
+# ─────────────────────── GET /api/config — write_controls_enabled ────────────
+
+
+@pytest.mark.asyncio
+async def test_api_config_reports_write_controls_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        body = (await client.get("/api/config")).json()
+    assert body["write_controls_enabled"] is True

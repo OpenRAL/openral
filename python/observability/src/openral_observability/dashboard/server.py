@@ -87,7 +87,7 @@ def run_dashboard(
     """
     import uvicorn  # local import: heavy enough to defer until invocation
 
-    from openral_observability.dashboard.app import create_app
+    from openral_observability.dashboard.app import _write_controls_enabled, create_app
 
     app = create_app(store)
 
@@ -118,6 +118,15 @@ def run_dashboard(
     if exposure is not None:
         _LOG.warning("dashboard.exposed_bind host=%s", host)
         print(f"WARNING: {exposure}", file=sys.stderr, flush=True)
+
+    if _write_controls_enabled():
+        _write_controls_msg = (
+            "dashboard write-controls ENABLED (OPENRAL_DASHBOARD_WRITE_CONTROLS=1): "
+            "skill-switch + non-safety param-tune are live and reach actuation config. "
+            "Pending safety-WG review (ADR-0064). The safety kernel still disposes all motion."
+        )
+        _LOG.warning("dashboard.write_controls_enabled")
+        print(f"WARNING: {_write_controls_msg}", file=sys.stderr, flush=True)
 
     def _on_signal(signum: int, _frame: object) -> None:
         server.should_exit = True
