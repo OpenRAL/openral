@@ -327,8 +327,9 @@ class _SimplerEnvSim:
         w = self.scene.observation_width
         if image is None:
             image = np.zeros((h, w, 3), dtype=np.uint8)
+        cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
         return {
-            "images": {"camera1": image},
+            "images": {cam0: image},
             "state": state,
             "task": self.task.instruction,
             "raw": flat,

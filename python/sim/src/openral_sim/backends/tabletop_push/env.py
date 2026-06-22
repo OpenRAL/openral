@@ -19,7 +19,7 @@ The :class:`openral_sim.SimRollout` contract:
 * ``step(action)`` writes an ``nu``-D joint-position-target action to the
   robot's actuators (``nu`` = the robot's actuator count; the scene adds none)
   and steps the simulator;
-* ``render()`` returns the last overhead RGB frame;
+* ``render()`` returns the last top-down RGB frame;
 * ``mujoco_handles()`` exposes ``MjModel`` / ``MjData`` to ``openral sim run --view``.
 
 The action / state dimension is ``nu`` — read from the compiled model, not
@@ -98,7 +98,7 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions
     xyz_keys = {
         "robot_base_xyz",
         "cube_size",
-        "overhead_camera_pos",
+        "top_camera_pos",
         "front_camera_pos",
         "wrist_camera_pos_local",
         "ambient_light",
@@ -505,7 +505,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             "cube freejoint — the composer must be updated.",
         )
 
-    camera_names: tuple[str, ...] = ("overhead", "front")
+    camera_names: tuple[str, ...] = ("top", "front")
     if options.wrist_camera_mount_body is not None:
         camera_names = (*camera_names, "wrist")
 

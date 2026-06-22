@@ -235,10 +235,12 @@ class _LiberoSim:
             )
             state_8d = np.concatenate([pos, axisangle, gr]).astype(np.float32)
 
+        cam0 = self.scene.cameras[0] if len(self.scene.cameras) > 0 else "camera1"
+        cam1 = self.scene.cameras[1] if len(self.scene.cameras) > 1 else "camera2"
         return {
             "images": {
-                "camera1": self._last_pixels.get("image", np.zeros((256, 256, 3), dtype=np.uint8)),
-                "camera2": self._last_pixels.get("image2", np.zeros((256, 256, 3), dtype=np.uint8)),
+                cam0: self._last_pixels.get("image", np.zeros((256, 256, 3), dtype=np.uint8)),
+                cam1: self._last_pixels.get("image2", np.zeros((256, 256, 3), dtype=np.uint8)),
             },
             "state": state_8d,
             "task": getattr(self._env, "task_description", self.task.instruction),

@@ -33,7 +33,7 @@
     backend: mujoco
     observation_height: 256
     observation_width: 256
-    cameras: ["camera1"]
+    cameras: ["front"]
   task: &task_proto
     id: metaworld/assembly-v3
     scene_id: metaworld

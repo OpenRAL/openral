@@ -78,13 +78,13 @@ class TestResolveImagePreprocessing:
             image_preprocessing=ImagePreprocessing(
                 flip_180=True,
                 input_template="observation.image.{cam}",
-                aliases={"camera1": "agentview"},
+                aliases={"front": "agentview"},
             )
         )
         ip = resolve_image_preprocessing(m, {})
         assert ip.flip_180 is True
         assert ip.input_template == "observation.image.{cam}"
-        assert ip.aliases == {"camera1": "agentview"}
+        assert ip.aliases == {"front": "agentview"}
 
     def test_schema_defaults_when_both_silent(self) -> None:
         """Both silent → ImagePreprocessing() schema defaults."""

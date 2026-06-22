@@ -50,7 +50,7 @@ joints:
 # PushT predates the multi-cam ``observation.images.cameraN`` convention
 # and exposes the raw key ``observation.image``.
 sensors:
-  - name: "topdown"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0

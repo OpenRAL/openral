@@ -259,14 +259,14 @@ OPENARM_DESCRIPTION = RobotDescription(
     # RGB cameras (issue #191 Phase 3b): the manifest-driven node's
     # SimSensorBridge publishes these via MujocoArmHAL.read_images, which renders
     # the MJCF camera `sim_camera_name or name`. Kept in sync with
-    # robots/openarm/robot.yaml. The MJCF overview camera is named "top"; the
-    # sensor / VLA feature key is "base".
+    # robots/openarm/robot.yaml. The MJCF overview camera is named "top" and the
+    # canonical sensor name (per ADR-0069) is also "top", so sim_camera_name is
+    # no longer set explicitly. vla_feature_key values are checkpoint-frozen.
     sensors=[
         SensorSpec(
-            name="base",
+            name="top",
             modality=SensorModality.RGB,
             frame_id="world",
-            sim_camera_name="top",
             rate_hz=10.0,
             intrinsics=IntrinsicsPinhole(
                 width=640, height=480, fx=640.0, fy=640.0, cx=320.0, cy=240.0
@@ -277,7 +277,7 @@ OPENARM_DESCRIPTION = RobotDescription(
             model="mujoco_top",
         ),
         SensorSpec(
-            name="left_wrist",
+            name="wrist_left",
             modality=SensorModality.RGB,
             frame_id="openarm_left_ee_base_link",
             rate_hz=10.0,
@@ -285,12 +285,12 @@ OPENARM_DESCRIPTION = RobotDescription(
                 width=640, height=480, fx=640.0, fy=640.0, cx=320.0, cy=240.0
             ),
             encoding="rgb8",
-            vla_feature_key="observation.images.left_wrist",
+            vla_feature_key="observation.images.wrist_left",
             vendor="sim",
             model="mujoco_wrist",
         ),
         SensorSpec(
-            name="right_wrist",
+            name="wrist_right",
             modality=SensorModality.RGB,
             frame_id="openarm_right_ee_base_link",
             rate_hz=10.0,
@@ -298,7 +298,7 @@ OPENARM_DESCRIPTION = RobotDescription(
                 width=640, height=480, fx=640.0, fy=640.0, cx=320.0, cy=240.0
             ),
             encoding="rgb8",
-            vla_feature_key="observation.images.right_wrist",
+            vla_feature_key="observation.images.wrist_right",
             vendor="sim",
             model="mujoco_wrist",
         ),

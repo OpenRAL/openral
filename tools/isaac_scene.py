@@ -24,6 +24,13 @@ rSkill clears the sensor/camera contract). The action is an 8-vector
 (>0 open, <=0 close). Reward is the cube height; the task succeeds when the cube
 is lifted above ``_LIFT_SUCCESS_Z``. The lifecycle/obs skeleton lives in
 :class:`_isaac_scene_base.IsaacSceneBase`.
+
+.. note::
+   The ``camera1`` / ``camera2`` output keys are LEGACY ordinal slots that
+   pre-date ADR-0069's canonical camera vocabulary. The HAL bridge tolerates
+   the mismatch via the ``vla_feature_key`` lookup fallback. TODO: extend the
+   isaac-sidecar protocol so the host can pass scene-side camera names
+   (``front`` / ``wrist`` ...) and emit those directly.
 """
 
 from __future__ import annotations

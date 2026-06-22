@@ -187,7 +187,7 @@ class IsaacManifestScene(IsaacSceneBase):
                 key = (
                     str(s["vla_feature_key"]).rsplit(".", 1)[-1]
                     if s.get("vla_feature_key")
-                    else s.get("name", "camera1")
+                    else s.get("name", "camera1")  # sensor name (canonical per ADR-0069)
                 )
                 plan.append(
                     {

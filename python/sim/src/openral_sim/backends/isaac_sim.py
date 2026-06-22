@@ -234,7 +234,8 @@ class _IsaacSimSidecar:
         else:
             h = self.scene.observation_height
             w = self.scene.observation_width
-            images = {"camera1": np.zeros((h, w, 3), dtype=np.uint8)}
+            cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
+            images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
         state = np.asarray(raw.get("state", []), dtype=np.float32).reshape(-1)
         obs: Observation = {
             "images": images,

@@ -84,8 +84,8 @@ class TabletopOptions:
             the table — its centre Z within this tolerance of the resting
             height ``table_top_z + cube_size_z``. Guards against "cube knocked
             off the table happens to pass over the goal XY" false positives.
-        overhead_camera_pos: World-frame position of the overhead camera.
-        overhead_camera_fovy: Overhead camera vertical FoV, degrees.
+        top_camera_pos: World-frame position of the top-down camera.
+        top_camera_fovy: Top-down camera vertical FoV, degrees.
         front_camera_pos: World-frame position of the front camera.
         front_camera_fovy: Front camera vertical FoV, degrees.
         wrist_camera_mount_body: When set, the composed model parents a
@@ -140,8 +140,8 @@ class TabletopOptions:
     goal_min_separation: float = 0.12
     off_table_z_tol: float = 0.04
 
-    overhead_camera_pos: tuple[float, float, float] = (0.0, 0.30, 0.90)
-    overhead_camera_fovy: float = 58.0
+    top_camera_pos: tuple[float, float, float] = (0.0, 0.30, 0.90)
+    top_camera_fovy: float = 58.0
     front_camera_pos: tuple[float, float, float] = (0.0, -0.45, 0.45)
     front_camera_fovy: float = 58.0
 
@@ -347,13 +347,13 @@ def _append_goal_marker(spec: mujoco.MjSpec, opts: TabletopOptions) -> None:
 
 
 def _append_world_cameras(spec: mujoco.MjSpec, opts: TabletopOptions) -> None:
-    """Append the overhead + front world-frame cameras (look at the table centre)."""
+    """Append the top + front world-frame cameras (look at the table centre)."""
     import mujoco as mj
 
     cx, cy = opts.table_center_xy
     target = (cx, cy, opts.table_top_z)
     for name, pos, fovy in (
-        ("overhead", opts.overhead_camera_pos, opts.overhead_camera_fovy),
+        ("top", opts.top_camera_pos, opts.top_camera_fovy),
         ("front", opts.front_camera_pos, opts.front_camera_fovy),
     ):
         cam = spec.worldbody.add_camera()

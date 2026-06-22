@@ -73,9 +73,9 @@ image_preprocessing:
   flip_180: false
   flip_vertical: true
   aliases:
-    camera1: "robot0_agentview_left_image"
-    camera2: "robot0_agentview_right_image"
-    camera3: "robot0_eye_in_hand_image"
+    front_left: "robot0_agentview_left_image"
+    front_right: "robot0_agentview_right_image"
+    wrist: "robot0_eye_in_hand_image"
 state_contract:
   layout: "human300_16d"
   dim: 16

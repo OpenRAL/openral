@@ -317,16 +317,18 @@ hal:
 # and the WorldStateAggregator forwards them onto observation.images.
 # These three SensorSpecs satisfy the pi05-openarm rskill's
 # ``sensors_required`` entries (``observation.images.{base,left_wrist,
-# right_wrist}``) at the eval capability gate. ``base`` is an alias of
-# the global ``top`` view (renamed in the rskill manifest's
-# ``image_preprocessing.aliases``).
+# right_wrist}``) at the eval capability gate. Per ADR-0069 the
+# HAL-facing sensor names are canonical (``top`` / ``wrist_left`` /
+# ``wrist_right``); the checkpoint-facing ``vla_feature_key`` is frozen
+# per checkpoint and so retains ``observation.images.{base,left_wrist,
+# right_wrist}`` (the rskill manifest's ``image_preprocessing.aliases``
+# bridges scene-side → checkpoint-side names). The MJCF camera is also
+# named ``top``, so ``sim_camera_name`` is no longer needed (the HAL's
+# ``read_images`` falls back to the sensor name when it is unset).
 sensors:
-  - name: "base"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
-    # The MJCF overview camera is named "top"; the sensor / VLA feature key is
-    # "base". issue #191 Phase 3b — read_images renders sim_camera_name.
-    sim_camera_name: "top"
     rate_hz: 10.0
     intrinsics:
       width: 640
@@ -339,7 +341,7 @@ sensors:
     vla_feature_key: "observation.images.base"
     vendor: "sim"
     model: "mujoco_top"
-  - name: "left_wrist"
+  - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
     rate_hz: 10.0
@@ -351,10 +353,10 @@ sensors:
       cx: 320.0
       cy: 240.0
     encoding: "rgb8"
-    vla_feature_key: "observation.images.left_wrist"
+    vla_feature_key: "observation.images.wrist_left"
     vendor: "sim"
     model: "mujoco_wrist"
-  - name: "right_wrist"
+  - name: "wrist_right"
     modality: "rgb"
     frame_id: "openarm_right_ee_base_link"
     rate_hz: 10.0
@@ -366,7 +368,7 @@ sensors:
       cx: 320.0
       cy: 240.0
     encoding: "rgb8"
-    vla_feature_key: "observation.images.right_wrist"
+    vla_feature_key: "observation.images.wrist_right"
     vendor: "sim"
     model: "mujoco_wrist"
 

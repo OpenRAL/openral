@@ -5,9 +5,9 @@ Deploy-sim keys ``WorldState.image_frames`` by the manifest SENSOR NAME
 resolve their ``camera_keys`` and look up ``obs["images"]`` by the VLA
 slot (``camera1`` / ``camera2`` / ...) — the LIBERO convention
 ``openral sim run`` and the rldx adapter already use. Without a realignment
-a manifest whose RGB sensors are descriptively named (franka:
-``agentview`` / ``wrist``) hands the pi0.5 adapter
-``obs["images"]["agentview"]`` while it looks up ``camera1`` and its
+a manifest whose RGB sensors are descriptively named (franka: ``front`` /
+``wrist`` per ADR-0069) hands the pi0.5 adapter
+``obs["images"]["front"]`` while it looks up ``camera1`` and its
 ``cam_alias`` maps ``camera1 -> image`` for the checkpoint — so the
 policy sees no frames.
 
@@ -63,12 +63,12 @@ def _rgb_frame(name: str, *, fill: int, h: int = 2, w: int = 2) -> SensorFrame:
 
 class TestVlaCameraSlots:
     def test_franka_slots_in_manifest_order(self) -> None:
-        # agentview -> observation.images.camera1, wrist -> ...camera2.
+        # front -> observation.images.camera1, wrist -> ...camera2.
         assert _vla_camera_slots(_franka()) == ("camera1", "camera2")
 
     def test_franka_name_to_slot_map(self) -> None:
         assert _sensor_name_to_vla_slot(_franka()) == {
-            "agentview": "camera1",
+            "front": "camera1",
             "wrist": "camera2",
         }
 
@@ -79,9 +79,9 @@ class TestVlaCameraSlots:
 
 class TestDecodeImageFrames:
     def test_remaps_sensor_names_to_vla_slots(self) -> None:
-        slot_map = {"agentview": "camera1", "wrist": "camera2"}
+        slot_map = {"front": "camera1", "wrist": "camera2"}
         frames = {
-            "agentview": _rgb_frame("agentview", fill=10),
+            "front": _rgb_frame("front", fill=10),
             "wrist": _rgb_frame("wrist", fill=20),
         }
         images = _decode_image_frames(frames, slot_map)
@@ -97,15 +97,15 @@ class TestDecodeImageFrames:
 
     def test_frames_without_data_are_skipped(self) -> None:
         frame = SensorFrame(
-            sensor_id="agentview",
+            sensor_id="front",
             stamp_monotonic_ns=1,
             stamp_wall_ns=2,
             encoding=FrameEncoding.RGB8,
             width=2,
             height=2,
-            topic="/openral/cameras/agentview/image",  # data=None
+            topic="/openral/cameras/front/image",  # data=None
         )
-        images = _decode_image_frames({"agentview": frame}, {"agentview": "camera1"})
+        images = _decode_image_frames({"front": frame}, {"front": "camera1"})
         assert images == {}
 
 
@@ -116,8 +116,8 @@ class TestBuildRuntimeSkillSceneCameras:
         """Sensor-name ``scene_cameras`` (what runtime_node passes) → VLA slots.
 
         ``runtime_node`` forwards ``camera_names`` (manifest sensor names,
-        e.g. ``agentview`` / ``wrist``) as ``scene_cameras``; the adapter
-        needs the VLA slots (``camera1`` / ``camera2``) so its
+        e.g. ``front`` / ``wrist`` per ADR-0069) as ``scene_cameras``; the
+        adapter needs the VLA slots (``camera1`` / ``camera2``) so its
         ``cam_alias`` maps ``camera1 -> image`` for the checkpoint. Capture
         the ``env_cfg.scene.cameras`` the policy factory receives by
         monkey-patching ``make_policy`` at the lerobot/torch process
@@ -141,7 +141,7 @@ class TestBuildRuntimeSkillSceneCameras:
             _build_runtime_skill_from_manifest(
                 yaml_path=yaml_path,
                 prompt="pick up the milk",
-                scene_cameras=("agentview", "wrist"),  # sensor names, as runtime_node passes
+                scene_cameras=("front", "wrist"),  # sensor names, as runtime_node passes
                 description=_franka(),
             )
 

@@ -82,8 +82,8 @@ processors:
 image_preprocessing:
   flip_180: true
   aliases:
-    camera1: "image"
-    camera2: "image2"
+    front: "image"
+    wrist: "image2"
 state_contract:
   dim: 8
 

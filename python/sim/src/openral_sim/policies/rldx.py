@@ -611,7 +611,12 @@ class _Gr00tFamilySidecarAdapter:
     # Per-camera rolling frame history (len=_RLDX_VIDEO_HISTORY). On reset
     # we clear; on the first frame after reset we pad by repeating the
     # current frame so the model sees a static 4-frame stack instead of
-    # garbage from a previous episode.
+    # garbage from a previous episode. Per ADR-0069 the canonical scene
+    # camera names (e.g. ``front`` / ``wrist``) live on ``_camera_keys``;
+    # the keys below are INTERNAL buffer aliases that the obs assembler
+    # uses to refer to "first camera" / "second camera" / "third camera"
+    # positionally — they are deliberately decoupled from the scene-side
+    # names so the buffer wiring does not need to be re-aliased per robot.
     _frame_buffers: dict[str, collections.deque[NDArray[np.uint8]]] = field(
         default_factory=lambda: {
             "camera1": collections.deque(maxlen=_RLDX_VIDEO_HISTORY),
@@ -1856,7 +1861,16 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     if isinstance(cam_keys_raw, (list, tuple)) and len(cam_keys_raw) == _RLDX_CAMERA_PAIR_LEN:
         camera_keys = (str(cam_keys_raw[0]), str(cam_keys_raw[1]))
     else:
-        camera_keys = ("camera1", "camera2")
+        # Per ADR-0069: fall back to the scene's canonical camera names
+        # (e.g. ``("front", "wrist")`` on franka_panda) when the rskill
+        # manifest does not pin ``vla.extra.camera_keys`` explicitly. The
+        # ordinal ``("camera1", "camera2")`` legacy default is retained
+        # only when the scene leaves ``cameras`` empty.
+        _scene_cams = list(getattr(env_cfg.scene, "cameras", []) or [])
+        camera_keys = (
+            _scene_cams[0] if len(_scene_cams) > 0 else "camera1",
+            _scene_cams[1] if len(_scene_cams) > 1 else "camera2",
+        )
     auto_spawn = _env_bool("OPENRAL_RLDX_AUTO_SPAWN", bool(extra.get("auto_spawn", True)))
     boot_timeout_s = float(
         os.environ.get("OPENRAL_RLDX_BOOT_TIMEOUT_S") or extra.get("boot_timeout_s", 900.0)

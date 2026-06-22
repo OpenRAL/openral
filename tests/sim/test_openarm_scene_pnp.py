@@ -3,7 +3,7 @@
 Loads the scene end-to-end (real MJCF compile, real MjSim, real OSC),
 resets it, runs a handful of zero-action steps, and asserts the
 observation dict matches the rSkill manifest's IO contract (16-D state,
-3 RGB cameras keyed top/left_wrist/right_wrist, task instruction
+3 RGB cameras keyed top/wrist_left/wrist_right, task instruction
 present). No mocks, no stubs — CLAUDE.md §1.11 / §5.4.
 
 Skipped automatically when ``robosuite`` is not installed (CI without
@@ -152,7 +152,7 @@ def test_openarm_tabletop_deploy_scene_builds_through_loader() -> None:
         assert set(obs).issuperset({"images", "state", "task"})
         assert obs["state"].shape == (16,), f"state dim={obs['state'].shape} expected (16,)"
         assert obs["state"].dtype == np.float32
-        assert set(obs["images"]) == {"top", "left_wrist", "right_wrist"}
+        assert set(obs["images"]) == {"top", "wrist_left", "wrist_right"}
 
         # Step under zero action — proves the noop task plumbing doesn't
         # trip the underlying robosuite OSC + sim.step path.
@@ -177,7 +177,7 @@ def _assert_loads_and_steps(rollout: SimRollout) -> None:
     # IO contract from rskills/pi05-openarm-bimanual-pick-pipe-nf4/rskill.yaml.
     assert obs["state"].shape == (16,), f"state dim={obs['state'].shape} expected (16,)"
     assert obs["state"].dtype == np.float32
-    assert set(obs["images"]) == {"top", "left_wrist", "right_wrist"}
+    assert set(obs["images"]) == {"top", "wrist_left", "wrist_right"}
     for cam, frame in obs["images"].items():
         assert frame.ndim == 3 and frame.shape[2] == 3, (
             f"camera {cam!r} returned shape {frame.shape}, expected HxWx3"

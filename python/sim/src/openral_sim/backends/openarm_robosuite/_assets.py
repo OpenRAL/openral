@@ -16,8 +16,8 @@ This module produces a single composite XML string that:
    ``TableArena``-style table top;
 3. Adds the manipulation scene: three coloured cubes
    (red / green / blue), a passive parallel-jaw drawer (prismatic
-   joint), and three RGB cameras (``top``, ``left_wrist``,
-   ``right_wrist``) at the resolutions the pi05 LoRA was trained on;
+   joint), and three RGB cameras (``top``, ``wrist_left``,
+   ``wrist_right``) at the resolutions the pi05 LoRA was trained on;
 4. Emits ``<motor>`` actuators for all 16 joints (7 arm + 1 finger per
    side), inheriting the upstream ``<equality>`` constraint that
    yokes the second finger to the first;
@@ -359,23 +359,22 @@ _WHITE_SKYBOX_ASSET = (
 
 
 def _rename_upstream_wrist_cameras(xml: str) -> str:
-    """Rename upstream ``camera_wrist_{left,right}`` → ``{left,right}_wrist``.
+    """Rename upstream ``camera_wrist_{left,right}`` → ``wrist_{left,right}``.
 
     The upstream OpenArm v2 MJCF already provides wrist-mounted camera tags
-    parented inside each ``openarm_*_ee_base_link`` body. The pi05 rSkill
-    manifest and HAL camera lists use the shorter ``left_wrist`` /
-    ``right_wrist`` dataset keys, so the composer preserves the upstream
-    camera IDs and only renames them. The rollout renderer may re-aim those
-    named cameras at runtime when the physical hand-mounted view is occluded
-    by the tabletop reset pose.
+    parented inside each ``openarm_*_ee_base_link`` body. Per ADR-0069 the
+    canonical HAL/sensor name is ``wrist_left`` / ``wrist_right``, so the
+    composer preserves the upstream camera IDs and only renames them. The
+    rollout renderer may re-aim those named cameras at runtime when the
+    physical hand-mounted view is occluded by the tabletop reset pose.
 
     No-op if the upstream camera names ever change — the caller still
     gets a syntactically valid MJCF, the wrist render path just won't
-    expose ``left_wrist`` / ``right_wrist`` and the world-state
+    expose ``wrist_left`` / ``wrist_right`` and the world-state
     aggregator will surface that as a stale-sensor warning.
     """
-    xml = xml.replace('name="camera_wrist_left"', 'name="left_wrist"')
-    xml = xml.replace('name="camera_wrist_right"', 'name="right_wrist"')
+    xml = xml.replace('name="camera_wrist_left"', 'name="wrist_left"')
+    xml = xml.replace('name="camera_wrist_right"', 'name="wrist_right"')
     return xml
 
 

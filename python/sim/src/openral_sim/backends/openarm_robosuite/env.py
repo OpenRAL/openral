@@ -430,7 +430,7 @@ class _OpenArmTabletopRollout:
     _max_steps: int = 500
     _step_count: int = 0
     _last_pixels: NDArray[np.uint8] | None = None
-    _image_keys: tuple[str, str, str] = ("top", "left_wrist", "right_wrist")
+    _image_keys: tuple[str, str, str] = ("top", "wrist_left", "wrist_right")
     _render_width: int = _DEFAULT_RENDER_WIDTH
     _render_height: int = _DEFAULT_RENDER_HEIGHT
     # ``"left_first"`` (default — matches robots/openarm/robot.yaml and
@@ -626,8 +626,12 @@ class _OpenArmTabletopRollout:
                 height=self._render_height,
             )
         out: dict[str, NDArray[np.uint8]] = {}
+        # Per ADR-0069 the sensor / output keys are canonical (``top`` /
+        # ``wrist_left`` / ``wrist_right``); the openarm MJCF composer renames
+        # the upstream wrist cameras to match, so the same name is used for both
+        # the renderer lookup and the output dict.
         for cam_name in self._image_keys:
-            if cam_name in ("left_wrist", "right_wrist"):
+            if cam_name in ("wrist_left", "wrist_right"):
                 self._update_dynamic_wrist_camera(mujoco, cam_name)
             # mujoco.Renderer wants the raw mujoco.MjData, not robosuite's wrapper.
             self._renderer.update_scene(self._sim.data._data, camera=cam_name)
@@ -639,11 +643,13 @@ class _OpenArmTabletopRollout:
 
         The upstream OpenArm MJCF cameras are parented inside the hand. In the
         tabletop reset pose they render mostly gripper shell/fingers, so the
-        policy never sees the cubes. Keep the dataset-facing names
-        (``left_wrist`` / ``right_wrist``) but move the compiled camera to a
-        world-space pose derived from the current end-effector site.
+        policy never sees the cubes. Keep the canonical sensor names
+        (``wrist_left`` / ``wrist_right``, per ADR-0069) but move the compiled
+        camera to a world-space pose derived from the current end-effector
+        site.
         """
-        side = cam_name.split("_", 1)[0]
+        # ``wrist_left`` → ``left``, ``wrist_right`` → ``right``
+        side = cam_name.split("_", 1)[1]
         sign = 1.0 if side == "left" else -1.0
         cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, cam_name)
         site_id = mujoco.mj_name2id(
