@@ -20,7 +20,10 @@ import pytest
 
 # The synth itself defers `mujoco`, so it imports without it; the cast
 # functions need a real model, hence the module-level importorskip.
-from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
+from openral_sim.backends.depth_camera import (
+    synthesize_depth_image,
+    synthesize_depth_pointcloud,
+)
 
 mujoco = pytest.importorskip("mujoco")
 
@@ -223,3 +226,92 @@ def test_depth_cloud_unknown_camera_raises() -> None:
             cy=_CY,
             max_range_m=10.0,
         )
+
+
+# ── synthesize_depth_image (ADR-0064 — dense raster for nvblox) ──────────────
+
+
+def test_depth_image_dense_fronto_parallel_wall() -> None:
+    """The image is dense ``(H, W)`` and a fronto-parallel wall reads constant Z."""
+    model, data = _model_data()
+    depth = synthesize_depth_image(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=10.0,
+    )
+    # Dense raster: (rows, cols) = (height, width) — every pixel kept.
+    assert depth.shape == (_H, _W)
+    assert depth.dtype == np.float32
+    # Perpendicular optical-Z is constant across a fronto-parallel wall, and
+    # equals the cloud synth's z-column (1.9 m to the near face).
+    assert np.allclose(depth, _EXPECTED_DEPTH_M, atol=1e-3)
+
+
+def test_depth_image_zero_for_misses() -> None:
+    """Out-of-range / no-return pixels read exactly ``0.0`` (nvblox's sentinel)."""
+    model, data = _model_data()
+    depth = synthesize_depth_image(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=1.0,  # wall at 1.9 m → every ray out of range
+    )
+    assert depth.shape == (_H, _W)
+    assert np.count_nonzero(depth) == 0
+
+
+def test_depth_image_stride_scales_raster() -> None:
+    """``stride=2`` rasterises ``ceil(H/2) x ceil(W/2)`` (CameraInfo scales to match)."""
+    model, data = _model_data()
+    depth = synthesize_depth_image(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=10.0,
+        stride=2,
+    )
+    assert depth.shape == (math.ceil(_H / 2), math.ceil(_W / 2))
+    assert np.allclose(depth, _EXPECTED_DEPTH_M, atol=1e-3)
+
+
+def test_depth_image_matches_cloud_z_column() -> None:
+    """The dense image's nonzero pixels equal the cloud synth's optical-Z, in order.
+
+    Both synths share ``_cast_depth_rays``; on a wall every ray hits, so the
+    raster flattened row-major must equal the cloud's ``z`` column exactly.
+    """
+    model, data = _model_data()
+    common = dict(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=10.0,
+    )
+    cloud = synthesize_depth_pointcloud(**common)  # (W*H, 3), full wall
+    depth = synthesize_depth_image(**common)  # (H, W)
+    assert np.allclose(depth.reshape(-1), cloud[:, 2], atol=1e-5)
