@@ -155,6 +155,8 @@ if _ROS2_AVAILABLE:
             self._hal: Any = None
             self._action_server: Any = None
             self._estop_sub: Any = None
+            self._episode_pub: Any = None
+            self._episode_counter: int = 0
             self._heartbeat: Any = None
             # ADR-0027 — state-adapter wiring. Populated by
             # ``_init_tf_lookup`` at on_configure; ``None`` until then.
@@ -187,6 +189,7 @@ if _ROS2_AVAILABLE:
             del state
             from openral_core.exceptions import ROSConfigError
             from openral_msgs.action import ExecuteRskill
+            from openral_msgs.msg import Episode
             from openral_observability import DiagnosticsHeartbeat, Level
             from openral_runner import ROSPublishingHAL
             from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -265,6 +268,18 @@ if _ROS2_AVAILABLE:
             self._estop_sub = self.create_subscription(
                 Empty, estop_topic, self._on_estop, estop_qos
             )
+
+            # ADR-0019 — Episode boundary markers on the bus. A dataset
+            # recorder (openral_runner.DatasetRecorderBridge, attached by
+            # compose_runtime when --dataset-out is set) and `openral record`
+            # both consume these to segment a deploy session into episodes.
+            # Sparse events → RELIABLE / VOLATILE / KEEP_LAST=10.
+            episode_qos = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+                depth=10,
+            )
+            self._episode_pub = self.create_publisher(Episode, "/openral/episode", episode_qos)
 
             # F8 heartbeat.
             robot_name = self._description.name
@@ -380,6 +395,9 @@ if _ROS2_AVAILABLE:
             if self._estop_sub is not None:
                 self.destroy_subscription(self._estop_sub)
                 self._estop_sub = None
+            if self._episode_pub is not None:
+                self.destroy_publisher(self._episode_pub)
+                self._episode_pub = None
             if self._action_server is not None:
                 self._action_server.destroy()
                 self._action_server = None
@@ -551,56 +569,70 @@ if _ROS2_AVAILABLE:
                     return result
                 self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
 
+                # ADR-0019 — frame the episode on the bus so a dataset
+                # recorder (DatasetRecorderBridge) / `openral record` can
+                # segment a deploy session. PHASE_END is published in the
+                # ``finally`` so every exit path (estop / error / cancel /
+                # success / safety re-raise) closes the episode with the
+                # resolved success flag.
+                episode_task = req.prompt or rskill_id
+                self._publish_episode_start(task_string=episode_task)
                 try:
-                    self._run_until_done_or_deadline(
-                        goal_handle=goal_handle,
-                        skill=skill,
-                        deadline_s=deadline_s,
-                    )
-                except ROSEStopRequested as exc:
-                    # Latched by /openral/estop or HAL.estop().
-                    span.record_exception(exc)
-                    result.success = False
-                    result.failure_reason = f"safety_estop:{exc!s}"
-                    goal_handle.abort()
-                    self._reset_active_goal()
-                    return result
-                except ROSSafetyViolation:
-                    # Never convert a safety violation into a soft failure_reason
-                    # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
-                    raise
-                except ROSError as exc:
-                    # A typed runtime failure during execution (e.g. a wrapped
-                    # ros_action skill whose goal could not be built from
-                    # malformed goal_params_json, an inference timeout, a planning
-                    # error). Previously these escaped the callback and the goal
-                    # aborted with an EMPTY failure_reason, so the reasoner could
-                    # not replan. Surface the typed reason so the replanning ladder
-                    # can act on it.
-                    span.record_exception(exc)
-                    self.get_logger().error(
-                        f"rskill_runner.execute_failed: kind={type(exc).__name__} reason={exc!s}"
-                    )
-                    result.success = False
-                    result.failure_reason = f"{type(exc).__name__}: {exc!s}"
-                    goal_handle.abort()
-                    self._reset_active_goal()
-                    return result
+                    try:
+                        self._run_until_done_or_deadline(
+                            goal_handle=goal_handle,
+                            skill=skill,
+                            deadline_s=deadline_s,
+                        )
+                    except ROSEStopRequested as exc:
+                        # Latched by /openral/estop or HAL.estop().
+                        span.record_exception(exc)
+                        result.success = False
+                        result.failure_reason = f"safety_estop:{exc!s}"
+                        goal_handle.abort()
+                        self._reset_active_goal()
+                        return result
+                    except ROSSafetyViolation:
+                        # Never convert a safety violation into a soft failure_reason
+                        # (CLAUDE.md §1) — let it reach the safety-supervisor boundary.
+                        raise
+                    except ROSError as exc:
+                        # A typed runtime failure during execution (e.g. a wrapped
+                        # ros_action skill whose goal could not be built from
+                        # malformed goal_params_json, an inference timeout, a planning
+                        # error). Previously these escaped the callback and the goal
+                        # aborted with an EMPTY failure_reason, so the reasoner could
+                        # not replan. Surface the typed reason so the replanning ladder
+                        # can act on it.
+                        span.record_exception(exc)
+                        _kind = type(exc).__name__
+                        self.get_logger().error(
+                            f"rskill_runner.execute_failed: kind={_kind} reason={exc!s}"
+                        )
+                        result.success = False
+                        result.failure_reason = f"{_kind}: {exc!s}"
+                        goal_handle.abort()
+                        self._reset_active_goal()
+                        return result
 
-                # Honour cancel — drain then idle-hold (ADR-0018 §F1).
-                if self._cancel_requested or goal_handle.is_cancel_requested:
-                    self._drain_and_idle_hold(skill)
-                    result.success = False
-                    result.failure_reason = "cancelled"
-                    goal_handle.canceled()
+                    # Honour cancel — drain then idle-hold (ADR-0018 §F1).
+                    if self._cancel_requested or goal_handle.is_cancel_requested:
+                        self._drain_and_idle_hold(skill)
+                        result.success = False
+                        result.failure_reason = "cancelled"
+                        goal_handle.canceled()
+                        self._reset_active_goal()
+                        return result
+
+                    result.success = True
+                    result.failure_reason = ""
+                    goal_handle.succeed()
                     self._reset_active_goal()
                     return result
-
-                result.success = True
-                result.failure_reason = ""
-                goal_handle.succeed()
-                self._reset_active_goal()
-                return result
+                finally:
+                    self._publish_episode_end(
+                        task_string=episode_task, success=bool(result.success)
+                    )
 
         # ── Internal helpers ─────────────────────────────────────────────────
 
@@ -1043,6 +1075,30 @@ if _ROS2_AVAILABLE:
             """
             del skill
             time.sleep(_CANCEL_DRAIN_S)
+
+        def _publish_episode_start(self, *, task_string: str) -> None:
+            """Publish an Episode(PHASE_START) marker (ADR-0019). No-op if unconfigured."""
+            self._publish_episode_marker(phase=0, task_string=task_string, success=False)
+
+        def _publish_episode_end(self, *, task_string: str, success: bool) -> None:
+            """Publish an Episode(PHASE_END) marker (ADR-0019). No-op if unconfigured."""
+            self._publish_episode_marker(phase=1, task_string=task_string, success=success)
+
+        def _publish_episode_marker(self, *, phase: int, task_string: str, success: bool) -> None:
+            """Publish one ``openral_msgs/Episode`` boundary marker; bump idx on END."""
+            if self._episode_pub is None:
+                return
+            from openral_msgs.msg import Episode
+
+            msg = Episode()
+            msg.stamp = self.get_clock().now().to_msg()
+            msg.episode_idx = self._episode_counter
+            msg.task_string = task_string
+            msg.phase = int(phase)
+            msg.success = bool(success)
+            self._episode_pub.publish(msg)
+            if int(phase) == Episode.PHASE_END:
+                self._episode_counter += 1
 
         def _reset_active_goal(self) -> None:
             """Clear the per-goal state under the lock."""
