@@ -63,7 +63,7 @@ _DOF_PER_ARM = _ARM_JOINT_COUNT + _GRIPPER_CTRL_COUNT
 _DEFAULT_RENDER_WIDTH = 256
 _DEFAULT_RENDER_HEIGHT = 256
 _GRIPPER_ENCODER_DEADBAND = 0.05
-_WRIST_CAMERA_TARGET = np.asarray([0.58, 0.0, 0.08], dtype=np.float64)
+_WRIST_CAMERA_TARGET: tuple[float, float, float] = (0.58, 0.0, 0.08)
 _WRIST_CAMERA_OFFSET = np.asarray([-0.10, 0.14, 0.10], dtype=np.float64)
 _WRIST_CAMERA_FOVY = 78.0
 
@@ -661,8 +661,9 @@ class _OpenArmTabletopRollout:
         cam_pos = eef_pos + offset
         self._model.cam_bodyid[cam_id] = 0
         self._model.cam_pos[cam_id] = cam_pos
+        cam_pos_xyz = (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
         self._model.cam_quat[cam_id] = np.asarray(
-            look_at_quat_wxyz(cam_pos, _WRIST_CAMERA_TARGET, view_axis="-z"),
+            look_at_quat_wxyz(cam_pos_xyz, _WRIST_CAMERA_TARGET, view_axis="-z"),
             dtype=np.float64,
         )
         self._model.cam_fovy[cam_id] = _WRIST_CAMERA_FOVY

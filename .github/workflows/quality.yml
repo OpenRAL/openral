@@ -28,5 +28,7 @@ jobs:
       - run: uv run mypy --strict tools/
       - name: Check schema drift
         run: uv run python tools/schema_export.py --check
+      - name: Validate robot/skill/scene manifests
+        run: uv run openral check
       - name: Build docs (mkdocs --strict)
         run: uv run mkdocs build --strict
