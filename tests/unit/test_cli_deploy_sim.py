@@ -55,6 +55,7 @@ def test_bh_deploy_sim_help_renders() -> None:
     # --rskill was removed: the reasoner picks the active rSkill
     # dynamically from rskills/ at on_configure.
     assert "--rskill" not in result.output
+    assert "--enable-sim-clock" not in result.output
 
 
 def test_bh_deploy_sim_dry_run_openarm() -> None:
@@ -131,6 +132,26 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     # forwarded so the OpaqueFunction can read it.
     assert "enable_slam:=false" in joined
     assert invocation.enable_slam is False
+    assert invocation.clock_origin == "simulation"
+    assert "clock_origin:=simulation" in joined
+    assert "enable_sim_clock:=" not in joined
+
+
+def test_deploy_sim_real_mode_uses_host_wall_clock_origin() -> None:
+    """Real deployments never publish OpenRAL /clock; they use the graph wall clock."""
+    invocation = resolve_launch_invocation(
+        config=None,
+        robot_override="franka_panda",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+
+    assert invocation.clock_origin == "host_wall"
+    joined = " ".join(invocation.argv_template)
+    assert "clock_origin:=host_wall" in joined
+    assert "enable_sim_clock:=" not in joined
 
 
 def test_deploy_sim_object_detector_manifest_selects_vlm() -> None:

@@ -318,6 +318,11 @@ class LaunchInvocation:
     capsule-vs-voxel check). Set by ``openral deploy sim --enable-octomap``;
     forwarded as ``enable_octomap:=true``. Defaults to "auto" = the robot
     manifest declares a depth SensorSpec (nothing to map otherwise)."""
+    clock_origin: str
+    """ClockAuthority origin forwarded as ``clock_origin:=…``. Derived from
+    the deployment: simulator-owned elapsed time for sim backends that expose
+    ``sim_time_ns``; host wall time for real deployments or clock-less scenes.
+    Operators do not choose ROS ``use_sim_time`` directly."""
     enable_object_detector: bool
     """ADR-0035 object-detection perception leg
     (ros_image_detector_node → /openral/perception/objects → world-state
@@ -442,6 +447,33 @@ def _scan_params_from_description(description: RobotDescription) -> dict[str, ob
     return params
 
 
+def _scene_backend_has_sim_clock(config: Path | None) -> bool:
+    """Return whether a DeployScene backend can be the OpenRAL simulation clock authority."""
+    if config is None:
+        return False
+    from openral_core import DeployScene, PhysicsBackend, load_scene_strict
+
+    scene = load_scene_strict(str(config), DeployScene)
+    return scene.scene.backend in {
+        PhysicsBackend.MUJOCO,
+        PhysicsBackend.MUJOCO_MJX,
+        PhysicsBackend.ISAACSIM,
+        PhysicsBackend.SAPIEN,
+    }
+
+
+def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
+    """Resolve the OpenRAL clock authority origin for the launch graph.
+
+    Real deployments use host wall time. Sim deployments use simulator elapsed
+    time only when the backend exposes ``sim_time_ns``; otherwise the graph
+    stays in host-wall time so ROS node clocks never pin at zero.
+    """
+    if hal_mode != "sim":
+        return "host_wall"
+    return "simulation" if _scene_backend_has_sim_clock(config) else "host_wall"
+
+
 def _omdet_runtime_available() -> bool:
     """True when the OmDet-Turbo continuous detector's runtime deps are importable.
 
@@ -528,7 +560,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_nav2: bool | None = None,
     enable_octomap: bool | None = None,
     enable_octomap_kernel_check: bool = True,
-    enable_sim_clock: bool = False,
     enable_object_detector: bool | None = None,
     object_detector_onnx: Path | None = None,
     object_detector_manifest: str | None = None,
@@ -653,6 +684,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             s.modality in ("depth", "point_cloud") and s.intrinsics is not None
             for s in description.sensors
         )
+    clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config)
 
     # ADR-0035/0037 — the object-detection leg is ON by default (deploy sim is a
     # perception-driven stack; ``--no-object-detector`` turns it off). The default
@@ -818,11 +850,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         f"enable_nav2:={'true' if enable_nav2 else 'false'}",
         f"enable_octomap:={'true' if enable_octomap else 'false'}",
         f"enable_octomap_kernel_check:={'true' if enable_octomap_kernel_check else 'false'}",
-        # ADR-0048 Phase 2 — run the whole graph on sim time (the HAL emits
-        # /clock from MjData via sim_time_ns). Only valid for backends with a
-        # sim clock (MuJoCo); the HAL warns + publishes nothing if the backend
-        # has none, so the default is false (wall-clock graph).
-        f"enable_sim_clock:={'true' if enable_sim_clock else 'false'}",
+        # ADR-0048 — OpenRAL clock authority. The launch maps this to ROS
+        # use_sim_time internally: simulation → use_sim_time=true + HAL /clock;
+        # host_wall → system time and no OpenRAL /clock publisher.
+        f"clock_origin:={clock_origin}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # ADR-0057 — reward monitor co-active with the VLA; the reasoner polls
@@ -883,6 +914,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         slam_backend=slam_backend,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
+        clock_origin=clock_origin,
         enable_object_detector=enable_object_detector,
         object_detector_onnx=resolved_object_detector_onnx,
         object_detector_manifest=resolved_object_detector_manifest,
@@ -1670,21 +1702,6 @@ def deploy_sim_command(
             "non-commercial, 5 GB VRAM, needs the sidecar venv)."
         ),
     ),
-    enable_sim_clock: bool = typer.Option(
-        False,
-        "--enable-sim-clock/--no-enable-sim-clock",
-        help=(
-            "ADR-0048 Phase 2 — run the whole ROS graph on **simulation time**. "
-            "The HAL becomes the /clock authority, publishing the sim's "
-            "``sim_time_ns`` so Nav2 / slam_toolbox / octomap advance in lockstep "
-            "with the sim (deterministic replay; no wall-vs-sim TF skew). **Only "
-            "for backends with a sim clock** (MuJoCo / robosuite); the HAL warns "
-            "and publishes no /clock for clock-less or sidecar backends, which "
-            "would freeze the graph — so the default is off (wall-clock). "
-            "Moving the kernel's world-collision octree onto sim time is "
-            "safety-WG-gated (ADR-0048 Phase 3)."
-        ),
-    ),
     enable_octomap: bool | None = typer.Option(
         None,
         "--enable-octomap/--no-enable-octomap",
@@ -1894,7 +1911,6 @@ def deploy_sim_command(
             enable_nav2=enable_nav2,
             enable_octomap=enable_octomap,
             enable_octomap_kernel_check=enable_octomap_kernel_check,
-            enable_sim_clock=enable_sim_clock,
             enable_object_detector=enable_object_detector,
             object_detector_onnx=object_detector_onnx,
             object_detector_manifest=object_detector_manifest,

@@ -16,55 +16,60 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   `HUMANOID, MANIPULATOR, BIMANUAL, QUADRUPED, MOBILE_BASE, MOBILE_MANIPULATOR, DRONE`
 - `class JointType(str, Enum)` — URDF joint type. (L46)
   `REVOLUTE, PRISMATIC, CONTINUOUS, FIXED, FLOATING, PLANAR`
-- `JointRole: TypeAlias = Literal[…]` — Structural classification of a `JointSpec` (ADR-0028a). (L57)
+- `class ClockOrigin(str, Enum)` — Authoritative source for OpenRAL `stamp_ns` values. `/clock` is a ROS projection, not an origin. (L57)
+  `HOST_WALL, SIMULATION, HARDWARE_SYNCED`
+- `class ClockEpoch(str, Enum)` — Epoch that a `stamp_ns` value is measured from. (L69)
+  `UNIX, SIMULATION_ELAPSED, HARDWARE`
+- `JointRole: TypeAlias = Literal[…]` — Structural classification of a `JointSpec` (ADR-0028a). (L77)
   `"arm", "base", "gripper", "torso", "leg", "head", "neck", "wheel", "unknown"`. Used by runner/safety/dataset-bridge to identify a channel without name-substring heuristics. Default `"unknown"` keeps legacy manifests loadable.
-- `class ControlMode(str, Enum)` — Action space / control interface. (L81)
+- `class ControlMode(str, Enum)` — Action space / control interface. (L181)
   `JOINT_POSITION, JOINT_VELOCITY, JOINT_TORQUE, JOINT_TRAJECTORY, CARTESIAN_POSE, CARTESIAN_DELTA, CARTESIAN_TWIST, BODY_TWIST, FOOT_PLACEMENT, GRIPPER_BINARY, GRIPPER_POSITION, DEX_HAND_JOINT, COMPOSITE_MODE`
-- `const BODY_TWIST_DIM: int = 6` — Width of a BODY_TWIST / CARTESIAN_* twist row `(vx, vy, vz, wx, wy, wz)`. Single source for the HAL packers (`openral_hal.panda_mobile`, `openral_hal.sim_attached`) + the safety supervisor that validate 6-vec twist payloads; matches `Action.body_twist` (a 6-tuple). (L134)
-- `class SensorModality(str, Enum)` — Physical sensing modality. (L147)
+- `const BODY_TWIST_DIM: int = 6` — Width of a BODY_TWIST / CARTESIAN_* twist row `(vx, vy, vz, wx, wy, wz)`. Single source for the HAL packers (`openral_hal.panda_mobile`, `openral_hal.sim_attached`) + the safety supervisor that validate 6-vec twist payloads; matches `Action.body_twist` (a 6-tuple). (L234)
+- `class SensorModality(str, Enum)` — Physical sensing modality. (L247)
   `RGB, DEPTH, STEREO, IR, POINT_CLOUD, LIDAR_2D, IMU, FORCE_TORQUE, JOINT_STATE, TACTILE_VISION, TACTILE_ARRAY, AUDIO, GPS, BATTERY`
-- `class Hand(str, Enum)` — End-effector laterality. (L166) `LEFT, RIGHT, NA`
-- `class StateRepresentation(str, Enum)` — State vector format. (L713)
+- `class Hand(str, Enum)` — End-effector laterality. (L266) `LEFT, RIGHT, NA`
+- `class StateRepresentation(str, Enum)` — State vector format. (L813)
   `JOINT_POSITIONS, EEF_POS_AXISANGLE, EEF_POS_EULER, EEF_POS_QUAT, EEF_POS_AXISANGLE_GRIPPER`
-- `class ActionRepresentation(str, Enum)` — Action vector format. (L723)
+- `class ActionRepresentation(str, Enum)` — Action vector format. (L823)
   `JOINT_POSITIONS, JOINT_VELOCITIES, DELTA_EE_6D_PLUS_GRIPPER, DELTA_EE_6D, CARTESIAN_POSE`
-- `class RSkillAction(str, Enum)` — Closed vocabulary of high-level action verbs an rSkill can perform (ADR-0022); declared on `RSkillManifest.actions` and surfaced to the reasoner LLM tool palette so it can pick a skill by what it does. (L733)
+- `class RSkillAction(str, Enum)` — Closed vocabulary of high-level action verbs an rSkill can perform (ADR-0022); declared on `RSkillManifest.actions` and surfaced to the reasoner LLM tool palette so it can pick a skill by what it does. (L833)
   Manipulation primitives: `PICK, PLACE, PICK_AND_PLACE, TRANSFER, GRASP, RELEASE`; articulated / contact-rich: `OPEN, CLOSE, PUSH, PULL, SLIDE, INSERT, POUR, WIPE, ROTATE`; motion: `REACH`; mobile: `NAVIGATE`; social/expressive: `WAVE, SHAKE`; generalist marker (foundation / multi-task checkpoints): `GENERALIST`; perception producer: `DETECT` (ADR-0037, for `kind: "detector"` rSkills); scene VLM: `QUERY` (ADR-0047, for `kind: "vlm"` rSkills).
-- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2322)
+- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2422)
   `FP32, FP16, BF16, INT8, INT4, FP4_NVFP4`
-- `class QuantizationBackend(str, Enum)` — Inference backend. (L2346)
+- `class QuantizationBackend(str, Enum)` — Inference backend. (L2446)
   `PYTORCH, ONNX, TENSORRT, GGUF, MLX`
-- `class RSkillState(str, Enum)` — Skill lifecycle. (L2418)
+- `class RSkillState(str, Enum)` — Skill lifecycle. (L2518)
   `UNCONFIGURED, INACTIVE, ACTIVE, FINALIZED, ERROR`
-- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2498)
+- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2598)
   `APACHE_2_0, MIT, BSD, PERMISSIVE_RESEARCH, NVIDIA_NON_COMMERCIAL, NVIDIA_OPEN_MODEL, RLWRLD_NON_COMMERCIAL, PROPRIETARY, UNKNOWN` (NVIDIA_OPEN_MODEL = GR00T N1.7+, commercial OK — ADR-0046)
-- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2512)
+- `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2612)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
-- `class PhysicsBackend(str, Enum)` — Sim backend. (L4834)
+- `class PhysicsBackend(str, Enum)` — Sim backend. (L4934)
   `MUJOCO, MUJOCO_MJX, PYBULLET, SAPIEN, ISAACSIM, COPPELIASIM, GENESIS, MOCK` (SAPIEN = ManiSkill3 / RoboTwin engine; RoboTwin uses it via a py3.10 sidecar — ADR-0061; `COPPELIASIM` = CoppeliaSim/PyRep RLBench backend, out-of-process py3.10 sidecar — ADR-0062)
 
 **Pydantic models — robot manifest hierarchy**
 
-- `class IntrinsicsPinhole(BaseModel)` — Pinhole camera intrinsics. (L177)
+- `class IntrinsicsPinhole(BaseModel)` — Pinhole camera intrinsics. (L277)
   fields: `width, height, fx, fy, cx, cy, distortion_model, distortion_coeffs`
-- `scale_intrinsics_to(base, width, height) -> IntrinsicsPinhole` — Linearly rescale pinhole intrinsics to a new render resolution (fx/fy/cx/cy scale by width/height ratios; FOV and distortion preserved). ADR-0035: deploy-sim renders the same MuJoCo camera at `scene.observation_width/height`, so the HAL scales the manifest's nominal intrinsics to the render resolution before the depth back-projection — keeping the published camera model matched to what was rendered. Returns `base` unchanged when the target equals its resolution; raises `ValueError` on non-positive dims. (L205)
+- `scale_intrinsics_to(base, width, height) -> IntrinsicsPinhole` — Linearly rescale pinhole intrinsics to a new render resolution (fx/fy/cx/cy scale by width/height ratios; FOV and distortion preserved). ADR-0035: deploy-sim renders the same MuJoCo camera at `scene.observation_width/height`, so the HAL scales the manifest's nominal intrinsics to the render resolution before the depth back-projection — keeping the published camera model matched to what was rendered. Returns `base` unchanged when the target equals its resolution; raises `ValueError` on non-positive dims. (L305)
+- `class ClockAuthority(BaseModel)` — Named origin for OpenRAL timestamps across sim, rSkills, ROS, and hardware. Fields: `origin`, `epoch`, `clock_id`, `publishes_ros_clock`, `timestep_s`, `notes`. Constructors: `host_wall()` for real-deployment wall/ROS system time, `simulation(clock_id, timestep_s=None, publishes_ros_clock=True)` for simulator elapsed time projected to `/clock`, and `hardware_synced(clock_id, epoch=UNIX)` for future synchronized controller/PTP clocks. Validator rejects impossible origin/epoch pairs and competing hardware `/clock` publishers. (L101)
 - `class CameraSimPlacement(BaseModel)` — ADR-0065. Where an RGB sensor's camera sits in the sim MJCF, so the generic HAL camera rig can splice it into a bare-arm MJCF (which ships no `<camera>`) for `deploy sim`. Fields: `parent_body: str | None` (MJCF body the camera mounts to / tracks; `None` = world-fixed in `<worldbody>`), `pos: (x,y,z)` + `target: (x,y,z)` (look-at point, parent or world frame), `fovy_deg: float | None` (else derived from the sensor's `intrinsics` as `2·atan(h/2·fy)`). `extra="forbid"`. Replaces per-robot `scene_defaults.composition` for camera-only deploy twins.
-- `class SensorSpec(BaseModel)` — Generalizable sensor descriptor (all modalities). `catalog_id: str | None` (ADR-0068) records the `openral_sensors` catalog provenance for robot-mounted physical devices while keeping the manifest fully materialized; calibrated intrinsics, placement, feature keys, and serials stay explicit on the spec. `sim_camera_name: str | None` (issue #191 Phase 3b, mirrors `JointSpec.sim_joint_name`) carries the MJCF camera name when it differs from the sensor `name` — `MujocoArmHAL.read_images` renders `sim_camera_name or name` (e.g. openarm's `base` sensor renders the MJCF `top` camera). `sim_placement: CameraSimPlacement | None` (ADR-0065) carries the camera's sim pose; when set, the HAL camera rig splices the camera into a bare-arm MJCF so deploy-sim twins render their declared cameras without a scene composer. (L299)
+- `class SensorSpec(BaseModel)` — Generalizable sensor descriptor (all modalities). `catalog_id: str | None` (ADR-0068) records the `openral_sensors` catalog provenance for robot-mounted physical devices while keeping the manifest fully materialized; calibrated intrinsics, placement, feature keys, and serials stay explicit on the spec. `sim_camera_name: str | None` (issue #191 Phase 3b, mirrors `JointSpec.sim_joint_name`) carries the MJCF camera name when it differs from the sensor `name` — `MujocoArmHAL.read_images` renders `sim_camera_name or name` (e.g. openarm's `base` sensor renders the MJCF `top` camera). `sim_placement: CameraSimPlacement | None` (ADR-0065) carries the camera's sim pose; when set, the HAL camera rig splices the camera into a bare-arm MJCF so deploy-sim twins render their declared cameras without a scene composer. (L399)
   fields: `name, modality, frame_id, parent_frame, static_transform_xyz_rpy, rate_hz, intrinsics, encoding, fov_h_deg, fov_v_deg, sim_camera_name, sim_placement, n_channels, range_min_m, range_max_m, accel_noise_density, gyro_noise_density, n_axes, tactile_grid, vla_feature_key, ros2_topic, ros2_msg_type, qos_profile, catalog_id, vendor, model, driver_pkg, metadata`
-- `class SensorBundle(BaseModel)` — Multi-modal sensor group. (L388)
+- `class SensorBundle(BaseModel)` — Multi-modal sensor group. (L488)
   fields: `bundle_name, sensors, sync, sync_tolerance_ms`
-- `class JointSpec(BaseModel)` — URDF-derived joint spec. (L407)
+- `class JointSpec(BaseModel)` — URDF-derived joint spec. (L507)
   fields: `name, joint_type, parent_link, child_link, axis_xyz, origin_xyz, origin_rpy, position_limits, velocity_limit, effort_limit, has_position_sensor, has_velocity_sensor, has_torque_sensor, backlash_estimate, actuator_kind, sim_joint_name, role`. **`origin_xyz` / `origin_rpy`** (ADR-0030) are the fixed parent-link→joint transform (URDF `<joint><origin>`); with `axis_xyz` they let the kernel compute forward kinematics for self-collision. Default zeros; populated by the offline lowering tool only for robots that enable collision checking. **`role`** (ADR-0028a) is a `JointRole` literal that downstream code reads to identify gripper / base / arm DoFs structurally instead of substring-matching the joint name (default `"unknown"`). `sim_joint_name` (ADR-0025) carries the MJCF/MuJoCo joint name when it differs from the logical `name` — used by `openral_sim.backends.robocasa.{synthesize_laser_scan_2d,read_panda_mobile_base_velocity}`, `SimSensorBridge._compute_scan_ranges`, and `openral_hal.sim_attached.SimAttachedHAL.read_state` to look up `mj_name2id` without hardcoding robosuite/robocasa naming. `None` = "MJCF name matches `name`" (the common case for fixed-base manipulators). **Population contract:** a robot needs `sim_joint_name` populated only when (a) its sim adapter does `mj_name2id` on a joint name, AND (b) the loaded MJCF differs from `name`. Today: `panda_mobile` (robocasa auto-prefixes with `mobilebase0_*` + `robot0_*`). LIBERO / ManiSkill3 / aloha / so100_robosuite / ur5e / widowx preserve URDF names — populating `sim_joint_name` for those is a no-op. `openarm_robosuite` does its own hardcoded `mj_name2id` lookups in `env.py:309-318` (`openarm_{side}_joint{i}`) and is a candidate to refactor through this field.
-- `class EndEffectorSpec(BaseModel)` — End-effector spec. (L478)
+- `class EndEffectorSpec(BaseModel)` — End-effector spec. (L578)
   fields: `name, kind, hand, n_dof, max_grip_force_n, max_payload_kg, workspace_radius_m, tactile_sensors, actuated`. **`actuated`** (ADR-0028a) defaults to `True`; set `False` for passive tools (inert flanges, kinematic-only mounts) so the safety kernel can reject chunks addressed at them.
-- `class RobotCapabilities(BaseModel)` — Capability flags for skill compatibility. (L538)
+- `class RobotCapabilities(BaseModel)` — Capability flags for skill compatibility. (L638)
   fields: `locomotion, can_lift_kg, has_dexterous_hands, has_tactile, has_force_control, has_vision, has_lidar, has_vision_slam, has_audio, bimanual, onboard_compute_tops, onboard_memory_gb, gpu_vram_gb, cuda_compute_capability, cuda_toolkit_version, tensorrt_version, gpu_supported_runtimes, gpu_supported_dtypes, supported_control_modes, supported_vla_embodiments, embodiment_tags, nvmm_available`. **`has_vision_slam`** (ADR-0064) gates the camera-based cuVSLAM+nvblox SLAM backend for lidar-less robots; independent of `has_lidar` (lidar backend wins when both set).
   - `supports_cumotion() -> bool` (ADR-0065) — True when the host meets the cuMotion (Isaac ROS) GPU floor: compute capability >= (8, 0), CUDA toolkit major >= 13, and `gpu_vram_gb` >= `_CUMOTION_MIN_VRAM_GIB` (7.5; nominal-8 GB cards report ~7.99 GiB). The MoveIt planner gate uses it to pick cuMotion vs OMPL. False on non-CUDA hosts or when the CUDA toolkit version is unknown.
-- `class SafetyEnvelope(BaseModel)` — Constraints enforced by C++ safety kernel. (L643)
+- `class SafetyEnvelope(BaseModel)` — Constraints enforced by C++ safety kernel. (L743)
   fields: `workspace_box_min_xyz, workspace_box_max_xyz, no_go_zones, max_ee_speed_m_s, max_ee_accel_m_s2, max_joint_speed_factor, max_force_n, max_torque_nm, deadman_required, e_stop_topic, e_stop_qos, contact_force_threshold_n, cycle_time_violation_threshold_ms, human_in_loop_required`
-- `class ObservationSpec(BaseModel)` — VLA observation config. (L784)
+- `class ObservationSpec(BaseModel)` — VLA observation config. (L884)
   fields: `state_key, state_shape, state_representation, image_flip_180`
-- `class ActionSpec(BaseModel)` — VLA action config. (L801)
+- `class ActionSpec(BaseModel)` — VLA action config. (L901)
   fields: `dim, representation, control_freq_hz, chunk_size`
 - `class ActionSlot(BaseModel)` — One contiguous slice of an rSkill's action vector (ADR-0028b). fields: `range, control_mode, discard, ee, frame, joint_names`. Per-mode field requirements enforced by `@model_validator`: cartesian needs ee+frame, body_twist needs frame only, gripper needs ee only, joint needs neither (joint_names optional, length must equal slot width when supplied). `discard=True` slots drop their slice silently — used for dataset artefacts (RoboCasa365 torso placeholder, paired gripper channels).
 - `class ActionContract(BaseModel)` — Per-rSkill action-vector contract (ADR-0019 + ADR-0028b). fields: `dim, representation, slots`. When `slots` is set, every index in `[0, dim)` is covered by exactly one `ActionSlot` (`@model_validator` rejects gaps + overlaps + over-range slots). When `slots is None`, the legacy single-Action JOINT_POSITION path applies (back-compat). Manifests carrying `slots` are exempt from the ADR-0028a `dim <= len(robot.joints)` invariant — the slot decoder gives a per-slice typed contract.
@@ -72,7 +77,7 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 - `class CapsuleShape(BaseModel)` — Capsule collision primitive (segment along local +Z swept by a radius); discriminator `shape="capsule"`, fields `radius_m (>0), length_m (>=0)`. (ADR-0030, L853)
 - `CollisionShape: TypeAlias = CapsuleShape | SphereShape` — Discriminated union of convex collision primitives (discriminator `shape`); mesh shapes excluded so the allocation-free kernel checks only analytic convex volumes. (ADR-0030, L882)
 - `class LinkCollisionGeometry(BaseModel)` — One convex collision volume attached to a robot link; fields `link_name, shape: CollisionShape, origin_xyz_rpy`. Lowered, kernel-facing form (hand-authored or emitted by the offline lowering tool from MJCF/URDF). (ADR-0030, L894)
-- `class RobotDescription(BaseModel)` — Top-level robot manifest, one per robot. (L1317)
+- `class RobotDescription(BaseModel)` — Top-level robot manifest, one per robot. (L1417)
   fields: `name, embodiment_kind, assets, base_frame, odom_frame, map_frame, joints, end_effectors, sensors, sensor_bundles, capabilities, safety, ros2_namespace, middleware, onboard_compute, sdk_kind, hal, observation_spec, action_spec, sim, scene_defaults, base_joints, footprint_radius, base_kinematics, collision_geometry, allowed_collision_pairs, footprint_polygon`. **`assets: AssetRefs`** (ADR-0058) is the single URDF/MJCF/SRDF reference block (default empty) — it replaces the former scattered `urdf_path`, `urdf_root_frame`, `static_base_to_urdf_root_xyz_rpy`, and `srdf_path` fields (and `SimDescription.mjcf_uri`); refs share the `openral_core.assets.resolve_asset` grammar and the URDF's `robot_state_publisher` wiring (`root_frame` + `base_to_root_xyz_rpy`, ADR-0027) lives on `assets.urdf`. **`collision_geometry: list[LinkCollisionGeometry]`** + **`allowed_collision_pairs: list[tuple[str, str]]`** (ADR-0030) carry the per-link collision primitives and the self-collision allowed-collision matrix the safety kernel consumes; all default empty/`None` and `joints` stays normative for the kinematic chain (URDF/SRDF add geometry + ACM only — the SRDF `disable_collisions` block named by `assets.srdf` is the canonical source for `allowed_collision_pairs` on real robots). `footprint_radius: float | None` (>0) + `base_kinematics: Literal["differential","holonomic","omni","ackermann"] | None` (ADR-0025) drive the generic Nav2 bringup (see `nav2_param_overrides`). `footprint_polygon: list[tuple[float, float]] | None` — optional base-frame XY polygon vertices (metres, CCW); when set, draws the true base outline on the SLAM occupancy grid instead of the `footprint_radius` circle (ADR-0025).
   - `scene_defaults: SceneDefaults | None = None` — Optional scene-level defaults (top-camera POV, etc.) consumed by the MJCF composers as the fallback when an environment does not pin its own values.
   - `validate_for_e2e_pipeline(self) -> None` — Assert this manifest carries every field the e2e ROS graph (`openral deploy sim` → C++ safety kernel) needs: every actuated joint must have `position_limits`, `velocity_limit`, and `effort_limit` set. Raises `ROSConfigError` listing every missing field at once — used by `sim_e2e.launch.py` so a misshapen manifest fails at launch-parse time, not later in the HAL's first actuation tick. Pure validation; for synthesis of the kernel `EnvelopeIntersection` use `openral_safety.envelope_loader.compute_intersection(robot, skill=None)`.
@@ -92,10 +97,10 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   fields: `sim: str | None` (null → derive `MujocoArmHAL.from_description` when a `sim:` block exists), `real: str | None` (null → simulation-only robot), `parameters: HalParameters` (per-robot HAL construction defaults; ADR-0029)
 - `class HalParameters(BaseModel)` — `RobotDescription.hal.parameters` block: per-robot HAL construction defaults (serial `port`, `robot_ip`, …) merged into the constructor by `openral_hal.build_hal` (explicit `transport` wins; unaccepted keys dropped), so a parameterised robot needs no bespoke lifecycle subclass. Empty by default. (ADR-0029, issue #191)
   fields: `defaults: dict[str, object]`
-- `class TopCameraDefaults(BaseModel)` — Default placement for the scene-level "top" / "base" camera consumed by sim backends that render an overview camera. (L1049)
+- `class TopCameraDefaults(BaseModel)` — Default placement for the scene-level "top" / "base" camera consumed by sim backends that render an overview camera. (L1149)
   fields: `pos: tuple[float, float, float], target: tuple[float, float, float], fovy: float (gt=0, lt=180)`
   - Replaces the dataset-specific `_DEFAULT_TOP_CAMERA_*` module-level constants previously hard-coded in `openral_sim.backends.openarm_robosuite._assets`. Backend YAML overrides (`scene.backend_options.top_camera_*`) still win — this submodel is the default fed to the composer.
-- `class SceneDefaults(BaseModel)` — Per-robot scene rendering defaults consulted when the scene YAML does not override them. Fields: `top_camera: TopCameraDefaults | None`, `composition: SceneComposition | None`. (L1114)
+- `class SceneDefaults(BaseModel)` — Per-robot scene rendering defaults consulted when the scene YAML does not override them. Fields: `top_camera: TopCameraDefaults | None`, `composition: SceneComposition | None`. (L1214)
 - `class SceneComposition(BaseModel)` — Declarative MJCF scene composition (issue #191 Phase 3b). `composer: "module:fn"` returning `(xml, meshdir)` + `params: dict`. The manifest-driven `ManifestHALLifecycleNode._create_hal` calls the composer and threads the composed MJCF in as the HAL's `mjcf_path` — replaced openarm's bespoke `_create_hal` tabletop splicing.
   fields: `composer: str`, `params: dict[str, object]`
   fields: `top_camera: TopCameraDefaults | None = None`
@@ -103,15 +108,15 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 
 **Pydantic models — runtime snapshots**
 
-- `class JointState(BaseModel)` — Real-time joint state snapshot. (L1718)
+- `class JointState(BaseModel)` — Real-time joint state snapshot. (L1818)
   fields: `name, position, velocity, effort, stamp_ns`
-- `class Pose6D(BaseModel)` — 6D pose (position + xyzw quaternion). (L1736)
+- `class Pose6D(BaseModel)` — 6D pose (position + xyzw quaternion). (L1836)
   fields: `xyz, quat_xyzw, frame_id`
-- `class DetectedObject(BaseModel)` — Object detection. (L1750)
+- `class DetectedObject(BaseModel)` — Object detection. (L1850)
   fields: `label, confidence, pose, bbox_3d, track_id`
 - `class WorldCollisionPrimitive(BaseModel)` — A placed convex obstacle in the world (world-frame analogue of `LinkCollisionGeometry`); fields `shape: CollisionShape, pose: Pose6D, object_id: str | None`. (ADR-0030, L1371)
 - `class OccupancyGridRef(BaseModel)` — Reference to a 2D occupancy grid for mobile-base world-collision (mirrors `nav_msgs/OccupancyGrid` metadata); fields `frame_id, resolution_m (>0), width (>=0), height (>=0), origin: Pose6D, data_topic`. (ADR-0030, L1395)
-- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills. (L1934)
+- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills. (L2034)
   fields: `stamp_ns, joint_state, base_pose, base_twist, ee_poses, contact_forces, images, image_frames, point_clouds, tactile, detected_objects, battery_pct, diagnostics, collision_primitives, occupancy_grid`
   - **collision_primitives / occupancy_grid (added ADR-0030)** — `list[WorldCollisionPrimitive]` (default empty) + `OccupancyGridRef | None` (default `None`): the bounded world surface the kernel's world-collision phase checks robot links against; an absent/stale world is treated as unavailable (fail-closed).
   - **image_frames (added ADR-0010)** — `dict[str, SensorFrame] | None`. Optional in-process frame carrier for no-ROS deployments; default `None` keeps the existing `images: dict[str, str]` topic-ref path unchanged.
