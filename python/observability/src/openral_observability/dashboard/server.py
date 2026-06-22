@@ -128,6 +128,17 @@ def run_dashboard(
         _LOG.warning("dashboard.write_controls_enabled")
         print(f"WARNING: {_write_controls_msg}", file=sys.stderr, flush=True)
 
+    if exposure is not None and _write_controls_enabled():
+        _compound_msg = (
+            "CRITICAL: dashboard is bound to a non-loopback address AND write-controls are "
+            f"enabled. The guarded write endpoints (skill-switch + param-tune, bound to {host!r}) "
+            "are reachable from the network by ANY unauthenticated host and reach actuation "
+            "config directly. This is the highest-risk dashboard configuration. "
+            "Bind 127.0.0.1 and use an SSH tunnel for remote access."
+        )
+        _LOG.warning("dashboard.exposed_write_controls host=%s", host)
+        print(f"WARNING: {_compound_msg}", file=sys.stderr, flush=True)
+
     def _on_signal(signum: int, _frame: object) -> None:
         server.should_exit = True
         if child is not None and child.poll() is None:
