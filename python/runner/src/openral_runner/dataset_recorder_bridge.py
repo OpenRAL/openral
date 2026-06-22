@@ -18,6 +18,13 @@ Per tick it joins three already-on-the-graph signals into one
   the HAL publishes on ``/openral/candidate_action`` (first ``n_dof`` row =
   the next-applied action). This dodges per-control-mode ``Action`` field
   extraction entirely.
+
+  KNOWN LIMITATION (ADR-0019 amendment 2026-06-22): for slot-dispatched
+  skills (ADR-0028b — e.g. LIBERO cartesian_delta = a 6-D cartesian chunk +
+  a separate 1-D gripper chunk) the recorded action reflects the
+  last-delivered chunk for the tick, not the reassembled full env action.
+  Single-``ActionChunk`` skills (joint-position robots: so100, openarm, …)
+  record the full action faithfully. Multi-slot reassembly is a follow-up.
 * **episode boundaries** — ``openral_msgs/Episode`` PHASE_START / PHASE_END
   markers the ``rskill_runner_node`` publishes around each ``ExecuteRskill``
   goal.

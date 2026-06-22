@@ -368,3 +368,59 @@ the **forward link** so a row pivots back into its trace.
   `trace_id` → `traceparent` rename + `tracestate` on `openral_msgs`
   (with a `tools/schema_migrator/` entry per CLAUDE.md §1.6) is out of
   scope and deliberately deferred.
+
+## Amendment (2026-06-22) — deploy-graph recording (bus-centric)
+
+The original bridge recorded **sim rollouts** (`SimRunner` → `RolloutRecorder`).
+This amendment closes the deploy side: `openral deploy sim` / `deploy run` can
+record the **live ROS graph** to a rosbag2 mcap that `openral dataset from-bag`
+converts to a LeRobotDataset v3 — the same offline path, fed from the bus.
+
+**Why not the in-process recorder.** The deploy graph does not run
+`SimRunner`/`HardwareRunner`; `rskill_runner_node` drives its own
+`skill.step(snapshot)` loop (the full `HardwareRunner` integration is still
+deferred pending the F2 `WorldStateStamped` work). Rather than couple recording
+into that actuation loop, recording attaches as a **bus observer**.
+
+**Design.**
+- **`openral_runner.DatasetRecorderBridge`** — mirrors `WorldCloudBridge`:
+  constructed against the shared runtime node so its subscriptions ride the
+  same executor. It joins three already-on-the-graph signals per frame:
+  proprio + camera frames from the shared `WorldStateAggregator` snapshot,
+  the action from `openral_msgs/ActionChunk.flat` on
+  `/openral/candidate_action`, and episode boundaries from
+  `openral_msgs/Episode`. Writes through the (enriched) `Rosbag2Sink`. It owns
+  no actuation logic and is embodiment-agnostic.
+- **Episode markers on the bus.** `rskill_runner_node` publishes
+  `Episode(PHASE_START)` on goal accept and `Episode(PHASE_END, success)` in a
+  `finally` (every exit path closes the episode).
+- **Enriched bag.** `Rosbag2Sink` now writes the inline `observation_state` +
+  `action` arrays into `/openral/tick` and one base64 raw-u8 frame per camera
+  on `/openral/dataset/image`; the converter derives the LeRobot feature shapes
+  from the recorded bag itself, so robots whose proprio/action layout lives only
+  on the rSkill contract (e.g. `franka_panda`, `observation_spec=None`) convert.
+- **Wiring.** `openral deploy sim/run --dataset-out PATH` →
+  `sim_e2e.launch.py` `dataset_out` arg → `runtime_node` param →
+  `compose_runtime(dataset_out=…)` attaches the bridge; teardown finalizes the
+  bag.
+
+**Verified live (2026-06-22):** `openral deploy sim --config
+scenes/deploy/libero_pnp.yaml --dataset-out …` (franka/LIBERO, MuJoCo) recorded
+a 178-frame episode (real 8-D proprio + 2× 256×256 video + PHASE_START/END);
+`openral dataset from-bag` produced a reloadable LeRobotDataset v3. The
+`act-libero` `ExecuteRskill` goal drove the loop.
+
+**Known follow-ups.**
+- **Multi-slot action fidelity.** For slot-dispatched skills (ADR-0028b — e.g.
+  LIBERO cartesian_delta = 6-D cartesian + 1-D gripper as *separate*
+  `ActionChunk`s), the bridge currently records the last-delivered chunk, so the
+  dataset's `action` reflects one slot (the gripper) rather than the full env
+  action. Single-`ActionChunk` skills (joint-position robots: so100, openarm,
+  …) record the full action correctly. The fix is to reassemble the per-tick
+  slot chunks into one action vector (or record the pre-split action the node
+  computes); deferred.
+- **`HardwareRunner` rename.** `HardwareRunner` already drives digital twins via
+  the sim HAL, so the name misleads (it is a HAL-driven runner, not
+  hardware-specific). A rename to `DeployRunner`/`HalRunner` + unifying the
+  `rskill_runner_node` loop onto it is the longer-term path to a single
+  recorder-capable inference loop across sim-run, deploy-sim, and deploy-run.
