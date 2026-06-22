@@ -43,6 +43,7 @@ from openral_core.exceptions import (
 from openral_core.schemas import (
     Action,
     ControlMode,
+    RobotCapabilities,
     RobotDescription,
     RosIntegration,
     RSkillManifest,
@@ -57,7 +58,12 @@ if TYPE_CHECKING:
     # uses `Any` to avoid the hard import.
     pass
 
-__all__ = ["ROSActionRskill", "build_joint_permutation_from_names"]
+__all__ = [
+    "CUMOTION_PIPELINE_ID",
+    "ROSActionRskill",
+    "build_joint_permutation_from_names",
+    "maybe_inject_cumotion_pipeline",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -127,6 +133,40 @@ def _merge_nested(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, 
         else:
             out[key] = override_val
     return out
+
+
+# The cuMotion MoveIt planning-pipeline id (ADR-0065). Selecting it is a per-request
+# ``MotionPlanRequest.pipeline_id`` — OpenRAL does not bring up ``move_group``; the
+# user's moveit_config must load this pipeline (a `ros_dependency` + config snippet).
+CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"
+
+
+def maybe_inject_cumotion_pipeline(
+    goal_dict: dict[str, Any],
+    *,
+    interface_type: str,
+    capabilities: RobotCapabilities | None,
+) -> dict[str, Any]:
+    """Return ``goal_dict`` with ``request.pipeline_id`` set to cuMotion when gated on.
+
+    cuMotion is a MoveIt planning-pipeline plugin selected per request via
+    ``moveit_msgs/MotionPlanRequest.pipeline_id`` (ADR-0065 D1). When the host
+    clears the cuMotion GPU floor (:meth:`RobotCapabilities.supports_cumotion`)
+    and the wrapped action is ``MoveGroup``, this injects the cuMotion pipeline id
+    into the goal's ``request`` block; otherwise the goal is returned unchanged so
+    MoveIt uses its default pipeline (OMPL).
+
+    Never overwrites an explicit ``pipeline_id`` (a manifest / LLM choice wins),
+    never mutates the input, and is a no-op when there is no ``request`` block.
+    """
+    if interface_type != "MoveGroup":
+        return goal_dict
+    if capabilities is None or not capabilities.supports_cumotion():
+        return goal_dict
+    request = goal_dict.get("request")
+    if not isinstance(request, dict) or request.get("pipeline_id"):
+        return goal_dict
+    return {**goal_dict, "request": {**request, "pipeline_id": CUMOTION_PIPELINE_ID}}
 
 
 def build_joint_permutation_from_names(
@@ -400,6 +440,16 @@ class ROSActionRskill(rSkillBase):
                     f"decode to a JSON object; got {type(overrides).__name__}."
                 )
             self._goal_dict = _merge_nested(self._goal_dict, overrides)
+
+        # ADR-0065 D1 — on a host that clears the cuMotion GPU floor, select the
+        # cuMotion MoveIt pipeline for MoveGroup goals (per-request `pipeline_id`).
+        # No-op for non-MoveGroup actions and on CPU/low-VRAM hosts (MoveIt then
+        # uses its default OMPL pipeline). An explicit pipeline_id still wins.
+        self._goal_dict = maybe_inject_cumotion_pipeline(
+            self._goal_dict,
+            interface_type=self._integration.interface_type,
+            capabilities=self._description.capabilities if self._description is not None else None,
+        )
 
         if kind == "action":
             try:

@@ -512,6 +512,28 @@ class EndEffectorSpec(BaseModel):
 
 LocomotionKind: TypeAlias = Literal["bipedal", "quadruped", "wheeled", "tracked", "none"]
 
+# cuMotion (Isaac ROS) GPU floor for the ADR-0065 MoveIt planner gate. cuRobo
+# needs an Ampere-or-newer GPU, CUDA toolkit >= 13, and a nominal 8 GB card.
+# Nominal-8 GB GPUs report ~7.99 GiB (the probe divides MiB by 1024), so the
+# VRAM floor sits just below 8.0 GiB rather than at it — otherwise a real 8 GB
+# card (e.g. RTX 4070 Laptop, 8188 MiB -> 7.996 GiB) would be wrongly excluded.
+_CUMOTION_MIN_COMPUTE_CAPABILITY: tuple[int, int] = (8, 0)
+_CUMOTION_MIN_CUDA_MAJOR: int = 13
+_CUMOTION_MIN_VRAM_GIB: float = 7.5
+
+
+def _cuda_major(version: str) -> int | None:
+    """Return the leading integer of a CUDA toolkit version string, or ``None``.
+
+    Accepts forms like ``"13"``, ``"13.2"``, ``"13.0.1"``; returns ``None`` for
+    anything without a leading integer.
+    """
+    head = version.strip().split(".", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
 
 class RobotCapabilities(BaseModel):
     """Capability flags used for skill compatibility checking.
@@ -579,6 +601,40 @@ class RobotCapabilities(BaseModel):
     supported_vla_embodiments: list[str] = Field(default_factory=list)
     embodiment_tags: list[str] = Field(default_factory=list)
     nvmm_available: bool = False
+
+    def supports_cumotion(self) -> bool:
+        """Whether this host meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).
+
+        cuMotion's CUDA motion planner requires an Ampere-or-newer GPU (compute
+        capability >= 8.0), CUDA toolkit >= 13.0, and a nominal 8 GB card. The
+        MoveIt planner gate uses this to choose the cuMotion planning pipeline;
+        when ``False`` it falls back to OMPL.
+
+        Returns:
+            ``True`` only when compute capability, CUDA toolkit version, and
+            VRAM all clear the cuMotion floor. ``False`` on any non-CUDA host or
+            when the CUDA toolkit version is unknown (the floor cannot be
+            confirmed, so the gate stays closed).
+
+        Example:
+            >>> caps = RobotCapabilities(
+            ...     gpu_vram_gb=24.0,
+            ...     cuda_compute_capability=(8, 9),
+            ...     cuda_toolkit_version="13.2",
+            ... )
+            >>> caps.supports_cumotion()
+            True
+        """
+        if self.cuda_compute_capability is None:
+            return False
+        if self.cuda_compute_capability < _CUMOTION_MIN_COMPUTE_CAPABILITY:
+            return False
+        if self.cuda_toolkit_version is None:
+            return False
+        cuda_major = _cuda_major(self.cuda_toolkit_version)
+        if cuda_major is None or cuda_major < _CUMOTION_MIN_CUDA_MAJOR:
+            return False
+        return self.gpu_vram_gb >= _CUMOTION_MIN_VRAM_GIB
 
 
 # ─── Safety ────────────────────────────────────────────────────────────────────
