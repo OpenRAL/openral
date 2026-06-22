@@ -84,6 +84,29 @@ suite (`full_run=true`) or just the emitted targets — `--ignore`ing the
 `isolated_targets` from those partitions and re-running each in its own process
 (see rule 7 above). `just test-changed-run` mirrors this locally.
 
+### CI speed-up design
+
+The `test-selective` workflow is optimised so that slow setup steps are never
+paid for runs that select zero tests:
+
+1. **Selection runs first, before heavy installs.** `select_tests.py` only needs
+   `pydantic` + stdlib; the workflow runs it via `uv run --isolated --with
+   pydantic` — a disposable ephemeral env that resolves in a few seconds with no
+   workspace sync required.
+2. **FFmpeg install and `uv sync` are conditional.** Both are skipped entirely
+   when `steps.select.outputs.any != 'true'` (docs-only diffs, pure markdown
+   changes, etc.), saving 1–3 min of pointless setup per such PR.
+3. **Test-root partitions run in parallel.** The bash loop in "Run selected
+   targets" launches each group as a background job (`&`), collects exit codes
+   after all finish, and streams the logs in collapsible GitHub groups — cutting
+   wall-clock time by roughly the number of partitions.
+4. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
+   true` stops any in-progress run on the same branch the moment a new push
+   arrives.
+5. **Documentation-only PRs skip the runner entirely.** A `paths-ignore` filter
+   on `docs/**`, `*.md`, and `mkdocs.yml` prevents runner queuing for commits
+   that cannot affect any test.
+
 ### Worked examples
 
 | Change | Result |
