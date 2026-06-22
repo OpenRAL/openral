@@ -76,7 +76,11 @@ enforces a **safety-parameter denylist** checked before any shell-out is
 attempted.
 
 A request is **refused with HTTP 403 and a paper-trail log message** if the
-parameter name contains any of the following substrings (case-insensitive):
+parameter name contains any of the following substrings (case-insensitive).
+Both compact and ROS 2 underscored forms are listed so that names such as
+`e_stop_enable`, `dead_man_timeout`, `safe_mode`, and `safe_zone_radius` are
+caught in addition to the compact spellings. The list is **fail-closed**: when
+in doubt, refuse (operator uses a reviewed config/manifest change instead).
 
 | Substring | Rationale |
 |-----------|-----------|
@@ -86,9 +90,12 @@ parameter name contains any of the following substrings (case-insensitive):
 | `torque` | torque limits |
 | `limit` | generic limit parameters |
 | `workspace` | workspace boundary constraints |
-| `estop` | emergency-stop configuration |
-| `deadman` | deadman switch configuration |
+| `estop` | compact e-stop form |
+| `e_stop` | ROS 2 underscored e-stop form (`e_stop_enable`, `e_stop_triggered`, …) |
+| `deadman` | compact deadman-switch form |
+| `dead_man` | ROS 2 underscored deadman form (`dead_man_timeout`, …) |
 | `safety` | safety-supervisor parameters |
+| `safe` | `safe_mode`, `safe_zone_radius`, `safe_dist`, … (also subsumes `safety`) |
 | `watchdog` | watchdog timeout parameters |
 
 Refusals are **never silent**. The response body identifies the matched

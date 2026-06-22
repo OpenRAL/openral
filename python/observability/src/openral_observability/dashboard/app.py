@@ -68,6 +68,13 @@ def _write_controls_enabled() -> bool:
 
 # Param-name substrings that may affect safety; the dashboard refuses to tune
 # these (CLAUDE.md §1.1 — never lower a velocity limit without a paper trail).
+#
+# Fail-closed intent: when in doubt, refuse.  Both the compact form (e.g.
+# "estop") AND the ROS 2 underscored/prefixed form (e.g. "e_stop") are listed
+# so that names like "e_stop_enable", "dead_man_timeout", "safe_mode", and
+# "safe_zone_radius" are all caught by substring matching.  "safe" subsumes
+# "safety" but both are kept for clarity; "e_stop" subsumes "estop" (which
+# never appears in practice) but both are kept for the same reason.
 _SAFETY_PARAM_DENYLIST = (
     "velocity",
     "accel",
@@ -76,8 +83,11 @@ _SAFETY_PARAM_DENYLIST = (
     "limit",
     "workspace",
     "estop",
+    "e_stop",  # ROS 2 underscored form: e_stop_enable, e_stop_triggered, …
     "deadman",
+    "dead_man",  # ROS 2 underscored form: dead_man_timeout, …
     "safety",
+    "safe",  # catches safe_mode, safe_zone_radius, safe_dist, … (and safety)
     "watchdog",
 )
 _MJPEG_BOUNDARY = "frame"

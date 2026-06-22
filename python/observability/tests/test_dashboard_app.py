@@ -653,6 +653,53 @@ async def test_param_set_allowed_param_503_without_ros2(
     assert resp.status_code == 503
 
 
+# ── Denylist gap regression (issue #75c, ADR-0064) ───────────────────────────
+#
+# Before this fix, "estop" did not match "e_stop_enable" and "deadman" did not
+# match "dead_man_timeout" because the substring "estop" ∉ "e_stop_enable" and
+# "deadman" ∉ "dead_man_timeout".  Likewise "safety" ∉ "safe_mode".  The new
+# tokens e_stop / dead_man / safe close all three gaps fail-closed.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "param_name",
+    [
+        "e_stop_enable",  # was bypassing denylist (e_stop gap)
+        "dead_man_timeout",  # was bypassing denylist (dead_man gap)
+        "safe_mode",  # was bypassing denylist (safe/safety gap)
+        "VELOCITY_LIMIT",  # existing token, verifies case-insensitivity still works
+    ],
+)
+async def test_param_set_refuses_underscored_safety_params(
+    monkeypatch: pytest.MonkeyPatch, param_name: str
+) -> None:
+    """Underscored ROS 2 safety param names must return 403 and never shell out.
+
+    Regression lock for issue #75c / ADR-0064: the original denylist missed
+    e_stop_enable, dead_man_timeout, and safe_mode because substring matching
+    on the compact tokens (estop, deadman, safety) does not cover the
+    underscored ROS 2 naming convention.
+    """
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    # No ros2 shim on PATH — a correct impl must refuse before shelling out.
+    # If a bug lets the name through, the subprocess path hits 503 (no ros2),
+    # not 403, so the assertion below catches the bypass clearly.
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post(
+            "/api/param/set",
+            json={"node": "/safety_kernel", "name": param_name, "value": "1"},
+        )
+    assert resp.status_code == 403, (
+        f"expected 403 (denylist) for param {param_name!r}, got {resp.status_code} — "
+        "underscored safety param bypassed the denylist"
+    )
+    body = resp.json()
+    assert "safety" in body["error"].lower() or "refused" in body["error"].lower(), body
+
+
 @pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and
