@@ -334,6 +334,53 @@ def test_converter_round_trips_real_state_action_images(
     )
 
 
+def test_converter_round_trips_robot_without_observation_spec(tmp_path: Path) -> None:
+    """from-bag works for a robot whose layout lives only on the rSkill contract.
+
+    franka_panda has ``observation_spec=None`` / ``action_spec=None`` (its
+    proprio/action dims come from the active rSkill's state/action contracts,
+    ADR-0007/ADR-0019). The converter must derive the LeRobot feature shapes
+    from the recorded bag itself rather than the (absent) RobotDescription
+    specs — this is the deploy path's robot (LIBERO/Franka).
+    """
+    import pandas as pd
+
+    repo_root = Path(__file__).resolve().parents[3]
+    franka = RobotDescription.from_yaml(str(repo_root / "robots" / "franka_panda" / "robot.yaml"))
+    assert franka.observation_spec is None  # guard: the case under test
+
+    state_dim, action_dim = 8, 7
+    bag_path = tmp_path / "franka.mcap"
+    sink = Rosbag2Sink(bag_path=bag_path)
+    rec = RolloutRecorder(robot=franka, task_string="t", fps=20.0, sinks=[sink])
+    rec.episode_start(task_string="put the bowl on the plate")
+    for i in range(3):
+        rec.record_frame(
+            observation_state=np.full(state_dim, float(i), dtype=np.float32),
+            images={
+                "camera1": np.full((64, 64, 3), 50, dtype=np.uint8),
+                "camera2": np.full((64, 64, 3), 60, dtype=np.uint8),
+            },
+            action=np.full(action_dim, float(i), dtype=np.float32),
+        )
+    rec.episode_end(success=True)
+    rec.finalize()
+
+    out = tmp_path / "ds"
+    summary = Rosbag2ToLeRobotConverter.from_bag(bag_path=bag_path, robot=franka, output_root=out)
+    assert summary.n_episodes == 1
+    assert summary.n_frames == 3
+
+    ds = lerobot.datasets.LeRobotDataset(f"openral/dataset-{franka.name}", root=out)  # type: ignore[attr-defined]
+    assert ds.num_frames == 3
+    info = json.loads((out / "meta" / "info.json").read_text())
+    assert tuple(info["features"]["observation.state"]["shape"]) == (state_dim,)
+    assert tuple(info["features"]["action"]["shape"]) == (action_dim,)
+    files = sorted(out.glob("data/**/*.parquet"))
+    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    assert list(np.asarray(df.iloc[1]["observation.state"]).ravel()) == pytest.approx([1.0] * 8)
+
+
 def test_converter_propagates_episode_success_through_recorder(
     so100_robot: RobotDescription, tmp_path: Path
 ) -> None:

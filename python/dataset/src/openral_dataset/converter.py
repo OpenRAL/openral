@@ -184,12 +184,24 @@ class Rosbag2ToLeRobotConverter:
         from openral_dataset import LeRobotDatasetSink, RolloutRecorder
 
         resolved_repo_id = repo_id if repo_id is not None else f"openral/dataset-{robot.name}"
+        # Derive feature shapes from the recorded bag itself — the inline
+        # arrays + image frames are authoritative. This makes from-bag work
+        # for ANY robot, including ones whose proprio/action layout lives on
+        # the active rSkill's contracts rather than RobotDescription's
+        # observation_spec/action_spec (e.g. franka_panda). Falls back to the
+        # robot spec for legacy metadata-only bags (overrides stay None).
+        state_override, action_override, camera_override = cls._shape_overrides_from_bag(
+            episodes, images_by_step
+        )
         sink = LeRobotDatasetSink(
             root=output_root,
             robot=robot,
             fps=resolved_fps,
             repo_id=resolved_repo_id,
             license=license,
+            state_shape=state_override,
+            action_dim=action_override,
+            camera_shape=camera_override,
         )
         # The recorder is the canonical way to drive a DatasetSink; reuse
         # it here instead of inlining the sink's lifecycle, so any
@@ -309,6 +321,33 @@ class Rosbag2ToLeRobotConverter:
         return episodes, images_by_step
 
     @staticmethod
+    def _shape_overrides_from_bag(
+        episodes: list[_EpisodeBuffer],
+        images_by_step: dict[tuple[int, int], dict[str, Any]],
+    ) -> tuple[tuple[int, ...] | None, int | None, tuple[int, int] | None]:
+        """Derive (state_shape, action_dim, camera_shape) from recorded data.
+
+        Returns ``None`` for any shape the bag does not carry inline (legacy
+        metadata-only bags), so the sink falls back to the robot spec.
+        """
+        first_tick = next((t for ep in episodes for t in ep.ticks), None)
+        state_override: tuple[int, ...] | None = None
+        action_override: int | None = None
+        if first_tick is not None:
+            state_raw = first_tick.get("observation_state")
+            if isinstance(state_raw, list) and state_raw:
+                state_override = (len(state_raw),)
+            action_raw = first_tick.get("action")
+            if isinstance(action_raw, list) and action_raw:
+                action_override = len(action_raw)
+        camera_override: tuple[int, int] | None = None
+        first_images = next(iter(images_by_step.values()), None)
+        if first_images:
+            any_arr = next(iter(first_images.values()))
+            camera_override = (int(any_arr.shape[0]), int(any_arr.shape[1]))
+        return state_override, action_override, camera_override
+
+    @staticmethod
     def _decode_image(payload: dict[str, Any]) -> Any:
         """Decode a ``/openral/dataset/image`` payload to a HxWxC uint8 array."""
         import base64
@@ -357,14 +396,19 @@ class Rosbag2ToLeRobotConverter:
         state_shape = tuple(obs_spec.state_shape) if obs_spec is not None else (1,)
         action_dim = robot.action_spec.dim if robot.action_spec is not None else 1
 
+        # Prefer the bag's inline arrays at their NATURAL recorded length —
+        # the sink's feature schema was derived from the same data
+        # (_shape_overrides_from_bag), so this matches even for robots with no
+        # observation_spec. Legacy metadata-only bags fall back to a zero
+        # vector of the robot's declared shape.
         state_raw = tick.get("observation_state")
         if isinstance(state_raw, list) and state_raw:
-            state = np.asarray(state_raw, dtype=np.float32).reshape(state_shape)
+            state = np.asarray(state_raw, dtype=np.float32)
         else:
             state = np.zeros(state_shape, dtype=np.float32)
         action_raw = tick.get("action")
         if isinstance(action_raw, list) and action_raw:
-            action = np.asarray(action_raw, dtype=np.float32).reshape(action_dim)
+            action = np.asarray(action_raw, dtype=np.float32)
         else:
             action = np.zeros(action_dim, dtype=np.float32)
 
