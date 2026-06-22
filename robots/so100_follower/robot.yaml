@@ -119,8 +119,12 @@ sensors:
     model: "so100_front"
   - name: "wrist"
     modality: "rgb"
-    frame_id: "wrist"
-    parent_frame: "wrist_roll"
+    # The wrist camera is bolted to the gripper body (it rolls with wrist_roll);
+    # its own optical frame is `wrist_camera`, parented to the `gripper` URDF
+    # link. `wrist_roll` is a joint, not a tf frame; `wrist` is the arm link and
+    # must not be reused as the camera frame (it would gain a second parent).
+    frame_id: "wrist_camera"
+    parent_frame: "gripper"
     rate_hz: 30.0
     intrinsics:
       width: 256

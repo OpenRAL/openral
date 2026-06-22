@@ -17,6 +17,7 @@ for the manifests lives in ``tools/schema_export.py`` (CI-gated via
 from __future__ import annotations
 
 import datetime
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -140,16 +141,44 @@ def _asset_refs(robot: RobotDescription) -> list[tuple[Literal["urdf", "mjcf", "
     return refs
 
 
-def _declared_frames(robot: RobotDescription) -> set[str]:
-    """tf2 frames a robot manifest declares directly (the static-TF tree roots)."""
+_URDF_LINK_RE = re.compile(r'<link\s+name="([^"]+)"')
+
+
+def _urdf_link_names(urdf_path: Path) -> set[str]:
+    """Link names declared in a URDF — the tf frames robot_state_publisher emits."""
+    try:
+        text = urdf_path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return set(_URDF_LINK_RE.findall(text))
+
+
+def _declared_frames(robot: RobotDescription, manifest_dir: Path) -> set[str]:
+    """tf2 frames a robot's manifest + local URDF declare.
+
+    ``robot_state_publisher`` emits one tf frame per URDF link, so a local
+    ``file:`` URDF is the authoritative frame source. The manifest's
+    base/odom/map frames, joint links, and sensor frames augment it (and are the
+    only source for sim-only robots whose URDF is a remote ``rd:`` ref we don't
+    resolve offline).
+    """
     frames = {robot.base_frame, robot.odom_frame, robot.map_frame}
     for joint in robot.joints:
         frames.add(joint.parent_link)
         frames.add(joint.child_link)
     for sensor in robot.sensors:
         frames.add(sensor.frame_id)
-    if robot.assets.urdf is not None and robot.assets.urdf.root_frame is not None:
-        frames.add(robot.assets.urdf.root_frame)
+    urdf = robot.assets.urdf
+    if urdf is not None:
+        if urdf.root_frame is not None:
+            frames.add(urdf.root_frame)
+        if urdf.ref.startswith("file:"):
+            try:
+                urdf_path = resolve_asset(urdf.ref, "urdf", manifest_dir=manifest_dir)
+            except AssetRefError:
+                urdf_path = None
+            if urdf_path is not None:
+                frames |= _urdf_link_names(urdf_path)
     return frames
 
 
@@ -171,7 +200,7 @@ def _check_robots(
         robots[robot_id] = robot
         robot_tags |= set(robot.capabilities.embodiment_tags)
         findings.extend(_check_assets(robot_id, robot, path.parent, resolve_remote_assets))
-        findings.extend(_check_frames(robot_id, robot))
+        findings.extend(_check_frames(robot_id, robot, path.parent))
     return robots, robot_tags, findings
 
 
@@ -189,8 +218,8 @@ def _check_assets(
     return findings
 
 
-def _check_frames(robot_id: str, robot: RobotDescription) -> list[CheckFinding]:
-    declared = _declared_frames(robot)
+def _check_frames(robot_id: str, robot: RobotDescription, manifest_dir: Path) -> list[CheckFinding]:
+    declared = _declared_frames(robot, manifest_dir)
     return [
         _warning(
             "frames",
