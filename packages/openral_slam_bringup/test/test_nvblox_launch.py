@@ -48,6 +48,16 @@ def test_default_params_file_exists_and_parses() -> None:
     assert params["global_frame"] == "map"
     assert params["use_tf_transforms"] is True
     assert params["publish_esdf_distance_slice"] is True
+    # Occupancy mapping → the `~/static_occupancy_grid` OccupancyGrid the launch
+    # remaps to `/map` (the backend-agnostic topic the static_layer consumes);
+    # static_tsdf would publish only an ESDF slice, not an OccupancyGrid.
+    assert params["mapping_type"] == "static_occupancy"
+    assert params["use_depth"] is True and params["use_lidar"] is False
+    # Persistent map: decay pinned to nvblox's no-decay extremes (strict bound —
+    # free must be > 0.5, occupied < 0.5) so far voxels do not fade and
+    # long-range Nav2 goals into previously-seen space still plan.
+    assert params["static_mapper.free_region_decay_probability"] > 0.5
+    assert params["static_mapper.occupied_region_decay_probability"] < 0.5
 
 
 def test_launch_module_pins_node_package_and_plugin() -> None:

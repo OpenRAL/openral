@@ -2,11 +2,13 @@
 # under OpenRAL's `/openral/nvblox` namespace.
 #
 # nvblox fuses a DEPTH image + camera_info + POSE (from cuVSLAM's map→odom
-# TF) into a TSDF/ESDF, and slices a 2D ESDF (`~/static_map_slice`,
-# nvblox_msgs/DistanceMapSlice) that the `nvblox_nav2` costmap plugin
-# feeds to Nav2. This is what gives a lidar-less robot a navigable cost
-# map: cuVSLAM provides localization (map→odom), nvblox provides the
-# obstacle map cuVSLAM does not.
+# TF) into an occupancy map, and publishes a 2D `nav_msgs/OccupancyGrid`
+# that `nvblox.launch.py` remaps `~/static_occupancy_grid → /map` — the
+# backend-agnostic `/map` that Nav2's static_layer (`nav2_visual.yaml`),
+# the dashboard SlamMapBridge, and the reasoner all consume regardless of
+# lidar vs visual origin (Decision §5). This is what gives a lidar-less
+# robot a navigable cost map: cuVSLAM provides localization (map→odom),
+# nvblox provides the obstacle map cuVSLAM does not.
 #
 # The depth image is supplied by the monocular metric-depth provider
 # (DA3-Small by default — measured 0.27 GB / ~27 Hz on an 8 GB Ada) when
@@ -30,15 +32,38 @@
     global_frame: map
     use_tf_transforms: true
 
+    # ── Input: depth image (not lidar) ──────────────────────────────
+    # Fuse the metric-depth image (`camera_0/depth/{image,camera_info}`,
+    # remapped at launch). NOT the lidar integrator — it rejects a
+    # forward pinhole cloud ("LiDAR intrinsics inconsistent").
+    use_depth: true
+    use_lidar: false
+    use_color: false
+
     # ── Reconstruction ──────────────────────────────────────────────
     voxel_size: 0.05            # 5 cm — room/kitchen-scale nav resolution
-    # Static-only mapping by default (no people/dynamic split); a robot
-    # in a dynamic scene can switch mapping_type at deploy time.
-    mapping_type: static_tsdf
+    # Occupancy mapping (not static_tsdf): publishes the 2D
+    # `~/static_occupancy_grid` OccupancyGrid the launch remaps to `/map`.
+    # A robot in a dynamic scene can switch mapping_type at deploy time.
+    mapping_type: static_occupancy
 
-    # ── 2D ESDF slice for Nav2 (consumed by the nvblox_nav2 plugin) ──
+    # ── Persistent map (no decay toward unknown) ────────────────────
+    # By default nvblox decays unobserved occupancy back toward 0.5
+    # (unknown), so the map behind a moving robot fades and long-range
+    # Nav2 goals into previously-seen space fail (NO_VALID_PATH). Pin the
+    # decay probabilities to their no-decay extremes so the map persists.
+    # nvblox's check is STRICT: free must be > 0.5, occupied < 0.5 (the
+    # exact endpoints abort at construction), so use the nearest valid
+    # values — decay is then negligible.
+    static_mapper.free_region_decay_probability: 0.5001
+    static_mapper.occupied_region_decay_probability: 0.4999
+    # Keep the whole explored map (no radius clearing of far voxels).
+    map_clearing_radius_m: -1.0
+
+    # ── 2D ESDF slice (also feeds the optional nvblox_nav2 plugin) ───
     esdf_mode: 2d
     publish_esdf_distance_slice: true
     # Slice height band (metres, in global_frame) the costmap is cut from;
     # tune to the robot's body height. Operator-confirmed per robot.
-    # esdf_slice_min_height / esdf_slice_max_height: set at deploy time.
+    esdf_slice_min_height: 0.10
+    esdf_slice_max_height: 0.60
