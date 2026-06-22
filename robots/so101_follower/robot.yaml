@@ -125,6 +125,16 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 30.0
+    # ADR-0065 — sim placement for the overhead OAK-D Pro. The generic HAL
+    # camera rig splices this `front` camera into the bare SO-101 MJCF for
+    # `deploy sim` (the upstream arm ships zero cameras, issue #88), world-fixed
+    # above the arm's workspace looking straight down. Poses are in metres
+    # relative to the arm base at the MJCF origin (the bare twin is NOT
+    # re-anchored). The `so101_box` sim-run scene renders its own `oak_top`
+    # camera and ignores this block.
+    sim_placement:
+      pos: [0.0, -0.15, 0.70]
+      target: [0.0, -0.15, 0.0]
     intrinsics:
       width: 640
       height: 480
@@ -145,6 +155,14 @@ sensors:
     frame_id: "wrist_camera"
     parent_frame: "gripper"
     rate_hz: 30.0
+    # ADR-0065 — sim placement for the wrist camera. The rig parents it to the
+    # MJCF `gripper` body (the roll-mounted end body), pose in that body's local
+    # frame, looking along the gripper approach axis (gripper-local -X = the
+    # finger/grasp direction) so the jaw + workspace ahead stay in frame.
+    sim_placement:
+      parent_body: "gripper"
+      pos: [0.03, -0.02, -0.06]
+      target: [-0.25, -0.02, -0.06]
     intrinsics:
       width: 256
       height: 256
@@ -154,6 +172,7 @@ sensors:
       cy: 128.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera2"
+    catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so101_wrist"
 

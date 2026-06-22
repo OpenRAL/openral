@@ -44,12 +44,7 @@ _SpatialMemory — ADR-0038 Phase 2 persistent object-centric scene-graph memory
   - Module constants: `DEFAULT_ASSOC_DISTANCE_M`, `DEFAULT_STANDOFF_M`, `DEFAULT_CAMERA_FRAME`, `DEFAULT_MAP_FRAME`, `DEFAULT_MIN_TEXT_SIMILARITY`.
 
 ### `python/world_state/src/openral_world_state/geometry.py`
-_ADR-0044 Phase 1 — shared gaze geometry; promotes the look-at math previously triplicated in the sim scene composers._
-
-- `ViewAxis` (TypeAlias = `Literal["-z", "+z", "+x"]`) — Camera forward-axis conventions: `"-z"` MuJoCo cameras, `"+z"` ROS optical frames (REP-103), `"+x"` body-frame forward (the ADR-0038 approach-viewpoint convention).
-- `look_at_quat_wxyz(eye, target, *, up=(0,0,1), view_axis="-z") -> tuple[float, float, float, float]` — Unit `(w, x, y, z)` quaternion orienting a camera at `eye` so `view_axis` points at `target`. Degenerate fallbacks (never raises): `target == eye` → MuJoCo straight-down flip for `"-z"` / identity otherwise; gaze near-parallel to `up` → +Y alternate up. (ADR-0044)
-- `compute_gaze_pose(camera_xyz, target_xyz, *, frame_id="map", up=(0,0,1), view_axis="+z") -> Pose6D` — Full 6-DOF camera pose whose view axis hits `target_xyz`; the `rskill-moveit-look-at` rSkill's goal (defaults to the optical-frame `"+z"` convention). (ADR-0044)
-- `rotation_to_quat_wxyz(rot: 3x3) -> tuple[w, x, y, z]` — Public matrix→quaternion conversion (Shepperd's method); used by `LookAtRskill` to re-express a gaze pose for the camera's mount link. (ADR-0044)
+_ADR-0044 Phase 1 — shared gaze geometry. **Relocated to `openral_core.geometry` in ADR-0065**; this module is now a thin re-export shim so `from openral_world_state.geometry import …` keeps working. Canonical entries (`ViewAxis`, `look_at_quat_wxyz`, `compute_gaze_pose`, `rotation_to_quat_wxyz`) are documented under [00-core-schemas.md](00-core-schemas.md)._
 
 ### `python/world_state/src/openral_world_state/grid.py`
 _ADR-0044 Phase 2 — occupancy-grid queries + approach-pose refinement (planning-layer proposal; the ADR-0030 Phase 6 kernel `check_nav_goal` gate stays the enforcement)._
@@ -92,4 +87,3 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable (ADR-0035)._
 
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step. Greedy highest-confidence-first matching: same-label + `aabb_iou_3d ≥ iou_threshold` → freeze (leave pose/bbox unchanged, bump confidence, reset miss count); no match → new track. Unmatched existing tracks: `in_fov` true → `miss_count += 1`; evict when `miss_count >= max_misses`; `in_fov` false → retain unchanged. Returns surviving tracks as `list[DetectedObject]`. (L64)
-

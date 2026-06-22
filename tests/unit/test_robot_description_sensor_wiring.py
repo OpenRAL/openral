@@ -19,6 +19,7 @@ from openral_hal import (
     ur10e_with_sensors,
 )
 from openral_hal._sensor_wiring import with_sensors
+from openral_sensors import CATALOG
 
 # ── Canonical descriptions remain empty (no behaviour change) ─────────────────
 
@@ -54,6 +55,24 @@ class TestSO100WithSensors:
     def test_does_not_mutate_canonical(self) -> None:
         _ = so100_with_sensors()
         assert SO100_DESCRIPTION.sensors == []
+
+
+@pytest.mark.parametrize(
+    "manifest_path, expected_catalog_ids",
+    [
+        ("robots/so100_follower/robot.yaml", [None, "generic/usb_uvc_rgb"]),
+        ("robots/so101_follower/robot.yaml", [None, "generic/usb_uvc_rgb"]),
+    ],
+)
+def test_robot_manifest_sensors_carry_catalog_provenance(
+    manifest_path: str, expected_catalog_ids: list[str]
+) -> None:
+    desc = RobotDescription.from_yaml(manifest_path)
+
+    assert [sensor.catalog_id for sensor in desc.sensors] == expected_catalog_ids
+    for sensor in desc.sensors:
+        if sensor.catalog_id is not None:
+            assert sensor.catalog_id in CATALOG
 
 
 # ── Franka Panda default loadout ──────────────────────────────────────────────

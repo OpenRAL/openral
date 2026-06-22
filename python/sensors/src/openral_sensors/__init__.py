@@ -2,13 +2,13 @@
 
 Public surface:
 - ``CATALOG``: global :class:`SensorCatalog` populated by every vendor module
-  on import.  Used by ``openral sensor list / show`` and the (future) ``catalog:``
-  reference field on ``RobotDescription`` sensors.
+  on import. Used by ``openral sensor list / show`` and
+  ``SensorSpec.catalog_id`` provenance on robot-mounted sensors.
 - ``SensorCatalog``, ``SensorCatalogEntry``: the registry types.
 - Per-vendor factories — see each ``<vendor>.py`` module:
     * ``realsense``: D415 / D435 / D435i bundles.
     * ``luxonis``:   OAK-D Pro bundle.
-    * ``usb_uvc``:   Logitech C920.
+    * ``usb_uvc``:   generic USB UVC RGB, Logitech C920.
     * ``force_torque``: Robotiq FT 300-S 6-axis F/T sensor.
 - Launch helpers (RealSense): ``bundle_to_node_params``, ``generate_launch_py``,
   ``calibrate_camera_cmd``.
@@ -37,6 +37,7 @@ from openral_sensors.realsense import (
     realsense_d435_bundle,
     realsense_d435i_bundle,
 )
+from openral_sensors.usb_uvc import generic_uvc_rgb_spec
 
 __all__ = [
     "CATALOG",
@@ -46,6 +47,7 @@ __all__ = [
     "bundle_to_node_params",
     "calibrate_camera_cmd",
     "generate_launch_py",
+    "generic_uvc_rgb_spec",
     "oak_d_pro_bundle",
     "realsense_d415_bundle",
     "realsense_d435_bundle",

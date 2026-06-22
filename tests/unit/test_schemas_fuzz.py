@@ -23,6 +23,7 @@ from openral_core.schemas import (
     ActuatorRequirement,
     ApproachViewpoint,
     BenchmarkName,
+    CameraSimPlacement,
     CapsuleShape,
     CollisionEvidence,
     ControlMode,
@@ -118,6 +119,16 @@ _intrinsics_st = st.builds(
     cy=_pos_float,
 )
 
+_xyz = st.tuples(_safe_float, _safe_float, _safe_float)
+_camera_sim_placement_st = st.builds(
+    CameraSimPlacement,
+    parent_body=st.none() | _name,
+    pos=_xyz,
+    target=_xyz,
+    fovy_deg=st.none()
+    | st.floats(allow_nan=False, allow_infinity=False, min_value=1.0, max_value=179.0),
+)
+
 _sensor_spec_st = st.builds(
     SensorSpec,
     name=_name,
@@ -126,6 +137,9 @@ _sensor_spec_st = st.builds(
     rate_hz=_pos_float,
     ros2_topic=_topic,
     ros2_msg_type=_name,
+    catalog_id=st.none()
+    | st.sampled_from(["generic/usb_uvc_rgb", "intel/realsense_d435i", "luxonis/oak_d_pro"]),
+    sim_placement=st.none() | _camera_sim_placement_st,
 )
 
 _sensor_bundle_st = st.builds(
@@ -300,6 +314,13 @@ def _round_trip_and_validate(cls: type, instance: object) -> None:  # type: igno
 def test_fuzz_intrinsics_pinhole(instance: IntrinsicsPinhole) -> None:
     """IntrinsicsPinhole round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(IntrinsicsPinhole, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_camera_sim_placement_st)
+def test_fuzz_camera_sim_placement(instance: CameraSimPlacement) -> None:
+    """CameraSimPlacement round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(CameraSimPlacement, instance)
 
 
 @_FUZZ_SETTINGS

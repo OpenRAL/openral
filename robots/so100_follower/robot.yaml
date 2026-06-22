@@ -106,6 +106,14 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 30.0
+    # ADR-0065 — sim placement for the overhead camera. The generic HAL camera
+    # rig splices this `front` camera into the bare SO-100 MJCF for `deploy sim`
+    # (the upstream `so_arm100` arm ships zero cameras, issue #88), world-fixed
+    # above the arm's workspace looking down. Poses are in metres relative to the
+    # arm base at the MJCF origin (the bare twin is NOT re-anchored).
+    sim_placement:
+      pos: [0.0, -0.22, 0.60]
+      target: [0.0, -0.22, 0.0]
     intrinsics:
       width: 256
       height: 256
@@ -126,6 +134,15 @@ sensors:
     frame_id: "wrist_camera"
     parent_frame: "gripper"
     rate_hz: 30.0
+    # ADR-0065 — sim placement for the wrist camera. The rig parents it to the
+    # SO-100 MJCF `Fixed_Jaw` body (the roll-mounted end body, the SO-100
+    # equivalent of the SO-101 `gripper` body), pose in that body's local frame
+    # (local +X = world-down, fingers along local -Y), looking forward-down the
+    # approach axis at the workspace.
+    sim_placement:
+      parent_body: "Fixed_Jaw"
+      pos: [0.0, -0.05, -0.07]
+      target: [0.10, -0.20, 0.01]
     intrinsics:
       width: 256
       height: 256
@@ -135,6 +152,7 @@ sensors:
       cy: 128.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera2"
+    catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so100_wrist"
 

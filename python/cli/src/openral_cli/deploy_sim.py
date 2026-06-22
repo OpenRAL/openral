@@ -780,6 +780,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # preserving the pre-migration `supports_sim_robot_yaml` behaviour.
         if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
             hal_params.setdefault("sim_env_yaml", str(config.resolve()))
+        # ADR-0066 — forward the DeployScene's own MJCF composition (its arena)
+        # to the manifest-driven node so the SCENE owns its environment instead
+        # of the robot manifest. Sim-mode bare-twin robots only (scene-attach
+        # robots build the scene's SimRollout directly via sim_env_yaml).
+        if hal_mode == "sim" and config is not None and hal.bare_twin_sim:
+            from openral_core import DeployScene
+
+            scene_composition = DeployScene.from_yaml(str(config)).composition
+            if scene_composition is not None:
+                hal_params.setdefault("scene_composition_json", scene_composition.model_dump_json())
 
     service = reset_to_pose_service or f"/openral/{robot_id}/reset_to_pose"
     # Empty by default — the legacy ResetToPose snap stays until a move_group is

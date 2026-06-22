@@ -104,6 +104,76 @@
       "title": "AssetRefs",
       "type": "object"
     },
+    "CameraSimPlacement": {
+      "additionalProperties": false,
+      "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+      "properties": {
+        "parent_body": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Body"
+        },
+        "pos": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Pos",
+          "type": "array"
+        },
+        "target": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Target",
+          "type": "array"
+        },
+        "fovy_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fovy Deg"
+        }
+      },
+      "required": [
+        "pos",
+        "target"
+      ],
+      "title": "CameraSimPlacement",
+      "type": "object"
+    },
     "CapsuleShape": {
       "additionalProperties": false,
       "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (:attr:`LinkCollisionGeometry.origin_xyz_rpy`\nfor a link, :attr:`WorldCollisionPrimitive.pose` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative (ADR-0030 \u00a72).\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
@@ -1195,7 +1265,7 @@
       "type": "string"
     },
     "SensorSpec": {
-      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
       "properties": {
         "name": {
           "title": "Name",
@@ -1316,6 +1386,17 @@
           ],
           "default": null,
           "title": "Sim Camera Name"
+        },
+        "sim_placement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CameraSimPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "n_channels": {
           "anyOf": [
@@ -1457,6 +1538,20 @@
           ],
           "title": "Qos Profile",
           "type": "string"
+        },
+        "catalog_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional openral_sensors catalog id for the physical device this fully materialized SensorSpec was derived from. Calibration and instance wiring remain explicit on the spec.",
+          "title": "Catalog Id"
         },
         "vendor": {
           "anyOf": [

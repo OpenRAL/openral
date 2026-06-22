@@ -224,8 +224,149 @@
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
+    "CameraSimPlacement": {
+      "additionalProperties": false,
+      "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+      "properties": {
+        "parent_body": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Body"
+        },
+        "pos": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Pos",
+          "type": "array"
+        },
+        "target": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Target",
+          "type": "array"
+        },
+        "fovy_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fovy Deg"
+        }
+      },
+      "required": [
+        "pos",
+        "target"
+      ],
+      "title": "CameraSimPlacement",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
     "SensorSpec": {
       "$defs": {
+        "CameraSimPlacement": {
+          "additionalProperties": false,
+          "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+          "properties": {
+            "parent_body": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Body"
+            },
+            "pos": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Pos",
+              "type": "array"
+            },
+            "target": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Target",
+              "type": "array"
+            },
+            "fovy_deg": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fovy Deg"
+            }
+          },
+          "required": [
+            "pos",
+            "target"
+          ],
+          "title": "CameraSimPlacement",
+          "type": "object"
+        },
         "IntrinsicsPinhole": {
           "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
@@ -304,7 +445,7 @@
           "type": "string"
         }
       },
-      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
       "properties": {
         "name": {
           "title": "Name",
@@ -425,6 +566,17 @@
           ],
           "default": null,
           "title": "Sim Camera Name"
+        },
+        "sim_placement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CameraSimPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "n_channels": {
           "anyOf": [
@@ -567,6 +719,20 @@
           "title": "Qos Profile",
           "type": "string"
         },
+        "catalog_id": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional openral_sensors catalog id for the physical device this fully materialized SensorSpec was derived from. Calibration and instance wiring remain explicit on the spec.",
+          "title": "Catalog Id"
+        },
         "vendor": {
           "anyOf": [
             {
@@ -621,6 +787,76 @@
     },
     "SensorBundle": {
       "$defs": {
+        "CameraSimPlacement": {
+          "additionalProperties": false,
+          "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+          "properties": {
+            "parent_body": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Body"
+            },
+            "pos": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Pos",
+              "type": "array"
+            },
+            "target": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Target",
+              "type": "array"
+            },
+            "fovy_deg": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fovy Deg"
+            }
+          },
+          "required": [
+            "pos",
+            "target"
+          ],
+          "title": "CameraSimPlacement",
+          "type": "object"
+        },
         "IntrinsicsPinhole": {
           "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
           "properties": {
@@ -699,7 +935,7 @@
           "type": "string"
         },
         "SensorSpec": {
-          "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+          "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
           "properties": {
             "name": {
               "title": "Name",
@@ -820,6 +1056,17 @@
               ],
               "default": null,
               "title": "Sim Camera Name"
+            },
+            "sim_placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CameraSimPlacement"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "n_channels": {
               "anyOf": [
@@ -961,6 +1208,20 @@
               ],
               "title": "Qos Profile",
               "type": "string"
+            },
+            "catalog_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional openral_sensors catalog id for the physical device this fully materialized SensorSpec was derived from. Calibration and instance wiring remain explicit on the spec.",
+              "title": "Catalog Id"
             },
             "vendor": {
               "anyOf": [
@@ -2000,6 +2261,76 @@
             }
           },
           "title": "AssetRefs",
+          "type": "object"
+        },
+        "CameraSimPlacement": {
+          "additionalProperties": false,
+          "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+          "properties": {
+            "parent_body": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Parent Body"
+            },
+            "pos": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Pos",
+              "type": "array"
+            },
+            "target": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Target",
+              "type": "array"
+            },
+            "fovy_deg": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Fovy Deg"
+            }
+          },
+          "required": [
+            "pos",
+            "target"
+          ],
+          "title": "CameraSimPlacement",
           "type": "object"
         },
         "CapsuleShape": {
@@ -3093,7 +3424,7 @@
           "type": "string"
         },
         "SensorSpec": {
-          "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+          "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
           "properties": {
             "name": {
               "title": "Name",
@@ -3214,6 +3545,17 @@
               ],
               "default": null,
               "title": "Sim Camera Name"
+            },
+            "sim_placement": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CameraSimPlacement"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "n_channels": {
               "anyOf": [
@@ -3355,6 +3697,20 @@
               ],
               "title": "Qos Profile",
               "type": "string"
+            },
+            "catalog_id": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional openral_sensors catalog id for the physical device this fully materialized SensorSpec was derived from. Calibration and instance wiring remain explicit on the spec.",
+              "title": "Catalog Id"
             },
             "vendor": {
               "anyOf": [
@@ -7714,6 +8070,26 @@
           "title": "Pose6D",
           "type": "object"
         },
+        "SceneComposition": {
+          "additionalProperties": false,
+          "description": "Declarative MJCF scene composition for a manifest-driven HAL (ADR-0029).\n\nLets a robot whose sim HAL needs a *composed* MJCF (a bare arm spliced onto\na tabletop + props) declare the composer in its manifest instead of a\nbespoke ``_create_hal`` lifecycle subclass (issue #191 Phase 3b). The\nmanifest-driven node calls :attr:`composer` before constructing the HAL and\nthreads the resulting MJCF path in as the HAL's ``mjcf_path``.\n\nThe composer is a ``\"module.path:function\"`` import string. The function is\ncalled with ``**params`` and MUST return ``(xml: str, meshdir: Path)`` \u2014 the\ncomposed MJCF XML and the mesh directory it references (the node writes the\nXML next to ``meshdir`` so relative mesh paths resolve). Today's only\ncomposer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.\n\nAttributes:\n    composer: ``\"module.path:function\"`` returning ``(xml, meshdir)``.\n    params: Keyword arguments for the composer (e.g. ``robot_lift_z``,\n        ``white_background``).\n\nExample:\n    >>> sc = SceneComposition(\n    ...     composer=\"pkg.scenes:compose_tabletop\",\n    ...     params={\"robot_lift_z\": 0.36, \"white_background\": True},\n    ... )\n    >>> sc.params[\"robot_lift_z\"]\n    0.36",
+          "properties": {
+            "composer": {
+              "title": "Composer",
+              "type": "string"
+            },
+            "params": {
+              "additionalProperties": true,
+              "title": "Params",
+              "type": "object"
+            }
+          },
+          "required": [
+            "composer"
+          ],
+          "title": "SceneComposition",
+          "type": "object"
+        },
         "SceneSpec": {
           "additionalProperties": false,
           "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (:class:`TaskSpec`) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -7771,7 +8147,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Environment-only scene for ``openral deploy run``.\n\nCarries the physics world and optional robot mount. No task, no eval\nconfig \u2014 this is a playground for the full OpenRAL stack.",
+      "description": "Environment-only scene for ``openral deploy run``.\n\nCarries the physics world and optional robot mount. No task, no eval\nconfig \u2014 this is a playground for the full OpenRAL stack.\n\n``composition`` (ADR-0066) lets a deploy scene declare the MJCF composer that\nbuilds its environment (e.g. the openarm tabletop arena: table + cubes +\ndrawer + overview camera) instead of the robot manifest carrying it: the\nrobot manifest describes the robot, the scene describes the scene. ``openral\ndeploy sim`` threads it to the manifest-driven HAL node, which composes the\nMJCF and builds a bare twin off the result. ``None`` = no scene composition\n(a bare-arm twin; cameras come from the robot's own sensor placements).",
       "properties": {
         "scene": {
           "$ref": "#/$defs/SceneSpec"
@@ -7792,6 +8168,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Pose6D"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "composition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneComposition"
             },
             {
               "type": "null"
@@ -7919,6 +8306,26 @@
             "frame_id"
           ],
           "title": "Pose6D",
+          "type": "object"
+        },
+        "SceneComposition": {
+          "additionalProperties": false,
+          "description": "Declarative MJCF scene composition for a manifest-driven HAL (ADR-0029).\n\nLets a robot whose sim HAL needs a *composed* MJCF (a bare arm spliced onto\na tabletop + props) declare the composer in its manifest instead of a\nbespoke ``_create_hal`` lifecycle subclass (issue #191 Phase 3b). The\nmanifest-driven node calls :attr:`composer` before constructing the HAL and\nthreads the resulting MJCF path in as the HAL's ``mjcf_path``.\n\nThe composer is a ``\"module.path:function\"`` import string. The function is\ncalled with ``**params`` and MUST return ``(xml: str, meshdir: Path)`` \u2014 the\ncomposed MJCF XML and the mesh directory it references (the node writes the\nXML next to ``meshdir`` so relative mesh paths resolve). Today's only\ncomposer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.\n\nAttributes:\n    composer: ``\"module.path:function\"`` returning ``(xml, meshdir)``.\n    params: Keyword arguments for the composer (e.g. ``robot_lift_z``,\n        ``white_background``).\n\nExample:\n    >>> sc = SceneComposition(\n    ...     composer=\"pkg.scenes:compose_tabletop\",\n    ...     params={\"robot_lift_z\": 0.36, \"white_background\": True},\n    ... )\n    >>> sc.params[\"robot_lift_z\"]\n    0.36",
+          "properties": {
+            "composer": {
+              "title": "Composer",
+              "type": "string"
+            },
+            "params": {
+              "additionalProperties": true,
+              "title": "Params",
+              "type": "object"
+            }
+          },
+          "required": [
+            "composer"
+          ],
+          "title": "SceneComposition",
           "type": "object"
         },
         "SceneSpec": {
@@ -8054,6 +8461,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Pose6D"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "composition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneComposition"
             },
             {
               "type": "null"
@@ -8272,6 +8690,26 @@
           "title": "Pose6D",
           "type": "object"
         },
+        "SceneComposition": {
+          "additionalProperties": false,
+          "description": "Declarative MJCF scene composition for a manifest-driven HAL (ADR-0029).\n\nLets a robot whose sim HAL needs a *composed* MJCF (a bare arm spliced onto\na tabletop + props) declare the composer in its manifest instead of a\nbespoke ``_create_hal`` lifecycle subclass (issue #191 Phase 3b). The\nmanifest-driven node calls :attr:`composer` before constructing the HAL and\nthreads the resulting MJCF path in as the HAL's ``mjcf_path``.\n\nThe composer is a ``\"module.path:function\"`` import string. The function is\ncalled with ``**params`` and MUST return ``(xml: str, meshdir: Path)`` \u2014 the\ncomposed MJCF XML and the mesh directory it references (the node writes the\nXML next to ``meshdir`` so relative mesh paths resolve). Today's only\ncomposer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.\n\nAttributes:\n    composer: ``\"module.path:function\"`` returning ``(xml, meshdir)``.\n    params: Keyword arguments for the composer (e.g. ``robot_lift_z``,\n        ``white_background``).\n\nExample:\n    >>> sc = SceneComposition(\n    ...     composer=\"pkg.scenes:compose_tabletop\",\n    ...     params={\"robot_lift_z\": 0.36, \"white_background\": True},\n    ... )\n    >>> sc.params[\"robot_lift_z\"]\n    0.36",
+          "properties": {
+            "composer": {
+              "title": "Composer",
+              "type": "string"
+            },
+            "params": {
+              "additionalProperties": true,
+              "title": "Params",
+              "type": "object"
+            }
+          },
+          "required": [
+            "composer"
+          ],
+          "title": "SceneComposition",
+          "type": "object"
+        },
         "SceneSpec": {
           "additionalProperties": false,
           "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (:class:`TaskSpec`) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -8405,6 +8843,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/Pose6D"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "composition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SceneComposition"
             },
             {
               "type": "null"

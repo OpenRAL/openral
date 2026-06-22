@@ -84,13 +84,10 @@ from openral_core.schemas import (
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
-    SceneComposition,
-    SceneDefaults,
     SensorModality,
     SensorSpec,
     SimDescription,
     SimGripperDescription,
-    TopCameraDefaults,
     UrdfAsset,
 )
 
@@ -381,28 +378,11 @@ OPENARM_DESCRIPTION = RobotDescription(
         ],
         seed_ctrl_from_qpos=True,
     ),
-    # Default top-camera POV for the ``openarm_tabletop_pnp`` MJCF
-    # composer.  Matches the ``mddoai/openarm_2026-05-14_clean``
-    # dataset POV an OpenArm vision policy would train on (camera between
-    # the two robot bases, looking forward + down at the tabletop). Sim
-    # YAMLs override via ``scene.backend_options.top_camera_*``; this is
-    # the default.
-    scene_defaults=SceneDefaults(
-        top_camera=TopCameraDefaults(
-            pos=(0.20, 0.0, 0.95),
-            target=(0.65, 0.0, 0.05),
-            fovy=65.0,
-        ),
-        composition=SceneComposition(
-            composer="openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf",
-            params={
-                "strip_actuators": False,
-                "robot_lift_z": 0.36,
-                "robot_forward_x": 0.2,
-                "white_background": True,
-            },
-        ),
-    ),
+    # ADR-0066 — the tabletop arena composition + overview-camera pose are NOT
+    # robot properties; they live on the scenes that own them (the deploy scene's
+    # `composition:` and the sim scene's `backend_options.top_camera_*`). This
+    # constant (and `robots/openarm/robot.yaml`, drift-checked equal) therefore
+    # carries no `scene_defaults`. The robot / scene / rSkill are separate.
 )
 
 
