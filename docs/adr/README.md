@@ -137,6 +137,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 |-----|-------|--------|-----------|
 | [0044](0044-look-at-skill-grid-refined-approach.md) | `look_at` skill + occupancy-grid-refined approach poses | Accepted | amended/extended by 0054 |
 | [0054](0054-moveit-goal-builder-library.md) | `goal_builder` — joint/pose/look_at library over `ROSActionRskill` | Accepted | amends/extends 0044 |
+| [0065](0065-cumotion-cuda-moveit-planning.md) | cuMotion — CUDA-accelerated MoveIt planning behind a GPU capability gate | Proposed | below 0024/0054; additive to 0030/0040; refs 0046/0016 |
 
 ---
 

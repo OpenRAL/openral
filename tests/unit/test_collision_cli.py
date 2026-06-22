@@ -75,6 +75,50 @@ def test_check_fails_on_drift(tmp_path: Path) -> None:
     assert "drift" in result.output.lower()
 
 
+def _franka_copy(tmp_path: Path) -> Path:
+    """A hermetic franka_panda copy (robot.yaml + SRDF) for cuMotion emission.
+
+    URDF/MJCF resolve via ``robot_descriptions`` (``rd:`` refs); only the SRDF is
+    a ``file:`` ref, so copying it alongside ``robot.yaml`` is enough — and keeps
+    a ``--write`` run away from the committed manifest.
+    """
+    dst = tmp_path / "robot.yaml"
+    shutil.copy("robots/franka_panda/robot.yaml", dst)
+    shutil.copy("robots/franka_panda/franka_panda.srdf", tmp_path / "franka_panda.srdf")
+    return dst
+
+
+def test_emit_cumotion_writes_curobo_config(tmp_path: Path) -> None:
+    import yaml
+
+    dst = _franka_copy(tmp_path)
+    out = tmp_path / "franka_cumotion.yaml"
+
+    result = runner.invoke(
+        app, ["collision", "lower", "--robot", str(dst), "--emit-cumotion", str(out), "--write"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert out.exists()
+    kin = yaml.safe_load(out.read_text(encoding="utf-8"))["robot_cfg"]["kinematics"]
+    assert kin["base_link"] == "panda_link0"
+    assert "panda_link0" in kin["collision_spheres"]
+    assert "panda_joint1" in kin["cspace"]["joint_names"]
+
+
+def test_emit_cumotion_dry_run_does_not_write(tmp_path: Path) -> None:
+    dst = _franka_copy(tmp_path)
+    out = tmp_path / "franka_cumotion.yaml"
+
+    result = runner.invoke(
+        app, ["collision", "lower", "--robot", str(dst), "--emit-cumotion", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not out.exists(), "dry run must not write the cuRobo config"
+    assert "Dry run" in result.output
+
+
 def test_mutually_exclusive_flags_rejected(tmp_path: Path) -> None:
     dst = tmp_path / "robot.yaml"
     shutil.copy("robots/panda_mobile/robot.yaml", dst)

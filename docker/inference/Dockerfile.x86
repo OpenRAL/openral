@@ -168,6 +168,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-moveit \
         ros-${ROS_DISTRO}-moveit-msgs \
         ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config \
+        # Optional GPU planner: add the NVIDIA Isaac ROS apt repo and
+        # `ros-${ROS_DISTRO}-isaac-ros-cumotion-moveit` to enable CUDA-accelerated
+        # MoveIt planning (ADR-0065). Auto-selected per-request via
+        # supports_cumotion(); MoveIt falls back to OMPL when absent. See
+        # docs/contributing/toolchain.md → "GPU motion planning — cuMotion".
         # nav2 + nav2-msgs: the IDL for the
         # ``rskills/openral-nav2-navigate-to-pose/`` ros_action skill,
         # plus the full bringup so the panda_mobile-driven nav demo can
@@ -351,6 +356,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-moveit \
         ros-${ROS_DISTRO}-moveit-msgs \
         ros-${ROS_DISTRO}-moveit-resources-panda-moveit-config \
+        # Optional GPU planner: add the NVIDIA Isaac ROS apt repo and
+        # `ros-${ROS_DISTRO}-isaac-ros-cumotion-moveit` to enable CUDA-accelerated
+        # MoveIt planning (ADR-0065). Auto-selected per-request via
+        # supports_cumotion(); MoveIt falls back to OMPL when absent. See
+        # docs/contributing/toolchain.md → "GPU motion planning — cuMotion".
         ros-${ROS_DISTRO}-nav2-bringup \
         ros-${ROS_DISTRO}-nav2-msgs \
         ros-${ROS_DISTRO}-slam-toolbox \

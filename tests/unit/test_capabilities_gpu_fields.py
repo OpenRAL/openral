@@ -83,6 +83,69 @@ class TestVisionSlamCapability:
         assert rebuilt == caps
 
 
+class TestSupportsCuMotion:
+    """``RobotCapabilities.supports_cumotion()`` — the GPU gate for ADR-0065.
+
+    cuMotion's x86 floor is Ampere+ (compute capability >= 8.0), CUDA >= 13.0,
+    and a nominal 8 GB GPU. Nominal-8 GB cards report ~7.99 GiB (8188 MiB / 1024
+    in the probe), so the VRAM floor must sit just below 8.0 GiB, not at it.
+    """
+
+    def test_nominal_8gb_ada_cuda13_qualifies(self) -> None:
+        # RTX 4070 Laptop: Ada (8, 9), CUDA 13.2, 8188 MiB -> 7.996 GiB.
+        caps = RobotCapabilities(
+            gpu_vram_gb=8188 / 1024.0,
+            cuda_compute_capability=(8, 9),
+            cuda_toolkit_version="13.2",
+        )
+        assert caps.supports_cumotion() is True
+
+    def test_ample_ampere_host_qualifies(self) -> None:
+        caps = RobotCapabilities(
+            gpu_vram_gb=24.0,
+            cuda_compute_capability=(8, 0),
+            cuda_toolkit_version="13.0",
+        )
+        assert caps.supports_cumotion() is True
+
+    def test_no_gpu_does_not_qualify(self) -> None:
+        assert RobotCapabilities().supports_cumotion() is False
+
+    def test_pre_ampere_does_not_qualify(self) -> None:
+        # Turing (7, 5) is below the Ampere (8, 0) floor.
+        caps = RobotCapabilities(
+            gpu_vram_gb=16.0,
+            cuda_compute_capability=(7, 5),
+            cuda_toolkit_version="13.0",
+        )
+        assert caps.supports_cumotion() is False
+
+    def test_cuda_below_13_does_not_qualify(self) -> None:
+        caps = RobotCapabilities(
+            gpu_vram_gb=24.0,
+            cuda_compute_capability=(8, 9),
+            cuda_toolkit_version="12.4",
+        )
+        assert caps.supports_cumotion() is False
+
+    def test_insufficient_vram_does_not_qualify(self) -> None:
+        caps = RobotCapabilities(
+            gpu_vram_gb=6.0,
+            cuda_compute_capability=(8, 9),
+            cuda_toolkit_version="13.2",
+        )
+        assert caps.supports_cumotion() is False
+
+    def test_missing_cuda_toolkit_does_not_qualify(self) -> None:
+        # Compute capability known but no nvcc on the host -> cannot confirm CUDA 13.
+        caps = RobotCapabilities(
+            gpu_vram_gb=24.0,
+            cuda_compute_capability=(8, 9),
+            cuda_toolkit_version=None,
+        )
+        assert caps.supports_cumotion() is False
+
+
 class TestExistingManifestsLoad:
     """Every committed ``robots/<name>/robot.yaml`` must still load."""
 

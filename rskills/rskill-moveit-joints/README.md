@@ -99,6 +99,18 @@ Packing the full trajectory as one chunk with `horizon=N` would let
 waypoints 1..N actuate unchecked — unacceptable for a planner whose
 job is to thread between joint-limit walls.
 
+### GPU-accelerated planning (cuMotion, ADR-0065)
+
+On a host that clears the cuMotion GPU floor (`RobotCapabilities.supports_cumotion()`
+— Ampere+, CUDA ≥ 13, ~8 GB VRAM), the runner sets
+`MotionPlanRequest.pipeline_id = "isaac_ros_cumotion"` so MoveIt plans with
+NVIDIA's CUDA-accelerated cuMotion pipeline; otherwise it falls back to OMPL.
+Transparent — same skill, no manifest change — and it never bypasses the safety
+kernel: the planned trajectory still replays through `/openral/candidate_action`
+and is validated waypoint-by-waypoint. Install: see
+[`docs/contributing/toolchain.md`](../../docs/contributing/toolchain.md) →
+"GPU motion planning — cuMotion".
+
 ## How it was trained / Upstream provenance
 
 Nothing is trained — this rSkill wraps the upstream MoveIt motion

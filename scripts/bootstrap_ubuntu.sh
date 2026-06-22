@@ -81,6 +81,29 @@ sudo apt-get install -y \
   echo "(one or more wrapped-ROS rSkill apt deps unavailable on this distro — " \
        "rSkills that need them will surface a typed runtime error)"
 
+# ADR-0065 — NVIDIA Isaac ROS cuMotion: a CUDA-accelerated MoveIt planning
+# pipeline. Selected per-request via MotionPlanRequest.pipeline_id only when the
+# host clears the GPU floor (RobotCapabilities.supports_cumotion: Ampere+, CUDA
+# >= 13, ~8 GB); on CPU/low-VRAM hosts MoveIt keeps OMPL. So we install it only
+# when a discrete NVIDIA GPU is present AND the distro is jazzy (cuMotion targets
+# Ubuntu 24.04). The apt packages live in NVIDIA's Isaac ROS apt repo — if that
+# repo isn't configured the install is skipped with a pointer, never a hard fail.
+# Isaac ROS 4.4+ cuMotion is a self-contained C++/CUDA package (ships a native
+# libcumotion.so.1 + uses the CUDA 13 runtime); there is NO Python cuRobo to
+# install and no uv/pip group — the apt packages are the whole planner. Verified
+# 2026-06-22 on an RTX 4070 (Ada): the planner node loads + solves a joint plan.
+if command -v nvidia-smi >/dev/null 2>&1 && [[ "${ROS_DISTRO}" == "jazzy" ]]; then
+  echo "==> NVIDIA GPU detected — installing Isaac ROS cuMotion (ADR-0065)."
+  sudo apt-get install -y \
+    "ros-${ROS_DISTRO}-isaac-ros-cumotion-moveit" \
+    "ros-${ROS_DISTRO}-isaac-ros-cumotion-robot-description" || \
+    echo "(cuMotion apt packages unavailable — add the NVIDIA Isaac ROS apt repo: " \
+         "https://nvidia-isaac-ros.github.io/getting_started/isaac_apt_repository.html ; " \
+         "MoveIt falls back to OMPL until cuMotion is installed)"
+else
+  echo "(no NVIDIA GPU or non-jazzy distro — skipping Isaac ROS cuMotion; MoveIt uses OMPL)"
+fi
+
 # uv
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
