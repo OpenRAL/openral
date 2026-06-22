@@ -793,3 +793,21 @@
     scroll-behavior: auto !important;
   }
 }
+
+  /* ------------------- ADD ROBOT · mDNS discovery panel (issue #75b) -------- */
+  .robots-list { display: flex; flex-direction: column; gap: 6px; }
+  .robot-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .robot-row button {
+    font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: var(--bg-2); color: var(--fg-dim);
+    border: 1px solid var(--hair); border-radius: 4px;
+    padding: 3px 10px; cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .robot-row button:hover { color: var(--fg); border-color: var(--hair-strong); }
+  .robots-hint { opacity: 0.6; font-size: 11px; margin: 6px 0 0; }
