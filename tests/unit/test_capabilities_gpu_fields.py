@@ -60,6 +60,7 @@ class TestRobotCapabilitiesGpuFields:
         assert caps.cuda_compute_capability == (10, 0)
         assert QuantizationDtype.FP4_NVFP4 in caps.gpu_supported_dtypes
 
+
 class TestVisionSlamCapability:
     """ADR-0064 — `has_vision_slam` gates the camera-based SLAM backend
     (cuVSLAM + nvblox) for lidar-less robots, alongside `has_lidar` which
