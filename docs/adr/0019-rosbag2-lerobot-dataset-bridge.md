@@ -410,15 +410,17 @@ a 178-frame episode (real 8-D proprio + 2× 256×256 video + PHASE_START/END);
 `openral dataset from-bag` produced a reloadable LeRobotDataset v3. The
 `act-libero` `ExecuteRskill` goal drove the loop.
 
-**Known follow-ups.**
-- **Multi-slot action fidelity.** For slot-dispatched skills (ADR-0028b — e.g.
-  LIBERO cartesian_delta = 6-D cartesian + 1-D gripper as *separate*
-  `ActionChunk`s), the bridge currently records the last-delivered chunk, so the
-  dataset's `action` reflects one slot (the gripper) rather than the full env
-  action. Single-`ActionChunk` skills (joint-position robots: so100, openarm,
-  …) record the full action correctly. The fix is to reassemble the per-tick
-  slot chunks into one action vector (or record the pre-split action the node
-  computes); deferred.
+**Multi-slot action reassembly (resolved 2026-06-22).** For slot-dispatched
+skills (ADR-0028b — e.g. LIBERO cartesian_delta = 6-D cartesian + 1-D gripper as
+*separate* `ActionChunk`s), the bridge accumulates a tick's slot chunks and
+concatenates their next-applied rows into one full action vector, detecting the
+tick boundary by the slot cycle (a repeated `(control_mode, ee_name)` key starts
+the next tick); the action-subscription QoS depth was raised 1 → 100 so a tick's
+rapid multi-slot burst is never coalesced. Single-`ActionChunk` skills
+(joint-position robots) flush one frame per chunk. Robot- and
+control-mode-agnostic (the HAL already flattened each slot into `flat`).
+
+**Known follow-up.**
 - **`HardwareRunner` rename.** `HardwareRunner` already drives digital twins via
   the sim HAL, so the name misleads (it is a HAL-driven runner, not
   hardware-specific). A rename to `DeployRunner`/`HalRunner` + unifying the
