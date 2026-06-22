@@ -24,6 +24,7 @@ from openral_core.exceptions import ROSError
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from openral_core import RobotDescription
     from openral_safety.urdf_lowering import LoweredCollisionModel
 
 __all__ = [
@@ -201,6 +202,27 @@ collision_app = typer.Typer(
 )
 
 
+def _lower(
+    robot_path: Path, *, acm_only: bool, geometry_only: bool
+) -> tuple[RobotDescription, LoweredCollisionModel]:
+    """Load a manifest and lower its collision model via the provenance dispatcher.
+
+    Route via the provenance-correct dispatcher (ADR-0058 §5): SRDF+URDF → SRDF
+    ACM, URDF-with-usable-meshes → sampling, MJCF-native → MJCF. The naive
+    ``urdf if assets.urdf else mjcf`` wrongly sent openarm (unusable URDF meshes)
+    to the URDF path. The byte-identical regression test routes through this same
+    dispatcher.
+    """
+    from openral_core import RobotDescription
+    from openral_safety.urdf_lowering import lower_robot_auto
+
+    robot = RobotDescription.from_yaml(str(robot_path))
+    model = lower_robot_auto(
+        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
+    )
+    return robot, model
+
+
 def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> tuple[str, str]:
     """Return ``(current_manifest_text, spliced_manifest_text)`` for a manifest.
 
@@ -208,18 +230,7 @@ def _lowered_text(robot_path: Path, *, acm_only: bool, geometry_only: bool) -> t
     lowers its collision model, renders the affected block(s), and splices them
     into the on-disk text — touching only the requested block(s).
     """
-    from openral_core import RobotDescription
-    from openral_safety.urdf_lowering import lower_robot_auto
-
-    robot = RobotDescription.from_yaml(str(robot_path))
-    # Route via the provenance-correct dispatcher (ADR-0058 §5): SRDF+URDF →
-    # SRDF ACM, URDF-with-usable-meshes → sampling, MJCF-native → MJCF. The
-    # naive ``urdf if assets.urdf else mjcf`` wrongly sent openarm (unusable URDF
-    # meshes) to the URDF path. The byte-identical regression test routes through
-    # this same dispatcher.
-    model = lower_robot_auto(
-        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
-    )
+    _robot, model = _lower(robot_path, acm_only=acm_only, geometry_only=geometry_only)
     geo_block, acm_block = render_blocks(model)
     current = robot_path.read_text(encoding="utf-8")
     # MJCF-sourced robots keep their hand-authored geometry (the tool reuses it,
@@ -247,11 +258,19 @@ def lower(
     geometry_only: bool = typer.Option(
         False, "--geometry-only", help="Only regenerate collision_geometry."
     ),
+    emit_cumotion: Path | None = typer.Option(
+        None,
+        "--emit-cumotion",
+        help="Also write a cuRobo robot-config (collision spheres + ACM) to this path (ADR-0065).",
+    ),
 ) -> None:
     """Lower URDF/SRDF → collision model. Prints a diff; mutates only with ``--write``.
 
     A regenerated allowed-collision matrix is a safety input — review the diff with
-    the safety WG before merging (CLAUDE.md §3).
+    the safety WG before merging (CLAUDE.md §3). ``--emit-cumotion <path>`` also
+    derives a cuRobo robot-config from the *same* lowered geometry so cuMotion's
+    plan-time collision matches the kernel's (ADR-0065 D4); it writes only with
+    ``--write`` (dry run prints the config).
     """
     if acm_only and geometry_only:
         _console.print("[red]--acm-only and --geometry-only are mutually exclusive.[/red]")
@@ -259,6 +278,20 @@ def lower(
     if not robot.exists():
         _console.print(f"[red]Robot description not found:[/red] {robot}")
         raise typer.Exit(code=2)
+    if emit_cumotion is not None:
+        from openral_safety.cumotion_config import render_cumotion_config
+
+        desc, model = _lower(robot, acm_only=False, geometry_only=False)
+        config_text = render_cumotion_config(desc, model)
+        if write:
+            emit_cumotion.write_text(config_text, encoding="utf-8")
+            _console.print(f"[green]Wrote[/green] cuRobo config → {emit_cumotion}")
+        else:
+            _console.print(config_text, markup=False, highlight=False)
+            _console.print(
+                f"[yellow]Dry run.[/yellow] Re-run with [bold]--write[/bold] to write "
+                f"{emit_cumotion}."
+            )
     current, spliced = _lowered_text(robot, acm_only=acm_only, geometry_only=geometry_only)
     if current == spliced:
         _console.print("[green]No change — manifest already matches the lowered model.[/green]")

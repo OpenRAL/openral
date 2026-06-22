@@ -158,6 +158,16 @@ _Offline URDF(+SRDF) → manifest collision-model lowering tool (ADR-0030); lazy
 - `LoweringSource` — `Literal["srdf", "sampling", "mjcf"]`; the source `select_lowering` resolves to (matches `LoweredCollisionModel.acm_source`).
 - `class LoweredCollisionModel` — Frozen dataclass result: `collision_geometry`, `allowed_collision_pairs` (sorted tuples), `acm_source` (`"srdf"`|`"sampling"`|`"mjcf"`), `srdf_path`, `joint_fk` (per-joint FK for onboarding).
 
+### `packages/openral_safety/openral_safety/cumotion_config.py`
+_ADR-0065 — derive a cuRobo (cuMotion) robot-config from the **same** lowered collision geometry the safety kernel checks (ADR-0030), so plan-time and kernel-time collision stay consistent. Pure module; reuses `urdf_lowering._capsule_segment_radius`._
+
+- `class CuMotionSphere` — Frozen dataclass: `center` (link-frame `(x, y, z)`), `radius` — one cuRobo collision sphere.
+- `capsule_to_spheres(p0, p1, radius, *, count) -> list[CuMotionSphere]` — Sample `count` spheres evenly along the segment `p0`→`p1` (endpoints inclusive for `count >= 2`; midpoint for `count == 1`).
+- `spheres_for_capsule(shape) -> int` — Sphere count to tile a lowered capsule with centres ≤ one radius apart (`ceil(L/r)+1`); `1` for a sphere / zero-length capsule.
+- `link_collision_spheres(geom, *, count=None) -> list[CuMotionSphere]` — Lower one `LinkCollisionGeometry` to cuRobo spheres in its link frame (reuses the kernel's capsule→segment math).
+- `actuated_joint_names(robot) -> list[str]` — Single-DOF movable joint names (revolute/prismatic/continuous), in manifest order — the cuRobo `cspace.joint_names`.
+- `render_cumotion_config(robot, model) -> str` — Render a cuRobo `robot_cfg` YAML fragment (base_link, collision_spheres, self_collision_ignore from the ACM, cspace.joint_names) with a generated-provenance header. `retract_config` / accel-jerk limits are planner tuning, left for ADR-0065 Phase 3.
+
 ### `packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py`
 _ADR-0018 F4 — `reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.ReasonerCore`._
 
