@@ -1,0 +1,62 @@
+name: hil-so100
+
+# ADR-0020 PR-I — Hardware-in-the-loop safety gate for the SO-100 follower arm.
+#
+# Runs the real C++ safety_kernel_node against a physically connected SO-100 and
+# exercises the deny-by-default envelope + geometric self/world-collision checks
+# end to end (tests/hil/safety/test_so100_*.py). This is the gate that takes
+# Layer 6 (the C++ safety kernel) from `yellow` to `green`: sim coverage proves
+# the math, this proves it on real hardware.
+#
+# Self-hosted: needs a lab runner registered with the labels
+# [self-hosted, lab-so100], an SO-100 on $SO100_PORT (default /dev/ttyUSB0), and
+# a sourced ROS 2 Jazzy. The tests are hardware-safe — every collision case
+# asserts the kernel DROPS the chunk before it reaches the HAL, so the arm is
+# never actuated into a collision. When no arm is attached the `just hil-safety`
+# recipe maps pytest's "no tests collected / all skipped" exit (4/5) to 0, so a
+# runner without the arm plugged in reports success rather than a red gate.
+#
+# Trigger: manual dispatch ONLY. Matches every other workflow in this repo
+# (hal/quality/test-python are dispatch-only — "out of GitHub Actions credits").
+# A push/PR trigger would queue a `runs-on: [self-hosted, lab-so100]` job that
+# hangs forever until such a runner exists, blocking every PR that touches the
+# safety paths. Run this from the Actions UI / `gh workflow run hil-so100.yml`
+# once the lab rig is online; until then it never auto-runs and never gates a PR.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # One HIL run per ref at a time — the lab arm is a single shared resource.
+  group: hil-so100-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hil-so100:
+    name: "SO-100 safety kernel HIL"
+    runs-on: [self-hosted, lab-so100]
+    timeout-minutes: 30
+    env:
+      SO100_PORT: ${{ vars.SO100_PORT || '/dev/ttyUSB0' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Build the C++ safety kernel
+        # `just safety-kernel-build` colcon-builds openral_msgs +
+        # opentelemetry_cpp_vendor + openral_safety_kernel into ./install.
+        shell: bash
+        run: |
+          source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+          just safety-kernel-build
+
+      - name: Run SO-100 HIL safety tests
+        # `just hil-safety so100` runs tests/hil/safety/test_so100_*.py and exits
+        # 0 when the arm is absent (skip-clean). The kernel node is resolved from
+        # the workspace overlay built above.
+        shell: bash
+        run: |
+          source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+          source install/setup.bash
+          just hil-safety so100

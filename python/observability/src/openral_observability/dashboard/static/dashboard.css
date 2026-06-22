@@ -694,7 +694,6 @@
     border: 1px solid var(--hair); border-radius: var(--radius); padding: 9px 12px;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   }
-  .prompt-box::before { content: "›_"; color: var(--brand); font-family: var(--mono); font-weight: 700; letter-spacing: -0.05em; }
   #prompt-input {
     font-family: var(--mono); font-size: 13px;
     background: var(--bg-2); color: var(--text);
@@ -793,3 +792,27 @@
     scroll-behavior: auto !important;
   }
 }
+
+  /* ------------------- ADD ROBOT · mDNS discovery panel (issue #75b) -------- */
+  .robots-list { display: flex; flex-direction: column; gap: 6px; }
+  .robot-row {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .robot-row button {
+    font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: var(--bg-2); color: var(--fg-dim);
+    border: 1px solid var(--hair); border-radius: 4px;
+    padding: 3px 10px; cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .robot-row button:hover { color: var(--fg); border-color: var(--hair-strong); }
+  .robots-hint { opacity: 0.6; font-size: 11px; margin: 6px 0 0; }
+
+/* ── Write-controls panel (issue #75c / ADR-0064) ── */
+.write-banner { background: #2a1a00; color: #ffcc66; padding: 6px 10px; border-radius: 4px;
+                font-size: 12px; margin-bottom: 8px; }
+.controls-result { font-family: var(--mono, monospace); font-size: 11px; opacity: 0.8; }
+#controls-panel form { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }

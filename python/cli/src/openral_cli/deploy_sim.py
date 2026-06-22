@@ -519,6 +519,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     dashboard_port: int,
     reset_to_pose_service: str | None,
     approach_skill_id: str | None = None,
+    dataset_out: str | None = None,
+    dataset_repo_id: str | None = None,
+    dataset_license: str | None = None,
     hal_param_overrides: dict[str, object] | None = None,
     hal_mode: str = "sim",
     enable_slam: bool | None = None,
@@ -533,6 +536,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_reward_monitor: bool = False,
     reward_monitor_manifest: str | None = None,
     reward_monitor_task: str | None = None,
+    enable_critic: bool = False,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     enable_dashboard: bool = True,
@@ -814,6 +818,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # ADR-0057 — reward monitor co-active with the VLA; the reasoner polls
         # /openral/perception/query_task_progress when task_progress_available.
         f"enable_reward_monitor:={'true' if enable_reward_monitor else 'false'}",
+        # ADR-0064 — Tier-C critic producer; emits FailureTrigger on
+        # /openral/failure/critic when a reward model's score stalls.
+        f"enable_critic:={'true' if enable_critic else 'false'}",
         f"spatial_memory_ingest:={'true' if spatial_memory_ingest else 'false'}",
         f"enable_dashboard:={'true' if enable_dashboard else 'false'}",
         # ADR-0059 — read-only Foxglove live-scene bridge. Off by default;
@@ -846,6 +853,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # defaults ``approach_skill_id`` to "").
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
+
+    # ADR-0019 — only forward the dataset args when recording is opted in
+    # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
+    # launch file defaults all three so omitting them disables recording).
+    if dataset_out:
+        argv_template.append(f"dataset_out:={dataset_out}")
+        if dataset_repo_id:
+            argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
+        if dataset_license:
+            argv_template.append(f"dataset_license:={dataset_license}")
 
     return LaunchInvocation(
         robot_id=robot_id,
@@ -1571,6 +1588,26 @@ def deploy_sim_command(
             "keeps the legacy ResetToPose snap."
         ),
     ),
+    dataset_out: str | None = typer.Option(
+        None,
+        "--dataset-out",
+        help=(
+            "ADR-0019 — record the deploy session (proprio + action + camera "
+            "frames + episode markers) to this rosbag2 mcap path. Convert to a "
+            "LeRobotDataset v3 offline with `openral dataset from-bag`. Empty "
+            "disables recording."
+        ),
+    ),
+    dataset_repo_id: str | None = typer.Option(
+        None,
+        "--dataset-repo-id",
+        help="ADR-0019 — repo_id for the recorded dataset (default openral/dataset-<robot>).",
+    ),
+    dataset_license: str | None = typer.Option(
+        None,
+        "--dataset-license",
+        help="ADR-0019 — SPDX license carried into `openral dataset from-bag` (default CC-BY-4.0).",
+    ),
     hal: list[str] = typer.Option(  # reason: typer Option idiom
         None,
         "--hal",
@@ -1728,6 +1765,18 @@ def deploy_sim_command(
             "co-resident with a VLA wants a small NF4 VLA on an 8 GB GPU (~3.3 GB)."
         ),
     ),
+    enable_critic: bool = typer.Option(
+        False,
+        "--enable-critic/--no-enable-critic",
+        help=(
+            "ADR-0064 — bring up the Tier-C critic producer "
+            "(openral_reasoner_ros/critic_producer_node). It watches the generic "
+            "/openral/critic/score topic that reward models publish (Robometer, a "
+            "future SARM, success classifiers) and emits a Tier-C FailureTrigger on "
+            "/openral/failure/critic when a critic stalls — the reasoner already maps "
+            "that to a forced Tier-C tick (replanning). Advisory-only. Default off."
+        ),
+    ),
     reward_monitor_manifest: str | None = typer.Option(
         None,
         "--reward-monitor-manifest",
@@ -1827,6 +1876,9 @@ def deploy_sim_command(
             dashboard_port=dashboard_port,
             reset_to_pose_service=reset_to_pose_service,
             approach_skill_id=approach_skill_id,
+            dataset_out=dataset_out,
+            dataset_repo_id=dataset_repo_id,
+            dataset_license=dataset_license,
             hal_param_overrides=overrides,
             enable_slam=enable_slam,
             enable_nav2=enable_nav2,
@@ -1840,6 +1892,7 @@ def deploy_sim_command(
             enable_reward_monitor=enable_reward_monitor,
             reward_monitor_manifest=reward_monitor_manifest,
             reward_monitor_task=reward_monitor_task,
+            enable_critic=enable_critic,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             enable_dashboard=dashboard,

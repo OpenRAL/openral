@@ -1,9 +1,9 @@
-"""Cross-HAL integration test: drive every HAL twin through ``HardwareRunner``.
+"""Cross-HAL integration test: drive every HAL twin through ``DeployRunner``.
 
 This is the strongest "all wiring is correct" signal in the repo.  Each
 per-HAL ``tests/sim/test_<robot>_hal_mujoco.py`` validates one HAL in
 isolation; this suite parametrizes the **production**
-:class:`openral_runner.HardwareRunner` over every HAL twin and runs a
+:class:`openral_runner.DeployRunner` over every HAL twin and runs a
 real rate-limited inference loop end-to-end:
 
     activate → for max_ticks:
@@ -13,12 +13,12 @@ real rate-limited inference loop end-to-end:
 
 If a HAL's joint indexing, units, lifecycle, or schema doesn't line up
 with the rest of the stack (``WorldStateAggregator``, ``rSkillBase``,
-``SafetyClient``, ``HardwareRunner``), this suite catches it.  Every
+``SafetyClient``, ``DeployRunner``), this suite catches it.  Every
 per-robot sim test could pass while this one still fails — the
 integration boundary is the new contract being exercised here.
 
 No mocks (CLAUDE.md §1.11).  Real ``MujocoArmHAL`` / ``AlohaMujocoHAL``
-subclasses, real ``WorldStateAggregator``, real ``HardwareRunner`` with
+subclasses, real ``WorldStateAggregator``, real ``DeployRunner`` with
 ``NullSafetyClient`` (the same default the production CLI uses for
 twins).  The skill is a tiny ``EchoCurrentPoseSkill`` that returns the
 robot's current joint state as a 1-step JOINT_POSITION action chunk —
@@ -79,7 +79,7 @@ from openral_hal import (
 from openral_hal.protocol import HAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_rskill.base import rSkillBase
-from openral_runner import HardwareRunner
+from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ class _EchoCurrentPoseSkill(rSkillBase):
         # ``world_state.joint_state`` is always populated by the runner
         # before ``skill.step`` — the aggregator's snapshot fans the
         # HAL's just-read JointState into the WorldState before the
-        # inference phase (see ``HardwareRunner._tick_impl``).
+        # inference phase (see ``DeployRunner._tick_impl``).
         js = world_state.joint_state
         assert js is not None, "runner must populate joint_state before step()"
         positions = list(js.position)[: self._n_joints]
@@ -228,12 +228,12 @@ _HAL_CASES: list[tuple[str, Callable[[], HAL], int, str]] = [
     [(f, n, e) for (_, f, n, e) in _HAL_CASES],
     ids=[label for (label, _, _, _) in _HAL_CASES],
 )
-def test_hal_drives_through_hardware_runner_end_to_end(
+def test_hal_drives_through_deploy_runner_end_to_end(
     factory: Callable[[], HAL],
     n_joints: int,
     embodiment_tag: str,
 ) -> None:
-    """For each HAL: ``HardwareRunner.run(max_ticks=10)`` completes without
+    """For each HAL: ``DeployRunner.run(max_ticks=10)`` completes without
     exception, the skill sees one ``step()`` per tick, and the runner's
     ``RunResult.n_ticks`` matches.  Any breakage in the joint-indexing /
     units / lifecycle / aggregator / safety wiring surfaces here as an
@@ -254,12 +254,12 @@ def test_hal_drives_through_hardware_runner_end_to_end(
     # each tick has ~33 ms; mj_step iterations on a 29-DoF humanoid
     # take a fraction of that.  No latency budget — this test isn't
     # about timing, it's about wiring.
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=skill,
         aggregator=aggregator,
         rate_hz=30.0,
-        runner_name=f"hardware_runner.{hal.description.name}",
+        runner_name=f"deploy_runner.{hal.description.name}",
     )
 
     max_ticks = 10
@@ -307,12 +307,12 @@ def test_hal_activate_one_tick_deactivate(
     skill = _EchoCurrentPoseSkill(n_joints=n_joints, embodiment_tags=[embodiment_tag])
     skill.configure()
     skill.activate()
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=skill,
         aggregator=aggregator,
         rate_hz=30.0,
-        runner_name=f"hardware_runner.{hal.description.name}.smoke",
+        runner_name=f"deploy_runner.{hal.description.name}.smoke",
     )
     runner.activate()
     try:

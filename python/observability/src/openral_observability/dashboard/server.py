@@ -87,9 +87,19 @@ def run_dashboard(
     """
     import uvicorn  # local import: heavy enough to defer until invocation
 
-    from openral_observability.dashboard.app import create_app
+    from openral_observability.dashboard.app import _write_controls_enabled, create_app
 
     app = create_app(store)
+
+    discovery = None
+    try:
+        from openral_observability.dashboard.discovery import Discovery
+
+        discovery = Discovery()
+        discovery.start(host=host, port=port)
+        app.state.discovery = discovery
+    except Exception as exc:  # discovery is best-effort; never gate the dashboard
+        _LOG.warning("dashboard.discovery_start_failed error=%s", exc)
 
     child: subprocess.Popen[bytes] | None = None
     if inprocess_cmd:
@@ -108,6 +118,26 @@ def run_dashboard(
     if exposure is not None:
         _LOG.warning("dashboard.exposed_bind host=%s", host)
         print(f"WARNING: {exposure}", file=sys.stderr, flush=True)
+
+    if _write_controls_enabled():
+        _write_controls_msg = (
+            "dashboard write-controls ENABLED (OPENRAL_DASHBOARD_WRITE_CONTROLS=1): "
+            "skill-switch + non-safety param-tune are live and reach actuation config. "
+            "Pending safety-WG review (ADR-0064). The safety kernel still disposes all motion."
+        )
+        _LOG.warning("dashboard.write_controls_enabled")
+        print(f"WARNING: {_write_controls_msg}", file=sys.stderr, flush=True)
+
+    if exposure is not None and _write_controls_enabled():
+        _compound_msg = (
+            "CRITICAL: dashboard is bound to a non-loopback address AND write-controls are "
+            f"enabled. The guarded write endpoints (skill-switch + param-tune, bound to {host!r}) "
+            "are reachable from the network by ANY unauthenticated host and reach actuation "
+            "config directly. This is the highest-risk dashboard configuration. "
+            "Bind 127.0.0.1 and use an SSH tunnel for remote access."
+        )
+        _LOG.warning("dashboard.exposed_write_controls host=%s", host)
+        print(f"WARNING: {_compound_msg}", file=sys.stderr, flush=True)
 
     def _on_signal(signum: int, _frame: object) -> None:
         server.should_exit = True
@@ -129,6 +159,8 @@ def run_dashboard(
     try:
         server.run()
     finally:
+        if discovery is not None:
+            discovery.stop()
         if child is not None and child.poll() is None:
             child.terminate()
             try:

@@ -34,8 +34,10 @@ ros2 launch openral_slam_bringup slam_toolbox.launch.py
 # (isaac_ros_visual_slam) + rectified camera streams
 ros2 launch openral_slam_bringup cuvslam.launch.py
 
-# occupancy for Nav2 (visual) — needs nvblox_ros + a depth stream
-ros2 launch openral_slam_bringup nvblox.launch.py
+# occupancy for Nav2 (visual) — needs nvblox_ros + a depth stream.
+# Pass robot_yaml so the prefilter derives the floor-excluded body-height
+# band from the robot's footprint/collision/link measurements + live TF.
+ros2 launch openral_slam_bringup nvblox.launch.py robot_yaml:=/abs/path/to/robots/<id>/robot.yaml
 ```
 
 ### Installing the NVIDIA Isaac ROS stack (visual backend only)

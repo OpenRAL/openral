@@ -1,4 +1,4 @@
-"""ADR-0019 PR3 integration tests — HardwareRunner episode API + Rosbag2Sink.
+"""ADR-0019 PR3 integration tests — DeployRunner episode API + Rosbag2Sink.
 
 Real components per CLAUDE.md §1.11:
   * Real SO100FollowerHAL backed by SO100DigitalTwin (no serial port).
@@ -8,7 +8,7 @@ Real components per CLAUDE.md §1.11:
   * Real ``rSkillBase`` subclass driven through its full lifecycle.
 
 The covered surface:
-  * :meth:`HardwareRunner.episode_start` / :meth:`episode_end` driving
+  * :meth:`DeployRunner.episode_start` / :meth:`episode_end` driving
     the recorder's episode lifecycle (and propagating through to the
     sink as PHASE_START / PHASE_END markers).
   * In-tick fan-out of state / action into the bag via the recorder's
@@ -31,7 +31,7 @@ from openral_dataset.bag import PHASE_END, PHASE_START, TOPIC_EPISODE, TOPIC_TIC
 from openral_hal.so100_follower import SO100FollowerHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_rskill.base import rSkillBase
-from openral_runner import HardwareRunner
+from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
 
 if TYPE_CHECKING:
@@ -89,8 +89,8 @@ def so100_robot_description() -> RobotDescription:
 @pytest.fixture
 def real_runner_stack(
     so100_robot_description: RobotDescription, tmp_path: Path
-) -> Generator[tuple[HardwareRunner, RolloutRecorder, Rosbag2Sink, Path], None, None]:
-    """Wire a real HardwareRunner + RolloutRecorder + Rosbag2Sink end-to-end.
+) -> Generator[tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path], None, None]:
+    """Wire a real DeployRunner + RolloutRecorder + Rosbag2Sink end-to-end.
 
     Yields ``(runner, recorder, sink, bag_path)``. The fixture also
     handles teardown: skill shutdown, recorder finalize (idempotent),
@@ -111,7 +111,7 @@ def real_runner_stack(
         fps=30.0,
         sinks=[sink],
     )
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=skill,
         aggregator=aggregator,
@@ -141,7 +141,7 @@ def test_runner_episode_start_without_recorder_returns_minus_one(
     skill = _NoOpSkill()
     skill.configure()
     skill.activate()
-    runner = HardwareRunner(hal=hal, skill=skill, aggregator=aggregator)
+    runner = DeployRunner(hal=hal, skill=skill, aggregator=aggregator)
     runner.activate()
     try:
         assert runner.episode_start("task") == -1
@@ -154,7 +154,7 @@ def test_runner_episode_start_without_recorder_returns_minus_one(
 
 
 def test_runner_episode_lifecycle_writes_bag_markers(
-    real_runner_stack: tuple[HardwareRunner, RolloutRecorder, Rosbag2Sink, Path],
+    real_runner_stack: tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path],
 ) -> None:
     """episode_start + 2 ticks + episode_end produces PHASE_START + 2 Ticks + PHASE_END."""
     runner, _recorder, sink, bag_path = real_runner_stack
@@ -188,7 +188,7 @@ def test_runner_episode_lifecycle_writes_bag_markers(
 
 
 def test_runner_episode_start_twice_raises(
-    real_runner_stack: tuple[HardwareRunner, RolloutRecorder, Rosbag2Sink, Path],
+    real_runner_stack: tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path],
 ) -> None:
     """Calling episode_start twice without episode_end raises RuntimeError."""
     runner, _recorder, _sink, _bag = real_runner_stack
@@ -198,7 +198,7 @@ def test_runner_episode_start_twice_raises(
 
 
 def test_runner_episode_end_without_start_raises(
-    real_runner_stack: tuple[HardwareRunner, RolloutRecorder, Rosbag2Sink, Path],
+    real_runner_stack: tuple[DeployRunner, RolloutRecorder, Rosbag2Sink, Path],
 ) -> None:
     """Calling episode_end without a matching episode_start raises RuntimeError."""
     runner, _recorder, _sink, _bag = real_runner_stack
@@ -229,7 +229,7 @@ def test_runner_deactivate_closes_open_episode_as_failure(
         fps=30.0,
         sinks=[sink],
     )
-    runner = HardwareRunner(hal=hal, skill=skill, aggregator=aggregator, recorder=recorder)
+    runner = DeployRunner(hal=hal, skill=skill, aggregator=aggregator, recorder=recorder)
     runner.activate()
     runner.episode_start("abandoned")
     runner.run(max_ticks=1)

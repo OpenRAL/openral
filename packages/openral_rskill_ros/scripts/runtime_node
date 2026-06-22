@@ -61,18 +61,18 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
     # HAL's ResetToPose service with the manifest's starting_pose
     # before the first inference tick. Empty disables the call.
     bootstrap.declare_parameter("reset_to_pose_service", "")
-    # ADR-0025 — bridge ``/map`` from slam_toolbox into the dashboard's
-    # ``slam.occupancy_grid`` OTel span family. Off by default; the
-    # ``sim_e2e.launch.py`` flips this on when ``enable_slam:=true``
-    # so the SLAM Map card on the dashboard populates as
-    # slam_toolbox starts building the map.
-    bootstrap.declare_parameter("enable_slam_bridge", False)
     # ADR-0030 — render the octomap occupied-voxel cloud
     # (``/octomap_point_cloud_centers``) into the dashboard's
     # ``world.pointcloud`` span family. Off by default; the
     # ``sim_e2e.launch.py`` flips this on when ``enable_octomap:=true``
     # so the robot-view pointcloud card populates as octomap_server runs.
     bootstrap.declare_parameter("enable_world_cloud_bridge", False)
+    # ADR-0019 — record the deploy session (proprio + action + camera frames
+    # + episode markers) to a rosbag2 mcap. Empty disables recording; the
+    # ``openral deploy sim/run --dataset-out`` flag sets it via the launch.
+    bootstrap.declare_parameter("dataset_out", "")
+    bootstrap.declare_parameter("dataset_repo_id", "")
+    bootstrap.declare_parameter("dataset_license", "CC-BY-4.0")
     robot_yaml: str = bootstrap.get_parameter("robot_yaml").get_parameter_value().string_value
     search_paths: list[str] = [
         p
@@ -92,11 +92,15 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
     reset_to_pose_service: str = (
         bootstrap.get_parameter("reset_to_pose_service").get_parameter_value().string_value
     )
-    enable_slam_bridge: bool = (
-        bootstrap.get_parameter("enable_slam_bridge").get_parameter_value().bool_value
-    )
     enable_world_cloud_bridge: bool = (
         bootstrap.get_parameter("enable_world_cloud_bridge").get_parameter_value().bool_value
+    )
+    dataset_out: str = bootstrap.get_parameter("dataset_out").get_parameter_value().string_value
+    dataset_repo_id: str = (
+        bootstrap.get_parameter("dataset_repo_id").get_parameter_value().string_value
+    )
+    dataset_license: str = (
+        bootstrap.get_parameter("dataset_license").get_parameter_value().string_value
     )
     bootstrap.destroy_node()
 
@@ -150,8 +154,10 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
         runtime = compose_runtime(
             robot_yaml,
             skill_resolver_factory=_build_resolver,
-            enable_slam_bridge=enable_slam_bridge,
             enable_world_cloud_bridge=enable_world_cloud_bridge,
+            dataset_out=dataset_out or None,
+            dataset_repo_id=dataset_repo_id or None,
+            dataset_license=dataset_license or "CC-BY-4.0",
         )
     except Exception as exc:  # surface as exit code, not stack trace
         print(f"runtime_node: compose_runtime failed: {exc!s}", file=sys.stderr)
@@ -214,6 +220,10 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
         # `try_shutdown()` switch below is the corresponding fix.
         pass
     finally:
+        # ADR-0019 — finalize the recorded bag (drains the writer thread,
+        # closes any open episode) BEFORE the nodes go down.
+        if runtime.dataset_recorder_bridge is not None:
+            runtime.dataset_recorder_bridge.destroy()
         runtime.skill_runner_node.destroy_node()
         runtime.world_state_node.destroy_node()
         # Idempotent — no-op when the SIGINT handler (or whoever fired

@@ -59,31 +59,45 @@ with RolloutRecorder(
 - **`features_from_robot`** — pure `RobotDescription` → LeRobot v3 features
   dict mapping. No I/O, no lerobot import.
 
-The PR series adds these in later sessions (still planned):
+The rest of the ADR-0019 PR series has since landed:
 
-- **PR2** — `SensorRosPublisher` in `python/sensors/` + new
-  `packages/openral_sensors_ros/` lifecycle node. Closes the camera-topic
-  publishing gap on the hardware path.
-- **PR3** — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
+- **PR2** *(partial)* — `SensorRosPublisher` in `python/sensors/`
+  (`ros_publisher.py`) ships and is tested. The wrapping
+  `packages/openral_sensors_ros/` lifecycle node specified by ADR-0019 is
+  **not yet built**, so feeding live camera topics into a recorder on the
+  hardware path is the one remaining gap.
+- **PR3** ✅ — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
   / `openral_msgs/Episode` IDLs + explicit `episode_start` / `episode_end`
-  API on `HardwareRunner`.
-- **PR4** — `Rosbag2ToLeRobotConverter.from_bag` + `openral dataset from-bag`
-  CLI subcommand.
-- **PR5** — `openral dataset push` with consent prompt + `_hf_publish` shared
+  API on `DeployRunner` (`bag.py`).
+- **PR4** ✅ — `Rosbag2ToLeRobotConverter.from_bag` + `openral dataset from-bag`
+  CLI subcommand (`converter.py`).
+- **PR5** ✅ — `openral dataset push` with consent prompt + `_hf_publish` shared
   helper de-duped from `tools/rskill_publisher.py`.
 
 ## CLI surface
 
-`openral sim run` accepts three new flags from PR1:
+**Sim path** — `openral sim run` accepts three flags (PR1):
 
 - `--dataset-out PATH` — write a LeRobotDataset v3 to `PATH` as the sim runs.
   Path must not pre-exist; lerobot v3 refuses to write into a populated root.
 - `--dataset-repo-id STR` — repo id stored in `meta/info.json`. Defaults to
-  `openral/dataset-<robot_id>`. Not pushed by `openral sim run`; PR5's
+  `openral/dataset-<robot_id>`. Not pushed by `openral sim run`;
   `openral dataset push` owns publishing.
 - `--dataset-license SPDX` — defaults to `CC-BY-4.0` (the LeRobot
   convention). PII-bearing datasets must set a more restrictive license; the
-  PR5 consent prompt enforces this.
+  `openral dataset push` consent prompt enforces this.
+
+**Hardware / rosbag path** — record on a live ROS 2 graph, then convert
+offline:
+
+- `openral record --profile slim|full --out DIR` — wrap `ros2 bag record`
+  with curated topic profiles (mcap storage). `--dry-run` prints the composed
+  argv without a sourced ROS 2 install.
+- `openral dataset from-bag BAG --robot robot.yaml --output DS` — replay a
+  `Rosbag2Sink` mcap into a LeRobotDataset v3 (`--repo-id` / `--license` /
+  `--fps` optional). PR4.
+- `openral dataset push DS [--repo-id ID] [--yes] [--dry-run]` — consent-gated
+  upload of a local dataset root to the HF Hub. PR5.
 
 ## Verification
 
@@ -104,3 +118,17 @@ Per CLAUDE.md §1.11 (no mocks): every test loads the real SO-100
 real `lerobot.datasets.LeRobotDataset` writer. Tests `pytest.skip` with a
 typed reason on hosts without `lerobot>=0.5.1` installed (it lives behind
 the `libero` / `metaworld` dependency groups today).
+
+### Coverage scope
+
+- **Sim path** is covered end-to-end: `tests/sim/test_dataset_emission.py`
+  drives `openral sim run --dataset-out` against `aloha_transfer_cube.yaml`
+  with real ACT weights + gym-aloha physics + SVT-AV1 video encoding, then
+  re-opens the produced v3 dataset (CUDA + `lerobot` + `gym_aloha` gated; skips
+  on CPU/CI).
+- **Hardware / rosbag path** is covered only in unit isolation:
+  `tests/unit/test_deploy_runner_dataset_recording.py` drives
+  `DeployRunner` + `Rosbag2Sink` directly, plus the converter / CLI unit
+  tests. It has **not** been exercised through `openral deploy sim` or a live
+  ROS 2 graph — the deploy-sim node (`rskill_runner_node.py`) does not yet
+  construct or attach a `RolloutRecorder`.

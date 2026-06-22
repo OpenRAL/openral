@@ -24,11 +24,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
+
+_log = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     import mujoco
@@ -259,6 +262,51 @@ def _quat_to_axisangle(quat: NDArray[np.float32]) -> NDArray[np.float32]:
     return np.zeros(3, dtype=np.float32)
 
 
+def _ensure_libero_config_matches_active_install() -> None:
+    """Repoint LIBERO's global ``~/.libero/config.yaml`` at the ACTIVE install.
+
+    LIBERO caches absolute benchmark / init-state / asset paths in a global
+    ``~/.libero/config.yaml`` (or ``$LIBERO_CONFIG_PATH``). That file is
+    written once from whichever ``libero`` package first generated it, so when
+    a *different* venv imports libero — a sibling git worktree, or a deploy-sim
+    launch subprocess whose venv differs from the one that seeded the config —
+    ``get_libero_path("init_states")`` keeps resolving to the OTHER venv's path.
+    If that path lacks the ``*.pruned_init`` files (e.g. an incomplete install),
+    ``LiberoEnv`` construction dies with a ``FileNotFoundError`` deep in
+    ``get_task_init_states``.
+
+    Fix: when the configured ``init_states`` path is missing, regenerate the
+    config from the *active* package's own location (``get_default_path_dict()``
+    defaults to the dir of the imported ``libero.__file__``). Idempotent once the
+    config already matches a complete install. This is a repair of a known
+    pre-existing cross-venv path bug, not new behaviour.
+    """
+    import os
+
+    from libero import libero as libero_pkg  # the active install's package
+
+    try:
+        init_states = libero_pkg.get_libero_path("init_states")
+    except Exception:  # reason: unreadable/absent config → regenerate
+        init_states = ""
+    if init_states and os.path.isdir(init_states):
+        return  # config already valid for this install
+
+    import yaml
+
+    defaults = libero_pkg.get_default_path_dict()
+    config_file = libero_pkg.config_file
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    with open(config_file, "w") as f:
+        yaml.safe_dump(defaults, f)
+    _log.warning(
+        "libero.config_repointed_to_active_install",
+        config_file=config_file,
+        init_states=defaults["init_states"],
+        reason="configured init_states path was missing (stale cross-venv config)",
+    )
+
+
 def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
     """Lazily import ``lerobot.envs.libero`` and build a :class:`_LiberoSim`."""
     if env_cfg.scene.id not in _LIBERO_SUITES:
@@ -283,6 +331,11 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
             "to import. Inspect the auto-install output above and re-run: "
             "CC=/usr/bin/gcc just sync --all-packages --group libero"
         ) from exc
+
+    # Repair a stale cross-venv ~/.libero/config.yaml before any path lookup
+    # (deploy-sim launch subprocesses + sibling worktrees seed it to the wrong
+    # venv, breaking get_task_init_states with a FileNotFoundError).
+    _ensure_libero_config_matches_active_install()
 
     task_index = _parse_task_id(env_cfg.task.id, env_cfg.scene.id)
     suite = _get_suite(env_cfg.scene.id)

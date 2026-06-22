@@ -23,6 +23,7 @@ rskill check        Report which installed rSkills will run on the current host.
 rskill new          Scaffold a new local rSkill from rskills/template/.
 collision lower     Lower a robot's URDF/SRDF into its self-collision model (ADR-0030).
 collision check     Fail if a manifest drifts from its lowered collision model.
+check               Cross-validate every robot/skill/scene manifest in one pass.
 
 Run ``openral --help`` for full usage.
 """
@@ -60,6 +61,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from openral_cli.check import check_command
 from openral_cli.collision import collision_app
 from openral_cli.dataset import dataset_app
 from openral_cli.deploy_sim import deploy_sim_command
@@ -2836,6 +2838,12 @@ app.add_typer(dataset_app, name="dataset")
 # self-collision model. The `lower_robot` import is deferred inside the commands
 # (it pulls yourdfpy/trimesh) so `openral --help` stays fast.
 app.add_typer(collision_app, name="collision")
+
+# `openral check` — static, host-independent validation of the declarative
+# robot/skill/scene set (manifests parse, asset refs resolve, scene robot_ids and
+# rSkill embodiment tags resolve). Complements `openral rskill check`. Manifest
+# JSON-Schema emission lives in `tools/schema_export.py` (CI-gated), not here.
+app.command("check")(check_command)
 
 # ADR-0058: `openral robot vendor-urdf <id>` — expand an upstream xacro to a
 # flat, committed URDF so end users need no xacro tooling at runtime. The

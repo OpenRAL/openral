@@ -4,7 +4,7 @@
   - **cuVSLAM trajectory:** `cuvslam.launch.py` ran cuVSLAM 15.0.0 on the Isaac ROS quickstart stereo bag and produced a real VO trajectory (17 poses, **1.285 m** net / 1.320 m path).
   - **Full lidar-free occupancy map:** the complete stack — bag stereo → cuVSLAM pose + bag RGB → the DA3 depth provider (`depth_provider`/`depth_convert` + DA3 sidecar) → 32FC1 metric depth → `nvblox.launch.py` — produced a coherent `nav_msgs/OccupancyGrid` (**80×64 cells @ 0.05 m = 4.0×3.2 m, 1566 occupied / 79 free cells**, 32 % observed), now remapped onto the backend-agnostic **`/map`** — **with no lidar**.
   - **Backend-agnostic Nav2 (Decision §5):** with nvblox's grid on `/map` and the **`nav2_visual.yaml`** costmap profile (static_layer on `/map`, no `/scan`), the full Nav2 stack activated ("Managed nodes are active") and **`ComputePathToPose` returned a 132-waypoint path (SUCCEEDED) consuming only `/map`** — proving Nav2 plans independently of how the 2D map is built. 3D-object-lift is already backend-agnostic (uses the `map` TF, not the grid topic).
-  - Unit/gate/convert/launch tests green. Live-testing fixes landed: `nvblox.launch.py` remaps the camera-namespaced `camera_0/depth/*` inputs **and** `~/static_occupancy_grid → /map`; `cuvslam.yaml` documents `rectified_images` for raw (`rational_polynomial`) vs rectified cameras; `nav2_visual.yaml` static_layer uses `map_subscribe_transient_local: False` (nvblox `/map` is VOLATILE) and disables the collision_monitor scan source.
+  - Unit/gate/convert/launch tests green. Live-testing fixes landed: `nvblox.launch.py` remaps deploy-sim's manifest depth camera (`/openral/cameras/front_depth/depth/*`) through `depth_height_filter_node.py`, which derives a floor-excluded body-height band from `RobotDescription` footprint/collision/link measurements plus live TF before nvblox, then remaps nvblox's camera-namespaced `camera_0/depth/*` inputs **and** `~/static_occupancy_grid → /map`; `nvblox.yaml` deliberately keeps nvblox workspace bounds unbounded so the YAML does not bake in one scene's floor height; `cuvslam.yaml` documents `rectified_images` for raw (`rational_polynomial`) vs rectified cameras; `nav2_visual.yaml` static_layer uses `map_subscribe_transient_local: False` (nvblox `/map` is VOLATILE) and disables the collision_monitor scan source.
   - **Caveats (replay-only, vanish on a real robot):** a single bag replay can't satisfy both cuVSLAM's ~30 fps need and the DA3 ~2 fps path, so playback is slowed; and a consistent **sim-time** clock (`--clock` + `use_sim_time:=true`) is required so cuVSLAM's pose TF and the depth stamps align in nvblox's TF buffer. A live robot has native-rate stereo, continuous depth, and one shared clock.
 - **Date:** 2026-06-21 (Phase 2 + measured results: 2026-06-22)
 - **Related:** ADR-0025 (Reasoner-managed background services — the `slam_toolbox`
@@ -129,8 +129,18 @@ component — **not an rSkill**. Concretely:
 5. **One backend-agnostic `/map` interface.** Downstream consumers must not care whether the 2D map
    came from lidar `slam_toolbox` or vision `cuVSLAM+nvblox`:
    - **Occupancy grid:** `nvblox.launch.py` remaps nvblox's `~/static_occupancy_grid` → **`/map`**
-     (`nav_msgs/OccupancyGrid`), the same topic slam_toolbox publishes. The dashboard `slam_bridge`,
-     the reasoner's `occupancy_map_topic`, and Nav2's `static_layer` then consume `/map` unchanged.
+     (`nav_msgs/OccupancyGrid`), the same topic slam_toolbox publishes. The launch inserts
+     `depth_height_filter_node.py` before nvblox, zeroing depth pixels outside a floor-excluded
+     robot-measurement-derived body-height band; otherwise forward/downward depth cameras project floor returns
+     into `/map` as occupied cells. Isaac ROS nvblox 4.4 applies `static_mapper.workspace_bounds_*`
+     to TSDF/ESDF view calculation but leaves the camera occupancy integrator unbounded, so the
+     depth prefilter is the control that makes `/map` nav-quality. The filter loads the same
+     `robot.yaml` as the deploy graph, derives a robot-relative band from the footprint,
+     `collision_geometry`, and link transforms, then shifts that band by the live
+     `map→base_frame` TF on every depth frame; camera pose is still used for per-pixel global-z
+     projection. This removes the previous RoboCasa/panda_mobile hardcoded map-z band and keeps the
+     filter independent of scene floor height. The dashboard `slam_bridge`, the
+     reasoner's `occupancy_map_topic`, and Nav2's `static_layer` then consume `/map` unchanged.
      (Caveat: nvblox's `/map` is **RELIABLE + VOLATILE** — live-updating, not latched — so a
      consumer's `static_layer` must use `map_subscribe_transient_local: False`; verified live.)
    - **Nav2:** the base config navigates off `/scan` (lidar `obstacle_layer`), which a lidar-less

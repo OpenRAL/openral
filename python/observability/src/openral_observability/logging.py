@@ -8,8 +8,18 @@ Wires structlog so that:
    to an OTel ``LoggerProvider`` via ``LoggingHandler`` — i.e. logs ship as
    OTLP log records to the same collector as the spans.
 
-Single-process only.  Multiprocess workers (dispatcher, future fleet
-supervisor) need additional setup — out of scope for Day 22.
+The bridge itself is global and idempotent (see
+:func:`install_structlog_bridge`), so it works unchanged inside a spawned
+worker once that worker has run :func:`configure_observability` (or the
+convenience :func:`configure_worker_observability`). Multiprocess workers
+(the dispatcher, the future fleet supervisor) correlate their logs and
+spans to the parent trace by having the parent pass
+:func:`openral_observability.propagation.traceparent_env` into the child's
+environment and the worker attach it via
+:func:`configure_worker_observability` /
+:func:`openral_observability.propagation.attach_traceparent_from_env`; the
+``trace_context_processor`` then stamps the parent's ``trace_id`` /
+``span_id`` on every worker log line.
 """
 
 from __future__ import annotations

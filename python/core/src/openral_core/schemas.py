@@ -5660,7 +5660,7 @@ class TickResult(BaseModel):
 
     The hardware fields (``sensors_ms``..``hal_ms``, ``safety_violations``,
     ``action_applied``) are the original (v1) surface used by
-    :class:`HardwareRunner`. The sim-specific fields
+    :class:`DeployRunner`. The sim-specific fields
     (``step_idx``..``truncated``) were added by ADR-0010 amendment 1 when
     :class:`SimRunner` adopted per-step tick semantics; hardware leaves
     them at their defaults (``None``), so a hardware tick serialises

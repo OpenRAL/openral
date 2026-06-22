@@ -53,11 +53,43 @@ def test_default_params_file_exists_and_parses() -> None:
     # static_tsdf would publish only an ESDF slice, not an OccupancyGrid.
     assert params["mapping_type"] == "static_occupancy"
     assert params["use_depth"] is True and params["use_lidar"] is False
+    # The `/map` prefilter derives its live global-frame band from robot geometry
+    # + TF; nvblox's own workspace bounds must not bake in a scene-specific floor.
+    assert params["static_mapper.workspace_bounds_type"] == "unbounded"
+    assert "static_mapper.workspace_bounds_min_height_m" not in params
+    assert "static_mapper.workspace_bounds_max_height_m" not in params
     # Persistent map: decay pinned to nvblox's no-decay extremes (strict bound —
     # free must be > 0.5, occupied < 0.5) so far voxels do not fade and
     # long-range Nav2 goals into previously-seen space still plan.
     assert params["static_mapper.free_region_decay_probability"] > 0.5
     assert params["static_mapper.occupied_region_decay_probability"] < 0.5
+
+
+def test_launch_defaults_to_sim_depth_camera_topics() -> None:
+    """ADR-0064 — deploy-sim's manifest depth camera is nvblox's default input."""
+    mod = _import_launch_module()
+    from launch.actions import DeclareLaunchArgument
+    from launch_ros.actions import Node
+
+    desc = mod.generate_launch_description()
+    args = {a.name: a for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)}
+    assert args["depth_image_topic"].default_value[0].text == (
+        "/openral/cameras/front_depth/depth/image"
+    )
+    assert args["depth_camera_info_topic"].default_value[0].text == (
+        "/openral/cameras/front_depth/depth/camera_info"
+    )
+    nodes = [
+        a
+        for a in desc.describe_sub_entities()
+        if isinstance(a, Node)
+        and getattr(a, "node_executable", None) == "depth_height_filter_node.py"
+    ]
+    assert len(nodes) == 1
+    assert nodes[0].node_executable == "depth_height_filter_node.py"
+    assert "robot_yaml" in args
+    assert "height_filter_floor_clearance_m" in args
+    assert "height_filter_min_body_height_m" in args
 
 
 def test_launch_module_pins_node_package_and_plugin() -> None:

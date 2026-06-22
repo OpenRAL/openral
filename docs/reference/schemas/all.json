@@ -3954,6 +3954,1586 @@
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
+    "RSkillManifest": {
+      "$defs": {
+        "ActionContract": {
+          "additionalProperties": false,
+          "description": "Per-rSkill action-vector contract (ADR-0019 PR-revert).\n\nMirrors :class:`StateContract` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nPer ADR-0007, the sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n:class:`RobotDescription` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        :attr:`ActionSpec.representation`). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: ADR-0028b \u2014 declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        :class:`ActionSlot` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed :class:`Action` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ADR-0028a ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.",
+          "properties": {
+            "dim": {
+              "exclusiveMinimum": 0,
+              "title": "Dim",
+              "type": "integer"
+            },
+            "representation": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ActionRepresentation"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "slots": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/$defs/ActionSlot"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slots"
+            }
+          },
+          "required": [
+            "dim"
+          ],
+          "title": "ActionContract",
+          "type": "object"
+        },
+        "ActionRepresentation": {
+          "description": "Action vector representation format.",
+          "enum": [
+            "joint_positions",
+            "joint_velocities",
+            "delta_ee_6d_plus_gripper",
+            "delta_ee_6d",
+            "cartesian_pose"
+          ],
+          "title": "ActionRepresentation",
+          "type": "string"
+        },
+        "ActionSlot": {
+          "additionalProperties": false,
+          "description": "One contiguous slice of an rSkill's action vector (ADR-0028b).\n\nThe skill_runner reads ``ActionContract.slots`` and emits one\ntyped :class:`Action` per non-discard slot per step. All actions\ninherit the parent step's ``trace_id`` so the safety supervisor\nand downstream telemetry can join them post-hoc.\n\nAttributes:\n    range: Inclusive ``[start, end]`` indices into the flat policy\n        action vector. ``range[0]`` must be \u2264 ``range[1]``; both\n        must fall within ``[0, ActionContract.dim)``.\n    control_mode: The :class:`ControlMode` the slice is routed to.\n        The HAL whitelist on the target robot must include this\n        mode (the palette filter rejects the rSkill at install\n        time otherwise). ``None`` only when :attr:`discard` is\n        ``True``.\n    discard: When ``True`` the slice is dropped silently \u2014 used\n        for dataset artefacts like RoboCasa365's torso\n        placeholder dim or paired gripper channels. The slot\n        still occupies its range so coverage validation works;\n        no :class:`Action` is emitted.\n    ee: End-effector name from the robot's\n        :attr:`RobotDescription.end_effectors` /\n        :attr:`RobotDescription.joints`. REQUIRED for\n        ``CARTESIAN_*`` modes (the pose is computed in the named\n        EE's frame) and for ``GRIPPER_*`` modes (names the\n        actuator). FORBIDDEN for ``BODY_TWIST`` and\n        ``JOINT_POSITION``.\n    frame: tf2 frame name. REQUIRED for cartesian + body-twist\n        modes (the slice's bytes are expressed in this frame).\n        FORBIDDEN for joint-position and gripper modes.\n    joint_names: Robot joint names this slice targets, in slot\n        order. REQUIRED for ``JOINT_POSITION`` / ``JOINT_VELOCITY``\n        / ``JOINT_TORQUE`` when the slot covers fewer than all\n        robot joints; FORBIDDEN for non-joint modes. Length must\n        equal ``range[1] - range[0] + 1``.",
+          "properties": {
+            "range": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "title": "Range",
+              "type": "array"
+            },
+            "control_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ControlMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "discard": {
+              "default": false,
+              "title": "Discard",
+              "type": "boolean"
+            },
+            "ee": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ee"
+            },
+            "frame": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Frame"
+            },
+            "joint_names": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Joint Names",
+              "type": "array"
+            }
+          },
+          "required": [
+            "range"
+          ],
+          "title": "ActionSlot",
+          "type": "object"
+        },
+        "ActuatorRequirement": {
+          "additionalProperties": false,
+          "description": "One actuator slot an rSkill emits actions for.\n\nSymmetric with :class:`SensorRequirement` on the action side.\nThe compatibility check resolves each entry against a\n:class:`RobotDescription`'s ``action_spec`` and rejects pairings\nwhose declared :class:`ControlMode` is not advertised by the robot.\n\nFor predefined embodiments (one of the 9 canonical\n``robots/<id>/robot.yaml`` slugs), ``n_dof`` and ``vla_action_key``\nare optional \u2014 the loader auto-fills them from the robot YAML at\ncompatibility-check time. For the ``\"custom\"`` embodiment escape\nhatch they MUST be set on the manifest; the\n:class:`RSkillManifest` cross-validator enforces this.\n\nAttributes:\n    kind: The action interface the skill emits (e.g.\n        ``ControlMode.JOINT_POSITION``,\n        ``ControlMode.CARTESIAN_DELTA``). Reuses the canonical\n        ``ControlMode`` enum so the manifest, the safety kernel,\n        ``Action.control_mode``, and ``RobotDescription.action_spec``\n        all share one source of truth.\n    n_dof: Optional degrees of freedom the skill emits. Auto-filled\n        from the robot YAML for predefined embodiments; REQUIRED on\n        the manifest when ``\"custom\"`` is in\n        ``RSkillManifest.embodiment_tags``.\n    vla_action_key: Optional slot name the policy emits, e.g.\n        ``\"action.joints.arm_left\"``. Auto-filled for predefined\n        embodiments; REQUIRED on the manifest when ``\"custom\"`` is\n        in ``RSkillManifest.embodiment_tags``.\n    control_mode_semantics: Action-space semantics for this slot.\n        REQUIRED \u2014 closes Gap 2 of the rSkill self-containment audit.\n        Cross-validators enforce: gripper kinds require\n        ``gripper_convention``; cartesian kinds require\n        ``reference_frame``; other kinds forbid both.\n\nExample:\n    >>> a = ActuatorRequirement(\n    ...     kind=ControlMode.JOINT_POSITION,\n    ...     control_mode_semantics=ControlModeSemantics(mode=\"absolute\"),\n    ... )\n    >>> a.kind is ControlMode.JOINT_POSITION\n    True\n    >>> a.n_dof is None and a.vla_action_key is None\n    True",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/ControlMode"
+            },
+            "n_dof": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "N Dof"
+            },
+            "vla_action_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Vla Action Key"
+            },
+            "control_mode_semantics": {
+              "$ref": "#/$defs/ControlModeSemantics"
+            }
+          },
+          "required": [
+            "kind",
+            "control_mode_semantics"
+          ],
+          "title": "ActuatorRequirement",
+          "type": "object"
+        },
+        "ControlMode": {
+          "description": "Action space / control interface exposed by a robot or skill.",
+          "enum": [
+            "joint_position",
+            "joint_velocity",
+            "joint_torque",
+            "joint_trajectory",
+            "cartesian_pose",
+            "cartesian_delta",
+            "cartesian_twist",
+            "body_twist",
+            "foot_placement",
+            "gripper_binary",
+            "gripper_position",
+            "dex_hand_joint",
+            "composite_mode"
+          ],
+          "title": "ControlMode",
+          "type": "string"
+        },
+        "ControlModeSemantics": {
+          "additionalProperties": false,
+          "description": "Action-space semantics declared on each :class:`ActuatorRequirement`.\n\nCloses Gap 2 of the rSkill self-containment audit: ``kind`` alone\n(\"joint_position\") doesn't say whether the policy emits absolute targets\nor per-step deltas, in which joint order, in which reference frame, or\nhow it encodes the gripper. Today these are assumed at the adapter\nlevel and silently broken when porting a skill between embodiments.\n\nThe block is REQUIRED on every actuator entry of a manifest. For\nthe canonical embodiments the loader still auto-fills ``n_dof`` /\n``vla_action_key`` from the robot YAML; semantics must be declared\nexplicitly on the manifest because they are a property of the *trained\ncheckpoint*, not the robot.\n\nAttributes:\n    mode: Whether the action vector represents absolute targets\n        (joint positions, end-effector pose) or deltas from the current\n        state. Required.\n    gripper_convention: Encoding of the gripper slot in the action\n        vector. Required when the parent :attr:`ActuatorRequirement.kind`\n        is :attr:`ControlMode.GRIPPER_BINARY` or\n        :attr:`ControlMode.GRIPPER_POSITION`; forbidden otherwise.\n    joint_order: Ordered list of joint names matching the channels\n        the policy emits. Optional for canonical embodiments\n        (the robot YAML's :attr:`ActionSpec.joint_names` is the\n        source of truth); REQUIRED for ``\"custom\"`` embodiments.\n    reference_frame: tf2 frame the action is expressed in. Required\n        when the parent :attr:`ActuatorRequirement.kind` is one of\n        :attr:`ControlMode.CARTESIAN_POSE`,\n        :attr:`ControlMode.CARTESIAN_DELTA`, or\n        :attr:`ControlMode.CARTESIAN_TWIST`; forbidden otherwise.\n\nExample:\n    >>> sem = ControlModeSemantics(mode=\"absolute\")\n    >>> sem.mode\n    'absolute'\n    >>> sem.gripper_convention is None and sem.reference_frame is None\n    True",
+          "properties": {
+            "mode": {
+              "enum": [
+                "absolute",
+                "delta"
+              ],
+              "title": "Mode",
+              "type": "string"
+            },
+            "gripper_convention": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "normalized_open_unit",
+                    "normalized_open_symmetric",
+                    "binary_close_one",
+                    "raw_joint_rad",
+                    "width_meters"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Gripper Convention"
+            },
+            "joint_order": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint Order"
+            },
+            "reference_frame": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reference Frame"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "title": "ControlModeSemantics",
+          "type": "object"
+        },
+        "DetectorContract": {
+          "additionalProperties": false,
+          "description": "Manifest contract for ``kind: \"detector\"`` rSkills (ADR-0037).\n\nCarries the configuration the runtime\n:class:`~openral_core.schemas.ObjectsDetector` needs to instantiate an\nexported detection model (RT-DETR / D-FINE ONNX) and match its output\nindices to semantic class labels.\n\nRequired when :attr:`RSkillManifest.kind` is ``\"detector\"``; forbidden\nfor all other kinds (enforced by\n:meth:`RSkillManifest._check_kind_consistency`).\n\nAttributes:\n    labels: Ordered class-label list; the integer class-id the model\n        emits is used as an index into this list.  At least one label\n        is required.\n    input_size: Model input resolution as ``(width, height)`` in pixels.\n        Both dimensions must be > 0.  Default ``(640, 640)`` matches the\n        RT-DETR / D-FINE default export resolution.\n    score_threshold: Detections with confidence below this value are\n        discarded before publishing.  Must be in ``[0.0, 1.0]``.\n        Default ``0.5``.\n    engine: Optional explicit backend selector (:class:`DetectorEngine`).\n        ``None`` (default) keeps the legacy ``runtime``-keyed dispatch.\n        Set it to disambiguate backends that share a ``runtime`` \u2014 e.g.\n        ``zeroshot_hf`` for an in-process Transformers open-vocabulary\n        detector, which is ``runtime: pytorch`` like the VLM sidecar.\n    mode: Invocation mode (:class:`DetectorMode`; default ``continuous``).\n        Declares whether the detector is an always-on background producer\n        (output reaches the reasoner via world state) or an on-demand\n        prompted locator (surfaces the ``locate_in_view`` tool). ADR-0051.\n\nExample:\n    >>> c = DetectorContract(\n    ...     labels=[\"person\", \"bicycle\", \"car\"],\n    ...     input_size=(640, 640),\n    ...     score_threshold=0.4,\n    ... )\n    >>> c.labels[0]\n    'person'\n    >>> c.mode\n    <DetectorMode.CONTINUOUS: 'continuous'>",
+          "properties": {
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Labels",
+              "type": "array"
+            },
+            "input_size": {
+              "default": [
+                640,
+                640
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "title": "Input Size",
+              "type": "array"
+            },
+            "score_threshold": {
+              "default": 0.5,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Score Threshold",
+              "type": "number"
+            },
+            "engine": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DetectorEngine"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "$ref": "#/$defs/DetectorMode",
+              "default": "continuous"
+            }
+          },
+          "required": [
+            "labels"
+          ],
+          "title": "DetectorContract",
+          "type": "object"
+        },
+        "DetectorEngine": {
+          "description": "Backend that executes a ``kind: \"detector\"`` rSkill (ADR-0037).\n\nSelects which runtime detector class :func:`build_manifest_detector`\nconstructs. ``None`` (the default on :class:`DetectorContract`) preserves\nthe legacy ``runtime``-keyed dispatch: ``runtime: onnx``/``tensorrt`` \u2192\nRT-DETR ONNX, ``runtime: pytorch`` \u2192 the LocateAnything VLM sidecar. Set it\nexplicitly to opt into a backend that the ``runtime`` value alone cannot\ndisambiguate (e.g. an in-process Transformers open-vocabulary detector,\nwhich is also ``runtime: pytorch``).\n\nAttributes:\n    RTDETR_ONNX: Fixed-label RT-DETR / D-FINE ONNX export (CPU / NVMM\n        tiers). Equivalent to leaving ``engine`` unset with an\n        ``onnx``/``tensorrt`` runtime.\n    VLM_SIDECAR: Out-of-process open-vocabulary visual-grounding VLM\n        (LocateAnything-3B). Equivalent to leaving ``engine`` unset with a\n        ``pytorch`` runtime. Query-driven (prompted).\n    ZEROSHOT_HF: In-process Transformers open-vocabulary detector\n        (``AutoModelForZeroShotObjectDetection`` \u2014 e.g. OmDet-Turbo). Runs\n        against a **fixed** class vocabulary (the manifest ``labels``)\n        every frame, so it behaves like a large closed-vocabulary detector\n        that needs no prompting \u2014 an unprompted background producer that\n        populates the world object list with far more than the 80 COCO\n        classes (ADR-0037 2026-06-12 amendment).\n\nExample:\n    >>> DetectorEngine.ZEROSHOT_HF.value\n    'zeroshot_hf'",
+          "enum": [
+            "rtdetr_onnx",
+            "vlm_sidecar",
+            "zeroshot_hf"
+          ],
+          "title": "DetectorEngine",
+          "type": "string"
+        },
+        "DetectorMode": {
+          "description": "Invocation mode of a ``kind: \"detector\"`` rSkill (ADR-0051).\n\nThe axis **orthogonal** to :class:`DetectorEngine`: where ``engine`` says\n*how* the model runs, ``mode`` says *when the reasoner invokes it* and\ntherefore how its output reaches the LLM.\n\nAttributes:\n    CONTINUOUS: An always-on background producer. Runs on the camera tee\n        every frame and streams ``ObjectsMetadata`` into\n        ``WorldState.detected_objects``; the reasoner reads it **passively**\n        (via world state / ``recall_object``) and never prompts it. It is\n        **not** an ExecuteSkill-dispatchable tool and carries no actuation\n        authority. RT-DETR (closed vocab) and OmDet-Turbo (frozen open\n        vocab) are continuous. The reasoner may still toggle it via\n        ``LifecycleTransitionTool`` to free VRAM (ADR-0050).\n    ON_DEMAND: A prompted locator the reasoner invokes only when it needs\n        to find a specific object **right now**. Surfaces the read-only\n        ``locate_in_view`` tool (ADR-0043) backed by an open-vocabulary\n        detector; it is not run continuously. LocateAnything is on-demand.\n\nThe two modes cleanly separate \"open-vocabulary\" from \"prompting\":\ncontinuous detectors cover a fixed bank of classes the reasoner reads for\nfree; the on-demand locator handles the long tail that bank does not cover.\n\nExample:\n    >>> DetectorMode.CONTINUOUS.value\n    'continuous'\n    >>> DetectorMode.ON_DEMAND.value\n    'on_demand'",
+          "enum": [
+            "continuous",
+            "on_demand"
+          ],
+          "title": "DetectorMode",
+          "type": "string"
+        },
+        "EmbodimentExtra": {
+          "additionalProperties": false,
+          "description": "Sensor + actuator surface for a ``\"custom\"`` embodiment.\n\nRequired when ``\"custom\"`` appears in\n:attr:`RSkillManifest.embodiment_tags`; forbidden otherwise. This\nis the explicit \"I know what I'm doing\" hatch for skill manifests\ntargeting embodiments that do not have a canonical\n``robots/<id>/robot.yaml`` in tree.\n\nReuses :class:`SensorRequirement` and :class:`ActuatorRequirement`\non the assumption that the natural shape of \"what this embodiment\noffers\" mirrors \"what the skill needs\" \u2014 the loader just runs the\nsame compat check it would run against a real robot YAML.\n\nAttributes:\n    sensors: Sensor slots this custom embodiment exposes (\u22651).\n    actuators: Actuator slots this custom embodiment exposes (\u22651).\n\nExample:\n    >>> from openral_core import SensorModality, ControlMode\n    >>> EmbodimentExtra(\n    ...     sensors=[SensorRequirement(modality=SensorModality.RGB)],\n    ...     actuators=[\n    ...         ActuatorRequirement(\n    ...             kind=ControlMode.JOINT_POSITION,\n    ...             n_dof=6,\n    ...             vla_action_key=\"action.joints.arm\",\n    ...             control_mode_semantics=ControlModeSemantics(mode=\"absolute\"),\n    ...         )\n    ...     ],\n    ... )  # doctest: +ELLIPSIS\n    EmbodimentExtra(sensors=[...], actuators=[...])",
+          "properties": {
+            "sensors": {
+              "items": {
+                "$ref": "#/$defs/SensorRequirement"
+              },
+              "minItems": 1,
+              "title": "Sensors",
+              "type": "array"
+            },
+            "actuators": {
+              "items": {
+                "$ref": "#/$defs/ActuatorRequirement"
+              },
+              "minItems": 1,
+              "title": "Actuators",
+              "type": "array"
+            }
+          },
+          "required": [
+            "sensors",
+            "actuators"
+          ],
+          "title": "EmbodimentExtra",
+          "type": "object"
+        },
+        "ImagePreprocessing": {
+          "additionalProperties": false,
+          "description": "Per-rSkill image preprocessing contract.\n\nProperties of how the *checkpoint* was trained against image frames,\nsurfaced on the manifest so the sim adapter does not have to learn\nthem from a YAML override. ``vla.extra`` overrides on the eval\nconfig still win \u2014 see ``openral_rskill._vla_core.resolve_image_preprocessing``.\n\nAttributes:\n    flip_180: Apply ``torch.flip(t, dims=[1, 2])`` (H+W reversal) to\n        every camera frame before the policy forward. SmolVLA / pi05\n        LIBERO checkpoints want this on; the RoboCasa checkpoints\n        published by RoMALab / DAVIAN-Robotics want it off.\n    flip_vertical: Apply ``img[::-1, :, :]`` (vertical-only, H-axis\n        reversal) BEFORE any 180\u00b0 rotation. Mirrors\n        ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.process_img``,\n        which the canonical openpi-robocasa eval applies before\n        feeding frames to the policy. Required for\n        ``robocasa/robocasa365_checkpoints/pi05_pretrain_human300``\n        and its lerobot-converted siblings; the RoMALab MG_300\n        checkpoint does NOT want this flip.\n    input_template: Format string used to name image tensors in the\n        policy input batch \u2014 for example ``\"observation.images.{cam}\"``\n        for SmolVLA / pi05 RoMALab vs ``\"observation.image.{cam}\"``\n        for ruiname/pi05-robocasa-10tasks-200k.\n    aliases: Per-checkpoint rename map from the *scene* / *robot* raw\n        camera key (e.g. robosuite's ``robot0_agentview_left_image``)\n        to the *model*'s expected input feature name (e.g.\n        ``agentview``). Empty means pass through unchanged. SmolVLA\n        LIBERO usually wants ``{\"camera1\": \"image\", \"camera2\": \"image2\"}``.\n    norm_tag: Normalization statistics tag for policies that use\n        multiple checkpoints or training distributions (e.g. MolmoAct2\n        with ``norm_tag=\"so100_so101_molmoact2\"`` for SO-100/101\n        finetuned weights). Optional; ``None`` means the adapter's\n        default tag applies. Used by ``predict_action`` methods to\n        select the right norm_stats entry at inference time.\n    image_max_crops: Cap on the number of image tiles a multi-crop\n        image processor (Molmo / MolmoAct2 family) produces per camera\n        frame. Each extra 378px crop adds ~182 pooled image tokens and\n        attention cost is quadratic in the token count, so this is the\n        primary *activation*-memory lever (the NF4 weights are fixed at\n        ~3.5 GiB; what overflows an 8 GiB card is the crop activations).\n        Optional; ``None`` keeps the checkpoint's own default (8 for\n        MolmoAct2). A per-rollout ``vla.extra[\"image_max_crops\"]`` (or\n        the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this\n        per-checkpoint default. Must be ``>= 1`` when set.",
+          "properties": {
+            "flip_180": {
+              "default": false,
+              "title": "Flip 180",
+              "type": "boolean"
+            },
+            "flip_vertical": {
+              "default": false,
+              "title": "Flip Vertical",
+              "type": "boolean"
+            },
+            "input_template": {
+              "default": "observation.images.{cam}",
+              "title": "Input Template",
+              "type": "string"
+            },
+            "aliases": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "title": "Aliases",
+              "type": "object"
+            },
+            "norm_tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Norm Tag"
+            },
+            "image_max_crops": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Image Max Crops"
+            }
+          },
+          "title": "ImagePreprocessing",
+          "type": "object"
+        },
+        "QuantizationBackend": {
+          "description": "Inference backend that will execute the quantized model.\n\nAttributes:\n    PYTORCH: ``torch.quantization`` / ``bitsandbytes`` / ``torchao``.\n    ONNX: ``onnxruntime`` with quantization pre-applied at export.\n    TENSORRT: NVIDIA TensorRT engine (INT8 / FP8 calibrated).\n    GGUF: llama.cpp / ggml GGUF format (CPU and Metal).\n    MLX: Apple MLX framework (Apple Silicon only).\n\nExample:\n    >>> QuantizationBackend.PYTORCH.value\n    'pytorch'",
+          "enum": [
+            "pytorch",
+            "onnx",
+            "tensorrt",
+            "gguf",
+            "mlx"
+          ],
+          "title": "QuantizationBackend",
+          "type": "string"
+        },
+        "QuantizationConfig": {
+          "description": "Full specification of how to quantize a skill's model weights.\n\nAttributes:\n    dtype: Target numeric format.\n    backend: Inference backend that will execute the model.\n    per_channel: Use per-channel (vs per-tensor) quantization.\n    calibration_dataset: HuggingFace dataset ID or local path used for\n        post-training calibration (INT8 / TensorRT only).\n    extra: Backend-specific overrides (e.g. ``{\"calibration_steps\": 128}``).\n\nExample:\n    >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)\n    >>> cfg.backend\n    <QuantizationBackend.PYTORCH: 'pytorch'>",
+          "properties": {
+            "dtype": {
+              "$ref": "#/$defs/QuantizationDtype",
+              "default": "fp32"
+            },
+            "backend": {
+              "$ref": "#/$defs/QuantizationBackend",
+              "default": "pytorch"
+            },
+            "per_channel": {
+              "default": false,
+              "title": "Per Channel",
+              "type": "boolean"
+            },
+            "calibration_dataset": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Calibration Dataset"
+            },
+            "extra": {
+              "additionalProperties": true,
+              "title": "Extra",
+              "type": "object"
+            }
+          },
+          "title": "QuantizationConfig",
+          "type": "object"
+        },
+        "QuantizationDtype": {
+          "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16",
+            "int8",
+            "int4",
+            "fp4_nvfp4"
+          ],
+          "title": "QuantizationDtype",
+          "type": "string"
+        },
+        "RSkillAction": {
+          "description": "Closed vocabulary of high-level action verbs an rSkill can perform.\n\nDeclared on :attr:`RSkillManifest.actions` so the reasoner's LLM tool\npalette can present each skill with a structured \"what does it do\"\nlabel, in addition to the free-form ``description`` and the slug.\nThe LLM scores tools primarily on natural-language description, but\na closed verb vocabulary lets the palette pre-filter and lets the\nschema be unit-testable. New entries are additive.\n\nCategories (descriptive only \u2014 not part of the wire format):\n\n- Manipulation primitives: ``PICK``, ``PLACE``, ``PICK_AND_PLACE``,\n  ``TRANSFER``, ``GRASP``, ``RELEASE``.\n- Articulated / contact-rich: ``OPEN``, ``CLOSE``, ``PUSH``, ``PULL``,\n  ``SLIDE``, ``INSERT``, ``POUR``, ``WIPE``, ``ROTATE``.\n- Motion: ``REACH``; ``LOOK`` (aim a camera at a point, ADR-0044).\n- Mobile (for mobile-manipulator embodiments): ``NAVIGATE``.\n- Social / expressive: ``WAVE``, ``SHAKE``.\n- Generalist marker: ``GENERALIST`` for foundation / multi-task\n  checkpoints (e.g. RoboCasa-365, DROID, MetaWorld-MT50). The palette\n  surfaces a generalist skill for goals that don't match a specific\n  verb.",
+          "enum": [
+            "pick",
+            "place",
+            "pick_and_place",
+            "transfer",
+            "grasp",
+            "release",
+            "open",
+            "close",
+            "push",
+            "pull",
+            "slide",
+            "insert",
+            "pour",
+            "wipe",
+            "rotate",
+            "reach",
+            "look",
+            "navigate",
+            "wave",
+            "shake",
+            "generalist",
+            "detect",
+            "query",
+            "monitor"
+          ],
+          "title": "RSkillAction",
+          "type": "string"
+        },
+        "RSkillLatencyBudget": {
+          "description": "Per-stage latency budget declared in ``rskill.yaml``.\n\nAttributes:\n    per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on\n        the reference host (CLAUDE.md \u00a77.4).\n    warmup_ms: Maximum allowed warm-up time during ``activate()``.\n    load_ms: Maximum allowed weight-load time during ``configure()``.",
+          "properties": {
+            "per_chunk_ms": {
+              "exclusiveMinimum": 0,
+              "title": "Per Chunk Ms",
+              "type": "number"
+            },
+            "warmup_ms": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Warmup Ms"
+            },
+            "load_ms": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Load Ms"
+            }
+          },
+          "required": [
+            "per_chunk_ms"
+          ],
+          "title": "RSkillLatencyBudget",
+          "type": "object"
+        },
+        "RSkillLicensePosture": {
+          "description": "License posture surfaced at install time (CLAUDE.md \u00a77.4).",
+          "enum": [
+            "apache-2.0",
+            "mit",
+            "bsd",
+            "permissive_research",
+            "nvidia_non_commercial",
+            "nvidia_open_model",
+            "rlwrld_non_commercial",
+            "proprietary",
+            "unknown"
+          ],
+          "title": "RSkillLicensePosture",
+          "type": "string"
+        },
+        "RSkillProcessors": {
+          "additionalProperties": false,
+          "description": "Explicit lerobot ``PolicyProcessorPipeline`` artefact pointers.\n\nCloses Gap 1 + Gap 3 of the rSkill self-containment audit. Replaces the\nimplicit ``snapshot_download(repo_id)`` \u2192\n``make_pre_post_processors(pretrained_path=...)`` fetch path used today\nby the SmolVLA / pi05 / xVLA / Diffusion / modern-ACT adapters. Two\nfiles are required because lerobot's pipeline ships them as a pair: a\npreprocessor that normalises the policy input batch and a\npostprocessor that un-normalises the action chunk.\n\nEach URI must point at a specific file (the implicit-snapshot shape\n``hf://owner/repo`` with no file tail is rejected). Two URI schemes\naccepted:\n\n* ``hf://owner/repo[@rev]/path/to/file.json`` \u2014 file inside an HF Hub\n  repo, revision-pinnable.\n\nAttributes:\n    preprocessor_uri: Per-file URI to the policy preprocessor JSON.\n    postprocessor_uri: Per-file URI to the policy postprocessor JSON.\n\nExample:\n    >>> RSkillProcessors(\n    ...     preprocessor_uri=\"hf://lerobot/smolvla_libero/policy_preprocessor.json\",\n    ...     postprocessor_uri=\"hf://lerobot/smolvla_libero/policy_postprocessor.json\",\n    ... )  # doctest: +ELLIPSIS\n    RSkillProcessors(preprocessor_uri='hf://...preprocessor.json', postprocessor_uri='hf://...postprocessor.json')",
+          "properties": {
+            "preprocessor_uri": {
+              "pattern": "^hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?\\/[A-Za-z0-9._\\/-]+\\.[A-Za-z0-9]+$",
+              "title": "Preprocessor Uri",
+              "type": "string"
+            },
+            "postprocessor_uri": {
+              "pattern": "^hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?\\/[A-Za-z0-9._\\/-]+\\.[A-Za-z0-9]+$",
+              "title": "Postprocessor Uri",
+              "type": "string"
+            }
+          },
+          "required": [
+            "preprocessor_uri",
+            "postprocessor_uri"
+          ],
+          "title": "RSkillProcessors",
+          "type": "object"
+        },
+        "RSkillRuntime": {
+          "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
+          "enum": [
+            "pytorch",
+            "onnx",
+            "tensorrt",
+            "trt_llm",
+            "vllm",
+            "gguf",
+            "mlx",
+            "jax"
+          ],
+          "title": "RSkillRuntime",
+          "type": "string"
+        },
+        "RewardContract": {
+          "additionalProperties": false,
+          "description": "Manifest contract for ``kind: \"reward\"`` rSkills (ADR-0057).\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    frame_window_s: Length of the rolling frame buffer in seconds. The\n        sidecar evicts frames older than this relative to the newest.\n        Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.num_bins\n    100",
+          "properties": {
+            "progress_range": {
+              "default": [
+                0.0,
+                1.0
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Progress Range",
+              "type": "array"
+            },
+            "success_threshold": {
+              "default": 0.5,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Success Threshold",
+              "type": "number"
+            },
+            "preference": {
+              "default": false,
+              "title": "Preference",
+              "type": "boolean"
+            },
+            "frame_window_s": {
+              "exclusiveMinimum": 0.0,
+              "title": "Frame Window S",
+              "type": "number"
+            },
+            "target_fps": {
+              "exclusiveMinimum": 0.0,
+              "title": "Target Fps",
+              "type": "number"
+            },
+            "num_bins": {
+              "default": 100,
+              "exclusiveMinimum": 0,
+              "title": "Num Bins",
+              "type": "integer"
+            },
+            "instruction_required": {
+              "default": true,
+              "title": "Instruction Required",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "frame_window_s",
+            "target_fps"
+          ],
+          "title": "RewardContract",
+          "type": "object"
+        },
+        "RosIntegration": {
+          "additionalProperties": false,
+          "description": "Wiring for an rSkill that wraps an existing ROS 2 action or service.\n\nPopulated when :attr:`RSkillManifest.kind` is ``\"ros_action\"`` or\n``\"ros_service\"``. The\n:class:`~openral_rskill.ros_action_rskill.ROSActionRskill` adapter reads\nthis block at configure time to build the right action / service client\non the host ``LifecycleNode``.\n\nAttributes:\n    package: IDL package name (e.g. ``\"moveit_msgs\"``, ``\"nav2_msgs\"``).\n        Imported lazily so manifests for un-installed ROS packages\n        still parse \u2014 the loader raises\n        :class:`~openral_core.exceptions.ROSConfigError` only when the\n        skill is actually resolved.\n    interface_type: Action / service type name inside ``package`` (e.g.\n        ``\"MoveGroup\"``, ``\"NavigateToPose\"``).\n    interface_name: Fully-qualified ROS path of the running server\n        (e.g. ``\"/move_action\"``, ``\"/navigate_to_pose\"``).\n    result_trajectory_field: Dotted accessor pointing at a\n        ``trajectory_msgs/JointTrajectory`` inside the action result\n        (e.g. ``\"planned_trajectory.joint_trajectory\"`` for MoveIt's\n        ``MoveGroup``). When set, the adapter replays one waypoint per\n        :meth:`~openral_rskill.base.rSkillBase.step` call onto\n        ``/openral/candidate_action`` (so the safety supervisor + HAL\n        see every position). When ``None`` the action is treated as\n        result-only: the adapter awaits the action result, raises\n        :class:`~openral_core.exceptions.ROSRskillGoalSatisfied` on\n        success, and never emits an\n        :class:`~openral_core.schemas.Action` chunk. This second mode\n        covers wrapped ROS packages that drive actuators on their own\n        (Nav2's behaviour tree publishes ``cmd_vel`` directly).\n    default_goal_json: JSON dict literal used to construct the goal\n        message. v1 hard-codes the target here \u2014 the structured-prompt\n        path that lowers LLM-emitted JSON into\n        ``ExecuteSkill.Goal.prompt_metadata_json`` is a follow-up.\n        REQUIRED so that a wrapped skill is always invocable end-to-end\n        without per-call schema work.\n    ros_dependencies: Apt / colcon packages the operator must have\n        installed for the wrapped server to be reachable (e.g.\n        ``\"ros-${ROS_DISTRO}-moveit\"``). Surfaced by ``ral skill check``\n        and quoted in :class:`~openral_core.exceptions.ROSConfigError`\n        messages when the action client fails to connect.\n\nExample:\n    >>> ri = RosIntegration(\n    ...     package=\"moveit_msgs\",\n    ...     interface_type=\"MoveGroup\",\n    ...     interface_name=\"/move_action\",\n    ...     result_trajectory_field=\"planned_trajectory.joint_trajectory\",\n    ...     default_goal_json='{\"target_joint_positions\": [0, 0, 0, 0, 0, 0, 0]}',\n    ...     ros_dependencies=[\"ros-${ROS_DISTRO}-moveit\"],\n    ... )\n    >>> ri.package\n    'moveit_msgs'",
+          "properties": {
+            "package": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Package",
+              "type": "string"
+            },
+            "interface_type": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Interface Type",
+              "type": "string"
+            },
+            "interface_name": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Interface Name",
+              "type": "string"
+            },
+            "result_trajectory_field": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Trajectory Field"
+            },
+            "default_goal_json": {
+              "maxLength": 10000,
+              "minLength": 2,
+              "title": "Default Goal Json",
+              "type": "string"
+            },
+            "ros_dependencies": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Ros Dependencies",
+              "type": "array"
+            },
+            "goal_builder": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "joint",
+                    "pose",
+                    "look_at"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Goal Builder"
+            }
+          },
+          "required": [
+            "package",
+            "interface_type",
+            "interface_name",
+            "default_goal_json"
+          ],
+          "title": "RosIntegration",
+          "type": "object"
+        },
+        "SafetyEnvelope": {
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by ADR-0028b's per-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: ADR-0028b \u2014 angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        :attr:`max_ee_speed_m_s`). ``None`` skips the check.\n    max_base_linear_speed_m_s: ADR-0028b \u2014 BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: ADR-0028b \u2014 BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.",
+          "properties": {
+            "workspace_box_min_xyz": {
+              "anyOf": [
+                {
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Workspace Box Min Xyz"
+            },
+            "workspace_box_max_xyz": {
+              "anyOf": [
+                {
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Workspace Box Max Xyz"
+            },
+            "no_go_zones": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "title": "No Go Zones",
+              "type": "array"
+            },
+            "max_ee_speed_m_s": {
+              "default": 0.5,
+              "title": "Max Ee Speed M S",
+              "type": "number"
+            },
+            "max_ee_accel_m_s2": {
+              "default": 1.0,
+              "title": "Max Ee Accel M S2",
+              "type": "number"
+            },
+            "max_joint_speed_factor": {
+              "default": 0.7,
+              "title": "Max Joint Speed Factor",
+              "type": "number"
+            },
+            "max_force_n": {
+              "default": 50.0,
+              "title": "Max Force N",
+              "type": "number"
+            },
+            "max_torque_nm": {
+              "default": 10.0,
+              "title": "Max Torque Nm",
+              "type": "number"
+            },
+            "deadman_required": {
+              "default": true,
+              "title": "Deadman Required",
+              "type": "boolean"
+            },
+            "e_stop_topic": {
+              "default": "/safety/e_stop",
+              "title": "E Stop Topic",
+              "type": "string"
+            },
+            "e_stop_qos": {
+              "const": "reliable",
+              "default": "reliable",
+              "title": "E Stop Qos",
+              "type": "string"
+            },
+            "contact_force_threshold_n": {
+              "default": 30.0,
+              "title": "Contact Force Threshold N",
+              "type": "number"
+            },
+            "cycle_time_violation_threshold_ms": {
+              "default": 5.0,
+              "title": "Cycle Time Violation Threshold Ms",
+              "type": "number"
+            },
+            "human_in_loop_required": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Human In Loop Required",
+              "type": "array"
+            },
+            "max_cartesian_step_m": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Cartesian Step M"
+            },
+            "max_cartesian_step_rad": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Cartesian Step Rad"
+            },
+            "max_ee_angular_speed_rad_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Ee Angular Speed Rad S"
+            },
+            "max_base_linear_speed_m_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Base Linear Speed M S"
+            },
+            "max_base_angular_speed_rad_s": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Base Angular Speed Rad S"
+            }
+          },
+          "title": "SafetyEnvelope",
+          "type": "object"
+        },
+        "SensorModality": {
+          "description": "Physical sensing modality.",
+          "enum": [
+            "rgb",
+            "depth",
+            "stereo",
+            "ir",
+            "point_cloud",
+            "lidar_2d",
+            "imu",
+            "force_torque",
+            "joint_state",
+            "tactile_vision",
+            "tactile_array",
+            "audio",
+            "gps",
+            "battery"
+          ],
+          "title": "SensorModality",
+          "type": "string"
+        },
+        "SensorRequirement": {
+          "additionalProperties": false,
+          "description": "One sensor an rSkill needs the robot to provide.\n\nUsed by :class:`RSkillManifest.sensors_required` to declare the inputs\nthe policy expects. The compatibility check resolves each entry against\na :class:`RobotDescription`'s ``sensors`` list and rejects the pairing\nif no robot sensor satisfies the requirement.\n\nResolution rules (in order):\n\n1. If ``vla_feature_key`` is set, the robot MUST expose exactly one\n   sensor with that ``vla_feature_key``. The check then verifies\n   ``modality`` matches and (if specified) the sensor's intrinsics meet\n   ``min_width`` / ``min_height``.\n2. Otherwise, the robot must expose at least ``count`` sensors of the\n   requested ``modality`` (each meeting any specified resolution\n   minimum).\n\nAttributes:\n    modality: Required physical modality (``rgb``, ``depth``, ``imu``\u2026).\n    vla_feature_key: Optional exact key the VLA expects, e.g.\n        ``\"observation.images.camera1\"``. When set, the robot's matching\n        ``SensorSpec.vla_feature_key`` must be identical.\n    min_width: Minimum image width in pixels (RGB/depth/IR/stereo only).\n    min_height: Minimum image height in pixels.\n    count: Number of robot sensors of this modality required when\n        ``vla_feature_key`` is unset. Ignored when ``vla_feature_key``\n        is provided (a key uniquely identifies one sensor).\n\nExample:\n    >>> SensorRequirement(\n    ...     modality=SensorModality.RGB,\n    ...     vla_feature_key=\"observation.images.camera1\",\n    ...     min_width=224,\n    ...     min_height=224,\n    ... )  # doctest: +ELLIPSIS\n    SensorRequirement(modality=<SensorModality.RGB: 'rgb'>, ...)",
+          "properties": {
+            "modality": {
+              "$ref": "#/$defs/SensorModality"
+            },
+            "vla_feature_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Vla Feature Key"
+            },
+            "min_width": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Min Width"
+            },
+            "min_height": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Min Height"
+            },
+            "count": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Count",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "modality"
+          ],
+          "title": "SensorRequirement",
+          "type": "object"
+        },
+        "StateContract": {
+          "additionalProperties": false,
+          "description": "Per-rSkill state-vector contract.\n\nSurfaces the proprioception layout the *checkpoint* was trained\nagainst so the runtime adapter does not have to learn it from a\nYAML override. ADR-0014 + ADR-0027.\n\nAttributes:\n    layout: Named proprioception layout \u2014 see :data:`StateLayout`.\n        LIBERO / MetaWorld / pusht / aloha leave this ``None`` and\n        consume the raw joint-position vector directly.\n    dim: Explicit state dimension override. The runtime adapter\n        clips or pads the env state vector to this width before\n        handing it to the policy.\n    bindings: Per-robot source bindings \u2014 TF frame names + JointState\n        entries the runtime adapter pulls values from. REQUIRED when\n        ``layout`` is in :data:`WRAPPED_TASK_SPACE_LAYOUTS`,\n        FORBIDDEN otherwise (joint-space layouts have no source to\n        parameterise).",
+          "properties": {
+            "layout": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "smolvla_9d",
+                    "human300_16d",
+                    "gr1",
+                    "rc365",
+                    "simpler_widowx",
+                    "simpler_google"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Layout"
+            },
+            "dim": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Dim"
+            },
+            "bindings": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StateContractBindings"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "title": "StateContract",
+          "type": "object"
+        },
+        "StateContractBindings": {
+          "additionalProperties": false,
+          "description": "Per-robot source bindings for an rSkill's `state_contract.layout`. ADR-0027.\n\nSymmetric to :class:`ControlModeSemantics` on the action side\n(``joint_order`` + ``reference_frame`` + ``gripper_convention``):\nthe rSkill manifest names the *shape* via :attr:`StateContract.layout`;\nthese bindings name the *sources* on the deploying robot. The\nlayout-adapter registry (``openral_state_adapter``) joins shape +\nbindings + live :class:`sensor_msgs/JointState` + live ``/tf`` into\nthe per-checkpoint state vector.\n\nBindings are required for layouts in :data:`WRAPPED_TASK_SPACE_LAYOUTS`\nand forbidden otherwise (the joint-space layouts have no source to\nparameterise).\n\nAttributes:\n    eef_frame: tf2 link name of the end effector\n        (e.g. ``\"panda_hand\"``). Required for any layout reading\n        EE position / orientation.\n    base_frame: tf2 link name of the mobile base\n        (e.g. ``\"base_link\"``). Required for any layout reading\n        base position / orientation OR base-relative EE poses.\n    world_frame: tf2 root frame the base pose is expressed in\n        (default ``\"map\"`` \u2014 slam_toolbox publishes ``map \u2192 odom \u2192\n        base_link``). Set to ``\"odom\"`` for deployments without SLAM.\n    gripper_qpos_joints: ``JointState.name`` entries whose positions\n        populate the gripper-width slot(s) of the layout, in the\n        order the policy expects (e.g. ``[\"panda_finger_joint1\",\n        \"panda_finger_joint2\"]``). Empty for grasper-less robots\n        or layouts without a gripper slot.\n    quaternion_convention: Component order of any quaternion in the\n        assembled vector. ROS / TF2 default is ``\"xyzw\"`` (the\n        ``geometry_msgs/Quaternion`` field order). Some upstream\n        checkpoints expect ``\"wxyz\"`` \u2014 declare it here so the\n        assembler permutes once, at the boundary.",
+          "properties": {
+            "eef_frame": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Eef Frame"
+            },
+            "base_frame": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Base Frame"
+            },
+            "world_frame": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "map",
+              "title": "World Frame"
+            },
+            "gripper_qpos_joints": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Gripper Qpos Joints",
+              "type": "array"
+            },
+            "quaternion_convention": {
+              "default": "xyzw",
+              "enum": [
+                "xyzw",
+                "wxyz"
+              ],
+              "title": "Quaternion Convention",
+              "type": "string"
+            }
+          },
+          "title": "StateContractBindings",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Pydantic model of the ``rskill.yaml`` package manifest (V1).\n\nThis is the on-disk schema for an rSkill HF Hub repo. An rSkill is\nloaded by capability-checking against a :class:`RobotDescription`,\nselecting a runtime + quantization, then constructing a runtime\n:class:`~openral_rskill.Skill` instance.\n\n``schema_version`` is ``\"0.1\"``: the manifest surface has had no\nbackward-incompatible change. Now the repo is published it is\nversioned for real (CLAUDE.md \u00a71.6) \u2014 a backward-incompatible change\nbumps it and ships a migrator, while backward-compatible additions\n(ADR-0013/0022/0024) evolve the surface in place.\n\nADR-0013 added two symmetric guards on top of the initial V1 shape:\n\n1. **``actuators_required``** mirrors ``sensors_required`` on the\n   output side. Every skill declares at least one\n   :class:`ActuatorRequirement`; the loader validates it against\n   :attr:`RobotDescription.action_spec`. ``n_dof`` and\n   ``vla_action_key`` are auto-filled from the robot YAML for the 9\n   canonical embodiments; for ``\"custom\"`` they must be set on the\n   manifest.\n\n2. **``embodiment_extra``** is the explicit escape hatch for\n   embodiments that do not have a canonical\n   ``robots/<id>/robot.yaml``. Required iff ``\"custom\"`` appears in\n   :attr:`embodiment_tags`; forbidden otherwise.\n\nV1 already tightened: ``name`` / ``fallback_skill_id`` must be\nHF-Hub-shaped, ``version`` is SemVer, ``weights_uri`` is restricted\nto ``hf://`` or ``local://``, ``embodiment_tags`` is closed to the\nset of in-tree-supported robots (now including ``\"custom\"``), and\n``benchmarks`` replaces the old free-form ``metadata`` blob with a\ntyped dict of canonical suite ids \u2192 success rate. Commercial-use\nposture is derived from :attr:`license` via\n:attr:`is_commercial_use_allowed`.\n\nAttributes:\n    schema_version: On-disk format version. ``\"0.1\"`` today.\n        Backward-compatible extensions (ADR-0013/0022/0024) evolved\n        the surface in place; now the repo is published, a\n        backward-incompatible change bumps this and ships a migrator\n        (CLAUDE.md \u00a71.6).\n    name: HF Hub identifier, e.g. ``\"openral/rskill-pick-cube-so100\"``.\n        Must match ``<owner>/<repo>``.\n    version: SemVer string of the rSkill package itself (not the\n        wrapped weights).\n    license: License posture (surfaced at install time).\n        Drives :attr:`is_commercial_use_allowed`.\n    role: rSkill slot. ``\"s1\"`` for fast policies (the only slot\n        currently loaded via :func:`rSkill.from_yaml` \u2014 100% of\n        in-tree skills); ``\"s0\"`` reserved for cerebellar realtime\n        (humanoid balance, C++ only); ``\"s2\"`` reserved for slow\n        reasoning (LLM-emitted BehaviorTree XML).\n    model_family: Closed VLA / policy family. Drives the runner's\n        adapter dispatch.\n    embodiment_tags: Robot embodiments this rSkill targets. Must\n        intersect a robot's ``RobotCapabilities.embodiment_tags`` for\n        the loader to accept. Restricted to the canonical set\n        (:data:`EmbodimentTag`) so typos / framework hints cannot\n        silently always-miss. ``\"custom\"`` is the explicit hatch\n        (see :attr:`embodiment_extra`).\n    embodiment_extra: ADR-0013. When ``\"custom\"`` is in\n        :attr:`embodiment_tags`, declares the sensor + actuator\n        surface of the custom rig so the loader's compat check\n        still has something to match against. MUST be ``None`` when\n        ``\"custom\"`` is not present.\n    capabilities_required: Per-flag capability requirements (subset of\n        :class:`RobotCapabilities` boolean fields). The loader rejects\n        installation on a robot that does not satisfy every flag.\n    sensors_required: Sensor inputs the policy expects from the\n        robot. See :class:`SensorRequirement`.\n    actuators_required: ADR-0013. Symmetric output-side\n        contract: at least one :class:`ActuatorRequirement`\n        entry. The loader matches each entry's :attr:`kind` against\n        :attr:`RobotDescription.action_spec.control_mode` and\n        auto-fills :attr:`ActuatorRequirement.n_dof` /\n        :attr:`vla_action_key` from the canonical robot YAML\n        (predefined embodiments only \u2014 for ``\"custom\"`` they must\n        be set on the manifest).\n    runtime: Preferred inference runtime.\n    quantization: Default :class:`QuantizationConfig` for this rSkill.\n    weights_uri: HF Hub revision-pinned URI to weights or local\n        path reference. Production deployments pin a SHA\n        (CLAUDE.md operating principle 8).\n    chunk_size: Action-chunk length the policy emits per\n        :meth:`Skill.step`. Drives the ChunkedExecutor's overlap\n        schedule and shows up in the trace surface.\n    latency_budget: Latency contract enforced by CI on the reference\n        host (CLAUDE.md \u00a77.4).\n    min_vram_gb: Optional minimum VRAM (GB) the skill needs per\n        quantization dtype. Informational \u2014 the loader uses it for\n        ``ral skill check`` / ``openral doctor``; the actually-applied\n        dtype is still pinned by ``quantization.dtype`` (CLAUDE.md\n        \u00a711 forbids silent downcast).\n    fallback_skill_id: rSkill id to substitute if this one fails\n        (RFC \u00a78.3 replanning ladder). HF Hub shape.\n    benchmarks: Map of canonical benchmark suite id \u2192 success rate\n        (``[0.0, 1.0]``) as measured for this skill. Keys\n        constrained to :data:`BenchmarkName`. The full per-task\n        breakdown lives in the matching\n        ``rskills/<id>/eval/<key>.json`` validated against\n        :class:`RSkillEvalResult`.\n    evaluated_tasks: Benchmark task ids / families this checkpoint was\n        trained or validated for (e.g. ``[\"libero_spatial\"]`` covering\n        ``libero_spatial/0..9``, or ``[\"maniskill3/PickCube-v1\"]``). The\n        benchmark runner gates a scene's ``task.id`` against this list: a\n        non-empty list that does not cover the scene's task is refused with\n        :class:`ROSCapabilityMismatch` (prevents running a checkpoint on a\n        task it was not trained for \u2014 e.g. a LiftCube policy on PickCube).\n        Empty (default) is permissive: legacy rSkills run with a warning.\n        Matching: exact ``task.id``, a ``\"<scene>/<...>\"`` prefix family,\n        or the bare ``scene.id``. See ADR-0060.\n    sim_env_control_mode: Optional simulator controller mode this policy\n        expects the env to run in, when the scene itself does not pin one.\n        Currently consumed by the LIBERO backend (``\"relative\"`` = OSC\n        delta-EE, the default for SmolVLA / \u03c00.5 / rldx1 / molmoact2 /\n        GR00T; ``\"absolute\"`` = OSC absolute-EE, required by xVLA which\n        emits absolute end-effector targets). Lets an absolute-control\n        policy run on the canonical ``libero_spatial.yaml`` without a\n        duplicate per-policy scene; ``scene.backend_options.control_mode``\n        still overrides it. ``None`` (default) \u2192 backend default.\n    policy_extras: Adapter-owned runtime knobs copied from the rSkill\n        manifest into :class:`VLASpec.extra` during CLI composition.\n        Used for family-specific generation, sampling, replay, or\n        transform settings that are part of the checkpoint contract but\n        should not become top-level manifest schema fields.\n    paper_url: Canonical paper URL for this skill / family.\n    dataset_uri: HF Hub URI for the training dataset.\n    source_repo: HF Hub URI for the upstream weights repo (often\n        the same as :attr:`weights_uri`'s prefix).\n    description: REQUIRED. Short (1-500 char) human-readable summary\n        surfaced by ``ral skill list`` and, more importantly, by the\n        reasoner's per-skill LLM tool description (see\n        :func:`openral_reasoner.palette.build_tool_palette`). The LLM\n        scores tools primarily on this text; keep it specific to what\n        the skill does (objects, scenes, task type), not how it was\n        trained.\n    actions: REQUIRED. Closed-vocabulary list (\u22651) of high-level\n        action verbs this skill performs (see :class:`RSkillAction`).\n        Generalist / foundation checkpoints declare ``[GENERALIST]``;\n        specialist checkpoints list the verbs they were trained on\n        (e.g. ``[PICK, PLACE]``). Surfaced to the reasoner LLM\n        alongside :attr:`description` so it can pick the right skill\n        for a given goal.\n    objects: Optional free-form keywords for the objects this skill\n        manipulates (e.g. ``[\"cube\"]``, ``[\"pipe\"]``, ``[\"drawer\"]``).\n        Discriminative hints for the LLM; the long tail (RoboCasa-365\n        has hundreds of categories) makes a closed enum impractical.\n    scenes: Optional free-form keywords for the scenes / environments\n        this skill targets (e.g. ``[\"tabletop\"]``, ``[\"kitchen\"]``).\n        Same rationale as :attr:`objects`.\n    processors: Per-file URIs for the lerobot ``PolicyProcessorPipeline``\n        artefacts (Gap 1 + Gap 3 of the rSkill self-containment audit).\n        REQUIRED when ``model_family`` is one of ``smolvla``, ``pi05``,\n        ``xvla``, ``diffusion``, or ``rldx``; OPTIONAL for ``act`` (the\n        legacy norm-stats-in-safetensors path is allowed there).\n    image_preprocessing: Per-checkpoint image-side knobs that cannot be\n        encoded in the processor JSONs (flip, camera renames).\n        Optional; ``None`` means schema defaults apply.\n    state_contract: Per-checkpoint proprioception layout (named layouts\n        for RoboCasa; explicit ``dim`` for everything else).\n    action_contract: Per-checkpoint action vector contract (dim +\n        optional representation). ADR-0019: consumed by the dataset\n        bridge to bind the LeRobot v3 ``action`` feature shape\n        without consulting the runtime adapter.\n    n_action_steps: Replay cadence (how many actions to consume from a\n        chunk before re-inferring). Omit when equal to ``chunk_size``;\n        the adapter falls through to its family default.\n\nExample:\n    >>> m = RSkillManifest(\n    ...     name=\"openral/rskill-pick-cube-so100\",\n    ...     version=\"0.1.0\",\n    ...     license=RSkillLicensePosture.APACHE_2_0,\n    ...     role=\"s1\",\n    ...     kind=\"vla\",\n    ...     model_family=\"smolvla\",\n    ...     embodiment_tags=[\"so100_follower\"],\n    ...     runtime=RSkillRuntime.PYTORCH,\n    ...     weights_uri=\"hf://lerobot/smolvla_base\",\n    ...     chunk_size=16,\n    ...     latency_budget=RSkillLatencyBudget(per_chunk_ms=100.0),\n    ...     description=\"Pick a cube on the SO-100 follower arm.\",\n    ...     actions=[RSkillAction.PICK],\n    ...     objects=[\"cube\"],\n    ...     scenes=[\"tabletop\"],\n    ...     actuators_required=[\n    ...         ActuatorRequirement(\n    ...             kind=ControlMode.JOINT_POSITION,\n    ...             control_mode_semantics=ControlModeSemantics(mode=\"absolute\"),\n    ...         ),\n    ...     ],\n    ...     processors=RSkillProcessors(\n    ...         preprocessor_uri=\"hf://lerobot/smolvla_base/policy_preprocessor.json\",\n    ...         postprocessor_uri=\"hf://lerobot/smolvla_base/policy_postprocessor.json\",\n    ...     ),\n    ... )\n    >>> m.is_commercial_use_allowed\n    True\n    >>> m.schema_version\n    '0.1'",
+      "properties": {
+        "schema_version": {
+          "const": "0.1",
+          "default": "0.1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        },
+        "license": {
+          "$ref": "#/$defs/RSkillLicensePosture",
+          "default": "unknown"
+        },
+        "role": {
+          "default": "s1",
+          "enum": [
+            "s0",
+            "s1",
+            "s2"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "vla",
+            "wam",
+            "ros_action",
+            "ros_service",
+            "detector",
+            "vlm",
+            "reward"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "model_family": {
+          "anyOf": [
+            {
+              "enum": [
+                "smolvla",
+                "pi05",
+                "xvla",
+                "act",
+                "diffusion",
+                "rldx",
+                "molmoact2",
+                "gr00t",
+                "diffuser_actor",
+                "openvla"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Family"
+        },
+        "embodiment_tags": {
+          "items": {
+            "enum": [
+              "aloha",
+              "aloha_agilex",
+              "custom",
+              "franka_panda",
+              "g1",
+              "google_robot",
+              "gr1",
+              "h1",
+              "mobile_base",
+              "openarm",
+              "panda_mobile",
+              "pusht",
+              "rizon4",
+              "sawyer",
+              "so100_follower",
+              "so101_follower",
+              "ur10e",
+              "ur5e",
+              "widowx"
+            ],
+            "type": "string"
+          },
+          "title": "Embodiment Tags",
+          "type": "array"
+        },
+        "embodiment_extra": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EmbodimentExtra"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "capabilities_required": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Capabilities Required",
+          "type": "object"
+        },
+        "sensors_required": {
+          "items": {
+            "$ref": "#/$defs/SensorRequirement"
+          },
+          "title": "Sensors Required",
+          "type": "array"
+        },
+        "actuators_required": {
+          "items": {
+            "$ref": "#/$defs/ActuatorRequirement"
+          },
+          "title": "Actuators Required",
+          "type": "array"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RSkillRuntime",
+          "default": "pytorch"
+        },
+        "quantization": {
+          "$ref": "#/$defs/QuantizationConfig"
+        },
+        "weights_uri": {
+          "anyOf": [
+            {
+              "pattern": "^(?:hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?|local:\\/\\/[A-Za-z0-9._\\/-]+)$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weights Uri"
+        },
+        "chunk_size": {
+          "exclusiveMinimum": 0,
+          "title": "Chunk Size",
+          "type": "integer"
+        },
+        "latency_budget": {
+          "$ref": "#/$defs/RSkillLatencyBudget"
+        },
+        "min_vram_gb": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "propertyNames": {
+                "$ref": "#/$defs/QuantizationDtype"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Vram Gb"
+        },
+        "fallback_skill_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fallback Skill Id"
+        },
+        "benchmarks": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "propertyNames": {
+            "enum": [
+              "aloha",
+              "aloha_insertion",
+              "aloha_transfer_cube",
+              "gr1_tabletop",
+              "libero_10",
+              "libero_goal",
+              "libero_object",
+              "libero_spatial",
+              "maniskill3_panda",
+              "metaworld_mt10",
+              "metaworld_mt50",
+              "pusht",
+              "rlbench",
+              "robocasa_pnp",
+              "robotwin",
+              "simpler_env_widowx"
+            ]
+          },
+          "title": "Benchmarks",
+          "type": "object"
+        },
+        "evaluated_tasks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evaluated Tasks",
+          "type": "array"
+        },
+        "sim_env_control_mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sim Env Control Mode"
+        },
+        "paper_url": {
+          "anyOf": [
+            {
+              "pattern": "^https?:\\/\\/[^\\s]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paper Url"
+        },
+        "dataset_uri": {
+          "anyOf": [
+            {
+              "pattern": "^hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset Uri"
+        },
+        "source_repo": {
+          "anyOf": [
+            {
+              "pattern": "^hf:\\/\\/[A-Za-z0-9][A-Za-z0-9._-]*\\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Repo"
+        },
+        "description": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/RSkillAction"
+          },
+          "minItems": 1,
+          "title": "Actions",
+          "type": "array"
+        },
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Objects",
+          "type": "array"
+        },
+        "scenes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Scenes",
+          "type": "array"
+        },
+        "envelope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafetyEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "policy_extras": {
+          "additionalProperties": true,
+          "title": "Policy Extras",
+          "type": "object"
+        },
+        "processors": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RSkillProcessors"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "image_preprocessing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImagePreprocessing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "action_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "n_action_steps": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Action Steps"
+        },
+        "starting_pose": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose"
+        },
+        "ros_integration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RosIntegration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "detector": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DetectorContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reward": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RewardContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "goal_params_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Goal Params Schema"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "kind",
+        "chunk_size",
+        "latency_budget",
+        "description",
+        "actions"
+      ],
+      "title": "RSkillManifest",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
     "JointState": {
       "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
       "properties": {
@@ -7915,7 +9495,7 @@
     },
     "TickResult": {
       "additionalProperties": false,
-      "description": "One tick's record returned by :meth:`InferenceRunner.tick`.\n\nCarries the timing breakdown so the parent OTel span can attach exact\nsub-stage durations and the latency budget enforcement can flag\nviolations without re-instrumenting.\n\nThe hardware fields (``sensors_ms``..``hal_ms``, ``safety_violations``,\n``action_applied``) are the original (v1) surface used by\n:class:`HardwareRunner`. The sim-specific fields\n(``step_idx``..``truncated``) were added by ADR-0010 amendment 1 when\n:class:`SimRunner` adopted per-step tick semantics; hardware leaves\nthem at their defaults (``None``), so a hardware tick serialises\nidentically to v1 under ``model_dump(exclude_none=True)``.\n\nAttributes:\n    stamp_ns: Tick wall-clock timestamp in nanoseconds (tick start).\n    tick_idx: 0-indexed tick counter within a run.\n    sensors_ms: ``SensorReader.read_latest`` total wall-time.\n    world_state_ms: ``WorldStateAggregator.snapshot`` wall-time.\n    inference_ms: ``Skill.step`` wall-time (the chunk dispatch cost,\n        not the full chunked inference \u2014 see :class:`ChunkedExecutor`).\n    safety_ms: Safety check wall-time.\n    hal_ms: ``HAL.send_action`` wall-time.\n    tick_ms: End-to-end tick wall-time including the rate-limiter\n        overhead.\n    chunk_index: Index of the action played out from a chunked\n        executor. ``None`` for non-chunked skills.\n    safety_violations: List of safety-violation reason strings emitted\n        during this tick. Non-empty implies the action was either\n        clamped or dropped per the safety policy.\n    action_applied: ``False`` when the\n        :class:`DeadlineOverrunPolicy` was ``drop`` and the runner\n        elected not to publish this tick's action, **or** when a sim\n        tick is the reset-tick between episodes (no inference / env\n        step happened).\n    step_idx: 0-indexed step within the current episode. Set by\n        :class:`SimRunner` on step-ticks; ``None`` on hardware ticks\n        and on sim reset-ticks.\n    episode_idx: 0-indexed episode within the current run. Set by\n        :class:`SimRunner` on every tick (including reset-ticks);\n        ``None`` on hardware ticks.\n    reward: Env step reward for this tick. Set by :class:`SimRunner`\n        on step-ticks; ``None`` on hardware ticks and reset-ticks.\n    terminated: Whether the env signalled natural termination this\n        tick. Set by :class:`SimRunner`; ``None`` elsewhere.\n    truncated: Whether the env hit its step budget this tick. Set by\n        :class:`SimRunner`; ``None`` elsewhere.\n    trace_context: Full W3C ``traceparent`` for this tick's\n        ``rskill.tick`` span, in the form\n        ``00-<trace_id_hex>-<span_id_hex>-<flags_hex>``. Optional \u2014\n        set by the runner when an OTel context is active so offline\n        consumers (dataset writers, post-hoc analysers) can resume\n        the trace without re-deriving it from the live span. Default\n        ``None`` for byte-identical v1 JSON under\n        ``model_dump(exclude_none=True)``.",
+      "description": "One tick's record returned by :meth:`InferenceRunner.tick`.\n\nCarries the timing breakdown so the parent OTel span can attach exact\nsub-stage durations and the latency budget enforcement can flag\nviolations without re-instrumenting.\n\nThe hardware fields (``sensors_ms``..``hal_ms``, ``safety_violations``,\n``action_applied``) are the original (v1) surface used by\n:class:`DeployRunner`. The sim-specific fields\n(``step_idx``..``truncated``) were added by ADR-0010 amendment 1 when\n:class:`SimRunner` adopted per-step tick semantics; hardware leaves\nthem at their defaults (``None``), so a hardware tick serialises\nidentically to v1 under ``model_dump(exclude_none=True)``.\n\nAttributes:\n    stamp_ns: Tick wall-clock timestamp in nanoseconds (tick start).\n    tick_idx: 0-indexed tick counter within a run.\n    sensors_ms: ``SensorReader.read_latest`` total wall-time.\n    world_state_ms: ``WorldStateAggregator.snapshot`` wall-time.\n    inference_ms: ``Skill.step`` wall-time (the chunk dispatch cost,\n        not the full chunked inference \u2014 see :class:`ChunkedExecutor`).\n    safety_ms: Safety check wall-time.\n    hal_ms: ``HAL.send_action`` wall-time.\n    tick_ms: End-to-end tick wall-time including the rate-limiter\n        overhead.\n    chunk_index: Index of the action played out from a chunked\n        executor. ``None`` for non-chunked skills.\n    safety_violations: List of safety-violation reason strings emitted\n        during this tick. Non-empty implies the action was either\n        clamped or dropped per the safety policy.\n    action_applied: ``False`` when the\n        :class:`DeadlineOverrunPolicy` was ``drop`` and the runner\n        elected not to publish this tick's action, **or** when a sim\n        tick is the reset-tick between episodes (no inference / env\n        step happened).\n    step_idx: 0-indexed step within the current episode. Set by\n        :class:`SimRunner` on step-ticks; ``None`` on hardware ticks\n        and on sim reset-ticks.\n    episode_idx: 0-indexed episode within the current run. Set by\n        :class:`SimRunner` on every tick (including reset-ticks);\n        ``None`` on hardware ticks.\n    reward: Env step reward for this tick. Set by :class:`SimRunner`\n        on step-ticks; ``None`` on hardware ticks and reset-ticks.\n    terminated: Whether the env signalled natural termination this\n        tick. Set by :class:`SimRunner`; ``None`` elsewhere.\n    truncated: Whether the env hit its step budget this tick. Set by\n        :class:`SimRunner`; ``None`` elsewhere.\n    trace_context: Full W3C ``traceparent`` for this tick's\n        ``rskill.tick`` span, in the form\n        ``00-<trace_id_hex>-<span_id_hex>-<flags_hex>``. Optional \u2014\n        set by the runner when an OTel context is active so offline\n        consumers (dataset writers, post-hoc analysers) can resume\n        the trace without re-deriving it from the live span. Default\n        ``None`` for byte-identical v1 JSON under\n        ``model_dump(exclude_none=True)``.",
       "properties": {
         "stamp_ns": {
           "minimum": 0,

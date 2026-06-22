@@ -15,7 +15,7 @@ two deployment commands still use **different stacks**:
 - `openral deploy sim` shells `ros2 launch openral_rskill_ros sim_e2e.launch.py` — the full
   production ROS graph (HAL lifecycle node, runtime/skill node, **C++ safety kernel**, world
   state, reasoner, SLAM/Nav2/octomap, dashboard) with a **simulation** HAL at layer 0.
-- `openral deploy run` spawns an **in-process** `HardwareRunner` (so100-only) — a single Python
+- `openral deploy run` spawns an **in-process** `DeployRunner` (so100-only) — a single Python
   tick loop with sensor readers, `NullSafetyClient`, and a Rich summary. It has **no C++ safety
   kernel, no reasoner, no world-collision check** — strictly less than the sim graph.
 
@@ -27,7 +27,7 @@ Two enabling facts from the Effort-2 investigation:
 1. The ROS graph is **sim-only today**: the so100 node switches sim↔real on a param, but the
    other 7 HAL nodes (`franka/ur5e/ur10e/aloha/g1/h1/rizon4`) hardcode their sim class via
    `make_lifecycle_main(node_name, <SimClass>)` — no real path.
-2. `HardwareRunner` is **not** the thing being retired — `openral_rskill_ros`'s `runtime_node`
+2. `DeployRunner` is **not** the thing being retired — `openral_rskill_ros`'s `runtime_node`
    already composes it internally. Only the `deploy run` **CLI entry** changes (from spawning
    an in-process runner to shelling the launch).
 
@@ -45,7 +45,7 @@ Two enabling facts from the Effort-2 investigation:
 3. **`deploy run` shells the launch.** The `deploy run` CLI mirrors `deploy_sim.py`'s
    `resolve_launch_invocation`, shelling `ros2 launch … hal_mode:=real`. Real `connect()` fails
    loudly with no hardware (ADR-0031). The in-process-runner spawn is removed from the CLI;
-   `HardwareRunner` lives on inside `runtime_node`.
+   `DeployRunner` lives on inside `runtime_node`.
 4. **Real safety is the C++ kernel.** In real mode the HAL publishes `/joint_states` and obeys
    `/openral/safe_action` from the kernel — the `NullSafetyClient` stub is gone from the
    real path. This is a safety *improvement* (§1.1).

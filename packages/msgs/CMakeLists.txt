@@ -17,6 +17,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/PromptStamped.msg
   msg/ActionChunk.msg
   msg/FailureTrigger.msg
+  # ADR-0064 — generic per-frame critic/reward score on /openral/critic/score.
+  msg/CriticScore.msg
   # ADR-0030 — bounded world obstacles for the kernel's world-collision check.
   msg/WorldCollision.msg
   # ADR-0030 voxel phase — dense fixed-capacity 3-D occupancy grid (octomap path).

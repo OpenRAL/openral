@@ -43,7 +43,11 @@ from opentelemetry.sdk.trace.sampling import (
     TraceIdRatioBased,
 )
 
-__all__ = ["configure_observability", "shutdown_observability"]
+__all__ = [
+    "configure_observability",
+    "configure_worker_observability",
+    "shutdown_observability",
+]
 
 _ENV_ENDPOINT = "OTEL_EXPORTER_OTLP_ENDPOINT"
 _ENV_PROTOCOL = "OTEL_EXPORTER_OTLP_PROTOCOL"
@@ -218,6 +222,70 @@ def configure_observability(
             atexit.register(shutdown_observability)
             _atexit_registered = True
         return True
+
+
+def configure_worker_observability(
+    service_name: str,
+    *,
+    endpoint: str | None = None,
+    sample_ratio: float | None = None,
+) -> bool:
+    """Bootstrap observability in a spawned worker so it joins the parent trace.
+
+    The cross-process counterpart of :func:`configure_observability` for a
+    subprocess (the dispatcher, the future fleet supervisor). It does two
+    things in order:
+
+    1. Calls :func:`configure_observability` so the worker gets its own OTLP
+       pipeline **and** the structlog→OTel log bridge (logs and spans both
+       ship to the collector with the worker's ``service.name``).
+    2. Calls
+       :func:`openral_observability.propagation.attach_traceparent_from_env`
+       so the worker's root OTel context is the parent process's span —
+       every span the worker opens, and every log line it stamps, carries
+       the parent's ``trace_id``.
+
+    The parent **must** propagate its active context into the child's
+    environment. Spawn the worker with
+    ``env={**os.environ, **traceparent_env()}`` (see
+    :func:`openral_observability.propagation.traceparent_env`); otherwise
+    step 2 is a no-op and the worker starts a fresh, uncorrelated trace.
+
+    Args:
+        service_name: ``service.name`` resource attribute for the worker —
+            give it a distinct value (e.g. ``"openral-dispatcher"``) so its
+            spans are filterable from the parent's.
+        endpoint: OTLP endpoint, forwarded to
+            :func:`configure_observability`. ``None`` falls back to the
+            ``OTEL_EXPORTER_OTLP_ENDPOINT`` env var (inherited from the
+            parent), then to no-op mode.
+        sample_ratio: Optional head-based sampling ratio, forwarded to
+            :func:`configure_observability`. ``ParentBased`` sampling means
+            the worker inherits the parent's sampling decision when the
+            attached context carries one.
+
+    Returns:
+        Whatever :func:`configure_observability` returns — ``True`` if
+        exporters were installed, ``False`` for the no-op path. (The
+        context attach in step 2 happens regardless, so trace correlation
+        works even before an endpoint is configured.)
+
+    Example:
+        >>> from openral_observability import configure_worker_observability
+        >>> # In a worker entrypoint, after the parent spawned us with
+        >>> # env={**os.environ, **traceparent_env()}:
+        >>> _ = configure_worker_observability("openral-dispatcher")
+    """
+    installed = configure_observability(
+        service_name=service_name,
+        endpoint=endpoint,
+        sample_ratio=sample_ratio,
+    )
+    # Imported lazily to match the module's no-import-at-top-for-cycles style.
+    from openral_observability.propagation import attach_traceparent_from_env
+
+    attach_traceparent_from_env()
+    return installed
 
 
 def _resolve_sampler(sample_ratio: float | None) -> Sampler:

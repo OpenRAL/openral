@@ -274,6 +274,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    # ADR-0019 — record the deploy session to a rosbag2 mcap.
+    dataset_out = LaunchConfiguration("dataset_out").perform(context)
+    dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
+    dataset_license = LaunchConfiguration("dataset_license").perform(context)
     dashboard_port = LaunchConfiguration("dashboard_port").perform(context)
     reasoner_provider = LaunchConfiguration("reasoner_provider").perform(context)
     reasoner_model = LaunchConfiguration("reasoner_model").perform(context)
@@ -351,6 +355,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reward_monitor_sidecar_port = LaunchConfiguration("reward_monitor_sidecar_port").perform(
         context
     )
+    # ADR-0064 — Tier-C critic-producer leg. Off by default; when on, a
+    # critic_producer_node watches the generic /openral/critic/score topic and
+    # turns a critic stall into a Tier-C FailureTrigger on /openral/failure/critic
+    # (the reasoner already subscribes it). Advisory-only — never actuates.
+    enable_critic = LaunchConfiguration("enable_critic").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    critic_stall_patience = LaunchConfiguration("critic_stall_patience").perform(context)
     # ADR-0056 — comma-separated on-demand locator manifest paths. Each becomes a
     # namespaced locate_in_view lifecycle node (/openral/perception/<alias>/...) so
     # the reasoner can choose a model via LocateInViewTool.detector. Alias/segment
@@ -684,9 +698,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
-                # Forward enable_slam so the runtime's compose_runtime
-                # attaches the SlamMapBridge → dashboard slam.occupancy_grid.
-                "enable_slam_bridge": enable_slam,
                 # ADR-0030 — when octomap is on the centers topic exists, so
                 # attach the WorldCloudBridge → dashboard world.pointcloud.
                 "enable_world_cloud_bridge": enable_octomap,
@@ -697,6 +708,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # would see it as ~1.78e9 s stale and drop every frame at the
                 # WorldState staleness gate. Default false keeps it wall-clock.
                 "use_sim_time": use_sim_time,
+                # ADR-0019 — when set, compose_runtime attaches the
+                # DatasetRecorderBridge and records the session to this mcap.
+                "dataset_out": dataset_out,
+                "dataset_repo_id": dataset_repo_id,
+                "dataset_license": dataset_license,
             }
         ],
         additional_env=otel_env,
@@ -903,7 +919,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                         PythonLaunchDescriptionSource(
                             os.path.join(slam_share, "launch", "nvblox.launch.py")
                         ),
-                        launch_arguments={"use_sim_time": sim_time_arg}.items(),
+                        launch_arguments={
+                            "use_sim_time": sim_time_arg,
+                            "robot_yaml": robot_yaml,
+                        }.items(),
                     )
                 )
         else:
@@ -1264,6 +1283,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "image_topic": reward_image_topic,
                     "task": reward_monitor_task,
                     "sidecar_port": int(reward_monitor_sidecar_port),
+                    # ADR-0064 — when the critic producer is also up, feed it real
+                    # Robometer progress as a CriticScore stream (else stay query-only).
+                    "enable_critic_score": enable_critic,
                     "use_sim_time": use_sim_time,
                 }
             ],
@@ -1271,6 +1293,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             output="screen",
         )
         extra_nodes.append(reward_monitor)
+
+    if enable_critic:
+        # ADR-0064 — Tier-C critic producer. Plain Node co-active with the graph:
+        # subscribes /openral/critic/score (any reward model — Robometer, a future
+        # SARM — publishes there), routes each sample through a CriticWatchdogGroup,
+        # and emits a Tier-C FailureTrigger on /openral/failure/critic on a stall.
+        critic_producer = Node(
+            package="openral_reasoner_ros",
+            executable="critic_producer_node.py",
+            name="openral_critic_producer",
+            namespace="",
+            parameters=[
+                {
+                    "stall_patience": int(critic_stall_patience),
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            additional_env=otel_env,
+            output="screen",
+        )
+        extra_nodes.append(critic_producer)
 
     nodes: list = [
         safety_kernel,
@@ -1370,6 +1413,26 @@ def generate_launch_description() -> LaunchDescription:
                 "plan a collision-free motion to each skill's starting_pose. "
                 "Empty = legacy ResetToPose snap."
             ),
+        ),
+        DeclareLaunchArgument(
+            "dataset_out",
+            default_value="",
+            description=(
+                "ADR-0019 — when set, record the deploy session (proprio + "
+                "action + camera frames + episode markers) to this rosbag2 "
+                "mcap path. Convert offline with `openral dataset from-bag`. "
+                "Empty disables recording."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "dataset_repo_id",
+            default_value="",
+            description="ADR-0019 — repo_id for the recorded dataset.",
+        ),
+        DeclareLaunchArgument(
+            "dataset_license",
+            default_value="CC-BY-4.0",
+            description="ADR-0019 — SPDX license carried into `openral dataset from-bag`.",
         ),
         DeclareLaunchArgument(
             "dashboard_port",
@@ -1570,6 +1633,28 @@ def generate_launch_description() -> LaunchDescription:
                 "built and a provisioned Robometer sidecar venv "
                 "(OPENRAL_ROBOMETER_SIDECAR_VENV); co-resident with a VLA needs ~3.3 GB "
                 "free VRAM (use a small NF4 VLA on an 8 GB GPU)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_critic",
+            default_value="false",
+            description=(
+                "ADR-0064 — bring up the Tier-C critic producer "
+                "(openral_reasoner_ros/critic_producer_node). It watches the generic "
+                "/openral/critic/score topic that reward models publish (Robometer "
+                "ADR-0057, a future SARM, success classifiers), and emits a Tier-C "
+                "FailureTrigger on /openral/failure/critic when a critic stalls — the "
+                "reasoner already maps that to a forced Tier-C tick. Advisory-only — "
+                "never actuates. Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "critic_stall_patience",
+            default_value="5",
+            description=(
+                "ADR-0064 — consecutive below-threshold, non-improving critic-score "
+                "samples (per critic_id) before the producer fires. Ignored unless "
+                "enable_critic."
             ),
         ),
         DeclareLaunchArgument(

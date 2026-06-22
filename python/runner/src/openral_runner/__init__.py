@@ -20,7 +20,7 @@ Public surface today:
 - ``SafetyClient`` / ``NullSafetyClient``: pre-action safety seam called
   by the runner before HAL dispatch. ``NullSafetyClient`` is a no-op
   stub awaiting the real C++ safety kernel (CLAUDE.md §6 Layer 6).
-- ``HardwareRunner``: concrete :class:`InferenceRunnerBase` subclass
+- ``DeployRunner``: concrete :class:`InferenceRunnerBase` subclass
   that composes a real :class:`HAL`, :class:`Skill`,
   :class:`WorldStateAggregator`, a list of :class:`SensorReader`s, and a
   :class:`SafetyClient`. First end-to-end loop on real hardware
@@ -51,19 +51,19 @@ from openral_runner.sensor_reader import SensorReader
 if TYPE_CHECKING:
     # Type checkers see the symbols at their true module locations.
     from openral_runner.base import InferenceRunnerBase
+    from openral_runner.deploy_runner import DeployRunner
     from openral_runner.factory import (
         SENSOR_BACKEND_REGISTRY,
         SKILL_REGISTRY,
         build_runner,
     )
-    from openral_runner.hardware import HardwareRunner
     from openral_runner.ros_publishing_hal import ROSPublishingHAL
     from openral_runner.safety import NullSafetyClient, SafetyClient
 
 __all__ = [
     "SENSOR_BACKEND_REGISTRY",
     "SKILL_REGISTRY",
-    "HardwareRunner",
+    "DeployRunner",
     "InferenceRunner",
     "InferenceRunnerBase",
     "NullSafetyClient",
@@ -82,7 +82,7 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "SENSOR_BACKEND_REGISTRY": ("openral_runner.factory", "SENSOR_BACKEND_REGISTRY"),
     "SKILL_REGISTRY": ("openral_runner.factory", "SKILL_REGISTRY"),
     "build_runner": ("openral_runner.factory", "build_runner"),
-    "HardwareRunner": ("openral_runner.hardware", "HardwareRunner"),
+    "DeployRunner": ("openral_runner.deploy_runner", "DeployRunner"),
     "NullSafetyClient": ("openral_runner.safety", "NullSafetyClient"),
     "ROSPublishingHAL": (
         "openral_runner.ros_publishing_hal",

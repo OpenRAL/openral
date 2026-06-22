@@ -1,7 +1,7 @@
 """SimRunner — per-step :class:`InferenceRunner` for the simulation runtime.
 
 Sim and hardware share one tick semantic — one inference step per tick.
-:class:`HardwareRunner` ticks at e.g. 30 Hz on a real robot; :class:`SimRunner`
+:class:`DeployRunner` ticks at e.g. 30 Hz on a real robot; :class:`SimRunner`
 ticks as fast as the env + policy let it, with each tick advancing one
 ``env.step``. Episodes are a derived view: SimRunner accumulates per-tick
 data into a private buffer and emits an :class:`EpisodeResult` whenever the
@@ -473,7 +473,7 @@ class SimRunner(InferenceRunnerBase):
     # SimRunner derives episode boundaries from the env's terminated /
     # truncated flags inside _reset_tick / _finalize_episode; the
     # RolloutRecorder is already driven there. The explicit
-    # episode_start / episode_end API exists for HardwareRunner. We
+    # episode_start / episode_end API exists for DeployRunner. We
     # override them as no-ops on the sim runner so a higher-level driver
     # (e.g. a BT executor) can call the same method on either runner
     # uniformly without dispatching on type.
@@ -498,7 +498,7 @@ class SimRunner(InferenceRunnerBase):
     def _on_deadline_overrun(self, result: TickResult) -> None:
         """Sim ticks intentionally ignore the base-class rate budget.
 
-        :class:`HardwareRunner` ticks at a real-time cadence so deadline
+        :class:`DeployRunner` ticks at a real-time cadence so deadline
         overruns matter — they mean the robot is starving on stale
         actions. Sim is not real-time: it runs as fast as the policy +
         env allow. The base class still enforces ``rate_hz`` because we

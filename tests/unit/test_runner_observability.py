@@ -195,9 +195,9 @@ def test_deadline_overrun_raise_policy_records_exception(
 def test_safety_violation_exception_recorded_on_tick_span() -> None:
     """``ROSSafetyViolation`` raised by ``check_action`` is observable via attrs.
 
-    We don't go through the HardwareRunner here (it requires HAL + sensors);
+    We don't go through the DeployRunner here (it requires HAL + sensors);
     instead we cover the ``NullSafetyClient`` happy path and document the
-    HardwareRunner branch with a separate test (``test_hardware_runner.py``
+    DeployRunner branch with a separate test (``test_deploy_runner.py``
     in this PR adds the matching coverage).
     """
     client = NullSafetyClient()

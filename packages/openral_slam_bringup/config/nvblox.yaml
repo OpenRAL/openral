@@ -47,6 +47,14 @@
     # A robot in a dynamic scene can switch mapping_type at deploy time.
     mapping_type: static_occupancy
 
+    # ── Floor-excluded navigation band ──────────────────────────────
+    # `nvblox.launch.py` filters the depth image to a live global-frame band
+    # derived from RobotDescription measurements + TF before nvblox sees it;
+    # that prefilter is what keeps floor pixels out of the static occupancy
+    # grid published as `/map`. Keep nvblox's own workspace bounds unbounded
+    # here so this YAML does not bake in one robot/scene's floor height.
+    static_mapper.workspace_bounds_type: unbounded
+
     # ── Persistent map (no decay toward unknown) ────────────────────
     # By default nvblox decays unobserved occupancy back toward 0.5
     # (unknown), so the map behind a moving robot fades and long-range
@@ -63,7 +71,7 @@
     # ── 2D ESDF slice (also feeds the optional nvblox_nav2 plugin) ───
     esdf_mode: 2d
     publish_esdf_distance_slice: true
-    # Slice height band (metres, in global_frame) the costmap is cut from;
-    # tune to the robot's body height. Operator-confirmed per robot.
-    esdf_slice_min_height: 0.10
-    esdf_slice_max_height: 0.60
+    # `/map` uses the filtered depth path above; deployments using the optional
+    # nvblox_nav2 ESDF plugin may override this slice per robot/deployment.
+    esdf_slice_min_height: 0.80
+    esdf_slice_max_height: 1.30
