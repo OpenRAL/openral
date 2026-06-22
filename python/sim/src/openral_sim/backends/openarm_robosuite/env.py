@@ -662,7 +662,15 @@ class _OpenArmTabletopRollout:
         self._model.cam_bodyid[cam_id] = 0
         self._model.cam_pos[cam_id] = cam_pos
         self._model.cam_quat[cam_id] = np.asarray(
-            look_at_quat_wxyz(cam_pos, _WRIST_CAMERA_TARGET, view_axis="-z"),
+            look_at_quat_wxyz(
+                (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
+                (
+                    float(_WRIST_CAMERA_TARGET[0]),
+                    float(_WRIST_CAMERA_TARGET[1]),
+                    float(_WRIST_CAMERA_TARGET[2]),
+                ),
+                view_axis="-z",
+            ),
             dtype=np.float64,
         )
         self._model.cam_fovy[cam_id] = _WRIST_CAMERA_FOVY
