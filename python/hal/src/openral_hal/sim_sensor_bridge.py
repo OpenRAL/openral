@@ -97,6 +97,26 @@ def _obs_key_for_sensor(sensor: Any) -> str:
     return str(sensor.name)
 
 
+def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
+    """Resolve a camera's frame from a ``read_images()`` dict, or ``None``.
+
+    The two sim HALs key their frame dicts by different conventions:
+    :class:`~openral_hal.sim_attached.SimAttachedHAL` (scene-attached LIBERO /
+    robocasa) keys by the VLA slot (``obs_key`` — ``camera1`` / ``camera2``),
+    while :class:`~openral_hal._mujoco_arm.MujocoArmHAL` (bare or composed
+    digital twin) keys by the sensor ``name``. Try the slot first, then fall
+    back to the name so both conventions resolve.
+
+    Without the fallback, so101's slot ``camera1`` never matched its
+    MujocoArmHAL frame keyed ``front`` and no frame ever published (issue #88);
+    openarm was unaffected only because its sensor names equal their VLA slots.
+    """
+    arr = images.get(obs_key)
+    if arr is None and name != obs_key:
+        arr = images.get(name)
+    return arr
+
+
 def _optical_frame_rgb_cameras(sensors: Any) -> list[Any]:
     """RGB camera specs that own a dedicated ``*_optical_frame`` (ADR-0052).
 
@@ -355,13 +375,13 @@ class SimSensorBridge:
         now_ns = time.monotonic_ns()
         for name, pub in self._image_pubs.items():
             obs_key = self._image_obs_key.get(name, name)
-            arr = images.get(obs_key)
+            arr = _frame_for_camera(images, obs_key, name)
             if arr is None:
                 if name not in self._image_missing_warned:
                     self._image_missing_warned.add(name)
                     self._node.get_logger().warning(
                         f"SimSensorBridge: no frame for camera '{name}' "
-                        f"(expected obs key '{obs_key}'); "
+                        f"(expected obs key '{obs_key}' or name '{name}'); "
                         f"available keys: {sorted(images.keys())}. "
                         "Check the scene's --robot override matches sensor layout."
                     )
