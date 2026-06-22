@@ -133,6 +133,47 @@ def test_so101_box_mjcf_compiles() -> None:
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, n) >= 0, f"missing site {n!r}"
 
 
+def test_so101_box_composes_around_so100_via_anchor_params() -> None:
+    """The box composer is robot-agnostic: it composes the SO-100 twin too (#88).
+
+    The SO-100 ``trs_so_arm100`` MJCF uses a different body schema than the
+    SO-101 (``Base`` with no pos/quat, ``Fixed_Jaw`` end body, zero cameras), so
+    the composer must re-anchor + splice via the ``base_body`` / ``gripper_body``
+    params. This is the path ``deploy sim`` drives for SO-100.
+    """
+    from openral_core import RobotDescription
+    from openral_sim.backends.so101_box._assets import compose_so101_box_mjcf
+
+    desc = RobotDescription.from_yaml("robots/so100_follower/robot.yaml")
+    _xml, path = compose_so101_box_mjcf(
+        robot_description=desc,
+        base_body="Base",
+        gripper_body="Fixed_Jaw",
+        wrist_camera_pos_local=(0.0, -0.05, -0.07),
+        wrist_camera_target_local=(0.10, -0.20, 0.01),
+    )
+    model = mujoco.MjModel.from_xml_path(str(path))
+    # 6 arm joints + 2 freejoints (slot_block + tube) — gripper qpos addr [5]
+    # stays valid because freejoints are appended after the arm chain.
+    assert model.nq == 20
+    assert model.nu == 6
+    for n in ("wrist", "oak_top"):
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, n) >= 0, f"missing camera {n!r}"
+    # The SO-100 `Base` body was re-anchored to the configured world pose.
+    base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "Base")
+    assert base_id >= 0
+    assert tuple(round(v, 3) for v in model.body_pos[base_id]) == (0.5, 0.5, 0.0)
+
+
+def test_so101_box_unknown_base_body_raises() -> None:
+    """A wrong `base_body` anchor surfaces loudly, not silently (#88)."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.backends.so101_box._assets import compose_so101_box_mjcf
+
+    with pytest.raises(ROSConfigError, match="base_body"):
+        compose_so101_box_mjcf(base_body="not_a_body")
+
+
 def test_so101_box_reset_observation_shapes(env_cfg) -> None:
     """``reset`` returns an observation with the expected image keys + shapes."""
     from openral_sim import SCENES

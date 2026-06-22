@@ -19,7 +19,7 @@ MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
 | Embodiment tags | `so100_follower`, `lerobot` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | `sdk_kind` | `open` (LeRobot SDK, Apache-2.0) |
-| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block (`deploy sim`) |
+| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; `deploy sim` composes the `so101_box` arena (via `scene_defaults.composition`, anchored on the SO-100 `Base` / `Fixed_Jaw` bodies) so the twin renders the `oak_top` + `wrist` cameras (issue #88) |
 | `hal.real` | `openral_hal.so100_follower:SO100FollowerHAL` (`deploy run`) |
 | Action / observation spec | 6-D joint positions @ 30 Hz / `(6,)` joint state |
 
