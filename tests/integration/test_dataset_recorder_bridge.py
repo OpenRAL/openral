@@ -169,3 +169,56 @@ def test_bridge_records_real_bus_data(
     # Camera pixels round-trip (constant fill per step).
     assert all(img["encoding"] == "raw_u8" for img in images)
     assert {img["camera"] for img in images}  # at least one slot recorded
+
+
+def test_bridge_reassembles_slot_dispatched_action(tmp_path: Path) -> None:
+    """Multi-slot (ADR-0028b) ticks reassemble into one full action vector.
+
+    Regression guard for the deploy-graph action-fidelity bug: a
+    slot-dispatched skill (e.g. LIBERO = a 6-D cartesian_delta ActionChunk +
+    a separate 1-D gripper ActionChunk per tick) must record ONE 7-D action
+    per tick — the concatenation of its slots — not just the last-delivered
+    chunk. The bridge detects the tick boundary by the slot cycle.
+    """
+    # franka_panda is the real slot-dispatch / LIBERO deploy robot
+    # (observation_spec / action_spec = None — its layout lives on the rSkill
+    # contract), so the recorder does not constrain the 7-D reassembled action.
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"))
+    from openral_world_state import WorldStateAggregator
+
+    aggregator = WorldStateAggregator(robot)
+    bag_path = tmp_path / "slots.mcap"
+    recorder = RolloutRecorder(
+        robot=robot, task_string="", fps=20.0, sinks=[Rosbag2Sink(bag_path=bag_path)]
+    )
+    bridge = DatasetRecorderBridge(
+        _StandinNode(), robot=robot, aggregator=aggregator, recorder=recorder
+    )
+
+    # Distinct control_mode ints for the two slots (cartesian_delta vs gripper).
+    cm_cartesian, cm_gripper = 3, 4
+    n_ticks = 3
+    bridge._on_episode(SimpleNamespace(phase=0, task_string="pick", success=False))
+    for step in range(n_ticks):
+        _feed_snapshot(aggregator, robot, state_dim=8, fill=100 + step, step=step)
+        # Slot 1: 6-D cartesian delta; slot 2: 1-D gripper — same fixed order each tick.
+        bridge._on_action(
+            SimpleNamespace(control_mode=cm_cartesian, ee_name="", n_dof=6, flat=[float(step)] * 6)
+        )
+        bridge._on_action(
+            SimpleNamespace(control_mode=cm_gripper, ee_name="", n_dof=1, flat=[float(step) + 0.9])
+        )
+    bridge._on_episode(SimpleNamespace(phase=1, task_string="pick", success=True))
+    bridge.destroy()
+
+    from mcap.reader import make_reader
+
+    ticks = []
+    with bag_path.open("rb") as f:
+        for _s, ch, m in make_reader(f).iter_messages():
+            if ch.topic == "/openral/tick":
+                ticks.append(json.loads(m.data))
+    assert len(ticks) == n_ticks, "one reassembled frame per tick, not per slot chunk"
+    for step, tick in enumerate(sorted(ticks, key=lambda t: t["step_idx"])):
+        # Full 7-D action = 6 cartesian + 1 gripper, concatenated in slot order.
+        assert tick["action"] == pytest.approx([float(step)] * 6 + [float(step) + 0.9])

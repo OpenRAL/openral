@@ -14,17 +14,17 @@ Per tick it joins three already-on-the-graph signals into one
   :class:`~openral_world_state.WorldStateAggregator` snapshot
   (``joint_state`` + ``image_frames``), the same in-process snapshot the
   runner feeds the policy. No separate camera-topic publisher is required.
-* **action** — the already-flattened ``openral_msgs/ActionChunk.flat``
-  the HAL publishes on ``/openral/candidate_action`` (first ``n_dof`` row =
-  the next-applied action). This dodges per-control-mode ``Action`` field
-  extraction entirely.
-
-  KNOWN LIMITATION (ADR-0019 amendment 2026-06-22): for slot-dispatched
-  skills (ADR-0028b — e.g. LIBERO cartesian_delta = a 6-D cartesian chunk +
-  a separate 1-D gripper chunk) the recorded action reflects the
-  last-delivered chunk for the tick, not the reassembled full env action.
-  Single-``ActionChunk`` skills (joint-position robots: so100, openarm, …)
-  record the full action faithfully. Multi-slot reassembly is a follow-up.
+* **action** — the per-tick action, reassembled from the
+  ``openral_msgs/ActionChunk`` stream on ``/openral/candidate_action``. For
+  slot-dispatched skills (ADR-0028b) the node emits one chunk per slot per
+  tick in a fixed order (e.g. LIBERO = 6-D cartesian_delta + 1-D gripper;
+  RoboCasa composite = cartesian + gripper + body_twist); the bridge
+  accumulates a tick's slots and concatenates their next-applied rows
+  (``flat[:n_dof]``) into one full action vector, detecting the tick boundary
+  by the slot cycle (a repeated ``(control_mode, ee_name)`` key starts the
+  next tick). Single-``ActionChunk`` skills (joint-position robots) flush one
+  frame per chunk. Robot- and control-mode-agnostic — no per-mode ``Action``
+  field extraction (the HAL already flattened each slot into ``flat``).
 * **episode boundaries** — ``openral_msgs/Episode`` PHASE_START / PHASE_END
   markers the ``rskill_runner_node`` publishes around each ``ExecuteRskill``
   goal.
@@ -123,13 +123,22 @@ class DatasetRecorderBridge:
         self._sensor_to_slot = _sensor_name_to_slot(robot)
         self._episode_open = False
         self._n_frames = 0
+        # Per-tick action reassembly (ADR-0028b slot dispatch): the node emits
+        # one ActionChunk per slot per tick (e.g. LIBERO = cartesian_delta +
+        # gripper; RoboCasa composite = cartesian + gripper + body_twist), in a
+        # fixed slot order. We accumulate the slots of the current tick and
+        # concatenate them into one full action vector; a repeated slot key
+        # signals the next tick's cycle has started → flush the assembled frame.
+        self._accum: list[tuple[tuple[int, str], list[float]]] = []
+        self._pending_snapshot: Any = None
 
-        # Control data class — RELIABLE / KEEP_LAST=1, matching the
-        # ROSPublishingHAL candidate_action publisher (CLAUDE.md §2 QoS).
+        # Control data class — RELIABLE. Deep queue (not KEEP_LAST=1) so a
+        # tick's rapid multi-slot ActionChunk burst is never coalesced/dropped
+        # before the reassembler sees every slot.
         action_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
+            depth=100,
         )
         # Episode markers are sparse + must not be dropped — KEEP_LAST=10.
         episode_qos = QoSProfile(
@@ -150,6 +159,7 @@ class DatasetRecorderBridge:
             # Open episode at teardown → mark failure (deactivate-with-open
             # contract, same as the offline converter's EOF handling).
             try:
+                self._flush_accumulated()  # commit any pending tick first
                 self._recorder.episode_end(success=False)
             except Exception:  # reason: teardown must not raise
                 _log.exception("dataset_recorder_bridge.episode_end_failed")
@@ -171,15 +181,20 @@ class DatasetRecorderBridge:
         phase = int(msg.phase)
         if phase == _PHASE_START:
             if self._episode_open:
-                # Stray re-open (missed PHASE_END) → close the previous as a
-                # failure before starting the new one.
+                # Stray re-open (missed PHASE_END) → flush + close the previous
+                # as a failure before starting the new one.
+                self._flush_accumulated()
                 self._recorder.episode_end(success=False)
+            # Drop any half-accumulated tick from a prior episode.
+            self._accum = []
+            self._pending_snapshot = None
             self._recorder.episode_start(task_string=str(msg.task_string))
             self._episode_open = True
             self._n_frames = 0
         elif phase == _PHASE_END:
             if not self._episode_open:
                 return
+            self._flush_accumulated()  # commit the episode's final tick
             self._recorder.episode_end(success=bool(msg.success))
             self._episode_open = False
             _log.debug(
@@ -189,20 +204,48 @@ class DatasetRecorderBridge:
             )
 
     def _on_action(self, msg: Any) -> None:  # noqa: ANN401  # reason: openral_msgs/ActionChunk IDL
-        """Join the latest snapshot with this action chunk → one frame."""
+        """Accumulate this tick's slot chunks; flush a full frame per tick.
+
+        The node emits the slots of one tick back-to-back in a fixed order,
+        then the next tick repeats that order. We detect the tick boundary by
+        the slot **cycle**: when a chunk arrives whose ``(control_mode,
+        ee_name)`` key is already in the current accumulation, the next tick
+        has begun — flush the assembled action (all slots concatenated in
+        emission order, the first/next-applied row of each) as one frame, then
+        start the new tick. This is timing-independent and works for any number
+        of slots / control modes (single-chunk joint skills flush every chunk;
+        bimanual same-mode slots stay distinct via ``ee_name``).
+        """
         if not self._episode_open:
             return
-        snapshot = self._aggregator.snapshot()
-        joint_state = getattr(snapshot, "joint_state", None)
-        if joint_state is None or not joint_state.position:
-            return  # no proprio yet — skip until the aggregator is warm
-        state = np.asarray(joint_state.position, dtype=np.float32)
-
+        slot_key = (int(getattr(msg, "control_mode", 0)), str(getattr(msg, "ee_name", "") or ""))
         # First row of the chunk = the next-applied action (row-major
         # [horizon][n_dof]). n_dof guards against an empty/short flat.
         n_dof = int(getattr(msg, "n_dof", 0)) or len(msg.flat)
-        action = np.asarray(list(msg.flat[:n_dof]), dtype=np.float32)
+        values = [float(v) for v in msg.flat[:n_dof]]
 
+        if any(key == slot_key for key, _ in self._accum):
+            # Slot cycle restarted → the previous tick is complete.
+            self._flush_accumulated()
+        if not self._accum:
+            # First slot of a new tick — capture the proprio + images the
+            # policy saw for THIS tick (chunks of a tick arrive within µs, so
+            # the snapshot at the first slot is the tick's observation).
+            self._pending_snapshot = self._aggregator.snapshot()
+        self._accum.append((slot_key, values))
+
+    def _flush_accumulated(self) -> None:
+        """Record one frame from the accumulated tick (concatenated slots)."""
+        accum, snapshot = self._accum, self._pending_snapshot
+        self._accum = []
+        self._pending_snapshot = None
+        if not accum or snapshot is None:
+            return
+        joint_state = getattr(snapshot, "joint_state", None)
+        if joint_state is None or not joint_state.position:
+            return  # no proprio for this tick — drop it
+        state = np.asarray(joint_state.position, dtype=np.float32)
+        action = np.asarray([v for _key, vals in accum for v in vals], dtype=np.float32)
         images = self._decode_images(getattr(snapshot, "image_frames", None))
         self._recorder.record_frame(
             observation_state=state,
