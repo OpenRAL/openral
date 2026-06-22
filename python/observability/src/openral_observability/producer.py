@@ -53,7 +53,7 @@ def modality_for_encoding(encoding: object) -> str:
 
     The dashboard's Perception card groups frames by modality
     (``rgb`` / ``mono`` / ``depth`` / ``raw``) — keep the mapping
-    centralised here so HAL nodes and the HardwareRunner produce the
+    centralised here so HAL nodes and the DeployRunner produce the
     same label for a given encoding.
     """
     value = getattr(encoding, "value", encoding)
@@ -68,7 +68,7 @@ _MAX_EE_FRAMES = 8
 # Thumbnail target — capped at VGA so the dashboard shows native-resolution
 # frames (the largest rskill camera contract is 640x480; PIL.thumbnail only
 # ever shrinks, so this never upscales). Emitted at a throttled rate
-# (HardwareRunner.thumbnail_hz, default 25 Hz), not faster than tick rate — so q90 stays
+# (DeployRunner.thumbnail_hz, default 25 Hz), not faster than tick rate — so q90 stays
 # cheap over OTLP even at 2-3 cameras on localhost.
 _THUMB_MAX_WIDTH = 640
 _THUMB_MAX_HEIGHT = 480
@@ -200,7 +200,7 @@ def record_sensor_frame_attrs(
     """Attach sensor-frame attributes to a ``sensors.read_latest`` span.
 
     Pass ``thumbnail_bytes`` at the throttled dashboard rate
-    (``HardwareRunner.thumbnail_hz``, default 25 Hz per camera); OTLP
+    (``DeployRunner.thumbnail_hz``, default 25 Hz per camera); OTLP
     attributes are a preview channel, not a 30 fps video transport. When
     set, the value is base64-encoded inline; downstream consumers
     (including :mod:`openral_observability.dashboard`) decode it for

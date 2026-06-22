@@ -60,7 +60,7 @@ publisher branch off the GStreamer pipeline for observability.
 
    - `SimRunner` (in `openral_sim`) is a thin shim around the
      existing `run_episode` — no behavior change to `openral sim run`.
-   - `HardwareRunner` (in `openral_runner`) wires the
+   - `DeployRunner` (in `openral_runner`) wires the
      `SensorReader → WorldStateAggregator → Skill → SafetyClient → HAL`
      chain.
 
@@ -84,7 +84,7 @@ publisher branch off the GStreamer pipeline for observability.
 
 3. **`openral deploy --config R.yaml` CLI as the sibling of `openral sim run`.**
    YAML schema validation up front, license gating via
-   `rSkill.from_yaml`, then hand off to the `HardwareRunner`.
+   `rSkill.from_yaml`, then hand off to the `DeployRunner`.
    `openral sim run` remains untouched (decided in the plan phase: keep
    `openral sim run`, add `openral deploy`).
 
@@ -121,7 +121,7 @@ publisher branch off the GStreamer pipeline for observability.
 
 8. **Safety integration via a `SafetyClient` stub PR.** Per the user
    call in plan-phase Q2, the safety client lands in its own PR before
-   M5 (the first end-to-end HardwareRunner). The runner calls
+   M5 (the first end-to-end DeployRunner). The runner calls
    `SafetyClient.check(action)` inside a `safety_span`; the stub
    returns OK + logs through the existing
    `openral_observability.safety_span` so the trace surface is
@@ -214,7 +214,7 @@ PR as the schemas.
 - **PR E**: `SafetyClient` stub. `safety_span`-wired Protocol that
   returns OK and records action metadata. Standalone PR per plan-phase
   Q2.
-- **PR F**: `HardwareRunner` end-to-end against `SO100DigitalTwin` HAL
+- **PR F**: `DeployRunner` end-to-end against `SO100DigitalTwin` HAL
   + a real `hello-skill` rSkill. No ROS.
   `tests/integration/test_inference_runner_so100_digital_twin.py`.
 - **PR G**: `openral deploy --config` CLI entry.
@@ -749,12 +749,12 @@ This amendment closes the unification:
 **What changed:**
 
 - **`SimRunner` ticks at one inference step per `tick()`**, matching
-  `HardwareRunner` exactly. One `runner.tick()` advances one
+  `DeployRunner` exactly. One `runner.tick()` advances one
   `env.step` (a "step-tick") or, between episodes, one
   `env.reset` + `policy.reset` ("reset-tick").
 - **`TickResult` v2** (additive, optional defaults): five new
   fields — `step_idx`, `episode_idx`, `reward`, `terminated`,
-  `truncated` — that `SimRunner` populates and `HardwareRunner`
+  `truncated` — that `SimRunner` populates and `DeployRunner`
   leaves at `None`. Hardware ticks serialise byte-identically with
   v1 JSON under `model_dump(exclude_none=True)`. `openral_core`
   bumped 0.5.0 → 0.6.0 (minor, non-breaking).
@@ -772,7 +772,7 @@ This amendment closes the unification:
 
 **Why:**
 
-The dual driver (Protocol-style `HardwareRunner` + free-function
+The dual driver (Protocol-style `DeployRunner` + free-function
 `run_evaluation`) forced every consumer of either path to know the
 difference. With one tick semantic and one driver, the next callers
 (notebook UX, fleet shim, planned `ral fleet` multi-robot harness)
@@ -843,7 +843,7 @@ What landed on this branch (`claude/add-otel-robot-tracing-Hxf2R`):
   `openral.tick.deadline_misses` counters; fires
   `openral.event.deadline_missed` and `record_exception` +
   `set_status(ERROR)` on the parent span when the policy raises.
-- `HardwareRunner._tick_impl` — wraps `HAL.read_state` /
+- `DeployRunner._tick_impl` — wraps `HAL.read_state` /
   `HAL.send_action` in dedicated spans + duration histograms;
   catches `ROSSafetyViolation` at the supervisor boundary with
   `record_exception` + `openral.event.safety_violation` +
@@ -906,7 +906,7 @@ The Decision text's PR-by-PR ladder is fully landed:
   `protocol.py` (`InferenceRunner` Protocol, `SensorReader` Protocol,
   `SafetyClient` Protocol), `base.py` (`InferenceRunnerBase`,
   rate-limited loop, `rskill.tick` OTel span, deadline policy),
-  `hardware.py` (`HardwareRunner` wiring
+  `deploy_runner.py` (`DeployRunner` wiring
   `SensorReader → WorldStateAggregator → Skill → SafetyClient → HAL`),
   `clock.py`, `factory.py`, `safety.py` (`NullSafetyClient`), and
   `sensor_reader.py` (`GStreamerSensorReader`).

@@ -179,13 +179,13 @@ and topic names.
   `tests/sim/test_h1_hal_mujoco.py`,
   `tests/sim/test_smolvla_so100.py`.
 - Sim (cross-HAL integration): `tests/sim/test_all_hals_via_runner.py`
-  drives **every** HAL twin through the production `HardwareRunner`
+  drives **every** HAL twin through the production `DeployRunner`
   with a real `WorldStateAggregator` + a trivial echo-current-pose
   skill. Catches any joint-indexing / units / lifecycle / aggregator
   / safety wiring breakage at the integration boundary — every
   per-robot sim test could pass while this one still fails.
 - One-line full sweep: `just hal-twin-sweep` runs both the per-HAL
-  contract suite and the cross-HAL `HardwareRunner` integration
+  contract suite and the cross-HAL `DeployRunner` integration
   suite (~200 tests covering 7 robot families) with the ROS 2
   plugin workaround baked in.
 - HIL: `tests/hil/test_so100.py`, `tests/hil/test_franka_panda.py`,

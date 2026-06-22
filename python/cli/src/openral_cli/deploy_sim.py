@@ -474,6 +474,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     dashboard_port: int,
     reset_to_pose_service: str | None,
     approach_skill_id: str | None = None,
+    dataset_out: str | None = None,
+    dataset_repo_id: str | None = None,
+    dataset_license: str | None = None,
     hal_param_overrides: dict[str, object] | None = None,
     hal_mode: str = "sim",
     enable_slam: bool | None = None,
@@ -793,6 +796,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # defaults ``approach_skill_id`` to "").
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
+
+    # ADR-0019 — only forward the dataset args when recording is opted in
+    # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
+    # launch file defaults all three so omitting them disables recording).
+    if dataset_out:
+        argv_template.append(f"dataset_out:={dataset_out}")
+        if dataset_repo_id:
+            argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
+        if dataset_license:
+            argv_template.append(f"dataset_license:={dataset_license}")
 
     return LaunchInvocation(
         robot_id=robot_id,
@@ -1517,6 +1530,26 @@ def deploy_sim_command(
             "keeps the legacy ResetToPose snap."
         ),
     ),
+    dataset_out: str | None = typer.Option(
+        None,
+        "--dataset-out",
+        help=(
+            "ADR-0019 — record the deploy session (proprio + action + camera "
+            "frames + episode markers) to this rosbag2 mcap path. Convert to a "
+            "LeRobotDataset v3 offline with `openral dataset from-bag`. Empty "
+            "disables recording."
+        ),
+    ),
+    dataset_repo_id: str | None = typer.Option(
+        None,
+        "--dataset-repo-id",
+        help="ADR-0019 — repo_id for the recorded dataset (default openral/dataset-<robot>).",
+    ),
+    dataset_license: str | None = typer.Option(
+        None,
+        "--dataset-license",
+        help="ADR-0019 — SPDX license carried into `openral dataset from-bag` (default CC-BY-4.0).",
+    ),
     hal: list[str] = typer.Option(  # reason: typer Option idiom
         None,
         "--hal",
@@ -1785,6 +1818,9 @@ def deploy_sim_command(
             dashboard_port=dashboard_port,
             reset_to_pose_service=reset_to_pose_service,
             approach_skill_id=approach_skill_id,
+            dataset_out=dataset_out,
+            dataset_repo_id=dataset_repo_id,
+            dataset_license=dataset_license,
             hal_param_overrides=overrides,
             enable_slam=enable_slam,
             enable_nav2=enable_nav2,

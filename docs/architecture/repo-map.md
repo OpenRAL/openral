@@ -16,7 +16,7 @@ openral/                      ← THIS monorepo
 │  ├─ rskill/       (openral_rskill)      ← `rSkillBase` ABC, `rSkill` loader, runtime adapters (PyTorch/ONNX/TensorRT), VLA + detector adapters ✓
 │  ├─ state_adapter/ (openral_state_adapter) ← rSkill state-contract bindings (ADR-0027) ✓
 │  ├─ sim/          (openral_sim)         ← `SimRunner` + `openral sim run` / `openral benchmark run` registry; LIBERO/MetaWorld/RoboCasa/ManiSkill3/SimplerEnv/gym-aloha/gym-pusht/IsaacSim (ADR-0045 sidecar) adapters ✓
-│  ├─ runner/       (openral_runner)      ← `InferenceRunner` Protocol + `HardwareRunner` + `GStreamerSensorReader` + `NullSafetyClient`; ADR-0010 ✓
+│  ├─ runner/       (openral_runner)      ← `InferenceRunner` Protocol + `DeployRunner` + `GStreamerSensorReader` + `NullSafetyClient`; ADR-0010 ✓
 │  ├─ reasoner/     (openral_reasoner)    ← S2 LLM reasoner/supervisor core — `ReasonerCore`, `ReasonerToolCall` palette, bounded replanning ladder (ADR-0018) ✓
 │  ├─ dataset/      (openral_dataset)     ← rosbag2 ↔ LeRobotDataset v3 bridge (ADR-0019) ✓
 │  ├─ wam/          (openral_wam)         ← World Action Model layer (mental-simulation gating) — scaffold ◐

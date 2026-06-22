@@ -107,7 +107,7 @@ file is that ADR. The boundary is **not** widened — Skills still
 consume a `SensorFrame`, the only change is that `handle` becomes a
 load-bearing field for one of the four `SensorReaderBackend` values.
 The HAL, Reasoning, WAM, Safety, and Observability layers see no
-change: HardwareRunner's tick loop passes the `SensorFrame` through
+change: DeployRunner's tick loop passes the `SensorFrame` through
 to `Skill.step` verbatim.
 
 ## Consequences

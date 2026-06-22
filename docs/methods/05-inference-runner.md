@@ -37,6 +37,11 @@ _ADR-0030 — rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (
 - `world_cloud_span_attributes(*, points_base, frame_id, source_node, range_max_m, xy_m, z_min, z_max) -> dict[str,Any]` — assemble the `openral.world_cloud.*` span attributes. (L214)
 - `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the centers cloud (TRANSIENT_LOCAL), TF2-transforms to `base_link`, throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `destroy()` releases the subscription. (L260)
 
+### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
+_ADR-0019 — bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._
+
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot (ADR-0028b) chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. `destroy()` flushes the pending tick, closes the episode, finalizes the bag, releases the subscriptions. (L85)
+
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _:class:`SensorReader` Protocol — seam between per-sensor capture backends and the inference runner (ADR-0010 PR D)._
 
@@ -161,14 +166,14 @@ _Runtime glue (ADR-0037) that wires a ``kind: detector`` rSkill to a live camera
 - `class DetectorRunner` (L60) — `__init__(pipeline, manifest, *, onnx_path=None, sensor_id, on_detection, tee_name=TEE_NAME, tier=None)` (L101) — validates `manifest.kind == "detector"` + `manifest.detector is not None` (raises `ROSConfigError`); caches `_net_w`/`_net_h` from `DetectorContract.input_size` for the NVMM caps; delegates to `build_manifest_detector(manifest, onnx_path=onnx_path, tier=tier)` → `(detector, tier)` (gi-free dispatch; `onnx_path` optional, `None` for the VLM sidecar tier); creates `TeeManager`. `start()` (L178) — selects branch string + handler by tier: NVMM_AGGREGATOR resolves the platform's NVMM converter (`nvvideoconvert`/`nvvidconv`) via `nvmm_convert_element()` (raises `ROSConfigError` if neither registered) and attaches the NVMM RGBA appsink + `_on_sample_nvmm`; every other tier (CPU_ONNX, VLM_SIDECAR, ZEROSHOT_HF) attaches `videoconvert ! video/x-raw,format=BGR ! appsink` + `_on_sample_bgr`; raises `ROSRuntimeError` if appsink not found after attach. `_on_sample_bgr(appsink) -> int` (L242) — pulls BGR sample, format assert, buffer.map/unmap, calls `detector.detect`, fires `on_detection` on non-`None`; errors guarded. `_on_sample_nvmm(appsink) -> int` (L301) — pulls NVMM sample, `wrap_buffer`, calls `NvmmObjectsDetector.detect_nvmm`, fires `on_detection`; always unmaps; errors guarded. `stop()` (L59) — disconnects signal + detaches branch + calls `detector.close()` if present; idempotent.
 
 ### `python/runner/src/openral_runner/__init__.py`
-_Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): heavy symbols (`InferenceRunnerBase`, `factory.*`, `HardwareRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch (582 modules) or trigger downstream glib conflicts._
+_Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): heavy symbols (`InferenceRunnerBase`, `factory.*`, `DeployRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch (582 modules) or trigger downstream glib conflicts._
 
 - light eager imports: `precise_sleep`, `sleep_until`, `InferenceRunner` (Protocol), `SensorReader` (Protocol).
 - `_LAZY_ATTRS: dict[str, tuple[str, str]]` — `attr → (module, name)` map driving the `__getattr__` resolver. (L80)
 - `__getattr__(name) -> Any` — Resolves heavy symbols on first access (torch / glib-sensitive deferral). (L95)
 
 ### `python/runner/src/openral_runner/factory.py`
-_Wires `RobotEnvironment` YAML → live `HardwareRunner` (ADR-0010 PR G). The single seam the `openral deploy --config` CLI goes through._
+_Wires `RobotEnvironment` YAML → live `DeployRunner` (ADR-0010 PR G). The single seam the `openral deploy --config` CLI goes through._
 
 - `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L135)
 - `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`. (L296)
@@ -178,12 +183,12 @@ _Wires `RobotEnvironment` YAML → live `HardwareRunner` (ADR-0010 PR G). The si
 - `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L112)
 - `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L141)
 - `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L181)
-- `build_runner(env: RobotEnvironment) -> tuple[HardwareRunner, rSkillBase]` — Composes HAL + skill + `WorldStateAggregator` + `SensorReader[]` + `NullSafetyClient` into a `HardwareRunner`. Returns the runner **and** the skill so the caller drives the skill lifecycle. Raises `ROSConfigError` on unknown registry ids. (L303)
+- `build_runner(env: RobotEnvironment) -> tuple[DeployRunner, rSkillBase]` — Composes HAL + skill + `WorldStateAggregator` + `SensorReader[]` + `NullSafetyClient` into a `DeployRunner`. Returns the runner **and** the skill so the caller drives the skill lifecycle. Raises `ROSConfigError` on unknown registry ids. (L303)
 
-### `python/runner/src/openral_runner/hardware.py`
-_:class:`HardwareRunner` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient (ADR-0010 PR F)._
+### `python/runner/src/openral_runner/deploy_runner.py`
+_:class:`DeployRunner` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient (ADR-0010 PR F)._
 
-- `class HardwareRunner(InferenceRunnerBase)` — First end-to-end closer of the `WorldState → Skill → safety → HAL` loop on real hardware / digital twins. The runner is the safety-supervisor boundary per CLAUDE.md §10: catches `ROSSafetyViolation` from the SafetyClient, records it on the `TickResult`, withholds the `HAL.send_action` call (does not re-raise because withholding IS the mitigation today). (L76)
+- `class DeployRunner(InferenceRunnerBase)` — First end-to-end closer of the `WorldState → Skill → safety → HAL` loop on real hardware / digital twins. The runner is the safety-supervisor boundary per CLAUDE.md §10: catches `ROSSafetyViolation` from the SafetyClient, records it on the `TickResult`, withholds the `HAL.send_action` call (does not re-raise because withholding IS the mitigation today). (L76)
   - `__init__(*, hal, skill, aggregator, sensor_readers=(), safety_client=None, recorder=None, thumbnail_hz=25.0, **base_kwargs)` — Caller must pre-`configure()`+`activate()` the skill; runner manages HAL + reader open/close. Defaults `safety_client` to `NullSafetyClient`. `thumbnail_hz` gates dashboard JPEG-thumbnail emission per camera (0 disables), decoupled from `rate_hz`. ADR-0019 PR3: optional `recorder` is a `openral_dataset.RolloutRecorder`; when set, `episode_start` / `episode_end` drive its lifecycle and every tick fans out via `record_frame`. (L128)
   - `episode_start(task_string: str) -> int` — ADR-0019 PR3: open a new episode on the attached recorder; returns the new `episode_idx` (or `-1` when no recorder is attached). Raises `RuntimeError` if called twice without `episode_end`. (L188)
   - `episode_end(*, success: bool) -> None` — ADR-0019 PR3: close the current recorder episode with the success flag. No-op when no recorder is attached. Raises `RuntimeError` if called without `episode_start`. (L216)
@@ -212,7 +217,7 @@ _Shared base for inference runners (ADR-0010 PR C). Subclasses override `_tick_i
   - `activate() -> None` — Reset tick counter; mark active. (L115)
   - `deactivate() -> None` — Stop ticking; idempotent. (L120)
   - `_tick_impl(tick_idx: int) -> TickResult` [@abstractmethod] — Subclass hook; the base wraps it in a `rskill.tick` span. (L127)
-  - `episode_start(task_string: str) -> int` — ADR-0019 PR3: optional explicit episode boundary; default raises `NotImplementedError`. `HardwareRunner` overrides to drive the recorder; `SimRunner` overrides as a no-op (sim derives episode boundaries from `env.step` flags). (L164)
+  - `episode_start(task_string: str) -> int` — ADR-0019 PR3: optional explicit episode boundary; default raises `NotImplementedError`. `DeployRunner` overrides to drive the recorder; `SimRunner` overrides as a no-op (sim derives episode boundaries from `env.step` flags). (L164)
   - `episode_end(*, success: bool) -> None` — ADR-0019 PR3: optional explicit episode boundary; default raises `NotImplementedError`. See `episode_start`. (L189)
   - `_should_terminate() -> bool` — Subclass early-exit hook (default False) consulted after each tick inside `run()`. `SimRunner` overrides to stop once `n_episodes` complete. (L141)
   - `tick() -> TickResult` — Span-wrapped single-tick entry; attaches per-stage timings as `skill.{tick_ms, inference_ms, sensors_ms, world_state_ms, safety_ms, hal_ms, action_applied, safety_violations}` attributes plus sim-only `skill.{step_idx, episode_idx, reward, terminated, truncated}` when set, plus `openral.tick.idx`. Records `openral.tick.duration` / `openral.inference.duration` histograms (label: `skill.id`) and increments `openral.safety.violations{check_name="runtime", severity="violation"}` for each violation on the tick. (L208)
@@ -220,4 +225,3 @@ _Shared base for inference runners (ADR-0010 PR C). Subclasses override `_tick_i
   - `_current_trace_id() -> str | None` [@staticmethod] — Active OTel trace id (hex) or None. (L348)
   - `_on_deadline_overrun(result: TickResult) -> None` — Apply policy: structlog warn / drop / raise `ROSDeadlineMissed`. Always increments `openral.tick.deadline_misses` and emits `openral.event.deadline_missed` on the current parent span; on `RAISE`, also calls `record_exception` + `set_status(ERROR)` on the parent span before re-raising. (L358)
   - `_build_run_result(results, *, budget_violations, trace_id) -> RunResult` — Aggregate per-tick records into `RunResult` (mean / p99). (L411)
-

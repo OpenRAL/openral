@@ -1,6 +1,6 @@
 """Hardware inference runner.
 
-:class:`HardwareRunner` is the first concrete subclass of
+:class:`DeployRunner` is the first concrete subclass of
 :class:`~openral_runner.InferenceRunnerBase` and closes the
 inference loop end-to-end on real hardware (or a digital twin):
 
@@ -65,7 +65,7 @@ from openral_runner.base import InferenceRunnerBase
 from openral_runner.safety import NullSafetyClient, SafetyClient
 from openral_runner.sensor_reader import SensorReader
 
-__all__ = ["HardwareRunner"]
+__all__ = ["DeployRunner"]
 
 log = structlog.get_logger(__name__)
 
@@ -73,7 +73,7 @@ log = structlog.get_logger(__name__)
 _modality_for_encoding = ral_producer.modality_for_encoding
 
 
-class HardwareRunner(InferenceRunnerBase):
+class DeployRunner(InferenceRunnerBase):
     """Compose HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient.
 
     Mirrors the simulator runner (``openral_sim.SimRunner``) but
@@ -120,7 +120,7 @@ class HardwareRunner(InferenceRunnerBase):
             ``latency_budget_ms``, ``save_dir``).
 
     Example:
-        >>> # Exercised in tests/unit/test_hardware_runner.py against a
+        >>> # Exercised in tests/unit/test_deploy_runner.py against a
         >>> # real SO100FollowerHAL backed by SO100DigitalTwin.
         >>> pass
     """
@@ -233,7 +233,7 @@ class HardwareRunner(InferenceRunnerBase):
     def _tracer(self) -> trace.Tracer:
         # Per-call resolution — see also ``aggregator._tracer``: caching at
         # module / __init__ time binds to the TracerProvider that was
-        # global when ``HardwareRunner`` was first constructed and silently
+        # global when ``DeployRunner`` was first constructed and silently
         # drops spans after a provider swap.
         return trace.get_tracer("openral")
 
@@ -251,7 +251,7 @@ class HardwareRunner(InferenceRunnerBase):
         for reader in self._sensor_readers:
             reader.open()
         log.info(
-            "hardware_runner.activated",
+            "deploy_runner.activated",
             runner=self._runner_name,
             robot=self._hal.description.name,
             sensor_count=len(self._sensor_readers),
@@ -269,7 +269,7 @@ class HardwareRunner(InferenceRunnerBase):
                 reader.close()
             except Exception as exc:  # reason: log + continue on teardown
                 log.warning(
-                    "hardware_runner.sensor_close_error",
+                    "deploy_runner.sensor_close_error",
                     runner=self._runner_name,
                     sensor_id=reader.sensor_id,
                     exc=str(exc),
@@ -278,7 +278,7 @@ class HardwareRunner(InferenceRunnerBase):
             self._hal.disconnect()
         except Exception as exc:  # reason: log + continue on teardown
             log.warning(
-                "hardware_runner.hal_disconnect_error",
+                "deploy_runner.hal_disconnect_error",
                 runner=self._runner_name,
                 exc=str(exc),
             )
@@ -291,14 +291,14 @@ class HardwareRunner(InferenceRunnerBase):
                     self._recorder.episode_end(success=False)  # type: ignore[attr-defined]
                 except (ValueError, RuntimeError) as exc:
                     log.warning(
-                        "hardware_runner.recorder_episode_end_failed",
+                        "deploy_runner.recorder_episode_end_failed",
                         exc=str(exc),
                     )
                 self._recorder_episode_open = False
             try:
                 self._recorder.finalize()  # type: ignore[attr-defined]
             except (ValueError, RuntimeError) as exc:
-                log.warning("hardware_runner.recorder_finalize_failed", exc=str(exc))
+                log.warning("deploy_runner.recorder_finalize_failed", exc=str(exc))
         super().deactivate()
 
     def _thumbnail_due(self, sensor_id: str, now: float) -> bool:
@@ -403,7 +403,7 @@ class HardwareRunner(InferenceRunnerBase):
                     )
                 ral_metrics.get_sensors_stale_reads().add(1, {semconv.LABEL_MODALITY: "unknown"})
                 log.debug(
-                    "hardware_runner.sensor_stale",
+                    "deploy_runner.sensor_stale",
                     sensor_id=reader.sensor_id,
                     exc=str(exc),
                 )
@@ -461,14 +461,14 @@ class HardwareRunner(InferenceRunnerBase):
         step_result = self._skill.step(snapshot)
         inference_ms = (time.perf_counter() - inf_t0) * 1e3
         # ADR-0028b — ``step()`` may return ``Action | list[Action]``.
-        # HardwareRunner is the live-hardware path; today its safety
+        # DeployRunner is the live-hardware path; today its safety
         # + HAL dispatch + observability code assumes a single Action.
         # Until ADR-0028c lands per-mode HAL handlers on real hardware,
         # surface list returns as a typed config error instead of
         # silently picking the first one.
         if isinstance(step_result, list):
             raise ROSConfigError(
-                f"HardwareRunner: skill {self._skill.name!r} returned "
+                f"DeployRunner: skill {self._skill.name!r} returned "
                 f"{len(step_result)} Actions (ADR-0028b multi-surface). "
                 "Real-hardware HALs gain per-mode dispatch in ADR-0028c; "
                 "run this skill via rskill_runner_node (sim path) until then."
@@ -510,7 +510,7 @@ class HardwareRunner(InferenceRunnerBase):
                 },
             )
             log.warning(
-                "hardware_runner.safety_violation",
+                "deploy_runner.safety_violation",
                 runner=self._runner_name,
                 tick_idx=tick_idx,
                 exc=str(exc),

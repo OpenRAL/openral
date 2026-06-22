@@ -269,6 +269,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    # ADR-0019 — record the deploy session to a rosbag2 mcap.
+    dataset_out = LaunchConfiguration("dataset_out").perform(context)
+    dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
+    dataset_license = LaunchConfiguration("dataset_license").perform(context)
     dashboard_port = LaunchConfiguration("dashboard_port").perform(context)
     reasoner_provider = LaunchConfiguration("reasoner_provider").perform(context)
     reasoner_model = LaunchConfiguration("reasoner_model").perform(context)
@@ -696,6 +700,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # would see it as ~1.78e9 s stale and drop every frame at the
                 # WorldState staleness gate. Default false keeps it wall-clock.
                 "use_sim_time": use_sim_time,
+                # ADR-0019 — when set, compose_runtime attaches the
+                # DatasetRecorderBridge and records the session to this mcap.
+                "dataset_out": dataset_out,
+                "dataset_repo_id": dataset_repo_id,
+                "dataset_license": dataset_license,
             }
         ],
         additional_env=otel_env,
@@ -1343,6 +1352,26 @@ def generate_launch_description() -> LaunchDescription:
                 "plan a collision-free motion to each skill's starting_pose. "
                 "Empty = legacy ResetToPose snap."
             ),
+        ),
+        DeclareLaunchArgument(
+            "dataset_out",
+            default_value="",
+            description=(
+                "ADR-0019 — when set, record the deploy session (proprio + "
+                "action + camera frames + episode markers) to this rosbag2 "
+                "mcap path. Convert offline with `openral dataset from-bag`. "
+                "Empty disables recording."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "dataset_repo_id",
+            default_value="",
+            description="ADR-0019 — repo_id for the recorded dataset.",
+        ),
+        DeclareLaunchArgument(
+            "dataset_license",
+            default_value="CC-BY-4.0",
+            description="ADR-0019 — SPDX license carried into `openral dataset from-bag`.",
         ),
         DeclareLaunchArgument(
             "dashboard_port",

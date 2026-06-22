@@ -16,7 +16,7 @@ directly**. Instead:
   shutdown in one place per CLAUDE.md §6.1).
 
 This is the **single change** to the in-process hot path mandated by
-ADR-0018 §F1: ``HardwareRunner._tick_impl`` keeps calling
+ADR-0018 §F1: ``DeployRunner._tick_impl`` keeps calling
 ``hal.send_action(action)`` — only the sink moves from motors to a ROS
 topic, behind which sits ``safety_node`` (F5) → ``<robot>_hal_node``.
 
@@ -120,7 +120,7 @@ class ROSPublishingHAL:
             ``disconnect`` are no-ops outside this node's lifecycle.
         description: The :class:`RobotDescription` for the robot this
             adapter represents. Surfaced via the ``HAL.description``
-            attribute consumed by `HardwareRunner` for span attributes
+            attribute consumed by `DeployRunner` for span attributes
             and per-joint limit lookups.
         skill_id_getter: Zero-arg callable returning the in-flight
             skill id (filled into ``ActionChunk.rskill_id``). The
@@ -149,6 +149,7 @@ class ROSPublishingHAL:
         description: RobotDescription,
         skill_id_getter: Callable[[], str] = lambda: "",
         skill_revision_getter: Callable[[], str] = lambda: "",
+        tick_index_getter: Callable[[], int] = lambda: 0,
         joint_state_topic: str = "/joint_states",
         candidate_action_topic: str = "/openral/candidate_action",
     ) -> None:
@@ -157,6 +158,9 @@ class ROSPublishingHAL:
         self.description = description
         self._skill_id_getter = skill_id_getter
         self._skill_revision_getter = skill_revision_getter
+        # ADR-0019 — stamps every emitted ActionChunk with the current 1-based
+        # inference-tick index so a recorder can group a tick's slot chunks.
+        self._tick_index_getter = tick_index_getter
         self._joint_state_topic = joint_state_topic
         self._candidate_action_topic = candidate_action_topic
         self._publisher: Any = None
@@ -314,6 +318,7 @@ class ROSPublishingHAL:
         chunk.confidence = float(action.confidence)
         chunk.rskill_id = self._skill_id_getter()
         chunk.rskill_revision = self._skill_revision_getter()
+        chunk.tick_index = int(self._tick_index_getter()) & 0xFFFFFFFF
         # ADR-0018 §6 — trace_id is the join key. Source it from the
         # active OTel span context via the existing W3C helper so the
         # field stays in lock-step with the OTel parent.

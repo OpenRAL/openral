@@ -12,7 +12,7 @@
 
 ## Context
 
-The OpenRAL runtime today is one Python process — `HardwareRunner` /
+The OpenRAL runtime today is one Python process — `DeployRunner` /
 `SimRunner` from ADR-0010 — that owns one rSkill, one HAL, and one
 WorldState aggregator. There is no graph; there is no fault bus; there is
 no way for an out-of-process planner to look at world state and tell the
@@ -104,7 +104,7 @@ Nodes:
 - `safety_node` — new. Python pass-through with stub envelope checks
   (Day 1); C++ kernel later (separate ADR).
 - `rskill_runner_node` — new. Owns the `ExecuteRskill.action` server and
-  the in-process `HardwareRunner` from ADR-0010. **One per robot.**
+  the in-process `DeployRunner` from ADR-0010. **One per robot.**
 - `reasoner_node` — new. Direct LLM dispatch (no BT in v1).
 - `prompt_router_node` — new. Single node with adapter registry
   (CLI + dashboard WebSocket in v1).

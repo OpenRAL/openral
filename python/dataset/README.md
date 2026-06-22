@@ -68,7 +68,7 @@ The rest of the ADR-0019 PR series has since landed:
   hardware path is the one remaining gap.
 - **PR3** ✅ — `Rosbag2Sink` (mcap, daemon writer thread) + `openral_msgs/Tick`
   / `openral_msgs/Episode` IDLs + explicit `episode_start` / `episode_end`
-  API on `HardwareRunner` (`bag.py`).
+  API on `DeployRunner` (`bag.py`).
 - **PR4** ✅ — `Rosbag2ToLeRobotConverter.from_bag` + `openral dataset from-bag`
   CLI subcommand (`converter.py`).
 - **PR5** ✅ — `openral dataset push` with consent prompt + `_hf_publish` shared
@@ -127,8 +127,8 @@ the `libero` / `metaworld` dependency groups today).
   re-opens the produced v3 dataset (CUDA + `lerobot` + `gym_aloha` gated; skips
   on CPU/CI).
 - **Hardware / rosbag path** is covered only in unit isolation:
-  `tests/unit/test_hardware_runner_dataset_recording.py` drives
-  `HardwareRunner` + `Rosbag2Sink` directly, plus the converter / CLI unit
+  `tests/unit/test_deploy_runner_dataset_recording.py` drives
+  `DeployRunner` + `Rosbag2Sink` directly, plus the converter / CLI unit
   tests. It has **not** been exercised through `openral deploy sim` or a live
   ROS 2 graph — the deploy-sim node (`rskill_runner_node.py`) does not yet
   construct or attach a `RolloutRecorder`.

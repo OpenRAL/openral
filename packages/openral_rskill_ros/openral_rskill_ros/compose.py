@@ -77,6 +77,13 @@ class ComposedRuntime:
     ``enable_world_cloud_bridge=True``. ``None`` otherwise. Production
     launches enable it through the same ``--enable-octomap`` CLI flag
     that brings up octomap_server itself."""
+    dataset_recorder_bridge: object | None = None
+    """ADR-0019 — optional bus-attached recorder writing a rosbag2 mcap of
+    the deploy session (proprio + action + camera frames + episode
+    markers). Constructed when :func:`compose_runtime` is called with a
+    ``dataset_out`` path. ``None`` otherwise. Production launches enable it
+    through the ``openral deploy sim/run --dataset-out`` CLI flag. The
+    caller must invoke ``.destroy()`` on teardown so the bag is finalized."""
 
 
 def compose_runtime(
@@ -86,6 +93,10 @@ def compose_runtime(
     skill_resolver_factory: Callable[[Any], SkillResolver] | None = None,
     enable_slam_bridge: bool = False,
     enable_world_cloud_bridge: bool = False,
+    dataset_out: str | pathlib.Path | None = None,
+    dataset_repo_id: str | None = None,
+    dataset_license: str = "CC-BY-4.0",
+    dataset_fps: float | None = None,
 ) -> ComposedRuntime:
     """Build the composed world_state + skill_runner runtime for any robot.
 
@@ -122,6 +133,18 @@ def compose_runtime(
             into the dashboard via the ``world.pointcloud`` OTel span
             family. Defaults to ``False`` so deployments without octomap
             don't pay the subscription cost.
+        dataset_out: ADR-0019 — when set, attach a
+            :class:`~openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`
+            that records the deploy session (proprio + action + camera
+            frames + episode markers) to this rosbag2 ``.mcap`` path. The
+            caller must call ``runtime.dataset_recorder_bridge.destroy()``
+            on teardown to finalize the bag. ``None`` disables recording.
+        dataset_repo_id: repo_id stamped into the recorded frames /
+            eventual LeRobotDataset. Defaults to ``openral/dataset-<robot>``.
+        dataset_license: SPDX license carried into the offline
+            ``openral dataset from-bag`` conversion. Defaults to ``CC-BY-4.0``.
+        dataset_fps: Recording cadence. Defaults to the robot's
+            ``action_spec.control_freq_hz`` or 30.0.
 
     Returns:
         A :class:`ComposedRuntime` bundle. The caller is responsible
@@ -195,6 +218,40 @@ def compose_runtime(
         from openral_runner.world_cloud_bridge import WorldCloudBridge
 
         world_cloud_bridge = WorldCloudBridge(skill_runner_node)
+    dataset_recorder_bridge: object | None = None
+    if dataset_out is not None:
+        # ADR-0019 — attach a bus recorder sharing the runner's executor +
+        # aggregator. Robot-agnostic: every shape is derived from the bus
+        # data + this ``description`` (no observation_spec dependency,
+        # since Rosbag2Sink writes raw arrays — `openral dataset from-bag`
+        # materialises the LeRobotDataset offline).
+        from openral_dataset import RolloutRecorder, Rosbag2Sink
+        from openral_runner.dataset_recorder_bridge import DatasetRecorderBridge
+
+        action_spec = getattr(description, "action_spec", None)
+        fps = (
+            float(dataset_fps)
+            if dataset_fps
+            else (
+                float(action_spec.control_freq_hz)
+                if action_spec is not None and action_spec.control_freq_hz
+                else 30.0
+            )
+        )
+        recorder = RolloutRecorder(
+            robot=description,
+            task_string="",
+            fps=fps,
+            sinks=[Rosbag2Sink(bag_path=dataset_out)],
+            repo_id=dataset_repo_id or f"openral/dataset-{description.name}",
+        )
+        dataset_recorder_bridge = DatasetRecorderBridge(
+            skill_runner_node,
+            robot=description,
+            aggregator=aggregator,
+            recorder=recorder,
+        )
+        del dataset_license  # carried into the bag's LeRobot conversion via `from-bag`
     return ComposedRuntime(
         description=description,
         aggregator=aggregator,
@@ -202,6 +259,7 @@ def compose_runtime(
         skill_runner_node=skill_runner_node,
         slam_bridge=slam_bridge,
         world_cloud_bridge=world_cloud_bridge,
+        dataset_recorder_bridge=dataset_recorder_bridge,
     )
 
 
