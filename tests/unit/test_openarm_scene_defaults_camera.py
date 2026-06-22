@@ -1,11 +1,10 @@
-"""Unit tests for ``RobotDescription.scene_defaults.top_camera``.
+"""Unit tests for OpenArm tabletop camera defaults.
 
 The openarm_robosuite scene composer used to carry module-level
 constants for the "top" (a.k.a. "base") overview camera, baked to the
-``mddoai/openarm_2026-05-14_clean`` dataset POV. Those moved onto the
-robot manifest's new ``scene_defaults.top_camera`` submodel so the
-default is data, not code; the per-rollout YAML's
-``scene.backend_options.top_camera_*`` keys still override.
+``mddoai/openarm_2026-05-14_clean`` dataset POV. ADR-0066 moved those
+defaults onto the deploy scene composition so the environment owns its
+arena and camera pose; the robot manifest describes only the robot.
 
 CLAUDE.md §1.11: real schemas, real fixture under ``robots/openarm/``,
 no mocks.
@@ -16,6 +15,7 @@ from __future__ import annotations
 import pytest
 from openral_core import (
     ControlMode,
+    DeployScene,
     EmbodimentKind,
     JointSpec,
     JointType,
@@ -61,27 +61,31 @@ def test_scene_defaults_forbids_unknown_fields() -> None:
         SceneDefaults.model_validate({"top_kamera": {"pos": [0, 0, 0]}})
 
 
-# ── openarm robot.yaml fixture round-trip ─────────────────────────────────────
+# ── OpenArm fixture ownership ─────────────────────────────────────────────────
 
 
-def test_openarm_robot_yaml_loads_top_camera_defaults() -> None:
-    """The in-tree openarm manifest carries the mddoai dataset POV."""
+def test_openarm_deploy_scene_loads_top_camera_defaults() -> None:
+    """The in-tree OpenArm deploy scene carries the mddoai dataset POV."""
+    scene = DeployScene.from_yaml("scenes/deploy/openarm_tabletop.yaml")
+    assert scene.composition is not None
+    params = scene.composition.params
+
+    assert params["top_camera_pos"] == [0.20, 0.0, 0.95]
+    assert params["top_camera_target"] == [0.65, 0.0, 0.05]
+    assert params["top_camera_fovy"] == 65.0
+
+
+def test_openarm_robot_yaml_does_not_own_scene_defaults() -> None:
+    """ADR-0066 keeps scene camera defaults off the robot manifest."""
     desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-    assert desc.scene_defaults is not None
-    cam = desc.scene_defaults.top_camera
-    assert cam is not None
-    assert cam.pos == (0.20, 0.0, 0.95)
-    assert cam.target == (0.65, 0.0, 0.05)
-    assert cam.fovy == 65.0
+    assert desc.scene_defaults is None
 
 
 def test_openarm_robot_yaml_matches_in_code_constant() -> None:
-    """``robots/openarm/robot.yaml`` and ``OPENARM_DESCRIPTION`` agree on the camera.
+    """``robots/openarm/robot.yaml`` and ``OPENARM_DESCRIPTION`` agree on defaults.
 
-    This is the drift guard for the new field: the in-code HAL constant
-    and the YAML fixture must declare the same ``scene_defaults`` block,
-    same way the joint inventory is pinned by
-    ``test_robot_manifests_match_hal_constants.py``.
+    The drift guard now asserts both omit scene defaults; scene composition is
+    pinned by ``test_openarm_deploy_scene_loads_top_camera_defaults``.
     """
     pytest.importorskip("openral_hal")
     from openral_hal.openarm import OPENARM_DESCRIPTION
