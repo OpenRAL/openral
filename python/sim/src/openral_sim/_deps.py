@@ -31,6 +31,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import sysconfig
 import threading
 from dataclasses import dataclass, field
@@ -134,8 +135,9 @@ def _has_module(module: str) -> bool:
 
     Uses ``find_spec`` instead of ``importlib.import_module`` so we do
     not trigger robocasa's import-time version assertions (which would
-    raise AssertionError under a real numpy 2.x install before the
-    backend's adapter has a chance to spoof ``__version__``).
+    raise AssertionError under a real numpy 2.x install if the clone's
+    asserts have not yet been relaxed at provision time, see
+    :func:`_relax_robocasa_version_asserts_step`).
     """
     try:
         return importlib.util.find_spec(module) is not None
@@ -177,6 +179,36 @@ _ROBOCASA_RUNTIME_DEPS = (
 )
 
 
+def _robocasa_import_succeeds() -> bool:
+    """True iff ``import robocasa`` actually SUCCEEDS (not just ``find_spec``).
+
+    The probes above use ``find_spec`` (never ``import``) for cheapness, but
+    ``find_spec``-able is NOT the same as functional: a robocasa whose import
+    would still fail — the wrong robosuite major shadowing the fork's pin (e.g.
+    LIBERO's ``robosuite==1.4``), a half-applied editable install, a missing
+    submodule — is still ``find_spec``-able, and the bare-``find_spec`` probes
+    would wrongly report it "present", causing :func:`ensure_backend_deps` to
+    SKIP the provisioning that would fix it (the false-positive this guards
+    against).
+
+    A plain ``import robocasa`` is enough now that the install plan relaxes the
+    fork's import-time micro-version asserts at provision time
+    (:func:`_relax_robocasa_version_asserts_step`) — no runtime version spoof.
+    Run it in a fresh subprocess so any crash is isolated; return ``True`` only
+    on a clean exit.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import robocasa"],
+            capture_output=True,
+            timeout=180,
+            check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return result.returncode == 0
+
+
 def _has_robocasa_kitchen() -> bool:
     """Robocasa is installed AND the kitchen variant ships `download_kitchen_assets`."""
     if not _has_module("robocasa"):
@@ -191,7 +223,12 @@ def _has_robocasa_kitchen() -> bool:
         # GR1 fork installed instead -- kitchen probe must say "no" so
         # the kitchen plan does not get skipped on a GR1 host.
         return False
-    return all(_has_module(m) for m in _ROBOCASA_RUNTIME_DEPS)
+    if not all(_has_module(m) for m in _ROBOCASA_RUNTIME_DEPS):
+        return False
+    # find_spec is necessary but NOT sufficient (see _robocasa_import_succeeds):
+    # verify the import actually works so a wrong-robosuite / half-installed
+    # robocasa is re-provisioned instead of silently skipped.
+    return _robocasa_import_succeeds()
 
 
 def _has_robocasa_gr1() -> bool:
@@ -212,7 +249,11 @@ def _has_robocasa_gr1() -> bool:
         and (utils / "placement_samplers.py").is_file()
     ):
         return False
-    return all(_has_module(m) for m in _ROBOCASA_RUNTIME_DEPS)
+    if not all(_has_module(m) for m in _ROBOCASA_RUNTIME_DEPS):
+        return False
+    # Same find_spec false-positive guard as the kitchen probe — see
+    # _robocasa_import_succeeds (asserts relaxed at provision time, no spoof).
+    return _robocasa_import_succeeds()
 
 
 def _has_simpler_env() -> bool:
@@ -515,6 +556,54 @@ def _robosuite_clone_hint(git: str, rs_dir: Path) -> str:
     )
 
 
+def _relax_robocasa_version_asserts_step(init_path: Path) -> InstallStep:
+    """Relax robocasa's import-time micro-version asserts in the cloned __init__.py.
+
+    robocasa's forks hard-assert exact micro versions at import — kitchen
+    ``mujoco == "3.3.1"`` / ``numpy in ["2.2.5"]``; the GR1 fork also
+    ``robosuite in {...}`` — strict ``==`` / ``in``, not ranges. We cannot pin the
+    whole venv to those (LIBERO / MetaWorld / ALOHA / PushT need newer
+    mujoco / numpy), and empirically robocasa runs fine on the workspace's
+    mujoco 3.8.x / numpy 2.2.x / robosuite 1.5.2 once the assert is bypassed.
+
+    So we neutralise the assert CONDITIONS in the editable clone at provision
+    time (idempotent via a marker; **fails loudly** if no assert is found, so an
+    upstream rewrite of ``__init__.py`` can't silently leave a stale pin). This
+    replaces the former runtime ``_spoof_robocasa_version_pins`` — no version
+    lying, and numba sees the real numpy 2.x (the spoof had to warm numba first
+    precisely because it faked an old numpy).
+    """
+    patch = (
+        "import re, sys\n"
+        "from pathlib import Path\n"
+        f"p = Path({str(init_path)!r})\n"
+        "s = p.read_text()\n"
+        "MARK = 'OPENRAL_VERSION_PINS_RELAXED'\n"
+        "if MARK in s:\n"
+        "    print('robocasa version asserts already relaxed'); sys.exit(0)\n"
+        "n = 0\n"
+        "for mod in ('mujoco', 'numpy', 'robosuite'):\n"
+        "    repl1 = f'{mod}.__version__ is not None  # {MARK}'\n"
+        '    s, c1 = re.subn(rf\'{mod}\\.__version__ == "[^"]+"\', repl1, s)\n'
+        "    repl2 = f'{mod}.__version__ is not None or {mod}.__version__ in [  # {MARK}'\n"
+        "    s, c2 = re.subn(rf'{mod}\\.__version__ in \\[', repl2, s)\n"
+        "    n += c1 + c2\n"
+        "if n == 0:\n"
+        "    print('ERROR: no robocasa version asserts found to relax '\n"
+        "          '(upstream __init__.py changed?)', file=sys.stderr); sys.exit(1)\n"
+        "p.write_text(s)\n"
+        "print(f'relaxed {n} robocasa version assert(s) in {p}')\n"
+    )
+    return InstallStep(
+        description=(
+            f"relax robocasa version asserts in {init_path} "
+            "(mujoco/numpy/robosuite micro-pins → accept the workspace versions; "
+            "replaces the runtime version spoof)"
+        ),
+        argv=["bash", "-c", f"python3 - <<'OPENRAL_PATCH_EOF'\n{patch}OPENRAL_PATCH_EOF"],
+    )
+
+
 def _robocasa_kitchen_plan() -> BackendInstallPlan:
     uv = _uv()
     git = _git()
@@ -653,6 +742,7 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
                 ),
                 argv=["bash", "-c", f"touch {rc_dir}/robocasa/macros_private.py"],
             ),
+            _relax_robocasa_version_asserts_step(rc_dir / "robocasa" / "__init__.py"),
             InstallStep(
                 description=(
                     f"uv pip install -e {rc_dir} --no-deps "
@@ -872,6 +962,7 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
                     f"touch {clone_dir}/robocasa/macros_private.py",
                 ],
             ),
+            _relax_robocasa_version_asserts_step(clone_dir / "robocasa" / "__init__.py"),
             InstallStep(
                 description=(
                     f"uv pip install -e {clone_dir} (editable -- the fork's "

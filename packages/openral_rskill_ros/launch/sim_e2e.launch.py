@@ -181,7 +181,9 @@ def _resolve_sim_clock(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes")
 
 
-def _build_nav2_include(robot_yaml: str, *, use_sim_time: bool) -> object:
+def _build_nav2_include(
+    robot_yaml: str, *, use_sim_time: bool, slam_backend: str = "lidar"
+) -> object:
     """Construct the IncludeLaunchDescription for upstream Nav2 (ADR-0025).
 
     Pulled out of :func:`compose_runtime_graph` for line-count
@@ -217,6 +219,9 @@ def _build_nav2_include(robot_yaml: str, *, use_sim_time: bool) -> object:
         launch_arguments={
             "use_sim_time": "true" if use_sim_time else "false",
             "robot_yaml": robot_yaml,
+            # ADR-0064 — visual robots get the `/map`-consuming costmap profile
+            # (nav2_visual.yaml); lidar robots keep the `/scan` base config.
+            "slam_backend": slam_backend,
         }.items(),
     )
 
@@ -294,6 +299,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         "true",
         "yes",
     )
+    # ADR-0064 — which SLAM backend to compose when enable_slam: "lidar"
+    # (slam_toolbox), "visual" (cuVSLAM, camera-based, lidar-less robots),
+    # or "none". Resolved upstream in deploy_sim.py from capabilities;
+    # default "lidar" preserves the pre-ADR-0064 behaviour for any caller
+    # that sets enable_slam without forwarding slam_backend.
+    slam_backend = LaunchConfiguration("slam_backend").perform(context).strip().lower()
     enable_nav2 = LaunchConfiguration("enable_nav2").perform(context).lower() in (
         "1",
         "true",
@@ -687,9 +698,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
-                # Forward enable_slam so the runtime's compose_runtime
-                # attaches the SlamMapBridge → dashboard slam.occupancy_grid.
-                "enable_slam_bridge": enable_slam,
                 # ADR-0030 — when octomap is on the centers topic exists, so
                 # attach the WorldCloudBridge → dashboard world.pointcloud.
                 "enable_world_cloud_bridge": enable_octomap,
@@ -863,67 +871,116 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     ),
                 )
 
-    # ADR-0025 — opt-in slam_toolbox as a Reasoner-managed background
-    # service. Auto-transitions UNCONFIGURED → INACTIVE only; activation
-    # is the Reasoner's job (LifecycleTransitionTool).
+    # ADR-0025 / ADR-0064 — opt-in SLAM. The backend is selected by
+    # ``slam_backend`` (resolved from capabilities in deploy_sim.py):
+    # ``visual`` composes cuVSLAM (camera-based, lidar-less robots);
+    # anything else composes slam_toolbox (2D lidar). ``enable_slam`` is
+    # the on/off gate; the two are kept consistent upstream.
     if enable_slam:
         # Deferred share-dir lookup so deployments without the
         # openral_slam_bringup package built still launch successfully
         # when enable_slam is left at its default (false).
         from ament_index_python.packages import get_package_share_directory
 
-        slam_params_path = os.path.join(
-            get_package_share_directory("openral_slam_bringup"),
-            "config",
-            "slam_toolbox_2d.yaml",
-        )
-        slam_node = LifecycleNode(
-            package="slam_toolbox",
-            executable="async_slam_toolbox_node",
-            name="openral_slam_toolbox",
-            namespace="",
-            # Graph-wide clock domain (see _resolve_sim_clock); overrides the
-            # yaml's use_sim_time so slam_toolbox shares the HAL's wall-clock
-            # /scan + odom TF. Sim-time without a /clock pins its pose-graph at
-            # 0 → empty map → Nav2 plans through obstacles.
-            parameters=[slam_params_path, {"use_sim_time": use_sim_time}],
-            additional_env=otel_env,
-            output="screen",
-        )
-        extra_nodes.append(slam_node)
-        # Auto-CONFIGURE + ACTIVATE slam_toolbox externally via a
-        # tiny in-process Python helper that uses rclpy.lifecycle to
-        # drive the transitions with retries. Using
-        # ``ros2 lifecycle set`` directly was racey on robocasa-kitchen
-        # boots: the kitchen install subprocess prints ~60 lines to
-        # stdout before slam_toolbox's service is fully advertised,
-        # so a fixed-delay TimerAction fired ``ros2 lifecycle set``
-        # while the node was still ``Node not found``, exiting 1 and
-        # surfacing as ``[ERROR] [ros2-9]: process has died, exit
-        # code 1``. The rclpy helper waits for the service, retries,
-        # and never logs at ERROR level on transient absence.
-        #
-        # Using rclpy avoids launch_ros's ``lifecycle_event_manager``
-        # which on Jazzy logs a spurious ``[ERROR] Failed to make
-        # transition 'TRANSITION_CONFIGURE'`` even when slam_toolbox's
-        # ``on_configure`` returns SUCCESS (the change_state response
-        # arrives with ``success=false`` on the first call due to a
-        # service-responder race upstream).
-        lifecycle_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
-        slam_autostart = ExecuteProcess(
-            cmd=[
-                sys.executable,
-                lifecycle_autostart_path,
-                "--node",
-                "/openral_slam_toolbox",
-                "--target",
-                "active",
-                "--service-timeout-s",
-                "60.0",
-            ],
-            output="log",
-        )
-        extra_nodes.append(slam_autostart)
+        if slam_backend == "visual":
+            # ADR-0064 — cuVSLAM is the camera-based backend for lidar-less
+            # robots; it fills the same ``map→odom`` TF edge slam_toolbox
+            # fills on lidar robots. It is a *composable node*, not a ROS
+            # lifecycle node, so there is no Reasoner-driven CONFIGURE/
+            # ACTIVATE and no autostart helper — composing it makes it live.
+            # We include the package's own ``cuvslam.launch.py`` so the node
+            # spec stays single-sourced (and hermetically tested). The
+            # cuVSLAM/nvblox engines are NVIDIA binaries the operator installs
+            # on the GPU host behind the ADR-0064 license guard (not bundled).
+            from launch.actions import IncludeLaunchDescription
+            from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+            slam_share = get_package_share_directory("openral_slam_bringup")
+            sim_time_arg = "true" if use_sim_time else "false"
+            extra_nodes.append(
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        os.path.join(slam_share, "launch", "cuvslam.launch.py")
+                    ),
+                    launch_arguments={"use_sim_time": sim_time_arg}.items(),
+                )
+            )
+            # ADR-0064 Phase 2 — cuVSLAM gives pose, NOT an occupancy grid.
+            # When navigating (enable_nav2), also bring up nvblox to fuse depth
+            # + cuVSLAM pose into the ESDF cost map Nav2's planner needs. The
+            # depth stream feeding nvblox comes from the monocular metric-depth
+            # provider (openral_perception_ros depth_provider_node + the DA3
+            # sidecar) on RGB-only robots, or a real RGB-D sensor — brought up
+            # by the operator (the model sidecar provisions its own venv, so it
+            # is not auto-spawned here).
+            if enable_nav2:
+                extra_nodes.append(
+                    IncludeLaunchDescription(
+                        PythonLaunchDescriptionSource(
+                            os.path.join(slam_share, "launch", "nvblox.launch.py")
+                        ),
+                        launch_arguments={
+                            "use_sim_time": sim_time_arg,
+                            "robot_yaml": robot_yaml,
+                        }.items(),
+                    )
+                )
+        else:
+            # ADR-0025 — slam_toolbox lidar backend, Reasoner-managed
+            # background service. Auto-transitions UNCONFIGURED → INACTIVE
+            # only; activation is the Reasoner's job (LifecycleTransitionTool).
+            slam_params_path = os.path.join(
+                get_package_share_directory("openral_slam_bringup"),
+                "config",
+                "slam_toolbox_2d.yaml",
+            )
+            slam_node = LifecycleNode(
+                package="slam_toolbox",
+                executable="async_slam_toolbox_node",
+                name="openral_slam_toolbox",
+                namespace="",
+                # Graph-wide clock domain (see _resolve_sim_clock); overrides the
+                # yaml's use_sim_time so slam_toolbox shares the HAL's wall-clock
+                # /scan + odom TF. Sim-time without a /clock pins its pose-graph at
+                # 0 → empty map → Nav2 plans through obstacles.
+                parameters=[slam_params_path, {"use_sim_time": use_sim_time}],
+                additional_env=otel_env,
+                output="screen",
+            )
+            extra_nodes.append(slam_node)
+            # Auto-CONFIGURE + ACTIVATE slam_toolbox externally via a
+            # tiny in-process Python helper that uses rclpy.lifecycle to
+            # drive the transitions with retries. Using
+            # ``ros2 lifecycle set`` directly was racey on robocasa-kitchen
+            # boots: the kitchen install subprocess prints ~60 lines to
+            # stdout before slam_toolbox's service is fully advertised,
+            # so a fixed-delay TimerAction fired ``ros2 lifecycle set``
+            # while the node was still ``Node not found``, exiting 1 and
+            # surfacing as ``[ERROR] [ros2-9]: process has died, exit
+            # code 1``. The rclpy helper waits for the service, retries,
+            # and never logs at ERROR level on transient absence.
+            #
+            # Using rclpy avoids launch_ros's ``lifecycle_event_manager``
+            # which on Jazzy logs a spurious ``[ERROR] Failed to make
+            # transition 'TRANSITION_CONFIGURE'`` even when slam_toolbox's
+            # ``on_configure`` returns SUCCESS (the change_state response
+            # arrives with ``success=false`` on the first call due to a
+            # service-responder race upstream).
+            lifecycle_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
+            slam_autostart = ExecuteProcess(
+                cmd=[
+                    sys.executable,
+                    lifecycle_autostart_path,
+                    "--node",
+                    "/openral_slam_toolbox",
+                    "--target",
+                    "active",
+                    "--service-timeout-s",
+                    "60.0",
+                ],
+                output="log",
+            )
+            extra_nodes.append(slam_autostart)
 
     if enable_nav2:
         # Nav2's local_costmap needs ``odom -> base_link`` TF to be
@@ -940,7 +997,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 OnStateTransition(
                     target_lifecycle_node=hal,
                     goal_state="active",
-                    entities=[_build_nav2_include(robot_yaml, use_sim_time=use_sim_time)],
+                    entities=[
+                        _build_nav2_include(
+                            robot_yaml, use_sim_time=use_sim_time, slam_backend=slam_backend
+                        )
+                    ],
                 ),
             ),
         )
@@ -1441,11 +1502,25 @@ def generate_launch_description() -> LaunchDescription:
             "enable_slam",
             default_value="false",
             description=(
-                "ADR-0025 — bring up slam_toolbox as a Reasoner-managed "
-                "background service. Auto-transitions to INACTIVE; the "
-                "Reasoner promotes to ACTIVE via LifecycleTransitionTool. "
-                "Requires ros-${ROS_DISTRO}-slam-toolbox and the "
-                "openral_slam_bringup package built in the workspace."
+                "ADR-0025 — bring up SLAM as a background service. The "
+                "backend is chosen by ``slam_backend``. Auto-transitions to "
+                "INACTIVE (lidar backend); the Reasoner promotes to ACTIVE "
+                "via LifecycleTransitionTool. Requires the openral_slam_bringup "
+                "package built in the workspace (+ ros-${ROS_DISTRO}-slam-toolbox "
+                "for the lidar backend / the operator's Isaac ROS install for "
+                "the visual backend)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "slam_backend",
+            default_value="lidar",
+            description=(
+                "ADR-0064 — SLAM backend composed when ``enable_slam`` is "
+                "true: ``lidar`` (slam_toolbox, needs /scan), ``visual`` "
+                "(cuVSLAM, camera-based, for lidar-less robots), or ``none``. "
+                "Normally resolved upstream by deploy_sim.py from "
+                "``RobotCapabilities`` (``has_lidar`` / ``has_vision_slam``); "
+                "defaults to ``lidar`` to preserve pre-ADR-0064 behaviour."
             ),
         ),
         DeclareLaunchArgument(

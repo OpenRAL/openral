@@ -1,0 +1,77 @@
+# ADR-0064 (Phase 2) — default parameter set for NVIDIA Isaac ROS nvblox
+# under OpenRAL's `/openral/nvblox` namespace.
+#
+# nvblox fuses a DEPTH image + camera_info + POSE (from cuVSLAM's map→odom
+# TF) into an occupancy map, and publishes a 2D `nav_msgs/OccupancyGrid`
+# that `nvblox.launch.py` remaps `~/static_occupancy_grid → /map` — the
+# backend-agnostic `/map` that Nav2's static_layer (`nav2_visual.yaml`),
+# the dashboard SlamMapBridge, and the reasoner all consume regardless of
+# lidar vs visual origin (Decision §5). This is what gives a lidar-less
+# robot a navigable cost map: cuVSLAM provides localization (map→odom),
+# nvblox provides the obstacle map cuVSLAM does not.
+#
+# The depth image is supplied by the monocular metric-depth provider
+# (DA3-Small by default — measured 0.27 GB / ~27 Hz on an 8 GB Ada) when
+# the robot has no real depth sensor; a RealSense/RGB-D rig can feed
+# nvblox directly.
+#
+# Only the stable, documented essentials are pinned; everything else
+# falls back to upstream nvblox defaults. Mapper/ESDF knobs are
+# version-sensitive — confirm against the installed Isaac ROS release.
+# nvblox is a precompiled NVIDIA binary OpenRAL does not bundle
+# (ADR-0064 license guard).
+
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    # ── Frame contract ──────────────────────────────────────────────
+    # nvblox looks up the camera pose against this global frame via TF;
+    # cuVSLAM publishes map→odom and the HAL publishes odom→base_link, so
+    # `map` is the consistent world frame for the reconstruction.
+    global_frame: map
+    use_tf_transforms: true
+
+    # ── Input: depth image (not lidar) ──────────────────────────────
+    # Fuse the metric-depth image (`camera_0/depth/{image,camera_info}`,
+    # remapped at launch). NOT the lidar integrator — it rejects a
+    # forward pinhole cloud ("LiDAR intrinsics inconsistent").
+    use_depth: true
+    use_lidar: false
+    use_color: false
+
+    # ── Reconstruction ──────────────────────────────────────────────
+    voxel_size: 0.05            # 5 cm — room/kitchen-scale nav resolution
+    # Occupancy mapping (not static_tsdf): publishes the 2D
+    # `~/static_occupancy_grid` OccupancyGrid the launch remaps to `/map`.
+    # A robot in a dynamic scene can switch mapping_type at deploy time.
+    mapping_type: static_occupancy
+
+    # ── Floor-excluded navigation band ──────────────────────────────
+    # `nvblox.launch.py` filters the depth image to a live global-frame band
+    # derived from RobotDescription measurements + TF before nvblox sees it;
+    # that prefilter is what keeps floor pixels out of the static occupancy
+    # grid published as `/map`. Keep nvblox's own workspace bounds unbounded
+    # here so this YAML does not bake in one robot/scene's floor height.
+    static_mapper.workspace_bounds_type: unbounded
+
+    # ── Persistent map (no decay toward unknown) ────────────────────
+    # By default nvblox decays unobserved occupancy back toward 0.5
+    # (unknown), so the map behind a moving robot fades and long-range
+    # Nav2 goals into previously-seen space fail (NO_VALID_PATH). Pin the
+    # decay probabilities to their no-decay extremes so the map persists.
+    # nvblox's check is STRICT: free must be > 0.5, occupied < 0.5 (the
+    # exact endpoints abort at construction), so use the nearest valid
+    # values — decay is then negligible.
+    static_mapper.free_region_decay_probability: 0.5001
+    static_mapper.occupied_region_decay_probability: 0.4999
+    # Keep the whole explored map (no radius clearing of far voxels).
+    map_clearing_radius_m: -1.0
+
+    # ── 2D ESDF slice (also feeds the optional nvblox_nav2 plugin) ───
+    esdf_mode: 2d
+    publish_esdf_distance_slice: true
+    # `/map` uses the filtered depth path above; deployments using the optional
+    # nvblox_nav2 ESDF plugin may override this slice per robot/deployment.
+    esdf_slice_min_height: 0.80
+    esdf_slice_max_height: 1.30

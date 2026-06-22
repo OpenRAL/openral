@@ -487,3 +487,89 @@ def pointcloud2_from_points_xyz(
     msg.data = pts.reshape(-1).tobytes()
     msg.is_dense = True
     return msg
+
+
+def depth_image_from_grid(
+    depth: NDArray[np.float32],
+    *,
+    frame_id: str,
+    stamp: Any = None,
+) -> Any:
+    """Pack an ``(H, W)`` metric-depth raster into a ``32FC1 sensor_msgs/Image``.
+
+    The dense, organised depth image nvblox's projective depth integrator
+    consumes (ADR-0064) — produced by
+    :func:`openral_sim.backends.depth_camera.synthesize_depth_image`. Pixels are
+    perpendicular optical-Z metres, ``0.0`` = no measurement (nvblox skips them).
+
+    Args:
+        depth: ``(H, W)`` float32 depth raster in metres (optical-Z).
+        frame_id: tf2 frame the image lives in (the camera optical frame); must
+            match the companion ``CameraInfo``.
+        stamp: ``builtin_interfaces/Time`` header stamp; ``None`` leaves zero.
+    """
+    from sensor_msgs.msg import Image  # reason: defer ROS dep
+
+    grid = np.ascontiguousarray(depth, dtype="<f4")
+    h, w = int(grid.shape[0]), int(grid.shape[1])
+
+    msg = Image()
+    msg.header.frame_id = frame_id
+    if stamp is not None:
+        msg.header.stamp = stamp
+    msg.height = h
+    msg.width = w
+    msg.encoding = "32FC1"
+    msg.is_bigendian = 0
+    msg.step = 4 * w
+    msg.data = grid.reshape(-1).tobytes()
+    return msg
+
+
+def camera_info_from_intrinsics(
+    *,
+    width: int,
+    height: int,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    frame_id: str,
+    stamp: Any = None,
+) -> Any:
+    """Build a pinhole ``sensor_msgs/CameraInfo`` for a synthesised depth image.
+
+    The intrinsics are those of the **rasterised** image — for a strided depth
+    synth (:func:`openral_sim.backends.depth_camera.synthesize_depth_image`) the
+    caller passes the stride-scaled values (``fx / stride`` … ``cy / stride``,
+    ``width``/``height`` = the strided raster dims) so the model is consistent
+    with the image nvblox receives.
+
+    Distortion is zero (``plumb_bob``, ``D = [0,0,0,0,0]``) — the MuJoCo pinhole
+    ray-cast has no lens distortion — with an identity rectification ``R`` and a
+    ``P`` that mirrors ``K`` (no stereo baseline).
+
+    Args:
+        width: Rasterised image width (pixels).
+        height: Rasterised image height (pixels).
+        fx: Focal length x of the rasterised image (pixels).
+        fy: Focal length y of the rasterised image (pixels).
+        cx: Principal point x of the rasterised image (pixels).
+        cy: Principal point y of the rasterised image (pixels).
+        frame_id: tf2 frame; must match the companion depth image.
+        stamp: ``builtin_interfaces/Time`` header stamp; ``None`` leaves zero.
+    """
+    from sensor_msgs.msg import CameraInfo  # reason: defer ROS dep
+
+    msg = CameraInfo()
+    msg.header.frame_id = frame_id
+    if stamp is not None:
+        msg.header.stamp = stamp
+    msg.height = int(height)
+    msg.width = int(width)
+    msg.distortion_model = "plumb_bob"
+    msg.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+    msg.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    msg.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    msg.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+    return msg

@@ -61,12 +61,6 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
     # HAL's ResetToPose service with the manifest's starting_pose
     # before the first inference tick. Empty disables the call.
     bootstrap.declare_parameter("reset_to_pose_service", "")
-    # ADR-0025 — bridge ``/map`` from slam_toolbox into the dashboard's
-    # ``slam.occupancy_grid`` OTel span family. Off by default; the
-    # ``sim_e2e.launch.py`` flips this on when ``enable_slam:=true``
-    # so the SLAM Map card on the dashboard populates as
-    # slam_toolbox starts building the map.
-    bootstrap.declare_parameter("enable_slam_bridge", False)
     # ADR-0030 — render the octomap occupied-voxel cloud
     # (``/octomap_point_cloud_centers``) into the dashboard's
     # ``world.pointcloud`` span family. Off by default; the
@@ -97,9 +91,6 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
     ]
     reset_to_pose_service: str = (
         bootstrap.get_parameter("reset_to_pose_service").get_parameter_value().string_value
-    )
-    enable_slam_bridge: bool = (
-        bootstrap.get_parameter("enable_slam_bridge").get_parameter_value().bool_value
     )
     enable_world_cloud_bridge: bool = (
         bootstrap.get_parameter("enable_world_cloud_bridge").get_parameter_value().bool_value
@@ -163,7 +154,6 @@ def _main() -> int:  # noqa: PLR0915  # reason: linear bootstrap entry point —
         runtime = compose_runtime(
             robot_yaml,
             skill_resolver_factory=_build_resolver,
-            enable_slam_bridge=enable_slam_bridge,
             enable_world_cloud_bridge=enable_world_cloud_bridge,
             dataset_out=dataset_out or None,
             dataset_repo_id=dataset_repo_id or None,

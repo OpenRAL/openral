@@ -137,7 +137,8 @@
     </div>
     <div id="slam-map-body">
       <div class="empty-state" id="slam-empty">
-        waiting for slam.occupancy_grid (Reasoner must activate slam_toolbox first)
+        waiting for slam.occupancy_grid (the SLAM backend must publish /map;
+        lidar uses slam_toolbox, lidar-less uses cuVSLAM+nvblox)
       </div>
       <div id="slam-image-wrap" style="display:none">
         <div id="slam-image-stage" style="position:relative;display:block;margin:0 auto">

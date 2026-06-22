@@ -254,12 +254,20 @@ class SlamMapBridge:
             QoSReliabilityPolicy,
         )
 
-        # slam_toolbox publishes /map with TRANSIENT_LOCAL durability so
-        # late-joining subscribers get the latest map without having to
-        # wait for the next update; mirror its QoS here.
+        # ADR-0064 — `/map` is backend-agnostic: slam_toolbox publishes it
+        # TRANSIENT_LOCAL (latched), but the visual backend (nvblox) publishes it
+        # VOLATILE (not latched). A VOLATILE subscriber is compatible with BOTH
+        # (a TRANSIENT_LOCAL publisher offers more than a VOLATILE subscriber
+        # requests), whereas a TRANSIENT_LOCAL subscriber rejects nvblox's
+        # VOLATILE `/map` outright (durability mismatch -> no data, the dashboard
+        # SLAM card stuck on "waiting"). So subscribe VOLATILE to render either
+        # backend's map. Trade-off: on a late join we miss slam_toolbox's last
+        # latched grid and wait for its next update (~1 Hz) -- acceptable for a
+        # live dashboard. Mirrors the nav2 static_layer's
+        # `map_subscribe_transient_local: False` (ADR-0064 Decision §5).
         map_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            durability=QoSDurabilityPolicy.VOLATILE,
             depth=1,
         )
 

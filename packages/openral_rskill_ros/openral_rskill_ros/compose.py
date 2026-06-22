@@ -64,12 +64,13 @@ class ComposedRuntime:
     aggregator: WorldStateAggregator
     world_state_node: _WorldStateLifecycleNode
     skill_runner_node: RskillRunnerNode
-    slam_bridge: object | None = None
-    """ADR-0025 — optional rclpy → OTLP bridge subscribing to
-    ``/map``. Constructed when :func:`compose_runtime` is called with
-    ``enable_slam_bridge=True``. ``None`` otherwise. Production
-    launches enable the bridge through the same ``--enable-slam`` CLI
-    flag that brings up slam_toolbox itself."""
+    slam_bridge: object
+    """ADR-0025 — rclpy → OTLP bridge subscribing to ``/map``.
+
+    Always constructed with the runtime so the dashboard renders any compatible
+    ``nav_msgs/OccupancyGrid`` publisher, regardless of whether the mapper was
+    launched by OpenRAL or separately by the operator.
+    """
     world_cloud_bridge: object | None = None
     """ADR-0030 — optional rclpy → OTLP bridge subscribing to
     ``/octomap_point_cloud_centers``. Constructed when
@@ -91,7 +92,6 @@ def compose_runtime(
     *,
     skill_resolver: SkillResolver | None = None,
     skill_resolver_factory: Callable[[Any], SkillResolver] | None = None,
-    enable_slam_bridge: bool = False,
     enable_world_cloud_bridge: bool = False,
     dataset_out: str | pathlib.Path | None = None,
     dataset_repo_id: str | None = None,
@@ -119,13 +119,6 @@ def compose_runtime(
             (ADR-0024) whose adapter needs the host rclpy node to
             create per-skill ActionClients on the same spin.
             Mutually exclusive with ``skill_resolver``.
-        enable_slam_bridge: ADR-0025 — when ``True``, attach a
-            :class:`~openral_runner.slam_bridge.SlamMapBridge` to the
-            composed ``RskillRunnerNode`` so ``/map`` updates from
-            slam_toolbox are bridged into the dashboard via the
-            ``slam.occupancy_grid`` OTel span family. Defaults to
-            ``False`` so deployments that don't enable slam don't pay
-            the subscription cost.
         enable_world_cloud_bridge: ADR-0030 — when ``True``, attach a
             :class:`~openral_runner.world_cloud_bridge.WorldCloudBridge`
             to the composed ``RskillRunnerNode`` so the octomap occupied
@@ -196,20 +189,17 @@ def compose_runtime(
             aggregator=aggregator,
             skill_resolver=skill_resolver,
         )
-    slam_bridge: object | None = None
-    if enable_slam_bridge:
-        # ADR-0025 — share the RskillRunnerNode's executor so the /map
-        # subscription's callbacks fire alongside the existing
-        # /joint_states + /openral/estop subscriptions without a second
-        # rclpy spin.
-        from openral_runner.slam_bridge import SlamMapBridge
+    # ADR-0025/0064 — share the RskillRunnerNode's executor so the /map
+    # subscription's callbacks fire alongside the existing
+    # /joint_states + /openral/estop subscriptions without a second rclpy spin.
+    from openral_runner.slam_bridge import SlamMapBridge
 
-        slam_bridge = SlamMapBridge(
-            skill_runner_node,
-            base_frame=description.base_frame,
-            footprint_radius_m=description.footprint_radius,
-            footprint_polygon=description.footprint_polygon,
-        )
+    slam_bridge: object = SlamMapBridge(
+        skill_runner_node,
+        base_frame=description.base_frame,
+        footprint_radius_m=description.footprint_radius,
+        footprint_polygon=description.footprint_polygon,
+    )
     world_cloud_bridge: object | None = None
     if enable_world_cloud_bridge:
         # ADR-0030 — share the RskillRunnerNode's executor so the

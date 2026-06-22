@@ -9,8 +9,17 @@ authoring guide, and per-backend `scene.id` catalogue all live in the in-tree
 [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md);
 this page is the **per-file catalogue** — one row per YAML.
 
-Scene dependencies are auto-installed on first use. Bypass the install prompt
-in CI with `OPENRAL_AUTO_INSTALL_DEPS=1`.
+Scene dependencies are auto-installed on first use (auto-install is on by
+default; set `OPENRAL_AUTO_INSTALL_DEPS=0` to be prompted instead, e.g. when
+*not* in CI). Most scenes need an opt-in dependency group first — sync it with
+`just sync --group <name>` (`sim` / `libero` / `robocasa` / `metaworld` /
+`maniskill3`), **never** a bare `uv sync`. RoboCasa is a special case: `just
+sync --group robocasa` provides only robosuite + deps, while the RoboCasa fork
+itself is git-cloned + installed editable at runtime by the HAL
+(`ensure_backend_deps('robocasa_kitchen')`). LIBERO and RoboCasa pin
+conflicting robosuite versions, so swap groups per task. Full recipe →
+[Managing the Python environment & dependency
+groups](../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
 ## Quick CLI
 

@@ -75,10 +75,10 @@ def _reconcile_robot_uids(env_id: str, robot_uids: str) -> None:
         ROSCapabilityMismatch: ``robot_uids`` is neither a supported base
             robot nor a registered subclass of one for ``env_id``.
     """
-    from mani_skill.agents.registration import (  # type: ignore[import-untyped,unused-ignore]  # reason: opt-in dep, no py.typed
+    from mani_skill.agents.registration import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in dep (--group maniskill3), no py.typed
         REGISTERED_AGENTS,
     )
-    from mani_skill.utils.registration import (  # type: ignore[import-untyped,unused-ignore]  # reason: opt-in dep, no py.typed
+    from mani_skill.utils.registration import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: opt-in dep (--group maniskill3), no py.typed
         REGISTERED_ENVS,
     )
 

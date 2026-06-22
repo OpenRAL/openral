@@ -24,17 +24,20 @@ from __future__ import annotations
 import importlib.metadata
 import sysconfig
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from openral_sim import _deps
 from openral_sim._deps import (
     _ROBOSUITE_PIN,
+    _has_robocasa_kitchen,
     _libero_plan,
     _openarm_robosuite_plan,
     _refresh_editable_finders,
     _remove_editable_shadow_step,
     _rldx_client_plan,
     _robocasa_gr1_plan,
+    _robocasa_import_succeeds,
     _robocasa_kitchen_plan,
     get_plan,
 )
@@ -402,6 +405,40 @@ class TestRobocasaPlansPinRobosuite:
         assert f"checkout --detach {_ROBOSUITE_PIN}" in plan.manual_hint
 
 
+# ─── Phase 10: relax robocasa version asserts at provision (no runtime spoof) ──
+
+
+class TestRobocasaPlansRelaxVersionAsserts:
+    """Both robocasa plans must patch the cloned ``__init__.py`` to relax the
+    import-time micro-version asserts, replacing the deleted runtime version
+    spoof. Without this step a plain ``import robocasa`` raises AssertionError on
+    the workspace's mujoco 3.8 / numpy 2.2, so the env never builds.
+    """
+
+    @pytest.mark.parametrize(
+        "plan_fn", [_robocasa_kitchen_plan, _robocasa_gr1_plan], ids=["kitchen", "gr1"]
+    )
+    def test_plan_relaxes_init_asserts(self, plan_fn) -> None:  # type: ignore[no-untyped-def]
+        plan = plan_fn()
+        relax_steps = [
+            s
+            for s in plan.steps
+            if "OPENRAL_VERSION_PINS_RELAXED" in " ".join(s.argv)
+            and "robocasa/__init__.py" in " ".join(s.argv)
+        ]
+        assert len(relax_steps) == 1, [s.description for s in plan.steps]
+        argv = relax_steps[0].argv
+        # It runs a python heredoc that fails loudly (exit 1) if no assert matches.
+        assert argv[0:2] == ["bash", "-c"], argv
+        assert "no robocasa version asserts found to relax" in argv[-1]
+
+    def test_relax_step_targets_given_init_path(self) -> None:
+        step = _deps._relax_robocasa_version_asserts_step(Path("/fake/robocasa/__init__.py"))
+        assert "/fake/robocasa/__init__.py" in step.argv[-1]
+        # Neutralises both the `==` (kitchen) and `in [` (gr1) assert forms.
+        assert "is not None" in step.argv[-1]
+
+
 # ─── Fix #5: refresh sys.meta_path after an in-process editable swap ──────
 
 
@@ -702,3 +739,61 @@ class TestEnsureBackendDepsLock:
             "ensure_backend_deps must serialise prompts via _INSTALL_LOCK"
         )
         assert installed == {"alpha": True, "beta": True}
+
+
+# ─── ensure_backend_deps false-positive guard (find_spec != functional) ─────
+
+
+class TestRobocasaImportVerification:
+    """`_has_robocasa_kitchen` must verify a plain `import robocasa` actually
+    works, not just `find_spec` — else a wrong-robosuite / half-installed
+    robocasa (or one whose version asserts have not yet been relaxed at
+    provision time) is reported "present" and the provisioning that would fix it
+    is skipped.
+
+    These mock the subprocess / probe so they assert the GUARD LOGIC
+    deterministically, independent of whether robocasa is installed in the
+    test venv.
+    """
+
+    def test_import_succeeds_maps_returncode(self, monkeypatch) -> None:
+        # The helper's verdict is exactly the subprocess exit status: a clean
+        # exit (0) → functional → True; a non-zero exit (the import-time
+        # version-assert / a missing dep) → not functional → False.
+        for rc, expected in ((0, True), (1, False)):
+            monkeypatch.setattr(
+                _deps.subprocess,
+                "run",
+                lambda *_a, _rc=rc, **_k: SimpleNamespace(returncode=_rc),
+            )
+            assert _robocasa_import_succeeds() is expected
+
+    def test_import_succeeds_false_on_subprocess_error(self, monkeypatch) -> None:
+        # A subprocess/OS error (e.g. interpreter missing) is treated as
+        # not-functional, never as a crash propagated to the caller.
+        def _boom(*_a, **_k):
+            raise OSError("simulated spawn failure")
+
+        monkeypatch.setattr(_deps.subprocess, "run", _boom)
+        assert _robocasa_import_succeeds() is False
+
+    def test_has_robocasa_kitchen_false_when_import_fails(self, monkeypatch) -> None:
+        # The false-positive guard: even if find_spec + the filesystem +
+        # runtime-dep checks all pass, a failing `import robocasa` (returns
+        # False) must make the probe report "not present" so ensure_backend_deps
+        # runs the provisioning plan instead of silently skipping it.
+        monkeypatch.setattr(_deps, "_has_module", lambda _m: True)
+        monkeypatch.setattr(
+            _deps,
+            "_robocasa_import_succeeds",
+            lambda: False,
+        )
+
+        class _Spec:
+            origin = "/fake/robocasa/__init__.py"
+
+        monkeypatch.setattr(_deps.importlib.util, "find_spec", lambda _n: _Spec())
+        monkeypatch.setattr(
+            _deps.Path, "is_file", lambda self: "download_kitchen_assets" in str(self)
+        )
+        assert _has_robocasa_kitchen() is False

@@ -37,7 +37,7 @@ repos:
     hooks:
       - id: codespell
         args:
-          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph"
+          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers"
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.4.0
     hooks:

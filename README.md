@@ -121,11 +121,18 @@ Or step-by-step:
 
 ```bash
 just bootstrap                  # uv + ROS 2 Jazzy + system deps
-uv sync --all-packages          # resolve & install workspace
+just sync                       # resolve & install workspace (always `just sync`, never bare `uv sync`)
 just ros2-build                 # colcon build
 source install/setup.bash
 uv run openral doctor
 ```
+
+> Sim / VLA work needs an opt-in dependency group: `just sync --group sim`
+> (or `--group libero` / `--group robocasa` / `--group metaworld` / `--group
+> maniskill3`). See [Managing the Python environment & dependency
+> groups](docs/contributing/toolchain.md#managing-the-python-environment-dependency-groups)
+> — including the LIBERO ↔ RoboCasa group-swap and the RoboCasa runtime
+> auto-install.
 
 The `openral` CLI lives in `.venv/bin/openral`. Run via `uv run openral ...` or `source .venv/bin/activate`. For a global install: `uv tool install --editable python/cli`.
 
@@ -210,8 +217,9 @@ Layer boundaries are enforced by Pydantic v2 schemas in `python/core/`. Crossing
 ## Run commands (cheat sheet)
 
 ```bash
-# Environment
-just bootstrap && uv sync --all-packages
+# Environment — always `just sync` (never bare `uv sync`); add `--group sim`
+# for VLA/sim work. See docs/contributing/toolchain.md.
+just bootstrap && just sync
 uv run openral doctor
 
 # Discovery
