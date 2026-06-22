@@ -267,8 +267,8 @@ rather than deployable hardware.
 | Module | Catalog ids | Modalities | Wired in |
 |---|---|---|---|
 | `realsense.py` | `intel/realsense_d435`, `intel/realsense_d435i`, `intel/realsense_d415` | RGB+DEPTH(+IMU) bundles | `ur10e_with_sensors`, `franka_panda_with_sensors`, `ur5e_with_sensors` |
-| `usb_uvc.py` | `generic/usb_uvc_rgb`, `logitech/c920` | RGB | SO-100/SO-101 manifests, `so100_with_sensors` |
-| `luxonis.py` | `luxonis/oak_d_pro` | RGB+DEPTH+IMU bundle | SO-101 manifest |
+| `usb_uvc.py` | `generic/usb_uvc_rgb`, `logitech/c920` | RGB | SO-100/SO-101 wrist camera specs, `so100_with_sensors` |
+| `luxonis.py` | `luxonis/oak_d_pro` | RGB+DEPTH+IMU bundle | available catalog entry; SO-101's world-fixed front camera may use this hardware model but is not robot-mounted provenance |
 | `force_torque.py` | `robotiq/ft_300s` | FORCE_TORQUE (n_axes=6) | `ur5e_with_sensors`, `ur10e_with_sensors` |
 
 ### How to use

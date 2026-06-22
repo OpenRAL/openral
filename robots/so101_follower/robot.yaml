@@ -144,7 +144,6 @@ sensors:
       cy: 240.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera1"
-    catalog_id: "luxonis/oak_d_pro"
     vendor: "luxonis"
     model: "oak_d_pro"
   - name: "wrist"

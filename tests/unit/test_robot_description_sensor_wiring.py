@@ -60,8 +60,8 @@ class TestSO100WithSensors:
 @pytest.mark.parametrize(
     "manifest_path, expected_catalog_ids",
     [
-        ("robots/so100_follower/robot.yaml", ["generic/usb_uvc_rgb", "generic/usb_uvc_rgb"]),
-        ("robots/so101_follower/robot.yaml", ["luxonis/oak_d_pro", "generic/usb_uvc_rgb"]),
+        ("robots/so100_follower/robot.yaml", [None, "generic/usb_uvc_rgb"]),
+        ("robots/so101_follower/robot.yaml", [None, "generic/usb_uvc_rgb"]),
     ],
 )
 def test_robot_manifest_sensors_carry_catalog_provenance(
@@ -71,8 +71,8 @@ def test_robot_manifest_sensors_carry_catalog_provenance(
 
     assert [sensor.catalog_id for sensor in desc.sensors] == expected_catalog_ids
     for sensor in desc.sensors:
-        assert sensor.catalog_id is not None
-        assert sensor.catalog_id in CATALOG
+        if sensor.catalog_id is not None:
+            assert sensor.catalog_id in CATALOG
 
 
 # ── Franka Panda default loadout ──────────────────────────────────────────────
