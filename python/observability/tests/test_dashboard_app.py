@@ -543,6 +543,47 @@ async def test_api_robots_lists_registry() -> None:
     assert body["robots"][0]["port"] == 4318
 
 
+# ─────────────────────── POST /api/skill/execute ─────────────────────────────
+#
+# issue #75c / ADR-0064 — flag-gated skill switch. DEFAULT OFF. Tests are
+# written BEFORE the implementation (TDD — safety-touching per CLAUDE.md §4.2).
+# The "no ros2" case reuses the empty-PATH trick from
+# test_post_prompt_returns_503_when_openral_missing above.
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "x"})
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_requires_skill_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "  "})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_503_without_ros2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("PATH", str(tmp_path))  # empty PATH → shutil.which("ros2") is None
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
+    assert resp.status_code == 503
+
+
 @pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and

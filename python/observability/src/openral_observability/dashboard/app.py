@@ -59,6 +59,27 @@ __all__ = ["create_app"]
 _logger = structlog.get_logger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _write_controls_enabled() -> bool:
+    """Whether guarded write-controls are on (default OFF; ADR-0064)."""
+    return os.environ.get("OPENRAL_DASHBOARD_WRITE_CONTROLS", "") == "1"
+
+
+# Param-name substrings that may affect safety; the dashboard refuses to tune
+# these (CLAUDE.md §1.1 — never lower a velocity limit without a paper trail).
+_SAFETY_PARAM_DENYLIST = (
+    "velocity",
+    "accel",
+    "force",
+    "torque",
+    "limit",
+    "workspace",
+    "estop",
+    "deadman",
+    "safety",
+    "watchdog",
+)
 _MJPEG_BOUNDARY = "frame"
 
 # The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
@@ -231,6 +252,107 @@ async def _estop_reset_response() -> JSONResponse:
     )
 
 
+def _config_response() -> JSONResponse:
+    """Dashboard-level config (Jaeger UI url, …) sourced from env.
+
+    The UI fetches this once on load to decide whether to enable the
+    "open in jaeger" link. Returning ``""`` (the default) leaves the
+    link disabled with a helpful tooltip — the previous behaviour of
+    unconditionally linking to ``localhost:16686`` produced a
+    broken-link click for every user who doesn't run Jaeger locally.
+    """
+    jaeger_url = os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/")
+    return JSONResponse({"jaeger_ui_url": jaeger_url})
+
+
+async def _skill_execute_from_request(request: Request) -> JSONResponse:
+    """Validate the ``POST /api/skill/execute`` payload and dispatch the action.
+
+    Handles the flag check, JSON decode, field validation, and dispatch in one
+    place so the route closure stays under the statement cap (PLR0915).
+    """
+    if not _write_controls_enabled():
+        return JSONResponse(
+            {
+                "error": (
+                    "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1 "
+                    "(pending safety-WG review, ADR-0064)"
+                )
+            },
+            status_code=403,
+        )
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        return JSONResponse({"error": f"invalid json: {exc}"}, status_code=400)
+    skill_id = payload.get("skill_id") if isinstance(payload, dict) else None
+    if not isinstance(skill_id, str) or not skill_id.strip():
+        return JSONResponse({"error": "field 'skill_id' required"}, status_code=400)
+    return await _skill_execute_response(
+        skill_id.strip(),
+        str(payload.get("revision", "") or ""),
+        str(payload.get("prompt", "") or ""),
+        str(payload.get("goal_params_json", "") or ""),
+    )
+
+
+async def _skill_execute_response(
+    skill_id: str, revision: str, prompt: str, goal_params_json: str
+) -> JSONResponse:
+    """Dispatch an ExecuteRskill action goal (ADR-0064; safety kernel disposes).
+
+    Shells out to ``ros2 action send_goal /openral/execute_rskill`` so the
+    actuation path is identical to the CLI — the safety kernel remains the
+    sole authority on whether the action proceeds. Every call is audit-logged
+    before the subprocess is spawned.
+    """
+    ros2 = shutil.which("ros2")
+    if ros2 is None:
+        return JSONResponse(
+            {"error": "`ros2` not on PATH; source the workspace install first"},
+            status_code=503,
+        )
+    goal = json.dumps(
+        {
+            "rskill_id": skill_id,
+            "revision": revision,
+            "prompt": prompt,
+            "prompt_metadata_json": "",
+            "goal_params_json": goal_params_json,
+            "deadline_s": 0.0,
+        }
+    )
+    _logger.warning("dashboard.skill_execute", skill_id=skill_id, revision=revision)
+    proc = await asyncio.create_subprocess_exec(
+        ros2,
+        "action",
+        "send_goal",
+        "/openral/execute_rskill",
+        "openral_msgs/action/ExecuteRskill",
+        goal,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return JSONResponse({"error": "skill execute timed out after 15 s"}, status_code=504)
+    out = out_b.decode("utf-8", errors="replace").strip()
+    err = err_b.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        return JSONResponse(
+            {
+                "error": "ros2 action send_goal failed",
+                "returncode": proc.returncode,
+                "stderr": err,
+            },
+            status_code=502,
+        )
+    return JSONResponse({"status": "ok", "stdout": out})
+
+
 def create_app(store: TelemetryStore | None = None) -> FastAPI:
     """Build the FastAPI app bound to ``store`` (a fresh one if ``None``).
 
@@ -361,16 +483,9 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
 
     @app.get("/api/config")
     async def get_config() -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
-        """Dashboard-level config (Jaeger UI url, …) sourced from env.
-
-        The UI fetches this once on load to decide whether to enable the
-        "open in jaeger" link. Returning ``""`` (the default) leaves the
-        link disabled with a helpful tooltip — the previous behaviour of
-        unconditionally linking to ``localhost:16686`` produced a
-        broken-link click for every user who doesn't run Jaeger locally.
-        """
-        jaeger_url = os.environ.get("OPENRAL_JAEGER_UI_URL", "").rstrip("/")
-        return JSONResponse({"jaeger_ui_url": jaeger_url})
+        # Dashboard-level config (Jaeger UI url, …) sourced from env.
+        # Body in _config_response to keep create_app under the statement cap.
+        return _config_response()
 
     @app.post("/api/prompt")
     async def post_prompt(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
@@ -405,6 +520,13 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
         # Operator recovery from a latched safety e-stop. Body lives in a
         # module-level helper to keep create_app() under the statement cap.
         return await _estop_reset_response()
+
+    @app.post("/api/skill/execute")
+    async def post_skill_execute(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # issue #75c / ADR-0064 — guarded skill switch. Default OFF.
+        # Full logic lives in _skill_execute_from_request to keep create_app
+        # under the statement cap (PLR0915).
+        return await _skill_execute_from_request(request)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
