@@ -32,9 +32,10 @@ def _zero_frame(
 ) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]:
     state = np.zeros(robot.observation_spec.state_shape, dtype=np.float32)
     action = np.zeros(robot.action_spec.dim, dtype=np.float32)
+    # SVT-AV1 (libsvtav1 ≥ v3) requires minimum 64×64; 96×96 gives headroom.
     images = {
-        "camera1": np.zeros((16, 16, 3), dtype=np.uint8),
-        "camera2": np.zeros((16, 16, 3), dtype=np.uint8),
+        "camera1": np.zeros((96, 96, 3), dtype=np.uint8),
+        "camera2": np.zeros((96, 96, 3), dtype=np.uint8),
     }
     return state, images, action
 
