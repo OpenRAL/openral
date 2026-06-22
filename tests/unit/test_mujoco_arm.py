@@ -199,7 +199,7 @@ def test_connect_with_missing_mjcf_raises_rosconfigerror() -> None:
     """
     pytest.importorskip("mujoco")
     arm = _make_arm()
-    with pytest.raises(ROSConfigError, match="Could not load MJCF"):
+    with pytest.raises(ROSConfigError, match=r"Could not (read|load) MJCF"):
         arm.connect()
 
 
