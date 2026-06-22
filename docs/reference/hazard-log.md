@@ -381,11 +381,37 @@ this entry prevents a future change from naively masking the pair.
   genuine collisions within manifest limits; 99.81% capsule overlap over 200 000
   reachable poses.
 
+### Follow-up / resolution path (2026-06-22)
+
+The "multi-capsule per link" fix floated above was **evaluated and proven
+insufficient** for so100. The base is a near-cubic block (`0.111 × 0.096 ×
+0.083 m`) and the `upper_arm` clears it by only +0.0494 m at home; a capsule's
+**circular** cross-section must bulge ≥ ~0.04 m past flat block faces, so two
+such shells (base ~0.04 + upper_arm ~0.035) sum to ~0.075 m > the 0.0494 m gap —
+the capsule **union must overlap at home regardless of capsule count**. Three
+decompositions confirm it (all preserve coverage and still catch the genuine
+collisions, but none clears 0; single capsule = −0.0894):
+
+- axis-split k=2 → −0.070
+- PCA grid (base 3×3=9, ua 3×2=6 caps) → −0.029 (plateaus; worse beyond)
+- VHACD convex decomposition (16+16 hulls) → −0.039 (plateaus)
+
+The kernel already supports multiple capsules per link (`collision.hpp`
+`capsule_link[]`/`capsules[]`; only the Python loader
+`envelope_loader._capsules_by_link` gates `>1`), but capsules are the **wrong
+primitive** here — the mismatch is the cross-section *shape*, not the count.
+
+**The real fix is a box/OBB collision primitive** (rectangular cross-section):
+a `BoxShape` in the `CollisionShape` union, allocation-free box–box / box–capsule
+distance in the C++ hot path, and OBB-emitting lowering for blocky links. That
+is a Layer-6 hot-path contract change — its own **ADR + maintainer pre-approval
++ safety-WG review**. Tracked in **issue #84**.
+
 ### Safety-WG reviewer gate
 
 **This finding requires explicit sign-off from a safety-WG reviewer**, per
 CLAUDE.md §3, to (a) confirm the "do not mask `base`↔`upper_arm`" conclusion and
-the 17.55%/896-pose evidence, and (b) prioritise the multi-capsule ADR that is
-the real fix.
+the 17.55%/896-pose evidence, and (b) prioritise the box/OBB primitive (issue
+#84) that is the real fix — multi-capsule was proven insufficient (above).
 
 - [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).
