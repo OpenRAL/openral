@@ -440,6 +440,109 @@ async def test_post_transcribe_real_audio(monkeypatch: pytest.MonkeyPatch) -> No
         assert "country" in body["text"].lower(), body["text"]
 
 
+def _otlp_camera_payload(source: str, thumb_b64: str) -> bytes:
+    from openral_observability import semconv
+
+    return ExportTraceServiceRequest(
+        resource_spans=[
+            ResourceSpans(
+                resource=Resource(attributes=[KeyValue(key="service.name", value=_av("ral"))]),
+                scope_spans=[
+                    ScopeSpans(
+                        scope=InstrumentationScope(name="test"),
+                        spans=[
+                            Span(
+                                name=semconv.SPAN_SENSORS_READ_LATEST,
+                                trace_id=b"\x11" * 16,
+                                span_id=b"\x22" * 8,
+                                attributes=[
+                                    KeyValue(key=semconv.SENSORS_SOURCE, value=_av(source)),
+                                    KeyValue(
+                                        key=semconv.SENSORS_THUMBNAIL_JPEG_B64,
+                                        value=_av(thumb_b64),
+                                    ),
+                                ],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+    ).SerializeToString()
+
+
+@pytest.mark.asyncio
+async def test_camera_stream_emits_jpeg_part() -> None:
+    # httpx.ASGITransport buffers the full response body before returning,
+    # so a true infinite MJPEG StreamingResponse deadlocks it (same limitation
+    # noted in test_subscriber_queue_receives_ingest_payload for SSE). We
+    # therefore exercise the two helpers directly — the same bytes the live
+    # server would push over the wire — confirming the store ingest → b64
+    # thumbnail → MJPEG part bytes round-trip produces valid framing.
+    # Wire-format coverage (route response headers, Content-Type boundary,
+    # 404 for unknown sources over a real socket) lives in
+    # test_dashboard_mjpeg_integration.py which launches a real uvicorn server.
+    import base64
+
+    from openral_observability.dashboard.app import _camera_thumb, _mjpeg_part
+
+    store = TelemetryStore()
+    app = create_app(store)
+    jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
+    thumb_b64 = base64.b64encode(jpeg).decode("ascii")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        await client.post("/v1/traces", content=_otlp_camera_payload("wrist", thumb_b64))
+
+    # Helpers: round-trip through the store → b64 → MJPEG part bytes.
+    thumb = _camera_thumb(store, "wrist")
+    assert thumb == thumb_b64
+    chunk = _mjpeg_part(thumb)
+    assert b"Content-Type: image/jpeg" in chunk
+    assert b"Content-Length: " in chunk
+    assert jpeg in chunk
+
+
+@pytest.mark.asyncio
+async def test_camera_stream_unknown_source_404() -> None:
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/camera/nope/stream")
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_api_robots_disabled_when_no_discovery() -> None:
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/robots")
+    assert resp.status_code == 200
+    assert resp.json() == {"enabled": False, "robots": []}
+
+
+@pytest.mark.asyncio
+async def test_api_robots_lists_registry() -> None:
+    from openral_observability.dashboard.discovery import DiscoveredRobot, Discovery, RobotRegistry
+
+    reg = RobotRegistry()
+    reg.upsert(
+        DiscoveredRobot(name="arm", addresses=["10.0.0.5"], port=4318, properties={}, last_seen=1.0)
+    )
+    disc = Discovery(registry=reg)
+    disc.enabled = True
+    app = create_app(TelemetryStore())
+    app.state.discovery = disc
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.get("/api/robots")
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["robots"][0]["name"] == "arm"
+    assert body["robots"][0]["port"] == 4318
+
+
 @pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and

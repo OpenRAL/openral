@@ -22,6 +22,8 @@ The same ASGI app serves three things on one port:
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import gzip
 import io
 import json
@@ -57,6 +59,7 @@ __all__ = ["create_app"]
 _logger = structlog.get_logger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_MJPEG_BOUNDARY = "frame"
 
 # The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
 # WebAssembly (.wasm) served by StaticFiles. Browsers reject an ESM dynamic
@@ -238,6 +241,9 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
     store = store if store is not None else TelemetryStore()
     app = FastAPI(title="OpenRAL Dashboard", docs_url=None, redoc_url=None)
     app.state.store = store
+    # Set by run_dashboard when mDNS discovery is wired; None in tests / when
+    # the 'mdns' extra is absent. The /api/robots endpoint tolerates both.
+    app.state.discovery = None
 
     @app.post(
         "/v1/traces",
@@ -316,6 +322,41 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
             },
+        )
+
+    @app.get("/api/camera/{source}/stream")
+    async def get_camera_stream(  # pyright: ignore[reportUnusedFunction]
+        source: str, request: Request
+    ) -> Response:
+        # Re-serve the per-camera OTLP thumbnail as a continuous MJPEG stream
+        # (issue #75a). 404 only when the source is entirely unknown — a known
+        # camera with no frame yet still opens and waits.
+        cameras = (
+            request.app.state.store.snapshot()
+            .get("topics", {})
+            .get("perception", {})
+            .get("cameras", {})
+        )
+        if source not in cameras:
+            return JSONResponse({"error": f"unknown camera source {source!r}"}, status_code=404)
+        return StreamingResponse(
+            _mjpeg_stream(request, source),
+            media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/robots")
+    async def get_robots(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # issue #75b — mDNS-discovered OpenRAL services for the "Add Robot"
+        # panel. Read-only. Returns the disabled shape when discovery is off.
+        discovery = getattr(request.app.state, "discovery", None)
+        if discovery is None:
+            return JSONResponse({"enabled": False, "robots": []})
+        return JSONResponse(
+            {
+                "enabled": discovery.enabled,
+                "robots": [r.model_dump() for r in discovery.robots()],
+            }
         )
 
     @app.get("/api/config")
@@ -405,6 +446,70 @@ def _bad_request(detail: str) -> Response:
         media_type="application/json",
         status_code=400,
     )
+
+
+def _camera_thumb(store: TelemetryStore, source: str) -> str | None:
+    """Return the latest base64 JPEG thumbnail for ``source``, or ``None``."""
+    cameras = store.snapshot().get("topics", {}).get("perception", {}).get("cameras", {})
+    entry = cameras.get(source)
+    if not isinstance(entry, dict):
+        return None
+    thumb = entry.get("thumbnail_jpeg_b64")
+    return thumb if isinstance(thumb, str) and thumb else None
+
+
+def _mjpeg_part(thumb_b64: str) -> bytes:
+    """Frame one base64 JPEG as a multipart/x-mixed-replace part.
+
+    Raises:
+        binascii.Error: ``thumb_b64`` is not valid base64.
+    """
+    jpeg = base64.b64decode(thumb_b64, validate=True)
+    head = (
+        f"--{_MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {len(jpeg)}\r\n\r\n"
+    ).encode("ascii")
+    return head + jpeg + b"\r\n"
+
+
+async def _mjpeg_stream(request: Request, source: str) -> AsyncIterator[bytes]:
+    """Push the store's latest thumbnail for ``source`` as it changes.
+
+    Subscribes to the store (same primitive as the SSE stream), emits the
+    current frame immediately, then a new multipart part on each *changed*
+    thumbnail. MJPEG has no keepalive frame, so on idle we just re-check
+    client disconnect. Always unsubscribes on exit.
+    """
+    store: TelemetryStore = request.app.state.store
+    queue = store.subscribe()
+    last: str | None = None
+    try:
+        thumb = _camera_thumb(store, source)
+        if thumb is not None:
+            try:
+                part = _mjpeg_part(thumb)
+            except binascii.Error:
+                _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+            else:
+                last = thumb
+                yield part
+        while True:
+            if await request.is_disconnected():
+                return
+            try:
+                await asyncio.wait_for(queue.get(), timeout=15.0)
+            except TimeoutError:
+                continue
+            thumb = _camera_thumb(store, source)
+            if thumb is not None and thumb != last:
+                try:
+                    part = _mjpeg_part(thumb)
+                except binascii.Error:
+                    _logger.warning("dashboard.mjpeg_decode_failed", source=source)
+                    continue
+                last = thumb
+                yield part
+    finally:
+        store.unsubscribe(queue)
 
 
 async def _sse_stream(request: Request) -> AsyncIterator[bytes]:

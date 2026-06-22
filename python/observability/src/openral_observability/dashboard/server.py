@@ -91,6 +91,16 @@ def run_dashboard(
 
     app = create_app(store)
 
+    discovery = None
+    try:
+        from openral_observability.dashboard.discovery import Discovery
+
+        discovery = Discovery()
+        discovery.start(host=host, port=port)
+        app.state.discovery = discovery
+    except Exception as exc:  # discovery is best-effort; never gate the dashboard
+        _LOG.warning("dashboard.discovery_start_failed error=%s", exc)
+
     child: subprocess.Popen[bytes] | None = None
     if inprocess_cmd:
         child = _spawn_child(inprocess_cmd, host=host, port=port)
@@ -129,6 +139,8 @@ def run_dashboard(
     try:
         server.run()
     finally:
+        if discovery is not None:
+            discovery.stop()
         if child is not None and child.poll() is None:
             child.terminate()
             try:
