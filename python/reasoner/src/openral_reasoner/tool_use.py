@@ -50,10 +50,13 @@ if TYPE_CHECKING:
     from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 
 __all__ = [
+    "DEEPSEEK_BASE_URL",
     "DEFAULT_SYSTEM_PROMPT",
+    "GEMINI_BASE_URL",
     "OLLAMA_BASE_URL",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
+    "XAI_BASE_URL",
     "AnthropicToolUseClient",
     "OpenAICompatibleToolUseClient",
     "ToolUseClient",
@@ -451,10 +454,33 @@ OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 # to override both defaults.
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
+# Named cloud presets reachable through Google / xAI / DeepSeek's own
+# OpenAI-compatible endpoints. Each is a thin convenience on top of the
+# generic ``openai-compatible`` client: the ``PROVIDER=<name>`` shortcut
+# pre-fills the base URL below so users don't hand-configure it. All
+# three enforce auth, so the factory requires
+# ``OPENRAL_REASONER_LLM_API_KEY`` (an explicit
+# ``OPENRAL_REASONER_LLM_BASE_URL`` still wins for a proxy / gateway).
+# Gemini's OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
+GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+XAI_BASE_URL: str = "https://api.x.ai/v1"
+DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+
+# Auth-required named presets that wrap :class:`OpenAICompatibleToolUseClient`
+# with a pre-filled base URL. ``openrouter`` is the original member;
+# ``gemini`` / ``xai`` / ``deepseek`` mirror it for the direct vendor
+# endpoints. Keyed by PROVIDER value → default base URL.
+_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
+    "openrouter": OPENROUTER_BASE_URL,
+    "gemini": GEMINI_BASE_URL,
+    "xai": XAI_BASE_URL,
+    "deepseek": DEEPSEEK_BASE_URL,
+}
+
 # All accepted PROVIDER values; surfaced in error messages and reused by
 # the ``openral doctor`` reasoner check so the two stay in sync.
 _KNOWN_PROVIDERS: frozenset[str] = frozenset(
-    {"anthropic", "openai-compatible", "openrouter", "ollama"},
+    {"anthropic", "openai-compatible", "ollama", *_OPENAI_COMPATIBLE_PRESETS},
 )
 
 
@@ -464,17 +490,22 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     Recognised env vars:
 
     * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
-      ``openai-compatible`` / ``openrouter`` / ``ollama``. Required.
+      ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``gemini`` /
+      ``xai`` / ``deepseek``. Required.
     * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
       Required.
     * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
-      ``anthropic`` and ``openrouter`` (both enforce auth); ignored by
-      local ``openai-compatible`` / ``ollama`` endpoints that don't.
-    * ``OPENRAL_REASONER_LLM_BASE_URL`` — only for ``openai-compatible``,
-      ``openrouter`` and ``ollama``. For ``openai-compatible`` it
-      defaults to the OpenAI cloud; for ``openrouter`` it defaults to
-      :data:`OPENROUTER_BASE_URL`; for ``ollama`` it defaults to
-      :data:`OLLAMA_BASE_URL` (local ``http://localhost:11434/v1``).
+      ``anthropic`` and the auth-required presets (``openrouter`` /
+      ``gemini`` / ``xai`` / ``deepseek``); ignored by local
+      ``openai-compatible`` / ``ollama`` endpoints that don't enforce it.
+    * ``OPENRAL_REASONER_LLM_BASE_URL`` — for ``openai-compatible``,
+      ``ollama``, and the named presets. For ``openai-compatible`` it
+      defaults to the OpenAI cloud; for ``ollama`` it defaults to
+      :data:`OLLAMA_BASE_URL` (local ``http://localhost:11434/v1``); for
+      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` it defaults to
+      that vendor's OpenAI-compatible endpoint
+      (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
+      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -493,9 +524,9 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     if not provider:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
-            "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' "
-            "to enable the reasoner. The open-core path has no default — "
-            "tests use FakeToolUseClient."
+            "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
+            "'gemini' / 'xai' / 'deepseek' to enable the reasoner. The open-core path "
+            "has no default — tests use FakeToolUseClient."
         )
         raise ROSConfigError(msg)
     model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
@@ -524,13 +555,17 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             base_url=base_url,
             timeout_s=timeout_s,
         )
-    if provider == "openrouter":
+    if provider in _OPENAI_COMPATIBLE_PRESETS:
+        # openrouter / gemini / xai / deepseek — thin auth-required presets
+        # that pre-fill the vendor's OpenAI-compatible base URL. An explicit
+        # OPENRAL_REASONER_LLM_BASE_URL still wins (proxy / staging gateway).
         if api_key is None:
             raise ROSConfigError(
-                "OPENRAL_REASONER_LLM_API_KEY is unset; required for provider=openrouter.",
+                f"OPENRAL_REASONER_LLM_API_KEY is unset; required for provider={provider}.",
             )
         base_url = (
-            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or OPENROUTER_BASE_URL
+            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
+            or _OPENAI_COMPATIBLE_PRESETS[provider]
         )
         return OpenAICompatibleToolUseClient(
             model_id=model,

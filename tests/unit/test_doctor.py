@@ -361,6 +361,48 @@ def test_check_reasoner_llm_ollama_default_base_url_no_key(
     assert any(r.check == "Ollama" for r in rows)
 
 
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url_fragment"),
+    [
+        ("gemini", "gemini-2.5-flash", "generativelanguage.googleapis.com"),
+        ("xai", "grok-4", "api.x.ai/v1"),
+        ("deepseek", "deepseek-chat", "api.deepseek.com"),
+    ],
+)
+def test_check_reasoner_llm_named_cloud_preset(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_reasoner_env: None,
+    provider: str,
+    model: str,
+    base_url_fragment: str,
+) -> None:
+    """The gemini / xai / deepseek presets resolve a vendor base URL, require a
+    key, and emit no Ollama probe (cloud endpoints)."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", model)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", f"sk-{provider}-secret")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "ok"
+    assert f"provider={provider}" in summary.details
+    assert base_url_fragment in summary.details
+    assert not any(r.check == "Ollama" for r in rows)
+
+
+def test_check_reasoner_llm_named_cloud_preset_missing_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A named cloud preset without an API key reports the missing key row."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek-chat")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
+    assert key_row.status == "missing"
+    assert "deepseek" in key_row.details
+
+
 def test_check_reasoner_llm_local_endpoint_unreachable(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
