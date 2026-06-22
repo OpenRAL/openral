@@ -82,6 +82,12 @@ A separate rSkill is warranted **only** for capabilities `MoveGroup`/OMPL can't 
 - **Replacing OMPL** — OMPL stays the CPU/Humble fallback (D1).
 - **Bundling NVIDIA example robot assets** (D4; ADR-0012).
 
+## Validation (2026-06-22, RTX 4070 Laptop / Ada, CUDA 13.2, ROS Jazzy)
+
+- **Install (Phase 3, partial).** `ros-jazzy-isaac-ros-cumotion{,-moveit,-interfaces,-robot-description}` 4.4.0 install cleanly from NVIDIA's Isaac apt repo. The package is **self-contained C++/CUDA** — `libcumotion_planner_lib.so` links a bundled native `libcumotion.so.1` + `libcudart.so.13`; **no Python cuRobo** is needed (correcting an earlier draft assumption). The MoveIt plugin registers as `isaac_ros_cumotion_moveit/CumotionPlanner` in moveit pluginlib. NVIDIA ships `franka.xrdf` / `ur5e.xrdf` / `ur10e.xrdf`; `--emit-cumotion` (D4) covers the rest of the fleet.
+- **Live GPU plan.** The cuMotion planner node loaded the panda config (`panda.urdf` + `franka.xrdf`) and brought up its IK solver + trajectory optimizer + `MotionPlan` action server on the GPU. A joint-to-joint `MotionPlan` goal returned **`success: true`, `MoveItErrorCodes.SUCCESS`, in ~0.12 s** — a concrete datapoint for the latency benefit (vs OMPL's hundreds of ms–seconds). (Benign quirk: NVIDIA's `franka.xrdf` expects two finger joints while the `moveit_resources` panda URDF has `panda_finger_joint2` as a mimic → a logged-but-non-fatal warning; arm planning unaffected.)
+- **Remaining for full e2e (Phase 3 cont.).** Drive cuMotion through `move_group` via `pipeline_id` (the injection is unit-tested) and route the planned trajectory through `/openral/candidate_action` → supervisor → C++ kernel, confirming an out-of-envelope plan is still rejected + E-stopped. Needs the colcon-built OpenRAL workspace + a `move_group` bring-up with the cuMotion pipeline in `planning_pipelines`.
+
 ## Open questions
 
 - **Q1 — VRAM co-residency.** Can cuMotion's working set + a quantized VLA co-exist on the 8 GB reference host, or does cuMotion need eviction coordination with the GPU-resident skill slot (ADR-0050)? Measure in phase 4.

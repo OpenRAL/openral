@@ -141,20 +141,25 @@ Manual install (if you skipped bootstrap or added the GPU later):
 ```bash
 # 1. Add NVIDIA's Isaac ROS apt repo (one-time):
 #    https://nvidia-isaac-ros.github.io/getting_started/isaac_apt_repository.html
-# 2. Install the cuMotion MoveIt pipeline (bundles a Jazzy/py3.12 cuRobo):
+# 2. Install the cuMotion MoveIt pipeline (self-contained C++/CUDA, no cuRobo pip):
 sudo apt install ros-$ROS_DISTRO-isaac-ros-cumotion-moveit \
                  ros-$ROS_DISTRO-isaac-ros-cumotion-robot-description
 # 3. Add the cuMotion pipeline to your moveit_config's planning_pipelines, then
-#    generate the per-robot cuRobo collision config from the kernel's own geometry:
+#    generate the per-robot cuRobo collision config from the kernel's own geometry
+#    (NVIDIA ships configs for franka / ur5e / ur10e; --emit-cumotion covers the
+#    rest of the OpenRAL fleet):
 openral collision lower --robot robots/<robot>/robot.yaml \
         --emit-cumotion robots/<robot>/cumotion_spheres.yaml --write
 ```
 
-cuRobo is **not on PyPI** (source-only, officially Python 3.8–3.10), so there is
-no `uv`/`pip` group — the apt packages are the supported path on OpenRAL's
-Python 3.12 + Jazzy stack. cuMotion never bypasses the safety kernel: planned
-trajectories still replay through `/openral/candidate_action` and are validated
-waypoint-by-waypoint (ADR-0065 D2).
+Isaac ROS 4.4+ cuMotion is a **self-contained C++/CUDA apt package** (ships a
+native `libcumotion.so.1` and uses the CUDA 13 runtime) — there is **no Python
+cuRobo to install** and no `uv`/`pip` group. The apt packages are the supported
+path on OpenRAL's Python 3.12 + Jazzy stack. *Verified 2026-06-22 on an RTX 4070
+(Ada): the planner node loads the panda config and solves a joint-space plan in
+~0.12 s.* cuMotion never bypasses the safety kernel: planned trajectories still
+replay through `/openral/candidate_action` and are validated waypoint-by-waypoint
+(ADR-0065 D2).
 
 ## Sim
 

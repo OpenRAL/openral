@@ -88,9 +88,10 @@ sudo apt-get install -y \
 # when a discrete NVIDIA GPU is present AND the distro is jazzy (cuMotion targets
 # Ubuntu 24.04). The apt packages live in NVIDIA's Isaac ROS apt repo — if that
 # repo isn't configured the install is skipped with a pointer, never a hard fail.
-# These apt packages bundle the cuRobo planner built for Jazzy/py3.12; cuRobo is
-# NOT on PyPI (source-only, officially py3.8-3.10) so there is no uv/pip group —
-# the apt route is the supported path on OpenRAL's py3.12 + Jazzy stack.
+# Isaac ROS 4.4+ cuMotion is a self-contained C++/CUDA package (ships a native
+# libcumotion.so.1 + uses the CUDA 13 runtime); there is NO Python cuRobo to
+# install and no uv/pip group — the apt packages are the whole planner. Verified
+# 2026-06-22 on an RTX 4070 (Ada): the planner node loads + solves a joint plan.
 if command -v nvidia-smi >/dev/null 2>&1 && [[ "${ROS_DISTRO}" == "jazzy" ]]; then
   echo "==> NVIDIA GPU detected — installing Isaac ROS cuMotion (ADR-0065)."
   sudo apt-get install -y \
