@@ -5,24 +5,24 @@
 ### `python/sensors/src/openral_sensors/catalog.py`
 _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` factories._
 
-- `class SensorSignature` — Probe-side identifier (kind + canonical value) for catalog reverse-lookup. (L58)
+- `class SensorSignature` — Probe-side identifier (kind + canonical value) for catalog reverse-lookup. (L59)
   fields: `kind, value`
-- `class SensorCatalogEntry` — One row in the catalog. (L87)
+- `class SensorCatalogEntry` — One row in the catalog. (L88)
   fields: `id, vendor, model, kind, factory, modalities, description, docs_url, signatures`
-- `class SensorCatalog` — In-memory registry. (L121)
-  - `register(entry, *, replace=False) -> SensorCatalogEntry` (L151)
-  - `unregister(sensor_id) -> None` (idempotent) (L174)
-  - `get(sensor_id) -> SensorCatalogEntry` — Raises `KeyError` on miss. (L180)
-  - `__contains__(sensor_id) -> bool` (L189)
-  - `__len__() -> int` (L193)
-  - `__iter__() -> object` (L197)
-  - `keys() -> list[str]` — Insertion order. (L201)
-  - `list_ids() -> list[str]` — Sorted alphabetically. (L205)
-  - `entries() -> list[SensorCatalogEntry]` — Sorted by id. (L209)
-  - `filter(*, vendor=None, modality=None, kind=None) -> list[SensorCatalogEntry]` (L213)
-  - `find_by_signature(signature) -> SensorCatalogEntry | None` — Reverse-lookup for `openral detect`. (L232)
-  - `build(sensor_id, **kwargs) -> SensorSpec | SensorBundle` (L253)
-- const `CATALOG = SensorCatalog()` — global singleton. (L265)
+- `class SensorCatalog` — In-memory registry. (L122)
+  - `register(entry, *, replace=False) -> SensorCatalogEntry` (L152)
+  - `unregister(sensor_id) -> None` (idempotent) (L175)
+  - `get(sensor_id) -> SensorCatalogEntry` — Raises `KeyError` on miss. (L181)
+  - `__contains__(sensor_id) -> bool` (L190)
+  - `__len__() -> int` (L194)
+  - `__iter__() -> object` (L198)
+  - `keys() -> list[str]` — Insertion order. (L202)
+  - `list_ids() -> list[str]` — Sorted alphabetically. (L206)
+  - `entries() -> list[SensorCatalogEntry]` — Sorted by id. (L210)
+  - `filter(*, vendor=None, modality=None, kind=None) -> list[SensorCatalogEntry]` (L214)
+  - `find_by_signature(signature) -> SensorCatalogEntry | None` — Reverse-lookup for `openral detect`. (L233)
+  - `build(sensor_id, **kwargs) -> SensorSpec | SensorBundle` (L254)
+- const `CATALOG = SensorCatalog()` — global singleton. (L266)
 
 ### Sensor `SensorSpec` factories — single-modality
 
@@ -34,8 +34,9 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 - `robotiq_ft300s_spec(name='wrist_ft', parent_frame='ee_link', rate_hz=100.0) -> SensorSpec` — Robotiq FT 300-S, 6-axis, 100 Hz, UR-native. (L25)
 
 #### `python/sensors/src/openral_sensors/usb_uvc.py`
-- `_uvc_intrinsics(width, height, hfov_deg) -> IntrinsicsPinhole` — Nominal pinhole intrinsics from sensor dims + hFOV. (L33)
-- `logitech_c920_spec(name='usb_cam', parent_frame='base_link', rate_hz=30.0, width=1920, height=1080) -> SensorSpec` — Logitech C920 / C920e, 1080p UVC, 78° hFOV. (L48)
+- `_uvc_intrinsics(width, height, hfov_deg) -> IntrinsicsPinhole` — Nominal pinhole intrinsics from sensor dims + hFOV. (L34)
+- `logitech_c920_spec(name='usb_cam', parent_frame='base_link', rate_hz=30.0, width=1920, height=1080) -> SensorSpec` — Logitech C920 / C920e, 1080p UVC, 78° hFOV. (L49)
+- `generic_uvc_rgb_spec(name='usb_cam', parent_frame='base_link', rate_hz=30.0, width=640, height=480, hfov_deg=70.0) -> SensorSpec` — Generic USB UVC RGB camera for calibrated robot-mounted cameras without stable vendor/model provenance; registered as `generic/usb_uvc_rgb`. (L75)
 
 ### Sensor `SensorBundle` factories — multi-modality
 
@@ -63,4 +64,3 @@ _ADR-0019 PR2 — generalised sensor → ROS 2 image publisher; non-GStreamer fa
 _Internal Protocol shim mirroring `openral_runner.SensorReader` to avoid a sensors↔runner import cycle._
 
 - `class SensorReaderLike(Protocol)` — Structural alias with `sensor_id`, `is_open`, `open`, `close`, `read_latest`. (L27)
-

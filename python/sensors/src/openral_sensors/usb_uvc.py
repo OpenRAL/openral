@@ -26,6 +26,7 @@ from openral_core.schemas import (
 from openral_sensors.catalog import CATALOG, SensorCatalogEntry, SensorSignature
 
 __all__ = [
+    "generic_uvc_rgb_spec",
     "logitech_c920_spec",
 ]
 
@@ -71,8 +72,56 @@ def logitech_c920_spec(
     )
 
 
+def generic_uvc_rgb_spec(
+    name: str = "usb_cam",
+    parent_frame: str = "base_link",
+    rate_hz: float = 30.0,
+    width: int = 640,
+    height: int = 480,
+    hfov_deg: float = 70.0,
+) -> SensorSpec:
+    """Build a generic USB UVC RGB camera spec for calibrated per-robot overrides.
+
+    Use this catalog entry when the robot manifest knows "USB UVC wrist camera"
+    but not a stable vendor model. The manifest should override intrinsics with
+    calibrated values and may override ``vendor`` / ``model`` when known.
+    """
+    return SensorSpec(
+        name=name,
+        modality=SensorModality.RGB,
+        frame_id=f"{name}_optical_frame",
+        parent_frame=parent_frame,
+        rate_hz=rate_hz,
+        encoding="rgb8",
+        intrinsics=_uvc_intrinsics(width, height, hfov_deg),
+        fov_h_deg=hfov_deg,
+        ros2_topic=f"/{name}/image_raw",
+        ros2_msg_type="sensor_msgs/Image",
+        catalog_id="generic/usb_uvc_rgb",
+        vendor="generic_usb",
+        model="usb_uvc_rgb",
+        driver_pkg="usb_cam",
+    )
+
+
 CATALOG.register_many(
     [
+        SensorCatalogEntry(
+            id="generic/usb_uvc_rgb",
+            vendor="generic",
+            model="usb_uvc_rgb",
+            kind="sensor",
+            factory=generic_uvc_rgb_spec,
+            modalities=(SensorModality.RGB,),
+            description=(
+                "Generic USB UVC RGB camera — use when the robot manifest has "
+                "per-unit calibration but no stable vendor model id."
+            ),
+            signatures=(
+                SensorSignature(kind="v4l2_name", value="USB Camera"),
+                SensorSignature(kind="v4l2_name", value="UVC Camera"),
+            ),
+        ),
         SensorCatalogEntry(
             id="logitech/c920",
             vendor="logitech",

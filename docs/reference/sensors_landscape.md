@@ -247,20 +247,28 @@ that extends `SensorSpec` in place against the pre-publish baseline
 
 ## 5. Catalog & factory implementation status
 
-The catalog ships only the sensor entries that are actually wired into a HAL
-adapter today.  Each entry is addressable by stable id (`<vendor>/<model>`)
+The catalog ships only the sensor entries that are actually wired into a robot
+manifest or HAL adapter today.  Each entry is addressable by stable id (`<vendor>/<model>`)
 through the `SensorCatalog` registry and surfaced via the `openral sensor list /
 show` CLI.  Speculative entries (extra RealSense SKUs, Orbbec, Logitech C922 /
 Brio, Arducam, every 2D / 3D LiDAR, standalone IMUs, ATI / Bota / OnRobot F/T,
 GelSight DIGIT, XELA, AnySkin) were dropped in the cleanup pass; reintroduce
 them only when a robot manifest or HAL factory needs them.
 
-### What shipped (5 entries, 3 modules)
+Robot-mounted physical sensors in `robots/<id>/robot.yaml` should set
+`SensorSpec.catalog_id` when they match a catalog entry. The catalog id is
+provenance, not lazy resolution: the manifest still owns calibrated intrinsics,
+frames, serial/MXID, VLA feature keys, and sim placement. Scene-only cameras may
+remain inline without catalog provenance because many are benchmark viewpoints
+rather than deployable hardware.
+
+### What shipped (7 entries, 4 modules)
 
 | Module | Catalog ids | Modalities | Wired in |
 |---|---|---|---|
 | `realsense.py` | `intel/realsense_d435`, `intel/realsense_d435i`, `intel/realsense_d415` | RGB+DEPTH(+IMU) bundles | `ur10e_with_sensors`, `franka_panda_with_sensors`, `ur5e_with_sensors` |
-| `usb_uvc.py` | `logitech/c920` | RGB | `so100_with_sensors` |
+| `usb_uvc.py` | `generic/usb_uvc_rgb`, `logitech/c920` | RGB | SO-100/SO-101 manifests, `so100_with_sensors` |
+| `luxonis.py` | `luxonis/oak_d_pro` | RGB+DEPTH+IMU bundle | SO-101 manifest |
 | `force_torque.py` | `robotiq/ft_300s` | FORCE_TORQUE (n_axes=6) | `ur5e_with_sensors`, `ur10e_with_sensors` |
 
 ### How to use
@@ -269,7 +277,7 @@ them only when a robot manifest or HAL factory needs them.
 from openral_sensors import CATALOG
 
 # List
-print(CATALOG.list_ids())                       # 5 ids
+print(CATALOG.list_ids())                       # 7 ids
 print([e.id for e in CATALOG.filter(vendor="intel")])
 
 # Build a SensorBundle / SensorSpec for a robot manifest
@@ -328,8 +336,8 @@ Every new module follows the conventions used by `realsense.py`,
 ## 7. Summary — status & next steps
 
 1. ✅ **Catalog pruned to actually-wired sensors.**  `openral_sensors` now
-   ships 5 catalog entries across 3 vendor modules (`realsense.py`,
-   `usb_uvc.py`, `force_torque.py`), `SensorCatalog` registry, `openral sensor
+   ships 7 catalog entries across 4 vendor modules (`realsense.py`,
+   `usb_uvc.py`, `luxonis.py`, `force_torque.py`), `SensorCatalog` registry, `openral sensor
    list / show` CLI, full unit-test coverage.  Any speculative entry (extra
    LiDAR, IMU, tactile, depth-camera SKUs, additional UVC cameras) was removed
    — reintroduce them on demand when a robot manifest or HAL adapter actually
@@ -341,11 +349,9 @@ Every new module follows the conventions used by `realsense.py`,
 3. After the ADR lands, ship Tier 3 modules (`stereolabs.py`, `luxonis.py`,
    `event_camera.py`, `thermal.py`, `proximity.py`, `barometer.py`) as
    separate small PRs, each with the test shape mandated in §6.
-4. Optional follow-up: add a `catalog:` reference field on
-   `RobotDescription.sensors` / `RobotDescription.sensor_bundles` so a
-   `robot.yaml` can say `- catalog: intel/realsense_d435i` instead of
-   inlining the whole `SensorBundle`.  This is a tiny v0.2 → v0.3 schema
-   migration; folding it into the same ADR keeps the migration count down.
+4. Optional follow-up: add materialization helpers that copy a catalog factory
+   output into a robot manifest while forcing authors to keep calibrated fields
+   explicit.
 
 ---
 

@@ -123,6 +123,7 @@ sensors:
       cy: 128.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera1"
+    catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so100_front"
   - name: "wrist"
@@ -152,6 +153,7 @@ sensors:
       cy: 128.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera2"
+    catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so100_wrist"
 
