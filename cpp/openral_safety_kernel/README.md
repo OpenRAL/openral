@@ -135,9 +135,15 @@ Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
   collision (`TestSO100GeometricCollisionHIL`: world-obstacle on the real
   SO-100 model + a self-collision case). Hardware-safe: every collision
   case asserts the kernel **drops** the chunk before the HAL, so the arm
-  is never actuated into a collision. The CI gate is
-  `.github/workflows/hil-so100.yml` (`[self-hosted, lab-so100]`),
-  skip-clean when no arm is attached.
+  is never actuated into a collision. The workflow
+  `.github/workflows/hil-so100.yml` (`runs-on [self-hosted, lab-so100]`)
+  is **dispatch-only** — it does not auto-run on push/PR (a self-hosted
+  job would queue forever until such a runner exists, and every other
+  workflow here is dispatch-only too). Run it from the Actions UI /
+  `gh workflow run hil-so100.yml` once a labelled runner + arm are online;
+  it is skip-clean when no arm is attached. **Not yet executed on physical
+  hardware** (the lab-so100 rig does not exist yet) — the sim tier above is
+  the current real-kernel verification.
 
 > Geometric collision arms automatically in `openral deploy sim` /
 > `deploy run`: the launch lowers the robot's collision model

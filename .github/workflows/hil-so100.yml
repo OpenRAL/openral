@@ -8,26 +8,22 @@ name: hil-so100
 # Layer 6 (the C++ safety kernel) from `yellow` to `green`: sim coverage proves
 # the math, this proves it on real hardware.
 #
-# Self-hosted: needs a lab runner with the labels [self-hosted, lab-so100], an
-# SO-100 on $SO100_PORT (default /dev/ttyUSB0), and a sourced ROS 2 Jazzy. The
-# tests are hardware-safe — every collision case asserts the kernel DROPS the
-# chunk before it reaches the HAL, so the arm is never actuated into a
-# collision. When no arm is attached the `just hil-safety` recipe maps pytest's
-# "no tests collected / all skipped" exit (4/5) to 0, so a runner without the
-# arm plugged in reports success rather than a red gate.
+# Self-hosted: needs a lab runner registered with the labels
+# [self-hosted, lab-so100], an SO-100 on $SO100_PORT (default /dev/ttyUSB0), and
+# a sourced ROS 2 Jazzy. The tests are hardware-safe — every collision case
+# asserts the kernel DROPS the chunk before it reaches the HAL, so the arm is
+# never actuated into a collision. When no arm is attached the `just hil-safety`
+# recipe maps pytest's "no tests collected / all skipped" exit (4/5) to 0, so a
+# runner without the arm plugged in reports success rather than a red gate.
 #
-# Triggers: manual dispatch, plus pushes that touch the safety kernel, the
-# safety overlay package, or the HIL safety tests. (Self-hosted runners do not
-# consume GitHub Actions credits, unlike the hosted-runner workflows which are
-# dispatch-only — see hal.yml.)
+# Trigger: manual dispatch ONLY. Matches every other workflow in this repo
+# (hal/quality/test-python are dispatch-only — "out of GitHub Actions credits").
+# A push/PR trigger would queue a `runs-on: [self-hosted, lab-so100]` job that
+# hangs forever until such a runner exists, blocking every PR that touches the
+# safety paths. Run this from the Actions UI / `gh workflow run hil-so100.yml`
+# once the lab rig is online; until then it never auto-runs and never gates a PR.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "cpp/openral_safety_kernel/**"
-      - "packages/openral_safety/**"
-      - "tests/hil/safety/**"
-      - ".github/workflows/hil-so100.yml"
 
 permissions:
   contents: read
