@@ -29,6 +29,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -91,6 +92,90 @@ _SAFETY_PARAM_DENYLIST = (
     "watchdog",
 )
 _MJPEG_BOUNDARY = "frame"
+
+# Background drain tasks created by _skill_execute_response are stored here so
+# the event loop does not GC them before they finish.  Each task removes itself
+# from this set in its own done-callback.
+_BACKGROUND_DRAIN_TASKS: set[asyncio.Task[None]] = set()
+
+# Regex to extract the goal ID from `ros2 action send_goal` stdout.
+_GOAL_ACCEPTED_RE = re.compile(r"Goal accepted with ID:\s*(\S+)")
+_GOAL_REJECTED_PHRASE = "Goal was rejected"
+
+# Default acceptance timeout in seconds (overridden by env).
+_DEFAULT_SKILL_ACCEPT_TIMEOUT_S = 12.0
+
+
+async def _read_goal_decision(
+    stdout: asyncio.StreamReader,
+) -> tuple[str | None, bool, list[str]]:
+    """Read stdout lines until ``Goal accepted with ID`` or ``Goal was rejected``.
+
+    Returns ``(goal_id, rejected, captured_lines)`` where exactly one of
+    ``goal_id`` (non-None) or ``rejected=True`` is set on a decision line.
+    If EOF arrives before either marker, both are falsy and ``captured_lines``
+    holds the full output.
+    """
+    captured: list[str] = []
+    goal_id: str | None = None
+    rejected = False
+    async for raw in stdout:
+        line = raw.decode("utf-8", errors="replace").rstrip()
+        captured.append(line)
+        m = _GOAL_ACCEPTED_RE.search(line)
+        if m:
+            goal_id = m.group(1)
+            return goal_id, rejected, captured
+        if _GOAL_REJECTED_PHRASE in line:
+            rejected = True
+            return goal_id, rejected, captured
+    return goal_id, rejected, captured
+
+
+async def _drain_skill_goal_stdout(
+    stdout: asyncio.StreamReader,
+    proc: asyncio.subprocess.Process,
+    captured_lines: list[str],
+    goal_id: str,
+    skill_id: str,
+) -> None:
+    """Drain remaining ``stdout`` after goal acceptance and audit-log the outcome.
+
+    Runs as a background ``asyncio.Task`` — must catch all exceptions and log
+    them (never crash the event loop). Called by ``_skill_execute_response``
+    after the action server accepts the goal (ADR-0064 §4).
+    """
+    remaining: list[str] = list(captured_lines)
+    try:
+        async for raw in stdout:
+            remaining.append(raw.decode("utf-8", errors="replace").rstrip())
+        await proc.wait()
+        full_out = "\n".join(remaining)
+        # Parse success / failure_reason / trace_id from the output.
+        success = "success: True" in full_out or "success=True" in full_out
+        failure_reason: str | None = None
+        trace_id: str | None = None
+        for line in remaining:
+            if "failure_reason:" in line:
+                failure_reason = line.split("failure_reason:", 1)[-1].strip() or None
+            if "trace_id:" in line:
+                trace_id = line.split("trace_id:", 1)[-1].strip() or None
+        _logger.warning(
+            "dashboard_skill_result",
+            goal_id=goal_id,
+            skill_id=skill_id,
+            success=success,
+            trace_id=trace_id,
+            failure_reason=failure_reason,
+        )
+    except Exception as exc:  # background task must log, never crash
+        _logger.warning(
+            "dashboard_skill_drain_error",
+            goal_id=goal_id,
+            skill_id=skill_id,
+            error=str(exc),
+        )
+
 
 # The vendored voice-prompt assets (static/vendor/vad/) include ESM (.mjs) and
 # WebAssembly (.wasm) served by StaticFiles. Browsers reject an ESM dynamic
@@ -324,10 +409,25 @@ async def _skill_execute_response(
 ) -> JSONResponse:
     """Dispatch an ExecuteRskill action goal (ADR-0064; safety kernel disposes).
 
-    Shells out to ``ros2 action send_goal /openral/execute_rskill`` so the
-    actuation path is identical to the CLI — the safety kernel remains the
-    sole authority on whether the action proceeds. Every call is audit-logged
-    at WARNING level before the subprocess is spawned (ADR-0064 §4).
+    Async accept-then-track: the endpoint returns as soon as the action server
+    **accepts** the goal (HTTP 202) rather than blocking on full completion.
+
+    - Returns **HTTP 202** with ``{"status":"accepted","goal_id":"<id>",...}``
+      the moment ``Goal accepted with ID: <id>`` appears on stdout.
+    - Returns **HTTP 409** if ``Goal was rejected`` appears before acceptance.
+    - Returns **HTTP 504** if the action server does not accept within
+      ``OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S`` seconds (default 12).
+    - Returns **HTTP 502** if the subprocess exits before printing any
+      acceptance line.
+    - Returns **HTTP 503** if ``ros2`` is not on PATH.
+
+    On 202 a background ``asyncio.Task`` drains the remaining stdout, awaits
+    process exit, and audit-logs the eventual outcome (ADR-0064 §4). The task
+    reference is kept in ``_BACKGROUND_DRAIN_TASKS`` so the event loop cannot
+    GC it before completion.
+
+    Every call is audit-logged at WARNING level before the subprocess is
+    spawned (ADR-0064 §4). ``prompt`` and ``goal_params_json`` are never logged.
     """
     ros2 = shutil.which("ros2")
     if ros2 is None:
@@ -335,6 +435,13 @@ async def _skill_execute_response(
             {"error": "`ros2` not on PATH; source the workspace install first"},
             status_code=503,
         )
+
+    accept_timeout = float(
+        os.environ.get(
+            "OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S", str(_DEFAULT_SKILL_ACCEPT_TIMEOUT_S)
+        )
+    )
+
     goal = json.dumps(
         {
             "rskill_id": skill_id,
@@ -354,6 +461,7 @@ async def _skill_execute_response(
         revision=revision,
         operator_ip=operator_ip,
     )
+
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "action",
@@ -362,26 +470,84 @@ async def _skill_execute_response(
         "openral_msgs/action/ExecuteRskill",
         goal,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
     )
+    # Capture stdout narrowed to StreamReader — PIPE was requested so it is always set.
+    if proc.stdout is None:  # pragma: no branch
+        raise RuntimeError("stdout is None despite asyncio.subprocess.PIPE request")
+    stdout = proc.stdout
+
+    # ── Phase 1: read lines until accepted / rejected / timeout / EOF ─────────
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        goal_id, rejected, captured_lines = await asyncio.wait_for(
+            _read_goal_decision(stdout), timeout=accept_timeout
+        )
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return JSONResponse({"error": "skill execute timed out after 15 s"}, status_code=504)
-    out = out_b.decode("utf-8", errors="replace").strip()
-    err = err_b.decode("utf-8", errors="replace").strip()
-    if proc.returncode != 0:
         return JSONResponse(
             {
-                "error": "ros2 action send_goal failed",
-                "returncode": proc.returncode,
-                "stderr": err,
+                "error": (
+                    f"action server did not accept the goal within {accept_timeout:.0f} s "
+                    "(OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S)"
+                )
             },
+            status_code=504,
+        )
+
+    # ── Phase 2a: goal rejected ───────────────────────────────────────────────
+    if rejected:
+        await proc.wait()
+        _logger.warning(
+            "dashboard_write_attempt",
+            operation="skill_execute",
+            outcome="rejected",
+            adr="ADR-0064",
+            skill_id=skill_id,
+            operator_ip=operator_ip,
+        )
+        return JSONResponse(
+            {"status": "rejected", "detail": "action server rejected the goal"},
+            status_code=409,
+        )
+
+    # ── Phase 2b: proc exited before any accepted/rejected line ──────────────
+    if goal_id is None:
+        # EOF without matching either marker — subprocess crashed or exited early.
+        await proc.wait()
+        out = "\n".join(captured_lines)
+        return JSONResponse(
+            {"error": "ros2 action send_goal exited before goal was accepted", "output": out},
             status_code=502,
         )
-    return JSONResponse({"status": "ok", "stdout": out})
+
+    # ── Phase 3: goal accepted — log it, schedule background drain ───────────
+    # Rebind to str so mypy knows it's not None inside the inner closure below.
+    accepted_goal_id: str = goal_id
+    _logger.warning(
+        "dashboard_write_attempt",
+        operation="skill_execute",
+        outcome="accepted",
+        adr="ADR-0064",
+        skill_id=skill_id,
+        goal_id=accepted_goal_id,
+        operator_ip=operator_ip,
+    )
+
+    task = asyncio.create_task(
+        _drain_skill_goal_stdout(stdout, proc, captured_lines, accepted_goal_id, skill_id)
+    )
+    _BACKGROUND_DRAIN_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_DRAIN_TASKS.discard)
+
+    return JSONResponse(
+        {
+            "status": "accepted",
+            "goal_id": accepted_goal_id,
+            "detail": "skill dispatched; track progress via dashboard telemetry",
+        },
+        status_code=202,
+    )
 
 
 async def _param_set_from_request(request: Request) -> JSONResponse:

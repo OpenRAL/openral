@@ -587,6 +587,132 @@ async def test_skill_execute_503_without_ros2(
     assert resp.status_code == 503
 
 
+# ── async accept-then-track tests (issue #75c, ADR-0064) ─────────────────────
+#
+# Fake `ros2` shims (process-boundary doubles, allowed per CLAUDE.md §1.11)
+# that simulate: goal accepted, goal rejected, slow action server (accept
+# timeout). Mirror the openral_shim pattern above.
+
+
+@pytest.fixture
+def ros2_accepted_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Install a fake `ros2` that prints 'Goal accepted with ID: test-123' then exits 0."""
+    log = tmp_path / "ros2_calls.txt"
+    shim = tmp_path / "ros2"
+    shim.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + "import json, sys, pathlib\n"
+        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        + "print('Waiting for an action server to become available...', flush=True)\n"
+        + "print('Sending goal:', flush=True)\n"
+        + "print('Goal accepted with ID: test-123', flush=True)\n"
+        # Simulate some trailing output that the background drain reads
+        + "print('Result:', flush=True)\n"
+        + "print('  success: True', flush=True)\n"
+        + "print('  trace_id: abc-trace-1', flush=True)\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    yield log
+
+
+@pytest.fixture
+def ros2_rejected_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Install a fake `ros2` that prints 'Goal was rejected' then exits 1."""
+    log = tmp_path / "ros2_calls.txt"
+    shim = tmp_path / "ros2"
+    shim.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + "import json, sys, pathlib\n"
+        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        + "print('Waiting for an action server to become available...', flush=True)\n"
+        + "print('Sending goal:', flush=True)\n"
+        + "print('Goal was rejected :(', flush=True)\n"
+        + "sys.exit(1)\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    yield log
+
+
+@pytest.fixture
+def ros2_slow_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Install a fake `ros2` that sleeps 5 s without printing any acceptance line."""
+    log = tmp_path / "ros2_calls.txt"
+    shim = tmp_path / "ros2"
+    shim.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + "import json, sys, pathlib, time\n"
+        + f"pathlib.Path({str(log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        + "time.sleep(5)\n"
+        + "print('Goal accepted with ID: too-late', flush=True)\n"
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    yield log
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_accepted_returns_202(
+    monkeypatch: pytest.MonkeyPatch, ros2_accepted_shim: Path
+) -> None:
+    """A fake ros2 that prints 'Goal accepted with ID: test-123' → HTTP 202 with goal_id."""
+    del ros2_accepted_shim  # fixture installs the shim on PATH; log file not needed here
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["status"] == "accepted"
+    assert body["goal_id"] == "test-123"
+    assert "detail" in body
+    # Give the background drain task a tick to complete (it's fire-and-forget)
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_rejected_returns_409(
+    monkeypatch: pytest.MonkeyPatch, ros2_rejected_shim: Path
+) -> None:
+    """A fake ros2 that prints 'Goal was rejected' → HTTP 409 status=rejected."""
+    del ros2_rejected_shim  # fixture installs the shim on PATH
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
+    assert resp.status_code == 409, resp.text
+    body = resp.json()
+    assert body["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_skill_execute_accept_timeout_returns_504(
+    monkeypatch: pytest.MonkeyPatch, ros2_slow_shim: Path
+) -> None:
+    """A fake ros2 that sleeps 5 s without printing acceptance → HTTP 504 (accept timeout)."""
+    del ros2_slow_shim  # fixture installs the shim on PATH
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    # Set a very short acceptance timeout so the test runs fast
+    monkeypatch.setenv("OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S", "1")
+    app = create_app(TelemetryStore())
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=10.0
+    ) as client:
+        resp = await client.post("/api/skill/execute", json={"skill_id": "openral/skill-pick"})
+    assert resp.status_code == 504, resp.text
+    body = resp.json()
+    assert "accept" in body["error"].lower(), body
+
+
 @pytest.mark.asyncio
 async def test_skill_execute_rejects_non_one_truthy_value(
     monkeypatch: pytest.MonkeyPatch,

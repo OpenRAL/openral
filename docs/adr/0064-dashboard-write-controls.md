@@ -66,8 +66,27 @@ path**: the C++ safety kernel continues to inspect, rate-limit, and dispose
 every motion chunk. This mirrors the existing `estop_reset` and
 `openral-prompt` shell-out pattern already present in the observability layer.
 
+**Async accept-then-track (HTTP 202):** the endpoint returns as soon as the
+action server **accepts** the goal, not when the skill finishes. This avoids
+504 errors on long-running skills. The response body includes `goal_id` so the
+operator can correlate telemetry. Execution progress is tracked via dashboard
+SSE / OTLP telemetry. Acceptance timeout is configurable via
+`OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S` (default `12` s).
+
+Response codes:
+
+| Code | Meaning |
+|------|---------|
+| **202** | Goal accepted; execution in progress |
+| **409** | Action server rejected the goal |
+| **504** | Action server did not accept within `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S` |
+| **502** | `ros2` subprocess exited before printing any acceptance line |
+| **503** | `ros2` not on PATH |
+
 Every invocation is audit-logged via `structlog` before the shell-out is
-issued, regardless of outcome.
+issued, regardless of outcome. On acceptance, `goal_id` is included in the
+audit record. A background task drains remaining subprocess output and
+audit-logs the eventual outcome (see §4).
 
 ### 3. Param-tune (`POST /api/param/set`)
 
@@ -111,12 +130,21 @@ at WARNING level with the following mandatory fields:
 
 - `event`: `"dashboard_write_attempt"`
 - `operation`: `"skill_execute"` or `"param_set"`
-- `outcome`: `"sent"` | `"denied_denylist"` | `"denied_flag_off"`
+- `outcome`: `"sent"` | `"accepted"` | `"rejected"` | `"denied_denylist"` | `"denied_flag_off"`
 - `adr`: `"ADR-0064"`
 - `operator_ip`: loopback address (always `127.0.0.1` given the localhost-only
   surface)
-- operation-specific fields (skill ID or param name + node, denylist match if
-  denied)
+- operation-specific fields (skill ID or param name + node, `goal_id` on
+  acceptance, denylist match if denied)
+
+Additionally, after skill execution completes, a **second** structlog event
+is emitted by the background drain task:
+
+- `event`: `"dashboard_skill_result"`
+- `goal_id`, `skill_id`, `success` (bool), `trace_id` (str or `None`),
+  `failure_reason` (str or `None`)
+
+`prompt` and `goal_params_json` are **never** included in any log event.
 
 ## Non-goals
 

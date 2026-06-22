@@ -109,9 +109,15 @@ before; discovery is additive, never load-bearing.
 Two guarded write endpoints are available when the flag is set:
 
 ```
-POST /api/skill/execute   # dispatch an ExecuteRskill action goal
+POST /api/skill/execute   # dispatch an ExecuteRskill action goal (returns 202 on acceptance)
 POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
 ```
+
+`POST /api/skill/execute` returns **HTTP 202** as soon as the action server
+accepts the goal — it does **not** block on skill completion. The response body
+includes `goal_id` for telemetry correlation. Execution progress is tracked via
+the dashboard SSE stream and OTLP telemetry. The acceptance timeout is
+configurable via `OPENRAL_DASHBOARD_SKILL_ACCEPT_TIMEOUT_S` (default `12` s).
 
 Enable them by starting the dashboard with the environment variable set:
 
