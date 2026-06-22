@@ -37,6 +37,11 @@ _ADR-0030 — rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (
 - `world_cloud_span_attributes(*, points_base, frame_id, source_node, range_max_m, xy_m, z_min, z_max) -> dict[str,Any]` — assemble the `openral.world_cloud.*` span attributes. (L214)
 - `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the centers cloud (TRANSIENT_LOCAL), TF2-transforms to `base_link`, throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `destroy()` releases the subscription. (L260)
 
+### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
+_ADR-0019 — bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._
+
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot (ADR-0028b) chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. `destroy()` flushes the pending tick, closes the episode, finalizes the bag, releases the subscriptions. (L85)
+
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _:class:`SensorReader` Protocol — seam between per-sensor capture backends and the inference runner (ADR-0010 PR D)._
 
@@ -220,4 +225,3 @@ _Shared base for inference runners (ADR-0010 PR C). Subclasses override `_tick_i
   - `_current_trace_id() -> str | None` [@staticmethod] — Active OTel trace id (hex) or None. (L348)
   - `_on_deadline_overrun(result: TickResult) -> None` — Apply policy: structlog warn / drop / raise `ROSDeadlineMissed`. Always increments `openral.tick.deadline_misses` and emits `openral.event.deadline_missed` on the current parent span; on `RAISE`, also calls `record_exception` + `set_status(ERROR)` on the parent span before re-raising. (L358)
   - `_build_run_result(results, *, budget_violations, trace_id) -> RunResult` — Aggregate per-tick records into `RunResult` (mean / p99). (L411)
-

@@ -201,12 +201,26 @@ def test_bridge_reassembles_slot_dispatched_action(tmp_path: Path) -> None:
     bridge._on_episode(SimpleNamespace(phase=0, task_string="pick", success=False))
     for step in range(n_ticks):
         _feed_snapshot(aggregator, robot, state_dim=8, fill=100 + step, step=step)
-        # Slot 1: 6-D cartesian delta; slot 2: 1-D gripper — same fixed order each tick.
+        # Slot 1: 6-D cartesian delta; slot 2: 1-D gripper — same fixed order
+        # each tick, both stamped with the same 1-based tick_index (ADR-0019).
+        tick = step + 1
         bridge._on_action(
-            SimpleNamespace(control_mode=cm_cartesian, ee_name="", n_dof=6, flat=[float(step)] * 6)
+            SimpleNamespace(
+                control_mode=cm_cartesian,
+                ee_name="",
+                n_dof=6,
+                flat=[float(step)] * 6,
+                tick_index=tick,
+            )
         )
         bridge._on_action(
-            SimpleNamespace(control_mode=cm_gripper, ee_name="", n_dof=1, flat=[float(step) + 0.9])
+            SimpleNamespace(
+                control_mode=cm_gripper,
+                ee_name="",
+                n_dof=1,
+                flat=[float(step) + 0.9],
+                tick_index=tick,
+            )
         )
     bridge._on_episode(SimpleNamespace(phase=1, task_string="pick", success=True))
     bridge.destroy()
@@ -222,3 +236,55 @@ def test_bridge_reassembles_slot_dispatched_action(tmp_path: Path) -> None:
     for step, tick in enumerate(sorted(ticks, key=lambda t: t["step_idx"])):
         # Full 7-D action = 6 cartesian + 1 gripper, concatenated in slot order.
         assert tick["action"] == pytest.approx([float(step)] * 6 + [float(step) + 0.9])
+
+
+def test_bridge_tick_index_groups_same_key_slots(tmp_path: Path) -> None:
+    """tick_index reassembles even when two slots share (control_mode, ee_name).
+
+    This is the case the slot-cycle fallback CANNOT handle (a repeated key would
+    flush prematurely): e.g. a bimanual robot emitting two same-mode joint
+    chunks with empty ee_name in one tick. ADR-0019's explicit ActionChunk
+    tick_index groups them robustly — both chunks of a tick share the index, so
+    they reassemble into one frame regardless of key collisions.
+    """
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml"))
+    from openral_world_state import WorldStateAggregator
+
+    aggregator = WorldStateAggregator(robot)
+    bag_path = tmp_path / "samekey.mcap"
+    recorder = RolloutRecorder(
+        robot=robot, task_string="", fps=20.0, sinks=[Rosbag2Sink(bag_path=bag_path)]
+    )
+    bridge = DatasetRecorderBridge(
+        _StandinNode(), robot=robot, aggregator=aggregator, recorder=recorder
+    )
+    bridge._on_episode(SimpleNamespace(phase=0, task_string="t", success=False))
+    n_ticks = 3
+    for step in range(n_ticks):
+        _feed_snapshot(aggregator, robot, state_dim=8, fill=100 + step, step=step)
+        tick = step + 1
+        # Two chunks, IDENTICAL (control_mode, ee_name) — only tick_index keeps
+        # them in the same tick (slot-cycle alone would split them).
+        bridge._on_action(
+            SimpleNamespace(
+                control_mode=1, ee_name="", n_dof=4, flat=[float(step)] * 4, tick_index=tick
+            )
+        )
+        bridge._on_action(
+            SimpleNamespace(
+                control_mode=1, ee_name="", n_dof=3, flat=[float(step) + 0.5] * 3, tick_index=tick
+            )
+        )
+    bridge._on_episode(SimpleNamespace(phase=1, task_string="t", success=True))
+    bridge.destroy()
+
+    from mcap.reader import make_reader
+
+    ticks = []
+    with bag_path.open("rb") as f:
+        for _s, ch, m in make_reader(f).iter_messages():
+            if ch.topic == "/openral/tick":
+                ticks.append(json.loads(m.data))
+    assert len(ticks) == n_ticks, "same-key slots must stay in ONE tick via tick_index"
+    for step, tick in enumerate(sorted(ticks, key=lambda t: t["step_idx"])):
+        assert tick["action"] == pytest.approx([float(step)] * 4 + [float(step) + 0.5] * 3)

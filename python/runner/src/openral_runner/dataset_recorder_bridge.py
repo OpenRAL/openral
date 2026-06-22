@@ -132,6 +132,7 @@ class DatasetRecorderBridge:
         # signals the next tick's cycle has started → flush the assembled frame.
         self._accum: list[tuple[tuple[int, str], list[float]]] = []
         self._pending_snapshot: Any = None
+        self._current_tick: int = 0  # tick_index of the accumulating group (0 = none)
 
         # Control data class — RELIABLE. Deep queue (not KEEP_LAST=1) so a
         # tick's rapid multi-slot ActionChunk burst is never coalesced/dropped
@@ -189,6 +190,7 @@ class DatasetRecorderBridge:
             # Drop any half-accumulated tick from a prior episode.
             self._accum = []
             self._pending_snapshot = None
+            self._current_tick = 0
             self._recorder.episode_start(task_string=str(msg.task_string))
             self._episode_open = True
             self._n_frames = 0
@@ -207,31 +209,39 @@ class DatasetRecorderBridge:
     def _on_action(self, msg: Any) -> None:  # noqa: ANN401  # reason: openral_msgs/ActionChunk IDL
         """Accumulate this tick's slot chunks; flush a full frame per tick.
 
-        The node emits the slots of one tick back-to-back in a fixed order,
-        then the next tick repeats that order. We detect the tick boundary by
-        the slot **cycle**: when a chunk arrives whose ``(control_mode,
-        ee_name)`` key is already in the current accumulation, the next tick
-        has begun — flush the assembled action (all slots concatenated in
-        emission order, the first/next-applied row of each) as one frame, then
-        start the new tick. This is timing-independent and works for any number
-        of slots / control modes (single-chunk joint skills flush every chunk;
-        bimanual same-mode slots stay distinct via ``ee_name``).
+        Tick boundary detection, in order of preference:
+
+        1. **``ActionChunk.tick_index``** (ADR-0019, set by the node) — the
+           authoritative, unambiguous key: every slot chunk of one inference
+           tick carries the same 1-based index, so a change of index ends the
+           tick. Robust even if two slots share a ``(control_mode, ee_name)``.
+        2. **Slot cycle** (fallback when ``tick_index == 0``, e.g. an older
+           publisher) — a repeated ``(control_mode, ee_name)`` key signals the
+           next tick's slot order has restarted.
+
+        The flushed frame concatenates all slots' next-applied rows
+        (``flat[:n_dof]``) in emission order into one full action vector.
         """
         if not self._episode_open:
             return
+        tick_index = int(getattr(msg, "tick_index", 0) or 0)
         slot_key = (int(getattr(msg, "control_mode", 0)), str(getattr(msg, "ee_name", "") or ""))
         # First row of the chunk = the next-applied action (row-major
         # [horizon][n_dof]). n_dof guards against an empty/short flat.
         n_dof = int(getattr(msg, "n_dof", 0)) or len(msg.flat)
         values = [float(v) for v in msg.flat[:n_dof]]
 
-        if any(key == slot_key for key, _ in self._accum):
-            # Slot cycle restarted → the previous tick is complete.
+        if tick_index >= 1:
+            boundary = bool(self._accum) and tick_index != self._current_tick
+        else:
+            boundary = any(key == slot_key for key, _ in self._accum)
+        if boundary:
             self._flush_accumulated()
         if not self._accum:
             # First slot of a new tick — capture the proprio + images the
             # policy saw for THIS tick (chunks of a tick arrive within µs, so
             # the snapshot at the first slot is the tick's observation).
+            self._current_tick = tick_index
             self._pending_snapshot = self._aggregator.snapshot()
         self._accum.append((slot_key, values))
 
@@ -240,6 +250,7 @@ class DatasetRecorderBridge:
         accum, snapshot = self._accum, self._pending_snapshot
         self._accum = []
         self._pending_snapshot = None
+        self._current_tick = 0
         if not accum or snapshot is None:
             return
         joint_state = getattr(snapshot, "joint_state", None)

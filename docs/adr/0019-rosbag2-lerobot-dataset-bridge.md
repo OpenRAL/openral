@@ -413,12 +413,20 @@ a 178-frame episode (real 8-D proprio + 2× 256×256 video + PHASE_START/END);
 **Multi-slot action reassembly (resolved 2026-06-22).** For slot-dispatched
 skills (ADR-0028b — e.g. LIBERO cartesian_delta = 6-D cartesian + 1-D gripper as
 *separate* `ActionChunk`s), the bridge accumulates a tick's slot chunks and
-concatenates their next-applied rows into one full action vector, detecting the
-tick boundary by the slot cycle (a repeated `(control_mode, ee_name)` key starts
-the next tick); the action-subscription QoS depth was raised 1 → 100 so a tick's
-rapid multi-slot burst is never coalesced. Single-`ActionChunk` skills
-(joint-position robots) flush one frame per chunk. Robot- and
-control-mode-agnostic (the HAL already flattened each slot into `flat`).
+concatenates their next-applied rows into one full action vector. The tick
+boundary is keyed on a new **`ActionChunk.tick_index`** — a 1-based monotonic
+index the node stamps identically on every slot chunk of one inference tick
+(via `ROSPublishingHAL.tick_index_getter`), so a change of index ends the tick.
+This is unambiguous even when two slots share a `(control_mode, ee_name)` key
+(e.g. a bimanual robot's two same-mode arm chunks). A **slot-cycle** heuristic
+(repeated `(control_mode, ee_name)` ends the tick) is the fallback when
+`tick_index == 0` (an older publisher). The action-subscription QoS depth was
+raised 1 → 100 so a tick's rapid multi-slot burst is never coalesced. The
+recorder rejects (logs loudly, no silent mis-record) a reassembled action that
+doesn't match a robot's `action_spec.dim` when one is defined — no current robot
+hits this (every multi-slot skill runs on an `action_spec=None` robot; every
+spec'd robot is single-surface). Verified live: franka/LIBERO recorded a 120-tick
+episode with action `{7: 120}` via `tick_index` grouping.
 
 **Known follow-up.**
 - **`HardwareRunner` rename.** `HardwareRunner` already drives digital twins via

@@ -157,6 +157,9 @@ if _ROS2_AVAILABLE:
             self._estop_sub: Any = None
             self._episode_pub: Any = None
             self._episode_counter: int = 0
+            # ADR-0019 — 1-based inference-tick index stamped onto every
+            # ActionChunk via the HAL's tick_index_getter (0 = no goal running).
+            self._current_tick_index: int = 0
             self._heartbeat: Any = None
             # ADR-0027 — state-adapter wiring. Populated by
             # ``_init_tf_lookup`` at on_configure; ``None`` until then.
@@ -239,6 +242,7 @@ if _ROS2_AVAILABLE:
                 description=self._description,
                 skill_id_getter=lambda: self._active_skill_id,
                 skill_revision_getter=lambda: self._active_skill_revision,
+                tick_index_getter=lambda: self._current_tick_index,
             )
             try:
                 self._hal.connect()
@@ -797,6 +801,10 @@ if _ROS2_AVAILABLE:
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
                     if actions and actions[0].horizon:
                         inf_span.set_attribute("inference.chunk_size", int(actions[0].horizon))
+                # ADR-0019 — stamp every slot chunk of THIS tick with the same
+                # 1-based tick index (read by ROSPublishingHAL via its
+                # tick_index_getter) so the dataset recorder groups them.
+                self._current_tick_index = chunk_index + 1
                 for action in actions:
                     self._hal.send_action(action)
                     self._chunks_published += 1
@@ -1108,6 +1116,7 @@ if _ROS2_AVAILABLE:
                 self._active_skill_id = ""
                 self._active_skill_revision = ""
                 self._cancel_requested = False
+                self._current_tick_index = 0
 
         def _on_estop(self, _msg: object) -> None:
             """``/openral/estop`` callback: latch + abort the active goal."""
