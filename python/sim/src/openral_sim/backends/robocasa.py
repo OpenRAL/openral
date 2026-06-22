@@ -1303,16 +1303,6 @@ def _is_gr1_robot(robot_name: str) -> bool:
     return robot_name.startswith("GR1")
 
 
-_VERSION_SPOOF_LOGGED: list[bool] = [False]
-"""One-element list used as a mutable "logged?" flag.
-
-Wrapping the boolean in a list lets the helper mutate it without a
-``global`` statement, which Pylint flags (PLW0603). The flag is
-process-local; concurrency is irrelevant here because the adapter is
-only invoked from a single sim runner thread.
-"""
-
-
 def _robosuite_conflict_hint(exc: ImportError) -> ROSConfigError | None:
     """Map a robocasa ImportError to an actionable resync error, or None.
 
@@ -1339,133 +1329,35 @@ def _robosuite_conflict_hint(exc: ImportError) -> ROSConfigError | None:
     return None
 
 
-def _spoof_robocasa_version_pins() -> None:
-    """Spoof ``mujoco`` / ``numpy`` / ``robosuite`` __version__ before robocasa import.
-
-    Two upstreams hard-assert exact micro versions at import:
-
-    * Upstream ``robocasa/__init__.py`` (1.0.1 main / robocasa365_release
-      branches) asserts ``mujoco==3.3.1`` and ``numpy==2.2.5``.
-    * The fork ``robocasa-gr1-tabletop-tasks`` asserts
-      ``mujoco==3.2.6``, ``numpy in {1.23.x, 1.26.4}`` and
-      ``robosuite in {1.5.0, 1.5.1}``.
-
-    The workspace's `dev` group depends on newer mujoco / numpy that
-    every other sim backend (LIBERO, MetaWorld, ALOHA, PushT) relies on;
-    we cannot pin everything to robocasa's exact micro versions without
-    breaking those backends. Empirically both robocasa variants import
-    + run with mujoco 3.8.x / numpy 2.2.x / robosuite 1.5.2 once the
-    assertions are bypassed.
-
-    Spoofing is local to the process and only applied at the very
-    moment of importing robocasa; we restore the originals immediately
-    afterwards so any other consumer of these __version__ attributes
-    (e.g. the LIBERO adapter's `robosuite==1.4` compatibility check) is
-    unaffected. Logged once per process so the workaround is visible
-    in traces.
-    """
-    # Warm numba before we spoof numpy.__version__. numba 0.65 reads
-    # numpy.__version__ at first import to pick a numpy<2 vs numpy>=2
-    # internal types layout; if we spoof to "1.26.4" *before* numba is
-    # imported, numba picks the numpy<2 path against an actual numpy
-    # 2.x install and crashes with
-    # `AttributeError: module 'numba.core.types' has no attribute 'bool'`
-    # the next time anything (e.g. robocasa.utils.placement_samplers,
-    # which lazily imports numba via scipy) touches the affected code
-    # path. Importing numba here is harmless if numba is already loaded;
-    # the GR1 fork pulls it transitively via robosuite -> mujoco-mjx so
-    # we can rely on it being installed alongside the `robocasa` group.
-    import contextlib
-
-    import mujoco
-    import numpy
-    import robosuite
-
-    with contextlib.suppress(ImportError):
-        import numba  # type: ignore[import-untyped,import-not-found,unused-ignore]  # noqa: F401  # reason: force numba's numpy-version detection before the spoof (no stubs shipped upstream; the unused-ignore suppresses mypy when numba is absent and the import-untyped / import-not-found codes never fire)
-
-    orig_mj = mujoco.__version__
-    orig_np = numpy.__version__
-    orig_rs = robosuite.__version__
-    # mypy types `__version__` as Final on these modules; the spoof is
-    # a deliberate runtime-only override so we silence the type errors.
-    # The two robocasa variants have INCOMPATIBLE micro-version pins
-    # (`assert mujoco.__version__ == "3.3.1"` upstream vs `== "3.2.6"`
-    # on the GR1 fork — strict equality, not a range), so we have to
-    # pick the right string based on which one is actually installed.
-    # Detect by the variant-specific asset script: the fork ships
-    # `download_tabletop_assets.py`, upstream ships
-    # `download_kitchen_assets.py`. Same heuristic as
-    # `_has_robocasa_gr1` / `_has_robocasa_kitchen` in `_deps.py`.
-    import importlib.util as _il_util
-    from pathlib import Path as _Path
-
-    _spec = _il_util.find_spec("robocasa")
-    _is_gr1_fork = False
-    if _spec is not None and _spec.origin is not None:
-        _scripts = _Path(_spec.origin).parent / "scripts"
-        _is_gr1_fork = (_scripts / "download_tabletop_assets.py").is_file()
-    if _is_gr1_fork:
-        # robocasa-gr1-tabletop-tasks fork pins
-        mujoco.__version__ = "3.2.6"
-        numpy.__version__ = "1.26.4"  # type: ignore[misc]  # reason: GR1 fork accepts {1.23.x, 1.26.4}; runtime numpy is still 2.x.
-        robosuite.__version__ = "1.5.1"  # fork accepts {1.5.0, 1.5.1}
-    else:
-        # Upstream robocasa 1.0.1 (kitchen) pins
-        mujoco.__version__ = "3.3.1"
-        numpy.__version__ = "2.2.5"  # type: ignore[misc]  # reason: upstream pins numpy==2.2.5 exactly; runtime numpy is still 2.2.x.
-        robosuite.__version__ = "1.5.2"  # upstream asserts >=1.5.2
-    try:
-        import robocasa  # type: ignore[import-not-found,import-untyped,unused-ignore]  # noqa: F401  reason: registers robocasa env classes; module is optional and lacks stubs
-    except ImportError as exc:
-        hint = _robosuite_conflict_hint(exc)
-        if hint is not None:
-            raise hint from exc
-        raise
-    finally:
-        mujoco.__version__ = orig_mj
-        numpy.__version__ = orig_np  # type: ignore[misc]  # reason: restore real version
-        robosuite.__version__ = orig_rs
-
-    if not _VERSION_SPOOF_LOGGED[0]:
-        import structlog
-
-        structlog.get_logger(__name__).info(
-            "robocasa_version_spoof",
-            mujoco=orig_mj,
-            numpy=orig_np,
-            robosuite=orig_rs,
-            note=(
-                "robocasa 1.0.1 / robocasa-gr1-tabletop-tasks 0.2.0 "
-                "hard-assert exact mujoco/numpy/robosuite micro versions "
-                "at import; spoofed at import-time. Track upstream PRs "
-                "that relax the pin."
-            ),
-        )
-        _VERSION_SPOOF_LOGGED[0] = True
-
-
 def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / camera / state-layout branching is intrinsic to the GR1 vs kitchen split; factoring out would just add indirection
     env_cfg: SimEnvironment, *, scene_id: str | None = None
 ) -> _RoboCasaSim:
     """Resolve a SimEnvironment to a running RoboCasa env."""
-    # Pick the install plan from the scene id BEFORE we touch
-    # _spoof_robocasa_version_pins() -- the spoof needs robocasa
-    # already on disk, which is exactly what ensure_backend_deps
-    # makes true on first use. The scene id alone disambiguates the
-    # two variants (kitchen `robocasa/<task>` vs GR1
-    # `robocasa/gr1/<task>`); falling back to the kitchen plan for
-    # the procedural `robocasa` scene id is the historical default.
+    # Provision the right fork from the scene id (kitchen `robocasa/<task>` vs
+    # GR1 `robocasa/gr1/<task>`; the procedural `robocasa` id falls back to
+    # kitchen, the historical default). ensure_backend_deps relaxes the fork's
+    # import-time micro-version asserts at provision time
+    # (`_relax_robocasa_version_asserts_step`), so a plain `import robocasa`
+    # registers its env classes on the workspace's mujoco/numpy/robosuite — no
+    # runtime version spoof needed.
     from openral_sim._deps import ensure_backend_deps
 
     sid = scene_id or env_cfg.scene.id
     backend_id = "robocasa_gr1" if sid.startswith(_GR1_SCENE_PREFIX + "/") else "robocasa_kitchen"
     ensure_backend_deps(backend_id)
 
-    _spoof_robocasa_version_pins()
+    try:
+        import robocasa  # reason: registers robocasa env classes (provisioned above)
+    except ImportError as exc:
+        # Surface the actionable libero<->robocasa robosuite-version conflict
+        # instead of the cryptic `cannot import name 'PandaOmron'`.
+        hint = _robosuite_conflict_hint(exc)
+        if hint is not None:
+            raise hint from exc
+        raise
     import robosuite  # reason: probe -- ensure_backend_deps above guarantees this resolves
 
-    _ = robosuite  # silence unused-import; the import is the actual probe
+    _ = (robocasa, robosuite)  # silence unused-import; the imports are the probe
     ensure_robocasa_assets()
 
     opts = _validate_backend_options(env_cfg.scene)
@@ -1601,7 +1493,9 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         # policy raw `robot0_joint_pos` slices and the env raw flat
         # vectors — neither matched the training distribution.
         import gymnasium as gym
-        import robocasa.utils.gym_utils.gymnasium_groot  # noqa: F401  reason: triggers `register(id='gr1_unified/...')`
+
+        # Side-effect import: registers the `gr1_unified/...` gym env ids.
+        import robocasa.utils.gym_utils.gymnasium_groot
 
         gym_env_id = f"gr1_unified/{env_name}_{opts.robots[0]}_Env"
         env = gym.make(gym_env_id, enable_render=True, seed=int(env_cfg.seed))
