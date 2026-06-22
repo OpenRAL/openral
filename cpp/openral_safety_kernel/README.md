@@ -117,6 +117,42 @@ the validator stays allocation-free
   `cpu_affinity` parameters; the node warns when the privileges are
   unavailable rather than silently downgrading.
 
+## Testing & verification
+
+Three tiers, all driving the **real** `safety_kernel_node` (no mocks):
+
+- **C++ unit** (`just safety-kernel-test`) — `test_validator.cpp`,
+  `test_collision.cpp`, `test_lifecycle_kernel.cpp`, and the
+  allocation pin `test_no_alloc.cpp` (10,000× runs, zero allocs).
+- **Sim** (`tests/sim/safety/`) — the kernel subprocess gated against a
+  MuJoCo oracle: envelope (`test_kernel_with_*_twin.py`) and geometric
+  collision (`test_kernel_*_collision*.py`, `test_kernel_h1_self_collision.py`,
+  `test_kernel_mjcf_lowered_self_collision.py`). These prove
+  self/world/voxel `KIND_COLLISION` rejection + estop end-to-end.
+- **HIL** (`tests/hil/safety/test_so100_*.py`, `just hil-safety so100`) —
+  the real C++ kernel against a physically connected SO-100. Envelope
+  (pass / external-estop latch / force violation) **and** geometric
+  collision (`TestSO100GeometricCollisionHIL`: world-obstacle on the real
+  SO-100 model + a self-collision case). Hardware-safe: every collision
+  case asserts the kernel **drops** the chunk before the HAL, so the arm
+  is never actuated into a collision. The workflow
+  `.github/workflows/hil-so100.yml` (`runs-on [self-hosted, lab-so100]`)
+  is **dispatch-only** — it does not auto-run on push/PR (a self-hosted
+  job would queue forever until such a runner exists, and every other
+  workflow here is dispatch-only too). Run it from the Actions UI /
+  `gh workflow run hil-so100.yml` once a labelled runner + arm are online;
+  it is skip-clean when no arm is attached. **Not yet executed on physical
+  hardware** (the lab-so100 rig does not exist yet) — the sim tier above is
+  the current real-kernel verification.
+
+> Geometric collision arms automatically in `openral deploy sim` /
+> `deploy run`: the launch lowers the robot's collision model
+> (`openral_safety.mjcf_lowering` preferred, manifest fallback) and the
+> kernel logs `self-collision check enabled: N links`. The lowering
+> assigns `dof_index` by **movable-joint order** — matching by joint
+> *name* previously froze the FK at the rest pose for robots whose MJCF
+> joint names differ from the manifest (issue #77).
+
 ## Related
 
 - ADR-0018 §5 — Safety contract that locks the topic surface.
