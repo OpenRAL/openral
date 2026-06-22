@@ -21,6 +21,7 @@ from openral_dataset.bag import (
     PHASE_END,
     PHASE_START,
     TOPIC_EPISODE,
+    TOPIC_IMAGE,
     TOPIC_TICK,
 )
 
@@ -141,23 +142,30 @@ def test_bag_round_trip_one_episode(so100_robot: RobotDescription, tmp_path: Pat
     assert bag_path.is_file()
 
     messages = _read_bag(bag_path)
-    # Order: episode_start → tick → tick → episode_end. mcap iter_messages
-    # iterates by log_time so all four should be in order.
-    assert [topic for topic, _ in messages] == [
+    # Episode/tick ordering (ignoring the interleaved per-camera image
+    # messages): episode_start → tick → tick → episode_end. mcap
+    # iter_messages iterates by log_time so the order is stable.
+    non_image = [(t, m) for t, m in messages if t != TOPIC_IMAGE]
+    assert [topic for topic, _ in non_image] == [
         TOPIC_EPISODE,
         TOPIC_TICK,
         TOPIC_TICK,
         TOPIC_EPISODE,
     ]
-    start_msg = messages[0][1]
-    end_msg = messages[3][1]
+    # so100 has two RGB cameras → two image messages per tick.
+    assert sink.n_images_written == 4
+    assert sum(1 for t, _ in messages if t == TOPIC_IMAGE) == 4
+    start_msg = non_image[0][1]
+    end_msg = non_image[3][1]
     assert start_msg["phase"] == PHASE_START
     assert start_msg["task_string"] == "pick the cube"
     assert end_msg["phase"] == PHASE_END
     assert end_msg["success"] is True
-    # Per-tick rewards survive the round-trip.
-    assert messages[1][1]["reward"] == 0.0
-    assert messages[2][1]["reward"] == pytest.approx(0.7)
+    # Per-tick rewards + inline observation/action arrays survive the round-trip.
+    assert non_image[1][1]["reward"] == 0.0
+    assert non_image[2][1]["reward"] == pytest.approx(0.7)
+    assert len(non_image[1][1]["observation_state"]) == so100_robot.observation_spec.state_shape[0]
+    assert len(non_image[1][1]["action"]) == so100_robot.action_spec.dim
 
 
 def test_bag_round_trip_multiple_episodes(so100_robot: RobotDescription, tmp_path: Path) -> None:
@@ -214,7 +222,10 @@ def test_bag_uncompressed_round_trip(so100_robot: RobotDescription, tmp_path: Pa
     rec.finalize()
 
     messages = _read_bag(bag_path)
-    assert len(messages) == 3  # start + 1 tick + end
+    non_image = [(t, m) for t, m in messages if t != TOPIC_IMAGE]
+    assert len(non_image) == 3  # start + 1 tick + end
+    # so100's two cameras each emit one image message for the single tick.
+    assert sum(1 for t, _ in messages if t == TOPIC_IMAGE) == 2
 
 
 def test_bag_construction_without_mcap_raises(

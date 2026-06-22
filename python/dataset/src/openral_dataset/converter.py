@@ -48,6 +48,7 @@ from openral_dataset.bag import (
     PHASE_END,
     PHASE_START,
     TOPIC_EPISODE,
+    TOPIC_IMAGE,
     TOPIC_TICK,
 )
 
@@ -171,7 +172,7 @@ class Rosbag2ToLeRobotConverter:
         else:
             resolved_fps = float(fps)
 
-        episodes = cls._walk_bag(bag)
+        episodes, images_by_step = cls._walk_bag(bag)
         if not episodes:
             raise ROSConfigError(
                 f"Rosbag2ToLeRobotConverter: bag {bag} has no /openral/episode markers; "
@@ -207,7 +208,7 @@ class Rosbag2ToLeRobotConverter:
         for ep_buf in episodes:
             rec.episode_start(task_string=ep_buf.task_string)
             for tick in ep_buf.ticks:
-                cls._replay_tick(rec, tick, robot)
+                cls._replay_tick(rec, tick, robot, images_by_step)
                 n_frames += 1
             success = ep_buf.ticks[-1].get("_episode_success", False) if ep_buf.ticks else False
             rec.episode_end(success=bool(success))
@@ -236,11 +237,16 @@ class Rosbag2ToLeRobotConverter:
     # ── Internals ───────────────────────────────────────────────────────────
 
     @classmethod
-    def _walk_bag(cls, bag_path: Path) -> list[_EpisodeBuffer]:
+    def _walk_bag(
+        cls, bag_path: Path
+    ) -> tuple[list[_EpisodeBuffer], dict[tuple[int, int], dict[str, Any]]]:
         """First pass: walk the mcap and group Ticks under their Episode markers.
 
-        Returns a list of `_EpisodeBuffer`s, one per matched
-        (PHASE_START, PHASE_END) pair. Ticks outside any episode are
+        Returns ``(episodes, images_by_step)`` where ``episodes`` is one
+        `_EpisodeBuffer` per matched (PHASE_START, PHASE_END) pair and
+        ``images_by_step`` maps ``(episode_idx, step_idx)`` to a
+        ``{camera: HxWxC uint8 array}`` dict decoded from the bag's
+        ``/openral/dataset/image`` messages. Ticks outside any episode are
         silently dropped (rare; only happens if a bag was truncated
         mid-episode). A PHASE_START with no matching PHASE_END is
         treated as a failure episode (the deactivate-with-open-episode
@@ -249,11 +255,18 @@ class Rosbag2ToLeRobotConverter:
         from mcap.reader import make_reader
 
         episodes: list[_EpisodeBuffer] = []
+        images_by_step: dict[tuple[int, int], dict[str, Any]] = {}
         current: _EpisodeBuffer | None = None
         with bag_path.open("rb") as f:
             reader = make_reader(f)
             for _schema, channel, message in reader.iter_messages():
                 payload = json.loads(message.data.decode("utf-8"))
+                if channel.topic == TOPIC_IMAGE:
+                    key = (int(payload["episode_idx"]), int(payload["step_idx"]))
+                    images_by_step.setdefault(key, {})[str(payload["camera"])] = cls._decode_image(
+                        payload
+                    )
+                    continue
                 if channel.topic == TOPIC_EPISODE:
                     phase = payload.get("phase")
                     if phase == PHASE_START:
@@ -293,7 +306,18 @@ class Rosbag2ToLeRobotConverter:
             # Open episode at EOF — treat as failure.
             cls._mark_episode_success(current, success=False)
             episodes.append(current)
-        return episodes
+        return episodes, images_by_step
+
+    @staticmethod
+    def _decode_image(payload: dict[str, Any]) -> Any:
+        """Decode a ``/openral/dataset/image`` payload to a HxWxC uint8 array."""
+        import base64
+
+        raw = base64.b64decode(str(payload["data_b64"]))
+        height = int(payload["height"])
+        width = int(payload["width"])
+        channels = int(payload["channels"])
+        return np.frombuffer(raw, dtype=np.uint8).reshape(height, width, channels)
 
     @staticmethod
     def _mark_episode_success(buf: _EpisodeBuffer, *, success: bool) -> None:
@@ -307,39 +331,62 @@ class Rosbag2ToLeRobotConverter:
             tick["_episode_success"] = success
 
     @staticmethod
-    def _replay_tick(rec: object, tick: dict[str, object], robot: RobotDescription) -> None:
+    def _replay_tick(
+        rec: object,
+        tick: dict[str, object],
+        robot: RobotDescription,
+        images_by_step: dict[tuple[int, int], dict[str, Any]],
+    ) -> None:
         """Drive `RolloutRecorder.record_frame` from a Tick payload.
 
-        State / action are zero-placeholders because PR3's bag does not
-        carry the inline arrays (the recorder writes only the per-tick
-        metadata; the real state vector lives on `/joint_states` and is
-        joined in a PR4-follow-up). reward / terminated / truncated
-        round-trip from the Tick payload verbatim.
+        ``observation_state`` / ``action`` are read from the inline
+        arrays the enriched :class:`Rosbag2Sink` now writes; per-camera
+        pixels are joined from the ``/openral/dataset/image`` messages
+        keyed by ``(episode_idx, step_idx)``. For legacy metadata-only
+        bags (no inline arrays / images) the converter falls back to a
+        zero vector / zero frame of the robot's declared shape, so old
+        bags still convert. reward / terminated / truncated round-trip
+        from the Tick payload verbatim.
         """
-        # ADR-0019: zero-shape placeholders MUST match the sink's
-        # declared feature shapes (state from RobotDescription /
-        # rSkill manifest contract; cameras from SensorSpec.intrinsics).
-        # The sink's strict per-frame shape validation catches any
-        # drift between the bag's tick records and the declared
-        # contract.
+        # ADR-0019: shapes MUST match the sink's declared feature shapes
+        # (state from RobotDescription / rSkill manifest contract;
+        # cameras from SensorSpec.intrinsics). The sink's strict per-frame
+        # shape validation catches any drift between the bag records and
+        # the declared contract.
         obs_spec = robot.observation_spec
         state_shape = tuple(obs_spec.state_shape) if obs_spec is not None else (1,)
         action_dim = robot.action_spec.dim if robot.action_spec is not None else 1
-        state = np.zeros(state_shape, dtype=np.float32)
-        action = np.zeros(action_dim, dtype=np.float32)
-        # Per-camera zero frame at the declared intrinsic resolution.
-        # The PR4-follow-up that joins real `/cameras/<id>/image_raw`
-        # streams will replace this with bag-sourced frames.
+
+        state_raw = tick.get("observation_state")
+        if isinstance(state_raw, list) and state_raw:
+            state = np.asarray(state_raw, dtype=np.float32).reshape(state_shape)
+        else:
+            state = np.zeros(state_shape, dtype=np.float32)
+        action_raw = tick.get("action")
+        if isinstance(action_raw, list) and action_raw:
+            action = np.asarray(action_raw, dtype=np.float32).reshape(action_dim)
+        else:
+            action = np.zeros(action_dim, dtype=np.float32)
+
+        # Real per-camera frames recorded for this step, if present.
+        episode_idx = int(cast("float | int", tick.get("episode_idx", 0)))
+        step_idx = int(cast("float | int", tick.get("step_idx", 0)))
+        recorded_images = images_by_step.get((episode_idx, step_idx), {})
         images: dict[str, np.ndarray[Any, Any]] = {}
         for sensor in robot.sensors:
             if sensor.vla_feature_key is None or sensor.intrinsics is None:
                 continue
             stripped = sensor.vla_feature_key.removeprefix("observation.images.")
             channels = 1 if sensor.modality in {"depth", "ir", "thermal"} else 3
-            images[stripped] = np.zeros(
-                (int(sensor.intrinsics.height), int(sensor.intrinsics.width), channels),
-                dtype=np.uint8,
-            )
+            if stripped in recorded_images:
+                images[stripped] = recorded_images[stripped]
+            else:
+                # Legacy bag without inline pixels — zero frame at the
+                # declared intrinsic resolution keeps the contract valid.
+                images[stripped] = np.zeros(
+                    (int(sensor.intrinsics.height), int(sensor.intrinsics.width), channels),
+                    dtype=np.uint8,
+                )
 
         # JSON decode produces `object`-typed values for dict[str, object]
         # entries; cast to concrete numerics for mypy strict-mode.
