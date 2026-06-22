@@ -21,6 +21,7 @@ convention = "google"
 "python/cli/src/openral_cli/dataset.py" = ["B008", "PLC0415"]  # ADR-0019 PR5: typer.Option() in defaults; huggingface_hub is a heavy dep deferred until the user actually publishes
 "python/cli/src/openral_cli/deploy_sim.py" = ["B008", "PLC0415"]  # typer.Option() in defaults; SceneEnvironment + openral_rskill.loader are deferred so `openral --help` stays sub-second
 "python/cli/src/openral_cli/collision.py" = ["B008", "PLC0415"]  # ADR-0030: typer.Option() in defaults; lower_robot (yourdfpy/trimesh) is deferred inside the commands so `openral --help` stays fast
+"python/cli/src/openral_cli/check.py" = ["B008"]  # typer.Option() in defaults is the typer pattern
 "python/cli/src/openral_cli/robot.py" = ["PLC0415"]  # ADR-0058: robot_descriptions/xacrodoc/yourdfpy are deferred inside vendor_urdf so `openral --help` stays fast
 "python/sensors/**" = ["RUF001", "RUF002", "RUF003"]  # Unicode FOV / range symbols (×, –, °) in docstrings are intentional and match vendor data sheets
 "python/sensors/src/openral_sensors/ros_publisher.py" = ["PLC0415", "ANN401", "BLE001"]  # ADR-0019 PR2: rclpy / sensor_msgs are deferred to the lifecycle node owner (matches ros_tee.py pattern); BLE001 in the pump-loop's never-kill-the-thread guard is intentional defensive code
