@@ -585,6 +585,28 @@ async def test_skill_execute_503_without_ros2(
 
 
 @pytest.mark.asyncio
+async def test_skill_execute_rejects_non_one_truthy_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the exact string "1" enables write-controls (ADR-0064 §1).
+
+    Common truthy strings ("true", "yes", "on", "True") must NOT unlock the
+    endpoint. This locks the safety default against a future refactor that
+    loosens the check from a strict equality to a broader truthiness test.
+    """
+    for truthy_non_one in ("true", "True", "yes", "on", "1 ", " 1", "2"):
+        monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", truthy_non_one)
+        app = create_app(TelemetryStore())
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            resp = await client.post("/api/skill/execute", json={"skill_id": "x"})
+        assert resp.status_code == 403, (
+            f"expected 403 for OPENRAL_DASHBOARD_WRITE_CONTROLS={truthy_non_one!r}, "
+            f"got {resp.status_code}"
+        )
+
+
+@pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and
     # onnxruntime-web wasm are vendored under static/vendor/vad/ (no CDN). Assert

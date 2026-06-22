@@ -270,8 +270,17 @@ async def _skill_execute_from_request(request: Request) -> JSONResponse:
 
     Handles the flag check, JSON decode, field validation, and dispatch in one
     place so the route closure stays under the statement cap (PLR0915).
+    Every attempt — permitted or denied — is audit-logged (ADR-0064 §4).
     """
+    operator_ip = request.client.host if request.client else "unknown"
     if not _write_controls_enabled():
+        _logger.warning(
+            "dashboard_write_attempt",
+            operation="skill_execute",
+            outcome="denied_flag_off",
+            adr="ADR-0064",
+            operator_ip=operator_ip,
+        )
         return JSONResponse(
             {
                 "error": (
@@ -293,18 +302,19 @@ async def _skill_execute_from_request(request: Request) -> JSONResponse:
         str(payload.get("revision", "") or ""),
         str(payload.get("prompt", "") or ""),
         str(payload.get("goal_params_json", "") or ""),
+        operator_ip,
     )
 
 
 async def _skill_execute_response(
-    skill_id: str, revision: str, prompt: str, goal_params_json: str
+    skill_id: str, revision: str, prompt: str, goal_params_json: str, operator_ip: str
 ) -> JSONResponse:
     """Dispatch an ExecuteRskill action goal (ADR-0064; safety kernel disposes).
 
     Shells out to ``ros2 action send_goal /openral/execute_rskill`` so the
     actuation path is identical to the CLI — the safety kernel remains the
     sole authority on whether the action proceeds. Every call is audit-logged
-    before the subprocess is spawned.
+    at WARNING level before the subprocess is spawned (ADR-0064 §4).
     """
     ros2 = shutil.which("ros2")
     if ros2 is None:
@@ -322,7 +332,15 @@ async def _skill_execute_response(
             "deadline_s": 0.0,
         }
     )
-    _logger.warning("dashboard.skill_execute", skill_id=skill_id, revision=revision)
+    _logger.warning(
+        "dashboard_write_attempt",
+        operation="skill_execute",
+        outcome="sent",
+        adr="ADR-0064",
+        skill_id=skill_id,
+        revision=revision,
+        operator_ip=operator_ip,
+    )
     proc = await asyncio.create_subprocess_exec(
         ros2,
         "action",
