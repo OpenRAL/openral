@@ -881,6 +881,49 @@
     .then((cfg) => { JAEGER_URL = (cfg && cfg.jaeger_ui_url) ? String(cfg.jaeger_ui_url).replace(/\/$/, "") : ""; })
     .catch(() => { JAEGER_URL = ""; });
 
+  // ── Write-controls panel (issue #75c / ADR-0064) ──────────────────────────
+  // Fetches /api/config once on load; reveals #controls-panel and wires the
+  // two operator forms only when write_controls_enabled is true (default OFF).
+  // Responses are rendered with textContent — never innerHTML — to prevent XSS.
+  async function initWriteControls() {
+    let cfg;
+    try {
+      const r = await fetch("/api/config");
+      cfg = r.ok ? await r.json() : {};
+    } catch (_) {
+      cfg = {};
+    }
+    if (!cfg.write_controls_enabled) return;
+    const panel = document.getElementById("controls-panel");
+    if (!panel) return;
+    panel.hidden = false;
+    const out = document.getElementById("controls-result");
+    document.getElementById("skill-switch-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await fetch("/api/skill/execute", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          skill_id: document.getElementById("skill-id").value,
+          prompt: document.getElementById("skill-prompt").value,
+        }),
+      });
+      if (out) out.textContent = "skill: " + r.status + " " + JSON.stringify(await r.json());
+    };
+    document.getElementById("param-set-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await fetch("/api/param/set", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          node: document.getElementById("param-node").value,
+          name: document.getElementById("param-name").value,
+          value: document.getElementById("param-value").value,
+        }),
+      });
+      if (out) out.textContent = "param: " + r.status + " " + JSON.stringify(await r.json());
+    };
+  }
+  initWriteControls();
+
 
   function renderTrace(trace) {
     const el = $("trace-id");
