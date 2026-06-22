@@ -17,6 +17,7 @@ import yaml
 
 _LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "nav2.launch.py"
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "nav2_panda_mobile.yaml"
+_VISUAL_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "nav2_visual.yaml"
 
 
 def _import_launch_module() -> ModuleType:
@@ -90,5 +91,45 @@ def test_launch_module_includes_upstream_navigation_launch() -> None:
     assert len(opaque) == 1, f"expected exactly 1 deferred OpaqueFunction; got {len(opaque)}"
     arg_names = {a.name for a in actions if isinstance(a, DeclareLaunchArgument)}
     assert "robot_yaml" in arg_names, arg_names
+    # ADR-0064 — the SLAM-backend selector arg drives the costmap profile.
+    assert "slam_backend" in arg_names, arg_names
     default_path = getattr(mod, "DEFAULT_PARAMS_PATH")  # noqa: B009
     assert Path(default_path).is_file(), default_path
+
+
+def test_slam_backend_selects_costmap_profile() -> None:
+    """ADR-0064 — `_params_path_for_backend` maps the backend to the right config."""
+    mod = _import_launch_module()
+    visual = Path(mod._params_path_for_backend("visual"))
+    lidar = Path(mod._params_path_for_backend("lidar"))
+    assert visual.name == "nav2_visual.yaml", visual
+    assert lidar.name == "nav2_panda_mobile.yaml", lidar
+    # default / unknown backends fall back to the lidar (base) profile.
+    assert Path(mod._params_path_for_backend("none")).name == "nav2_panda_mobile.yaml"
+    # case-insensitive
+    assert Path(mod._params_path_for_backend("VISUAL")).name == "nav2_visual.yaml"
+
+
+def test_visual_profile_consumes_map_not_scan() -> None:
+    """ADR-0064 — the visual profile's costmaps read `/map` via static_layer (no /scan).
+
+    This is what makes Nav2 backend-agnostic: a lidar-less robot (cuVSLAM+nvblox)
+    plans off the same `/map` interface slam_toolbox publishes, with no `/scan`.
+    """
+    assert _VISUAL_CONFIG_PATH.is_file(), _VISUAL_CONFIG_PATH
+    data = yaml.safe_load(_VISUAL_CONFIG_PATH.read_text())
+    for scope in ("global_costmap", "local_costmap"):
+        cm = data[scope][scope]["ros__parameters"]
+        assert "static_layer" in cm["plugins"], (scope, cm["plugins"])
+        assert "obstacle_layer" not in cm["plugins"], (scope, cm["plugins"])
+        assert "voxel_layer" not in cm["plugins"], (scope, cm["plugins"])
+        sl = cm["static_layer"]
+        assert sl["map_topic"] == "/map", sl
+        # nvblox publishes /map RELIABLE+VOLATILE (not latched) — the static_layer
+        # must NOT request transient_local or the QoS mismatches.
+        assert sl["map_subscribe_transient_local"] is False, sl
+    # collision_monitor must not depend on /scan (lidar-less): scan source disabled.
+    cm = data["collision_monitor"]["ros__parameters"]
+    assert cm["scan"]["enabled"] is False, cm["scan"]
+    # geometry/planner still mirror the base (planner threads unknown space).
+    assert data["planner_server"]["ros__parameters"]["GridBased"]["allow_unknown"] is True

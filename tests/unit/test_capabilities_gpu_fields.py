@@ -61,6 +61,28 @@ class TestRobotCapabilitiesGpuFields:
         assert QuantizationDtype.FP4_NVFP4 in caps.gpu_supported_dtypes
 
 
+class TestVisionSlamCapability:
+    """ADR-0064 — `has_vision_slam` gates the camera-based SLAM backend
+    (cuVSLAM + nvblox) for lidar-less robots, alongside `has_lidar` which
+    gates the 2D lidar `slam_toolbox` backend."""
+
+    def test_defaults_false(self) -> None:
+        # Backward-compatible additive field: every existing manifest stays
+        # "no vision SLAM" without a schema_version bump (CLAUDE.md §1.6).
+        assert RobotCapabilities().has_vision_slam is False
+
+    def test_independent_of_has_lidar(self) -> None:
+        caps = RobotCapabilities(has_lidar=False, has_vision_slam=True)
+        assert caps.has_lidar is False
+        assert caps.has_vision_slam is True
+
+    def test_round_trips_through_json(self) -> None:
+        caps = RobotCapabilities(has_vision_slam=True)
+        rebuilt = RobotCapabilities.model_validate_json(caps.model_dump_json())
+        assert rebuilt.has_vision_slam is True
+        assert rebuilt == caps
+
+
 class TestExistingManifestsLoad:
     """Every committed ``robots/<name>/robot.yaml`` must still load."""
 

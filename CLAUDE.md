@@ -4,7 +4,7 @@
 >
 > Pointers (kept out of this file to stay tight):
 > - Repo layout → [`docs/architecture/repo-map.md`](docs/architecture/repo-map.md) + live [`repo-state-map.html`](docs/architecture/repo-state-map.html).
-> - Toolchain & `openral` CLI → [`docs/contributing/toolchain.md`](docs/contributing/toolchain.md).
+> - Toolchain & `openral` CLI → [`docs/contributing/toolchain.md`](docs/contributing/toolchain.md). **Env rule: always `just sync` (never bare `uv sync`); opt-in groups via `just sync --group <name>`; LIBERO↔RoboCasa groups are mutually exclusive (swap per task); RoboCasa installs editable at runtime via the HAL, not `just sync` — see "Managing the Python environment & dependency groups".**
 > - Glossary → [`docs/reference/glossary.md`](docs/reference/glossary.md).
 > - Public-symbol inventory → [`docs/METHODS.md`](docs/METHODS.md) index + per-layer files in [`docs/methods/`](docs/methods/). **`grep -rn <symbol> docs/methods/` before adding a helper.**
 > - Agent-tool entry points → [`AGENTS.md`](AGENTS.md) is the tool-neutral root pointer (Cursor / Codex / Copilot / Aider read it) and **redirects here**; keep it a 3-line pointer, never a copy or symlink of this file. Vendor-neutral skills live in [`.agents/skills/`](.agents/skills/) (`SKILL.md` + `references/`). `AGENTS.md` itself stays at repo root — it does **not** belong under `.agents/`.

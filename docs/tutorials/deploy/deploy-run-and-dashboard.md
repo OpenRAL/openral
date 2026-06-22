@@ -10,9 +10,10 @@ against a digital twin, then runs it on hardware with the live dashboard.
 ## Prerequisites
 
 ```bash
-just bootstrap && uv sync --all-packages
-openral install ros         # the ROS 2 graph deploy run launches
-openral doctor              # confirm ROS 2, GPU, and USB are visible
+just bootstrap && just sync   # always `just sync`, never bare `uv sync` —
+                              # see docs/contributing/toolchain.md
+openral install ros           # the ROS 2 graph deploy run launches
+openral doctor                # confirm ROS 2, GPU, and USB are visible
 ```
 
 You need a `RobotDescription` for your robot under
@@ -78,6 +79,36 @@ openral deploy sim \
 
 This is the safe place to shake out manifest, sensor, and rSkill-compatibility
 errors.
+
+### RoboCasa scenes — let the HAL provision the backend
+
+RoboCasa kitchen scenes (e.g. `scenes/deploy/robocasa_navigate.yaml`) need the
+RoboCasa fork, which is **not** installed by `just sync --group robocasa` — that
+group only supplies robosuite + supporting deps. The fork is git-cloned and
+installed editable **at runtime** by the deploy-sim HAL's `on_configure` via
+`openral_sim._deps.ensure_backend_deps('robocasa_kitchen')`. Auto-install is on
+by default; run it like so:
+
+```bash
+just sync --group robocasa    # robosuite + deps (swaps out the libero/sim group)
+OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
+  --config scenes/deploy/robocasa_navigate.yaml --rskill <rskill>
+```
+
+Do **not** hand-install `robocasa` / `robosuite` — that pulls the wrong
+robosuite and wrecks the managed env. To avoid the first-run build stalling the
+lifecycle transition, pre-build the clone once beforehand:
+
+```bash
+OPENRAL_AUTO_INSTALL_DEPS=1 python -c \
+  "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
+```
+
+LIBERO and RoboCasa pin conflicting robosuite versions and cannot coexist, so
+swap groups per task: `just sync --group robocasa` for kitchens, `just sync
+--group sim` (or `--group libero`) to go back. Full details in
+[Managing the Python environment & dependency
+groups](../../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
 ## 3. Run on hardware
 

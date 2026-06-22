@@ -16,6 +16,12 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_slam_toolbox_launch test/test_slam_toolbox_launch.py
     TIMEOUT 30
   )
+  ament_add_pytest_test(test_cuvslam_launch test/test_cuvslam_launch.py
+    TIMEOUT 30
+  )
+  ament_add_pytest_test(test_nvblox_launch test/test_nvblox_launch.py
+    TIMEOUT 30
+  )
 endif()
 
 ament_package()

@@ -28,7 +28,8 @@ git clone https://github.com/OpenRAL/openral
 cd OpenRAL
 just bootstrap          # installs uv, ROS 2, system deps (~5–10 min)
 source /opt/ros/jazzy/setup.bash   # or 'humble' on Ubuntu 22.04
-uv sync --all-packages  # install Python workspace deps
+just sync               # install Python workspace deps (always `just sync`,
+                        # never bare `uv sync` — see toolchain.md)
 ```
 
 The bootstrap script auto-detects Ubuntu 22.04 (→ ROS 2 Humble) or 24.04 (→ ROS 2 Jazzy).
@@ -73,8 +74,8 @@ VS Code will build `Dockerfile.dev` (first build ~8 min; subsequent builds use t
 ```bash
 docker compose -f docker-compose.dev.yml up -d openral-dev
 docker compose -f docker-compose.dev.yml exec openral-dev bash
-# inside container:
-uv sync --all-packages
+# inside container (always `just sync`, never bare `uv sync`):
+just sync
 just test
 ```
 
@@ -216,13 +217,20 @@ The full PR checklist is in the repo-root `CLAUDE.md` (not linked from docs — 
 
 ## Troubleshooting
 
-### `uv sync` fails with "package not found"
+### `uv sync` fails with "package not found" (or "Unable to uninstall hf-libero")
 
-Run `uv sync --all-packages` instead of plain `uv sync`. The workspace has multiple member packages and the root manifest does not list them as direct dependencies.
+Run **`just sync`** instead of any bare `uv sync`. The workspace has multiple
+member packages (the root manifest does not list them as direct dependencies),
+so the sync needs `--all-packages` — which `just sync` supplies — and the
+`just sync` wrapper also runs `scripts/repair_hf_libero_install.py` before/after
+to avoid the `hf-libero==0.1.3` distutils-uninstall abort. Add opt-in groups
+with `just sync --group <name>`. See
+[Managing the Python environment & dependency
+groups](toolchain.md#managing-the-python-environment-dependency-groups).
 
 ### `mypy` reports "missing library stubs or py.typed"
 
-Both `openral_core` and `openral_cli` ship `py.typed` markers. If mypy still complains, make sure you ran `uv sync --all-packages` and that your interpreter is the workspace venv (`which python` should point into `.venv/`).
+Both `openral_core` and `openral_cli` ship `py.typed` markers. If mypy still complains, make sure you ran `just sync` and that your interpreter is the workspace venv (`which python` should point into `.venv/`).
 
 ### `openral doctor` shows ROS 2 as "missing" after bootstrap
 

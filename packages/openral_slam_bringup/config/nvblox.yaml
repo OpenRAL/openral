@@ -1,0 +1,44 @@
+# ADR-0064 (Phase 2) — default parameter set for NVIDIA Isaac ROS nvblox
+# under OpenRAL's `/openral/nvblox` namespace.
+#
+# nvblox fuses a DEPTH image + camera_info + POSE (from cuVSLAM's map→odom
+# TF) into a TSDF/ESDF, and slices a 2D ESDF (`~/static_map_slice`,
+# nvblox_msgs/DistanceMapSlice) that the `nvblox_nav2` costmap plugin
+# feeds to Nav2. This is what gives a lidar-less robot a navigable cost
+# map: cuVSLAM provides localization (map→odom), nvblox provides the
+# obstacle map cuVSLAM does not.
+#
+# The depth image is supplied by the monocular metric-depth provider
+# (DA3-Small by default — measured 0.27 GB / ~27 Hz on an 8 GB Ada) when
+# the robot has no real depth sensor; a RealSense/RGB-D rig can feed
+# nvblox directly.
+#
+# Only the stable, documented essentials are pinned; everything else
+# falls back to upstream nvblox defaults. Mapper/ESDF knobs are
+# version-sensitive — confirm against the installed Isaac ROS release.
+# nvblox is a precompiled NVIDIA binary OpenRAL does not bundle
+# (ADR-0064 license guard).
+
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    # ── Frame contract ──────────────────────────────────────────────
+    # nvblox looks up the camera pose against this global frame via TF;
+    # cuVSLAM publishes map→odom and the HAL publishes odom→base_link, so
+    # `map` is the consistent world frame for the reconstruction.
+    global_frame: map
+    use_tf_transforms: true
+
+    # ── Reconstruction ──────────────────────────────────────────────
+    voxel_size: 0.05            # 5 cm — room/kitchen-scale nav resolution
+    # Static-only mapping by default (no people/dynamic split); a robot
+    # in a dynamic scene can switch mapping_type at deploy time.
+    mapping_type: static_tsdf
+
+    # ── 2D ESDF slice for Nav2 (consumed by the nvblox_nav2 plugin) ──
+    esdf_mode: 2d
+    publish_esdf_distance_slice: true
+    # Slice height band (metres, in global_frame) the costmap is cut from;
+    # tune to the robot's body height. Operator-confirmed per robot.
+    # esdf_slice_min_height / esdf_slice_max_height: set at deploy time.

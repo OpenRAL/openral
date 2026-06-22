@@ -469,6 +469,54 @@ ros2-build:
 # The same flag is also set inside opentelemetry_cpp_vendor's own
 # ExternalProject_Add CMAKE_ARGS for the upstream otel-cpp 1.16.1 tree.
 
+# Optional: install the NVIDIA Isaac ROS stack (cuVSLAM + nvblox) for the
+# ADR-0064 camera-based SLAM backend used by lidar-less robots
+# (`slam_backend:=visual`). NOT part of bootstrap/quickstart — these are
+# closed-source NVIDIA binaries under an NVIDIA EULA (ADR-0064 license guard)
+# and a multi-GB download, needed only to run cuVSLAM/nvblox live. Requires
+# Ubuntu 24.04 (noble) x86_64 (or a supported Jetson), CUDA 13.0+, driver 580+.
+# Runs sudo (apt) — needs a real terminal for the password, so run it directly
+# (`just install-isaac-ros`), NOT through the `!` session prefix (no tty).
+# Adds TWO NVIDIA repos: the Isaac ROS repo (cuVSLAM/nvblox) AND the Jetson
+# x86_64 repo, which provides the VPI + nvsci libs (libnvvpi4 / vpi4-dev /
+# nvsci) that Isaac ROS NITROS depends on — without the Jetson repo the install
+# fails with "libnvvpi4 / nvsci not installable". Idempotent.
+# Official steps: https://nvidia-isaac-ros.github.io/getting_started/
+install-isaac-ros:
+    @if ! command -v curl >/dev/null 2>&1; then echo "curl required" >&2; exit 1; fi
+    @. /etc/os-release; if [ "$VERSION_CODENAME" != "noble" ]; then \
+        echo "==> WARN: Isaac ROS apt repo targets noble (Ubuntu 24.04); you are on $VERSION_CODENAME" >&2; \
+    fi
+    @echo '==> Isaac ROS: adding the Isaac ROS apt repository (release-4, noble)'
+    k="/usr/share/keyrings/nvidia-isaac-ros.gpg"; \
+    if [ ! -s "$k" ]; then \
+        curl -fsSL https://isaac.download.nvidia.com/isaac-ros/repos.key \
+            | sudo gpg --dearmor | sudo tee "$k" > /dev/null; \
+    fi; \
+    f="/etc/apt/sources.list.d/nvidia-isaac-ros.list"; \
+    s="deb [signed-by=$k] https://isaac.download.nvidia.com/isaac-ros/release-4 noble main"; \
+    sudo touch "$f"; \
+    grep -qxF "$s" "$f" || echo "$s" | sudo tee -a "$f" > /dev/null
+    @echo '==> Isaac ROS: adding the Jetson x86_64 repository (r38.2) for VPI + nvsci'
+    jk="/usr/share/keyrings/nvidia-jetson.gpg"; \
+    if [ ! -s "$jk" ]; then \
+        curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+            | sudo gpg --dearmor | sudo tee "$jk" > /dev/null; \
+    fi; \
+    jf="/etc/apt/sources.list.d/nvidia-jetson-x86.list"; \
+    js="deb [signed-by=$jk] https://repo.download.nvidia.com/jetson/x86_64/noble r38.2 main"; \
+    sudo touch "$jf"; \
+    grep -qxF "$js" "$jf" || echo "$js" | sudo tee -a "$jf" > /dev/null
+    @echo '==> Isaac ROS: apt update + install cuVSLAM + nvblox (+ VPI/nvsci deps)'
+    sudo apt-get update
+    sudo apt-get install -y ros-jazzy-isaac-ros-visual-slam ros-jazzy-isaac-ros-nvblox
+    @echo '==> Isaac ROS installed. Verify with:'
+    @echo '      ros2 pkg prefix isaac_ros_visual_slam && ros2 pkg prefix nvblox_ros'
+    @echo '    Then bring up the visual backend on a has_vision_slam robot:'
+    @echo '      openral deploy sim --config <scene> --enable-slam   # slam_backend resolves to visual'
+    @echo '    For mono-only robots also start the depth sidecar:'
+    @echo '      python tools/da3_depth_sidecar.py --port 5771'
+
 # ROS 2 test — scope must match `ros2-build`'s `--packages-select` set,
 # otherwise colcon discovers (and tries to test) packages it never built
 # and reports them as failures with "Has this package been built before?".
