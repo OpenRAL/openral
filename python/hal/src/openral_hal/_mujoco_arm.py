@@ -221,11 +221,15 @@ class MujocoArmHAL(HALBase):
         self._starvation_warned: bool = False
         self._model: mujoco.MjModel | None = None
         self._data: mujoco.MjData | None = None
-        # Lazily-created offscreen renderer for read_images() (issue #191
-        # Phase 3b). Created on the first read_images() call so the EGL context
-        # is bound on the caller's thread (SimSensorBridge's camera timer on the
-        # node's single-threaded executor) — EGL contexts are thread-affine.
-        self._renderer: object | None = None
+        # Lazily-created offscreen renderers for read_images() (issue #191
+        # Phase 3b), keyed by (height, width). One renderer per distinct camera
+        # resolution so every camera renders at ITS OWN declared intrinsics
+        # rather than a shared max (a 256x256 wrist camera alongside a 640x480
+        # overhead must publish 256x256, not 640x480). Created on the first
+        # read_images() call so the EGL context binds on the caller's thread
+        # (SimSensorBridge's camera timer on the node's single-threaded
+        # executor) — EGL contexts are thread-affine.
+        self._renderers: dict[tuple[int, int], Any] = {}  # (h, w) -> mujoco.Renderer
         self._render_failed: bool = False
         self._mjcf_cameras: set[str] = set()
         self._render_missing_warned: set[str] = set()
@@ -313,10 +317,10 @@ class MujocoArmHAL(HALBase):
         if not self._connected:
             return
         log.info("hal.disconnect", robot=self.description.name)
-        if self._renderer is not None:
+        for renderer in self._renderers.values():
             with contextlib.suppress(Exception):
-                self._renderer.close()  # type: ignore[attr-defined]
-            self._renderer = None
+                renderer.close()
+        self._renderers.clear()
         self._model = None
         self._data = None
         self._connected = False
@@ -343,16 +347,20 @@ class MujocoArmHAL(HALBase):
         through the shared bridge instead of a bespoke node renderer.
 
         Each RGB :class:`~openral_core.schemas.SensorSpec` is rendered from the
-        MJCF camera ``sensor.sim_camera_name or sensor.name`` at the sensor's
-        ``intrinsics`` resolution. A camera absent from the MJCF (or a render
-        error) is skipped with a one-shot warning, never raising — a missing
-        camera must not crash the actuation path. Returns ``{}`` when not
-        connected, when no RGB sensors are declared, or after a renderer
-        failure.
+        MJCF camera ``sensor.sim_camera_name or sensor.name`` at **its own**
+        ``intrinsics`` resolution (one ``mujoco.Renderer`` is cached per distinct
+        ``(height, width)``), so the published frame size always matches the
+        sensor's camera model — a 256x256 wrist camera alongside a 640x480
+        overhead publishes 256x256, not the larger of the two. A camera absent
+        from the MJCF (or a render error) is skipped with a one-shot warning,
+        never raising — a missing camera must not crash the actuation path.
+        Returns ``{}`` when not connected, when no RGB sensors are declared, or
+        after a renderer failure.
 
-        The ``mujoco.Renderer`` is created lazily on the first call so its EGL
-        context binds on the caller's thread (the bridge's camera timer runs on
-        the node's single-threaded executor; EGL contexts are thread-affine).
+        Renderers are created lazily on the first call that needs each resolution
+        so their EGL context binds on the caller's thread (the bridge's camera
+        timer runs on the node's single-threaded executor; EGL contexts are
+        thread-affine).
         """
         if not self._connected or self._model is None or self._data is None:
             return {}
@@ -365,26 +373,11 @@ class MujocoArmHAL(HALBase):
             self._render_failed = True
             return {}
 
-        if self._renderer is None:
-            # Size the renderer to the largest declared RGB resolution; per-camera
-            # sub-resolutions are unusual and MuJoCo renders at the renderer size.
-            heights = [s.intrinsics.height for s in rgb if s.intrinsics is not None]
-            widths = [s.intrinsics.width for s in rgb if s.intrinsics is not None]
-            height = max(heights) if heights else 480
-            width = max(widths) if widths else 640
-            try:
-                self._renderer = mj.Renderer(self._model, height=height, width=width)
-                self._mjcf_cameras = {
-                    mj.mj_id2name(self._model, mj.mjtObj.mjOBJ_CAMERA, i)
-                    for i in range(int(self._model.ncam))
-                }
-            except Exception as exc:  # reason: GL/MJCF render setup is non-fatal
-                log.warning(
-                    "hal.read_images.renderer_failed", robot=self.description.name, error=str(exc)
-                )
-                self._render_failed = True
-                self._renderer = None
-                return {}
+        if not self._mjcf_cameras:
+            self._mjcf_cameras = {
+                mj.mj_id2name(self._model, mj.mjtObj.mjOBJ_CAMERA, i)
+                for i in range(int(self._model.ncam))
+            }
 
         frames: dict[str, object] = {}
         for s in rgb:
@@ -399,9 +392,28 @@ class MujocoArmHAL(HALBase):
                         available=sorted(c for c in self._mjcf_cameras if c),
                     )
                 continue
+            # One renderer per distinct resolution so each camera renders at ITS
+            # declared intrinsics (not a shared max) — the published frame size
+            # then matches the sensor's camera model for every robot.
+            height = s.intrinsics.height if s.intrinsics is not None else 480
+            width = s.intrinsics.width if s.intrinsics is not None else 640
+            renderer = self._renderers.get((height, width))
+            if renderer is None:
+                try:
+                    renderer = mj.Renderer(self._model, height=height, width=width)
+                except Exception as exc:  # reason: GL/MJCF render setup is non-fatal
+                    log.warning(
+                        "hal.read_images.renderer_failed",
+                        robot=self.description.name,
+                        error=str(exc),
+                    )
+                    self._render_failed = True
+                    self._renderers.clear()
+                    return {}
+                self._renderers[(height, width)] = renderer
             try:
-                self._renderer.update_scene(self._data, camera=cam)  # type: ignore[union-attr]
-                frames[s.name] = self._renderer.render()  # type: ignore[union-attr]
+                renderer.update_scene(self._data, camera=cam)
+                frames[s.name] = renderer.render()
             except Exception as exc:  # reason: a per-tick render hiccup skips one frame
                 log.warning(
                     "hal.read_images.render_failed",

@@ -61,10 +61,16 @@ def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
     if not frames:
         pytest.skip("offscreen MuJoCo render produced no frames (no GL context)")
     assert set(frames) == {"front", "wrist"}
+    intr = {s.name: s.intrinsics for s in desc.sensors if s.modality == "rgb"}
     for name, arr in frames.items():
         a = np.asarray(arr)
         assert a.ndim == 3 and a.shape[2] == 3, f"{name}: {a.shape}"
         assert a.dtype == np.uint8
+        # Each camera renders at ITS OWN declared intrinsics, not a shared max
+        # across sensors (so a 256x256 wrist isn't upsized to a 640x480 overhead).
+        assert a.shape[:2] == (intr[name].height, intr[name].width), (
+            f"{name} rendered {a.shape[:2]} != intrinsics {(intr[name].height, intr[name].width)}"
+        )
         # The staging floor + fill light guarantee a non-black frame (a forward
         # wrist camera over a bare arm with no floor would otherwise be void).
         assert a.std() > 1.0, f"{name} looks blank (std={a.std():.2f})"
