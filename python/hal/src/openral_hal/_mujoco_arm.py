@@ -27,6 +27,7 @@ Design notes
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -249,10 +250,35 @@ class MujocoArmHAL(HALBase):
                 "just sync --all-packages --group sim"
             ) from exc
 
+        # ADR-0065 — generic camera rig: splice the manifest's declared RGB
+        # cameras into the MJCF when they are absent (a bare-arm twin ships
+        # none), so deploy sim renders them without a per-robot scene composer.
+        # Idempotent: a scene-attached / already-composed MJCF that already has
+        # the cameras passes through and we load the original path unchanged.
+        mjcf_path = self._mjcf_path
         try:
-            self._model = mj.MjModel.from_xml_path(self._mjcf_path)
+            from openral_hal._camera_rig import rig_cameras_into_mjcf
+
+            with open(self._mjcf_path) as fh:
+                rigged_xml, changed = rig_cameras_into_mjcf(
+                    fh.read(), list(self.description.sensors)
+                )
+            if changed:
+                # Write next to the source MJCF so its relative meshdir resolves.
+                rig_path = os.path.join(
+                    os.path.dirname(self._mjcf_path),
+                    f"{self.description.name}_camrig.xml",
+                )
+                with open(rig_path, "w") as fh:
+                    fh.write(rigged_xml)
+                mjcf_path = rig_path
+        except OSError as exc:
+            raise ROSConfigError(f"Could not read MJCF '{self._mjcf_path}': {exc}") from exc
+
+        try:
+            self._model = mj.MjModel.from_xml_path(mjcf_path)
         except (OSError, ValueError) as exc:
-            raise ROSConfigError(f"Could not load MJCF '{self._mjcf_path}': {exc}") from exc
+            raise ROSConfigError(f"Could not load MJCF '{mjcf_path}': {exc}") from exc
 
         if not self._gravity_enabled:
             self._model.opt.gravity[:] = 0.0

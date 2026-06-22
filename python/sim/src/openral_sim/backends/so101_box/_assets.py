@@ -22,8 +22,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from openral_core import RobotDescription
@@ -38,17 +37,6 @@ __all__ = [
 
 # Sentinel for "not provided": lets None mean "use a typed default".
 _UNSET: tuple[float, ...] = ()
-
-
-def _as_xyz(v: Sequence[float]) -> tuple[float, float, float]:
-    """Coerce a 3-sequence (YAML list or tuple) to a typed ``(x, y, z)`` tuple.
-
-    Manifest ``scene_defaults.composition.params`` arrive as YAML lists; the
-    frozen :class:`BoxSceneOptions` fields are 3-tuples (hashable). This narrows
-    the type and validates the length.
-    """
-    x, y, z = v
-    return (float(x), float(y), float(z))
 
 
 @dataclass(frozen=True)
@@ -123,16 +111,6 @@ class BoxSceneOptions:
 
     box_size_xyz: tuple[float, float, float] = (1.00, 0.615, 0.75)
     wall_thickness: float = 0.01
-
-    # Splice anchors — the upstream MJCF body names the composer re-anchors
-    # (``base_body``) and parents the wrist camera to (``gripper_body``). The
-    # defaults match the SO-101 ``new_calib`` schema (``base`` / ``gripper``).
-    # The SO-100 ``trs_so_arm100`` MJCF uses a different schema (``Base`` with
-    # no pos/quat to inject, ``Fixed_Jaw`` for the roll-mounted end body) — set
-    # both per-robot from the manifest so one composer serves the SO-ARM family
-    # (issue #88 — the ADR-0033 "robot is a flag" splice-anchor follow-up).
-    base_body: str = "base"
-    gripper_body: str = "gripper"
 
     robot_base_xyz: tuple[float, float, float] = (0.50, 0.50, 0.0)
     robot_base_yaw_deg: float = 0.0
@@ -270,55 +248,29 @@ def _yaw_quat_z(yaw_deg: float) -> tuple[float, float, float, float]:
 _look_at_quat = look_at_quat_wxyz
 
 
-def _reanchor_robot_base(
-    xml: str,
-    pos: tuple[float, float, float],
-    yaw_deg: float,
-    base_body: str = "base",
-) -> str:
-    """Re-anchor the ``<body name="{base_body}" ...>`` to ``pos`` + yaw.
+def _reanchor_robot_base(xml: str, pos: tuple[float, float, float], yaw_deg: float) -> str:
+    """Rewrite the ``<body name="base" pos=... quat=...>`` line.
 
-    The SO-101 ``new_calib`` MJCF declares its base at ``pos="0 0 0"
-    quat="1 0 0 0"`` — we rewrite both attributes in one regex pass so the
-    whole kinematic chain rigidly translates + yaws to the configured pose.
-
-    The SO-100 ``trs_so_arm100`` MJCF instead declares its base as bare
-    ``<body name="Base" childclass="so_arm100">`` (no pos/quat to rewrite), so
-    when no ``pos=``/``quat=`` are present we INJECT them into the opening tag
-    (stripping any stale pos/quat/euler first). Either way the base body ends
-    up at the configured world pose (issue #88).
+    The upstream SO-101 MJCF declares its base at ``pos="0 0 0"
+    quat="1 0 0 0"``. We rewrite both attributes in one regex pass so
+    the entire kinematic chain rigidly translates + yaws to the
+    configured pose.
     """
     quat = _yaw_quat_z(yaw_deg)
+    pattern = re.compile(
+        r'(<body[^>]*\bname="base"[^>]*\bpos=")([^"]+)("[^>]*\bquat=")([^"]+)("[^>]*>)',
+    )
     new_pos = f"{pos[0]} {pos[1]} {pos[2]}"
     new_quat = f"{quat[0]} {quat[1]} {quat[2]} {quat[3]}"
-    name_re = re.escape(base_body)
-
-    # Case 1 — base already declares pos= + quat= (SO-101 schema): rewrite both.
-    rewrite = re.compile(
-        rf'(<body[^>]*\bname="{name_re}"[^>]*\bpos=")([^"]+)("[^>]*\bquat=")([^"]+)("[^>]*>)',
-    )
-    xml2, n = rewrite.subn(rf"\g<1>{new_pos}\g<3>{new_quat}\g<5>", xml, count=1)
-    if n == 1:
-        return xml2
-
-    # Case 2 — base lacks pos/quat (SO-100 `Base` schema): inject them.
-    def _inject(m: re.Match[str]) -> str:
-        attrs = m.group(2)
-        for stale in (r'\s*\bpos="[^"]*"', r'\s*\bquat="[^"]*"', r'\s*\beuler="[^"]*"'):
-            attrs = re.sub(stale, "", attrs)
-        return f'{m.group(1)}{attrs} pos="{new_pos}" quat="{new_quat}"{m.group(3)}'
-
-    inject = re.compile(rf'(<body)([^>]*\bname="{name_re}"[^>]*?)(\s*/?>)')
-    xml2, n = inject.subn(_inject, xml, count=1)
-    if n == 1:
-        return xml2
-
-    raise ROSConfigError(
-        f'so101_box: cannot find <body name="{base_body}"> in the robot MJCF. '
-        "The base-body name is set via the `base_body` composer param "
-        "(`base` for SO-101, `Base` for SO-100); a robot with a different "
-        "base-body schema must set it (ADR-0033 splice anchors).",
-    )
+    xml, n = pattern.subn(rf"\g<1>{new_pos}\g<3>{new_quat}\g<5>", xml, count=1)
+    if n != 1:
+        raise ROSConfigError(
+            'so101_box: cannot find <body name="base" pos=... quat=...> in the robot '
+            "MJCF (so_arm101 schema). The base body must declare pos= + quat=; a robot "
+            "with a different base-body schema needs the splice anchors parameterised "
+            "(ADR-0033 follow-up).",
+        )
+    return xml
 
 
 def _splice_wrist_camera(
@@ -326,13 +278,12 @@ def _splice_wrist_camera(
     pos_local: tuple[float, float, float],
     target_local: tuple[float, float, float],
     fovy: float,
-    gripper_body: str = "gripper",
 ) -> str:
-    """Insert a ``<camera name="wrist">`` element inside the ``gripper_body`` body.
+    """Insert a ``<camera name="wrist">`` element inside the ``<body name="gripper">`` body.
 
-    The camera is parented to the roll-mounted end body so it tracks the
-    end-effector pose (SO-101 ``gripper``; SO-100 ``Fixed_Jaw``).
-    ``pos_local`` / ``target_local`` are expressed in that body's local frame.
+    The camera is parented to the gripper body so it tracks the
+    end-effector pose. ``pos_local`` / ``target_local`` are expressed
+    in the gripper body's local frame.
     """
     quat = _look_at_quat(pos_local, target_local)
     cam = (
@@ -340,14 +291,12 @@ def _splice_wrist_camera(
         f'quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}" fovy="{fovy}" '
         f'mode="fixed"/>'
     )
-    pattern = re.compile(rf'(<body[^>]*\bname="{re.escape(gripper_body)}"[^>]*>)')
+    pattern = re.compile(r'(<body[^>]*\bname="gripper"[^>]*>)')
     xml, n = pattern.subn(rf"\g<1>\n        {cam}", xml, count=1)
     if n != 1:
         raise ROSConfigError(
-            f'so101_box: cannot find <body name="{gripper_body}"> in the robot '
-            "MJCF — wrist camera cannot be parented. The end-body name is set via "
-            "the `gripper_body` composer param (`gripper` for SO-101, `Fixed_Jaw` "
-            "for SO-100).",
+            'so101_box: cannot find <body name="gripper"> in the upstream SO-101 '
+            "MJCF — wrist camera cannot be parented.",
         )
     return xml
 
@@ -583,16 +532,10 @@ def _render_tube(opts: BoxSceneOptions) -> str:
 def compose_so101_box_mjcf(
     options: BoxSceneOptions | None = None,
     robot_description: RobotDescription | None = None,
-    *,
-    base_body: str | None = None,
-    gripper_body: str | None = None,
-    wrist_camera_pos_local: tuple[float, float, float] | None = None,
-    wrist_camera_target_local: tuple[float, float, float] | None = None,
-    wrist_camera_fovy: float | None = None,
 ) -> tuple[str, Path]:
     """Return ``(composed_xml, output_mjcf_path)`` for the so101_box scene.
 
-    The output path is a sibling of the robot's upstream MJCF so its
+    The output path is a sibling of the upstream SO-101 MJCF so its
     ``meshdir="assets"`` resolves at compile time without copying
     STL meshes.  The XML string is also returned for inspection /
     unit-tests that don't want to touch the filesystem.
@@ -603,23 +546,7 @@ def compose_so101_box_mjcf(
         robot_description: Robot whose ``assets.mjcf`` provides the base arm
             MJCF (ADR-0033). ``None`` falls back to the SO-101 MJCF, keeping the
             legacy call path byte-for-byte unchanged. The robot must share the
-            so_arm splice anchors (a base body + a roll-mounted end body).
-        base_body: Override for ``BoxSceneOptions.base_body`` (the re-anchored
-            base body name — ``Base`` for SO-100). ``None`` keeps the default.
-        gripper_body: Override for ``BoxSceneOptions.gripper_body`` (the
-            wrist-camera parent body — ``Fixed_Jaw`` for SO-100). ``None`` keeps
-            the default.
-        wrist_camera_pos_local: Override for the wrist-camera position in the
-            gripper-body frame. ``None`` keeps the default.
-        wrist_camera_target_local: Override for the wrist-camera look-at target.
-            ``None`` keeps the default.
-        wrist_camera_fovy: Override for the wrist-camera vertical FoV (degrees).
-            ``None`` keeps the default.
-
-    The flat keyword overrides are YAML-friendly so the manifest-driven node can
-    set the SO-100 splice anchors + wrist-camera pose via
-    ``scene_defaults.composition.params`` without constructing a
-    :class:`BoxSceneOptions` (issue #88).
+            so_arm101 splice anchors (``<body name="base">`` + ``gripper``).
 
     Returns:
         ``(xml, output_path)`` — ``xml`` is the composed MJCF; the
@@ -628,23 +555,13 @@ def compose_so101_box_mjcf(
 
     Raises:
         ROSConfigError: If any required upstream MJCF landmark
-            (the base body, the gripper/end body, the closing
+            (the ``<body name="base">`` declaration, the
+            ``<body name="gripper">`` body, the closing
             ``</worldbody>``) is missing — those are the splice
             anchors and a future upstream rename would surface here
             loudly.
     """
     opts = options if options is not None else BoxSceneOptions()
-    # Flat overrides → typed option fields (YAML lists coerced to 3-tuples).
-    if base_body is not None:
-        opts = replace(opts, base_body=base_body)
-    if gripper_body is not None:
-        opts = replace(opts, gripper_body=gripper_body)
-    if wrist_camera_pos_local is not None:
-        opts = replace(opts, wrist_camera_pos_local=_as_xyz(wrist_camera_pos_local))
-    if wrist_camera_target_local is not None:
-        opts = replace(opts, wrist_camera_target_local=_as_xyz(wrist_camera_target_local))
-    if wrist_camera_fovy is not None:
-        opts = replace(opts, wrist_camera_fovy=wrist_camera_fovy)
 
     # ADR-0033 — the robot is a flag: resolve its base MJCF from the manifest
     # (`assets.mjcf`) when a description is given; default to SO-101 so the
@@ -658,18 +575,17 @@ def compose_so101_box_mjcf(
     meshdir = upstream_path.parent / "assets"
     if not meshdir.is_dir():
         raise ROSConfigError(
-            f"so101_box: mesh dir not found at {meshdir}; upstream MJCF assumes "
+            f"SO-101 mesh dir not found at {meshdir}; upstream MJCF assumes "
             "meshdir='assets' next to the XML.",
         )
 
     body = _inject_fill_light(raw)
-    body = _reanchor_robot_base(body, opts.robot_base_xyz, opts.robot_base_yaw_deg, opts.base_body)
+    body = _reanchor_robot_base(body, opts.robot_base_xyz, opts.robot_base_yaw_deg)
     body = _splice_wrist_camera(
         body,
         opts.wrist_camera_pos_local,
         opts.wrist_camera_target_local,
         opts.wrist_camera_fovy,
-        opts.gripper_body,
     )
 
     arena_geoms = _render_arena_geoms(opts.box_size_xyz, opts.wall_thickness)

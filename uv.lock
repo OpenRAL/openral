@@ -2664,12 +2664,14 @@ name = "openral-core"
 version = "0.1.0"
 source = { editable = "python/core" }
 dependencies = [
+    { name = "numpy" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "numpy", specifier = ">=1.24" },
     { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]

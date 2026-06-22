@@ -256,6 +256,46 @@ def scale_intrinsics_to(base: IntrinsicsPinhole, width: int, height: int) -> Int
     )
 
 
+class CameraSimPlacement(BaseModel):
+    """Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).
+
+    Lets the generic HAL camera rig (``openral_hal._camera_rig``) splice a
+    manifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so
+    a ``deploy sim`` digital twin renders the robot's declared cameras without a
+    per-robot scene composer. A camera is a property of the robot's sensor suite
+    (the wrist camera is bolted to the gripper; the overhead camera is a declared
+    sensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.
+
+    The rig only splices a camera that is *absent* from the loaded MJCF, so this
+    is a no-op for scene-attached or already-composed models (those carry their
+    own cameras).
+
+    Attributes:
+        parent_body: MJCF body the camera is rigidly mounted to (tracks that
+            body's pose — e.g. the gripper/``Fixed_Jaw`` for a wrist camera).
+            ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /
+            third-person camera).
+        pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame
+            (or world when ``parent_body`` is ``None``).
+        target: Look-at point ``(x, y, z)`` in the same frame; the camera's
+            MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.
+        fovy_deg: Vertical field of view in degrees. ``None`` derives it from the
+            sensor's pinhole ``intrinsics`` (``2·atan(height / (2·fy))``) so the
+            rendered FoV matches the declared camera model.
+
+    Example:
+        >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_body: str | None = None
+    pos: tuple[float, float, float]
+    target: tuple[float, float, float]
+    fovy_deg: float | None = None
+
+
 class SensorSpec(BaseModel):
     """Generalizable sensor descriptor — covers all modalities.
 
@@ -302,6 +342,13 @@ class SensorSpec(BaseModel):
     # name matches ``name``" (the common case). E.g. openarm's ``base`` sensor
     # renders the MJCF ``top`` camera.
     sim_camera_name: str | None = None
+    # ADR-0065 — where this camera sits in the sim MJCF. When set, the generic
+    # HAL camera rig (``openral_hal._camera_rig``) splices the camera into a
+    # bare-arm MJCF that ships no ``<camera>`` elements, so a ``deploy sim`` twin
+    # renders the robot's declared cameras without a per-robot scene composer.
+    # ``None`` = not rigged (the MJCF is expected to already declare the camera,
+    # e.g. a scene-attached or composed-props model).
+    sim_placement: CameraSimPlacement | None = None
     # LiDAR / point cloud
     n_channels: int | None = None
     range_min_m: float | None = None

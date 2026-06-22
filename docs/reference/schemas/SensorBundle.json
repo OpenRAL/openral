@@ -1,5 +1,75 @@
 {
   "$defs": {
+    "CameraSimPlacement": {
+      "additionalProperties": false,
+      "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+      "properties": {
+        "parent_body": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Body"
+        },
+        "pos": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Pos",
+          "type": "array"
+        },
+        "target": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Target",
+          "type": "array"
+        },
+        "fovy_deg": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fovy Deg"
+        }
+      },
+      "required": [
+        "pos",
+        "target"
+      ],
+      "title": "CameraSimPlacement",
+      "type": "object"
+    },
     "IntrinsicsPinhole": {
       "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
       "properties": {
@@ -199,6 +269,17 @@
           ],
           "default": null,
           "title": "Sim Camera Name"
+        },
+        "sim_placement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CameraSimPlacement"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "n_channels": {
           "anyOf": [

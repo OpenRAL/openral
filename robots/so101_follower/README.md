@@ -20,7 +20,7 @@ side); only the MJCF mesh set differs.
 | Embodiment tags | `so101_follower`, `lerobot` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | `sdk_kind` | `open` (LeRobot SDK, Apache-2.0) |
-| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; `deploy sim` composes the `so101_box` arena (via `scene_defaults.composition`) so the twin renders the `oak_top` + `wrist` cameras (issue #88) |
+| `hal.sim` | _null_ — derives `MujocoArmHAL.from_description` from the `sim:` block; for `deploy sim` the generic HAL camera rig (ADR-0065) splices the `front` + `wrist` cameras from their `sensors[].sim_placement` into the bare MJCF so the twin renders them (issue #88) |
 | `hal.real` | `openral_hal.so100_follower:SO100FollowerHAL` (shared SO-100 Feetech follower; `deploy run`) |
 | Action / observation spec | 6-D joint positions @ 30 Hz / `(6,)` joint state |
 

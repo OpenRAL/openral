@@ -120,18 +120,7 @@ def build_hal(
                     "null and there is no `sim:` block to derive MujocoArmHAL from. "
                     "It is real-hardware-only — use `deploy run`."
                 )
-            # issue #88 — the derived bare-twin path must honour a composed
-            # scene `mjcf_path` (the manifest-driven node threads it in from
-            # `scene_defaults.composition`), exactly as the `hal.sim`
-            # entrypoint path does via `_construct`. Without this, a robot with
-            # `hal.sim: null` (so100 / so101) silently ignored its composed
-            # MJCF and built the camera-less upstream arm twin, so the HAL
-            # reported every manifest camera absent.
-            mjcf_path = resolved.get("mjcf_path")
-            return MujocoArmHAL.from_description(
-                description,
-                mjcf_path_override=str(mjcf_path) if mjcf_path else None,
-            )
+            return MujocoArmHAL.from_description(description)
         return _construct(_import_object(entry), description, resolved)
     if mode == "real":
         entry = description.hal.real

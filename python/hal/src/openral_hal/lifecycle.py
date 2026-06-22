@@ -1014,19 +1014,10 @@ if _ROS2_AVAILABLE:
             replaces openarm's bespoke ``_create_hal`` scene splicing.
             """
             import importlib
-            import inspect
 
             module_path, _, fn_name = composition.composer.partition(":")  # type: ignore[attr-defined]
             composer = getattr(importlib.import_module(module_path), fn_name)
-            kwargs = dict(composition.params)  # type: ignore[attr-defined]
-            # ADR-0033 "the robot is a flag" — thread the loaded manifest in when
-            # the composer accepts `robot_description`, so a single composer can
-            # serve a robot family off each robot's own `assets.mjcf` (e.g. the
-            # so101_box composer composes the SO-100 twin from so_arm100, not the
-            # SO-101 MJCF). Composers without the param are called unchanged.
-            if "robot_description" in inspect.signature(composer).parameters:
-                kwargs.setdefault("robot_description", description)
-            xml, meshdir = composer(**kwargs)
+            xml, meshdir = composer(**composition.params)  # type: ignore[attr-defined]
             scene_path = meshdir.parent / f"{description.name}_composed_scene.xml"
             scene_path.write_text(xml)
             self.get_logger().info(

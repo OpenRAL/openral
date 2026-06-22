@@ -434,7 +434,8 @@ const SCHEMAS = [
   { name: "SceneComposition",     where: "core",  kind: "part",  note: "issue #191 Phase 3b. Declarative MJCF scene composition: `composer: 'module:fn'` returning (xml, meshdir) + `params`. ManifestHALLifecycleNode composes the MJCF and threads it in as the HAL's mjcf_path — replaced openarm's bespoke _create_hal tabletop splicing." },
 
   // sensors
-  { name: "SensorSpec",           where: "core",  kind: "sensor", note: "One per sensor; modality + intrinsics + tf2 frame + ros2_topic + qos_profile. `sim_camera_name` (issue #191 Phase 3b) maps a sensor to a differently-named MJCF camera for MujocoArmHAL.read_images." },
+  { name: "SensorSpec",           where: "core",  kind: "sensor", note: "One per sensor; modality + intrinsics + tf2 frame + ros2_topic + qos_profile. `sim_camera_name` (issue #191 Phase 3b) maps a sensor to a differently-named MJCF camera for MujocoArmHAL.read_images. `sim_placement` (ADR-0065) carries the camera's sim pose so the generic HAL camera rig splices it into a bare-arm MJCF for deploy-sim." },
+  { name: "CameraSimPlacement",   where: "core",  kind: "sensor", note: "ADR-0065. Sim pose for an RGB sensor's camera (parent_body|world, pos, look-at target, optional fovy). Read by the generic HAL camera rig to splice manifest cameras into a bare-arm MJCF — replaces per-robot scene_defaults.composition for camera-only deploy twins." },
   { name: "SensorBundle",         where: "core",  kind: "sensor", note: "Multi-modal group, e.g. RealSense D455 = RGB+depth+IMU." },
   { name: "IntrinsicsPinhole",    where: "core",  kind: "sensor" },
 

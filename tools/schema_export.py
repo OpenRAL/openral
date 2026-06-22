@@ -30,6 +30,7 @@ from openral_core.schemas import (
     ActionSpec,
     BenchmarkMetadata,
     BenchmarkScene,
+    CameraSimPlacement,
     ControlMode,
     DeadlineOverrunPolicy,
     DeployScene,
@@ -90,6 +91,7 @@ _ENUM_TYPES: list[type] = [
 
 _MODEL_TYPES: list[type] = [
     IntrinsicsPinhole,
+    CameraSimPlacement,
     SensorSpec,
     SensorBundle,
     JointSpec,

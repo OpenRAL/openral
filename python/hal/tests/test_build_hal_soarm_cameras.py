@@ -1,87 +1,44 @@
-"""SO-ARM (SO-100 / SO-101) deploy-sim cameras (issue #88).
+"""SO-ARM (SO-100 / SO-101) deploy-sim cameras via the generic rig (ADR-0065; issue #88).
 
-`openral deploy sim` builds a bare/composed MuJoCo twin for the SO-ARM arms
-(their manifests set ``hal.sim: null``, so build_hal derives a ``MujocoArmHAL``).
-The upstream SO-100 / SO-101 MJCFs declare zero ``<camera>`` elements, so
-without a composed scene the HAL reported every manifest camera absent and no
-frames reached the dashboard / WorldState / detectors.
+`openral deploy sim` builds a bare MuJoCo twin for the SO-ARM arms (their
+manifests set ``hal.sim: null`` → ``MujocoArmHAL.from_description``). The upstream
+``so_arm100`` / ``so_arm101`` MJCFs declare zero ``<camera>`` elements, so the HAL
+rendered nothing and every manifest camera came back absent.
 
-The fix has three parts, all exercised here against real fixtures (no mocks):
-
-1. Each manifest declares ``scene_defaults.composition`` (the so101_box
-   composer, which is robot-agnostic via its ``base_body`` / ``gripper_body``
-   anchors) so deploy sim composes an arena with ``oak_top`` + ``wrist``
-   cameras around the robot's OWN MJCF, and maps its ``front`` sensor onto the
-   ``oak_top`` MJCF camera via ``sim_camera_name``.
-2. ``build_hal``'s derived (``hal.sim: null``) sim path threads the composed
-   ``mjcf_path`` transport into ``MujocoArmHAL.from_description``.
-3. ``SimSensorBridge`` resolves frames by VLA slot OR sensor name (covered in
-   ``test_sim_sensor_bridge_camera_key``).
+The fix: each RGB ``SensorSpec`` carries a ``sim_placement``, and
+``MujocoArmHAL.connect`` runs the generic camera rig
+(``openral_hal._camera_rig``) to splice those cameras into the bare MJCF — no
+per-robot scene composer, no ``scene_defaults.composition`` on the manifest.
+This is exercised here against the real manifests + real MuJoCo (no mocks).
 """
 
 from __future__ import annotations
-
-import importlib
 
 import pytest
 from openral_core import RobotDescription
 from openral_hal import build_hal
 
 pytest.importorskip("mujoco")
-pytest.importorskip("openral_sim")
 
 _SOARM = ["robots/so100_follower/robot.yaml", "robots/so101_follower/robot.yaml"]
 
 
-def _compose_for(desc: RobotDescription) -> str:
-    """Replicate the lifecycle node's compose step, returning the scene path."""
-    import inspect
-
-    comp = desc.scene_defaults.composition
-    assert comp is not None
-    mod, _, fn = comp.composer.partition(":")
-    composer = getattr(importlib.import_module(mod), fn)
-    kwargs = dict(comp.params)
-    if "robot_description" in inspect.signature(composer).parameters:
-        kwargs.setdefault("robot_description", desc)
-    xml, meshdir = composer(**kwargs)
-    scene_path = meshdir.parent / f"{desc.name}_composed_scene.xml"
-    scene_path.write_text(xml)
-    return str(scene_path)
-
-
 @pytest.mark.parametrize("robot_yaml", _SOARM)
-def test_manifest_declares_box_composition_and_camera_mapping(robot_yaml: str) -> None:
+def test_manifest_sensors_carry_sim_placement(robot_yaml: str) -> None:
     desc = RobotDescription.from_yaml(robot_yaml)
-    comp = desc.scene_defaults.composition if desc.scene_defaults else None
-    assert comp is not None, f"{desc.name} must declare scene_defaults.composition"
-    assert comp.composer == "openral_sim.backends.so101_box._assets:compose_so101_box_mjcf"
+    # No scene composition hook on the robot manifest (ADR-0065).
+    assert desc.scene_defaults is None or desc.scene_defaults.composition is None
     by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    # front maps onto the composed overhead camera; wrist matches its MJCF name.
-    assert by_name["front"].sim_camera_name == "oak_top"
-    assert by_name["wrist"].sim_camera_name == "wrist"
+    # front = world-fixed overhead; wrist = parented to the roll-mounted end body.
+    assert by_name["front"].sim_placement is not None
+    assert by_name["front"].sim_placement.parent_body is None
+    assert by_name["wrist"].sim_placement is not None
+    assert by_name["wrist"].sim_placement.parent_body is not None
 
 
 @pytest.mark.parametrize("robot_yaml", _SOARM)
-def test_build_hal_threads_composed_mjcf_into_derived_twin(robot_yaml: str) -> None:
-    # The derived (hal.sim: null) path must honour the composed mjcf_path the
-    # manifest-driven node threads in — not silently rebuild the camera-less
-    # upstream arm.
-    desc = RobotDescription.from_yaml(robot_yaml)
-    scene_path = _compose_for(desc)
-
-    hal = build_hal(desc, mode="sim", transport={"mjcf_path": scene_path})
-    assert type(hal).__name__ == "MujocoArmHAL"
-    assert hal._mjcf_path == scene_path
-
-    # Negative control: no mjcf_path transport -> the camera-less upstream arm.
-    bare = build_hal(desc, mode="sim", transport={})
-    assert bare._mjcf_path != scene_path
-
-
-@pytest.mark.parametrize("robot_yaml", _SOARM)
-def test_composed_scene_renders_both_manifest_cameras(robot_yaml: str) -> None:
-    """End-to-end: the composed twin renders `front` + `wrist` frames.
+def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
+    """End-to-end: the bare twin renders `front` + `wrist` after the connect-time rig.
 
     Mirrors the SimSensorBridge camera tick exactly (it calls
     ``hal.read_images()``). Skips only if offscreen GL is unavailable on the
@@ -90,9 +47,9 @@ def test_composed_scene_renders_both_manifest_cameras(robot_yaml: str) -> None:
     import numpy as np
 
     desc = RobotDescription.from_yaml(robot_yaml)
-    scene_path = _compose_for(desc)
-
-    hal = build_hal(desc, mode="sim", transport={"mjcf_path": scene_path})
+    # No transport / no composition: the HAL rigs cameras from sim_placement.
+    hal = build_hal(desc, mode="sim")
+    assert type(hal).__name__ == "MujocoArmHAL"
     hal.connect()
     try:
         frames = hal.read_images()
@@ -108,3 +65,6 @@ def test_composed_scene_renders_both_manifest_cameras(robot_yaml: str) -> None:
         a = np.asarray(arr)
         assert a.ndim == 3 and a.shape[2] == 3, f"{name}: {a.shape}"
         assert a.dtype == np.uint8
+        # The staging floor + fill light guarantee a non-black frame (a forward
+        # wrist camera over a bare arm with no floor would otherwise be void).
+        assert a.std() > 1.0, f"{name} looks blank (std={a.std():.2f})"

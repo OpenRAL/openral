@@ -8,6 +8,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
     "pydantic>=2.7,<3",  # reason: normative schema framework
     "PyYAML>=6.0",       # reason: rSkill manifest (rskill.yaml) loader
+    "numpy>=1.24",       # reason: openral_core.geometry look-at math (ADR-0065; import-on-demand, not loaded by __init__)
 ]
 
 [build-system]
