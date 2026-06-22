@@ -132,7 +132,25 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     # forwarded so the OpaqueFunction can read it.
     assert "enable_slam:=false" in joined
     assert invocation.enable_slam is False
+    assert invocation.clock_origin == "host_wall"
+    assert "clock_origin:=host_wall" in joined
+    assert "enable_sim_clock:=" not in joined
+
+
+def test_deploy_sim_scene_attached_mujoco_uses_simulation_clock_origin() -> None:
+    """Scene-attached MuJoCo HALs publish simulator time on /clock."""
+    invocation = resolve_launch_invocation(
+        config=_PANDA_MOBILE_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+
+    assert invocation.robot_id == "panda_mobile"
+    assert invocation.hal.bare_twin_sim is False
     assert invocation.clock_origin == "simulation"
+    joined = " ".join(invocation.argv_template)
     assert "clock_origin:=simulation" in joined
     assert "enable_sim_clock:=" not in joined
 
