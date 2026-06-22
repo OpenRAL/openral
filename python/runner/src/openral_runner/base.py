@@ -10,7 +10,7 @@ span and decides whether the cadence was honoured.
 
 The base is plain Python: it does not import HAL, sensors, or ROS. The
 two concrete runners — :class:`SimRunner` (in ``openral_sim``, future
-PR) and :class:`HardwareRunner` (in ``openral_runner.hardware``,
+PR) and :class:`DeployRunner` (in ``openral_runner.deploy_runner``,
 PR F) — wire their respective input / output stacks into the
 :meth:`_tick_impl` hook.
 """
@@ -141,7 +141,7 @@ class InferenceRunnerBase(ABC):
     def _should_terminate(self) -> bool:
         """Subclass hook: early-exit signal evaluated after each tick.
 
-        Default returns ``False`` so :class:`HardwareRunner` runs until
+        Default returns ``False`` so :class:`DeployRunner` runs until
         ``max_ticks`` (or :meth:`deactivate`) as before. :class:`SimRunner`
         overrides this to stop once ``n_episodes`` have completed without
         depending on the caller picking the exact tick budget. The hook is
@@ -272,7 +272,7 @@ class InferenceRunnerBase(ABC):
             # ``safety_violations`` is a list of human-readable strings on
             # ``TickResult``; the counter just records that the tick had
             # at least one. Per-exception-type counters are emitted at the
-            # supervisor boundary in ``HardwareRunner._tick_impl``.
+            # supervisor boundary in ``DeployRunner._tick_impl``.
             ral_metrics.get_safety_violations().add(
                 len(result.safety_violations),
                 {

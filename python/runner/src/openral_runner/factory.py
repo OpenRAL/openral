@@ -1,4 +1,4 @@
-"""Factory wiring `RobotEnvironment` YAML → live :class:`HardwareRunner`.
+"""Factory wiring `RobotEnvironment` YAML → live :class:`DeployRunner`.
 
 The factory is the single seam the CLI (`openral deploy --config R.yaml`) goes
 through to instantiate a runner. It resolves three free axes against
@@ -48,7 +48,7 @@ from openral_world_state.aggregator import WorldStateAggregator
 
 from openral_runner.backends import OpenCVThreadSensorReader
 from openral_runner.backends.gstreamer.pipeline import PipelineSpec, Source
-from openral_runner.hardware import HardwareRunner
+from openral_runner.deploy_runner import DeployRunner
 from openral_runner.safety import NullSafetyClient
 from openral_runner.sensor_reader import SensorReader
 
@@ -300,8 +300,8 @@ SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]
 """Registry of SensorReader factories. Keyed by :attr:`SensorReaderConfig.backend`."""
 
 
-def build_runner(env: RobotEnvironment) -> tuple[HardwareRunner, rSkillBase]:
-    """Materialise a :class:`HardwareRunner` from a :class:`RobotEnvironment`.
+def build_runner(env: RobotEnvironment) -> tuple[DeployRunner, rSkillBase]:
+    """Materialise a :class:`DeployRunner` from a :class:`RobotEnvironment`.
 
     Returns the runner **and** the skill so the caller can drive the skill
     lifecycle (``configure / activate / deactivate / shutdown``) around the
@@ -354,7 +354,7 @@ def build_runner(env: RobotEnvironment) -> tuple[HardwareRunner, rSkillBase]:
     )
     safety_client = NullSafetyClient(envelope=safety_envelope)
 
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=skill,
         aggregator=aggregator,

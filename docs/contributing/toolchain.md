@@ -14,6 +14,8 @@ just bootstrap                  # installs uv, ROS 2, system deps via scripts/
 just sync                       # resolve & install all workspace deps
                                 # (wraps `uv sync` + scripts/repair_hf_libero_install.py)
 just sync --group robocasa      # + an opt-in dep group (sim / libero / robocasa / rldx / …)
+                                # → read "Managing the Python environment & dependency
+                                #   groups" below before swapping groups or running RoboCasa
 just test                       # run unit tests (<30 s)
 just test-doctest               # run docstring examples on the curated set
 uv run pytest -k so100          # filter by keyword
@@ -22,6 +24,93 @@ just lint                       # ruff check + ruff format --check + mypy --stri
 uv run ruff check . --fix       # autofix
 uv run ruff format .            # format
 ```
+
+## Managing the Python environment & dependency groups
+
+Read this before touching the venv — these are the rules that keep a working
+tree, in priority order.
+
+**1. Always `just sync`, never bare `uv sync`.** The Justfile `sync` recipe
+wraps [`scripts/repair_hf_libero_install.py`](https://github.com/OpenRAL/openral/blob/master/scripts/repair_hf_libero_install.py)
+**before and after** the sync and forces `--all-packages` for you. Bare
+`uv sync` skips the repair and trips on:
+
+```
+error: Unable to uninstall hf-libero==0.1.3. distutils-installed distributions
+do not include the metadata required to uninstall safely.
+```
+
+which aborts the resolve and leaves the venv half-broken (missing `h5py`,
+`transformers`, `scipy`, …). `just sync` is idempotent and safe on every host.
+
+```bash
+just sync                       # the only correct full-workspace sync
+```
+
+**2. Opt-in dependency groups → `just sync --group <name>`.** The
+`[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
+`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers==5.3.0`,
+`scipy`, `opencv`, robosuite — live in these groups, **not** in the core deps.
+A default sync (no `--group`) deliberately *removes* them, so for any VLA / sim
+work you need at least the `sim` group:
+
+```bash
+just sync --group sim           # minimum working VLA / sim baseline
+just sync --group libero        # LIBERO suites
+just sync --group robocasa      # RoboCasa robosuite + supporting deps
+just sync --group metaworld     # MetaWorld
+just sync --group maniskill3    # ManiSkill3 / SAPIEN
+```
+
+`just sync --group robocasa` is exactly `uv sync --all-packages --group robocasa`
+— the wrapper supplies `--all-packages` so the editable `openral-*` members are
+never silently uninstalled (a bare `uv sync --group <x>` drops them and the next
+`openral …` can't `import openral_core`).
+
+**3. The libero ↔ robocasa conflict — swap groups per task.** LIBERO pins
+`robosuite==1.4` + a specific MuJoCo; RoboCasa needs `robosuite>=1.5` + a
+different MuJoCo. They are declared mutually exclusive in `pyproject.toml`
+(`[tool.uv] conflicts`) and **cannot** coexist in one resolution — a
+`uv sync --group libero --group robocasa` fails by design. You **swap** the
+active group per task:
+
+```bash
+just sync --group robocasa      # before a RoboCasa run
+just sync --group sim           # (or --group libero) to go back to LIBERO/MuJoCo
+```
+
+**4. RoboCasa itself is installed editable AT RUNTIME — not by `just sync`.**
+The `robocasa` group only provides robosuite + supporting deps. The RoboCasa
+kitchen fork (a GitHub repo, no PyPI release) is git-cloned and
+`uv pip install -e --no-deps`'d by
+`openral_sim._deps.ensure_backend_deps('robocasa_kitchen')`, which the
+deploy-sim HAL triggers from `on_configure`. Auto-install is **on by default**
+(`OPENRAL_AUTO_INSTALL_DEPS` unset or `=1`; set `=0` to prompt instead). So the
+correct way to run a RoboCasa scene is to let the HAL provision it:
+
+```bash
+OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
+  --config scenes/deploy/robocasa_navigate.yaml --rskill <rskill>
+```
+
+Do **not** hand-install `robocasa` / `robosuite` yourself — that pulls the wrong
+robosuite and wrecks the managed env.
+
+**5. Pre-build to skip the in-`on_configure` install window.** Provision the
+RoboCasa clone once, ahead of time, so the lifecycle transition doesn't stall
+on a first-run build:
+
+```bash
+OPENRAL_AUTO_INSTALL_DEPS=1 just sync --group robocasa
+OPENRAL_AUTO_INSTALL_DEPS=1 python -c \
+  "from openral_sim._deps import ensure_backend_deps; ensure_backend_deps('robocasa_kitchen')"
+```
+
+**6. Never `uv sync --all-packages` to "repair" the RoboCasa env.** Once the
+runtime-editable RoboCasa install is in place, a plain `uv sync --all-packages`
+*uninstalls* it (and the matching robosuite) and breaks the env. Repair with the
+group re-applied — `just sync --group robocasa` — and, if RoboCasa itself was
+evicted, re-run the `ensure_backend_deps('robocasa_kitchen')` line from point 5.
 
 ## ROS 2
 

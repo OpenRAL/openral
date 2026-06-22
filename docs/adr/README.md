@@ -129,6 +129,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0017](0017-dashboard-otlp-receiver.md) | `openral dashboard` — embedded OTLP/HTTP receiver | Accepted | — |
 | [0019](0019-rosbag2-lerobot-dataset-bridge.md) | rosbag2 ↔ LeRobotDataset v3 bridge | Accepted | amends 0010 |
 | [0059](0059-foxglove-live-scene-visualization.md) | Foxglove as the read-only live-scene surface (hybrid with the OTel dashboard) | Accepted | keeps 0017; taps 0058 `/tf`; safety-WG-signed-off |
+| [0064](0064-vision-slam-lidarless-cuvslam-nvblox-monodepth.md) | Vision SLAM for lidar-less robots (cuVSLAM + nvblox + monocular metric depth) | Accepted | extends 0025; reuses 0046 license/sidecar pattern; competes with 0050 VRAM budget; Ph1+2 landed, live mapping operator-run |
 
 ## J · Motion / MoveIt goal building
 

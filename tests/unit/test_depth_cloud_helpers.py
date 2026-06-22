@@ -496,6 +496,47 @@ def test_pointcloud2_from_points_xyz_packs_fields() -> None:
     assert np.allclose(flat, points.ravel())
 
 
+def test_depth_image_from_grid_packs_32fc1() -> None:
+    pytest.importorskip("sensor_msgs")
+    from openral_hal.depth_cloud import depth_image_from_grid
+
+    grid = np.array([[1.0, 2.0, 0.0], [3.0, 0.0, 4.5]], dtype=np.float32)  # (H=2, W=3)
+    msg = depth_image_from_grid(grid, frame_id="front_depth_optical_frame", stamp=None)
+    assert msg.header.frame_id == "front_depth_optical_frame"
+    assert msg.encoding == "32FC1"
+    assert (msg.height, msg.width) == (2, 3)
+    assert msg.step == 4 * 3  # float32 row
+    assert msg.is_bigendian == 0
+    # Round-trip the raw buffer back to the grid (row-major, 0.0 sentinels kept).
+    flat = np.frombuffer(bytes(msg.data), dtype="<f4")
+    assert np.allclose(flat, grid.ravel())
+
+
+def test_camera_info_from_intrinsics_builds_pinhole() -> None:
+    pytest.importorskip("sensor_msgs")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics
+
+    info = camera_info_from_intrinsics(
+        width=64,
+        height=48,
+        fx=40.0,
+        fy=41.0,
+        cx=32.0,
+        cy=24.0,
+        frame_id="front_depth_optical_frame",
+        stamp=None,
+    )
+    assert info.header.frame_id == "front_depth_optical_frame"
+    assert (info.width, info.height) == (64, 48)
+    assert info.distortion_model == "plumb_bob"
+    assert list(info.d) == [0.0, 0.0, 0.0, 0.0, 0.0]
+    # K = [fx 0 cx; 0 fy cy; 0 0 1]
+    assert list(info.k) == [40.0, 0.0, 32.0, 0.0, 41.0, 24.0, 0.0, 0.0, 1.0]
+    # P mirrors K (no stereo baseline), R = identity.
+    assert list(info.p) == [40.0, 0.0, 32.0, 0.0, 0.0, 41.0, 24.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    assert list(info.r) == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
 # ── full deploy-sim chain: SensorSpec → synth → PointCloud2 ───────────────
 
 _CHAIN_MJCF = """

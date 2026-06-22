@@ -1,0 +1,57 @@
+# ADR-0064 — default parameter set for NVIDIA Isaac ROS Visual SLAM
+# (cuVSLAM) running under OpenRAL's `/openral/visual_slam` namespace as
+# the camera-based SLAM backend for lidar-less robots.
+#
+# Unlike slam_toolbox (ADR-0025), cuVSLAM's `VisualSlamNode` is a
+# *composable node*, not a ROS 2 lifecycle node — it is enabled by
+# composing it into the graph when `slam_backend:=visual` (see
+# sim_e2e.launch.py), not driven through CONFIGURE/ACTIVATE by the
+# Reasoner's LifecycleTransitionTool. The frame contract below matches
+# OpenRAL's convention so cuVSLAM fills the same `map→odom` TF edge
+# slam_toolbox fills on lidar robots.
+#
+# Only the stable, documented parameters are pinned here; everything
+# else falls back to the upstream `isaac_ros_visual_slam` defaults. The
+# IMU / tracking-mode block is operator-tunable and version-sensitive —
+# confirm names against the installed Isaac ROS release before relying
+# on them (this package does NOT bundle the cuVSLAM engine; see ADR-0064
+# on the NVIDIA license guard).
+
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    # ── Frame contract (matches the OpenRAL convention) ─────────────
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_link
+    # Broadcast odom→base so cuVSLAM fills the same TF edge slam_toolbox
+    # does on lidar robots; Nav2 + world-state consume it unchanged.
+    publish_odom_to_base_tf: true
+    publish_map_to_odom_tf: true
+
+    # ── Camera rig ──────────────────────────────────────────────────
+    # Stereo by default (num_cameras: 2 → image_0/image_1). Mono+IMU or
+    # RGB-D rigs override num_cameras + tracking_mode at deploy time.
+    num_cameras: 2
+    # rectified_images MUST match the actual camera stream:
+    #   true  → camera_info.distortion_model is "pinhole" (already rectified;
+    #           cuVSLAM errors "Rectified stereo camera mode requires pinhole
+    #           distortion model" otherwise). OpenRAL sim publishes rectified.
+    #   false → raw images; cuVSLAM undistorts using camera_info's distortion
+    #           model (plumb_bob / rational_polynomial / fisheye). Verified live
+    #           against the Isaac ROS quickstart bag (raw, rational_polynomial):
+    #           rectified_images:false + camera_optical_frames produced a real
+    #           VO trajectory (ADR-0064). A real RealSense rectified stream uses
+    #           true. Pass an override params file or per-robot config to flip it.
+    rectified_images: true
+    # camera_optical_frames: optional explicit [left_optical, right_optical, …]
+    # the rig's optical frames (cuVSLAM relates camera motion to base_frame via
+    # TF). Defaults to the image header frame_ids when unset.
+    enable_localization_n_mapping: true
+
+    # ── Operator-tunable, version-sensitive (confirm before use) ────
+    # tracking_mode selects the cuVSLAM front-end for the rig actually
+    # wired up (stereo / visual-inertial / RGB-D). Left unset here so the
+    # installed default applies; set explicitly per robot once verified
+    # against the Isaac ROS release on the target host.

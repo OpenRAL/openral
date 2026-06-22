@@ -38,7 +38,7 @@ implementation.
 CLAUDE.md §6.1 Layer 6 (Safety). The Python-side `SafetyClient`
 Protocol stays at `python/runner/src/openral_runner/safety.py`
 (`NullSafetyClient`) — it remains the in-process tick-time gate the
-`HardwareRunner` calls. This package is the **chunk-rate topic
+`DeployRunner` calls. This package is the **chunk-rate topic
 boundary** the `rskill_runner_node` and `<robot>_hal_node` peer with.
 The C++ kernel that ultimately replaces this node's internals lives
 at `cpp/openral_safety_kernel/` (ADR-0020).

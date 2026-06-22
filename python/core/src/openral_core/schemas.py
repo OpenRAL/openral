@@ -523,7 +523,13 @@ class RobotCapabilities(BaseModel):
         has_tactile: Whether tactile sensing is available.
         has_force_control: Whether force/impedance control is supported.
         has_vision: Whether camera(s) are present.
-        has_lidar: Whether LiDAR is present.
+        has_lidar: Whether LiDAR is present. Gates the 2D-lidar
+            ``slam_toolbox`` backend (ADR-0025).
+        has_vision_slam: Whether the robot should run camera-based visual
+            SLAM (cuVSLAM + nvblox) for localization/mapping, for robots
+            that lack a lidar. Gates the visual SLAM backend (ADR-0064).
+            Independent of ``has_lidar``; when both are set the lidar
+            backend wins (it does not require an AI depth model).
         has_audio: Whether audio I/O is present.
         bimanual: Whether the robot has two arms.
         onboard_compute_tops: Peak onboard compute in TOPS.
@@ -558,6 +564,7 @@ class RobotCapabilities(BaseModel):
     has_force_control: bool = False
     has_vision: bool = True
     has_lidar: bool = False
+    has_vision_slam: bool = False
     has_audio: bool = False
     bimanual: bool = False
     onboard_compute_tops: float = 0.0
@@ -5722,7 +5729,7 @@ class TickResult(BaseModel):
 
     The hardware fields (``sensors_ms``..``hal_ms``, ``safety_violations``,
     ``action_applied``) are the original (v1) surface used by
-    :class:`HardwareRunner`. The sim-specific fields
+    :class:`DeployRunner`. The sim-specific fields
     (``step_idx``..``truncated``) were added by ADR-0010 amendment 1 when
     :class:`SimRunner` adopted per-step tick semantics; hardware leaves
     them at their defaults (``None``), so a hardware tick serialises

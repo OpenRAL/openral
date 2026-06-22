@@ -25,6 +25,7 @@ from openral_cli.deploy_sim import (
     _cmdline_is_openral_graph_process,
     _preflight_palette_deps,
     _prepare_launch_env,
+    _resolve_slam_backend,
     _run_launch,
     _scan_params_from_description,
     _terminate_launch_group,
@@ -455,6 +456,60 @@ def test_bh_deploy_sim_enable_slam_forwards_launch_arg_and_flag() -> None:
     assert invocation.enable_slam is True
     joined = " ".join(invocation.argv_template)
     assert "enable_slam:=true" in joined
+
+
+# ADR-0064 — SLAM backend selection (cuVSLAM/nvblox visual vs slam_toolbox lidar).
+
+
+@pytest.mark.parametrize(
+    ("has_lidar", "has_vision_slam", "enable_slam", "expected"),
+    [
+        (True, False, True, "lidar"),  # lidar robot → 2D slam_toolbox
+        (False, True, True, "visual"),  # lidar-less + vision SLAM → cuVSLAM+nvblox
+        (True, True, True, "lidar"),  # both flags → lidar wins (no AI depth needed)
+        (False, False, True, "none"),  # neither → nothing to map
+        (True, False, False, "none"),  # explicit --no-enable-slam forces off
+        (False, True, False, "none"),  # explicit off beats vision capability too
+    ],
+)
+def test_resolve_slam_backend(
+    has_lidar: bool, has_vision_slam: bool, enable_slam: bool, expected: str
+) -> None:
+    assert (
+        _resolve_slam_backend(
+            has_lidar=has_lidar,
+            has_vision_slam=has_vision_slam,
+            enable_slam=enable_slam,
+        )
+        == expected
+    )
+
+
+def test_bh_deploy_sim_lidar_robot_forwards_slam_backend_lidar() -> None:
+    """ADR-0064 — panda_mobile (lidar) resolves the lidar backend and forwards it."""
+    invocation = resolve_launch_invocation(
+        config=_PANDA_MOBILE_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.enable_slam is True
+    assert invocation.slam_backend == "lidar"
+    assert "slam_backend:=lidar" in " ".join(invocation.argv_template)
+
+
+def test_bh_deploy_sim_no_slam_robot_forwards_backend_none() -> None:
+    """ADR-0064 — openarm (no lidar, no vision SLAM) resolves backend ``none``."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_backend == "none"
+    assert "slam_backend:=none" in " ".join(invocation.argv_template)
 
 
 def test_bh_deploy_sim_forwards_hal_mode_sim() -> None:

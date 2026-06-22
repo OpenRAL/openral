@@ -298,6 +298,14 @@ class LaunchInvocation:
     enable_slam: bool
     """ADR-0025 opt-in. Set by ``openral deploy sim --enable-slam``;
     forwarded into the launch as ``enable_slam:=true``."""
+    slam_backend: str
+    """ADR-0064 — which SLAM backend the launch composes when
+    ``enable_slam`` is true: ``"lidar"`` (slam_toolbox, needs ``/scan``),
+    ``"visual"`` (cuVSLAM + nvblox, camera-based, for lidar-less robots),
+    or ``"none"`` (no SLAM). Resolved from capabilities — ``has_lidar``
+    selects ``lidar`` (it wins when both flags are set, needing no AI depth
+    model); else ``has_vision_slam`` selects ``visual``. Forwarded as
+    ``slam_backend:=…``."""
     enable_nav2: bool
     """ADR-0025 opt-in for the Nav2 navigation stack. Set by
     ``openral deploy sim --enable-nav2``; forwarded into the launch as
@@ -467,6 +475,43 @@ def _object_detector_onnx_present(path: Path) -> bool:
     return path.is_file()
 
 
+def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam: bool) -> str:
+    """ADR-0064 — pick the SLAM backend the launch composes.
+
+    Returns one of ``"lidar"`` (slam_toolbox; needs ``/scan``), ``"visual"``
+    (cuVSLAM + nvblox; camera-based, for lidar-less robots), or ``"none"``.
+
+    ``has_lidar`` wins when both flags are set: the 2D-lidar leg is the
+    cheaper, proven path and needs no AI depth model. A resolved
+    ``enable_slam`` of ``False`` (an explicit ``--no-enable-slam``) forces
+    ``"none"`` so the forwarded ``slam_backend:=`` arg never contradicts the
+    ``enable_slam:=false`` arg.
+
+    Args:
+        has_lidar: ``RobotCapabilities.has_lidar``.
+        has_vision_slam: ``RobotCapabilities.has_vision_slam``.
+        enable_slam: The resolved SLAM-on decision (manifest auto or flag).
+
+    Returns:
+        The backend identifier forwarded as the ``slam_backend`` launch arg.
+
+    Example:
+        >>> _resolve_slam_backend(has_lidar=False, has_vision_slam=True, enable_slam=True)
+        'visual'
+        >>> _resolve_slam_backend(has_lidar=True, has_vision_slam=True, enable_slam=True)
+        'lidar'
+        >>> _resolve_slam_backend(has_lidar=True, has_vision_slam=False, enable_slam=False)
+        'none'
+    """
+    if not enable_slam:
+        return "none"
+    if has_lidar:
+        return "lidar"
+    if has_vision_slam:
+        return "visual"
+    return "none"
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -474,6 +519,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     dashboard_port: int,
     reset_to_pose_service: str | None,
     approach_skill_id: str | None = None,
+    dataset_out: str | None = None,
+    dataset_repo_id: str | None = None,
+    dataset_license: str | None = None,
     hal_param_overrides: dict[str, object] | None = None,
     hal_mode: str = "sim",
     enable_slam: bool | None = None,
@@ -577,8 +625,19 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # opts out with `--no-enable-slam`. Fixed-base arms (no mobile base, no lidar)
     # correctly stay off — there is no base to localise and nothing to map.
     # `enable_slam is None` means "auto": honour the manifest; an explicit flag wins.
+    # ADR-0064 — SLAM is on for any robot that can localise/map: a lidar
+    # (slam_toolbox) OR camera-based visual SLAM (cuVSLAM+nvblox, for
+    # lidar-less robots). Fixed-base arms with neither correctly stay off.
     if enable_slam is None:
-        enable_slam = bool(description.capabilities.has_lidar)
+        enable_slam = bool(
+            description.capabilities.has_lidar or description.capabilities.has_vision_slam
+        )
+    # ADR-0064 — backend selection (pure helper, unit-tested directly).
+    slam_backend = _resolve_slam_backend(
+        has_lidar=bool(description.capabilities.has_lidar),
+        has_vision_slam=bool(description.capabilities.has_vision_slam),
+        enable_slam=enable_slam,
+    )
     # ADR-0025 — Nav2 auto-enables alongside slam_toolbox: every
     # lidar-equipped mobile robot needs a planner to consume the map.
     # Operators that want the map alone (recording / inspection) pass
@@ -755,6 +814,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # synthesises cartesian/OSC modes); ``deploy run`` → ``"real"``.
         f"hal_mode:={hal_mode}",
         f"enable_slam:={'true' if enable_slam else 'false'}",
+        f"slam_backend:={slam_backend}",
         f"enable_nav2:={'true' if enable_nav2 else 'false'}",
         f"enable_octomap:={'true' if enable_octomap else 'false'}",
         f"enable_octomap_kernel_check:={'true' if enable_octomap_kernel_check else 'false'}",
@@ -804,12 +864,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
 
+    # ADR-0019 — only forward the dataset args when recording is opted in
+    # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
+    # launch file defaults all three so omitting them disables recording).
+    if dataset_out:
+        argv_template.append(f"dataset_out:={dataset_out}")
+        if dataset_repo_id:
+            argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
+        if dataset_license:
+            argv_template.append(f"dataset_license:={dataset_license}")
+
     return LaunchInvocation(
         robot_id=robot_id,
         robot_yaml=robot_yaml,
         robot_manifest_name=description.name,
         hal=hal,
         enable_slam=enable_slam,
+        slam_backend=slam_backend,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
         enable_object_detector=enable_object_detector,
@@ -1527,6 +1598,26 @@ def deploy_sim_command(
             "keeps the legacy ResetToPose snap."
         ),
     ),
+    dataset_out: str | None = typer.Option(
+        None,
+        "--dataset-out",
+        help=(
+            "ADR-0019 — record the deploy session (proprio + action + camera "
+            "frames + episode markers) to this rosbag2 mcap path. Convert to a "
+            "LeRobotDataset v3 offline with `openral dataset from-bag`. Empty "
+            "disables recording."
+        ),
+    ),
+    dataset_repo_id: str | None = typer.Option(
+        None,
+        "--dataset-repo-id",
+        help="ADR-0019 — repo_id for the recorded dataset (default openral/dataset-<robot>).",
+    ),
+    dataset_license: str | None = typer.Option(
+        None,
+        "--dataset-license",
+        help="ADR-0019 — SPDX license carried into `openral dataset from-bag` (default CC-BY-4.0).",
+    ),
     hal: list[str] = typer.Option(  # reason: typer Option idiom
         None,
         "--hal",
@@ -1795,6 +1886,9 @@ def deploy_sim_command(
             dashboard_port=dashboard_port,
             reset_to_pose_service=reset_to_pose_service,
             approach_skill_id=approach_skill_id,
+            dataset_out=dataset_out,
+            dataset_repo_id=dataset_repo_id,
+            dataset_license=dataset_license,
             hal_param_overrides=overrides,
             enable_slam=enable_slam,
             enable_nav2=enable_nav2,

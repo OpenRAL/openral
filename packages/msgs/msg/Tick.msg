@@ -1,4 +1,4 @@
-# openral_msgs/Tick — per-tick metadata from HardwareRunner (ADR-0019 PR3).
+# openral_msgs/Tick — per-tick metadata from DeployRunner (ADR-0019 PR3).
 #
 # Published once per InferenceRunnerBase tick alongside the per-sensor
 # image streams and /joint_states. Carries the fields the dataset

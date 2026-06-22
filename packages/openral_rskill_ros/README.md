@@ -9,7 +9,7 @@ ADR-0018. One node per robot.
 ## Layer
 
 CLAUDE.md §6.1 Layer 3 (rSkill). The runtime path is the in-process
-[`openral_runner.HardwareRunner`](../../python/runner/src/openral_runner/hardware.py);
+[`openral_runner.DeployRunner`](../../python/runner/src/openral_runner/deploy_runner.py);
 this package is the ROS-side surface that exposes a typed action
 goal to external clients (CLI, reasoner, dashboard) and routes
 chunks to the safety boundary.

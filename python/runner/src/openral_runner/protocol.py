@@ -2,7 +2,7 @@
 
 The :class:`InferenceRunner` Protocol is the contract every runner shape
 satisfies — today the sim path (``openral_sim``-backed shim, future PR)
-and the hardware path (``openral_runner.hardware.HardwareRunner``,
+and the hardware path (``openral_runner.deploy_runner.DeployRunner``,
 PR F). The Protocol is intentionally narrow so subclasses or shims only
 have to honour ``activate / tick / run / deactivate``; everything else
 (rate-limited loop, OTel parent span, latency budget enforcement) lives

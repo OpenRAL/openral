@@ -109,8 +109,10 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
 
     Handles both robocasa variants -- the upstream kitchen package and
     the GR1 tabletop fork -- by detecting which is installed and
-    invoking the matching download script with the matching mujoco /
-    numpy / robosuite `__version__` spoof.
+    invoking the matching download script. The version asserts are
+    relaxed in the editable clone at provision time
+    (``_deps._relax_robocasa_version_asserts_step``), so no version
+    spoof is needed here.
 
     The first call triggers a Rich license banner + ``typer.confirm()``
     prompt unless ``OPENRAL_ALLOW_ROBOCASA_ASSETS=1`` is set. On
@@ -287,36 +289,18 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     # `models/assets/` directory (not `target`); we touch the sentinel
     # under `target` afterwards as a readiness marker.
     #
-    # Each robocasa variant hard-asserts different exact micro
-    # versions at import: kitchen wants mujoco==3.3.1 / numpy==2.2.5;
-    # the GR1 fork wants mujoco==3.2.6 / numpy==1.26.4 /
-    # robosuite==1.5.{0,1}. We wrap the subprocess in a tiny ``-c``
-    # shim that monkey-patches the ``__version__`` strings *before*
-    # importing robocasa, then invokes the matching download script.
-    # This mirrors the in-process spoof the RoboCasa adapter uses (see
-    # ``backends/robocasa._spoof_robocasa_version_pins``) so the user
-    # never has to manually patch upstream code.
+    # robocasa's download scripts ``import robocasa``, which used to hard-assert
+    # exact mujoco/numpy/robosuite micro versions at import. The install plan now
+    # relaxes those asserts in the editable clone at provision time
+    # (``_deps._relax_robocasa_version_asserts_step``), so the download runs on
+    # the workspace's real versions with NO version spoof -- a plain ``runpy``
+    # shim suffices. Only the procedural ``download_*_assets`` target differs by
+    # variant (kitchen vs the GR1 tabletop fork).
     if variant == "gr1_tabletop":
-        shim = (
-            "import sys, runpy, mujoco, numpy, robosuite; "
-            'mujoco.__version__ = "3.2.6"; '
-            'numpy.__version__ = "1.26.4"; '
-            'robosuite.__version__ = "1.5.1"; '
-            'runpy.run_module("robocasa.scripts.download_tabletop_assets", '
-            'run_name="__main__")'
-        )
         script_hint = "robocasa.scripts.download_tabletop_assets"
-        spoof_hint = "3.2.6 / 1.26.4 / 1.5.1"
     else:
-        shim = (
-            "import sys, runpy, mujoco, numpy; "
-            'mujoco.__version__ = "3.3.1"; '
-            'numpy.__version__ = "2.2.5"; '
-            'runpy.run_module("robocasa.scripts.download_kitchen_assets", '
-            'run_name="__main__")'
-        )
         script_hint = "robocasa.scripts.download_kitchen_assets"
-        spoof_hint = "3.3.1 / 2.2.5"
+    shim = f'import runpy; runpy.run_module("{script_hint}", run_name="__main__")'
 
     try:
         subprocess.run(
@@ -328,9 +312,7 @@ def ensure_robocasa_assets() -> Path:  # noqa: PLR0915  # reason: orchestrates t
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         raise ROSConfigError(
             f"RoboCasa asset download failed: {exc}. Run "
-            f"`uv run python -m {script_hint}` "
-            "manually (after spoofing mujoco / numpy `__version__` to "
-            f"robocasa's {spoof_hint} pin) and re-run the sim."
+            f"`uv run python -m {script_hint}` manually and re-run the sim."
         ) from exc
 
     sentinel.touch()

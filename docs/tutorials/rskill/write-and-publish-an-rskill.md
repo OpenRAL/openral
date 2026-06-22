@@ -13,8 +13,9 @@ uses only real commands; nothing here is a mock.
 ## Prerequisites
 
 ```bash
-just bootstrap && uv sync --all-packages   # toolchain + Python workspace
-openral doctor                             # confirm the CLI and GPU/runtime
+just bootstrap && just sync   # toolchain + Python workspace (always `just sync`,
+                              # never bare `uv sync` — see docs/contributing/toolchain.md)
+openral doctor                # confirm the CLI and GPU/runtime
 ```
 
 You'll also want a Hugging Face account and a write token (`HF_TOKEN`) if you

@@ -284,7 +284,7 @@ _Producer-side helpers for recording rich span attributes on OpenRAL hot-path sp
 - `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L188)
 - `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L229)
 - `encode_frame_thumbnail(frame) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L254)
-- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` (or its string value) to the dashboard's modality label (`rgb` / `mono` / `depth` / `raw` / `unknown`). Reused by `HardwareRunner._tick_impl` and `world_state_ros/lifecycle_node._on_image` so both surfaces produce identical modality labels for the same encoding. (L51)
+- `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` (or its string value) to the dashboard's modality label (`rgb` / `mono` / `depth` / `raw` / `unknown`). Reused by `DeployRunner._tick_impl` and `world_state_ros/lifecycle_node._on_image` so both surfaces produce identical modality labels for the same encoding. (L51)
 - `_MODALITY_BY_ENCODING: dict[str, str]` (L39) — Canonical encoding → modality lookup table.
 
 ### `python/observability/src/openral_observability/system_metrics.py`
@@ -396,19 +396,19 @@ _Pure `RobotDescription` → LeRobot v3 features dict mapping; no I/O, no lerobo
 ### `python/dataset/src/openral_dataset/bag.py`
 _ADR-0019 PR3 — mcap-backed :class:`DatasetSink` for online hardware recording._
 
-- `Rosbag2Sink(*, bag_path, compression="zstd")` — Writes every `RolloutRecorder` event into an mcap file readable by `ros2 bag info` / Foxglove / mcap-cli. Daemon writer thread + bounded `queue.Queue` → `write_frame` enqueues only; hot path never blocks on disk I/O. JSON-schema encoding (interoperable with ROS 2's `ros2msg` encoding for the same topics). Topics: `/openral/tick` (per-tick metadata), `/openral/episode` (PHASE_START / PHASE_END markers). (L143)
-  - `open_episode(header) -> None` — Open the bag on first call; emit Episode(PHASE_START). (L237)
-  - `write_frame(frame) -> None` — Enqueue a Tick message (incl. the frame's `trace_id`/`span_id`, ISSUE-109); never blocks. The off-thread mcap write reads the ids off the frame because the OTel context is gone by then. (L251)
-  - `close_episode(summary) -> None` — Emit Episode(PHASE_END) with success flag. (L282)
-  - `finalize() -> None` — Drain queue, stop writer thread, close mcap. Idempotent. (L292)
-  - prop `bag_path`, `n_ticks_written`, `n_episode_markers_written`, `n_dropped` — Diagnostics. (L216)
-- `TOPIC_TICK`, `TOPIC_EPISODE`, `PHASE_START`, `PHASE_END` — Module-private constants the PR4 converter imports by symbol. (L65, L66, L111, L112)
+- `Rosbag2Sink(*, bag_path, compression="zstd")` — Writes every `RolloutRecorder` event into an mcap file readable by `ros2 bag info` / Foxglove / mcap-cli. Daemon writer thread + bounded `queue.Queue` → `write_frame` enqueues only; hot path never blocks on disk I/O. JSON-schema encoding (interoperable with ROS 2's `ros2msg` encoding for the same topics). Topics: `/openral/tick` (per-tick metadata **plus inline `observation_state` + `action` arrays**), `/openral/episode` (PHASE_START / PHASE_END markers), `/openral/dataset/image` (one base64 raw-u8 frame per camera per tick). The inline arrays + image frames make the bag self-sufficient for conversion — no separate `/joint_states` / camera-topic join needed. (L190)
+  - `open_episode(header) -> None` — Open the bag on first call; emit Episode(PHASE_START). (L291)
+  - `write_frame(frame) -> None` — Enqueue a Tick message (incl. inline `observation_state`/`action` + the frame's `trace_id`/`span_id`, ISSUE-109) and one DatasetImage message per camera; never blocks. The off-thread mcap write reads the ids off the frame because the OTel context is gone by then. (L305)
+  - `close_episode(summary) -> None` — Emit Episode(PHASE_END) with success flag. (L348)
+  - `finalize() -> None` — Drain queue, stop writer thread, close mcap. Idempotent. (L358)
+  - prop `bag_path`, `n_ticks_written`, `n_episode_markers_written`, `n_images_written`, `n_dropped` — Diagnostics. (L265)
+- `TOPIC_TICK`, `TOPIC_EPISODE`, `TOPIC_IMAGE`, `PHASE_START`, `PHASE_END` — Module-private constants the converter imports by symbol. (L66, L67, L73, L117, L118)
 
 ### `python/dataset/src/openral_dataset/converter.py`
 _ADR-0019 PR4 — offline mcap rosbag2 → LeRobotDataset v3 converter._
 
-- `@dataclass class DatasetSummary(output_root, n_episodes, n_frames, n_success, repo_id)` — Returned by `from_bag` describing what landed on disk. (L68)
-- `Rosbag2ToLeRobotConverter.from_bag(*, bag_path, robot, output_root, repo_id=None, license="CC-BY-4.0", fps=None) -> DatasetSummary` — Walk a `Rosbag2Sink`-produced mcap, group Ticks under PHASE_START / PHASE_END markers, replay each episode through a real `LeRobotDatasetSink` → produce a reloadable v3 dataset. Each replayed tick re-injects the bag's original `(trace_id, span_id)` so the on-disk frame points at the source rollout, not the convert run (ISSUE-109). Raises `ROSConfigError` on missing bag / missing episode markers / mismatched robot. (L117)
+- `@dataclass class DatasetSummary(output_root, n_episodes, n_frames, n_success, repo_id)` — Returned by `from_bag` describing what landed on disk. (L69)
+- `Rosbag2ToLeRobotConverter.from_bag(*, bag_path, robot, output_root, repo_id=None, license="CC-BY-4.0", fps=None) -> DatasetSummary` — Walk a `Rosbag2Sink`-produced mcap, group Ticks under PHASE_START / PHASE_END markers, join each tick's inline `observation_state`/`action` arrays + the per-`(episode_idx, step_idx)` camera frames from `/openral/dataset/image`, and replay each episode through a real `LeRobotDatasetSink` → produce a reloadable v3 dataset with **real** proprio/action/video (legacy metadata-only bags fall back to zero vectors of the declared shape). Each replayed tick re-injects the bag's original `(trace_id, span_id)` so the on-disk frame points at the source rollout, not the convert run (ISSUE-109). Raises `ROSConfigError` on missing bag / missing episode markers / mismatched robot. (L118)
 
 ### `python/dataset/src/openral_dataset/frame_trace.py`
 _ISSUE-109 — pivot a written LeRobotDataset frame back to its OTel ids._

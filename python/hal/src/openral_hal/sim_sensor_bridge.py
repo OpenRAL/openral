@@ -220,6 +220,11 @@ class SimSensorBridge:
         # Feeds octomap_server → safety kernel world-collision voxel check.
         # Gated on live MuJoCo handles; _depth_disabled prevents repeated warnings.
         self._depth_pubs: dict[str, Any] = {}
+        # ADR-0064 — per depth camera, a dense 32FC1 depth image + CameraInfo
+        # alongside the PointCloud2, so nvblox's projective depth integrator
+        # (which rejects the sparse hit-only cloud) can build a `/map`.
+        self._depth_image_pubs: dict[str, Any] = {}
+        self._depth_info_pubs: dict[str, Any] = {}
         self._depth_timer: Any = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
@@ -287,9 +292,15 @@ class SimSensorBridge:
         if self._scan_pub is not None:
             self._node.destroy_publisher(self._scan_pub)
             self._scan_pub = None
-        for pub in self._depth_pubs.values():
+        for pub in (
+            *self._depth_pubs.values(),
+            *self._depth_image_pubs.values(),
+            *self._depth_info_pubs.values(),
+        ):
             self._node.destroy_publisher(pub)
         self._depth_pubs.clear()
+        self._depth_image_pubs.clear()
+        self._depth_info_pubs.clear()
         self._depth_disabled.clear()
         self._depth_base_body = None
         self._depth_base_body_id = -1
@@ -729,7 +740,7 @@ class SimSensorBridge:
             QoSProfile,
             QoSReliabilityPolicy,
         )
-        from sensor_msgs.msg import PointCloud2
+        from sensor_msgs.msg import CameraInfo, Image, PointCloud2
         from tf2_ros import TransformBroadcaster
 
         if self._tf_broadcaster is None:  # may already exist (RGB camera TFs)
@@ -740,14 +751,31 @@ class SimSensorBridge:
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=5,
         )
+        # CameraInfo is low-rate + near-static: RELIABLE + TRANSIENT_LOCAL so any
+        # subscriber QoS (nvblox's included) matches and late joiners get it.
+        info_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
         for spec in depth_specs:
-            topic = f"/openral/cameras/{spec.name}/points"
-            self._depth_pubs[spec.name] = self._node.create_publisher(PointCloud2, topic, depth_qos)
+            base = f"/openral/cameras/{spec.name}"
+            self._depth_pubs[spec.name] = self._node.create_publisher(
+                PointCloud2, f"{base}/points", depth_qos
+            )
+            # ADR-0064 — dense depth image + CameraInfo for nvblox's depth integrator.
+            self._depth_image_pubs[spec.name] = self._node.create_publisher(
+                Image, f"{base}/depth/image", depth_qos
+            )
+            self._depth_info_pubs[spec.name] = self._node.create_publisher(
+                CameraInfo, f"{base}/depth/camera_info", info_qos
+            )
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
         )
         self._node.get_logger().info(
-            f"SimSensorBridge: publishing {len(depth_specs)} depth cloud(s): "
+            f"SimSensorBridge: publishing {len(depth_specs)} depth camera(s) "
+            "(PointCloud2 + 32FC1 depth image + CameraInfo): "
             + ", ".join(s.name for s in depth_specs)
             + f" @ {self._depth_rate_hz:.1f} Hz"
         )
@@ -811,7 +839,7 @@ class SimSensorBridge:
         return None
 
     def _publish_depth_clouds(self) -> None:
-        """Ray-cast + publish a PointCloud2 per depth camera, and its TF.
+        """Ray-cast + publish a PointCloud2 (+ ADR-0064 depth image) per camera, and its TF.
 
         ADR-0030 — the deploy-sim source for octomap_server. Each depth
         ``SensorSpec`` is synthesised with
@@ -840,10 +868,15 @@ class SimSensorBridge:
             TransformStamped,
         )
         from openral_core.exceptions import ROSConfigError
-        from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
+        from openral_sim.backends.depth_camera import (
+            synthesize_depth_image,
+            synthesize_depth_pointcloud,
+        )
 
         from openral_hal.depth_cloud import (
+            camera_info_from_intrinsics,
             camera_optical_tf_to_base,
+            depth_image_from_grid,
             depth_synth_kwargs,
             is_depth_sensor,
             pointcloud2_from_points_xyz,
@@ -881,6 +914,33 @@ class SimSensorBridge:
                 )
                 cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
                 pub.publish(cloud)
+                # ADR-0064 — dense 32FC1 depth image + CameraInfo for nvblox.
+                # Same pinhole ray-cast, but every pixel (0.0 = no return); the
+                # CameraInfo intrinsics scale by 1/stride to match the raster.
+                depth_grid = synthesize_depth_image(
+                    model=model,
+                    data=data,
+                    stride=stride,
+                    exclude_body_id=exclude_id,
+                    exclude_body_ids=self._depth_self_bodies or None,
+                    **kwargs,
+                )
+                h_eff, w_eff = (int(depth_grid.shape[0]), int(depth_grid.shape[1]))
+                self._depth_image_pubs[name].publish(
+                    depth_image_from_grid(depth_grid, frame_id=spec.frame_id, stamp=stamp)
+                )
+                self._depth_info_pubs[name].publish(
+                    camera_info_from_intrinsics(
+                        width=w_eff,
+                        height=h_eff,
+                        fx=kwargs["fx"] / stride,
+                        fy=kwargs["fy"] / stride,
+                        cx=kwargs["cx"] / stride,
+                        cy=kwargs["cy"] / stride,
+                        frame_id=spec.frame_id,
+                        stamp=stamp,
+                    )
+                )
                 if self._depth_base_body is not None and self._tf_broadcaster is not None:
                     xyz, quat = camera_optical_tf_to_base(
                         model=model,

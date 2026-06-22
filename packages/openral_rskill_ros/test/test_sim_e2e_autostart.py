@@ -79,3 +79,14 @@ def test_autostart_activate_is_scoped_to_configure_not_runtime_deactivate() -> N
         f"(start_state='configuring'), got {start_state!r}. A bare goal_state='inactive' "
         "matcher re-activates a node on a runtime deactivate and breaks ADR-0050 VRAM eviction."
     )
+
+
+def test_slam_bridge_has_no_launch_gate() -> None:
+    """The dashboard map bridge is always part of the composed runtime."""
+    mod = _import_launch_module()
+    from launch.actions import DeclareLaunchArgument
+
+    desc = mod.generate_launch_description()
+    args = {a.name: a for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)}
+    assert args["enable_slam"].default_value[0].text == "false"
+    assert "enable_slam_bridge" not in args

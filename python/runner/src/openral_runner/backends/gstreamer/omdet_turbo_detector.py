@@ -269,7 +269,7 @@ class OmDetTurboDetector:
         patch-embed size already matches the processor.
         """
         try:
-            import timm  # noqa: PLC0415 — optional; only timm-backbone models need this
+            import timm  # type: ignore[import-not-found,import-untyped,unused-ignore]  # noqa: PLC0415  reason: opt-in dep (--group omdet), no py.typed; only timm-backbone models need it
         except ImportError:
             return
         bc = getattr(model.config, "backbone_config", None)

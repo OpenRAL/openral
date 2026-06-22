@@ -47,6 +47,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
+import numpy as np
 import structlog
 from openral_core.exceptions import ROSConfigError
 
@@ -65,6 +66,11 @@ _log = structlog.get_logger(__name__)
 # ROSPagrConfigError("bag has no /openral/episode markers").
 TOPIC_TICK: Final[str] = "/openral/tick"
 TOPIC_EPISODE: Final[str] = "/openral/episode"
+# Per-camera image frames (ADR-0019 PR4-follow-up). One message per
+# (episode, step, camera) carrying the inline HWC uint8 pixels so the
+# converter can rebuild a video-bearing LeRobotDataset from the bag
+# alone — no separate `/joint_states` / camera-topic join required.
+TOPIC_IMAGE: Final[str] = "/openral/dataset/image"
 
 # JSON-encoded schemas. The format is mcap's `jsonschema` encoding —
 # any mcap reader / Foxglove / mcap-cli decodes them without ROS 2.
@@ -85,6 +91,11 @@ _TICK_SCHEMA: Final[dict[str, Any]] = {
         "action_applied": {"type": "boolean"},
         "trace_id": {"type": "string"},
         "span_id": {"type": "string"},
+        # Inline observation/action arrays (ADR-0019 PR4-follow-up). Absent
+        # on legacy metadata-only bags — the converter falls back to a
+        # zero vector of the robot's declared shape when missing.
+        "observation_state": {"type": "array", "items": {"type": "number"}},
+        "action": {"type": "array", "items": {"type": "number"}},
     },
     "required": [
         "stamp_ns",
@@ -92,6 +103,36 @@ _TICK_SCHEMA: Final[dict[str, Any]] = {
         "step_idx",
         "terminated",
         "truncated",
+    ],
+}
+
+# Per-camera image frame schema. Pixels are carried as a base64-encoded
+# raw HWC uint8 buffer (``encoding="raw_u8"``) so the message stays a
+# self-describing JSON object readable by any mcap reader without ROS or
+# an image codec; the converter decodes it back to ``(H, W, C) uint8``.
+_IMAGE_SCHEMA: Final[dict[str, Any]] = {
+    "title": "openral_msgs/DatasetImage",
+    "type": "object",
+    "properties": {
+        "stamp_ns": {"type": "integer"},
+        "episode_idx": {"type": "integer"},
+        "step_idx": {"type": "integer"},
+        "camera": {"type": "string"},
+        "height": {"type": "integer"},
+        "width": {"type": "integer"},
+        "channels": {"type": "integer"},
+        "encoding": {"type": "string"},
+        "data_b64": {"type": "string"},
+    },
+    "required": [
+        "episode_idx",
+        "step_idx",
+        "camera",
+        "height",
+        "width",
+        "channels",
+        "encoding",
+        "data_b64",
     ],
 }
 
@@ -111,6 +152,12 @@ _EPISODE_SCHEMA: Final[dict[str, Any]] = {
 # Episode.phase constants — must match packages/msgs/msg/Episode.msg.
 PHASE_START: Final[int] = 0
 PHASE_END: Final[int] = 1
+
+# Image array rank thresholds (HWC convention) — named so the shape
+# probe in `_enqueue_image` stays lint-clean (no magic-value comparison).
+_NDIM_H: Final[int] = 1
+_NDIM_HW: Final[int] = 2
+_NDIM_HWC: Final[int] = 3
 
 # Bounded writer queue. 1024 is generous — at 30 Hz tick rate that's
 # >30 s of slack while the writer thread catches up. A full queue logs
@@ -197,6 +244,7 @@ class Rosbag2Sink(DatasetSink):
         self._file_handle: Any | None = None
         self._tick_channel_id: int | None = None
         self._episode_channel_id: int | None = None
+        self._image_channel_id: int | None = None
         self._queue: queue.Queue[dict[str, Any] | _Stop] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._writer_thread: threading.Thread | None = None
         self._sequence_per_channel: dict[int, int] = {}
@@ -208,6 +256,7 @@ class Rosbag2Sink(DatasetSink):
         # lifecycle node's diagnostics topic.
         self._n_ticks_written: int = 0
         self._n_episode_markers_written: int = 0
+        self._n_images_written: int = 0
         self._n_dropped: int = 0
 
     # ── Properties (test / diagnostics surface) ────────────────────────────
@@ -226,6 +275,11 @@ class Rosbag2Sink(DatasetSink):
     def n_episode_markers_written(self) -> int:
         """Number of /openral/episode messages (start + end) written."""
         return self._n_episode_markers_written
+
+    @property
+    def n_images_written(self) -> int:
+        """Number of /openral/dataset/image messages successfully written."""
+        return self._n_images_written
 
     @property
     def n_dropped(self) -> int:
@@ -275,9 +329,21 @@ class Rosbag2Sink(DatasetSink):
                     # context is no longer in scope.
                     "trace_id": frame.trace_id,
                     "span_id": frame.span_id,
+                    # Inline arrays so the bag is self-sufficient for
+                    # conversion (ADR-0019 PR4-follow-up).
+                    "observation_state": _to_float_list(frame.observation_state),
+                    "action": _to_float_list(frame.action),
                 },
             }
         )
+        for camera, image in frame.images.items():
+            self._enqueue_image(
+                stamp_ns=frame.stamp_ns,
+                episode_idx=frame.episode_idx,
+                step_idx=frame.frame_idx,
+                camera=camera,
+                image=image,
+            )
 
     def close_episode(self, summary: EpisodeSummary) -> None:
         """Emit an Episode(PHASE_END) marker carrying the success flag."""
@@ -310,6 +376,7 @@ class Rosbag2Sink(DatasetSink):
             bag_path=str(self._bag_path),
             n_ticks=self._n_ticks_written,
             n_episode_markers=self._n_episode_markers_written,
+            n_images=self._n_images_written,
             n_dropped=self._n_dropped,
         )
 
@@ -338,6 +405,14 @@ class Rosbag2Sink(DatasetSink):
         )
         self._episode_channel_id = self._writer.register_channel(
             topic=TOPIC_EPISODE, message_encoding="json", schema_id=episode_schema_id
+        )
+        image_schema_id = self._writer.register_schema(
+            name="openral_msgs/DatasetImage",
+            encoding="jsonschema",
+            data=json.dumps(_IMAGE_SCHEMA).encode("utf-8"),
+        )
+        self._image_channel_id = self._writer.register_channel(
+            topic=TOPIC_IMAGE, message_encoding="json", schema_id=image_schema_id
         )
         # Spawn the writer daemon now that the channels are registered.
         self._writer_thread = threading.Thread(
@@ -384,6 +459,40 @@ class Rosbag2Sink(DatasetSink):
                     "task_string": task_string,
                     "phase": phase,
                     "success": bool(success),
+                },
+            }
+        )
+
+    def _enqueue_image(
+        self,
+        *,
+        stamp_ns: int,
+        episode_idx: int,
+        step_idx: int,
+        camera: str,
+        image: Any,
+    ) -> None:
+        """Enqueue one camera frame as a base64 raw-u8 image message."""
+        import base64
+
+        arr = np.ascontiguousarray(image, dtype=np.uint8)
+        height = int(arr.shape[0]) if arr.ndim >= _NDIM_H else 0
+        width = int(arr.shape[1]) if arr.ndim >= _NDIM_HW else 0
+        channels = int(arr.shape[2]) if arr.ndim >= _NDIM_HWC else 1
+        self._enqueue(
+            {
+                "topic": TOPIC_IMAGE,
+                "stamp_ns": stamp_ns,
+                "data": {
+                    "stamp_ns": stamp_ns,
+                    "episode_idx": episode_idx,
+                    "step_idx": step_idx,
+                    "camera": camera,
+                    "height": height,
+                    "width": width,
+                    "channels": channels,
+                    "encoding": "raw_u8",
+                    "data_b64": base64.b64encode(arr.tobytes()).decode("ascii"),
                 },
             }
         )
@@ -446,6 +555,8 @@ class Rosbag2Sink(DatasetSink):
             channel_id = self._tick_channel_id
         elif topic == TOPIC_EPISODE:
             channel_id = self._episode_channel_id
+        elif topic == TOPIC_IMAGE:
+            channel_id = self._image_channel_id
         else:
             _log.warning("rosbag2_sink.unknown_topic", topic=topic)
             return
@@ -467,8 +578,15 @@ class Rosbag2Sink(DatasetSink):
         )
         if topic == TOPIC_TICK:
             self._n_ticks_written += 1
-        else:
+        elif topic == TOPIC_EPISODE:
             self._n_episode_markers_written += 1
+        else:
+            self._n_images_written += 1
+
+
+def _to_float_list(arr: Any) -> list[float]:
+    """Flatten an array-like to a JSON-serialisable list of floats."""
+    return [float(x) for x in np.asarray(arr, dtype=np.float64).ravel().tolist()]
 
 
 def _now_ns() -> int:

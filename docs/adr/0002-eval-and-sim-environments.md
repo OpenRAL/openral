@@ -282,7 +282,7 @@ first two are unchanged. `run_evaluation` (and its inner
 `openral_sim.SimRunner` (in `python/sim/src/openral_sim/sim_runner.py`),
 a per-step `InferenceRunner` subclass that shares the loop, OTel
 spans, and `TickResult` / `RunResult` shape with
-`openral_runner.HardwareRunner` (ADR-0010 amendment 1).
+`openral_runner.DeployRunner` (ADR-0010 amendment 1).
 
 Callers go from:
 
