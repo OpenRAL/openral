@@ -1331,6 +1331,15 @@ wheels = [
 ]
 
 [[package]]
+name = "ifaddr"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/ac/fb4c578f4a3256561548cd825646680edcadb9440f3f68add95ade1eb791/ifaddr-0.2.0.tar.gz", hash = "sha256:cc0cbfcaabf765d44595825fb96a99bb12c79716b73b44330ea38ee2b0c4aed4", size = 10485, upload-time = "2022-06-15T21:40:27.561Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/1f/19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32/ifaddr-0.2.0-py3-none-any.whl", hash = "sha256:085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748", size = 12314, upload-time = "2022-06-15T21:40:25.756Z" },
+]
+
+[[package]]
 name = "imageio"
 version = "2.37.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2810,6 +2819,9 @@ dashboard = [
     { name = "httpx" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+mdns = [
+    { name = "zeroconf" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2825,8 +2837,9 @@ requires-dist = [
     { name = "psutil", specifier = ">=5.9" },
     { name = "structlog", specifier = ">=24.1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dashboard'", specifier = ">=0.27" },
+    { name = "zeroconf", marker = "extra == 'mdns'", specifier = ">=0.131" },
 ]
-provides-extras = ["dashboard"]
+provides-extras = ["dashboard", "mdns"]
 
 [[package]]
 name = "openral-reasoner"
@@ -5492,6 +5505,28 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ff/19/20c50861f30aff7720f9a601f386d73760c2df9961de1f98d0dbf3b85e69/yourdfpy-0.0.60.tar.gz", hash = "sha256:2af2d8bdeea1b85b642590a3b4236fdb35746d7b3e38ce460a169c18d9c4f868", size = 538238, upload-time = "2026-01-23T07:32:47.856Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/60/4ea0d6df0b497d51bf2ef87eaab0eb26f8bc3b3313c012da5df3383cced9/yourdfpy-0.0.60-py3-none-any.whl", hash = "sha256:8a187a8b18c98db87c76e9a950581b3c875b761e00df83942526c17ea693166c", size = 22194, upload-time = "2026-01-23T07:32:46.481Z" },
+]
+
+[[package]]
+name = "zeroconf"
+version = "0.149.17"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ifaddr" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/95/1be51e0a98f629bf8fc8dd8b038c0323f3a090969cb007cdcf436bd844d9/zeroconf-0.149.17.tar.gz", hash = "sha256:f10e58071bc5e749176b8dc8d7e7ed4d2e6b507dde20fd8169b760cf4f7f4c5a", size = 198435, upload-time = "2026-06-21T23:02:41.445Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/83/688e127c2e05e290267c807972ca6fa0b48544c184c46cb04f4fdff8c255/zeroconf-0.149.17-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f2614d52ef0f3b7bf943ff4348058fa58d29f6970c97ba2d1abcb496662d83b9", size = 1676559, upload-time = "2026-06-21T23:31:08.309Z" },
+    { url = "https://files.pythonhosted.org/packages/04/5b/e2bf194e3b3f2cea8193f273ff887a69edd9e7d9508e61614221c255de11/zeroconf-0.149.17-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b785da4c27d571460831c12bb4204eb7eb41384c54355e7f1981f6a530532279", size = 2080015, upload-time = "2026-06-21T23:31:10.035Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/4d/15d76fc7e4517dc042c22b543efc4bda17f7ffdcab2db9cb27b3597ea889/zeroconf-0.149.17-cp312-cp312-manylinux2014_armv7l.manylinux_2_17_armv7l.manylinux_2_31_armv7l.whl", hash = "sha256:4e4f56e39537778a82ce98fbe9d6ebceda1340f2f9de490d8ae6c747e9e22f81", size = 1876602, upload-time = "2026-06-21T23:31:12.708Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/91/90c82a755caec9311c828150772a36b8202f8ea82f58621c3cd290ca3e04/zeroconf-0.149.17-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:df55d5aca0668c85b9cb9e7b62d2a5d690d1a92835af43bf6bc24f9f2376395b", size = 2177647, upload-time = "2026-06-21T23:31:14.842Z" },
+    { url = "https://files.pythonhosted.org/packages/21/3c/a3edc6ae0be155ee309defec7ce1ffda9d2fd896eb7192b225aa37761c20/zeroconf-0.149.17-cp312-cp312-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:2d735c7b559ddd614c192be4cd4afbdab642610e05c3a6fb1188731652864b4a", size = 2108263, upload-time = "2026-06-21T23:31:16.956Z" },
+    { url = "https://files.pythonhosted.org/packages/04/f1/513b4401197349b5e7d297a24813dd0c1207b333e093d2e6266882b41821/zeroconf-0.149.17-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:a0784735c0d595e63096fb9c7bfb385b86a68979924b6b72cbfd877fb0d42399", size = 2106442, upload-time = "2026-06-21T23:31:18.908Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/58/c581bee10ff0ec6f1602ec48daab18b48223834768ec4b0090856ebb89fa/zeroconf-0.149.17-cp312-cp312-musllinux_1_2_armv7l.whl", hash = "sha256:51c403e96b551149d5dca1079680191aa8aead5f218021efc88f5776ea33d103", size = 1966283, upload-time = "2026-06-21T23:31:20.972Z" },
+    { url = "https://files.pythonhosted.org/packages/15/65/f66eddac757c5e814f36d4cfe02294e489b82b704a899bed8d457d7b3e3f/zeroconf-0.149.17-cp312-cp312-musllinux_1_2_riscv64.whl", hash = "sha256:61b0ef752394f05565d60d5093ff92570f83412c191f40d7e352407bf86fd222", size = 2112526, upload-time = "2026-06-21T23:31:22.795Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/3a/4dccfc128956d89e21368e91218eed20ba723289f31c077515d26bcd2c7d/zeroconf-0.149.17-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:9605cef67b2c096cf27a035c784a09f458112ec063185c7f0ea77213af69deb2", size = 2199169, upload-time = "2026-06-21T23:31:25.1Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/b3/da72fe27ff0750682ba4d24971a337798bf23988bd0e82473f8874179bbd/zeroconf-0.149.17-cp312-cp312-win32.whl", hash = "sha256:e881334e041a60245ad5e5ae3bb6afb5adc1ecb33a6ee0320080799d268904e2", size = 1269537, upload-time = "2026-06-21T23:31:27.04Z" },
+    { url = "https://files.pythonhosted.org/packages/80/83/1d4493e4f732a849bcf7babfd6377013292fe3a55ef3933227024f867073/zeroconf-0.149.17-cp312-cp312-win_amd64.whl", hash = "sha256:5455a6351a5df757a35be58fb64295c3a07887fc42aeed47903f4375631b5f9a", size = 1506730, upload-time = "2026-06-21T23:31:29.766Z" },
 ]
 
 [[package]]

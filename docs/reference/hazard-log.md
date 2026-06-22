@@ -261,3 +261,157 @@ ordinal mapping matches the actuator/qpos order the HAL dispatches for every
 in-tree MJCF robot (no off-by-one against `RobotDescription.joints`).
 
 - [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).
+
+---
+
+## Entry 004 — so100_follower manifest collision model self-collides at home (`base`↔`upper_arm`)
+
+**Date:** 2026-06-22
+**PR:** _this PR_ (docs-only finding; no safety code or geometry change — see "Decision" below)
+**Files changed:** `docs/reference/hazard-log.md` (this entry only). **No change to**
+`packages/openral_safety/`, `cpp/openral_safety_kernel/`, or any
+`robots/*/robot.yaml` collision block.
+
+### What was found
+
+Driving the **real C++ `safety_kernel_node`** with the so100_follower manifest
+collision model (`openral_safety.envelope_loader.collision_params_from_description`
+on `robots/so100_follower/robot.yaml`) and `self_collision_enabled=True`, a
+`JOINT_POSITION` chunk is **dropped + E-stopped** as `KIND_COLLISION` self
+`base`↔`upper_arm` across the robot's entire near-home region:
+
+| config                                   | kernel result          | `min_distance_m` |
+| ---------------------------------------- | ---------------------- | ---------------- |
+| zero `q=[0,0,0,0,0,0]`                    | E-STOP `base↔upper_arm`| `-0.0894`        |
+| MJCF `home` keyframe `[0,-1.57,1.57,1.57,-1.57,0]` | E-STOP `base↔upper_arm`| `-0.0943`        |
+| `q=[0,0,0,0,0,0.5]` (originally reported) | E-STOP `base↔upper_arm`| `-0.0894`        |
+
+`base`↔`upper_arm` is a non-adjacent (2-hop: `base`→`shoulder`→`upper_arm`) pair
+and is **not** in the manifest's `allowed_collision_pairs`.
+
+**Effect:** if self-collision were enabled on the **manifest** model the kernel
+would E-stop the arm at/near its mechanical home. NOTE — this does **not** affect
+deployment today: `openral deploy sim` / `deploy run` lower so100 from its MJCF
+(`lower_collision_params`), whose collision geoms are mesh-only → the kernel
+receives `self_collision_enabled=False` and runs the scalar-envelope check only.
+The manifest model is the **real-HW fallback** and must still be correct.
+
+### Root cause
+
+The so100 collision model is lowered via the **URDF random-pose sampling** path
+(`select_lowering → "sampling"`; so100 has a URDF with usable collision meshes
+and no SRDF). That path fits **one conservative PCA bounding capsule per link**
+that must contain every mesh vertex (so it never under-covers — ADR-0030 §2).
+
+so100's links are bulky, non-cylindrical brackets/blocks. A single capsule
+over-approximates them badly:
+
+- `base` mesh bbox is `0.111 × 0.096 × 0.083 m` (a solid block); its tightest
+  conservative single capsule has **radius 0.0636 m** (the smallest of all three
+  PCA-axis fits; the min bounding sphere is even larger at 0.070 m). It over-covers
+  the real base by ~0.06–0.07 m in the thin directions.
+- The `upper_arm` capsule swings within that ~6 cm phantom shell at home.
+
+As a result the **capsule** distance `base`↔`upper_arm` is `-0.0894 m` at zero
+while the **true mesh** clearance (MuJoCo `mj_geomDistance` oracle) is **+0.0494 m**
+— a ~0.14 m fitting artifact. Over 200 000 reachable poses the capsule pair
+overlaps in **99.81%** of configs (max clearance ever **+0.0006 m**), so it nearly
+always fires — yet the sampling ACM rule only disables a pair colliding in
+**100%** of the 2000-sample sweep (`== n_samples`); so100 hits 1994/2000, so the
+pair stays *checked* and false-E-stops home. (The MJCF runtime path avoids this
+with a separate "disable pairs overlapping at the neutral pose" rule
+[`_neutral_pose_collisions`], which the URDF sampling path does not have.)
+
+### Hazard analysis — why neither quick fix is acceptable (conservatism, CLAUDE.md §3)
+
+Two "obvious" fixes were each evaluated against the **real geometry** and
+**rejected as unsafe or infeasible**:
+
+1. **Add `base`↔`upper_arm` to the ACM (mask it) — REJECTED as UNSAFE.**
+   The pair is *not* genuinely always-in-collision: the real links clear by
+   ~5 cm at home, and `base`↔`upper_arm` genuinely collides (true mesh distance
+   ≤ 0) in **17.55%** of poses sampled **within the manifest's own
+   `position_limits`** (the real-HW safety bounds; the wider `shoulder_lift`
+   range folds the upper arm down onto the base far more than the URDF limits do).
+   Crucially, replaying the masked model through the kernel's own capsule check
+   shows **896 of 30 000 reachable poses** (over a separate sweep) where a genuine
+   self-collision exists and `base`↔`upper_arm`'s capsule is the **only** pair
+   that flags it — masking would turn those into silent blind spots. Masking
+   therefore *removes* real safety coverage and is strictly less conservative.
+
+2. **Re-fit a tighter single capsule — INFEASIBLE.**
+   The committed capsule already equals the tool's output (the fleet drift guard
+   `tests/unit/test_collision_lowering_fleet.py` is green) and is already the
+   *tightest* conservative single primitive for the `base` block (smallest of the
+   three PCA-axis radii; a sphere is larger). Any tighter capsule would drop mesh
+   vertices → under-cover → less conservative.
+
+The genuinely correct fix is **multiple capsules per link** so a bracket/block
+link is covered by 2+ tight capsules instead of one fat one. The **C++ kernel
+already supports this** (`collision.hpp` `capsule_link[]` / `capsules[]`; the
+MJCF path emits multi-capsule today). The only blocker is the manifest loader
+`openral_safety.envelope_loader._capsules_by_link`, which deliberately rejects
+`>1 collision primitive` per link ("unsupported in ADR-0030 phase 2"), plus the
+URDF lowering emitting a single PCA capsule. Lifting that restriction and
+teaching the lowering to emit ≥2 capsules for bulky links is a safety-layer
+change that **crosses a contract boundary and needs its own ADR** (CLAUDE.md §3,
+§6) — out of scope for a targeted geometry fix.
+
+### Decision (this PR)
+
+**No code or geometry change.** A hand-edit to the ACM would be unsafe (item 1)
+and a capsule re-fit is infeasible (item 2); the real fix is an ADR-gated
+multi-capsule capability. This entry records the latent hazard, the evidence,
+and the recommended path so the safety WG can prioritise the multi-capsule ADR.
+Until then so100's real-HW fallback must **not** enable `self_collision_enabled`
+on the manifest model without the multi-capsule fix (deployment is unaffected —
+it uses the MJCF path, which disables manifest self-collision for so100).
+
+**Conservatism:** documentation only — no enforcement path, threshold, limit,
+geometry, ACM, or E-stop logic is changed. The model behaves exactly as before;
+this entry prevents a future change from naively masking the pair.
+
+### Verification (real C++ kernel + MuJoCo oracle)
+
+- Real `safety_kernel_node` subprocess (built from this worktree, `BUILD_TESTING=ON`)
+  driven with the committed so100 manifest + `self_collision_enabled=True`
+  reproduced the three E-stops in the table above.
+- MuJoCo `mj_geomDistance` over the so100 MJCF collision meshes is the independent
+  oracle: +0.0494 m true clearance at home vs −0.0894 m capsule distance; 17.55%
+  genuine collisions within manifest limits; 99.81% capsule overlap over 200 000
+  reachable poses.
+
+### Follow-up / resolution path (2026-06-22)
+
+The "multi-capsule per link" fix floated above was **evaluated and proven
+insufficient** for so100. The base is a near-cubic block (`0.111 × 0.096 ×
+0.083 m`) and the `upper_arm` clears it by only +0.0494 m at home; a capsule's
+**circular** cross-section must bulge ≥ ~0.04 m past flat block faces, so two
+such shells (base ~0.04 + upper_arm ~0.035) sum to ~0.075 m > the 0.0494 m gap —
+the capsule **union must overlap at home regardless of capsule count**. Three
+decompositions confirm it (all preserve coverage and still catch the genuine
+collisions, but none clears 0; single capsule = −0.0894):
+
+- axis-split k=2 → −0.070
+- PCA grid (base 3×3=9, ua 3×2=6 caps) → −0.029 (plateaus; worse beyond)
+- VHACD convex decomposition (16+16 hulls) → −0.039 (plateaus)
+
+The kernel already supports multiple capsules per link (`collision.hpp`
+`capsule_link[]`/`capsules[]`; only the Python loader
+`envelope_loader._capsules_by_link` gates `>1`), but capsules are the **wrong
+primitive** here — the mismatch is the cross-section *shape*, not the count.
+
+**The real fix is a box/OBB collision primitive** (rectangular cross-section):
+a `BoxShape` in the `CollisionShape` union, allocation-free box–box / box–capsule
+distance in the C++ hot path, and OBB-emitting lowering for blocky links. That
+is a Layer-6 hot-path contract change — its own **ADR + maintainer pre-approval
++ safety-WG review**. Tracked in **issue #84**.
+
+### Safety-WG reviewer gate
+
+**This finding requires explicit sign-off from a safety-WG reviewer**, per
+CLAUDE.md §3, to (a) confirm the "do not mask `base`↔`upper_arm`" conclusion and
+the 17.55%/896-pose evidence, and (b) prioritise the box/OBB primitive (issue
+#84) that is the real fix — multi-capsule was proven insufficient (above).
+
+- [ ] **PENDING: safety-WG reviewer sign-off** (human gate — not author-clearable).

@@ -94,16 +94,27 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     assert invocation.hal.executable == "lifecycle_node.py"
     assert invocation.hal.node_name == "openral_hal_openarm"
     assert invocation.hal.supported_robot_names == frozenset({"openarm_v2", "openarm"})
-    # issue #191 Phase 3b — openarm is manifest-driven now: robot_yaml + hal_mode
-    # are injected; scene params moved to the manifest's scene_defaults.composition
-    # and HAL kwargs to hal.parameters. `bare_twin_sim=True` suppresses the
-    # `sim_env_yaml` scene-attach (openarm composes its own MJCF). Only the viewer
-    # toggle remains a node param.
+    # openarm is manifest-driven: robot_yaml + hal_mode are injected; HAL kwargs
+    # live in hal.parameters. `bare_twin_sim=True` suppresses the `sim_env_yaml`
+    # scene-attach (openarm composes its own MJCF). ADR-0066 — the tabletop arena
+    # composition lives on the DeployScene now (not the robot manifest), so it is
+    # forwarded to the node as `scene_composition_json`.
+    import json
+
+    from openral_core import DeployScene
+
+    expected_composition = DeployScene.from_yaml(str(_OPENARM_CONFIG)).composition
+    assert expected_composition is not None
     assert invocation.hal_params == {
         "viewer_enabled": True,
         "robot_yaml": str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"),
         "hal_mode": "sim",
+        "scene_composition_json": expected_composition.model_dump_json(),
     }
+    # The composer + the overview camera pose come from the scene, not robot.yaml.
+    _comp = json.loads(invocation.hal_params["scene_composition_json"])
+    assert _comp["composer"].endswith("compose_openarm_tabletop_mjcf")
+    assert _comp["params"]["top_camera_pos"] == [0.20, 0.0, 0.95]
     assert "sim_env_yaml" not in invocation.hal_params
     assert invocation.reset_to_pose_service == "/openral/openarm/reset_to_pose"
     # ADR-0053 — MoveIt approach is opt-in; empty default keeps the legacy snap

@@ -931,6 +931,11 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("hal_mode", "sim")
             self.declare_parameter("sim_env_yaml", "")
+            # ADR-0066 — scene-level MJCF composition (a `SceneComposition` as
+            # JSON). `openral deploy sim` forwards the DeployScene's `composition`
+            # here so the SCENE (not the robot manifest) owns its arena. Takes
+            # precedence over `scene_defaults.composition`; "" = none.
+            self.declare_parameter("scene_composition_json", "")
             self.declare_parameter("viewer_enabled", True)
             self.declare_parameter("camera_publish_rate_hz", 10.0)
             self.declare_parameter("viewer_sync_rate_hz", 30.0)
@@ -983,16 +988,24 @@ if _ROS2_AVAILABLE:
                 f"{hal_mode} mode: building HAL for robot={description.name} from {robot_yaml}"
                 + (f" scene={sim_env_yaml}" if sim_env_yaml else "")
             )
-            # issue #191 Phase 3b — declarative MJCF scene composition. When the
-            # manifest declares `scene_defaults.composition` and we're building a
-            # bare sim HAL (no scene-attach), call the named composer and thread
-            # the resulting MJCF path in as the HAL's `mjcf_path` transport kwarg.
+            # Declarative MJCF scene composition (issue #191 Phase 3b; ADR-0066).
+            # When building a bare sim HAL (no scene-attach), call the named
+            # composer and thread the resulting MJCF in as the HAL's `mjcf_path`.
+            # The SCENE's `composition` (forwarded as `scene_composition_json`)
+            # wins over the robot manifest's `scene_defaults.composition` — the
+            # scene owns its arena, the robot manifest describes the robot
+            # (ADR-0066). The manifest fallback is retained for back-compat.
+            from openral_core.schemas import SceneComposition
+
             transport: dict[str, object] = {}
-            composition = (
-                description.scene_defaults.composition
-                if description.scene_defaults is not None
-                else None
+            scene_comp_json = (
+                self.get_parameter("scene_composition_json").get_parameter_value().string_value
             )
+            composition: SceneComposition | None = None
+            if scene_comp_json:
+                composition = SceneComposition.model_validate_json(scene_comp_json)
+            elif description.scene_defaults is not None:
+                composition = description.scene_defaults.composition
             if hal_mode == "sim" and sim_env_yaml is None and composition is not None:
                 transport["mjcf_path"] = self._compose_scene_mjcf(description, composition)
             # Phase 1 (ADR-0032) routes sim through the seam; real-HW transport

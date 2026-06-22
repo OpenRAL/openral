@@ -28,8 +28,13 @@ scene:
     max_steps: 500
     # action_layout / joint_units default to left_first / radians — correct
     # for this checkpoint, so we leave them implicit.
-    # top_camera_* default to the mddoai POV (between the bases,
-    # facing the tabletop). Override here to dial it if needed.
+    # ADR-0066 — the overview-camera pose lives on the SCENE (was the robot
+    # manifest's `scene_defaults.top_camera`, removed so robot.yaml describes
+    # only the robot). The mddoai dataset POV: between the bases, facing the
+    # tabletop. The openarm_robosuite env feeds these to the composer.
+    top_camera_pos: [0.20, 0.0, 0.95]
+    top_camera_target: [0.65, 0.0, 0.05]
+    top_camera_fovy: 65.0
 
 task:
   id: openarm/pnp_cube_to_drawer

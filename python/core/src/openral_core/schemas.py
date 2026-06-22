@@ -5234,6 +5234,14 @@ class DeployScene(BaseModel):
 
     Carries the physics world and optional robot mount. No task, no eval
     config — this is a playground for the full OpenRAL stack.
+
+    ``composition`` (ADR-0066) lets a deploy scene declare the MJCF composer that
+    builds its environment (e.g. the openarm tabletop arena: table + cubes +
+    drawer + overview camera) instead of the robot manifest carrying it: the
+    robot manifest describes the robot, the scene describes the scene. ``openral
+    deploy sim`` threads it to the manifest-driven HAL node, which composes the
+    MJCF and builds a bare twin off the result. ``None`` = no scene composition
+    (a bare-arm twin; cameras come from the robot's own sensor placements).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -5241,6 +5249,7 @@ class DeployScene(BaseModel):
     scene: SceneSpec
     robot_id: str | None = None
     base_pose: Pose6D | None = None
+    composition: SceneComposition | None = None
 
     @model_validator(mode="before")
     @classmethod
