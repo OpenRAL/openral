@@ -535,8 +535,94 @@ def _cuda_major(version: str) -> int | None:
         return None
 
 
+class ComputeSpec(BaseModel):
+    """Onboard compute profile — runtime inference and GPU capabilities.
+
+    Describes the compute hardware available on a robot or the detected host.
+    Populated either statically in ``robot.yaml`` (for robots with known fixed
+    hardware, e.g. a Jetson AGX Orin) or at runtime by
+    :func:`openral_detect.assemble.assemble_robot_description` probing the
+    live host (NVIDIA GPU, Jetson, Apple Silicon).
+
+    Consumed by ``rSkill.check_runtime`` and ``rSkill.check_quantization_dtype``
+    to match ``RSkillManifest.runtime`` / ``quantization.dtype`` against what
+    the hardware can actually execute.
+
+    Attributes:
+        onboard_compute_tops: Peak onboard compute in INT8 TOPS (0 = unknown).
+        onboard_memory_gb: Total system RAM in GB (0 = unknown).
+        gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).
+        cuda_compute_capability: Highest CUDA compute capability (major, minor),
+            e.g. ``(8, 9)`` for Ada Lovelace, ``(10, 0)`` for Blackwell.
+            ``None`` on non-CUDA hosts.
+        cuda_toolkit_version: ``nvcc`` version string, e.g. ``"12.4"``.
+            ``None`` when CUDA is absent or the version cannot be determined.
+        tensorrt_version: TensorRT runtime version string when importable.
+        gpu_supported_runtimes: Inference runtimes the hardware can execute,
+            used by ``rSkill.check_capabilities`` to match
+            ``RSkillManifest.runtime``.  Empty list = "unknown — skip check".
+        gpu_supported_dtypes: Quantization dtypes the accelerator supports
+            (derived from CUDA compute capability or platform).  Empty =
+            "unknown — skip check".
+        nvmm_available: Whether ``libnvbufsurface.so`` is present on the host
+            (Tegra L4T multimedia stack).  ``True`` enables the NVMM zero-copy
+            sensor-ingest path on Jetson; always ``False`` on x86 and on
+            stripped L4T images.  Populated by
+            :func:`openral_detect.probes.gpu._probe_nvmm_available`
+            (ADR-0013).
+
+    Example:
+        >>> spec = ComputeSpec(
+        ...     gpu_vram_gb=24.0,
+        ...     cuda_compute_capability=(8, 9),
+        ...     cuda_toolkit_version="13.2",
+        ... )
+        >>> spec.supports_cumotion()
+        True
+    """
+
+    onboard_compute_tops: float = 0.0
+    onboard_memory_gb: float = 0.0
+    gpu_vram_gb: float = 0.0
+    cuda_compute_capability: tuple[int, int] | None = None
+    cuda_toolkit_version: str | None = None
+    tensorrt_version: str | None = None
+    gpu_supported_runtimes: list[RSkillRuntime] = Field(default_factory=list)
+    gpu_supported_dtypes: list[QuantizationDtype] = Field(default_factory=list)
+    nvmm_available: bool = False
+
+    def supports_cumotion(self) -> bool:
+        """Whether this compute spec meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).
+
+        cuMotion's CUDA motion planner requires an Ampere-or-newer GPU (compute
+        capability >= 8.0), CUDA toolkit >= 13.0, and a nominal 8 GB card. The
+        MoveIt planner gate uses this to choose the cuMotion planning pipeline;
+        when ``False`` it falls back to OMPL.
+
+        Returns:
+            ``True`` only when compute capability, CUDA toolkit version, and
+            VRAM all clear the cuMotion floor. ``False`` on any non-CUDA host or
+            when the CUDA toolkit version is unknown (the floor cannot be
+            confirmed, so the gate stays closed).
+        """
+        if self.cuda_compute_capability is None:
+            return False
+        if self.cuda_compute_capability < _CUMOTION_MIN_COMPUTE_CAPABILITY:
+            return False
+        if self.cuda_toolkit_version is None:
+            return False
+        cuda_major = _cuda_major(self.cuda_toolkit_version)
+        if cuda_major is None or cuda_major < _CUMOTION_MIN_CUDA_MAJOR:
+            return False
+        return self.gpu_vram_gb >= _CUMOTION_MIN_VRAM_GIB
+
+
 class RobotCapabilities(BaseModel):
-    """Capability flags used for skill compatibility checking.
+    """Physical capability flags for a robot body.
+
+    Describes what the *robot* can do (sensors, actuation, embodiment tags).
+    Runtime compute / GPU properties live on :class:`ComputeSpec` and are
+    attached to the :class:`RobotDescription` via its ``compute`` field.
 
     Attributes:
         locomotion: Locomotion types available.
@@ -554,27 +640,9 @@ class RobotCapabilities(BaseModel):
             backend wins (it does not require an AI depth model).
         has_audio: Whether audio I/O is present.
         bimanual: Whether the robot has two arms.
-        onboard_compute_tops: Peak onboard compute in TOPS.
-        onboard_memory_gb: Onboard RAM in GB.
-        gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).
-        cuda_compute_capability: Highest CUDA compute capability (major, minor),
-            e.g. (8, 9) for Ada Lovelace, (10, 0) for Blackwell.  ``None`` on
-            non-CUDA hosts.
-        cuda_toolkit_version: ``nvcc`` version string when present.
-        tensorrt_version: TensorRT runtime version string when importable.
-        gpu_supported_runtimes: Inference runtimes the host can execute, used
-            by ``rSkill.check_capabilities`` to match ``RSkillManifest.runtime``.
-        gpu_supported_dtypes: Quantization dtypes the host accelerator
-            supports (derived from CUDA compute capability or platform).
         supported_control_modes: List of supported ControlMode values.
         supported_vla_embodiments: VLA embodiment IDs this robot can run.
         embodiment_tags: Short tags mapping to VLA heads / dataset splits.
-        nvmm_available: Whether ``libnvbufsurface.so`` is present on the host
-            (Tegra L4T multimedia stack).  ``True`` enables the NVMM
-            zero-copy sensor-ingest path on Jetson; always ``False`` on x86
-            and on stripped L4T images.  Populated by
-            :func:`openral_detect.probes.gpu._probe_nvmm_available`.
-            Added in v0.5 per ADR-0013.
     """
 
     locomotion: list[LocomotionKind] = Field(
@@ -589,52 +657,9 @@ class RobotCapabilities(BaseModel):
     has_vision_slam: bool = False
     has_audio: bool = False
     bimanual: bool = False
-    onboard_compute_tops: float = 0.0
-    onboard_memory_gb: float = 0.0
-    gpu_vram_gb: float = 0.0
-    cuda_compute_capability: tuple[int, int] | None = None
-    cuda_toolkit_version: str | None = None
-    tensorrt_version: str | None = None
-    gpu_supported_runtimes: list[RSkillRuntime] = Field(default_factory=list)
-    gpu_supported_dtypes: list[QuantizationDtype] = Field(default_factory=list)
     supported_control_modes: list[ControlMode] = Field(default_factory=list)
     supported_vla_embodiments: list[str] = Field(default_factory=list)
     embodiment_tags: list[str] = Field(default_factory=list)
-    nvmm_available: bool = False
-
-    def supports_cumotion(self) -> bool:
-        """Whether this host meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).
-
-        cuMotion's CUDA motion planner requires an Ampere-or-newer GPU (compute
-        capability >= 8.0), CUDA toolkit >= 13.0, and a nominal 8 GB card. The
-        MoveIt planner gate uses this to choose the cuMotion planning pipeline;
-        when ``False`` it falls back to OMPL.
-
-        Returns:
-            ``True`` only when compute capability, CUDA toolkit version, and
-            VRAM all clear the cuMotion floor. ``False`` on any non-CUDA host or
-            when the CUDA toolkit version is unknown (the floor cannot be
-            confirmed, so the gate stays closed).
-
-        Example:
-            >>> caps = RobotCapabilities(
-            ...     gpu_vram_gb=24.0,
-            ...     cuda_compute_capability=(8, 9),
-            ...     cuda_toolkit_version="13.2",
-            ... )
-            >>> caps.supports_cumotion()
-            True
-        """
-        if self.cuda_compute_capability is None:
-            return False
-        if self.cuda_compute_capability < _CUMOTION_MIN_COMPUTE_CAPABILITY:
-            return False
-        if self.cuda_toolkit_version is None:
-            return False
-        cuda_major = _cuda_major(self.cuda_toolkit_version)
-        if cuda_major is None or cuda_major < _CUMOTION_MIN_CUDA_MAJOR:
-            return False
-        return self.gpu_vram_gb >= _CUMOTION_MIN_VRAM_GIB
 
 
 # ─── Safety ────────────────────────────────────────────────────────────────────
@@ -1371,6 +1396,14 @@ class RobotDescription(BaseModel):
             allowed-collision matrix. On real robots this is sourced from
             the SRDF ``disable_collisions`` block (named by
             :attr:`AssetRefs.srdf`). ADR-0030.
+        compute: Optional onboard compute profile. Set statically in
+            ``robot.yaml`` for robots with known fixed hardware (e.g. a
+            Jetson AGX Orin platform), or populated at runtime by
+            :func:`openral_detect.assemble.assemble_robot_description`.
+            ``rSkill.check_capabilities`` uses this to validate
+            ``RSkillManifest.runtime`` and ``quantization.dtype`` against
+            the real accelerator. ``None`` means "unknown — skip compute
+            checks".
 
     Example:
         >>> desc = RobotDescription(
@@ -1443,6 +1476,7 @@ class RobotDescription(BaseModel):
     # falls back to the ``footprint_radius`` circle. Independent of
     # ``footprint_radius`` (a robot may declare either, both, or neither).
     footprint_polygon: list[tuple[float, float]] | None = Field(default=None)
+    compute: ComputeSpec | None = None
 
     @model_validator(mode="after")
     def _validate_footprint_polygon(self) -> RobotDescription:

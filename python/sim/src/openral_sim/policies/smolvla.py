@@ -247,26 +247,22 @@ class _SmolVLAAdapter:
         images = observation.get("images", {})
         # Preserve the original LIBERO key naming so the stored preprocessor
         # rename step (image → camera1, image2 → camera2) lines up.
-        from openral_sim.policies._video_capture import to_input_frame
+        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
-        # Top-left "VLA input" panel should show the wrist / mounted
-        # camera (more informative for manipulation than the static
-        # agent view). When multiple cameras are configured the last
-        # one in ``camera_keys`` is the wrist by convention (LIBERO:
-        # ``[camera1=agentview, camera2=eye_in_hand]``); when there's
-        # only one camera, that's the mounted view we capture.
-        wrist_idx = len(self._camera_keys) - 1
+        preview_frames: list[NDArray[np.uint8]] = []
         for i, cam_key in enumerate(self._camera_keys):
             img = images.get(cam_key)
             if img is None:
                 continue
-            if i == wrist_idx:
-                self._last_input_frame = to_input_frame(img, flip_180=self._flip_images_180)
+            preview = to_input_frame(img, flip_180=self._flip_images_180)
+            if preview is not None:
+                preview_frames.append(preview)
             t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
             batch[self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))] = t
+        self._last_input_frame = tile_input_frames(preview_frames)
 
         state = observation.get("state")
         if state is not None:

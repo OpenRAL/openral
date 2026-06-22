@@ -90,10 +90,10 @@ class TabletopOptions:
         front_camera_fovy: Front camera vertical FoV, degrees.
         wrist_camera_mount_body: When set, the composed model parents a
             ``wrist`` camera to the named MJCF body (the robot's end-effector
-            link, e.g. ``"gripper"`` for SO-101 or ``"hand"`` for Franka). The
-            body name is robot-specific so it is opt-in — left ``None`` the
-            scene ships only the two world-frame cameras, which work for any
-            robot. A name absent from the loaded MJCF fails loudly.
+            link, e.g. ``"gripper"`` for SO-101 or ``"hand"`` for Franka). Left
+            ``None``, callers may infer the mount from the robot manifest's
+            ``sensors[].sim_placement.parent_body`` for the ``wrist`` camera.
+            A name absent from the loaded MJCF fails loudly.
         wrist_camera_pos_local: Wrist-camera position in the mount-body frame.
         wrist_camera_fovy: Wrist-camera vertical FoV, degrees.
         settle_steps: ``mj_step`` calls after each action write — the scene's
@@ -185,6 +185,21 @@ def _resolve_robot_mjcf(description: RobotDescription) -> str:
             f"tabletop_push: assets.mjcf={description.assets.mjcf!r} did not resolve to a file.",
         )
     return str(path)
+
+
+def infer_wrist_camera_mount_body(description: RobotDescription) -> str | None:
+    """Return the wrist camera's MJCF parent body from the robot manifest.
+
+    Free-axis scenes can request a logical ``wrist`` camera without hardcoding
+    a robot-specific MJCF body name. This keeps the robot manifest as the
+    source of truth for the camera mount.
+    """
+    for sensor in description.sensors:
+        if sensor.name != "wrist" or sensor.sim_placement is None:
+            continue
+        if sensor.sim_placement.parent_body:
+            return sensor.sim_placement.parent_body
+    return None
 
 
 def _base_pos_quat(

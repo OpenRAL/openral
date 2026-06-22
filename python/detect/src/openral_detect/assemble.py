@@ -42,6 +42,7 @@ import socket
 from typing import Any
 
 from openral_core.schemas import (
+    ComputeSpec,
     EmbodimentKind,
     RobotCapabilities,
     RobotDescription,
@@ -334,21 +335,23 @@ def _enrich_compute(description: RobotDescription, detection: DetectionReport) -
     runtimes = detection.derived_runtimes()
     dtypes = detection.derived_dtypes()
 
+    existing = description.compute or ComputeSpec()
+    new_compute = ComputeSpec(
+        onboard_compute_tops=max(existing.onboard_compute_tops, tops),
+        onboard_memory_gb=max(existing.onboard_memory_gb, memory_gb),
+        gpu_vram_gb=max(existing.gpu_vram_gb, vram_gb),
+        cuda_compute_capability=cc or existing.cuda_compute_capability,
+        cuda_toolkit_version=cuda_toolkit or existing.cuda_toolkit_version,
+        tensorrt_version=tensorrt_v or existing.tensorrt_version,
+        gpu_supported_runtimes=runtimes,
+        gpu_supported_dtypes=dtypes,
+        nvmm_available=_probe_nvmm_available(),
+    )
     capabilities = description.capabilities.model_copy(
-        update={
-            "onboard_compute_tops": max(description.capabilities.onboard_compute_tops, tops),
-            "onboard_memory_gb": max(description.capabilities.onboard_memory_gb, memory_gb),
-            "gpu_vram_gb": max(description.capabilities.gpu_vram_gb, vram_gb),
-            "cuda_compute_capability": cc or description.capabilities.cuda_compute_capability,
-            "cuda_toolkit_version": cuda_toolkit or description.capabilities.cuda_toolkit_version,
-            "tensorrt_version": tensorrt_v or description.capabilities.tensorrt_version,
-            "gpu_supported_runtimes": runtimes,
-            "gpu_supported_dtypes": dtypes,
-            "nvmm_available": _probe_nvmm_available(),
-        }
+        update={"has_vision": description.capabilities.has_vision}
     )
     return description.model_copy(
-        update={"onboard_compute": onboard, "capabilities": capabilities},
+        update={"onboard_compute": onboard, "capabilities": capabilities, "compute": new_compute},
         deep=True,
     )
 
