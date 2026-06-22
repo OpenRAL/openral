@@ -18,7 +18,7 @@ Contract:
   subclass such as :class:`ROSWorkspaceViolation`,
   :class:`ROSForceLimitExceeded`, :class:`ROSEStopRequested`). Per
   CLAUDE.md §10 the exception is **never** silently caught; the runner
-  catches at its supervisor boundary (M6 / PR F :class:`HardwareRunner`),
+  catches at its supervisor boundary (M6 / PR F :class:`DeployRunner`),
   records the violation into :attr:`TickResult.safety_violations`,
   flips :attr:`TickResult.action_applied` to ``False``, and propagates
   for E-stop handling.

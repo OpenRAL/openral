@@ -521,7 +521,7 @@ if _ROS2_AVAILABLE:
             Emits a ``sensors.read_latest`` OTel span per frame so the
             dashboard's Perception card populates (modality, encoding,
             geometry, age, JPEG thumbnail). The span name + attribute
-            shape mirror :meth:`HardwareRunner._tick_impl`'s sensor read
+            shape mirror :meth:`DeployRunner._tick_impl`'s sensor read
             so a single dashboard consumer handles both topologies.
             """
             import time

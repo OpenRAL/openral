@@ -68,7 +68,7 @@ def _mock_env(
 
 
 def test_sim_runner_satisfies_inference_runner_protocol() -> None:
-    """Structural ``isinstance`` check passes (matches HardwareRunner)."""
+    """Structural ``isinstance`` check passes (matches DeployRunner)."""
     runner = SimRunner(_mock_env())
     assert isinstance(runner, InferenceRunner)
 

@@ -16,7 +16,7 @@ directly**. Instead:
   shutdown in one place per CLAUDE.md §6.1).
 
 This is the **single change** to the in-process hot path mandated by
-ADR-0018 §F1: ``HardwareRunner._tick_impl`` keeps calling
+ADR-0018 §F1: ``DeployRunner._tick_impl`` keeps calling
 ``hal.send_action(action)`` — only the sink moves from motors to a ROS
 topic, behind which sits ``safety_node`` (F5) → ``<robot>_hal_node``.
 
@@ -120,7 +120,7 @@ class ROSPublishingHAL:
             ``disconnect`` are no-ops outside this node's lifecycle.
         description: The :class:`RobotDescription` for the robot this
             adapter represents. Surfaced via the ``HAL.description``
-            attribute consumed by `HardwareRunner` for span attributes
+            attribute consumed by `DeployRunner` for span attributes
             and per-joint limit lookups.
         skill_id_getter: Zero-arg callable returning the in-flight
             skill id (filled into ``ActionChunk.rskill_id``). The

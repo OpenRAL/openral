@@ -1,4 +1,4 @@
-"""HardwareRunner emits ``hal.read_state`` / ``hal.send_action`` spans + metrics.
+"""DeployRunner emits ``hal.read_state`` / ``hal.send_action`` spans + metrics.
 
 End-to-end against a real SO-100 digital twin (no mocks per CLAUDE.md
 §1.11 / §5.4). The runner-side wrapping covers every HAL adapter
@@ -19,7 +19,7 @@ from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_observability import semconv
 from openral_observability.metrics import _reset_instrument_cache
 from openral_rskill.base import rSkillBase
-from openral_runner import HardwareRunner
+from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import _internal as metrics_internal
@@ -100,7 +100,7 @@ def active_skill() -> Generator[_NoOpTestSkill, None, None]:
         skill.shutdown()
 
 
-def test_hardware_runner_emits_hal_spans_and_histograms(
+def test_deploy_runner_emits_hal_spans_and_histograms(
     active_skill: _NoOpTestSkill,
     memory_exporter: InMemorySpanExporter,
     memory_metric_reader: InMemoryMetricReader,
@@ -109,7 +109,7 @@ def test_hardware_runner_emits_hal_spans_and_histograms(
     twin = SO100DigitalTwin(SO100DigitalTwinConfig())
     hal = SO100FollowerHAL(robot=twin)
     aggregator = WorldStateAggregator(hal.description)
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=active_skill,
         aggregator=aggregator,

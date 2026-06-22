@@ -204,7 +204,7 @@ shim. Both are now gone:
 - `run_evaluation` (and `run_episode`) deleted; replaced by
   `openral_sim.SimRunner`, a per-step `InferenceRunner` that
   shares the same Protocol surface as
-  `openral_runner.HardwareRunner`. `openral sim run` and `openral benchmark
+  `openral_runner.DeployRunner`. `openral sim run` and `openral benchmark
   run` both drive `SimRunner.activate / run / deactivate`.
 - `python/eval-shim/` (the `openral_eval` re-export package)
   removed in the same PR — the one-release clock declared in PR C had

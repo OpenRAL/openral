@@ -2,7 +2,7 @@
 """ADR-0018 F1 — `rskill_runner_node` lifecycle node.
 
 Owns the ``openral_msgs/action/ExecuteRskill`` action server and the
-in-process :class:`openral_runner.HardwareRunner` mandated by ADR-0018
+in-process :class:`openral_runner.DeployRunner` mandated by ADR-0018
 §F1. One node per robot.
 
 Action-goal lifecycle (CLAUDE.md §6.4 + ADR-0018 §F1):
@@ -15,7 +15,7 @@ Action-goal lifecycle (CLAUDE.md §6.4 + ADR-0018 §F1):
    :class:`ROSConfigError` (CLAUDE.md §10) surfaced as
    ``ExecuteRskill.Result(success=False, failure_reason=<typed>)``.
 2. **execute_cb** — instantiate / reuse a
-   :class:`openral_runner.HardwareRunner` with the
+   :class:`openral_runner.DeployRunner` with the
    :class:`openral_runner.ROSPublishingHAL` sink and the shared
    :class:`openral_world_state.WorldStateAggregator`; run until the
    rskill signals completion or the goal's ``deadline_s`` lapses.
@@ -721,9 +721,9 @@ if _ROS2_AVAILABLE:
             """Drive ``skill.step(snapshot)`` until done / cancelled / deadline.
 
             Mirrors the inner loop of
-            :meth:`openral_runner.HardwareRunner._tick_impl` but trims
+            :meth:`openral_runner.DeployRunner._tick_impl` but trims
             back the observability + per-stage timing to keep this PR
-            focused on the topic-shape contract. The full HardwareRunner
+            focused on the topic-shape contract. The full DeployRunner
             integration lands when F2 ships ``WorldStateStamped`` so the
             in-process snapshot has the typed staleness array; for now
             the lightweight loop here is sufficient to publish chunks on
@@ -821,7 +821,7 @@ if _ROS2_AVAILABLE:
 
                 # Sleep until the next tick boundary — the loop's
                 # rate-limiting is intentionally minimal here; production
-                # use composes the full HardwareRunner via the compose
+                # use composes the full DeployRunner via the compose
                 # factory when F2's typed WorldStateStamped lands.
                 time.sleep(period_s)
 

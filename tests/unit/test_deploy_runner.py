@@ -1,4 +1,4 @@
-"""Integration tests for `HardwareRunner` end-to-end.
+"""Integration tests for `DeployRunner` end-to-end.
 
 No mocks (CLAUDE.md §1.11). The runner is exercised against real
 components: a real SO100FollowerHAL backed by SO100DigitalTwin (in-memory,
@@ -20,7 +20,7 @@ from openral_hal.so100_follower import SO100FollowerHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_rskill.base import rSkillBase
 from openral_runner import (
-    HardwareRunner,
+    DeployRunner,
     InferenceRunner,
     NullSafetyClient,
     SafetyClient,
@@ -99,13 +99,13 @@ def active_skill() -> Generator[_NoOpTestSkill, None, None]:
 # ── Protocol conformance ─────────────────────────────────────────────────────
 
 
-def test_hardware_runner_satisfies_inference_runner_protocol(
+def test_deploy_runner_satisfies_inference_runner_protocol(
     hal: SO100FollowerHAL,
     aggregator: WorldStateAggregator,
     active_skill: _NoOpTestSkill,
 ) -> None:
     """Structural ``isinstance`` against :class:`InferenceRunner` succeeds."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
     assert isinstance(runner, InferenceRunner)
 
 
@@ -118,7 +118,7 @@ def test_runner_drives_skill_step_at_each_tick(
     active_skill: _NoOpTestSkill,
 ) -> None:
     """5 ticks → ``skill.step`` called 5 times, no safety violations."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
     runner.activate()
     try:
         result = runner.run(max_ticks=5)
@@ -144,7 +144,7 @@ def test_runner_honors_30_hz_cadence_end_to_end(
     Slightly wider slack than the synthetic ``FixedLatencyRunner`` test —
     the real HAL ``read_state`` / ``send_action`` adds a few ms of jitter.
     """
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=30.0)
     runner.activate()
     try:
         t0 = time.perf_counter()
@@ -166,7 +166,7 @@ def test_runner_pushes_joint_state_into_aggregator(
     active_skill: _NoOpTestSkill,
 ) -> None:
     """After one tick the aggregator's snapshot carries SO-100 joint names."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
     runner.activate()
     try:
         runner.run(max_ticks=1)
@@ -186,7 +186,7 @@ def test_runner_records_skill_lifecycle_step_count(
     active_skill: _NoOpTestSkill,
 ) -> None:
     """``_NoOpTestSkill.step_count`` increments once per tick."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
     runner.activate()
     try:
         runner.run(max_ticks=3)
@@ -229,7 +229,7 @@ def test_safety_violation_withholds_action_and_records_on_tick(
     """Rejected actions don't propagate; they record on the TickResult."""
     safety = _RejectAfterSafetyClient(allow_first=2)
     assert isinstance(safety, SafetyClient)
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=active_skill,
         aggregator=aggregator,
@@ -253,7 +253,7 @@ def test_null_safety_client_is_default(
     active_skill: _NoOpTestSkill,
 ) -> None:
     """When no ``safety_client`` is passed, the runner installs a ``NullSafetyClient``."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator)
     assert isinstance(runner._safety_client, NullSafetyClient)
 
 
@@ -266,7 +266,7 @@ def test_re_activate_after_deactivate(
     active_skill: _NoOpTestSkill,
 ) -> None:
     """The runner can be re-activated for a second :meth:`run`."""
-    runner = HardwareRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
+    runner = DeployRunner(hal=hal, skill=active_skill, aggregator=aggregator, rate_hz=60.0)
     runner.activate()
     r1 = runner.run(max_ticks=2)
     runner.deactivate()

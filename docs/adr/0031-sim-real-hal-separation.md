@@ -26,7 +26,7 @@ of HAL **type** leaks out of the manifest into environment config and runtime pa
    registry (`_ROBOT_HAL_REGISTRY`) carries per-robot `supports_sim_env_yaml` /
    `supports_sim_robot_yaml` flags that inject those params.
 
-3. **`deploy run` decides sim-vs-real from env config.** The in-process `HardwareRunner`
+3. **`deploy run` decides sim-vs-real from env config.** The in-process `DeployRunner`
    (so100-only) selects a digital twin vs real serial from a `hal.transport.digital_twin`
    boolean in the `RobotEnvironment` YAML.
 
@@ -90,7 +90,7 @@ The net effect: the same command can boot a different HAL class depending on YAM
 
 - **`deploy run` → ROS graph:** converge `deploy run` onto the `deploy sim` launch graph
   (kernel / sensors / dashboard / nav) with `hal_mode:=real`; retire the in-process
-  `HardwareRunner` deploy path. Subsumes ADR-0029's unification.
+  `DeployRunner` deploy path. Subsumes ADR-0029's unification.
 - **`sim run` HAL-driven native harness:** run native MuJoCo scenes over the sim HAL (no ROS)
   for fast robot + rSkill iteration; generalize `SimAttachedHAL` so a scene takes a `robot_id`
   and attaches `build_hal(mode="sim")`. Benchmark/external scenes stay scene-backend.

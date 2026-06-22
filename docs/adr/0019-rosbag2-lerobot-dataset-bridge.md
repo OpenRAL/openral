@@ -182,7 +182,7 @@ ROS / GStreamer / hardware dependencies and exercises the full
   `_EpisodeBuffer` (additive — the buffer is not replaced; the
   per-episode video pipeline and `RSkillEvalResult` writer stay
   unchanged).
-- `HardwareRunner` (PR3) gets explicit `episode_start(task_string)` /
+- `DeployRunner` (PR3) gets explicit `episode_start(task_string)` /
   `episode_end(*, success)` methods. These also land as
   `NotImplementedError` defaults on `InferenceRunnerBase` so future
   runners must opt in.
@@ -377,8 +377,8 @@ record the **live ROS graph** to a rosbag2 mcap that `openral dataset from-bag`
 converts to a LeRobotDataset v3 — the same offline path, fed from the bus.
 
 **Why not the in-process recorder.** The deploy graph does not run
-`SimRunner`/`HardwareRunner`; `rskill_runner_node` drives its own
-`skill.step(snapshot)` loop (the full `HardwareRunner` integration is still
+`SimRunner`/`DeployRunner`; `rskill_runner_node` drives its own
+`skill.step(snapshot)` loop (the full `DeployRunner` integration is still
 deferred pending the F2 `WorldStateStamped` work). Rather than couple recording
 into that actuation loop, recording attaches as a **bus observer**.
 
@@ -429,7 +429,7 @@ spec'd robot is single-surface). Verified live: franka/LIBERO recorded a 120-tic
 episode with action `{7: 120}` via `tick_index` grouping.
 
 **Known follow-up.**
-- **`HardwareRunner` rename.** `HardwareRunner` already drives digital twins via
+- **`DeployRunner` rename.** `DeployRunner` already drives digital twins via
   the sim HAL, so the name misleads (it is a HAL-driven runner, not
   hardware-specific). A rename to `DeployRunner`/`HalRunner` + unifying the
   `rskill_runner_node` loop onto it is the longer-term path to a single

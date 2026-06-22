@@ -1,6 +1,6 @@
 # openral_msgs/Episode — episode-boundary marker (ADR-0019 PR3).
 #
-# Published TWICE per episode by HardwareRunner.episode_start() /
+# Published TWICE per episode by DeployRunner.episode_start() /
 # episode_end():
 #
 #   phase=0 (PHASE_START) — task_string carries the natural-language

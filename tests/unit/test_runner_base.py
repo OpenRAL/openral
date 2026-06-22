@@ -192,7 +192,7 @@ class StopAfterNRunner(FixedLatencyRunner):
 
 
 def test_should_terminate_default_false_is_hardware_compatible() -> None:
-    """``HardwareRunner`` semantics: default hook never terminates early.
+    """``DeployRunner`` semantics: default hook never terminates early.
 
     A subclass that does not override ``_should_terminate`` runs until
     ``max_ticks`` exactly as before the hook was added.

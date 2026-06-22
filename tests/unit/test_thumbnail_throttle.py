@@ -1,4 +1,4 @@
-"""HardwareRunner throttles dashboard thumbnail emission to thumbnail_hz/camera.
+"""DeployRunner throttles dashboard thumbnail emission to thumbnail_hz/camera.
 
 Real twin + real skill + real synthetic camera readers (no mocks per
 CLAUDE.md §1.11). A :class:`_SyntheticRgbReader` is a genuine
@@ -21,7 +21,7 @@ from openral_hal.so100_follower import SO100FollowerHAL
 from openral_hal.so100_sim import SO100DigitalTwin, SO100DigitalTwinConfig
 from openral_observability import semconv
 from openral_rskill.base import rSkillBase
-from openral_runner import HardwareRunner
+from openral_runner import DeployRunner
 from openral_world_state.aggregator import WorldStateAggregator
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -102,14 +102,14 @@ def memory_exporter() -> Iterator[InMemorySpanExporter]:
 
 def _build_runner(
     *, thumbnail_hz: float, readers: list[_SyntheticRgbReader]
-) -> tuple[HardwareRunner, _NoOpSkill]:
+) -> tuple[DeployRunner, _NoOpSkill]:
     skill = _NoOpSkill()
     skill.configure()
     skill.activate()
     twin = SO100DigitalTwin(SO100DigitalTwinConfig())
     hal = SO100FollowerHAL(robot=twin)
     aggregator = WorldStateAggregator(hal.description)
-    runner = HardwareRunner(
+    runner = DeployRunner(
         hal=hal,
         skill=skill,
         aggregator=aggregator,

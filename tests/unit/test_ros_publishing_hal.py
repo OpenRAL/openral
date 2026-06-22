@@ -3,7 +3,7 @@
 The adapter is the single change to the in-process hot path mandated by
 ADR-0018 §F1 — it replaces a motor-driving HAL with a publisher of
 ``openral_msgs/ActionChunk`` on ``/openral/candidate_action`` while
-keeping the existing `HardwareRunner._tick_impl` contract intact.
+keeping the existing `DeployRunner._tick_impl` contract intact.
 
 Two test tiers (mirrors ``tests/unit/test_diagnostics_heartbeat.py``):
 
