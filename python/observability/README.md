@@ -99,3 +99,43 @@ GET /api/robots
 When the `mdns` extra is absent or `zeroconf` fails to start, the endpoint
 returns `{"enabled": false, "robots": []}` — the dashboard runs exactly as
 before; discovery is additive, never load-bearing.
+
+## Write-controls (`OPENRAL_DASHBOARD_WRITE_CONTROLS`)
+
+> **Default: OFF.** These endpoints are pending safety-WG review and a
+> hazard-log update (ADR-0064). Do not enable in production until the safety WG
+> has signed off.
+
+Two guarded write endpoints are available when the flag is set:
+
+```
+POST /api/skill/execute   # dispatch an ExecuteRskill action goal
+POST /api/param/set       # tune a non-safety ROS 2 parameter via ros2 param set
+```
+
+Enable them by starting the dashboard with the environment variable set:
+
+```bash
+OPENRAL_DASHBOARD_WRITE_CONTROLS=1 openral dashboard
+```
+
+The dashboard prints a loud `WARNING:` banner to stderr on startup when the
+flag is on. The flag is also surfaced in `GET /api/config`:
+
+```json
+{"jaeger_ui_url": "...", "write_controls_enabled": true}
+```
+
+**Safety posture (ADR-0064):**
+
+- Both endpoints return `403` when the flag is off (default).
+- `POST /api/param/set` also refuses any param name that matches a substring in
+  a hard-coded safety denylist (`velocity`, `accel`, `force`, `torque`,
+  `limit`, `workspace`, `estop`, `e_stop`, `deadman`, `dead_man`, `safety`,
+  `safe`, `watchdog`) — these must be changed via a reviewed config or manifest,
+  never the dashboard (CLAUDE.md §1.1).
+- Every attempt (permitted or denied) is audit-logged at WARNING level before
+  any subprocess is spawned, providing a paper trail.
+- The safety kernel (`cpp/openral_safety_kernel`) remains the sole authority on
+  whether a skill action proceeds — the dashboard shells out to
+  `ros2 action send_goal /openral/execute_rskill`; the kernel disposes.
