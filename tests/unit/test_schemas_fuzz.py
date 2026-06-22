@@ -137,6 +137,8 @@ _sensor_spec_st = st.builds(
     rate_hz=_pos_float,
     ros2_topic=_topic,
     ros2_msg_type=_name,
+    catalog_id=st.none()
+    | st.sampled_from(["generic/usb_uvc_rgb", "intel/realsense_d435i", "luxonis/oak_d_pro"]),
     sim_placement=st.none() | _camera_sim_placement_st,
 )
 

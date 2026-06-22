@@ -20,7 +20,7 @@ from openral_sensors.force_torque import robotiq_ft300s_spec
 from openral_sensors.realsense import (
     realsense_d435i_bundle,
 )
-from openral_sensors.usb_uvc import logitech_c920_spec
+from openral_sensors.usb_uvc import generic_uvc_rgb_spec, logitech_c920_spec
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -165,7 +165,7 @@ class TestSensorCatalog:
 class TestGlobalCatalog:
     def test_has_entries(self) -> None:
         # Catalog IDs that are wired into a HAL adapter or sim scene.
-        assert len(CATALOG) == 6
+        assert len(CATALOG) == 7
 
     def test_realsense_present(self) -> None:
         for sid in [
@@ -180,6 +180,7 @@ class TestGlobalCatalog:
             "intel/realsense_d435",
             "intel/realsense_d435i",
             "intel/realsense_d415",
+            "generic/usb_uvc_rgb",
             "logitech/c920",
             "luxonis/oak_d_pro",
             "robotiq/ft_300s",
@@ -224,6 +225,12 @@ class TestRealsenseExtensions:
 
 
 class TestUsbUvc:
+    def test_generic_uvc_catalog_id(self) -> None:
+        s = generic_uvc_rgb_spec(name="wrist")
+        assert s.catalog_id == "generic/usb_uvc_rgb"
+        assert s.name == "wrist"
+        assert s.intrinsics is not None
+
     def test_c920_default_resolution(self) -> None:
         s = logitech_c920_spec()
         assert s.intrinsics is not None

@@ -315,6 +315,10 @@ class SensorSpec(BaseModel):
         ros2_msg_type: ROS 2 message type, e.g. "sensor_msgs/Image". None for
             non-ROS robots (USB, sim-only).
         qos_profile: QoS profile key.
+        catalog_id: Optional sensor catalog id used as provenance for a
+            catalog-backed physical device. The spec remains fully materialized;
+            calibrated intrinsics, placement, feature keys, and serials stay on
+            this instance.
         vendor: Sensor vendor name.
         model: Sensor model, e.g. "RealSense D455".
         driver_pkg: ROS 2 driver package name.
@@ -366,6 +370,15 @@ class SensorSpec(BaseModel):
     ros2_msg_type: str | None = None
     qos_profile: Literal["sensor_data", "reliable", "transient_local", "parameters"] = "sensor_data"
     # Driver / vendor
+    catalog_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9_.-]*$",
+        description=(
+            "Optional openral_sensors catalog id for the physical device this "
+            "fully materialized SensorSpec was derived from. Calibration and "
+            "instance wiring remain explicit on the spec."
+        ),
+    )
     vendor: str | None = None
     model: str | None = None
     driver_pkg: str | None = None

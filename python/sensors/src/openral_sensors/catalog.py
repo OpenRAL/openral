@@ -9,8 +9,9 @@ Entries are registered on import by each vendor module (``realsense.py``,
 ``orbbec.py``, ``slamtec.py``, …). The registry is consumed by:
 - ``openral sensor list``  — print all registered ids.
 - ``openral sensor show``  — pretty-print one resolved spec/bundle.
-- The future ``catalog:`` reference field on ``RobotDescription.sensors`` /
-  ``RobotDescription.sensor_bundles`` (gated on schema v0.3 ADR).
+- ``SensorSpec.catalog_id`` provenance on robot-mounted physical sensors. Robot
+  manifests still inline the fully materialized calibrated spec; the catalog id
+  records the nominal device/factory it came from.
 
 Design notes
 ------------
@@ -89,8 +90,8 @@ class SensorCatalogEntry:
 
     Attributes:
         id: Stable identifier in the form ``"<vendor>/<model>"`` — lowercase,
-            slugified.  Used as the lookup key and as the value of the future
-            ``catalog:`` field in ``robot.yaml``.
+            slugified. Used as the lookup key and as ``SensorSpec.catalog_id``
+            provenance in ``robot.yaml``.
         vendor: Vendor or maintainer name (free-form, lowercase).
         model: Vendor model identifier (free-form, lowercase / slugified).
         kind: Whether the factory returns a single ``SensorSpec`` or a
@@ -253,9 +254,9 @@ class SensorCatalog:
     def build(self, sensor_id: str, **kwargs: object) -> SensorSpec | SensorBundle:
         """Resolve ``sensor_id`` and call its factory with ``**kwargs``.
 
-        This is the entry point used by the (future) ``catalog:`` reference in
-        ``robot.yaml`` — the loader passes any per-instance overrides
-        (``name``, ``parent_frame``, ``serial_no``, …) as keyword arguments.
+        This is the entry point used by HAL helpers, ``openral detect``, and
+        authors who want to seed a fully materialized RobotDescription sensor
+        before adding per-robot calibration and placement.
         """
         entry = self.get(sensor_id)
         return entry.factory(**kwargs)
