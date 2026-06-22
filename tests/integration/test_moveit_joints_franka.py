@@ -1,12 +1,12 @@
-"""ADR-0024 end-to-end exercise — :class:`ROSActionRskill` against live MoveIt.
+"""ADR-0024/0054 end-to-end exercise — joint goal rSkill against live MoveIt.
 
 Brings up the upstream ``moveit_resources_panda_moveit_config`` demo
 launch as a subprocess (real ``move_group`` + ``ros2_control`` fake
 hardware + ``robot_state_publisher``), then drives the
-:class:`~openral_rskill.ros_action_rskill.ROSActionRskill` adapter
-configured from the in-tree ``rskills/rskill-moveit-joints/``
-manifest. Asserts the planner returns a non-empty trajectory that the
-adapter caches, reorders into the host
+:class:`~openral_rskill.joint_goal_rskill.JointGoalRskill` adapter selected by
+``ros_integration.goal_builder: "joint"`` from the in-tree
+``rskills/rskill-moveit-joints/`` manifest. Asserts the planner returns a
+non-empty trajectory that the adapter caches, reorders into the host
 :class:`~openral_core.RobotDescription` joint order, and emits one
 waypoint per :meth:`~openral_rskill.base.rSkillBase.step` call until
 :class:`~openral_core.exceptions.ROSRskillGoalSatisfied` fires.
@@ -86,7 +86,7 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
         RSkillManifest,
     )
     from openral_core.schemas import ControlMode
-    from openral_rskill.ros_action_rskill import ROSActionRskill
+    from openral_rskill.joint_goal_rskill import JointGoalRskill
 
     repo_root = Path(__file__).resolve().parents[2]
     manifest_path = repo_root / "rskills" / "rskill-moveit-joints" / "rskill.yaml"
@@ -104,7 +104,7 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
         from rclpy.node import Node
 
         node = Node("test_moveit_rskill_harness")
-        skill = ROSActionRskill(
+        skill = JointGoalRskill(
             manifest=manifest,
             ros_node=node,
             robot_description=description,
