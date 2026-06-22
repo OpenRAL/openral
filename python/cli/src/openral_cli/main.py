@@ -635,6 +635,7 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "anthropic": "https://api.anthropic.com",
     "openai-compatible": "https://api.openai.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "ollama": "http://localhost:11434/v1",
 }
 
 

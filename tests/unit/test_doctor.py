@@ -344,6 +344,23 @@ def test_check_reasoner_llm_openrouter_missing_key(
     assert "openrouter.ai/api/v1" in summary.details
 
 
+def test_check_reasoner_llm_ollama_default_base_url_no_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """`provider=ollama` is recognised, defaults to the loopback base URL,
+    and requires no API key — it must not be reported as an unknown provider."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen3:8b")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    # No model/key missing → ok (auth not required for ollama).
+    assert summary.status == "ok"
+    assert "provider=ollama" in summary.details
+    assert "localhost:11434/v1" in summary.details
+    # Loopback base URL → an Ollama probe row is emitted.
+    assert any(r.check == "Ollama" for r in rows)
+
+
 def test_check_reasoner_llm_local_endpoint_unreachable(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
