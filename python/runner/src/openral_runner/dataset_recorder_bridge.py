@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription
@@ -247,11 +248,27 @@ class DatasetRecorderBridge:
         state = np.asarray(joint_state.position, dtype=np.float32)
         action = np.asarray([v for _key, vals in accum for v in vals], dtype=np.float32)
         images = self._decode_images(getattr(snapshot, "image_frames", None))
-        self._recorder.record_frame(
-            observation_state=state,
-            images=images,
-            action=action,
-        )
+        try:
+            self._recorder.record_frame(
+                observation_state=state,
+                images=images,
+                action=action,
+            )
+        except (ValueError, ROSConfigError) as exc:
+            # A per-frame shape mismatch (e.g. a robot that gained a defined
+            # action_spec.dim AND runs a multi-slot skill whose slots sum to a
+            # different dim — none today; see ADR-0019 amendment). Surface it
+            # loudly + stop recording this episode rather than crash the
+            # shared executor or silently mis-record (CLAUDE.md §1.4).
+            _log.error(
+                "dataset_recorder_bridge.record_frame_rejected",
+                error=str(exc),
+                action_dim=int(action.shape[0]),
+                state_dim=int(state.shape[0]),
+                slot_keys=[k for k, _ in accum],
+                hint="reassembled action/state shape does not match the robot's spec",
+            )
+            return
         self._n_frames += 1
 
     def _decode_images(self, image_frames: Any) -> dict[str, np.ndarray[Any, Any]]:  # noqa: ANN401
