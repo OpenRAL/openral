@@ -112,6 +112,26 @@
       "title": "Pose6D",
       "type": "object"
     },
+    "SceneComposition": {
+      "additionalProperties": false,
+      "description": "Declarative MJCF scene composition for a manifest-driven HAL (ADR-0029).\n\nLets a robot whose sim HAL needs a *composed* MJCF (a bare arm spliced onto\na tabletop + props) declare the composer in its manifest instead of a\nbespoke ``_create_hal`` lifecycle subclass (issue #191 Phase 3b). The\nmanifest-driven node calls :attr:`composer` before constructing the HAL and\nthreads the resulting MJCF path in as the HAL's ``mjcf_path``.\n\nThe composer is a ``\"module.path:function\"`` import string. The function is\ncalled with ``**params`` and MUST return ``(xml: str, meshdir: Path)`` \u2014 the\ncomposed MJCF XML and the mesh directory it references (the node writes the\nXML next to ``meshdir`` so relative mesh paths resolve). Today's only\ncomposer is ``openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf``.\n\nAttributes:\n    composer: ``\"module.path:function\"`` returning ``(xml, meshdir)``.\n    params: Keyword arguments for the composer (e.g. ``robot_lift_z``,\n        ``white_background``).\n\nExample:\n    >>> sc = SceneComposition(\n    ...     composer=\"pkg.scenes:compose_tabletop\",\n    ...     params={\"robot_lift_z\": 0.36, \"white_background\": True},\n    ... )\n    >>> sc.params[\"robot_lift_z\"]\n    0.36",
+      "properties": {
+        "composer": {
+          "title": "Composer",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "composer"
+      ],
+      "title": "SceneComposition",
+      "type": "object"
+    },
     "SceneSpec": {
       "additionalProperties": false,
       "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (:class:`TaskSpec`) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
@@ -245,6 +265,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Pose6D"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "composition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SceneComposition"
         },
         {
           "type": "null"

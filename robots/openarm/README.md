@@ -26,7 +26,7 @@ MJCF — PR #19 on master).
 | Supported VLA embodiments | `openarm_v2`, `openarm` |
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `open` (Enactic OpenArm + upstream MJCF) |
-| `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`) |
+| `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), ADR-0066. The robot / scene / rSkill are separate. |
 | `hal.real` | _null_ — sim-only until a lerobot OpenArm HAL lands (`deploy run` raises `ROSCapabilityMismatch`) |
 
 ## What v2 fixes vs the v1 era
