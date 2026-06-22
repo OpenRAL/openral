@@ -371,6 +371,126 @@ async def _skill_execute_response(
     return JSONResponse({"status": "ok", "stdout": out})
 
 
+async def _param_set_from_request(request: Request) -> JSONResponse:
+    """Validate the ``POST /api/param/set`` payload and dispatch the operation.
+
+    Handles the flag check, JSON decode, field validation, denylist check, and
+    dispatch in one place so the route closure stays under the statement cap
+    (PLR0915). Every attempt — permitted or denied — is audit-logged (ADR-0064 §4).
+    """
+    operator_ip = request.client.host if request.client else "unknown"
+    if not _write_controls_enabled():
+        _logger.warning(
+            "dashboard_write_attempt",
+            operation="param_set",
+            outcome="denied_flag_off",
+            adr="ADR-0064",
+            operator_ip=operator_ip,
+        )
+        return JSONResponse(
+            {
+                "error": (
+                    "write-controls disabled; set OPENRAL_DASHBOARD_WRITE_CONTROLS=1 "
+                    "(pending safety-WG review, ADR-0064)"
+                )
+            },
+            status_code=403,
+        )
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError as exc:
+        return JSONResponse({"error": f"invalid json: {exc}"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "object body required"}, status_code=400)
+    node = payload.get("node")
+    name = payload.get("name")
+    value = payload.get("value")
+    if not all(isinstance(v, str) and v.strip() for v in (node, name, value)):
+        return JSONResponse(
+            {"error": "fields 'node', 'name', 'value' required (non-empty strings)"},
+            status_code=400,
+        )
+    return await _param_set_response(
+        node,  # type: ignore[arg-type]  # reason: narrowed by the all(isinstance) guard above
+        name,  # type: ignore[arg-type]
+        value,  # type: ignore[arg-type]
+        operator_ip,
+    )
+
+
+async def _param_set_response(node: str, name: str, value: str, operator_ip: str) -> JSONResponse:
+    """Set a NON-safety ROS param via ``ros2 param set`` (ADR-0064).
+
+    Checks ``name`` case-insensitively against ``_SAFETY_PARAM_DENYLIST`` before
+    any shell-out. A matching name is refused with 403 and a paper-trail audit
+    log (CLAUDE.md §1.1). Permitted calls are also audit-logged before the
+    subprocess is spawned so there is no fire-and-forget gap.
+    """
+    low = name.lower()
+    refused = next((tok for tok in _SAFETY_PARAM_DENYLIST if tok in low), None)
+    if refused is not None:
+        _logger.warning(
+            "dashboard_write_attempt",
+            operation="param_set",
+            outcome="denied_denylist",
+            adr="ADR-0064",
+            operator_ip=operator_ip,
+            node=node,
+            name=name,
+            matched=refused,
+        )
+        return JSONResponse(
+            {
+                "error": (
+                    f"refused: param {name!r} looks safety-relevant (matched {refused!r}); "
+                    "change it via a reviewed config/manifest, not the dashboard "
+                    "(CLAUDE.md §1.1)"
+                )
+            },
+            status_code=403,
+        )
+    ros2 = shutil.which("ros2")
+    if ros2 is None:
+        return JSONResponse(
+            {"error": "`ros2` not on PATH; source the workspace install first"},
+            status_code=503,
+        )
+    _logger.warning(
+        "dashboard_write_attempt",
+        operation="param_set",
+        outcome="sent",
+        adr="ADR-0064",
+        operator_ip=operator_ip,
+        node=node,
+        name=name,
+        value=value,
+    )
+    proc = await asyncio.create_subprocess_exec(
+        ros2,
+        "param",
+        "set",
+        node,
+        name,
+        value,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return JSONResponse({"error": "param set timed out after 10 s"}, status_code=504)
+    out = out_b.decode("utf-8", errors="replace").strip()
+    err = err_b.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        return JSONResponse(
+            {"error": "ros2 param set failed", "returncode": proc.returncode, "stderr": err},
+            status_code=502,
+        )
+    return JSONResponse({"status": "ok", "stdout": out})
+
+
 def create_app(store: TelemetryStore | None = None) -> FastAPI:
     """Build the FastAPI app bound to ``store`` (a fresh one if ``None``).
 
@@ -545,6 +665,13 @@ def create_app(store: TelemetryStore | None = None) -> FastAPI:
         # Full logic lives in _skill_execute_from_request to keep create_app
         # under the statement cap (PLR0915).
         return await _skill_execute_from_request(request)
+
+    @app.post("/api/param/set")
+    async def post_param_set(request: Request) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # issue #75c / ADR-0064 — guarded param tune. Default OFF; safety params
+        # refused via denylist. Full logic in _param_set_from_request to keep
+        # create_app under the statement cap (PLR0915).
+        return await _param_set_from_request(request)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

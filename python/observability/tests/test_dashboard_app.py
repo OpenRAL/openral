@@ -606,6 +606,53 @@ async def test_skill_execute_rejects_non_one_truthy_value(
         )
 
 
+# ─────────────────────── POST /api/param/set ─────────────────────────────────
+#
+# issue #75c / ADR-0064 — flag-gated param tune. DEFAULT OFF; safety params
+# refused via denylist. Tests written BEFORE implementation (TDD — safety-
+# touching per CLAUDE.md §4.2).
+
+
+@pytest.mark.asyncio
+async def test_param_set_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", raising=False)
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post(
+            "/api/param/set", json={"node": "/n", "name": "rate_hz", "value": "20"}
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_param_set_refuses_safety_param(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post(
+            "/api/param/set", json={"node": "/n", "name": "max_velocity", "value": "9.9"}
+        )
+    assert resp.status_code == 403
+    assert "safety" in resp.json()["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_param_set_allowed_param_503_without_ros2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OPENRAL_DASHBOARD_WRITE_CONTROLS", "1")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    app = create_app(TelemetryStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        resp = await client.post(
+            "/api/param/set", json={"node": "/n", "name": "rate_hz", "value": "20"}
+        )
+    assert resp.status_code == 503
+
+
 @pytest.mark.asyncio
 async def test_vendored_vad_assets_served_offline() -> None:
     # The voice prompt is fully offline: the VAD library, Silero model and
