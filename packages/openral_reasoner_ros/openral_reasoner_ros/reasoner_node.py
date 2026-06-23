@@ -82,9 +82,12 @@ from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
 from openral_reasoner.context import (
     ContextRenderer,
+    ExecutionEventRecord,
     FailureEventRecord,
     PerceptionEventRecord,
     PromptRecord,
+    reflect_on_failure,
+    reflect_on_retry_cap,
     render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
@@ -1425,6 +1428,21 @@ class ReasonerNode(LifecycleNode):
                         "A new operator prompt resets the streak; otherwise it self-clears "
                         "when the model picks a different tool. (Repeats logged at debug.)",
                     )
+                    # ADR-0071 §2.3 — inject a Reflexion strategy hint into context
+                    # (once per streak) so the NEXT tick changes approach instead of
+                    # looping. Appending bumps `seq`, so the next heartbeat runs
+                    # rather than being suppressed as idle.
+                    if self._core is not None:
+                        tool = self._core._kind_streak[0]
+                        self._renderer.append_execution(
+                            ExecutionEventRecord(
+                                rskill_id="(ladder)",
+                                outcome="failed",
+                                summary=f"retry ladder exhausted for {tool!r}",
+                                reflection=reflect_on_retry_cap(tool, self._core._retry_cap),
+                                stamp_ns=self.get_clock().now().nanoseconds,
+                            )
+                        )
                 else:
                     self.get_logger().debug("tick suppressed: retry_cap (ongoing streak)")
                 return
@@ -2229,23 +2247,49 @@ class ReasonerNode(LifecycleNode):
         # failures; succeeded passes through silently.
         result = wrapped.result
         status = int(wrapped.status)
+        now_ns = self.get_clock().now().nanoseconds
         if status == 4 and result.success:
             self.get_logger().info(
                 f"execute_rskill succeeded rskill_id={call.rskill_id!r} "
                 f"trace_id={result.trace_id!r}",
+            )
+            # ADR-0071 §2.2 — surface SUCCESS to the LLM (Inner Monologue). The
+            # failure path already reaches the FAILURES buffer; success used to
+            # pass through silently, leaving the reasoner blind to "it worked".
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="ok",
+                    summary=f"trace={result.trace_id[:8] if result.trace_id else '-'}",
+                    reflection=None,
+                    stamp_ns=now_ns,
+                )
             )
             return
         self.get_logger().warning(
             f"execute_rskill failed rskill_id={call.rskill_id!r} status={status} "
             f"reason={result.failure_reason!r}",
         )
+        outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
+        detail = result.failure_reason or f"GoalStatus={status}"
+        # ADR-0071 §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
+        # the next tick advances the ladder instead of blindly retrying.
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id=call.rskill_id,
+                outcome="failed",
+                summary=detail,
+                reflection=reflect_on_failure(outcome_state, detail),
+                stamp_ns=now_ns,
+            )
+        )
         self._publish_skill_failure(
             kind=_KIND_CONTROLLER,
             rskill_id=call.rskill_id,
             evidence=ControllerEvidence(
                 controller_name=call.rskill_id,
-                state="aborted" if status == 6 else "canceled" if status == 5 else "failed",
-                detail=result.failure_reason or f"GoalStatus={status}",
+                state=outcome_state,
+                detail=detail,
             ),
             traceparent=traceparent,
             trace_id=result.trace_id or None,
