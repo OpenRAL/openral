@@ -20,9 +20,11 @@ Covers:
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pytest
 import yaml
 from openral_core import RobotDescription, RSkillManifest
@@ -120,6 +122,70 @@ def test_robotwin_root_errors_without_assets(
         _robotwin_root()
 
 
+def test_robotwin_sidecar_derives_sapien_sim_time() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Env:
+        elapsed_steps = np.array([3], dtype=np.int64)
+        control_timestep = 0.05
+
+    assert module._sapien_sim_time_ns(Env()) == 150_000_000
+
+
+def test_robotwin_sidecar_derives_wrapped_sapien_sim_time() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_wrapped_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Inner:
+        elapsed_steps = 4
+        control_freq = 20
+
+    class Env:
+        _env = Inner()
+
+    assert module._sapien_sim_time_ns(Env()) == 200_000_000
+
+
+def test_robotwin_sidecar_fallback_time_starts_at_zero_and_steps() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_fallback_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Env:
+        def step(
+            self, action: np.ndarray
+        ) -> tuple[dict[str, object], float, bool, bool, dict[str, bool]]:
+            return {}, 0.0, False, False, {"is_success": False}
+
+    scene = object.__new__(module._RoboTwinEnv)
+    scene._env = Env()
+    scene._is_vector_env = False
+    scene._success_key = "is_success"
+    scene._fallback_dt_ns = 33_333_333
+    scene._fallback_time_ns = 0
+    scene._unwrap_obs = lambda _obs: {"images": {}, "state": np.zeros(14), "task": ""}
+
+    assert scene.sim_time_ns() == 0
+    reply = scene.step(np.zeros(14, dtype=np.float32))
+
+    assert reply["sim_time_ns"] == 33_333_333
+
+
 def test_robotwin_launch_argv_passes_checkout_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -150,7 +216,7 @@ def test_robotwin_launch_argv_passes_checkout_root(
 
     env_cfg = SimEnvironment(
         robot_id="aloha_agilex",
-        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN, cameras=["camera1"]),
+        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN, cameras=["top"]),
         task=TaskSpec(
             id="robotwin/lift_pot",
             scene_id="robotwin",
@@ -219,7 +285,7 @@ def test_aloha_agilex_manifest() -> None:
     r = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "aloha_agilex" / "robot.yaml"))
     assert r.name == "aloha_agilex"
     assert len(r.joints) == 14
-    assert [s.name for s in r.sensors] == ["camera1", "camera2", "camera3"]
+    assert [s.name for s in r.sensors] == ["top", "wrist_left", "wrist_right"]
     assert r.action_spec.dim == 14
     assert "aloha_agilex" in r.capabilities.embodiment_tags
 

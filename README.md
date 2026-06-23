@@ -71,7 +71,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard` | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
-| Schemas | Pydantic v2 + JSON Schema export; pre-publish baseline at `schema_version: "0.1"` | `python/core/`, `tools/schema_export.py` |
+| Schemas | Pydantic v2 + JSON Schema export; manifests at `schema_version: "0.2"` (ADR-0069) | `python/core/`, `tools/schema_export.py` |
 | ROS 2 IDL | `openral_msgs` (.msg, .action) — normative across the runtime | `packages/msgs/` |
 
 ## Supported platforms

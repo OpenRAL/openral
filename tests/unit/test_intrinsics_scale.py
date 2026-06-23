@@ -16,15 +16,15 @@ import pytest
 from openral_core import IntrinsicsPinhole, scale_intrinsics_to
 
 
-def _panda_mobile_agentview() -> IntrinsicsPinhole:
-    """The canonical panda_mobile agentview_left / front_depth intrinsics (256²)."""
+def _panda_mobile_front_left() -> IntrinsicsPinhole:
+    """The canonical panda_mobile front_left / front_depth intrinsics (256²)."""
     return IntrinsicsPinhole(width=256, height=256, fx=256.0, fy=256.0, cx=128.0, cy=128.0)
 
 
 def test_scales_256_to_640_linearly() -> None:
     # The exact case from the plan: a 256² (fx=256, cx=128) camera rendered at
     # 640² must report fx=fy=640 and cx=cy=320 (cx == width / 2 preserved).
-    base = _panda_mobile_agentview()
+    base = _panda_mobile_front_left()
     scaled = scale_intrinsics_to(base, 640, 640)
     assert scaled.width == 640
     assert scaled.height == 640
@@ -37,7 +37,7 @@ def test_scales_256_to_640_linearly() -> None:
 def test_fov_is_preserved() -> None:
     # Linear scaling holds the field of view fixed: width / fx and the
     # normalised principal point cx / width are invariant across resolutions.
-    base = _panda_mobile_agentview()
+    base = _panda_mobile_front_left()
     scaled = scale_intrinsics_to(base, 640, 640)
     assert scaled.width / scaled.fx == pytest.approx(base.width / base.fx)
     assert scaled.cx / scaled.width == pytest.approx(base.cx / base.width)
@@ -45,7 +45,7 @@ def test_fov_is_preserved() -> None:
 
 def test_downscale_to_128() -> None:
     # The base scene renders at 128²; the same helper must halve a 256² model.
-    base = _panda_mobile_agentview()
+    base = _panda_mobile_front_left()
     scaled = scale_intrinsics_to(base, 128, 128)
     assert (scaled.width, scaled.height) == (128, 128)
     assert scaled.fx == pytest.approx(128.0)
@@ -63,7 +63,7 @@ def test_non_square_scales_each_axis_independently() -> None:
 
 
 def test_identity_when_resolution_unchanged_returns_same_object() -> None:
-    base = _panda_mobile_agentview()
+    base = _panda_mobile_front_left()
     assert scale_intrinsics_to(base, 256, 256) is base
 
 
@@ -85,6 +85,6 @@ def test_distortion_is_preserved() -> None:
 
 @pytest.mark.parametrize(("width", "height"), [(0, 640), (640, 0), (-1, 640), (640, -1)])
 def test_rejects_non_positive_resolution(width: int, height: int) -> None:
-    base = _panda_mobile_agentview()
+    base = _panda_mobile_front_left()
     with pytest.raises(ValueError, match="positive"):
         scale_intrinsics_to(base, width, height)

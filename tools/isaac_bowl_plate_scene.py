@@ -13,7 +13,11 @@ OSC term:
 The scene mirrors the LIBERO contract so a LIBERO-finetuned rSkill (act-libero /
 smolvla-libero) can drive it through ``openral sim run`` unchanged:
 
-* obs ``images``: ``camera1`` = front agent-view, ``camera2`` = secondary prop view;
+* obs ``images``: ``camera1`` = front agent-view, ``camera2`` = secondary prop view
+  (legacy ordinal slots predating ADR-0070; the HAL bridge tolerates the
+  mismatch with the canonical sensor name via ``vla_feature_key`` fallback —
+  TODO: extend the isaac-sidecar protocol so the host can pass canonical
+  scene-side names and emit them directly);
 * obs ``state``: 8-D ``[eef_pos(3) ‖ eef_axisangle(3) ‖ gripper_qpos(2)]``
   (matches ``openral_sim.backends.libero._wrap_obs``);
 * action: 7-D OSC-pose delta ``[dx, dy, dz, drx, dry, drz, gripper]`` — the

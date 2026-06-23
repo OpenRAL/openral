@@ -10,7 +10,7 @@ scene:
   backend: mujoco            # SAPIEN/ManiSkill3 under the hood
   observation_height: 480
   observation_width: 640
-  cameras: ["camera1"]
+  cameras: ["top"]
 
 task:
   id: simpler_env/widowx_carrot_on_plate

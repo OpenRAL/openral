@@ -50,10 +50,14 @@ if TYPE_CHECKING:
     from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 
 __all__ = [
+    "DEEPSEEK_BASE_URL",
     "DEFAULT_SYSTEM_PROMPT",
+    "GEMINI_BASE_URL",
     "OLLAMA_BASE_URL",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
+    "VLLM_BASE_URL",
+    "XAI_BASE_URL",
     "AnthropicToolUseClient",
     "OpenAICompatibleToolUseClient",
     "ToolUseClient",
@@ -451,10 +455,56 @@ OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 # to override both defaults.
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
 
+# Local vLLM's OpenAI-compatible base URL; pre-filled by the
+# ``OPENRAL_REASONER_LLM_PROVIDER=vllm`` shortcut (``vllm serve`` listens
+# on ``:8000`` by default). Like Ollama it is a self-hosted endpoint that
+# does not enforce auth unless started with ``--api-key``; the preset
+# therefore drops the API-key requirement, and an explicit
+# ``OPENRAL_REASONER_LLM_{BASE_URL,API_KEY}`` still overrides both.
+VLLM_BASE_URL: str = "http://localhost:8000/v1"
+
+# Named cloud presets reachable through Google / xAI / DeepSeek's own
+# OpenAI-compatible endpoints. Each is a thin convenience on top of the
+# generic ``openai-compatible`` client: the ``PROVIDER=<name>`` shortcut
+# pre-fills the base URL below so users don't hand-configure it. All
+# three enforce auth, so the factory requires
+# ``OPENRAL_REASONER_LLM_API_KEY`` (an explicit
+# ``OPENRAL_REASONER_LLM_BASE_URL`` still wins for a proxy / gateway).
+# Gemini's OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
+GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+XAI_BASE_URL: str = "https://api.x.ai/v1"
+DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+
+# Auth-required named presets that wrap :class:`OpenAICompatibleToolUseClient`
+# with a pre-filled base URL. ``openrouter`` is the original member;
+# ``gemini`` / ``xai`` / ``deepseek`` mirror it for the direct vendor
+# endpoints. Keyed by PROVIDER value → default base URL.
+_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
+    "openrouter": OPENROUTER_BASE_URL,
+    "gemini": GEMINI_BASE_URL,
+    "xai": XAI_BASE_URL,
+    "deepseek": DEEPSEEK_BASE_URL,
+}
+
+# Local self-hosted OpenAI-compatible presets. Same wrapper as the cloud
+# presets above, but these point at a loopback daemon and do NOT require
+# an API key (the endpoint enforces none by default). Keyed by PROVIDER
+# value → default base URL; the factory also gives this class a longer
+# default timeout to absorb a cold-model first call.
+_LOCAL_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
+    "ollama": OLLAMA_BASE_URL,
+    "vllm": VLLM_BASE_URL,
+}
+
 # All accepted PROVIDER values; surfaced in error messages and reused by
 # the ``openral doctor`` reasoner check so the two stay in sync.
 _KNOWN_PROVIDERS: frozenset[str] = frozenset(
-    {"anthropic", "openai-compatible", "openrouter", "ollama"},
+    {
+        "anthropic",
+        "openai-compatible",
+        *_LOCAL_OPENAI_COMPATIBLE_PRESETS,
+        *_OPENAI_COMPATIBLE_PRESETS,
+    },
 )
 
 
@@ -464,17 +514,24 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     Recognised env vars:
 
     * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
-      ``openai-compatible`` / ``openrouter`` / ``ollama``. Required.
+      ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``vllm`` /
+      ``gemini`` / ``xai`` / ``deepseek``. Required.
     * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
       Required.
     * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
-      ``anthropic`` and ``openrouter`` (both enforce auth); ignored by
-      local ``openai-compatible`` / ``ollama`` endpoints that don't.
-    * ``OPENRAL_REASONER_LLM_BASE_URL`` — only for ``openai-compatible``,
-      ``openrouter`` and ``ollama``. For ``openai-compatible`` it
-      defaults to the OpenAI cloud; for ``openrouter`` it defaults to
-      :data:`OPENROUTER_BASE_URL`; for ``ollama`` it defaults to
-      :data:`OLLAMA_BASE_URL` (local ``http://localhost:11434/v1``).
+      ``anthropic`` and the auth-required cloud presets (``openrouter`` /
+      ``gemini`` / ``xai`` / ``deepseek``); ignored by local
+      ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that don't
+      enforce it.
+    * ``OPENRAL_REASONER_LLM_BASE_URL`` — for ``openai-compatible`` and
+      every preset. For ``openai-compatible`` it defaults to the OpenAI
+      cloud; for the local presets it defaults to
+      :data:`OLLAMA_BASE_URL` (``http://localhost:11434/v1``) /
+      :data:`VLLM_BASE_URL` (``http://localhost:8000/v1``); for
+      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` it defaults to
+      that vendor's OpenAI-compatible endpoint
+      (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
+      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -493,9 +550,9 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     if not provider:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
-            "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' "
-            "to enable the reasoner. The open-core path has no default — "
-            "tests use FakeToolUseClient."
+            "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
+            "'vllm' / 'gemini' / 'xai' / 'deepseek' to enable the reasoner. The open-core "
+            "path has no default — tests use FakeToolUseClient."
         )
         raise ROSConfigError(msg)
     model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
@@ -504,11 +561,12 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             "OPENRAL_REASONER_LLM_MODEL is unset; required to construct a ToolUseClient.",
         )
     api_key = os.environ.get("OPENRAL_REASONER_LLM_API_KEY", "").strip() or None
-    # Local small models do tool-use slowly (qwen3:0.6b on first call
-    # needs ~30 s warm-up); the cloud providers stay tight on the
-    # 10 s default. An explicit env wins for either side.
+    # Local self-hosted models do tool-use slowly on a cold first call
+    # (qwen3:0.6b under Ollama needs ~30 s warm-up; vLLM can be mid-load);
+    # the cloud providers stay tight on the 10 s default. An explicit env
+    # wins for either side.
     timeout_env = os.environ.get("OPENRAL_REASONER_LLM_TIMEOUT_S", "").strip()
-    default_timeout_s = 60.0 if provider == "ollama" else 10.0
+    default_timeout_s = 60.0 if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS else 10.0
     timeout_s = float(timeout_env) if timeout_env else default_timeout_s
     if provider == "anthropic":
         if api_key is None:
@@ -524,13 +582,17 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             base_url=base_url,
             timeout_s=timeout_s,
         )
-    if provider == "openrouter":
+    if provider in _OPENAI_COMPATIBLE_PRESETS:
+        # openrouter / gemini / xai / deepseek — thin auth-required presets
+        # that pre-fill the vendor's OpenAI-compatible base URL. An explicit
+        # OPENRAL_REASONER_LLM_BASE_URL still wins (proxy / staging gateway).
         if api_key is None:
             raise ROSConfigError(
-                "OPENRAL_REASONER_LLM_API_KEY is unset; required for provider=openrouter.",
+                f"OPENRAL_REASONER_LLM_API_KEY is unset; required for provider={provider}.",
             )
         base_url = (
-            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or OPENROUTER_BASE_URL
+            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
+            or _OPENAI_COMPATIBLE_PRESETS[provider]
         )
         return OpenAICompatibleToolUseClient(
             model_id=model,
@@ -538,11 +600,15 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             base_url=base_url,
             timeout_s=timeout_s,
         )
-    if provider == "ollama":
-        # Ollama's OpenAI-compat endpoint does not enforce auth by
-        # default; an explicit env value still passes through for users
-        # who front their Ollama with a gateway that does.
-        base_url = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or OLLAMA_BASE_URL
+    if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS:
+        # ollama / vllm — local self-hosted OpenAI-compatible servers whose
+        # endpoint does not enforce auth by default; an explicit env value
+        # still passes through for users who front them with a gateway (or
+        # `vllm serve --api-key`) that does.
+        base_url = (
+            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
+            or _LOCAL_OPENAI_COMPATIBLE_PRESETS[provider]
+        )
         return OpenAICompatibleToolUseClient(
             model_id=model,
             api_key=api_key,

@@ -22,7 +22,7 @@
     backend: sapien
     observation_height: 256
     observation_width: 256
-    cameras: ["camera1", "camera2", "camera3"]
+    cameras: ["top", "wrist_left", "wrist_right"]
   task: &task_proto
     id: robotwin/lift_pot
     scene_id: robotwin

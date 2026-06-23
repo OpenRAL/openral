@@ -197,9 +197,12 @@ class _RoboCasaSim:
     """SimRollout wrapper around a robosuite/robocasa kitchen env.
 
     robosuite's env returns a flat dict observation keyed by topic
-    (e.g. ``robot0_agentview_left_image``); we map the first camera to
-    ``camera1`` and concatenate robot proprioception into ``state`` so
-    the eval-layer contract matches the other adapters.
+    (e.g. ``robot0_agentview_left_image``); we map each camera in
+    declaration order to the scene's canonical camera names (per
+    ADR-0070 — e.g. ``shoulder_left`` / ``shoulder_right`` / ``wrist`` on
+    panda_mobile, falling back to ``camera{i+1}``) and concatenate
+    robot proprioception into ``state`` so the eval-layer contract
+    matches the other adapters.
     """
 
     scene: SceneSpec
@@ -533,12 +536,14 @@ class _RoboCasaSim:
         # Expose every raw camera stream the env produced -- both under
         # its native robosuite name (so a lerobot pi0.5 / pi0 checkpoint
         # that consumes ``observation.images.robot0_agentview_left_image``
-        # works without an alias map) and under the openral ergonomic
-        # alias `camera1` / `camera2` / `camera3` (so the smolvla / xvla /
-        # mock policy adapters keep working unchanged).
+        # works without an alias map) and under the canonical scene
+        # camera names (per ADR-0070: e.g. ``shoulder_left`` / ``shoulder_right``
+        # / ``wrist`` on panda_mobile; falls back to ``camera{i+1}`` when
+        # the scene leaves ``cameras`` empty).
         images: dict[str, NDArray[np.uint8]] = {}
         h = self.scene.observation_height
         w = self.scene.observation_width
+        scene_cams = list(self.scene.cameras)
         # MuJoCo's offscreen renderer emits images bottom-row-first (OpenGL
         # convention). RoboCasa's upstream training pipeline
         # (``gymnasium_basic.RoboCasaEnv.get_basic_observation``) flips
@@ -559,11 +564,13 @@ class _RoboCasaSim:
             if value is not None:
                 arr = np.ascontiguousarray(np.asarray(value, dtype=np.uint8)[::-1, :, :])
                 images[key] = arr
-                images[f"camera{i + 1}"] = arr
+                alias = scene_cams[i] if i < len(scene_cams) else f"camera{i + 1}"
+                images[alias] = arr
                 if self._last_image is None or i == 0:
                     self._last_image = arr
         if not images:
-            images["camera1"] = np.zeros((h, w, 3), dtype=np.uint8)
+            fallback = scene_cams[0] if scene_cams else "camera1"
+            images[fallback] = np.zeros((h, w, 3), dtype=np.uint8)
 
         # 9-D smolvla layout: eef_pos(3) + eef_quat(4) + gripper_qpos(2).
         # The older pre-mg_300 single-arm shape; also the graceful
@@ -786,9 +793,11 @@ class _RoboCasaSim:
           `"unlocked_waist: "` for ArmsAndWaist embodiments.
 
         We pluck those, concatenate the five state arrays into the
-        openral 29-D order, and expose the camera under `camera1`
-        (openral alias) plus `video.ego_view` (the short canonical key
-        the rldx adapter sends to the FT-GR1 sidecar).
+        openral 29-D order, and expose the camera under the scene's
+        first canonical camera name (per ADR-0070 — e.g. ``head`` on
+        the GR1 tabletop scene; falls back to ``camera1``) plus
+        ``video.ego_view`` (the short canonical key the rldx adapter
+        sends to the FT-GR1 sidecar).
         """
         state = np.concatenate(
             [
@@ -811,9 +820,10 @@ class _RoboCasaSim:
             f"unlocked_waist: {self.task.instruction}"
         )
 
+        cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
         return {
             "images": {
-                "camera1": ego,
+                cam0: ego,
                 "video.ego_view": ego,
                 "video.ego_view_pad_res256_freq20": ego,
             },
@@ -1425,9 +1435,9 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
     if is_gr1:
         # GR1 humanoid uses a single head-mounted "egoview" camera.
         # robocasa's GR1*KeyConverter.get_camera_config() pins exactly
-        # this one; the bot-harness scene contract still exposes
-        # camera1 / camera2 / camera3 aliases (the second/third are
-        # empty for GR1).
+        # this one; the bot-harness scene contract exposes it under the
+        # scene's first canonical camera name (per ADR-0070 — typically
+        # ``head`` on the gr1 tabletop scene).
         camera_names: list[str] = ["egoview"]
         camera_keys: tuple[str, ...] = ("egoview_image",)
     else:

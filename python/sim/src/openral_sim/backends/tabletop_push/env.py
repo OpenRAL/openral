@@ -19,7 +19,7 @@ The :class:`openral_sim.SimRollout` contract:
 * ``step(action)`` writes an ``nu``-D joint-position-target action to the
   robot's actuators (``nu`` = the robot's actuator count; the scene adds none)
   and steps the simulator;
-* ``render()`` returns the last overhead RGB frame;
+* ``render()`` returns the last top-down RGB frame;
 * ``mujoco_handles()`` exposes ``MjModel`` / ``MjData`` to ``openral sim run --view``.
 
 The action / state dimension is ``nu`` — read from the compiled model, not
@@ -30,7 +30,7 @@ relies on (the appended task world never reorders the robot's actuators).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -40,6 +40,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.tabletop_push._assets import (
     TabletopOptions,
     compose_tabletop_mjcf,
+    infer_wrist_camera_mount_body,
 )
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult, sim_time_ns_from_mujoco_handles
@@ -98,7 +99,7 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions
     xyz_keys = {
         "robot_base_xyz",
         "cube_size",
-        "overhead_camera_pos",
+        "top_camera_pos",
         "front_camera_pos",
         "wrist_camera_pos_local",
         "ambient_light",
@@ -454,6 +455,17 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             "valid `robot_id:` in the YAML or pass --robot <robot_id>.",
         )
 
+    requested_cameras = tuple(env_cfg.scene.cameras or ("top", "front"))
+    if "wrist" in requested_cameras and options.wrist_camera_mount_body is None:
+        inferred_mount = infer_wrist_camera_mount_body(description)
+        if inferred_mount is None:
+            raise ROSConfigError(
+                f"tabletop_push: scene requested a wrist camera, but robot "
+                f"{description.name!r} does not declare "
+                "sensors['wrist'].sim_placement.parent_body in its manifest.",
+            )
+        options = replace(options, wrist_camera_mount_body=inferred_mount)
+
     model = compose_tabletop_mjcf(description, options, base_pose=env_cfg.base_pose)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
@@ -505,9 +517,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
             "cube freejoint — the composer must be updated.",
         )
 
-    camera_names: tuple[str, ...] = ("overhead", "front")
-    if options.wrist_camera_mount_body is not None:
-        camera_names = (*camera_names, "wrist")
+    camera_names = requested_cameras
 
     render_w = int(env_cfg.scene.observation_width or _DEFAULT_RENDER_WIDTH)
     render_h = int(env_cfg.scene.observation_height or _DEFAULT_RENDER_HEIGHT)

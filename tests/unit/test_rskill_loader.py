@@ -695,26 +695,31 @@ class TestCheckCapabilities:
             actions=[RSkillAction.GENERALIST],
         )
 
+    @staticmethod
+    def _caps_with_gpu_support(
+        *,
+        runtimes: list[RSkillRuntime] | None = None,
+        dtypes: list[QuantizationDtype] | None = None,
+    ) -> RobotCapabilities:
+        caps = RobotCapabilities(embodiment_tags=["so100_follower"])
+        object.__setattr__(caps, "gpu_supported_runtimes", list(runtimes or []))
+        object.__setattr__(caps, "gpu_supported_dtypes", list(dtypes or []))
+        return caps
+
     def test_runtime_unsupported_raises(self) -> None:
         """Skill requires TensorRT but the host only has PyTorch / ONNX."""
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT)
-        caps = RobotCapabilities(
-            embodiment_tags=["so100_follower"],
-            gpu_supported_runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.ONNX],
-        )
+        caps = self._caps_with_gpu_support(runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.ONNX])
         with pytest.raises(ROSCapabilityMismatch, match="runtime"):
             rSkill.check_capabilities(m, caps)
 
     def test_runtime_supported_passes(self) -> None:
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT)
-        caps = RobotCapabilities(
-            embodiment_tags=["so100_follower"],
-            gpu_supported_runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT],
-        )
+        caps = self._caps_with_gpu_support(runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT])
         rSkill.check_capabilities(m, caps)
 
     def test_runtime_unknown_skips_check(self) -> None:
-        """Empty robot runtime list = unknown; should not enforce — preserves legacy."""
+        """Missing legacy runtime fields = unknown; should not enforce."""
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT)
         caps = RobotCapabilities(embodiment_tags=["so100_follower"])
         rSkill.check_capabilities(m, caps)  # no raise
@@ -722,10 +727,9 @@ class TestCheckCapabilities:
     def test_quantization_dtype_unsupported_raises(self) -> None:
         """Skill needs FP4 but the host (Ada) only has up to FP8."""
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT, QuantizationDtype.FP4_NVFP4)
-        caps = RobotCapabilities(
-            embodiment_tags=["so100_follower"],
-            gpu_supported_runtimes=[RSkillRuntime.TENSORRT],
-            gpu_supported_dtypes=[
+        caps = self._caps_with_gpu_support(
+            runtimes=[RSkillRuntime.TENSORRT],
+            dtypes=[
                 QuantizationDtype.FP32,
                 QuantizationDtype.FP16,
                 QuantizationDtype.INT8,
@@ -737,21 +741,15 @@ class TestCheckCapabilities:
     def test_quantization_dtype_supported_passes(self) -> None:
         """Skill needs FP4; Blackwell host supports it."""
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT, QuantizationDtype.FP4_NVFP4)
-        caps = RobotCapabilities(
-            embodiment_tags=["so100_follower"],
-            gpu_supported_runtimes=[RSkillRuntime.TENSORRT],
-            gpu_supported_dtypes=[QuantizationDtype.FP4_NVFP4],
+        caps = self._caps_with_gpu_support(
+            runtimes=[RSkillRuntime.TENSORRT], dtypes=[QuantizationDtype.FP4_NVFP4]
         )
         rSkill.check_capabilities(m, caps)
 
     def test_quantization_dtype_unknown_skips_check(self) -> None:
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT, QuantizationDtype.FP4_NVFP4)
-        # gpu_supported_runtimes populated but dtypes empty: only the runtime
-        # check applies.
-        caps = RobotCapabilities(
-            embodiment_tags=["so100_follower"],
-            gpu_supported_runtimes=[RSkillRuntime.TENSORRT],
-        )
+        # runtime declared, dtype unknown: only the runtime check applies.
+        caps = self._caps_with_gpu_support(runtimes=[RSkillRuntime.TENSORRT])
         rSkill.check_capabilities(m, caps)
 
 

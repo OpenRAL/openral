@@ -50,7 +50,7 @@ joints:
 # PushT predates the multi-cam ``observation.images.cameraN`` convention
 # and exposes the raw key ``observation.image``.
 sensors:
-  - name: "topdown"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
@@ -93,3 +93,4 @@ sdk_kind: "open"
 # The IO contract (2-D state, 2-D action, 96x96 RGB at 10 Hz) is the
 # scene's, not the robot's, and lives in
 # openral_sim.adapters.pusht.
+schema_version: '0.2'

@@ -25,7 +25,10 @@ from openral_core.schemas import (
     BenchmarkName,
     CameraSimPlacement,
     CapsuleShape,
+    ClockAuthority,
+    ClockEpoch,
     CollisionEvidence,
+    ComputeSpec,
     ControlMode,
     ControlModeSemantics,
     DeadlineOverrunPolicy,
@@ -167,10 +170,15 @@ _end_effector_st = st.builds(
 _capabilities_st = st.builds(
     RobotCapabilities,
     can_lift_kg=_pos_float,
-    onboard_compute_tops=_pos_float,
-    onboard_memory_gb=_pos_float,
     embodiment_tags=st.lists(_name, max_size=5),
     supported_control_modes=st.lists(st.sampled_from(list(ControlMode)), max_size=4),
+)
+
+_compute_spec_st = st.builds(
+    ComputeSpec,
+    compute_tops=_pos_float,
+    system_memory_gb=_pos_float,
+    gpu_vram_gb=_pos_float,
 )
 
 _safety_st = st.builds(
@@ -203,6 +211,9 @@ _robot_description_st = st.builds(
     safety=_safety_st,
     sdk_kind=st.sampled_from(["open", "closed_with_api", "closed"]),
     hal=_hal_entrypoints_st,
+    compute_edge=st.one_of(st.none(), _compute_spec_st),
+    compute_local=st.one_of(st.none(), _compute_spec_st),
+    compute_cloud=st.one_of(st.none(), _compute_spec_st),
 )
 
 _joint_state_st = st.builds(
@@ -276,6 +287,24 @@ _occupancy_grid_ref_st = st.builds(
     data_topic=_topic,
 )
 
+_clock_authority_st = st.one_of(
+    st.builds(ClockAuthority.host_wall, clock_id=_name),
+    st.builds(
+        ClockAuthority.simulation,
+        clock_id=_name,
+        timestep_s=st.one_of(
+            st.none(),
+            st.floats(allow_nan=False, allow_infinity=False, min_value=1e-6, max_value=1.0),
+        ),
+        publishes_ros_clock=st.booleans(),
+    ),
+    st.builds(
+        ClockAuthority.hardware_synced,
+        clock_id=_name,
+        epoch=st.sampled_from([ClockEpoch.UNIX, ClockEpoch.HARDWARE]),
+    ),
+)
+
 _collision_evidence_st = st.builds(
     CollisionEvidence,
     collision_kind=st.sampled_from(["self", "world"]),
@@ -307,6 +336,13 @@ def _round_trip_and_validate(cls: type, instance: object) -> None:  # type: igno
 
 
 # ─── Fuzz tests ───────────────────────────────────────────────────────────────
+
+
+@_FUZZ_SETTINGS
+@given(_clock_authority_st)
+def test_fuzz_clock_authority(instance: ClockAuthority) -> None:
+    """ClockAuthority round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(ClockAuthority, instance)
 
 
 @_FUZZ_SETTINGS
@@ -356,6 +392,13 @@ def test_fuzz_end_effector_spec(instance: EndEffectorSpec) -> None:
 def test_fuzz_robot_capabilities(instance: RobotCapabilities) -> None:
     """RobotCapabilities round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(RobotCapabilities, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_compute_spec_st)
+def test_fuzz_compute_spec(instance: ComputeSpec) -> None:
+    """ComputeSpec round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(ComputeSpec, instance)
 
 
 @_FUZZ_SETTINGS

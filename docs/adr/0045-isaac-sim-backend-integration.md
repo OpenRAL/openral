@@ -444,8 +444,8 @@ pass a `RobotDescription` object across the boundary. Instead:
 - **Full slam-map + obstacle-aware Nav2 (DONE, verified live 2026-06-11)** — the slam loop needs a
   common clock (slam + Nav2 run `use_sim_time:true`); the deploy-sim `/clock` publisher (ADR-0048,
   #309) on master closes it. With this branch rebased onto that master,
-  `openral deploy sim --config scenes/deploy/isaac_panda_mobile_urdf.yaml --enable-sim-clock
-  --enable-slam --enable-nav2` ran the **complete autonomous-navigation loop** on Isaac panda_mobile:
+  `openral deploy sim --config scenes/deploy/isaac_panda_mobile_urdf.yaml --enable-slam
+  --enable-nav2` ran the **complete autonomous-navigation loop** on Isaac panda_mobile:
   the HAL published `/clock` from sim time, `slam_toolbox` **registered the Isaac lidar** and built a
   388×480 @ 0.05 m `/map` from the `/scan`, Nav2's planner+controller+costmaps came up, and a
   `NavigateToPose` goal to `(1.6, 0)` in `map` returned **SUCCEEDED** with `/odom` advancing

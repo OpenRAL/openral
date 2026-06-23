@@ -190,14 +190,17 @@ class TestComputeEnrichment:
             ),
         )
         desc = assemble_robot_description(report)
-        assert desc.capabilities.onboard_compute_tops == 1321.0
-        assert desc.capabilities.gpu_vram_gb == 24.0
-        assert desc.capabilities.cuda_compute_capability == (8, 9)
-        assert desc.capabilities.cuda_toolkit_version == "12.4"
-        assert desc.capabilities.tensorrt_version == "10.5"
+        # Discrete NVIDIA → compute_local; compute_edge stays None.
+        assert desc.compute_local is not None
+        assert desc.compute_edge is None
+        assert desc.compute_local.compute_tops == 1321.0
+        assert desc.compute_local.gpu_vram_gb == 24.0
+        assert desc.compute_local.cuda_compute_capability == (8, 9)
+        assert desc.compute_local.cuda_toolkit_version == "12.4"
+        assert desc.compute_local.tensorrt_version == "10.5"
         # Discrete NVIDIA host unlocks TensorRT / TRT-LLM / vLLM.
-        assert RSkillRuntime.TENSORRT in desc.capabilities.gpu_supported_runtimes
-        assert RSkillRuntime.TRT_LLM in desc.capabilities.gpu_supported_runtimes
+        assert RSkillRuntime.TENSORRT in desc.compute_local.gpu_supported_runtimes
+        assert RSkillRuntime.TRT_LLM in desc.compute_local.gpu_supported_runtimes
         # Onboard compute blob captures the raw probe payload.
         assert "gpu_probe" in desc.onboard_compute
 
@@ -215,9 +218,12 @@ class TestComputeEnrichment:
             ),
         )
         desc = assemble_robot_description(report)
-        assert desc.capabilities.onboard_compute_tops == 275.0
-        assert desc.capabilities.onboard_memory_gb == 64.0
-        assert desc.capabilities.cuda_compute_capability == (8, 7)
+        # Jetson SoC → compute_edge; compute_local stays None.
+        assert desc.compute_edge is not None
+        assert desc.compute_local is None
+        assert desc.compute_edge.compute_tops == 275.0
+        assert desc.compute_edge.system_memory_gb == 64.0
+        assert desc.compute_edge.cuda_compute_capability == (8, 7)
 
 
 class TestRos2Metadata:
@@ -253,8 +259,14 @@ class TestIdempotence:
         d1 = assemble_robot_description(r1)
         r2 = _empty_report()
         d2 = assemble_robot_description(r2)
-        assert d1.capabilities.onboard_compute_tops == 275.0
-        assert d2.capabilities.onboard_compute_tops == 0.0
+        # d1: Jetson → compute_edge populated; compute_local stays None.
+        assert d1.compute_edge is not None
+        assert d1.compute_local is None
+        assert d1.compute_edge.compute_tops == 275.0
+        # d2: CPU-only → compute_local populated (zero TOPS); compute_edge stays None.
+        assert d2.compute_local is not None
+        assert d2.compute_edge is None
+        assert d2.compute_local.compute_tops == 0.0
 
 
 class TestRoundTripAfterAssemble:

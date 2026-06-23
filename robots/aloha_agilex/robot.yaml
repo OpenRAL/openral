@@ -172,14 +172,16 @@ end_effectors:
 
 # Three RGB cameras: a head (overhead) view + per-wrist views. RoboTwin's
 # native keys are cam_high / cam_left_wrist / cam_right_wrist (480×640 in the
-# `lerobot/robotwin_unified` dataset), but the public `lerobot/smolvla_robotwin`
-# checkpoint's `config.json` consumes them as camera1 / camera2 / camera3 at
-# 256×256 (the same generic naming the franka_panda / ManiSkill rSkills use).
-# We expose the checkpoint-facing keys here so the rSkill sensor gate resolves
-# cleanly; the RoboTwin sidecar re-keys the env's three cameras to camera1/2/3
-# in head→left→right order.
+# `lerobot/robotwin_unified` dataset). The public `lerobot/smolvla_robotwin`
+# checkpoint's `config.json` consumes them at 256×256 under the generic feature
+# keys observation.images.camera1/2/3 (the same naming the franka_panda /
+# ManiSkill rSkills use). Per ADR-0070 the HAL-facing sensor names are
+# canonical (top / wrist_left / wrist_right); the checkpoint-facing
+# `vla_feature_key` stays camera1/2/3 since it is frozen per checkpoint. The
+# RoboTwin sidecar re-keys the env's three cameras to scene cameras in
+# head→left→right order.
 sensors:
-  - name: "camera1"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 25.0
@@ -194,7 +196,7 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "sim"
     model: "robotwin_cam_high"
-  - name: "camera2"
+  - name: "wrist_left"
     modality: "rgb"
     frame_id: "left_link6"
     rate_hz: 25.0
@@ -209,7 +211,7 @@ sensors:
     vla_feature_key: "observation.images.camera2"
     vendor: "sim"
     model: "robotwin_cam_left_wrist"
-  - name: "camera3"
+  - name: "wrist_right"
     modality: "rgb"
     frame_id: "right_link6"
     rate_hz: 25.0
@@ -263,3 +265,4 @@ action_spec:
   dim: 14
   representation: "joint_positions"
   control_freq_hz: 25.0
+schema_version: '0.2'

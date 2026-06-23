@@ -38,7 +38,7 @@ def _make_adapter(state_layout: str):
     object.__setattr__(adapter, "quantization", "nf4")
     object.__setattr__(adapter, "embodiment_tag", "OXE_BRIDGE_ORIG")
     object.__setattr__(adapter, "model_id", None)
-    object.__setattr__(adapter, "_camera_keys", ("camera1", "camera2"))
+    object.__setattr__(adapter, "_camera_keys", ("top", "camera2"))
     object.__setattr__(adapter, "_last_input_frame", None)
     # Sticky-gripper state machine — same defaults as the dataclass field
     # so wire-shape tests start from a known "open and unlocked" state.
@@ -49,7 +49,7 @@ def _make_adapter(state_layout: str):
 
 def _make_simpler_obs(eef_pos: np.ndarray) -> dict:
     return {
-        "images": {"camera1": np.zeros((480, 640, 3), dtype=np.uint8)},
+        "images": {"top": np.zeros((480, 640, 3), dtype=np.uint8)},
         "state": np.zeros(16, dtype=np.float32),
         "task": "put the carrot on the plate",
         "raw": {"agent": {"eef_pos": eef_pos.astype(np.float32)}},

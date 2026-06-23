@@ -12,6 +12,7 @@ import pytest
 from openral_cli.main import (
     CheckResult,
     _check_colcon,
+    _check_compute_spec,
     _check_gpu,
     _check_just,
     _check_openral_core,
@@ -151,11 +152,8 @@ def test_check_gpu_nvidia_ok() -> None:
         driver_version="550.78",
         cuda_compute_capability=(8, 9),
     )
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(nvidia=[nv], backend="nvml"),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    results = _check_gpu(probe, [])
     assert len(results) == 1
     assert results[0].status == "ok"
     assert "RTX 4090" in results[0].details
@@ -185,11 +183,8 @@ def test_check_gpu_multi() -> None:
             cuda_compute_capability=(8, 6),
         ),
     ]
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(nvidia=cards, backend="nvml"),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(nvidia=cards, backend="nvml")
+    results = _check_gpu(probe, [])
     assert len(results) == 2
     assert results[0].check == "GPU 0"
     assert results[1].check == "GPU 1"
@@ -197,34 +192,25 @@ def test_check_gpu_multi() -> None:
 
 def test_check_gpu_nvsmi_query_fails() -> None:
     # Probe failed → empty result with a warning; doctor surfaces "absent".
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub()
+    results = _check_gpu(probe, ["nvml unavailable"])
     assert results[0].status == "absent"
 
 
 def test_check_gpu_absent_non_mac() -> None:
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub()
+    results = _check_gpu(probe, [])
     assert results[0].status == "absent"
 
 
 def test_check_gpu_apple_silicon() -> None:
     from openral_detect.report import AppleSiliconInfo
 
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(
-            apple_silicon=AppleSiliconInfo(chip="Apple M3 Max", gpu_cores=40),
-            backend="system_profiler",
-        ),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(
+        apple_silicon=AppleSiliconInfo(chip="Apple M3 Max", gpu_cores=40),
+        backend="system_profiler",
+    )
+    results = _check_gpu(probe, [])
     assert results[0].status == "info"
     assert "Apple Silicon" in results[0].details
 
@@ -358,6 +344,100 @@ def test_check_reasoner_llm_openrouter_missing_key(
     assert "openrouter.ai/api/v1" in summary.details
 
 
+def test_check_reasoner_llm_ollama_default_base_url_no_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """`provider=ollama` is recognised, defaults to the loopback base URL,
+    and requires no API key — it must not be reported as an unknown provider."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen3:8b")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    # No model/key missing → ok (auth not required for ollama).
+    assert summary.status == "ok"
+    assert "provider=ollama" in summary.details
+    assert "localhost:11434/v1" in summary.details
+    # Loopback base URL → an Ollama probe row is emitted.
+    assert any(r.check == "Ollama" for r in rows)
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url_fragment"),
+    [
+        ("gemini", "gemini-2.5-flash", "generativelanguage.googleapis.com"),
+        ("xai", "grok-4", "api.x.ai/v1"),
+        ("deepseek", "deepseek-chat", "api.deepseek.com"),
+    ],
+)
+def test_check_reasoner_llm_named_cloud_preset(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_reasoner_env: None,
+    provider: str,
+    model: str,
+    base_url_fragment: str,
+) -> None:
+    """The gemini / xai / deepseek presets resolve a vendor base URL, require a
+    key, and emit no Ollama probe (cloud endpoints)."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", model)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", f"sk-{provider}-secret")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "ok"
+    assert f"provider={provider}" in summary.details
+    assert base_url_fragment in summary.details
+    assert not any(r.check == "Ollama" for r in rows)
+
+
+def test_check_reasoner_llm_named_cloud_preset_missing_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A named cloud preset without an API key reports the missing key row."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek-chat")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
+    assert key_row.status == "missing"
+    assert "deepseek" in key_row.details
+
+
+def test_check_reasoner_llm_vllm_probe_row_labelled_vllm(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """`provider=vllm` defaults to the local :8000 endpoint, needs no key, and
+    its loopback probe row is labelled vLLM (not Ollama) with a vLLM hint."""
+    # Port 1 is guaranteed-closed so the probe always warns deterministically.
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1:1/v1")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    # No model/key missing → ok (auth not required for vllm).
+    assert summary.status == "ok"
+    assert "provider=vllm" in summary.details
+    probe = next(r for r in rows if r.check == "vLLM")
+    assert probe.status == "warn"
+    assert "vllm serve" in probe.details
+    # Must not be mislabelled / hinted as Ollama.
+    assert not any(r.check == "Ollama" for r in rows)
+    assert "bootstrap-ollama" not in probe.details
+
+
+def test_check_reasoner_llm_vllm_default_port(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """With no BASE_URL, vllm resolves the :8000 loopback default in the summary."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert "localhost:8000/v1" in summary.details
+    # Loopback → a vLLM probe row is emitted (reachable or not).
+    assert any(r.check == "vLLM" for r in rows)
+
+
 def test_check_reasoner_llm_local_endpoint_unreachable(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
@@ -392,7 +472,73 @@ def test_gather_checks_returns_list() -> None:
     names = [c.check for c in checks]
     assert "Python" in names
     assert "Platform" in names
-    assert "Reasoner LLM" in names
+    # ComputeSpec rows always present regardless of GPU availability (tier label varies)
+    assert any("ComputeSpec" in n and "runtimes" in n for n in names)
+    assert any("ComputeSpec" in n and "dtypes" in n for n in names)
+    assert any("ComputeSpec" in n and "cuMotion" in n for n in names)
+    assert any("ComputeSpec" in n and "NVMM" in n for n in names)
+
+
+# ── _check_compute_spec ───────────────────────────────────────────────────────
+
+
+def test_check_compute_spec_cpu_only() -> None:
+    probe = _gpu_probe_stub()
+    rows = _check_compute_spec(probe)
+    # CPU-only → "local" tier
+    checks = {r.check: r for r in rows}
+    assert "ComputeSpec (local) / runtimes" in checks
+    assert "ComputeSpec (local) / dtypes" in checks
+    cumotion = checks["ComputeSpec (local) / cuMotion"]
+    assert cumotion.status == "info"
+    assert "not supported" in cumotion.details
+
+
+def test_check_compute_spec_ampere_cuda13_qualifies_cumotion() -> None:
+    from openral_detect.report import NvidiaGpuInfo
+
+    nv = NvidiaGpuInfo(
+        index=0,
+        name="RTX 4090",
+        vram_total_mib=24576,
+        vram_free_mib=24000,
+        pci_bus_id="0000:01:00.0",
+        driver_version="550.78",
+        cuda_compute_capability=(8, 9),
+        cuda_toolkit_version="13.2",
+    )
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    rows = _check_compute_spec(probe)
+    # Discrete NVIDIA → "local" tier
+    checks = {r.check: r for r in rows}
+    assert checks["ComputeSpec (local) / cuMotion"].status == "ok"
+    assert checks["ComputeSpec (local) / cuMotion"].details == "supported"
+
+
+def test_check_compute_spec_runtimes_include_tensorrt_for_nvidia() -> None:
+    from openral_detect.report import NvidiaGpuInfo
+
+    nv = NvidiaGpuInfo(
+        index=0,
+        name="RTX 3090",
+        vram_total_mib=24576,
+        vram_free_mib=24000,
+        pci_bus_id="0000:01:00.0",
+        driver_version="550",
+        cuda_compute_capability=(8, 6),
+    )
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    rows = _check_compute_spec(probe)
+    # Discrete NVIDIA → "local" tier
+    runtimes_row = next(r for r in rows if "runtimes" in r.check)
+    assert "tensorrt" in runtimes_row.details
+
+
+def test_check_compute_spec_nvmm_row_present() -> None:
+    probe = _gpu_probe_stub()
+    rows = _check_compute_spec(probe)
+    nvmm = next(r for r in rows if "NVMM" in r.check)
+    assert nvmm.status in ("ok", "absent")
 
 
 # ── CLI integration (typer CliRunner) ─────────────────────────────────────────

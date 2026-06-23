@@ -120,7 +120,7 @@ safety:
   deadman_required: true
 
 sensors:
-  - name: "overhead"
+  - name: "top"
     modality: "rgb"
     frame_id: "overhead_camera"
     rate_hz: 10.0
@@ -139,3 +139,4 @@ sensors:
 sdk_kind: "open"
 # observation_spec / action_spec deliberately omitted (ADR-0007). The
 # per-sim IO contracts live in the matching scene adapters.
+schema_version: '0.2'

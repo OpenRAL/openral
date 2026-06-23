@@ -42,8 +42,8 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    ComputeSpec,
     ControlMode,
-    RobotCapabilities,
     RobotDescription,
     RosIntegration,
     RSkillManifest,
@@ -145,13 +145,13 @@ def maybe_inject_cumotion_pipeline(
     goal_dict: dict[str, Any],
     *,
     interface_type: str,
-    capabilities: RobotCapabilities | None,
+    compute: ComputeSpec | None,
 ) -> dict[str, Any]:
     """Return ``goal_dict`` with ``request.pipeline_id`` set to cuMotion when gated on.
 
     cuMotion is a MoveIt planning-pipeline plugin selected per request via
     ``moveit_msgs/MotionPlanRequest.pipeline_id`` (ADR-0065 D1). When the host
-    clears the cuMotion GPU floor (:meth:`RobotCapabilities.supports_cumotion`)
+    clears the cuMotion GPU floor (:meth:`ComputeSpec.supports_cumotion`)
     and the wrapped action is ``MoveGroup``, this injects the cuMotion pipeline id
     into the goal's ``request`` block; otherwise the goal is returned unchanged so
     MoveIt uses its default pipeline (OMPL).
@@ -161,7 +161,7 @@ def maybe_inject_cumotion_pipeline(
     """
     if interface_type != "MoveGroup":
         return goal_dict
-    if capabilities is None or not capabilities.supports_cumotion():
+    if compute is None or not compute.supports_cumotion():
         return goal_dict
     request = goal_dict.get("request")
     if not isinstance(request, dict) or request.get("pipeline_id"):
@@ -448,7 +448,9 @@ class ROSActionRskill(rSkillBase):
         self._goal_dict = maybe_inject_cumotion_pipeline(
             self._goal_dict,
             interface_type=self._integration.interface_type,
-            capabilities=self._description.capabilities if self._description is not None else None,
+            compute=(self._description.compute_edge or self._description.compute_local)
+            if self._description is not None
+            else None,
         )
 
         if kind == "action":

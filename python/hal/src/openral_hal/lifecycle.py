@@ -355,8 +355,8 @@ if _ROS2_AVAILABLE:
             self._pub_thread: threading.Thread | None = None
             self._pub_stop: threading.Event | None = None
             # ADR-0048 Phase 2 — /clock publisher. Created at activate iff the
-            # graph runs on sim time (the node's ``use_sim_time`` is True, set by
-            # the ``enable_sim_clock`` launch flag) AND the HAL exposes a sim
+            # graph runs on sim time (the node's ``use_sim_time`` is True,
+            # derived from ClockAuthority.origin=simulation) AND the HAL exposes a sim
             # clock; the publisher thread emits sim_time_ns so Nav2/slam/octomap
             # advance in lockstep with the sim. The HAL is the single /clock
             # authority (deploy-sim steps the sim, so only it knows sim time).
@@ -507,14 +507,14 @@ if _ROS2_AVAILABLE:
                 ProprioSnapshot() if callable(getattr(self._hal, "idle_step", None)) else None
             )
             # ADR-0048 Phase 2 — sim /clock publisher. When the graph is on sim
-            # time (``use_sim_time`` true via ``enable_sim_clock``) and this is a
+            # time (``use_sim_time`` true via ClockAuthority.origin=simulation) and this is a
             # sim-attached HAL, the publisher thread emits the captured
             # ``sim_time_ns`` on ``/clock``. RELIABLE so it satisfies any
             # downstream clock-subscription QoS. If the backend has no sim clock
             # (sidecar without sim_time, clock-less env), captured sim_time stays
             # ``None`` and the thread simply never publishes — the graph then
             # has no /clock and use_sim_time should not have been set (the CLI
-            # gates ``enable_sim_clock`` on backend capability).
+            # resolves clock_origin against backend capability).
             self._clock_pub = None
             if self._proprio is not None and (
                 self.get_parameter("use_sim_time").get_parameter_value().bool_value
@@ -540,7 +540,7 @@ if _ROS2_AVAILABLE:
                     self.get_logger().error(
                         "use_sim_time=true but this backend exposes no sim clock "
                         "(sim_time_ns is None) — NO /clock will be published and the "
-                        "graph would freeze at t=0. Re-run without --enable-sim-clock."
+                        "graph would freeze at t=0. Use host_wall clock_origin for this backend."
                     )
             # ADR-0018 F1/F5: consume /openral/safe_action. Depth=10
             # mirrors the candidate_action upstream — depth=1 coalesces

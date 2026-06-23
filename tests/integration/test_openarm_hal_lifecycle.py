@@ -153,8 +153,9 @@ def test_cameras_publish_rgb_frames() -> None:
     """SimSensorBridge + OpenArmMujocoHAL.read_images publish the manifest cameras.
 
     issue #191 Phase 3b — the composed scene's MJCF camera "top" renders the
-    "base" RGB sensor (via ``sim_camera_name``); the frame is published on
-    ``/openral/cameras/base/image`` headless (EGL on the executor thread).
+    "top" RGB sensor (the MJCF and sensor names match per ADR-0070); the frame
+    is published on ``/openral/cameras/top/image`` headless (EGL on the
+    executor thread).
     """
     import rclpy
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -168,12 +169,12 @@ def test_cameras_publish_rgb_frames() -> None:
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=1,
         )
-        sub_node.create_subscription(RosImage, "/openral/cameras/base/image", frames.append, qos)
+        sub_node.create_subscription(RosImage, "/openral/cameras/top/image", frames.append, qos)
         executor.add_node(sub_node)
         _spin_for(executor, 1.5)
         sub_node.destroy_node()
 
-    assert frames, "no frame published on /openral/cameras/base/image"
+    assert frames, "no frame published on /openral/cameras/top/image"
     img = frames[0]
     assert img.encoding == "rgb8", img.encoding
     assert img.width == 640 and img.height == 480, (img.width, img.height)

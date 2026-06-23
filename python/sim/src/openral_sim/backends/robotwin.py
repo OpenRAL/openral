@@ -66,6 +66,8 @@ if TYPE_CHECKING:
 
 _ROBOTWIN_SCENE_ID = "robotwin"
 _ROBOTWIN_ROBOT_ID = "aloha_agilex"
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
+_DEFAULT_DEPLOY_TASK = "lift_pot"
 
 _AUTO_SPAWN_ENV = "OPENRAL_ROBOTWIN_AUTO_SPAWN"
 _SIDECAR_PYTHON_ENV = "OPENRAL_ROBOTWIN_SIDECAR_PYTHON"
@@ -111,6 +113,10 @@ _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 600.0
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
+# Last-resort sim-time cadence the sidecar uses only when the live SAPIEN env
+# exposes neither an elapsed-time scalar nor a control period (control_timestep/
+# control_dt/control_freq); RoboTwin's default control rate is ~30 Hz.
+_FALLBACK_SIM_DT_S = 1.0 / 30.0
 
 
 def _scene_default_port(task_id: str, robot_id: str) -> int:
@@ -139,6 +145,15 @@ def _robotwin_task_name(task_id: str) -> str:
     with no ``/`` is passed through unchanged.
     """
     return task_id.split("/", 1)[1] if "/" in task_id else task_id
+
+
+def _task_name_for_env(env_cfg: SimEnvironment) -> str:
+    """Resolve a RoboTwin upstream task name, including deploy-sim's no-op task."""
+    task_id = env_cfg.task.id
+    if task_id.endswith(_DEPLOY_NOOP_SUFFIX):
+        override = env_cfg.scene.backend_options.get("deploy_task_id")
+        return str(override or _DEFAULT_DEPLOY_TASK)
+    return _robotwin_task_name(task_id)
 
 
 # ── SimRollout adapter ────────────────────────────────────────────────────────
@@ -384,8 +399,8 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
     host = str(opts.get("host", _DEFAULT_HOST))
     timeout_ms = _opt_num(opts, "timeout_ms", _DEFAULT_TIMEOUT_MS, int)
     boot_timeout_s = _opt_num(opts, "boot_timeout_s", _DEFAULT_BOOT_TIMEOUT_S, float)
-    task_name = _robotwin_task_name(env_cfg.task.id)
-    port = _opt_num(opts, "port", _scene_default_port(env_cfg.task.id, _ROBOTWIN_ROBOT_ID), int)
+    task_name = _task_name_for_env(env_cfg)
+    port = _opt_num(opts, "port", _scene_default_port(task_name, _ROBOTWIN_ROBOT_ID), int)
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
     cameras = env_cfg.scene.cameras or ["head_camera", "left_camera", "right_camera"]
@@ -409,6 +424,8 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
         str(env_cfg.task.max_steps if env_cfg.task.max_steps is not None else _DEFAULT_MAX_STEPS),
         "--success-key",
         env_cfg.task.success_key or "is_success",
+        "--fallback-dt-s",
+        str(_FALLBACK_SIM_DT_S),
         "--robotwin-root",
         str(_robotwin_root()),
         "--host",

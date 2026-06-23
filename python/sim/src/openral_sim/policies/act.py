@@ -145,23 +145,24 @@ class _ACTAdapter:
         batch: dict[str, Any] = {"task": [instruction or str(observation.get("task", ""))]}
 
         images = observation.get("images", {})
-        from openral_sim.policies._video_capture import to_input_frame
+        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
-        # Last camera in the list is by convention the wrist / in-hand view
-        # (LIBERO: ``[camera1=agentview, camera2=eye_in_hand]``); that's the
-        # one the eval-layer video panel captures.
-        wrist_idx = len(self._camera_keys) - 1
-        for i, cam_key in enumerate(self._camera_keys):
+        # Record every camera the policy consumed so the debug video does not
+        # hide multi-camera setups behind a single wrist-only preview.
+        preview_frames: list[NDArray[np.uint8]] = []
+        for cam_key in self._camera_keys:
             img = images.get(cam_key)
             if img is None:
                 continue
-            if i == wrist_idx:
-                self._last_input_frame = to_input_frame(img, flip_180=self._flip_images_180)
+            preview = to_input_frame(img, flip_180=self._flip_images_180)
+            if preview is not None:
+                preview_frames.append(preview)
             t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
             batch[self._image_input_template.format(cam=self._cam_alias.get(cam_key, cam_key))] = t
+        self._last_input_frame = tile_input_frames(preview_frames)
 
         state = observation.get("state")
         if state is not None:

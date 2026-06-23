@@ -135,10 +135,12 @@ class _PushTSim:
             self._last_pixels = pixel_arr
 
         # Diffusion Policy adapter reads `images["camera1"]` by default;
-        # expose the PushT topdown stream under that key.
+        # expose the PushT topdown stream under the scene's first camera
+        # (canonical ``top`` per ADR-0070, falling back to ``camera1``).
         images: dict[str, NDArray[np.uint8]] = {}
         if pixel_arr is not None:
-            images["camera1"] = pixel_arr
+            cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
+            images[cam0] = pixel_arr
 
         state = (
             np.asarray(agent_pos, dtype=np.float32)

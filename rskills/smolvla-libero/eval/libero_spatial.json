@@ -2,57 +2,49 @@
   "schema_version": "0.1",
   "source": {
     "paper": "https://arxiv.org/abs/2306.03310",
-    "arxiv": null,
+    "arxiv": "https://arxiv.org/abs/2306.03310",
     "model_variant": "smolvla",
     "evaluated_by": "OpenRAL:openral benchmark run",
     "reproduced_locally": true,
     "reproduction_planned": null,
-    "reproduction_cli": "openral benchmark run --suite libero_spatial --rskill smolvla-libero",
+    "reproduction_cli": "openral benchmark run --suite libero_spatial --rskill rskills/smolvla-libero",
     "table": null,
     "status": "reproduced"
   },
   "benchmark": {
     "name": "LIBERO-Spatial",
     "dataset": null,
-    "protocol": "10 episodes per task, success_key=is_success, max_steps=280",
+    "protocol": "1 episodes per task, success_key=is_success, max_steps=220",
     "robot": "franka_panda",
     "simulator": "LIBERO (MuJoCo)"
   },
   "eval_config": {
-    "n_episodes": 10,
+    "n_episodes": 1,
     "seeds": [
-      0,
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8,
-      9
+      0
     ],
     "success_key": "is_success",
-    "max_steps": 280,
+    "max_steps": 220,
     "vla_id": "smolvla",
     "weights_uri": "rskills/smolvla-libero"
   },
   "results": {
     "libero_spatial/0_success_rate": 1.0,
-    "libero_spatial/1_success_rate": 0.8,
-    "libero_spatial/2_success_rate": 0.8,
+    "libero_spatial/1_success_rate": 1.0,
+    "libero_spatial/2_success_rate": 1.0,
     "libero_spatial/3_success_rate": 1.0,
-    "libero_spatial/4_success_rate": 0.5,
+    "libero_spatial/4_success_rate": 1.0,
     "libero_spatial/5_success_rate": 0.0,
     "libero_spatial/6_success_rate": 1.0,
     "libero_spatial/7_success_rate": 1.0,
-    "libero_spatial/8_success_rate": 0.9,
+    "libero_spatial/8_success_rate": 1.0,
     "libero_spatial/9_success_rate": 1.0,
-    "avg_success_rate": 0.8,
+    "avg_success_rate": 0.9,
     "n_tasks": 10,
-    "n_episodes_per_task": 10,
-    "n_episodes_total": 100,
-    "mean_step_latency_ms_avg": 8.2168229810305
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 10,
+    "mean_step_latency_ms_avg": 18.340975287590346
   },
-  "baselines": {}
+  "baselines": {},
+  "trace_id": null
 }

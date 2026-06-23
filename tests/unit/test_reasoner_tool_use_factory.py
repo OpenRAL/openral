@@ -1,9 +1,10 @@
 """Unit tests for :func:`openral_reasoner.build_tool_use_client_from_env`.
 
 Drives the env-driven factory through every branch — anthropic /
-openai-compatible / openrouter / ollama / unknown / missing-required —
-with ``monkeypatch.setenv`` only. No mocks of openral types per
-CLAUDE.md §1.11; we inspect the constructed object's attributes directly.
+openai-compatible / openrouter / ollama / gemini / xai / deepseek /
+unknown / missing-required — with ``monkeypatch.setenv`` only. No mocks
+of openral types per CLAUDE.md §1.11; we inspect the constructed
+object's attributes directly.
 """
 
 from __future__ import annotations
@@ -11,8 +12,12 @@ from __future__ import annotations
 import pytest
 from openral_core.exceptions import ROSConfigError
 from openral_reasoner.tool_use import (
+    DEEPSEEK_BASE_URL,
+    GEMINI_BASE_URL,
     OLLAMA_BASE_URL,
     OPENROUTER_BASE_URL,
+    VLLM_BASE_URL,
+    XAI_BASE_URL,
     AnthropicToolUseClient,
     OpenAICompatibleToolUseClient,
     build_tool_use_client_from_env,
@@ -44,6 +49,10 @@ def test_provider_unset_raises_with_message() -> None:
     assert "openai-compatible" in msg
     assert "openrouter" in msg
     assert "ollama" in msg
+    assert "vllm" in msg
+    assert "gemini" in msg
+    assert "xai" in msg
+    assert "deepseek" in msg
 
 
 def test_provider_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,3 +167,83 @@ def test_ollama_explicit_base_url_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     client = build_tool_use_client_from_env()
     assert isinstance(client, OpenAICompatibleToolUseClient)
     assert client._base_url == "https://ollama-gateway.internal/v1"
+
+
+def test_vllm_default_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`vllm` with no BASE_URL pins to the local vLLM default and needs no key."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "qwen2.5-7b-instruct"
+    assert client._base_url == VLLM_BASE_URL == "http://localhost:8000/v1"
+    # Self-hosted vLLM enforces no auth by default.
+    assert client._api_key is None
+
+
+def test_vllm_explicit_base_url_and_key_win(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit BASE_URL / API_KEY override the vLLM defaults — e.g. a
+    remote `vllm serve --api-key` deployment on a non-default port."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "served-key")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://gpu-box.internal:8001/v1")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._base_url == "http://gpu-box.internal:8001/v1"
+    assert client._api_key == "served-key"
+
+
+# ── Named cloud presets (gemini / xai / deepseek) ──────────────────────────────
+# Thin auth-required convenience wrappers over OpenAICompatibleToolUseClient
+# that pre-fill the vendor's own OpenAI-compatible base URL (issue #74).
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected_base_url"),
+    [
+        ("gemini", "gemini-2.5-flash", GEMINI_BASE_URL),
+        ("xai", "grok-4", XAI_BASE_URL),
+        ("deepseek", "deepseek-chat", DEEPSEEK_BASE_URL),
+    ],
+)
+def test_named_preset_default_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    model: str,
+    expected_base_url: str,
+) -> None:
+    """Each named preset pins the vendor base URL and forwards model + key."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", model)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", f"sk-{provider}-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == model
+    assert client._base_url == expected_base_url
+    assert client._api_key == f"sk-{provider}-secret"
+
+
+@pytest.mark.parametrize("provider", ["gemini", "xai", "deepseek"])
+def test_named_preset_explicit_base_url_wins(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """An explicit BASE_URL overrides a named preset's default (proxy / staging)."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "some-model")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-secret")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "https://llm-proxy.internal/v1")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._base_url == "https://llm-proxy.internal/v1"
+
+
+@pytest.mark.parametrize("provider", ["gemini", "xai", "deepseek"])
+def test_named_preset_without_key_raises(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
+    """The named presets all enforce auth, like openrouter."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "some-model")
+    with pytest.raises(ROSConfigError) as excinfo:
+        build_tool_use_client_from_env()
+    assert "OPENRAL_REASONER_LLM_API_KEY" in str(excinfo.value)
+    assert provider in str(excinfo.value)

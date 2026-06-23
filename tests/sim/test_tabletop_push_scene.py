@@ -3,8 +3,8 @@
 The point of this scene is that the robot is a **flag**: the same composer +
 rollout drives any position-controlled arm. So the suite runs the full
 :class:`openral_sim.SimRollout` Protocol — compose, ``reset``, ``step``,
-observation shapes, geometric success — against **three different robots**
-(SO-101, Franka, UR5e), resolving each robot's base MJCF from its real manifest.
+observation shapes, geometric success — against **four different robots**
+(SO-100, SO-101, Franka, UR5e), resolving each robot's base MJCF from its real manifest.
 
 No mocks (CLAUDE.md §1.11): real ``robots/*/robot.yaml`` manifests, the
 production MjSpec composer, and a zero / hand-set action.
@@ -41,7 +41,7 @@ if _MUJOCO_ERROR is None:
 # Robots exercised. Each must have an `assets.mjcf` resolvable via
 # robot_descriptions; the suite skips a robot whose MJCF can't be fetched
 # (offline CI) rather than failing.
-_ROBOTS = ("so101_follower", "franka_panda", "ur5e")
+_ROBOTS = ("so100_follower", "so101_follower", "franka_panda", "ur5e")
 
 
 pytestmark = [
@@ -52,7 +52,7 @@ pytestmark = [
 ]
 
 
-def _make_env(robot_id: str, *, backend_options: dict | None = None, cameras=("overhead", "front")):
+def _make_env(robot_id: str, *, backend_options: dict | None = None, cameras=("top", "front")):
     """Build a real :class:`SimEnvironment` for the tabletop_push scene."""
     from openral_core.schemas import SceneSpec, SimEnvironment, TaskSpec, VLASpec
 
@@ -139,7 +139,7 @@ def test_tabletop_push_composes_for_robot(robot_id: str) -> None:
     # Task-world entities exist.
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cube") >= 0
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "goal") >= 0
-    for cam in ("overhead", "front"):
+    for cam in ("top", "front"):
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cam) >= 0
     # The cube freejoint qpos lands AFTER the robot's qpos (so the robot keeps
     # its low actuator/qpos indices — the manifest contract).
@@ -154,9 +154,9 @@ def test_tabletop_push_reset_step_for_robot(robot_id: str) -> None:
     rollout = _build_or_skip(robot_id)
     obs = rollout.reset(seed=1)
     nu = rollout._n_act
-    assert set(obs["images"].keys()) == {"overhead", "front"}
-    assert obs["images"]["overhead"].shape == (64, 64, 3)
-    assert obs["images"]["overhead"].dtype == np.uint8
+    assert set(obs["images"].keys()) == {"top", "front"}
+    assert obs["images"]["top"].shape == (64, 64, 3)
+    assert obs["images"]["top"].dtype == np.uint8
     assert obs["state"].shape == (nu,)
     assert obs["state"].dtype == np.float32
     assert obs["task"] == "push the red cube onto the green goal marker"
@@ -421,8 +421,16 @@ def test_tabletop_push_wrist_camera_opt_in() -> None:
     rollout = _build_or_skip(
         "so101_follower",
         backend_options={"wrist_camera_mount_body": "gripper"},
-        cameras=("overhead", "front", "wrist"),
+        cameras=("top", "front", "wrist"),
     )
+    obs = rollout.reset(seed=0)
+    assert "wrist" in obs["images"]
+    rollout.close()
+
+
+def test_tabletop_push_wrist_camera_inferred_from_manifest() -> None:
+    """Requesting `wrist` auto-resolves the mount body from the robot manifest."""
+    rollout = _build_or_skip("so100_follower", cameras=("top", "front", "wrist"))
     obs = rollout.reset(seed=0)
     assert "wrist" in obs["images"]
     rollout.close()

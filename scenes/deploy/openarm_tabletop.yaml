@@ -16,7 +16,7 @@ scene:
   backend: mujoco
   observation_height: 480
   observation_width: 640
-  cameras: ["top", "left_wrist", "right_wrist"]
+  cameras: ["top", "wrist_left", "wrist_right"]
   backend_options:
     render_width: 640
     render_height: 480

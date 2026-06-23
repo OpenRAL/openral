@@ -26,7 +26,7 @@
     backend: mujoco
     observation_height: 96
     observation_width: 96
-    cameras: ["camera1"]
+    cameras: ["top"]
   task:
     id: pusht/0
     scene_id: pusht

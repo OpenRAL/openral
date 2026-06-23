@@ -84,16 +84,16 @@ class TabletopOptions:
             the table — its centre Z within this tolerance of the resting
             height ``table_top_z + cube_size_z``. Guards against "cube knocked
             off the table happens to pass over the goal XY" false positives.
-        overhead_camera_pos: World-frame position of the overhead camera.
-        overhead_camera_fovy: Overhead camera vertical FoV, degrees.
+        top_camera_pos: World-frame position of the top-down camera.
+        top_camera_fovy: Top-down camera vertical FoV, degrees.
         front_camera_pos: World-frame position of the front camera.
         front_camera_fovy: Front camera vertical FoV, degrees.
         wrist_camera_mount_body: When set, the composed model parents a
             ``wrist`` camera to the named MJCF body (the robot's end-effector
-            link, e.g. ``"gripper"`` for SO-101 or ``"hand"`` for Franka). The
-            body name is robot-specific so it is opt-in — left ``None`` the
-            scene ships only the two world-frame cameras, which work for any
-            robot. A name absent from the loaded MJCF fails loudly.
+            link, e.g. ``"gripper"`` for SO-101 or ``"hand"`` for Franka). Left
+            ``None``, callers may infer the mount from the robot manifest's
+            ``sensors[].sim_placement.parent_body`` for the ``wrist`` camera.
+            A name absent from the loaded MJCF fails loudly.
         wrist_camera_pos_local: Wrist-camera position in the mount-body frame.
         wrist_camera_fovy: Wrist-camera vertical FoV, degrees.
         settle_steps: ``mj_step`` calls after each action write — the scene's
@@ -140,8 +140,8 @@ class TabletopOptions:
     goal_min_separation: float = 0.12
     off_table_z_tol: float = 0.04
 
-    overhead_camera_pos: tuple[float, float, float] = (0.0, 0.30, 0.90)
-    overhead_camera_fovy: float = 58.0
+    top_camera_pos: tuple[float, float, float] = (0.0, 0.30, 0.90)
+    top_camera_fovy: float = 58.0
     front_camera_pos: tuple[float, float, float] = (0.0, -0.45, 0.45)
     front_camera_fovy: float = 58.0
 
@@ -185,6 +185,21 @@ def _resolve_robot_mjcf(description: RobotDescription) -> str:
             f"tabletop_push: assets.mjcf={description.assets.mjcf!r} did not resolve to a file.",
         )
     return str(path)
+
+
+def infer_wrist_camera_mount_body(description: RobotDescription) -> str | None:
+    """Return the wrist camera's MJCF parent body from the robot manifest.
+
+    Free-axis scenes can request a logical ``wrist`` camera without hardcoding
+    a robot-specific MJCF body name. This keeps the robot manifest as the
+    source of truth for the camera mount.
+    """
+    for sensor in description.sensors:
+        if sensor.name != "wrist" or sensor.sim_placement is None:
+            continue
+        if sensor.sim_placement.parent_body:
+            return sensor.sim_placement.parent_body
+    return None
 
 
 def _base_pos_quat(
@@ -347,13 +362,13 @@ def _append_goal_marker(spec: mujoco.MjSpec, opts: TabletopOptions) -> None:
 
 
 def _append_world_cameras(spec: mujoco.MjSpec, opts: TabletopOptions) -> None:
-    """Append the overhead + front world-frame cameras (look at the table centre)."""
+    """Append the top + front world-frame cameras (look at the table centre)."""
     import mujoco as mj
 
     cx, cy = opts.table_center_xy
     target = (cx, cy, opts.table_top_z)
     for name, pos, fovy in (
-        ("overhead", opts.overhead_camera_pos, opts.overhead_camera_fovy),
+        ("top", opts.top_camera_pos, opts.top_camera_fovy),
         ("front", opts.front_camera_pos, opts.front_camera_fovy),
     ):
         cam = spec.worldbody.add_camera()

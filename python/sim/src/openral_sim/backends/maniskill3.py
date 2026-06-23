@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 
 _MANISKILL3_SCENE_ID = "maniskill3"
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 # Mirrors the constant in :mod:`openral_sim.sim_runner` and
 # :mod:`openral_sim.backends.simpler_env`. :meth:`SimRunner.activate`
 # sets it to ``"1"`` for the duration of the scene-build window when
@@ -53,6 +54,13 @@ def _parse_task_id(task_id: str) -> str:
     if len(parts) != expected_parts or parts[0] != _MANISKILL3_SCENE_ID:
         raise ROSConfigError(f"maniskill3 task id must be 'maniskill3/<env_id>', got {task_id!r}")
     return parts[1]
+
+
+def _task_id_for_env(env_cfg: SimEnvironment) -> str:
+    """Resolve the concrete ManiSkill env id, including taskless deploy scenes."""
+    if env_cfg.task.id.endswith(_DEPLOY_NOOP_SUFFIX):
+        return str(env_cfg.scene.backend_options.get("deploy_task_id", "PickCube-v1"))
+    return _parse_task_id(env_cfg.task.id)
 
 
 def _reconcile_robot_uids(env_id: str, robot_uids: str) -> None:
@@ -141,6 +149,68 @@ def _suppress_unsupported_robot_warning() -> Iterator[None]:
         logger.removeFilter(filt)
 
 
+def _scalar_float(value: object) -> float | None:
+    """Return the first scalar value from a tensor/array-like object."""
+    if value is None:
+        return None
+    if callable(value):
+        return None
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _first_scalar_attr(obj: object, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        value = getattr(obj, name, None)
+        scalar = _scalar_float(value)
+        if scalar is not None:
+            return scalar
+    return None
+
+
+def _sapien_sim_time_ns(env: object) -> int | None:
+    """Derive elapsed SAPIEN/ManiSkill control time from a live env.
+
+    ManiSkill3/SimplerEnv expose the elapsed control step counter as an array or
+    tensor (`elapsed_steps` / `_elapsed_steps`) and the control period as a
+    scalar (`control_timestep`, `control_dt`, or a `control_freq` inverse).
+    """
+    candidates = (env, getattr(env, "unwrapped", env))
+    elapsed_s_names = ("elapsed_time", "time_elapsed", "sim_time", "elapsed_seconds")
+    step_names = ("elapsed_steps", "_elapsed_steps")
+    dt_names = ("control_timestep", "_control_timestep", "control_dt", "dt")
+    freq_names = ("control_freq", "_control_freq")
+
+    for candidate in candidates:
+        elapsed_s = _first_scalar_attr(candidate, elapsed_s_names)
+        if elapsed_s is not None:
+            return round(elapsed_s * 1_000_000_000)
+
+        steps = _first_scalar_attr(candidate, step_names)
+        if steps is None:
+            continue
+
+        dt_s = _first_scalar_attr(candidate, dt_names)
+        if dt_s is None:
+            freq_hz = _first_scalar_attr(candidate, freq_names)
+            if freq_hz is not None and freq_hz > 0:
+                dt_s = 1.0 / freq_hz
+        if dt_s is not None:
+            return round(steps * dt_s * 1_000_000_000)
+    return None
+
+
 @dataclass
 class _ManiSkill3Sim:
     """Thin :class:`SimRollout` wrapper around a ManiSkill3 gym env.
@@ -178,6 +248,15 @@ class _ManiSkill3Sim:
             info=_unbatch_info(info),
         )
 
+    @property
+    def action_dim(self) -> int:
+        """Single-env action width reported by the live ManiSkill action space."""
+        return _action_dim_from_space(self._env.action_space)
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
+        return _sapien_sim_time_ns(self._env)
+
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()
 
@@ -210,21 +289,23 @@ class _ManiSkill3Sim:
 
         ManiSkill3's ``sensor_data`` sub-dict carries one entry per
         registered camera (e.g. ``base_camera`` + ``hand_camera`` on
-        ``panda_wristcam``). We surface them in declaration order as
-        ``camera1`` / ``camera2`` / ... to match the scene-side names
-        the franka_panda RobotDescription declares and that
-        ``image_preprocessing.aliases`` in an rSkill manifest then
-        renames to model-side keys (``up`` / ``wrist`` / ...).
+        ``panda_wristcam``). We surface them in declaration order under
+        the scene's ``cameras`` list (canonical per ADR-0070 — e.g.
+        ``front`` / ``wrist``), falling back to ``camera{i+1}`` when the
+        scene leaves that list empty. An rSkill manifest's
+        ``image_preprocessing.aliases`` block then renames them to
+        model-side keys (``up`` / ``wrist`` / ...).
         """
         flat = _unbatch_obs(obs)
-        images = _extract_rgb_streams(flat)
+        images = _extract_rgb_streams(flat, list(self.scene.cameras) or None)
         state = _extract_state(flat)
         if images:
             self._last_image = next(iter(images.values()))
         h = self.scene.observation_height
         w = self.scene.observation_width
         if not images:
-            images = {"camera1": np.zeros((h, w, 3), dtype=np.uint8)}
+            cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
+            images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
         return {
             "images": images,
             "state": state,
@@ -239,6 +320,14 @@ def _unbatch(value: Any) -> Any:
         value = value.cpu().numpy()
     arr = np.asarray(value)
     return arr.reshape(-1)[0] if arr.size else arr
+
+
+def _action_dim_from_space(action_space: Any) -> int:
+    """Return the single-environment action width from a gym-style action space."""
+    shape = getattr(action_space, "shape", None)
+    if not shape:
+        raise ROSConfigError("ManiSkill action_space has no shape; cannot resolve action_dim.")
+    return int(shape[-1])
 
 
 def _unbatch_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -286,14 +375,17 @@ def _extract_rgb(flat: Any) -> NDArray[np.uint8] | None:
     return next(iter(streams.values()))
 
 
-def _extract_rgb_streams(flat: Any) -> dict[str, NDArray[np.uint8]]:
+def _extract_rgb_streams(
+    flat: Any, camera_names: list[str] | None = None
+) -> dict[str, NDArray[np.uint8]]:
     """Pull every RGB camera stream from a ManiSkill3 obs dict.
 
-    Returns an ordered ``{"camera1": rgb1, "camera2": rgb2, ...}`` map
-    that mirrors the declaration order in ``sensor_data``. The keys are
-    the scene-side names the franka_panda RobotDescription declares;
-    an rSkill manifest's ``image_preprocessing.aliases`` block renames
-    them to model-side keys before preprocessing.
+    Returns an ordered ``{name: rgb, ...}`` map mirroring the declaration
+    order in ``sensor_data``. When ``camera_names`` is supplied (typically
+    ``scene.cameras`` per ADR-0070) the i-th sensor is keyed by
+    ``camera_names[i]``; otherwise the ordinal fallback ``camera{i+1}`` is
+    used. An rSkill manifest's ``image_preprocessing.aliases`` block then
+    renames the resulting keys to model-side keys before preprocessing.
     """
     if not isinstance(flat, dict):
         return {}
@@ -301,11 +393,16 @@ def _extract_rgb_streams(flat: Any) -> dict[str, NDArray[np.uint8]]:
     if not isinstance(sensor_data, dict):
         return {}
     out: dict[str, NDArray[np.uint8]] = {}
-    for idx, cam_obs in enumerate(sensor_data.values(), start=1):
+    for idx, cam_obs in enumerate(sensor_data.values()):
         if isinstance(cam_obs, dict):
             rgb = cam_obs.get("rgb")
             if rgb is not None:
-                out[f"camera{idx}"] = np.asarray(rgb, dtype=np.uint8)
+                key = (
+                    camera_names[idx]
+                    if camera_names is not None and idx < len(camera_names)
+                    else f"camera{idx + 1}"
+                )
+                out[key] = np.asarray(rgb, dtype=np.uint8)
     return out
 
 
@@ -344,7 +441,7 @@ def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
             "uv sync --all-packages --group maniskill3 --inexact"
         ) from exc
 
-    env_id = _parse_task_id(env_cfg.task.id)
+    env_id = _task_id_for_env(env_cfg)
     # Single-env eval — the harness expects one Observation per step, and
     # the per-(task, seed) outer loop in run_benchmark is the right place
     # to parallelise (clear semantics, OTel spans per episode).
