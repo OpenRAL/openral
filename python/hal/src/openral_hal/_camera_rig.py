@@ -54,7 +54,8 @@ def _camera_element(sensor: SensorSpec) -> str:
     name = sensor.sim_camera_name or sensor.name
     px, py, pz = placement.pos
     # MuJoCo cameras look along local -Z; orient -Z from pos toward target.
-    w, x, y, z = look_at_quat_wxyz(placement.pos, placement.target, view_axis="-z")
+    # ``up`` levels the roll (``(0, 0, -1)`` for an upside-down-mounted camera).
+    w, x, y, z = look_at_quat_wxyz(placement.pos, placement.target, up=placement.up, view_axis="-z")
     fovy = _fovy_deg_for(sensor)
     return (
         f'<camera name="{name}" pos="{px} {py} {pz}" '

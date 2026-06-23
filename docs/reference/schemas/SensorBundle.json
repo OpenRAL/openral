@@ -2,7 +2,7 @@
   "$defs": {
     "CameraSimPlacement": {
       "additionalProperties": false,
-      "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
+      "description": "Where an RGB sensor's camera sits in the sim MJCF (ADR-0065).\n\nLets the generic HAL camera rig (``openral_hal._camera_rig``) splice a\nmanifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so\na ``deploy sim`` digital twin renders the robot's declared cameras without a\nper-robot scene composer. A camera is a property of the robot's sensor suite\n(the wrist camera is bolted to the gripper; the overhead camera is a declared\nsensor), so its sim pose lives on the :class:`SensorSpec`, not in a scene.\n\nThe rig only splices a camera that is *absent* from the loaded MJCF, so this\nis a no-op for scene-attached or already-composed models (those carry their\nown cameras).\n\nAttributes:\n    parent_body: MJCF body the camera is rigidly mounted to (tracks that\n        body's pose \u2014 e.g. the gripper/``Fixed_Jaw`` for a wrist camera).\n        ``None`` mounts it world-fixed in ``<worldbody>`` (an overhead /\n        third-person camera).\n    pos: Camera position ``(x, y, z)`` in metres, in ``parent_body``'s frame\n        (or world when ``parent_body`` is ``None``).\n    target: Look-at point ``(x, y, z)`` in the same frame; the camera's\n        MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.\n    up: World-up hint used to level the camera roll. Defaults to ``(0, 0, 1)``.\n        A camera physically mounted upside-down (e.g. a wrist phone bolted\n        inverted on the gripper) uses ``(0, 0, -1)`` to roll the image 180\u00b0.\n    fovy_deg: Vertical field of view in degrees. ``None`` derives it from the\n        sensor's pinhole ``intrinsics`` (``2\u00b7atan(height / (2\u00b7fy))``) so the\n        rendered FoV matches the declared camera model.\n\nExample:\n    >>> CameraSimPlacement(pos=(0.5, 0.3, 0.75), target=(0.5, 0.3, 0.0)).parent_body is None\n    True",
       "properties": {
         "parent_body": {
           "anyOf": [
@@ -48,6 +48,28 @@
             }
           ],
           "title": "Target",
+          "type": "array"
+        },
+        "up": {
+          "default": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Up",
           "type": "array"
         },
         "fovy_deg": {

@@ -75,14 +75,13 @@ scene:
     robot_base_xyz: [0.50, 0.50, 0.00]
     robot_base_yaw_deg: 0.0
 
-    # Wrist camera — parented to the SO-101 `gripper` body, mounted on top of
-    # the wrist/gripper housing (+X in that body frame) and facing in the same
-    # forward direction as the link (+Z), with a slight downward pitch so the
-    # workspace still enters frame.
-    wrist_camera_pos_local: [0.02, 0.0, -0.02]
-    wrist_camera_target_local: [0.0, 0.0, 0.20]
-    wrist_camera_up_local: [1.0, 0.0, 0.0]
-    wrist_camera_fovy: 75.0
+    # Wrist camera — mounted on the static finger face like the real lerobot
+    # SO-101 phone rig (inverted, up = (0,0,-1)); the open jaws hang into the
+    # bottom ~20% of the frame, workspace + object fill the rest.
+    wrist_camera_pos_local: [-0.0084, 0.0834, -0.0545]
+    wrist_camera_target_local: [-0.0074, -0.091, -0.1886]
+    wrist_camera_up_local: [0.0, 0.0, -1.0]
+    wrist_camera_fovy: 90.0
 
     # OAK-D Pro overhead — centred horizontally over the box,
     # mounted at the ceiling (z = box_height - 1 mm), looking down.

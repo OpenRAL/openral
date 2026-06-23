@@ -18,7 +18,7 @@ The observation dict carries:
   (bare MuJoCo camera name, matching ``scene.cameras``);
 * ``images.oak_top_depth``: HW float32 depth in metres from the same
   camera;
-* ``images.wrist``: HWC uint8 RGB from the gripper-mounted camera;
+* ``images.wrist``: HWC uint8 RGB from the terminal gripper-mounted camera;
 * ``state``: 6-D float32 of the SO-101 joint qpos (rad);
 * ``task``: the natural-language instruction.
 

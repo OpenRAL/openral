@@ -379,6 +379,9 @@ class CameraSimPlacement(BaseModel):
             (or world when ``parent_body`` is ``None``).
         target: Look-at point ``(x, y, z)`` in the same frame; the camera's
             MuJoCo ``-z`` view axis is oriented from ``pos`` toward it.
+        up: World-up hint used to level the camera roll. Defaults to ``(0, 0, 1)``.
+            A camera physically mounted upside-down (e.g. a wrist phone bolted
+            inverted on the gripper) uses ``(0, 0, -1)`` to roll the image 180°.
         fovy_deg: Vertical field of view in degrees. ``None`` derives it from the
             sensor's pinhole ``intrinsics`` (``2·atan(height / (2·fy))``) so the
             rendered FoV matches the declared camera model.
@@ -393,6 +396,7 @@ class CameraSimPlacement(BaseModel):
     parent_body: str | None = None
     pos: tuple[float, float, float]
     target: tuple[float, float, float]
+    up: tuple[float, float, float] = (0.0, 0.0, 1.0)
     fovy_deg: float | None = None
 
 
