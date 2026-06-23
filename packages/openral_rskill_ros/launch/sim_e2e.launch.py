@@ -164,21 +164,21 @@ def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     ]
 
 
-def _resolve_sim_clock(value: str) -> bool:
-    """Single source of truth for the composed graph's clock domain.
+def _resolve_clock_origin(value: str) -> str:
+    """Resolve the OpenRAL clock authority origin forwarded by the CLI.
 
-    ``True`` iff a sim ``/clock`` will actually be published this run, in
-    which case every node runs on ``use_sim_time``. deploy-sim has **no**
-    ``/clock`` publisher today (the sim only advances while a skill steps,
-    and the HAL stamps ``/scan`` + TF on wall-clock), so this defaults
-    ``False`` and the whole graph stays on wall-clock — coherent with the
-    HAL. Flipping a single node to sim-time without a ``/clock`` pins its
-    clock at 0, which is exactly the nav-collision root cause (the local
-    costmap rejected the "future" wall-clock scans and stayed empty).
-    Mirrors the ``enable_*`` truthy idiom used throughout
-    :func:`compose_runtime_graph`.
+    ``simulation`` means the HAL publishes simulator elapsed time on ROS
+    ``/clock`` and the whole graph runs with ``use_sim_time=true``. ``host_wall``
+    means no OpenRAL ``/clock`` publisher and every node stays on ROS system
+    time. Operators should not toggle ROS ``use_sim_time`` directly.
     """
-    return value.strip().lower() in ("1", "true", "yes")
+    origin = value.strip().lower().replace("-", "_")
+    if origin not in ("host_wall", "simulation"):
+        raise ValueError(
+            f"clock_origin must be 'host_wall' or 'simulation', got {value!r}. "
+            "It is resolved by `openral deploy`, not a ROS use_sim_time toggle."
+        )
+    return origin
 
 
 def _build_nav2_include(
@@ -195,8 +195,8 @@ def _build_nav2_include(
     ``OpenRAL/rskill-nav2-navigate-to-pose`` wrapped-action rSkill,
     not by lifecycle-transitioning the planner.
 
-    ``use_sim_time`` is the graph-wide clock-domain flag (see
-    :func:`_resolve_sim_clock`); it is **not** hardcoded here. With no
+    ``use_sim_time`` is derived from the graph-wide clock authority (see
+    :func:`_resolve_clock_origin`); it is **not** hardcoded here. With no
     ``/clock`` on the bus it must be ``False`` so Nav2's controller loop
     and costmaps run on wall-clock — matching the HAL's wall-clock
     ``/scan`` + odom→base_link TF. (``true`` + no ``/clock`` pins every
@@ -405,14 +405,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         "yes",
     )
     foxglove_port = LaunchConfiguration("foxglove_port").perform(context)
-    # Graph-wide clock domain (single source of truth). deploy-sim has no
-    # /clock publisher, so this is False by default and EVERY node below —
-    # HAL, Nav2, slam_toolbox, robot_state_publisher, octomap, detector —
-    # runs on wall-clock coherently. A future sim-/clock publisher (its own
-    # ADR) flips ``enable_sim_clock:=true`` to put the whole graph on
-    # sim-time at once, instead of the scattered per-node literals that let
-    # Nav2 silently disagree and drive the base into an obstacle.
-    use_sim_time = _resolve_sim_clock(LaunchConfiguration("enable_sim_clock").perform(context))
+    # Graph-wide clock domain (single source of truth). The CLI resolves the
+    # OpenRAL ClockAuthority origin; this launch only maps it to ROS
+    # use_sim_time. ``simulation`` is backed by the HAL's /clock publisher.
+    # ``host_wall`` keeps every node on system time. There is no operator-facing
+    # ROS time toggle to drift from the authority.
+    clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
+    use_sim_time = clock_origin == "simulation"
 
     # Synthesise the kernel envelope from the manifest. ``skill=None``
     # because ``openral deploy sim`` does not preselect an rSkill — the
@@ -666,8 +665,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         namespace="",
         # Clock domain via the graph-wide flag. The HAL is the clock
         # authority — it stamps /scan, odom→base_link TF and joint_states.
-        # Default (wall-clock) is unchanged; flipping enable_sim_clock makes
-        # those stamps sim-time, coherent with a future /clock publisher.
+        # Host-wall origin is unchanged; a simulation clock origin makes those
+        # stamps sim-time, coherent with the HAL's /clock publisher.
         parameters=[hal_params_file, {"use_sim_time": use_sim_time}],
         additional_env=otel_env,
         output="screen",
@@ -703,7 +702,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "enable_world_cloud_bridge": enable_octomap,
                 # ADR-0048 Phase 2 — the runtime node (WorldState aggregator +
                 # the GStreamer/runner sensor readers + skill_runner) must share
-                # the graph-wide clock domain. Under enable_sim_clock the HAL
+                # the graph-wide clock domain. Under a simulation clock origin the HAL
                 # stamps camera/state data on sim time; a wall-clock runtime
                 # would see it as ~1.78e9 s stale and drop every frame at the
                 # WorldState staleness gate. Default false keeps it wall-clock.
@@ -817,7 +816,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     parameters=[
                         {
                             "robot_description": robot_description_xml,
-                            # Graph-wide clock domain (see _resolve_sim_clock).
+                            # Graph-wide clock domain (see _resolve_clock_origin).
                             # Must match the HAL: with no /clock, sim-time would
                             # pin RSP's TF stamps at 0 while the HAL publishes
                             # odom→base_link on wall-clock — the split that
@@ -939,7 +938,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 executable="async_slam_toolbox_node",
                 name="openral_slam_toolbox",
                 namespace="",
-                # Graph-wide clock domain (see _resolve_sim_clock); overrides the
+                # Graph-wide clock domain (see _resolve_clock_origin); overrides the
                 # yaml's use_sim_time so slam_toolbox shares the HAL's wall-clock
                 # /scan + odom TF. Sim-time without a /clock pins its pose-graph at
                 # 0 → empty map → Nav2 plans through obstacles.
@@ -1066,7 +1065,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "occupancy_thres": 0.6,
                     "sensor_model.miss": 0.4,
                     "filter_speckles": True,
-                    # Graph-wide clock domain (see _resolve_sim_clock). With no
+                    # Graph-wide clock domain (see _resolve_clock_origin). With no
                     # /clock publisher this is wall-clock: use_sim_time=True
                     # would pin octomap_server's clock at 0 while the HAL stamps
                     # the depth cloud + base_link->optical TF on wall-clock — the
@@ -1141,7 +1140,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         det_image_topic = f"/openral/cameras/{det_camera}/image"
 
         # Shared QoS / clock note: clock domain follows the graph-wide flag
-        # (see _resolve_sim_clock). The node stamps its output from the input
+        # (see _resolve_clock_origin). The node stamps its output from the input
         # Image's header.stamp; its ONLY use of self.get_clock() is the
         # max_rate_hz publish throttle. With no live /clock this stays
         # wall-clock — use_sim_time=True would pin get_clock().now() at 0 and
@@ -1358,7 +1357,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "send_buffer_limit": 10_000_000,
                     "max_qos_depth": 10,
                     "include_hidden": False,
-                    # Graph-wide clock domain (see _resolve_sim_clock).
+                    # Graph-wide clock domain (see _resolve_clock_origin).
                     "use_sim_time": use_sim_time,
                 }
             ],
@@ -1484,18 +1483,15 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
-            "enable_sim_clock",
-            default_value="false",
+            "clock_origin",
+            default_value="host_wall",
             description=(
-                "Single source of truth for the whole graph's clock domain. "
-                "When true, every node (HAL, Nav2, slam_toolbox, "
-                "robot_state_publisher, octomap, detector) runs on "
-                "``use_sim_time`` — only valid once a sim ``/clock`` is "
-                "published. deploy-sim has no ``/clock`` publisher today, so "
-                "the default is false (wall-clock graph-wide, matching the "
-                "HAL's wall-clock /scan + TF). Setting this true without a "
-                "/clock pins every node at t=0 → empty costmap → the base "
-                "drives into obstacles (the nav-collision bug)."
+                "OpenRAL ClockAuthority origin resolved by the CLI: "
+                "``simulation`` means the HAL publishes sim elapsed time on "
+                "ROS ``/clock`` and the launch maps the graph to "
+                "``use_sim_time=true``; ``host_wall`` means ROS system time "
+                "and no OpenRAL ``/clock`` publisher. Operators should not "
+                "toggle ROS ``use_sim_time`` directly."
             ),
         ),
         DeclareLaunchArgument(

@@ -44,8 +44,12 @@ never pulls them transitively.
 from __future__ import annotations
 
 import contextlib
+import enum
+import importlib.util
 import os
+import sys
 from dataclasses import dataclass, field
+from types import ModuleType
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -262,10 +266,11 @@ def _import_transformers() -> tuple[Any, Any, Any]:
     config is built at ``from_pretrained`` time (a 4-bit model cannot be
     ``.to()``-moved afterwards).
 
-    OpenVLA's ``auto_map`` keys the model on ``AutoModelForVision2Seq``, which
-    transformers <5 exposes directly; transformers 5.x renamed it to
-    ``AutoModelForImageTextToText``. Prefer the legacy class when present (so the
-    auto_map dispatch matches) and fall back to the new name otherwise.
+    OpenVLA's ``auto_map`` keys the model on ``AutoModelForVision2Seq``. Newer
+    Transformers releases may remove that auto class without migrating legacy
+    OpenVLA repos to ``AutoModelForImageTextToText``. Prefer the real legacy class
+    when present; otherwise use a compatibility shim that reads the repo's legacy
+    auto map and loads the referenced dynamic class directly.
 
     Returns ``(auto_model_cls, AutoProcessor, BitsAndBytesConfig)``, untyped
     (transformers has no strict stubs in this workspace).
@@ -284,8 +289,187 @@ def _import_transformers() -> tuple[Any, Any, Any]:
         ) from exc
     auto_model_cls: Any = getattr(transformers, "AutoModelForVision2Seq", None)
     if auto_model_cls is None:
-        auto_model_cls = transformers.AutoModelForImageTextToText
+        auto_model_cls = _AutoModelForVision2SeqCompat
+    _install_tokenization_compat(transformers)
     return auto_model_cls, AutoProcessor, BitsAndBytesConfig
+
+
+class _AutoModelForVision2SeqCompat:
+    """Compatibility loader for OpenVLA repos keyed to legacy AutoModelForVision2Seq."""
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path: str, *args: Any, **kwargs: Any) -> Any:
+        from transformers import AutoConfig
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        config = kwargs.get("config")
+        revision = kwargs.get("revision")
+        trust_remote_code = bool(kwargs.get("trust_remote_code"))
+        if config is None:
+            config = AutoConfig.from_pretrained(
+                pretrained_model_name_or_path,
+                trust_remote_code=trust_remote_code,
+                revision=revision,
+            )
+            kwargs["config"] = config
+        auto_map = getattr(config, "auto_map", None)
+        class_ref = auto_map.get("AutoModelForVision2Seq") if isinstance(auto_map, dict) else None
+        if not isinstance(class_ref, str):
+            raise ROSConfigError(
+                "OpenVLA checkpoint requires AutoModelForVision2Seq, but Transformers "
+                "does not expose that class and config.auto_map has no "
+                "AutoModelForVision2Seq entry."
+            )
+        _install_prismatic_oft_compat()
+        model_cls = get_class_from_dynamic_module(
+            class_ref,
+            pretrained_model_name_or_path,
+            revision=revision,
+        )
+        _install_legacy_openvla_model_compat(model_cls)
+        with _legacy_openvla_timm_version_guard():
+            return model_cls.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+
+
+def _install_legacy_openvla_model_compat(model_cls: type[Any]) -> None:
+    """Patch legacy OpenVLA remote classes for newer Transformers init hooks."""
+    for cls in model_cls.__mro__:
+        tie_weights = cls.__dict__.get("tie_weights")
+        if tie_weights is None or getattr(tie_weights, "_openral_compat", False):
+            continue
+
+        def _tie_weights_compat(
+            self: Any,
+            *args: Any,
+            __tie_weights: Any = tie_weights,
+            **kwargs: Any,
+        ) -> Any:
+            return __tie_weights(self)
+
+        _tie_weights_compat._openral_compat = True  # type: ignore[attr-defined]
+        cls.tie_weights = _tie_weights_compat
+
+
+@contextlib.contextmanager
+def _legacy_openvla_timm_version_guard() -> Any:
+    """Let legacy OpenVLA remote code pass its strict pre-1.0 timm version check."""
+    try:
+        import timm
+    except ImportError:
+        yield
+        return
+
+    original_version = getattr(timm, "__version__", None)
+    if isinstance(original_version, str) and original_version.split(".", 1)[0] == "1":
+        timm.__version__ = "0.9.16"
+        _log.warning(
+            "openvla_legacy_timm_version_guard_enabled",
+            original_version=original_version,
+            reported_version=timm.__version__,
+        )
+        try:
+            yield
+        finally:
+            timm.__version__ = original_version
+        return
+    yield
+
+
+class _OpenVLANormalizationType(str, enum.Enum):
+    NORMAL = "normal"
+    BOUNDS = "bounds"
+    BOUNDS_Q99 = "bounds_q99"
+
+
+def _install_prismatic_oft_compat() -> None:
+    """Install minimal OpenVLA-OFT ``prismatic`` symbols when the package is absent."""
+    if importlib.util.find_spec("prismatic") is not None:
+        return
+    import torch
+
+    constants_mod = ModuleType("prismatic.vla.constants")
+    constants_mod.IGNORE_INDEX = -100
+    constants_mod.ACTION_TOKEN_BEGIN_IDX = 31743
+    constants_mod.STOP_INDEX = 2
+    constants_mod.NUM_ACTIONS_CHUNK = 8
+    constants_mod.ACTION_DIM = 7
+    constants_mod.ACTION_PROPRIO_NORMALIZATION_TYPE = _OpenVLANormalizationType.BOUNDS_Q99
+    constants_mod.NormalizationType = _OpenVLANormalizationType
+
+    train_utils_mod = ModuleType("prismatic.training.train_utils")
+
+    def get_current_action_mask(token_ids: Any) -> Any:
+        newline_positions = token_ids != constants_mod.IGNORE_INDEX
+        cumsum = torch.cumsum(newline_positions, dim=1)
+        mask = (cumsum >= 1) & (cumsum <= constants_mod.ACTION_DIM)
+        return (token_ids > constants_mod.ACTION_TOKEN_BEGIN_IDX) * mask
+
+    def get_next_actions_mask(token_ids: Any) -> Any:
+        newline_positions = token_ids != constants_mod.IGNORE_INDEX
+        cumsum = torch.cumsum(newline_positions, dim=1)
+        mask = cumsum > constants_mod.ACTION_DIM
+        return (token_ids > constants_mod.ACTION_TOKEN_BEGIN_IDX) * mask
+
+    train_utils_mod.get_current_action_mask = get_current_action_mask
+    train_utils_mod.get_next_actions_mask = get_next_actions_mask
+
+    prismatic_mod = ModuleType("prismatic")
+    prismatic_mod.__path__ = []
+    training_mod = ModuleType("prismatic.training")
+    training_mod.__path__ = []
+    vla_mod = ModuleType("prismatic.vla")
+    vla_mod.__path__ = []
+    training_mod.train_utils = train_utils_mod
+    vla_mod.constants = constants_mod
+    prismatic_mod.training = training_mod
+    prismatic_mod.vla = vla_mod
+
+    sys.modules.setdefault("prismatic", prismatic_mod)
+    sys.modules.setdefault("prismatic.training", training_mod)
+    sys.modules.setdefault("prismatic.training.train_utils", train_utils_mod)
+    sys.modules.setdefault("prismatic.vla", vla_mod)
+    sys.modules.setdefault("prismatic.vla.constants", constants_mod)
+
+
+def _install_tokenization_compat(transformers: Any) -> None:
+    """Restore tokenization symbols older OpenVLA remote code imports.
+
+    Some pinned OpenVLA/OFT repositories import ``PaddingStrategy`` and related
+    type aliases from ``transformers.tokenization_utils``. Newer Transformers
+    exposes them from ``tokenization_utils_base`` instead. Installing the aliases
+    before ``trust_remote_code`` import keeps the pinned remote code working
+    without editing or vendoring third-party model files.
+    """
+    import importlib
+    import sys
+
+    tokenization_utils_modules: list[Any] = []
+    for module in (
+        getattr(transformers, "tokenization_utils", None),
+        sys.modules.get("transformers.tokenization_utils"),
+    ):
+        if module is not None and all(module is not seen for seen in tokenization_utils_modules):
+            tokenization_utils_modules.append(module)
+    with contextlib.suppress(ImportError):
+        module = importlib.import_module("transformers.tokenization_utils")
+        if all(module is not seen for seen in tokenization_utils_modules):
+            tokenization_utils_modules.append(module)
+
+    tokenization_base = getattr(transformers, "tokenization_utils_base", None)
+    if tokenization_base is None:
+        tokenization_base = sys.modules.get("transformers.tokenization_utils_base")
+    if tokenization_base is None:
+        with contextlib.suppress(ImportError):
+            tokenization_base = importlib.import_module("transformers.tokenization_utils_base")
+    if not tokenization_utils_modules or tokenization_base is None:
+        return
+    for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
+        if not hasattr(tokenization_base, name):
+            continue
+        value = getattr(tokenization_base, name)
+        for tokenization_utils in tokenization_utils_modules:
+            if not hasattr(tokenization_utils, name):
+                setattr(tokenization_utils, name, value)
 
 
 def _strip_hf_uri(uri: str | None, *, field_name: str) -> tuple[str, str | None]:
@@ -522,6 +706,7 @@ def _load_openvla_model(
         **common,
         "torch_dtype": torch.bfloat16,
         "low_cpu_mem_usage": True,
+        "attn_implementation": "eager",
     }
     if use_nf4:
         load_kwargs["quantization_config"] = bnb_config_cls(

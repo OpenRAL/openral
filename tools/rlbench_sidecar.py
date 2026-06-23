@@ -74,6 +74,42 @@ _PLANNER_FAILURE_EXC_NAMES = frozenset(
 )
 
 
+def _scalar_float(value: Any) -> float | None:
+    """Convert scalar Python / NumPy values into ``float``; reject non-scalars."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            return None
+        value = value.reshape(()).item()
+    if isinstance(value, np.generic):
+        value = value.item()
+    if not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _coppeliasim_time_ns(env: Any) -> int | None:
+    """Return CoppeliaSim elapsed sim time from PyRep, when the handle is exposed."""
+    candidates = (
+        env,
+        getattr(env, "_pyrep", None),
+        getattr(env, "pyrep", None),
+        getattr(env, "pr", None),
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        get_time = getattr(candidate, "get_simulation_time", None)
+        if not callable(get_time):
+            continue
+        seconds = _scalar_float(get_time())
+        if seconds is None:
+            continue
+        return round(seconds * 1_000_000_000)
+    return None
+
+
 def _is_planner_path_failure(exc: BaseException) -> bool:
     """True when *exc* is a RLBench/PyRep motion-planner path-finding failure.
 
@@ -186,6 +222,9 @@ class _RLBenchScene:
         self._last_wrapped_obs = self._wrap_obs(obs)
         return self._last_wrapped_obs
 
+    def sim_time_ns(self) -> int | None:
+        return _coppeliasim_time_ns(self._env)
+
     def step(self, action: NDArray[np.float32], *, record_video: bool = False) -> dict[str, Any]:
         target = np.asarray(action, dtype=np.float64).reshape(-1)[:8]
         act9 = np.ones(9, dtype=np.float64)  # peract fork: pose7 + gripper1 + ignore_collisions1
@@ -233,6 +272,7 @@ class _RLBenchScene:
                 "terminated": True,
                 "truncated": False,
                 "info": {self._success_key: False},
+                "sim_time_ns": self.sim_time_ns(),
             }
             if record_video:
                 reply["video_frames"] = self._motion_frames
@@ -249,6 +289,7 @@ class _RLBenchScene:
             "terminated": bool(terminate or success),
             "truncated": False,
             "info": {self._success_key: success},
+            "sim_time_ns": self.sim_time_ns(),
         }
         if record_video:
             reply["video_frames"] = self._motion_frames
@@ -344,7 +385,10 @@ def _serve(scene: _RLBenchScene, *, host: str, port: int, task: str) -> int:
                     "layout": "rlbench",
                 }
             elif endpoint == "reset":
-                reply = {"observation": scene.reset(seed=data.get("seed"))}
+                reply = {
+                    "observation": scene.reset(seed=data.get("seed")),
+                    "sim_time_ns": scene.sim_time_ns(),
+                }
             elif endpoint == "step":
                 reply = scene.step(
                     np.asarray(data["action"], dtype=np.float32),

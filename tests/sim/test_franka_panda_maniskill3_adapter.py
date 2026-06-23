@@ -44,11 +44,11 @@ _CONFIG = _REPO_ROOT / "scenes" / "benchmark" / "maniskill_pick_cube.yaml"
 
 @pytest.fixture(scope="module")
 def scene_env():
-    from openral_core import SimScene, load_scene_strict
+    from openral_core import BenchmarkScene, load_scene_strict
 
     if not _CONFIG.exists():
         pytest.skip(f"sim config not found at {_CONFIG}")
-    return load_scene_strict(str(_CONFIG), SimScene)
+    return load_scene_strict(str(_CONFIG), BenchmarkScene)
 
 
 @pytest.fixture(scope="module")
@@ -88,14 +88,19 @@ class TestManiSkill3Adapter:
 
     def test_step_propagates_action(self, sim) -> None:
         sim.reset(seed=0)
+        t0 = sim.sim_time_ns()
+        assert t0 is not None
         # Action dim follows the env's controller, which is version-dependent
         # (ManiSkill 3.0.x panda_wristcam = 7 arm + 1 gripper = 8); derive it
         # from the action space rather than hardcoding.
         action_dim = int(sim._env.action_space.shape[-1])
         result = sim.step(np.zeros(action_dim, dtype=np.float32))
+        t1 = sim.sim_time_ns()
         # PickCube-v1 reward is shaped; a zero-action step yields a small
         # positive value at the initial pose. The contract we care about is
         # "finite and machine-comparable", not a specific magnitude.
         assert np.isfinite(result.reward)
         assert "success" in result.info
         assert isinstance(result.info["success"], (bool, np.bool_))
+        assert t1 is not None
+        assert t1 > t0

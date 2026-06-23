@@ -41,6 +41,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    ClockAuthority,
     ControlMode,
     GripperReadMode,
     GripperWriteMode,
@@ -336,6 +337,37 @@ class MujocoArmHAL(HALBase):
         if self._model is None or self._data is None:
             return None
         return self._model, self._data
+
+    def sim_time_ns(self) -> int | None:
+        """Return this bare MuJoCo twin's authoritative elapsed simulation time.
+
+        Bare-twin HALs (OpenArm / SO-100 / SO-101 / manifest-driven arm sims)
+        own a live ``MjData`` just like scene-attached MuJoCo HALs do. Exposing
+        ``data.time`` here lets deploy-sim safely derive
+        ``ClockAuthority.origin=simulation`` and publish ROS ``/clock`` instead
+        of leaving these graphs on host-wall time.
+
+        Returns:
+            Elapsed simulator time in nanoseconds, or ``None`` before connect /
+            after disconnect or e-stop.
+        """
+        if not self._connected or self._data is None:
+            return None
+        return round(float(self._data.time) * 1_000_000_000)
+
+    def clock_authority(self) -> ClockAuthority:
+        """Return the timestamp authority this bare MuJoCo HAL contributes.
+
+        Once connected, the live MuJoCo ``MjData.time`` is the authoritative
+        simulation clock. Before connect / after disconnect there is no live sim
+        clock to project onto ROS ``/clock``, so report host-wall.
+        """
+        if self.sim_time_ns() is None or self._model is None:
+            return ClockAuthority.host_wall()
+        return ClockAuthority.simulation(
+            "mujoco",
+            timestep_s=float(self._model.opt.timestep),
+        )
 
     def read_images(self) -> dict[str, object]:
         """Render the manifest's RGB cameras off the live MJCF (issue #191 Phase 3b).
