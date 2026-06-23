@@ -20,9 +20,11 @@ Covers:
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pytest
 import yaml
 from openral_core import RobotDescription, RSkillManifest
@@ -118,6 +120,22 @@ def test_robotwin_root_errors_without_assets(
 
     with pytest.raises(ROSConfigError, match="RoboTwin assets not found"):
         _robotwin_root()
+
+
+def test_robotwin_sidecar_derives_sapien_sim_time() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "robotwin_sidecar_for_test",
+        _REPO_ROOT / "tools" / "robotwin_sidecar.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Env:
+        elapsed_steps = np.array([3], dtype=np.int64)
+        control_timestep = 0.05
+
+    assert module._sapien_sim_time_ns(Env()) == 150_000_000
 
 
 def test_robotwin_launch_argv_passes_checkout_root(

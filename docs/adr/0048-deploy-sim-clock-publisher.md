@@ -170,6 +170,7 @@ gate that already defers the Nav2 include is the natural hook.
 | bare-twin MuJoCo HALs (OpenArm / SO-100 / SO-101) | `MjData.time` | ✅ | `MujocoArmHAL.sim_time_ns()` exposes the same authority |
 | ManiSkill3 / SimplerEnv (SAPIEN) | elapsed control steps × control timestep | ✅ | Wrapper derives this from the live ManiSkill/SAPIEN env |
 | Isaac Sim (ADR-0045 sidecar) | PhysX sim-time, **inside the sidecar** | ✅ | ZMQ reply carries `sim_time_ns` |
+| RoboTwin (SAPIEN sidecar) | elapsed control steps × control timestep | ✅ | Sidecar derives this from the live RoboTwin/SAPIEN env |
 | RLBench (CoppeliaSim sidecar) | not exposed | ❌ | Sidecar lacks a sim-time wire field |
 | GR00T (ADR-0046 sidecar) | n/a (policy, not sim) | n/a | Not a sim backend |
 | PushT / mock / clock-less gym | none | ❌ | Forced wall-clock |

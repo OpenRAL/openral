@@ -13,7 +13,7 @@ the openral side uses (``openral_sim.sidecar``):
 
     ping  -> {"ok": True, "action_dim": int, "task": str, "env": "robotwin"}
     reset -> {"observation": {...}, "sim_time_ns": int|None}
-    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info"}
+    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info", "sim_time_ns": int|None}
     render-> {"frame": <uint8 HWC>|None}
     close -> {"ok": True}
 
@@ -56,6 +56,56 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
     if "__ndarray__" in obj:
         return np.load(io.BytesIO(obj["npy"]), allow_pickle=False)
     return obj
+
+
+def _scalar_float(value: object) -> float | None:
+    if value is None or callable(value):
+        return None
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _first_scalar_attr(obj: object, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        scalar = _scalar_float(getattr(obj, name, None))
+        if scalar is not None:
+            return scalar
+    return None
+
+
+def _sapien_sim_time_ns(env: object) -> int | None:
+    """Best-effort elapsed SAPIEN time from the wrapped RoboTwin env."""
+    candidates = (env, getattr(env, "unwrapped", env))
+    elapsed_s_names = ("elapsed_time", "time_elapsed", "sim_time", "elapsed_seconds")
+    step_names = ("elapsed_steps", "_elapsed_steps")
+    dt_names = ("control_timestep", "_control_timestep", "control_dt", "dt")
+    freq_names = ("control_freq", "_control_freq")
+    for candidate in candidates:
+        elapsed_s = _first_scalar_attr(candidate, elapsed_s_names)
+        if elapsed_s is not None:
+            return round(elapsed_s * 1_000_000_000)
+        steps = _first_scalar_attr(candidate, step_names)
+        if steps is None:
+            continue
+        dt_s = _first_scalar_attr(candidate, dt_names)
+        if dt_s is None:
+            freq_hz = _first_scalar_attr(candidate, freq_names)
+            if freq_hz is not None and freq_hz > 0:
+                dt_s = 1.0 / freq_hz
+        if dt_s is not None:
+            return round(steps * dt_s * 1_000_000_000)
+    return None
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -227,7 +277,12 @@ class _RoboTwinEnv:
             "terminated": bool(np.asarray(terminated).reshape(-1)[0]),
             "truncated": bool(np.asarray(truncated).reshape(-1)[0]),
             "info": {self._success_key: success},
+            "sim_time_ns": self.sim_time_ns(),
         }
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN time from the wrapped RoboTwin env, when exposed."""
+        return _sapien_sim_time_ns(self._env)
 
     def render(self) -> npt.NDArray[np.uint8] | None:
         return None
@@ -287,7 +342,10 @@ def _serve(env: _RoboTwinEnv, *, host: str, port: int, task: str) -> int:
                     "env": "robotwin",
                 }
             elif endpoint == "reset":
-                reply = {"observation": env.reset(seed=data.get("seed")), "sim_time_ns": None}
+                reply = {
+                    "observation": env.reset(seed=data.get("seed")),
+                    "sim_time_ns": env.sim_time_ns(),
+                }
             elif endpoint == "step":
                 reply = env.step(np.asarray(data["action"], dtype=np.float32))
             elif endpoint == "render":
