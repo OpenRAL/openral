@@ -25,7 +25,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_world_state.geometry import look_at_quat_wxyz
+
 
 # `mujoco` is imported lazily inside `_build_openarm_tabletop_scene` —
 # the parent `openral_sim` package eagerly registers every backend at
@@ -63,9 +63,24 @@ _DOF_PER_ARM = _ARM_JOINT_COUNT + _GRIPPER_CTRL_COUNT
 _DEFAULT_RENDER_WIDTH = 256
 _DEFAULT_RENDER_HEIGHT = 256
 _GRIPPER_ENCODER_DEADBAND = 0.05
-_WRIST_CAMERA_TARGET: tuple[float, float, float] = (0.58, 0.0, 0.08)
-_WRIST_CAMERA_OFFSET = np.asarray([-0.10, 0.14, 0.10], dtype=np.float64)
-_WRIST_CAMERA_FOVY = 78.0
+# Wrist camera local pose in the ``openarm_{side}_ee_base_link`` body frame.
+# EEF frame conventions (at tabletop reset pose):
+#   body +X  → world +Z (up)
+#   body +Y  → world +Y (lateral)
+#   body -Z  → world +X (approach axis, toward workspace)
+# Camera default look direction in MuJoCo is body -Z.
+#
+# pos: 18 cm in body +X ("above" the wrist in task space) so the camera
+# clears the gripper shell; no lateral or approach offset keeps it
+# symmetrically centred on the EEF axis.
+#
+# euler: 35° rotation around body Y tilts the look direction from purely
+# along the approach axis toward slightly downward in task space — this
+# keeps the gripper tip and the target object in frame during a downward
+# pick motion.
+_WRIST_CAM_LOCAL_POS = np.asarray([0.18, 0.0, 0.0], dtype=np.float64)
+_WRIST_CAM_LOCAL_EULER_XYZ = np.asarray([0.0, 0.611, 0.0], dtype=np.float64)  # 35°
+_WRIST_CAMERA_FOVY = 90.0
 
 
 def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | None:
@@ -639,39 +654,37 @@ class _OpenArmTabletopRollout:
         return out
 
     def _update_dynamic_wrist_camera(self, mujoco: Any, cam_name: str) -> None:
-        """Aim the named wrist streams at the live tabletop workspace.
+        """Fix the wrist camera to be properly body-parented to the EEF link.
 
-        The upstream OpenArm MJCF cameras are parented inside the hand. In the
-        tabletop reset pose they render mostly gripper shell/fingers, so the
-        policy never sees the cubes. Keep the canonical sensor names
-        (``wrist_left`` / ``wrist_right``, per ADR-0069) but move the compiled
-        camera to a world-space pose derived from the current end-effector
-        site.
+        The upstream OpenArm MJCF positions the wrist cameras inside the
+        gripper shell looking back at the fingers (original euler=-1.5708 on Z
+        produces a sideways view that renders mostly gripper geometry). This
+        function overrides position and orientation **in the EEF body-local
+        frame** using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_EULER_XYZ``
+        so the camera stays rigidly attached to the wrist throughout a
+        trajectory, rather than floating at a world-space offset (the old
+        ``cam_bodyid = 0`` approach). Called once per render step so the
+        camera tracks the live EEF pose.
         """
-        # ``wrist_left`` → ``left``, ``wrist_right`` → ``right``
-        side = cam_name.split("_", 1)[1]
-        sign = 1.0 if side == "left" else -1.0
+        side = cam_name.split("_", 1)[1]  # "wrist_left" → "left"
+        body_name = f"openarm_{side}_ee_base_link"
         cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, cam_name)
-        site_id = mujoco.mj_name2id(
-            self._model,
-            mujoco.mjtObj.mjOBJ_SITE,
-            f"{side}_ee_control_point",
-        )
-        if cam_id < 0 or site_id < 0:
+        body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        if cam_id < 0 or body_id < 0:
             raise ROSConfigError(
                 f"openarm_tabletop_pnp could not resolve {cam_name!r} camera "
-                f"or {side!r} end-effector site in the composed MJCF.",
+                f"or {body_name!r} body in the composed MJCF.",
             )
-        eef_pos = np.asarray(self._sim.data.site_xpos[site_id], dtype=np.float64)
-        offset = _WRIST_CAMERA_OFFSET * np.asarray([1.0, sign, 1.0], dtype=np.float64)
-        cam_pos = eef_pos + offset
-        self._model.cam_bodyid[cam_id] = 0
-        self._model.cam_pos[cam_id] = cam_pos
-        cam_pos_xyz = (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
-        self._model.cam_quat[cam_id] = np.asarray(
-            look_at_quat_wxyz(cam_pos_xyz, _WRIST_CAMERA_TARGET, view_axis="-z"),
-            dtype=np.float64,
-        )
+        # Keep the camera body-parented (follows the EEF through the trajectory).
+        self._model.cam_bodyid[cam_id] = body_id
+        # Local position in EEF frame — 18 cm along body +X clears the gripper shell.
+        self._model.cam_pos[cam_id] = _WRIST_CAM_LOCAL_POS.copy()
+        # Local orientation: 35° tilt around body Y tilts the look direction from
+        # purely along the approach axis (body -Z) toward slightly downward, so
+        # the gripper tip and target object stay in frame during picking.
+        quat = np.zeros(4, dtype=np.float64)
+        mujoco.mju_euler2Quat(quat, _WRIST_CAM_LOCAL_EULER_XYZ, "XYZ")
+        self._model.cam_quat[cam_id] = quat
         self._model.cam_fovy[cam_id] = _WRIST_CAMERA_FOVY
         mujoco.mj_forward(self._model, self._sim.data._data)
 
