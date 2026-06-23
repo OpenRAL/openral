@@ -38,12 +38,12 @@ def _world_state() -> WorldState:
 
 
 def test_renders_empty_when_no_state() -> None:
-    """An empty renderer produces the four section headers + '(none)' filler."""
+    """An empty renderer produces the five section headers + '(none)' filler."""
     text = ContextRenderer().render(world_state=None)
-    for header in ("## WORLD_STATE", "## FAILURES", "## PERCEPTION", "## PROMPTS"):
+    for header in ("## WORLD_STATE", "## EXECUTION", "## FAILURES", "## PERCEPTION", "## PROMPTS"):
         assert header in text
     assert "(no snapshot yet)" in text
-    assert text.count("(none)") == 3  # failures, perception, prompts
+    assert text.count("(none)") == 4  # executions, failures, perception, prompts
 
 
 def test_renders_world_state_joint_positions() -> None:

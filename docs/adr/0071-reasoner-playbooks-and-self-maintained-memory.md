@@ -603,7 +603,14 @@ affected docs in the same PR (§1.14). Phases are independently landable.
      modes); `ContextRenderer.set_robot_model` surfaces it, wired in
      `reasoner_node` at palette-seed time. Unit-tested on real `so100_follower` /
      `panda_mobile` fixtures.
-   - **2.2 execution feedback + 2.3 ladder reflection — remaining.**
+   - **2.2 execution feedback — landed.** `ContextRenderer.append_execution`
+     surfaces every dispatched skill's outcome (success *and* failure) in a new
+     `## EXECUTION` context section (Inner Monologue); wired in `reasoner_node`'s
+     `_on_execute_rskill_result` (success used to pass silently).
+   - **2.3 ladder reflection — landed.** `reflect_on_failure` /
+     `reflect_on_retry_cap` (Reflexion): a deterministic NL strategy hint is
+     appended on a skill failure and once when the per-kind retry ladder is
+     exhausted, so the next tick changes approach instead of looping.
 3. **Playbook loading (default path).** `on_configure` injects installed,
    capability-matched `PLAYBOOK.md` bodies into the system prompt. Author
    **find-object** and **decompose-mission** (+ the **subtask-with-goal** contract)
