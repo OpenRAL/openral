@@ -438,6 +438,7 @@ ros2-build:
                           openral_hal_ur5e \
                           openral_hal_ur10e \
                           openral_hal_aloha \
+                          openral_hal_scene_attached \
                           openral_hal_g1 \
                           openral_hal_h1 \
                           openral_hal_rizon4 \
@@ -536,6 +537,7 @@ ros2-test:
                           openral_hal_ur5e \
                           openral_hal_ur10e \
                           openral_hal_aloha \
+                          openral_hal_scene_attached \
                           openral_hal_g1 \
                           openral_hal_h1 \
                           openral_hal_rizon4 \

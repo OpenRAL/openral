@@ -32,6 +32,8 @@ envs (``GraspSingleOpenedCokeCanInScene``, ``MoveNearGoogleBakedTexInScene``,
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +44,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.maniskill3 import (
     _extract_rgb,
     _extract_state,
+    _sapien_sim_time_ns,
     _unbatch,
     _unbatch_info,
     _unbatch_obs,
@@ -66,6 +69,7 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 
 
 _SIMPLER_ENV_SCENE_ID = "simpler_env"
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 # SimplerEnv bridge envs ported into ManiSkill3 v3.0.x advertise a single
 # ``rgb+segmentation`` obs mode (see SUPPORTED_OBS_MODES on
 # BridgeDatasetEvalBase). Earlier branches accepted ``rgbd`` — the
@@ -75,6 +79,19 @@ _SIMPLER_ENV_SCENE_ID = "simpler_env"
 _DEFAULT_OBS_MODE = "rgb+segmentation"
 
 
+@contextmanager
+def _headless_display_guard(*, view_requested: bool) -> Iterator[None]:
+    """Keep headless SAPIEN env construction away from inherited X displays."""
+    if view_requested or "DISPLAY" not in os.environ:
+        yield
+        return
+    display = os.environ.pop("DISPLAY")
+    try:
+        yield
+    finally:
+        os.environ["DISPLAY"] = display
+
+
 def _parse_task_id(task_id: str) -> str:
     """Parse ``"simpler_env/<env_id>"`` and return ``<env_id>``."""
     parts = task_id.split("/", maxsplit=1)
@@ -82,6 +99,13 @@ def _parse_task_id(task_id: str) -> str:
     if len(parts) != expected_parts or parts[0] != _SIMPLER_ENV_SCENE_ID:
         raise ROSConfigError(f"simpler_env task id must be 'simpler_env/<env_id>', got {task_id!r}")
     return parts[1]
+
+
+def _task_name_for_env(env_cfg: SimEnvironment) -> str:
+    """Resolve the concrete SimplerEnv task, including taskless deploy scenes."""
+    if env_cfg.task.id.endswith(_DEPLOY_NOOP_SUFFIX):
+        return str(env_cfg.scene.backend_options.get("deploy_task_id", "widowx_carrot_on_plate"))
+    return _parse_task_id(env_cfg.task.id)
 
 
 def _bump_version_if_deprecated(env_id: str) -> str:
@@ -278,6 +302,17 @@ class _SimplerEnvSim:
             info=_unbatch_info(info),
         )
 
+    @property
+    def action_dim(self) -> int:
+        """Single-env action width reported by the live SimplerEnv action space."""
+        from openral_sim.backends.maniskill3 import _action_dim_from_space
+
+        return _action_dim_from_space(self._env.action_space)
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
+        return _sapien_sim_time_ns(self._env)
+
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()
 
@@ -366,7 +401,7 @@ def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
             '"simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"'
         ) from exc
 
-    task_name = _parse_task_id(env_cfg.task.id)
+    task_name = _task_name_for_env(env_cfg)
     env_id, env_kwargs = _resolve_friendly_name(task_name)
 
     # Upstream ``simpler_env.make`` injects ``prepackaged_config=True`` and
@@ -401,13 +436,14 @@ def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
     # back to 60 steps. MS3's ``TimeLimitWrapper`` introspects the
     # ``gym.make`` frame and prefers the caller-supplied value when
     # non-None (see ``mani_skill.utils.registration.TimeLimitWrapper``).
-    env = gym.make(
-        env_id,
-        obs_mode=obs_mode,
-        render_mode=None,
-        max_episode_steps=env_cfg.task.max_steps,
-        **env_kwargs,
-    )
+    with _headless_display_guard(view_requested=view_pending):
+        env = gym.make(
+            env_id,
+            obs_mode=obs_mode,
+            render_mode=None,
+            max_episode_steps=env_cfg.task.max_steps,
+            **env_kwargs,
+        )
     return _SimplerEnvSim(
         scene=env_cfg.scene,
         task=env_cfg.task,

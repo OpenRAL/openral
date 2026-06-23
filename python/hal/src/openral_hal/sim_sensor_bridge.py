@@ -522,7 +522,7 @@ class SimSensorBridge:
         if not callable(getattr(self._hal, "idle_step", None)):
             return
         # ADR-0048 Phase 2 — drive the idle stepper on WALL time, never the
-        # node's clock. Under ``use_sim_time`` (enable_sim_clock) a node-clock
+        # node's clock. Under ``use_sim_time`` (simulation clock authority) a node-clock
         # timer fires off ``/clock`` — but the idle step is what ADVANCES
         # ``/clock`` (it steps the sim), so a sim-time timer here deadlocks: no
         # step → no /clock → no fire. A SYSTEM_TIME clock breaks the cycle so the

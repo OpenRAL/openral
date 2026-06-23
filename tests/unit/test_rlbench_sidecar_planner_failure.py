@@ -75,9 +75,23 @@ def _scene() -> Any:
     return scene
 
 
+class _PyRepTime:
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    def get_simulation_time(self) -> float:
+        return self.seconds
+
+
+class _EnvWithPyRep:
+    def __init__(self, seconds: float) -> None:
+        self._pyrep = _PyRepTime(seconds)
+
+
 def test_planner_path_failure_ends_episode_as_failure_not_a_crash() -> None:
     scene = _scene()
     scene._task = _UnplannableTask()
+    scene._env = _EnvWithPyRep(1.25)
 
     reply = scene.step(np.zeros(8, dtype=np.float32))
 
@@ -85,6 +99,7 @@ def test_planner_path_failure_ends_episode_as_failure_not_a_crash() -> None:
     assert reply["truncated"] is False
     assert reply["reward"] == 0.0
     assert reply["info"]["is_success"] is False
+    assert reply["sim_time_ns"] == 1_250_000_000
     # The cached observation is returned (no fresh obs exists on a planner miss).
     assert reply["observation"] is scene._last_wrapped_obs
 
@@ -110,3 +125,8 @@ def test_genuine_error_still_propagates() -> None:
 def test_is_planner_path_failure_matches_by_name(exc_name: str, expected: bool) -> None:
     exc = type(exc_name, (Exception,), {})("boom")
     assert rlbench_sidecar._is_planner_path_failure(exc) is expected
+
+
+def test_coppeliasim_time_ns_reads_pyrep_simulation_time() -> None:
+    assert rlbench_sidecar._coppeliasim_time_ns(_EnvWithPyRep(0.075)) == 75_000_000
+    assert rlbench_sidecar._coppeliasim_time_ns(object()) is None

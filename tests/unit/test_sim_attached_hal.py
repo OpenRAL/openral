@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 from openral_core import (
     Action,
+    ClockOrigin,
     ControlMode,
     JointSpec,
     JointType,
@@ -343,9 +344,14 @@ def _qpos_addr(model: object, joint_name: str) -> int:
 
 
 def test_body_twist_advances_mujoco_qpos() -> None:
-    """ADR-0026 follow-up — BODY_TWIST writes base qpos directly (no env.step)."""
+    """BODY_TWIST writes base qpos directly and advances the logical sim timestep."""
     model, data = _build_planar_base_mjcf()
-    env = FakeSimEnv(action_dim=11, handles=(model, data))
+    env = FakeSimEnv(
+        action_dim=11,
+        handles=(model, data),
+        has_sim_clock=True,
+        sim_time_from_mujoco=True,
+    )
     hal = SimAttachedHAL(env, _two_dof_description(), body_twist_dt_s=0.05)
     hal.connect()
 
@@ -364,6 +370,11 @@ def test_body_twist_advances_mujoco_qpos() -> None:
     assert float(data.qpos[fwd_addr]) == pytest.approx(0.05, abs=1e-9)
     assert float(data.qpos[side_addr]) == pytest.approx(0.0, abs=1e-9)
     assert float(data.qpos[yaw_addr]) == pytest.approx(0.0, abs=1e-9)
+    # Direct-qpos is still one simulation timestep. This is the deploy-sim
+    # /clock contract: Nav2 BODY_TWIST streams must not freeze sim time just
+    # because the base bypasses env.step.
+    assert float(data.time) == pytest.approx(0.05, abs=1e-12)
+    assert hal.sim_time_ns() == 50_000_000
     # Crucial: env.step was NOT called — the integrator bypasses the
     # robocasa composite controller (which doesn't honour planar
     # velocities in slots 0-2 on this scene).
@@ -597,6 +608,7 @@ def test_sim_time_ns_none_for_clockless_backend() -> None:
     hal = SimAttachedHAL(env, _two_dof_description())
     hal.connect()
     assert hal.sim_time_ns() is None
+    assert hal.clock_authority().origin is ClockOrigin.HOST_WALL
     # Stepping does not conjure a clock.
     hal.send_action(_joint_position_chunk())
     assert hal.sim_time_ns() is None
@@ -616,6 +628,9 @@ def test_sim_time_ns_advances_with_steps() -> None:
     for prev, cur in pairwise(samples):
         assert cur >= prev  # type: ignore[operator]  # reason: None ruled out above
     assert samples[-1] == 20_000_000 * 5  # deterministic fake clock
+    authority = hal.clock_authority()
+    assert authority.origin is ClockOrigin.SIMULATION
+    assert authority.publishes_ros_clock is True
 
 
 def test_sim_time_ns_does_not_rewind_across_reset() -> None:

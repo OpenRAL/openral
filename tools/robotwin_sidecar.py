@@ -13,7 +13,7 @@ the openral side uses (``openral_sim.sidecar``):
 
     ping  -> {"ok": True, "action_dim": int, "task": str, "env": "robotwin"}
     reset -> {"observation": {...}, "sim_time_ns": int|None}
-    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info"}
+    step  -> {"observation": {...}, "reward", "terminated", "truncated", "info", "sim_time_ns": int|None}
     render-> {"frame": <uint8 HWC>|None}
     close -> {"ok": True}
 
@@ -41,6 +41,20 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+# Attribute names a gym/SAPIEN wrapper may use to expose the env it wraps. The
+# nesting walk in ``_sim_time_candidates`` follows these one level deep, twice.
+_NESTED_ENV_ATTRS = (
+    "unwrapped",
+    "env",
+    "_env",
+    "gym_env",
+    "base_env",
+    "scene",
+    "_scene",
+    "sim",
+    "_sim",
+)
+
 # ── msgpack ndarray codec (matches openral_sim.sidecar) ───────────────────────
 
 
@@ -56,6 +70,83 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
     if "__ndarray__" in obj:
         return np.load(io.BytesIO(obj["npy"]), allow_pickle=False)
     return obj
+
+
+def _scalar_float(value: object) -> float | None:
+    if value is None or callable(value):
+        return None
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _first_scalar_attr(obj: object, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        scalar = _scalar_float(getattr(obj, name, None))
+        if scalar is not None:
+            return scalar
+    return None
+
+
+def _sapien_sim_time_ns(env: object) -> int | None:
+    """Best-effort elapsed SAPIEN time from the wrapped RoboTwin env."""
+    candidates = tuple(_sim_time_candidates(env))
+    elapsed_s_names = ("elapsed_time", "time_elapsed", "sim_time", "elapsed_seconds")
+    step_names = ("elapsed_steps", "_elapsed_steps")
+    dt_names = ("control_timestep", "_control_timestep", "control_dt", "dt")
+    freq_names = ("control_freq", "_control_freq")
+    for candidate in candidates:
+        elapsed_s = _first_scalar_attr(candidate, elapsed_s_names)
+        if elapsed_s is not None:
+            return round(elapsed_s * 1_000_000_000)
+        steps = _first_scalar_attr(candidate, step_names)
+        if steps is None:
+            continue
+        dt_s = _first_scalar_attr(candidate, dt_names)
+        if dt_s is None:
+            freq_hz = _first_scalar_attr(candidate, freq_names)
+            if freq_hz is not None and freq_hz > 0:
+                dt_s = 1.0 / freq_hz
+        if dt_s is not None:
+            return round(steps * dt_s * 1_000_000_000)
+    return None
+
+
+def _sim_time_candidates(env: object) -> list[object]:
+    """Return plausible wrapped/vectorized env objects that may expose time attrs."""
+    seen: set[int] = set()
+    out: list[object] = []
+
+    def add(obj: object | None) -> None:
+        if obj is None:
+            return
+        ident = id(obj)
+        if ident in seen:
+            return
+        seen.add(ident)
+        out.append(obj)
+
+    add(env)
+    for name in _NESTED_ENV_ATTRS:
+        add(getattr(env, name, None))
+    for name in ("envs", "_envs", "venv"):
+        value = getattr(env, name, None)
+        if isinstance(value, (list, tuple)) and value:
+            add(value[0])
+    for obj in list(out):
+        for name in _NESTED_ENV_ATTRS:
+            add(getattr(obj, name, None))
+    return out
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -78,6 +169,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
+    p.add_argument(
+        "--fallback-dt-s",
+        type=float,
+        default=1.0 / 30.0,
+        help="deterministic sim-time step used only when RoboTwin hides elapsed-time attrs",
+    )
     return p.parse_args(argv)
 
 
@@ -111,6 +208,7 @@ class _RoboTwinEnv:
         obs_width: int,
         episode_length: int,
         success_key: str,
+        fallback_dt_s: float,
     ) -> None:
         self._task = task
         self._instruction = instruction
@@ -126,6 +224,8 @@ class _RoboTwinEnv:
         )
         self._is_vector_env = hasattr(self._env, "single_action_space")
         self._action_dim = int(np.prod(self._env.action_space.shape))
+        self._fallback_dt_ns = round(fallback_dt_s * 1_000_000_000)
+        self._fallback_time_ns = 0
 
     def _make_env(
         self,
@@ -213,6 +313,7 @@ class _RoboTwinEnv:
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         obs, _info = self._env.reset(seed=seed)
+        self._fallback_time_ns = 0
         return self._unwrap_obs(obs)
 
     def step(self, action: npt.NDArray[np.float32]) -> dict[str, Any]:
@@ -220,6 +321,8 @@ class _RoboTwinEnv:
         if self._is_vector_env:
             action_arr = action_arr.reshape(1, -1)
         obs, reward, terminated, truncated, info = self._env.step(action_arr)
+        if _sapien_sim_time_ns(self._env) is None:
+            self._fallback_time_ns += self._fallback_dt_ns
         success = bool(np.asarray(info.get(self._success_key, False)).any())
         return {
             "observation": self._unwrap_obs(obs),
@@ -227,7 +330,12 @@ class _RoboTwinEnv:
             "terminated": bool(np.asarray(terminated).reshape(-1)[0]),
             "truncated": bool(np.asarray(truncated).reshape(-1)[0]),
             "info": {self._success_key: success},
+            "sim_time_ns": self.sim_time_ns(),
         }
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN time from the wrapped RoboTwin env, when exposed."""
+        return _sapien_sim_time_ns(self._env) or self._fallback_time_ns
 
     def render(self) -> npt.NDArray[np.uint8] | None:
         return None
@@ -254,6 +362,7 @@ def main(argv: list[str]) -> int:
         obs_width=args.obs_width,
         episode_length=args.episode_length,
         success_key=args.success_key,
+        fallback_dt_s=args.fallback_dt_s,
     )
     try:
         return _serve(env, host=args.host, port=args.port, task=args.task)
@@ -287,7 +396,10 @@ def _serve(env: _RoboTwinEnv, *, host: str, port: int, task: str) -> int:
                     "env": "robotwin",
                 }
             elif endpoint == "reset":
-                reply = {"observation": env.reset(seed=data.get("seed")), "sim_time_ns": None}
+                reply = {
+                    "observation": env.reset(seed=data.get("seed")),
+                    "sim_time_ns": env.sim_time_ns(),
+                }
             elif endpoint == "step":
                 reply = env.step(np.asarray(data["action"], dtype=np.float32))
             elif endpoint == "render":

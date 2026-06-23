@@ -75,8 +75,8 @@ ACTIVE). Pointed the bridge at it.
 Earlier I wrongly concluded cameras need a skill to step the sim — that was a
 premature reading taken seconds after boot. **Corrected:** master has an
 autonomous idle-step timer (`sim_sensor_bridge.py`, ADR-0034 idle-stepper
-amendment) gated **only** on the HAL exposing `idle_step`, *not* on
-`enable_sim_clock`. Empirically, the idle OpenArm graph (no skill, reasoner
+amendment) gated **only** on the HAL exposing `idle_step`, *not* on the
+graph clock origin. Empirically, the idle OpenArm graph (no skill, reasoner
 unable to dispatch — no LLM) streamed cameras (base ~6 Hz, wrists ~1-2 Hz) and
 `/joint_states` at 30 Hz. So the cameras populate Foxglove at idle.
 

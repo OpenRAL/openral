@@ -85,6 +85,7 @@ class FakeSimEnv:
     #     returns ``None`` (clock-less backend) so the fake doubles as the
     #     "no sim clock" case without a second fake class.
     has_sim_clock: bool = False
+    sim_time_from_mujoco: bool = False
     sim_dt_ns: int = 20_000_000  # 20 ms — a typical robosuite control step
     _sim_time_ns: int = 0
 
@@ -113,6 +114,9 @@ class FakeSimEnv:
         within an episode, rewinds on ``reset``. ``None`` when
         ``has_sim_clock`` is ``False`` (the clock-less-backend case).
         """
+        if self.has_sim_clock and self.sim_time_from_mujoco and self.handles is not None:
+            _model, data = self.handles
+            return round(float(data.time) * 1_000_000_000)
         return self._sim_time_ns if self.has_sim_clock else None
 
     def refresh_obs(self) -> dict[str, Any] | None:

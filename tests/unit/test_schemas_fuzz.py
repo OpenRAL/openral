@@ -25,6 +25,8 @@ from openral_core.schemas import (
     BenchmarkName,
     CameraSimPlacement,
     CapsuleShape,
+    ClockAuthority,
+    ClockEpoch,
     CollisionEvidence,
     ControlMode,
     ControlModeSemantics,
@@ -276,6 +278,24 @@ _occupancy_grid_ref_st = st.builds(
     data_topic=_topic,
 )
 
+_clock_authority_st = st.one_of(
+    st.builds(ClockAuthority.host_wall, clock_id=_name),
+    st.builds(
+        ClockAuthority.simulation,
+        clock_id=_name,
+        timestep_s=st.one_of(
+            st.none(),
+            st.floats(allow_nan=False, allow_infinity=False, min_value=1e-6, max_value=1.0),
+        ),
+        publishes_ros_clock=st.booleans(),
+    ),
+    st.builds(
+        ClockAuthority.hardware_synced,
+        clock_id=_name,
+        epoch=st.sampled_from([ClockEpoch.UNIX, ClockEpoch.HARDWARE]),
+    ),
+)
+
 _collision_evidence_st = st.builds(
     CollisionEvidence,
     collision_kind=st.sampled_from(["self", "world"]),
@@ -307,6 +327,13 @@ def _round_trip_and_validate(cls: type, instance: object) -> None:  # type: igno
 
 
 # ─── Fuzz tests ───────────────────────────────────────────────────────────────
+
+
+@_FUZZ_SETTINGS
+@given(_clock_authority_st)
+def test_fuzz_clock_authority(instance: ClockAuthority) -> None:
+    """ClockAuthority round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(ClockAuthority, instance)
 
 
 @_FUZZ_SETTINGS
