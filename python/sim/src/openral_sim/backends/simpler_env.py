@@ -67,6 +67,7 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 
 
 _SIMPLER_ENV_SCENE_ID = "simpler_env"
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 # SimplerEnv bridge envs ported into ManiSkill3 v3.0.x advertise a single
 # ``rgb+segmentation`` obs mode (see SUPPORTED_OBS_MODES on
 # BridgeDatasetEvalBase). Earlier branches accepted ``rgbd`` — the
@@ -83,6 +84,13 @@ def _parse_task_id(task_id: str) -> str:
     if len(parts) != expected_parts or parts[0] != _SIMPLER_ENV_SCENE_ID:
         raise ROSConfigError(f"simpler_env task id must be 'simpler_env/<env_id>', got {task_id!r}")
     return parts[1]
+
+
+def _task_name_for_env(env_cfg: SimEnvironment) -> str:
+    """Resolve the concrete SimplerEnv task, including taskless deploy scenes."""
+    if env_cfg.task.id.endswith(_DEPLOY_NOOP_SUFFIX):
+        return str(env_cfg.scene.backend_options.get("deploy_task_id", "widowx_carrot_on_plate"))
+    return _parse_task_id(env_cfg.task.id)
 
 
 def _bump_version_if_deprecated(env_id: str) -> str:
@@ -371,7 +379,7 @@ def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
             '"simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"'
         ) from exc
 
-    task_name = _parse_task_id(env_cfg.task.id)
+    task_name = _task_name_for_env(env_cfg)
     env_id, env_kwargs = _resolve_friendly_name(task_name)
 
     # Upstream ``simpler_env.make`` injects ``prepackaged_config=True`` and

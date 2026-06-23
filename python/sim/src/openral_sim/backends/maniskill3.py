@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 
 _MANISKILL3_SCENE_ID = "maniskill3"
+_DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 # Mirrors the constant in :mod:`openral_sim.sim_runner` and
 # :mod:`openral_sim.backends.simpler_env`. :meth:`SimRunner.activate`
 # sets it to ``"1"`` for the duration of the scene-build window when
@@ -53,6 +54,13 @@ def _parse_task_id(task_id: str) -> str:
     if len(parts) != expected_parts or parts[0] != _MANISKILL3_SCENE_ID:
         raise ROSConfigError(f"maniskill3 task id must be 'maniskill3/<env_id>', got {task_id!r}")
     return parts[1]
+
+
+def _task_id_for_env(env_cfg: SimEnvironment) -> str:
+    """Resolve the concrete ManiSkill env id, including taskless deploy scenes."""
+    if env_cfg.task.id.endswith(_DEPLOY_NOOP_SUFFIX):
+        return str(env_cfg.scene.backend_options.get("deploy_task_id", "PickCube-v1"))
+    return _parse_task_id(env_cfg.task.id)
 
 
 def _reconcile_robot_uids(env_id: str, robot_uids: str) -> None:
@@ -410,7 +418,7 @@ def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
             "uv sync --all-packages --group maniskill3 --inexact"
         ) from exc
 
-    env_id = _parse_task_id(env_cfg.task.id)
+    env_id = _task_id_for_env(env_cfg)
     # Single-env eval — the harness expects one Observation per step, and
     # the per-(task, seed) outer loop in run_benchmark is the right place
     # to parallelise (clear semantics, OTel spans per episode).
