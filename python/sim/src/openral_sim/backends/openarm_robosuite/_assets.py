@@ -251,12 +251,12 @@ _FALLBACK_TOP_CAMERA_POS: tuple[float, float, float] = (0.20, 0.0, 0.95)
 _FALLBACK_TOP_CAMERA_TARGET: tuple[float, float, float] = (0.65, 0.0, 0.05)
 _FALLBACK_TOP_CAMERA_FOVY: float = 65.0
 
-# Fallback for the ``front`` camera — centered between the two arms,
-# in front of the workspace, facing slightly down toward the table.
-# Matches the scene YAML default so bare callers see the same view.
-_FALLBACK_FRONT_CAMERA_POS: tuple[float, float, float] = (0.90, 0.0, 0.65)
-_FALLBACK_FRONT_CAMERA_TARGET: tuple[float, float, float] = (0.45, 0.0, 0.33)
-_FALLBACK_FRONT_CAMERA_FOVY: float = 70.0
+# Fallback for the ``front`` camera — chest-mounted between the two arms
+# at pedestal-top height, looking forward toward the workspace (robot POV).
+# Matches how bimanual robots like ALOHA mount a head/chest camera.
+_FALLBACK_FRONT_CAMERA_POS: tuple[float, float, float] = (0.05, 0.0, 0.85)
+_FALLBACK_FRONT_CAMERA_TARGET: tuple[float, float, float] = (0.55, 0.0, 0.35)
+_FALLBACK_FRONT_CAMERA_FOVY: float = 80.0
 
 
 # MuJoCo (w, x, y, z) look-at quaternion — promoted to the shared gaze-geometry

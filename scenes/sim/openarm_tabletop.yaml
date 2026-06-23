@@ -35,13 +35,12 @@ scene:
     top_camera_pos: [0.20, 0.0, 0.95]
     top_camera_target: [0.65, 0.0, 0.05]
     top_camera_fovy: 65.0
-    # Front camera: centered between both arms, slightly elevated, facing
-    # slightly down toward the workspace. Mirrors the spirit of the upstream
-    # enactic/openarm_mujoco ``front_camera`` but positioned in front of
-    # the workspace rather than to the side.
-    front_camera_pos: [0.90, 0.0, 0.65]
-    front_camera_target: [0.45, 0.0, 0.33]
-    front_camera_fovy: 70.0
+    # Front camera: chest-mounted between the arms at pedestal-top height,
+    # looking forward toward the workspace — robot POV, not an external
+    # camera. Matches how bimanual robots like ALOHA mount a head/chest cam.
+    front_camera_pos: [0.05, 0.0, 0.85]
+    front_camera_target: [0.55, 0.0, 0.35]
+    front_camera_fovy: 80.0
 
 task:
   id: openarm/pnp_cube_to_drawer

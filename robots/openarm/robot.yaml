@@ -320,8 +320,9 @@ hal:
 # the rskill manifest's ``image_preprocessing.aliases`` bridges
 # scene-side → checkpoint-side names.
 #
-# ``front``: operator-facing view from world +Y side — mirrors the
-#   upstream enactic/openarm_mujoco ``front_camera`` (pos=[0,2,0.5]).
+# ``front``: chest-mounted between the arms at pedestal-top height,
+#   looking forward toward the workspace (robot POV — analogous to the
+#   head/chest camera on ALOHA and similar bimanual platforms).
 # ``top``: overhead workspace overview (mddoai dataset POV).
 # ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
