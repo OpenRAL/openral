@@ -151,17 +151,19 @@ safety:
   deadman_required: true
 
 # Single corner-view RGB camera that mirrors MetaWorld's `pixels`
-# observation (480×480 native, surfaced as `camera1` by the
-# openral_sim MetaWorld scene adapter — see
+# observation (480×480 native, surfaced as `front` by the
+# openral_sim MetaWorld scene adapter per ADR-0070 — see
 # python/eval/src/openral_sim/adapters/metaworld.py:92). Declared
 # here so the rSkill compatibility check on a `openral sim run --config
 # smolvla_metaworld_push.yaml` rollout matches
 # `observation.images.camera1` against a real SensorSpec — same
-# pattern as aloha_bimanual's `top`. Drift-guard intentionally does not
-# assert sensors against the HAL constant (see
+# pattern as aloha_bimanual's `top`. The HAL-facing sensor name (`front`)
+# is canonical per ADR-0070; the checkpoint-facing `vla_feature_key`
+# stays camera1 since it is frozen per checkpoint. Drift-guard
+# intentionally does not assert sensors against the HAL constant (see
 # tests/unit/test_robot_manifests_match_hal_constants.py header).
 sensors:
-  - name: "corner"
+  - name: "front"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 20.0

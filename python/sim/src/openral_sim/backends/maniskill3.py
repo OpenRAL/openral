@@ -289,21 +289,23 @@ class _ManiSkill3Sim:
 
         ManiSkill3's ``sensor_data`` sub-dict carries one entry per
         registered camera (e.g. ``base_camera`` + ``hand_camera`` on
-        ``panda_wristcam``). We surface them in declaration order as
-        ``camera1`` / ``camera2`` / ... to match the scene-side names
-        the franka_panda RobotDescription declares and that
-        ``image_preprocessing.aliases`` in an rSkill manifest then
-        renames to model-side keys (``up`` / ``wrist`` / ...).
+        ``panda_wristcam``). We surface them in declaration order under
+        the scene's ``cameras`` list (canonical per ADR-0070 — e.g.
+        ``front`` / ``wrist``), falling back to ``camera{i+1}`` when the
+        scene leaves that list empty. An rSkill manifest's
+        ``image_preprocessing.aliases`` block then renames them to
+        model-side keys (``up`` / ``wrist`` / ...).
         """
         flat = _unbatch_obs(obs)
-        images = _extract_rgb_streams(flat)
+        images = _extract_rgb_streams(flat, list(self.scene.cameras) or None)
         state = _extract_state(flat)
         if images:
             self._last_image = next(iter(images.values()))
         h = self.scene.observation_height
         w = self.scene.observation_width
         if not images:
-            images = {"camera1": np.zeros((h, w, 3), dtype=np.uint8)}
+            cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
+            images = {cam0: np.zeros((h, w, 3), dtype=np.uint8)}
         return {
             "images": images,
             "state": state,
@@ -373,14 +375,17 @@ def _extract_rgb(flat: Any) -> NDArray[np.uint8] | None:
     return next(iter(streams.values()))
 
 
-def _extract_rgb_streams(flat: Any) -> dict[str, NDArray[np.uint8]]:
+def _extract_rgb_streams(
+    flat: Any, camera_names: list[str] | None = None
+) -> dict[str, NDArray[np.uint8]]:
     """Pull every RGB camera stream from a ManiSkill3 obs dict.
 
-    Returns an ordered ``{"camera1": rgb1, "camera2": rgb2, ...}`` map
-    that mirrors the declaration order in ``sensor_data``. The keys are
-    the scene-side names the franka_panda RobotDescription declares;
-    an rSkill manifest's ``image_preprocessing.aliases`` block renames
-    them to model-side keys before preprocessing.
+    Returns an ordered ``{name: rgb, ...}`` map mirroring the declaration
+    order in ``sensor_data``. When ``camera_names`` is supplied (typically
+    ``scene.cameras`` per ADR-0070) the i-th sensor is keyed by
+    ``camera_names[i]``; otherwise the ordinal fallback ``camera{i+1}`` is
+    used. An rSkill manifest's ``image_preprocessing.aliases`` block then
+    renames the resulting keys to model-side keys before preprocessing.
     """
     if not isinstance(flat, dict):
         return {}
@@ -388,11 +393,16 @@ def _extract_rgb_streams(flat: Any) -> dict[str, NDArray[np.uint8]]:
     if not isinstance(sensor_data, dict):
         return {}
     out: dict[str, NDArray[np.uint8]] = {}
-    for idx, cam_obs in enumerate(sensor_data.values(), start=1):
+    for idx, cam_obs in enumerate(sensor_data.values()):
         if isinstance(cam_obs, dict):
             rgb = cam_obs.get("rgb")
             if rgb is not None:
-                out[f"camera{idx}"] = np.asarray(rgb, dtype=np.uint8)
+                key = (
+                    camera_names[idx]
+                    if camera_names is not None and idx < len(camera_names)
+                    else f"camera{idx + 1}"
+                )
+                out[key] = np.asarray(rgb, dtype=np.uint8)
     return out
 
 

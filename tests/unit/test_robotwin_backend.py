@@ -216,7 +216,7 @@ def test_robotwin_launch_argv_passes_checkout_root(
 
     env_cfg = SimEnvironment(
         robot_id="aloha_agilex",
-        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN, cameras=["camera1"]),
+        scene=SceneSpec(id="robotwin", backend=PhysicsBackend.SAPIEN, cameras=["top"]),
         task=TaskSpec(
             id="robotwin/lift_pot",
             scene_id="robotwin",
@@ -285,7 +285,7 @@ def test_aloha_agilex_manifest() -> None:
     r = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "aloha_agilex" / "robot.yaml"))
     assert r.name == "aloha_agilex"
     assert len(r.joints) == 14
-    assert [s.name for s in r.sensors] == ["camera1", "camera2", "camera3"]
+    assert [s.name for s in r.sensors] == ["top", "wrist_left", "wrist_right"]
     assert r.action_spec.dim == 14
     assert "aloha_agilex" in r.capabilities.embodiment_tags
 

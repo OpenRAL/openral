@@ -26,7 +26,7 @@ scene:
   backend: isaacsim
   observation_height: 256
   observation_width: 256
-  cameras: ["camera1", "camera2"]
+  cameras: ["top", "wrist"]
   backend_options:
     layout: "bowl_plate"
     headless: true

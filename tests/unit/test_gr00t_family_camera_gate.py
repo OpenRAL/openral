@@ -47,9 +47,9 @@ def test_libero_layout_rejects_single_camera_scene() -> None:
     """gr00t/rldx LIBERO (2 cams) on a 1-camera scene → clear early mismatch.
 
     Mirrors gr00t on the single-camera Isaac ``lift_cube`` deploy/wire layout vs
-    ``isaac_franka_bowl_plate`` (renders ``camera1``+``camera2``, which passes).
+    ``isaac_franka_bowl_plate`` (renders ``top``+``wrist``, which passes).
     """
-    env_cfg = _env_with_cameras(["camera1"])
+    env_cfg = _env_with_cameras(["top"])
     with pytest.raises(ROSCapabilityMismatch, match="2 distinct camera views"):
         _require_scene_cameras(
             env_cfg, layout="libero", camera_keys=("camera1", "camera2"), family="gr00t"
@@ -57,7 +57,7 @@ def test_libero_layout_rejects_single_camera_scene() -> None:
 
 
 def test_libero_layout_accepts_two_camera_scene() -> None:
-    env_cfg = _env_with_cameras(["camera1", "camera2"])
+    env_cfg = _env_with_cameras(["top", "wrist"])
     _require_scene_cameras(
         env_cfg, layout="libero", camera_keys=("camera1", "camera2"), family="gr00t"
     )  # must not raise
@@ -74,7 +74,7 @@ def test_empty_cameras_is_adapter_default_not_a_mismatch() -> None:
 
 def test_single_view_layout_allows_single_camera_scene() -> None:
     """GR1 / Simpler checkpoints consume one camera — a 1-camera scene is fine."""
-    env_cfg = _env_with_cameras(["camera1"])
+    env_cfg = _env_with_cameras(["front"])
     for layout in ("gr1", "simpler_widowx", "simpler_google"):
         _require_scene_cameras(
             env_cfg, layout=layout, camera_keys=("camera1", "camera2"), family="rldx"
@@ -82,12 +82,12 @@ def test_single_view_layout_allows_single_camera_scene() -> None:
 
 
 def test_rc365_layout_requires_three_cameras() -> None:
-    env_cfg = _env_with_cameras(["camera1", "camera2"])
+    env_cfg = _env_with_cameras(["shoulder_left", "shoulder_right"])
     with pytest.raises(ROSCapabilityMismatch, match="3 distinct camera views"):
         _require_scene_cameras(
             env_cfg, layout="rc365", camera_keys=("camera1", "camera2"), family="rldx"
         )
-    ok = _env_with_cameras(["camera1", "camera2", "camera3"])
+    ok = _env_with_cameras(["shoulder_left", "shoulder_right", "wrist"])
     _require_scene_cameras(
         ok, layout="rc365", camera_keys=("camera1", "camera2"), family="rldx"
     )  # must not raise

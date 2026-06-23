@@ -33,7 +33,7 @@ scene:
   backend: isaacsim
   observation_height: 256
   observation_width: 256
-  cameras: ["camera1"]
+  cameras: ["top"]
   backend_options:
     layout: "lift_cube"
     headless: true

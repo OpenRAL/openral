@@ -12,7 +12,7 @@ scene:
   backend: mujoco
   observation_height: 256
   observation_width: 256
-  cameras: ["camera1"]
+  cameras: ["head"]
   # GR1 tabletop tasks route through the `gr1_unified/<task>_<robot>_Env`
   # gymnasium wrapper (BASIC composite controller + Fourier-native 29-D
   # state). `robots[0]` must be a GR1 composition so `_is_gr1_robot` flips

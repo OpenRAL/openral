@@ -98,16 +98,16 @@ end_effectors:
     workspace_radius_m: 0.32
 
 # SO-100 ships with optional USB cameras. The defaults here mirror the
-# convention used by the lerobot SO-100 dataset (``camera1`` = front,
+# convention used by the lerobot SO-100 dataset (``camera1`` = overhead/top,
 # ``camera2`` = wrist). For the smoketest digital twin no real images
 # are produced — the VLA runs against zero tensors.
 sensors:
-  - name: "front"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 30.0
     # ADR-0065 — sim placement for the overhead camera. The generic HAL camera
-    # rig splices this `front` camera into the bare SO-100 MJCF for `deploy sim`
+    # rig splices this `top` camera into the bare SO-100 MJCF for `deploy sim`
     # (the upstream `so_arm100` arm ships zero cameras, issue #88), world-fixed
     # above the arm's workspace looking down. Poses are in metres relative to the
     # arm base at the MJCF origin (the bare twin is NOT re-anchored).
@@ -124,7 +124,7 @@ sensors:
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera1"
     vendor: "generic_usb"
-    model: "so100_front"
+    model: "so100_top"
   - name: "wrist"
     modality: "rgb"
     # The wrist camera is bolted to the gripper body (it rolls with wrist_roll);

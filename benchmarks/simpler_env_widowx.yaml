@@ -36,7 +36,7 @@
     backend: mujoco       # SAPIEN under the hood; we reuse the mujoco enum slot
     observation_height: 480
     observation_width: 640
-    cameras: ["camera1"]
+    cameras: ["top"]
   task: &task_proto
     id: simpler_env/widowx_carrot_on_plate
     scene_id: simpler_env

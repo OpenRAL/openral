@@ -181,7 +181,7 @@ scene:
   backend: mujoco                 # PhysicsBackend enum
   observation_height: 256
   observation_width: 256
-  cameras: ["agentview", "wrist"]  # optional; SceneSpec.cameras defaults to []
+  cameras: ["top", "wrist"]        # optional; SceneSpec.cameras defaults to []
 
 task:
   id: libero_spatial/0            # adapter splits on "/" to resolve

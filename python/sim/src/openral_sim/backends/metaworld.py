@@ -121,8 +121,9 @@ class _MetaworldSim:
 
         agent_pos = np.asarray(obs.get("agent_pos", np.zeros(4)), dtype=np.float32)
 
+        cam0 = self.scene.cameras[0] if self.scene.cameras else "camera1"
         return {
-            "images": {"camera1": image},
+            "images": {cam0: image},
             "state": agent_pos,
             "task": self.task.instruction,
         }

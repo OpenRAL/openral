@@ -13,7 +13,7 @@ scene:
   # Order matters for debug video: the pi0.5 adapter records the last listed
   # camera as the VLA input panel, so keep wrist last while still feeding the
   # checkpoint's trained top/front/wrist streams.
-  cameras: ["overhead", "front", "wrist"]
+  cameras: ["top", "front", "wrist"]
   backend_options:
     # Table: 80 × 80 cm slab, top surface at z = 0 (robot base height).
     table_size_xy: [0.80, 0.80]
@@ -35,7 +35,7 @@ scene:
     goal_radius: 0.05
     goal_min_separation: 0.12
     off_table_z_tol: 0.04
-    overhead_camera_pos: [0.0, -0.30, 0.90]
+    top_camera_pos: [0.0, -0.30, 0.90]
     front_camera_pos: [0.0, -1.05, 0.45]
 
     # Wrist camera mount is inferred from the robot manifest's

@@ -29,16 +29,16 @@ def test_manifest_sensors_carry_sim_placement(robot_yaml: str) -> None:
     # No scene composition hook on the robot manifest (ADR-0065).
     assert desc.scene_defaults is None or desc.scene_defaults.composition is None
     by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    # front = world-fixed overhead; wrist = parented to the roll-mounted end body.
-    assert by_name["front"].sim_placement is not None
-    assert by_name["front"].sim_placement.parent_body is None
+    # top = world-fixed overhead; wrist = parented to the roll-mounted end body.
+    assert by_name["top"].sim_placement is not None
+    assert by_name["top"].sim_placement.parent_body is None
     assert by_name["wrist"].sim_placement is not None
     assert by_name["wrist"].sim_placement.parent_body is not None
 
 
 @pytest.mark.parametrize("robot_yaml", _SOARM)
 def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
-    """End-to-end: the bare twin renders `front` + `wrist` after the connect-time rig.
+    """End-to-end: the bare twin renders `top` + `wrist` after the connect-time rig.
 
     Mirrors the SimSensorBridge camera tick exactly (it calls
     ``hal.read_images()``). Skips only if offscreen GL is unavailable on the
@@ -60,7 +60,7 @@ def test_rig_renders_both_manifest_cameras(robot_yaml: str) -> None:
 
     if not frames:
         pytest.skip("offscreen MuJoCo render produced no frames (no GL context)")
-    assert set(frames) == {"front", "wrist"}
+    assert set(frames) == {"top", "wrist"}
     intr = {s.name: s.intrinsics for s in desc.sensors if s.modality == "rgb"}
     for name, arr in frames.items():
         a = np.asarray(arr)

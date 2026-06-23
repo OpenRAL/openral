@@ -121,11 +121,11 @@ _Clean single-view world MP4 helper for website hero clips (overlays rendered by
 
 #### `python/sim/src/openral_sim/backends/robocasa.py`
 _RoboCasa kitchen + GR1 tabletop adapter. ADR-0011 / ADR-0015._
-- `read_panda_mobile_base_velocity(model, data) -> NDArray[np.float32]` — Returns body-frame `(vx, vy, wz)` 3-vec for the robosuite OmronMobileBase; reads `data.qvel` at the three planar joint addresses and de-rotates the world-frame `(vx, vy)` using the live yaw. Returns `zeros(3)` when the base joints aren't in this model (silently no-ops for non-PandaMobile envs). (L957)
-- `synthesize_laser_scan_2d(*, model, data, base_body_id=None, n_beams=360, max_range_m=12.0, laser_height_m=0.30) -> NDArray[np.float32]` — Single-origin batched `mj_multiRay` 2D laser fan from the panda_mobile base. Returns `(n_beams,)` float32 ranges in metres, clamped to `max_range_m` for "no hit" beams (NEVER NaN/inf, so Nav2 costmap consumers don't poison the grid). Self-exclusion via `bodyexclude=mj_name2id("base")` so the chassis doesn't pollute the scan. (L1030)
+- `read_panda_mobile_base_velocity(model, data) -> NDArray[np.float32]` — Returns body-frame `(vx, vy, wz)` 3-vec for the robosuite OmronMobileBase; reads `data.qvel` at the three planar joint addresses and de-rotates the world-frame `(vx, vy)` using the live yaw. Returns `zeros(3)` when the base joints aren't in this model (silently no-ops for non-PandaMobile envs). (L967)
+- `synthesize_laser_scan_2d(*, model, data, base_body_id=None, n_beams=360, max_range_m=12.0, laser_height_m=0.30) -> NDArray[np.float32]` — Single-origin batched `mj_multiRay` 2D laser fan from the panda_mobile base. Returns `(n_beams,)` float32 ranges in metres, clamped to `max_range_m` for "no hit" beams (NEVER NaN/inf, so Nav2 costmap consumers don't poison the grid). Self-exclusion via `bodyexclude=mj_name2id("base")` so the chassis doesn't pollute the scan. (L1040)
 - `_emit_panda_mobile_extras(obs)` (method on `_RoboCasaSim`) — Attaches `obs["robot0_base_vel"]` + `obs["robot0_scan"]` when `"PandaMobile" in self._robots`; no-op for other compositions. (L569 in `_wrap_obs`)
-- `sim_time_ns() -> int | None` (method on `_RoboCasaSim`) — `round(MjData.time * 1e9)` off `mujoco_handles()` (ADR-0048 Phase 1); covers the robocasa kitchen / GR1 / so100_robosuite scenes. RoboCasa rewinds the clock on `reset`, so it is monotonic only within an episode — `SimAttachedHAL.sim_time_ns` adds the cross-reset offset. (L512)
-- Constants `_OMRON_BASE_JOINT_NAMES`, `_OMRON_BASE_JOINT_NAMES_FALLBACK`, `_LASER_DEFAULT_N_BEAMS=360`, `_LASER_DEFAULT_MAX_RANGE_M=12.0`. (L888)
+- `sim_time_ns() -> int | None` (method on `_RoboCasaSim`) — `round(MjData.time * 1e9)` off `mujoco_handles()` (ADR-0048 Phase 1); covers the robocasa kitchen / GR1 / so100_robosuite scenes. RoboCasa rewinds the clock on `reset`, so it is monotonic only within an episode — `SimAttachedHAL.sim_time_ns` adds the cross-reset offset. (L515)
+- Constants `_OMRON_BASE_JOINT_NAMES`, `_OMRON_BASE_JOINT_NAMES_FALLBACK`, `_LASER_DEFAULT_N_BEAMS=360`, `_LASER_DEFAULT_MAX_RANGE_M=12.0`. (L898)
 
 #### `python/sim/src/openral_sim/backends/depth_camera.py`
 _ADR-0030 — simulated depth camera via MuJoCo CPU ray-casting (the 3-D analogue of `synthesize_laser_scan_2d`); robot-agnostic, no GL/EGL context. Feeds the deploy-sim HAL → octomap_server → the kernel world-collision voxel check._
@@ -135,14 +135,14 @@ _ADR-0030 — simulated depth camera via MuJoCo CPU ray-casting (the 3-D analogu
 #### `python/sim/src/openral_sim/backends/libero.py`
 - `class _LiberoSim` — `SimRollout` wrapping `LiberoEnv`. (L114) — `reset/step/render/close/action_dim/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through robosuite's `env.sim.{model,data}._{model,data}` for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)` (ADR-0048 Phase 1). `action_dim` walks the `LiberoEnv→OffScreenRenderEnv` wrapper chain to sum robosuite `robots[*].action_dim` (LIBERO OSC_POSE = 7) so `SimAttachedHAL` can size cartesian actions on the `openral deploy sim` suite-scene path.
 - `_parse_task_id(task_id, scene_id) -> int` — Validate `<suite>/<int>` format. (L83)
-- `_quat_to_axisangle(quat) -> NDArray[np.float32]` — `[x,y,z,w]` → axis-angle. (L252)
-- `_build_libero_scene(env_cfg) -> _LiberoSim` (L310)
+- `_quat_to_axisangle(quat) -> NDArray[np.float32]` — `[x,y,z,w]` → axis-angle. (L254)
+- `_build_libero_scene(env_cfg) -> _LiberoSim` (L312)
 
 #### `python/sim/src/openral_sim/backends/metaworld.py`
 _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a `metaworld==3.0.0 --no-deps` pip install (its transitive deps conflict with the workspace lock); the scene factory calls `openral_sim._deps.ensure_backend_deps("metaworld")` first so the user gets an interactive auto-install banner on first use. Scene id `metaworld`. Task id `metaworld/<task-name>` (e.g. `metaworld/reach-v3`)._
 - `class _MetaworldSim` — `SimRollout` wrapping `MetaworldEnv`. (L46) — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `unwrapped.{model,data}` for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)` (ADR-0048 Phase 1).
 - `_parse_task_id(task_id) -> str` (L36)
-- `_build_metaworld_scene(env_cfg) -> _MetaworldSim` (L132)
+- `_build_metaworld_scene(env_cfg) -> _MetaworldSim` (L133)
 
 #### `python/sim/src/openral_sim/backends/maniskill3.py`
 _ManiSkill3 (SAPIEN-backed) free-axis scene adapter. ADR-0014. Opt-in via the `maniskill3` dependency group; the scene factory calls `openral_sim._deps.ensure_backend_deps("maniskill3")` first so the user gets an interactive auto-install banner on first use (bypass with `OPENRAL_AUTO_INSTALL_DEPS=1`). Scene id `maniskill3`. Task id `maniskill3/<env_id>` (e.g. `maniskill3/PickCube-v1`)._
@@ -154,10 +154,10 @@ _ManiSkill3 (SAPIEN-backed) free-axis scene adapter. ADR-0014. Opt-in via the `m
 - `_reconcile_robot_uids(env_id, robot_uids) -> None` — Validate a scene's requested `robot_uids` against the task's `SUPPORTED_ROBOTS`. Accepts a registered camera-variant subclass of a supported base (walks the agent's MRO uids — e.g. `panda_wristcam`→`panda`); raises `ROSCapabilityMismatch` for genuinely-unsupported robots instead of MS3's vague warning + downstream crash. (L66)
 - `class _DropUnsupportedRobotWarning(logging.Filter)` / `_suppress_unsupported_robot_warning()` — Context manager that drops MS3's false "not in the task's list of supported robots" log record (only that message) around `gym.make`, after `_reconcile_robot_uids` has validated the variant. (L113 / L123)
 - `_unbatch(value)`, `_unbatch_info(info)`, `_unbatch_obs(obs)` — recursive numpy / torch unbatch helpers shared with the SimplerEnv adapter. (L106 / L114 / L130)
-- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L364)
-- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L399)
-- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L415)
-- Module side effect: `SCENES.register("maniskill3")(_build_maniskill3_scene)` at import (L415).
+- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L366)
+- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L409)
+- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L425)
+- Module side effect: `SCENES.register("maniskill3")(_build_maniskill3_scene)` at import (L425).
 
 #### `python/sim/src/openral_sim/backends/simpler_env.py`
 _SimplerEnv real-to-sim correlator adapter. ADR-0014. Opt-in via the `simpler-env` dependency group (the package has no PyPI release; install hint in the typed `ROSConfigError`). Reuses the obs-extraction helpers from `backends/maniskill3` because SimplerEnv now sits on top of MS3 v3.0.x. Scene id `simpler_env`. Task id `simpler_env/<friendly_name>` (e.g. `simpler_env/widowx_carrot_on_plate`); friendly names are translated via `simpler_env.ENVIRONMENT_MAP` to the underlying MS3 env id + kwargs. Today only the four WidowX bridge tasks are wired end-to-end against MS3 v3.0.x; `google_robot_*` friendly names resolve to env ids that are not yet registered upstream._
@@ -168,8 +168,8 @@ _SimplerEnv real-to-sim correlator adapter. ADR-0014. Opt-in via the `simpler-en
 - `_task_name_for_env(env_cfg) -> str` — Resolves the concrete SimplerEnv friendly/raw task name. Normal sim tasks parse `simpler_env/<friendly_name>`; deploy-sim's synthetic `_hal_deploy_noop` task maps to `scene.backend_options.deploy_task_id` or `widowx_carrot_on_plate`.
 - `_bump_version_if_deprecated(env_id) -> str` — Rounds an upstream `-v0` env id up to the highest registered `-v*` suffix; upstream `simpler_env.ENVIRONMENT_MAP` still ships `-v0` but MS3 v3.0.x registers `-v1`. (L111)
 - `_resolve_friendly_name(task_name) -> tuple[str, dict[str, Any]]` — Translates a SimplerEnv friendly task name into `(ms3_env_id, kwargs)`. Falls back to passing the input through unchanged so users can author configs against raw MS3 env ids. (L134)
-- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L374)
-- Module side effect: `SCENES.register("simpler_env")(_build_simpler_env_scene)` at import (L374).
+- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L375)
+- Module side effect: `SCENES.register("simpler_env")(_build_simpler_env_scene)` at import (L375).
 
 #### `python/sim/src/openral_sim/sidecar.py`
 _Canonical openral-side out-of-process sidecar transport (ADR-0045) — ZMQ REQ/REP + a numpy-aware msgpack codec. Shared by new sidecar integrations (the Isaac Sim backend); the RLDX-1 adapter predates it and keeps its own wire-locked copy (its codec must match the upstream `__ndarray_class__` sentinel and its real path is un-runnable in CI)._
