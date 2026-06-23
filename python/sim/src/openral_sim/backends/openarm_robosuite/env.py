@@ -66,28 +66,29 @@ _GRIPPER_ENCODER_DEADBAND = 0.05
 # Wrist camera local pose in the ``openarm_{side}_ee_base_link`` body frame.
 # EEF frame conventions (at tabletop reset pose):
 #   body +X  → world +Z (up)
-#   body +Y  → world +Y (lateral)
+#   body +Y  → world +Y (lateral, jaw opening/closing axis)
 #   body -Z  → world +X (approach axis, toward workspace)
-# Camera default look direction in MuJoCo is body -Z.
 #
 # Both left and right EEF bodies share identical world-frame orientation
-# (the bimanual kinematics are Y-axis-mirrored, so at reset pose and
-# throughout symmetric motions both EEFs have the same body frame).
-# Using the same euler for both cameras gives equivalent forward-down
-# views from each gripper's perspective.
+# (bimanual kinematics are Y-mirrored, so the same body frame holds for
+# both arms throughout symmetric motions).
 #
-# pos: 10 cm in body +X places the camera above the wrist clear of the
-# gripper shell; no lateral or approach offset keeps it centred on the
-# EEF axis.
+# pos: 14 cm in body +X (= 14 cm above EEF in world Z) and 6 cm in body
+# -Z (= 6 cm forward toward the fingertips along the approach axis).
+# This clears the gripper housing and places the camera at roughly
+# fingertip height when looking straight down.
 #
-# euler (XYZ): derived from the upstream OpenArm MJCF camera_wrist_left
-# definition.  The -1.5708 Z-rotation is a frame correction that aligns
-# image-up with world +Z (without it the image appears rotated 90°).
-# The 0.90 Y-rotation (≈ 52°) tilts the look direction downward so the
-# gripper tip and task objects stay in frame during a pick motion.
-_WRIST_CAM_LOCAL_POS = np.asarray([0.10, 0.0, 0.0], dtype=np.float64)
-_WRIST_CAM_LOCAL_EULER_XYZ = np.asarray([-0.366519, 0.90, -1.5708], dtype=np.float64)
-_WRIST_CAMERA_FOVY = 90.0
+# quat (wxyz, MuJoCo convention): computed from look/up vectors so the
+# camera is orthogonal to the jaw opening direction:
+#   image right = body -Y = world -Y  (jaw axis → jaws open left↔right)
+#   look        = mostly body -X (world -Z, downward) + slight body -Z
+#                 (world +X, forward) — no body-Y component, so the look
+#                 direction is strictly perpendicular to the jaw axis.
+#   image up    = body +Z (world +X, toward workspace) × slight body +X
+# Quaternion derived analytically from R = [right | up | -look] column matrix.
+_WRIST_CAM_LOCAL_POS = np.asarray([0.14, 0.0, -0.06], dtype=np.float64)
+_WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray([0.611289, -0.355423, 0.355423, -0.611289], dtype=np.float64)
+_WRIST_CAMERA_FOVY = 85.0
 
 
 def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | None:
@@ -667,15 +668,16 @@ class _OpenArmTabletopRollout:
         shell at fingertip level with only a -90° Z-rotation, which renders
         mostly gripper geometry from an uninformative angle. This function
         overrides position and orientation **in the EEF body-local frame**
-        using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_EULER_XYZ`` so
-        the camera sits 10 cm above the wrist and looks forward-and-down at
-        the workspace. The camera stays rigidly attached to the EEF body
-        rather than floating at a world-space offset. Called once per render
-        step so the camera tracks the live EEF pose.
+        using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_QUAT_WXYZ`` so
+        the camera sits 14 cm above the wrist and 6 cm forward, looking down
+        at the workspace with the jaw axis horizontal in the image frame.
+        The camera stays rigidly attached to the EEF body rather than floating
+        at a world-space offset. Called once per render step so the camera
+        tracks the live EEF pose.
 
-        Both left and right cameras use the same euler because the bimanual
-        EEF bodies maintain identical world-frame orientations throughout
-        symmetric motions (Y-mirrored kinematics → same local frame).
+        Both left and right cameras use the same quaternion because the
+        bimanual EEF bodies maintain identical world-frame orientations
+        throughout symmetric motions (Y-mirrored kinematics → same body frame).
         """
         side = cam_name.split("_", 1)[1]  # "wrist_left" → "left"
         body_name = f"openarm_{side}_ee_base_link"
@@ -689,9 +691,7 @@ class _OpenArmTabletopRollout:
         # Keep the camera body-parented (follows the EEF through the trajectory).
         self._model.cam_bodyid[cam_id] = body_id
         self._model.cam_pos[cam_id] = _WRIST_CAM_LOCAL_POS.copy()
-        quat = np.zeros(4, dtype=np.float64)
-        mujoco.mju_euler2Quat(quat, _WRIST_CAM_LOCAL_EULER_XYZ, "XYZ")
-        self._model.cam_quat[cam_id] = quat
+        self._model.cam_quat[cam_id] = _WRIST_CAM_LOCAL_QUAT_WXYZ.copy()
         self._model.cam_fovy[cam_id] = _WRIST_CAMERA_FOVY
         mujoco.mj_forward(self._model, self._sim.data._data)
 
