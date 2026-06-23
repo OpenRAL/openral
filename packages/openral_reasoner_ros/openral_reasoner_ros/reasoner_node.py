@@ -85,6 +85,7 @@ from openral_reasoner.context import (
     FailureEventRecord,
     PerceptionEventRecord,
     PromptRecord,
+    render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
@@ -1095,6 +1096,10 @@ class ReasonerNode(LifecycleNode):
             )
             return
         self._robot_capabilities = description.capabilities
+        # ADR-0071 Decision 2.1 — render the static robot self-model once and
+        # surface it as the reasoner's `## ROBOT` context section so the LLM can
+        # judge reach/view feasibility before dispatching a skill.
+        self._renderer.set_robot_model(render_robot_self_model(description))
 
         manifests: list[RSkillManifest] = []
         manifest_paths: list[pathlib.Path] = []
