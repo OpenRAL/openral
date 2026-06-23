@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -246,6 +247,16 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+def _sidecar_display_prefix() -> list[str]:
+    """Prefix the RLBench sidecar with Xvfb when no display server is present."""
+    if os.environ.get("DISPLAY"):
+        return []
+    xvfb_run = shutil.which("xvfb-run")
+    if xvfb_run is None:
+        return []
+    return [xvfb_run, "-a", "--server-args=-screen 0 1280x1024x24"]
+
+
 @SCENES.register(_RLBENCH_SCENE_ID, fixed_robot="franka_panda")
 def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
     """Build an RLBench task behind the out-of-process CoppeliaSim sidecar.
@@ -280,16 +291,17 @@ def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
 
     root = _coppeliasim_root()
     ld = f"{root}:{os.environ.get('LD_LIBRARY_PATH', '')}".rstrip(":")
-    display = os.environ.get("DISPLAY", ":1")
+    display = os.environ.get("DISPLAY")
     # Wrap with `env` so the sidecar's child process gets the CoppeliaSim vars
     # (SidecarClient._spawn inherits os.environ minus PYTHONPATH; an explicit
     # `env` prefix is clearer than mutating the parent's global environment).
     launch_argv = [
+        *_sidecar_display_prefix(),
         "env",
         f"{_COPPELIASIM_ROOT_ENV}={root}",
         f"LD_LIBRARY_PATH={ld}",
         f"QT_QPA_PLATFORM_PLUGIN_PATH={root}",
-        f"DISPLAY={display}",
+        *([f"DISPLAY={display}"] if display else []),
         str(_sidecar_python()),
         str(_locate_sidecar_script()),
         "--task",

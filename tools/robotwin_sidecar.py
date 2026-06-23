@@ -86,7 +86,7 @@ def _first_scalar_attr(obj: object, names: tuple[str, ...]) -> float | None:
 
 def _sapien_sim_time_ns(env: object) -> int | None:
     """Best-effort elapsed SAPIEN time from the wrapped RoboTwin env."""
-    candidates = (env, getattr(env, "unwrapped", env))
+    candidates = tuple(_sim_time_candidates(env))
     elapsed_s_names = ("elapsed_time", "time_elapsed", "sim_time", "elapsed_seconds")
     step_names = ("elapsed_steps", "_elapsed_steps")
     dt_names = ("control_timestep", "_control_timestep", "control_dt", "dt")
@@ -106,6 +106,33 @@ def _sapien_sim_time_ns(env: object) -> int | None:
         if dt_s is not None:
             return round(steps * dt_s * 1_000_000_000)
     return None
+
+
+def _sim_time_candidates(env: object) -> list[object]:
+    """Return plausible wrapped/vectorized env objects that may expose time attrs."""
+    seen: set[int] = set()
+    out: list[object] = []
+
+    def add(obj: object | None) -> None:
+        if obj is None:
+            return
+        ident = id(obj)
+        if ident in seen:
+            return
+        seen.add(ident)
+        out.append(obj)
+
+    add(env)
+    for name in ("unwrapped", "env", "_env", "gym_env", "base_env", "scene", "_scene", "sim", "_sim"):
+        add(getattr(env, name, None))
+    for name in ("envs", "_envs", "venv"):
+        value = getattr(env, name, None)
+        if isinstance(value, (list, tuple)) and value:
+            add(value[0])
+    for obj in list(out):
+        for name in ("unwrapped", "env", "_env", "gym_env", "base_env", "scene", "_scene", "sim", "_sim"):
+            add(getattr(obj, name, None))
+    return out
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -128,6 +155,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
+    p.add_argument(
+        "--fallback-dt-s",
+        type=float,
+        default=1.0 / 30.0,
+        help="deterministic sim-time step used only when RoboTwin hides elapsed-time attrs",
+    )
     return p.parse_args(argv)
 
 
@@ -161,6 +194,7 @@ class _RoboTwinEnv:
         obs_width: int,
         episode_length: int,
         success_key: str,
+        fallback_dt_s: float,
     ) -> None:
         self._task = task
         self._instruction = instruction
@@ -176,6 +210,8 @@ class _RoboTwinEnv:
         )
         self._is_vector_env = hasattr(self._env, "single_action_space")
         self._action_dim = int(np.prod(self._env.action_space.shape))
+        self._fallback_dt_ns = round(fallback_dt_s * 1_000_000_000)
+        self._fallback_time_ns = 0
 
     def _make_env(
         self,
@@ -263,6 +299,7 @@ class _RoboTwinEnv:
 
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         obs, _info = self._env.reset(seed=seed)
+        self._fallback_time_ns = 0
         return self._unwrap_obs(obs)
 
     def step(self, action: npt.NDArray[np.float32]) -> dict[str, Any]:
@@ -270,6 +307,8 @@ class _RoboTwinEnv:
         if self._is_vector_env:
             action_arr = action_arr.reshape(1, -1)
         obs, reward, terminated, truncated, info = self._env.step(action_arr)
+        if _sapien_sim_time_ns(self._env) is None:
+            self._fallback_time_ns += self._fallback_dt_ns
         success = bool(np.asarray(info.get(self._success_key, False)).any())
         return {
             "observation": self._unwrap_obs(obs),
@@ -282,7 +321,7 @@ class _RoboTwinEnv:
 
     def sim_time_ns(self) -> int | None:
         """Elapsed SAPIEN time from the wrapped RoboTwin env, when exposed."""
-        return _sapien_sim_time_ns(self._env)
+        return _sapien_sim_time_ns(self._env) or self._fallback_time_ns
 
     def render(self) -> npt.NDArray[np.uint8] | None:
         return None
@@ -309,6 +348,7 @@ def main(argv: list[str]) -> int:
         obs_width=args.obs_width,
         episode_length=args.episode_length,
         success_key=args.success_key,
+        fallback_dt_s=args.fallback_dt_s,
     )
     try:
         return _serve(env, host=args.host, port=args.port, task=args.task)

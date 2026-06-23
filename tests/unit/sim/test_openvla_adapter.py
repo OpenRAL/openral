@@ -8,6 +8,8 @@ The full ``predict_action`` chunk path is exercised live in
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from openral_core.exceptions import ROSConfigError
@@ -15,6 +17,7 @@ from openral_sim.policies.openvla import (
     _as_action_chunk,
     _decode_prompt,
     _extra_bool,
+    _install_tokenization_compat,
     _postprocess_action_chunk,
     _unnormalize_action,
 )
@@ -104,3 +107,22 @@ def test_postprocess_action_chunk_scales_and_binarizes_gripper() -> None:
 def test_extra_bool_rejects_ambiguous_strings() -> None:
     with pytest.raises(ROSConfigError, match="openvla_do_sample"):
         _extra_bool({"openvla_do_sample": "maybe"}, "openvla_do_sample", False)
+
+
+def test_tokenization_compat_installs_missing_remote_code_imports() -> None:
+    tokenization_utils = SimpleNamespace()
+    tokenization_base = SimpleNamespace(
+        PaddingStrategy=object(),
+        PreTokenizedInput=object(),
+        TextInput=object(),
+        TruncationStrategy=object(),
+    )
+    transformers = SimpleNamespace(
+        tokenization_utils=tokenization_utils,
+        tokenization_utils_base=tokenization_base,
+    )
+
+    _install_tokenization_compat(transformers)
+
+    for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
+        assert getattr(tokenization_utils, name) is getattr(tokenization_base, name)

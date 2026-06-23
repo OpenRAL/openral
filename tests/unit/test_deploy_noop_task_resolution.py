@@ -10,6 +10,7 @@ from __future__ import annotations
 from openral_core import PhysicsBackend, SceneSpec, SimEnvironment, TaskSpec, VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.maniskill3 import _action_dim_from_space, _task_id_for_env
+from openral_sim.backends.robotwin import _task_name_for_env as _robotwin_task_name_for_env
 from openral_sim.backends.simpler_env import _task_name_for_env
 
 
@@ -62,6 +63,22 @@ def test_simpler_env_deploy_noop_allows_backend_override() -> None:
     )
 
     assert _task_name_for_env(env_cfg) == "widowx_spoon_on_towel"
+
+
+def test_robotwin_deploy_noop_uses_default_task() -> None:
+    env_cfg = _env("robotwin", "robotwin/_hal_deploy_noop")
+
+    assert _robotwin_task_name_for_env(env_cfg) == "lift_pot"
+
+
+def test_robotwin_deploy_noop_allows_backend_override() -> None:
+    env_cfg = _env(
+        "robotwin",
+        "robotwin/_hal_deploy_noop",
+        deploy_task_id="pick_apple_messy",
+    )
+
+    assert _robotwin_task_name_for_env(env_cfg) == "pick_apple_messy"
 
 
 def test_simpler_env_regular_task_still_parses_task_id() -> None:

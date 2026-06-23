@@ -210,6 +210,37 @@ def test_deploy_sim_scene_attached_mujoco_uses_simulation_clock_origin() -> None
     assert "enable_sim_clock:=" not in joined
 
 
+def test_deploy_sim_scene_attached_sapien_registry_uses_generic_hal(tmp_path: Path) -> None:
+    """SAPIEN sidecar robots use the generic scene-attached lifecycle host."""
+    for robot_id in ("widowx", "aloha_agilex"):
+        config = tmp_path / f"{robot_id}.yaml"
+        config.write_text(
+            f'robot_id: "{robot_id}"\n'
+            "scene:\n"
+            f"  id: {robot_id}/deploy_noop\n"
+            "  backend: sapien\n"
+            "  observation_height: 128\n"
+            "  observation_width: 128\n"
+            "  cameras: []\n"
+        )
+        invocation = resolve_launch_invocation(
+            config=config,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+        )
+
+        assert invocation.hal.package == "openral_hal_scene_attached"
+        assert invocation.hal.manifest_driven is True
+        assert invocation.hal.supports_sim_env_yaml is True
+        assert invocation.clock_origin == "simulation"
+        assert invocation.hal_params["sim_env_yaml"] == str(config.resolve())
+        joined = " ".join(invocation.argv_template)
+        assert "hal_package:=openral_hal_scene_attached" in joined
+        assert "clock_origin:=simulation" in joined
+
+
 def test_deploy_sim_real_mode_uses_host_wall_clock_origin() -> None:
     """Real deployments never publish OpenRAL /clock; they use the graph wall clock."""
     invocation = resolve_launch_invocation(

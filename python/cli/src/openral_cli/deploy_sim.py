@@ -239,6 +239,30 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         default_params={},
         manifest_driven=True,
     ),
+    "aloha_agilex": _HalSpec(
+        # RoboTwin owns the SAPIEN robot; deploy-sim only needs a ROS lifecycle
+        # host for SimAttachedHAL. This package is intentionally sim-only and
+        # generic, so it never claims a real AgileX hardware transport.
+        package="openral_hal_scene_attached",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_scene_attached",
+        supported_robot_names=frozenset({"aloha_agilex"}),
+        default_params={},
+        manifest_driven=True,
+        supports_sim_env_yaml=True,
+    ),
+    "widowx": _HalSpec(
+        # SimplerEnv owns the SAPIEN WidowX twin; OpenRAL has no real WidowX HAL.
+        # The generic scene-attached node is valid for deploy-sim only because
+        # build_hal(mode="sim", sim_env_yaml=...) bypasses hal.sim entirely.
+        package="openral_hal_scene_attached",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_scene_attached",
+        supported_robot_names=frozenset({"widowx"}),
+        default_params={},
+        manifest_driven=True,
+        supports_sim_env_yaml=True,
+    ),
     "g1": _HalSpec(
         package="openral_hal_g1",
         executable="lifecycle_node.py",

@@ -285,7 +285,26 @@ def _import_transformers() -> tuple[Any, Any, Any]:
     auto_model_cls: Any = getattr(transformers, "AutoModelForVision2Seq", None)
     if auto_model_cls is None:
         auto_model_cls = transformers.AutoModelForImageTextToText
+    _install_tokenization_compat(transformers)
     return auto_model_cls, AutoProcessor, BitsAndBytesConfig
+
+
+def _install_tokenization_compat(transformers: Any) -> None:
+    """Restore tokenization symbols older OpenVLA remote code imports.
+
+    Some pinned OpenVLA/OFT repositories import ``PaddingStrategy`` and related
+    type aliases from ``transformers.tokenization_utils``. Newer Transformers
+    exposes them from ``tokenization_utils_base`` instead. Installing the aliases
+    before ``trust_remote_code`` import keeps the pinned remote code working
+    without editing or vendoring third-party model files.
+    """
+    tokenization_utils = getattr(transformers, "tokenization_utils", None)
+    tokenization_base = getattr(transformers, "tokenization_utils_base", None)
+    if tokenization_utils is None or tokenization_base is None:
+        return
+    for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
+        if not hasattr(tokenization_utils, name) and hasattr(tokenization_base, name):
+            setattr(tokenization_utils, name, getattr(tokenization_base, name))
 
 
 def _strip_hf_uri(uri: str | None, *, field_name: str) -> tuple[str, str | None]:
