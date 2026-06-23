@@ -213,3 +213,4 @@ allowed_collision_pairs:
   - [link4, link7]
   - [link5, link6]
   - [link6, link7]
+schema_version: '0.2'

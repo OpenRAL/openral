@@ -115,17 +115,16 @@ class BoxSceneOptions:
     robot_base_xyz: tuple[float, float, float] = (0.50, 0.50, 0.0)
     robot_base_yaw_deg: float = 0.0
 
-    # Wrist camera, parented to the gripper body. It must look along the
-    # gripper APPROACH axis (where the fingers point / what gets grasped) so
-    # it tracks the workspace at every pose. In the gripper-body local frame
-    # the approach axis is -X (verified: gripper-local +X maps to world +Z, so
-    # -X is world-down = the finger/approach direction); the previous default
-    # aimed along -Y, which points sideways into a box wall — the camera saw a
-    # blank dark plane. These defaults sit the camera just above/behind the
-    # fingertips looking down -X so the gripper jaw + the object ahead are in
-    # frame.
-    wrist_camera_pos_local: tuple[float, float, float] = (0.03, -0.02, -0.06)
-    wrist_camera_target_local: tuple[float, float, float] = (-0.25, -0.02, -0.06)
+    # Wrist camera, parented to the gripper body. The SO-101 gripper body's
+    # local axes are:
+    #   +X = up (top of the wrist/gripper housing)
+    #   +Z = forward along the wrist/gripper link
+    # A faithful top-mounted wrist camera therefore lives at small +X and looks
+    # mostly along +Z, with a slight negative-X pitch so it still sees some of
+    # the workspace rather than only the horizon / box wall.
+    wrist_camera_pos_local: tuple[float, float, float] = (0.02, 0.0, -0.02)
+    wrist_camera_target_local: tuple[float, float, float] = (0.0, 0.0, 0.20)
+    wrist_camera_up_local: tuple[float, float, float] = (1.0, 0.0, 0.0)
     wrist_camera_fovy: float = 75.0
 
     oak_top_camera_pos: tuple[float, float, float] = (0.50, 0.3075, 0.749)
@@ -277,6 +276,7 @@ def _splice_wrist_camera(
     xml: str,
     pos_local: tuple[float, float, float],
     target_local: tuple[float, float, float],
+    up_local: tuple[float, float, float],
     fovy: float,
 ) -> str:
     """Insert a ``<camera name="wrist">`` element inside the ``<body name="gripper">`` body.
@@ -285,7 +285,7 @@ def _splice_wrist_camera(
     end-effector pose. ``pos_local`` / ``target_local`` are expressed
     in the gripper body's local frame.
     """
-    quat = _look_at_quat(pos_local, target_local)
+    quat = _look_at_quat(pos_local, target_local, up=up_local)
     cam = (
         f'<camera name="wrist" pos="{pos_local[0]} {pos_local[1]} {pos_local[2]}" '
         f'quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}" fovy="{fovy}" '
@@ -585,6 +585,7 @@ def compose_so101_box_mjcf(
         body,
         opts.wrist_camera_pos_local,
         opts.wrist_camera_target_local,
+        opts.wrist_camera_up_local,
         opts.wrist_camera_fovy,
     )
 

@@ -197,6 +197,17 @@ def _resolve_step_instruction(
     return task_instruction
 
 
+def _count_policy_input_cameras(policy: object, env_cfg: SimEnvironment) -> int:
+    """Best-effort count of distinct camera streams consumed by the policy."""
+    camera_keys = getattr(policy, "_camera_keys", None)
+    if isinstance(camera_keys, (list, tuple)) and camera_keys:
+        return len(camera_keys)
+    cam_keys = env_cfg.vla.extra.get("camera_keys")
+    if isinstance(cam_keys, (list, tuple)) and cam_keys:
+        return len(cam_keys)
+    return 1
+
+
 @dataclass
 class _EpisodeBuffer:
     """Per-episode accumulation buffer used by :class:`SimRunner`.
@@ -780,8 +791,7 @@ class SimRunner(InferenceRunnerBase):
         max_step_reward = (
             float(self._buf.max_step_reward) if self._buf.max_step_reward != float("-inf") else 0.0
         )
-        cam_keys = env_cfg.vla.extra.get("camera_keys")
-        num_cams = len(cam_keys) if isinstance(cam_keys, (list, tuple)) else 1
+        num_cams = _count_policy_input_cameras(self._policy, env_cfg)
 
         out = EpisodeResult(
             success=self._buf.success,

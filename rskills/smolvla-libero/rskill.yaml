@@ -92,10 +92,10 @@ latency_budget:
 # per-task breakdown lives in those JSONs; this dict is what
 # `ral skill list` renders.
 benchmarks:
-  libero_spatial: 0.80
-  libero_object: 0.78
-  libero_goal: 0.67
   libero_10: 0.59
+  libero_goal: 0.67
+  libero_object: 0.78
+  libero_spatial: 0.9
 
 paper_url: "https://arxiv.org/abs/2506.01844"
 dataset_uri: "hf://HuggingFaceVLA/libero"

@@ -210,12 +210,11 @@ class EpisodeResult:
     # Per-step action vector returned by the policy. Same length as
     # ``steps``.
     actions: list[NDArray[np.float32]] = field(default_factory=list)
-    # Number of distinct camera streams the policy consumed (from
-    # ``env_cfg.vla.extra.camera_keys`` if set, else 1). The video
-    # helper uses this to decide whether the top of the debug video
-    # shows two panels (multi-cam: wrist + agent-view) or one
-    # full-width tile (single-cam scenes where the env render *is* the
-    # VLA input).
+    # Number of distinct camera streams the policy consumed. The runner
+    # prefers the adapter's resolved camera keys and falls back to
+    # ``env_cfg.vla.extra.camera_keys`` when the adapter doesn't expose them.
+    # The video helper uses this to decide whether the top of the debug video
+    # shows separate policy/world panels or collapses to one full-width tile.
     num_input_cameras: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
 

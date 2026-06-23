@@ -573,3 +573,4 @@ allowed_collision_pairs:
   - [right_wrist_pitch_link, right_wrist_roll_link]
   - [right_wrist_pitch_link, right_wrist_yaw_link]
   - [right_wrist_roll_link, right_wrist_yaw_link]
+schema_version: '0.2'

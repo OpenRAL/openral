@@ -516,3 +516,4 @@ allowed_collision_pairs:
   - [openarm_right_link5, openarm_right_finger_pair]
   - [openarm_right_link6, openarm_right_finger_pair]
   - [openarm_right_link7, openarm_right_finger_pair]
+schema_version: '0.2'

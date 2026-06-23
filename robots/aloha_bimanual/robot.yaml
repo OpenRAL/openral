@@ -313,3 +313,4 @@ action_spec:
   dim: 14
   representation: "joint_positions"
   control_freq_hz: 50.0
+schema_version: '0.2'

@@ -293,6 +293,7 @@ def _evaluate_sections(
     """
     sections: list[SectionVerdict] = []
     caps = robot.capabilities
+    compute = robot.compute_edge or robot.compute_local
 
     try:
         rSkill.check_embodiment_tags(manifest, caps)
@@ -314,24 +315,23 @@ def _evaluate_sections(
         sections.append(_section_fail("capability_flags", str(exc), "capability_flag"))
 
     try:
-        rSkill.check_runtime(manifest, caps)
-        if not caps.gpu_supported_runtimes:
+        rSkill.check_runtime(manifest, caps, compute=compute)
+        runtimes = compute.gpu_supported_runtimes if compute is not None else []
+        if not runtimes:
             reason = f"host runtimes unknown — accepted {manifest.runtime.value}"
         else:
-            reason = f"{manifest.runtime.value} ∈ {[r.value for r in caps.gpu_supported_runtimes]}"
+            reason = f"{manifest.runtime.value} ∈ {[r.value for r in runtimes]}"
         sections.append(_section_pass("gpu_runtime", reason))
     except ROSCapabilityMismatch as exc:
         sections.append(_section_fail("gpu_runtime", str(exc), "runtime"))
 
     try:
-        rSkill.check_quantization_dtype(manifest, caps)
-        if not caps.gpu_supported_dtypes:
+        rSkill.check_quantization_dtype(manifest, caps, compute=compute)
+        dtypes = compute.gpu_supported_dtypes if compute is not None else []
+        if not dtypes:
             reason = f"host dtypes unknown — accepted {manifest.quantization.dtype.value}"
         else:
-            reason = (
-                f"{manifest.quantization.dtype.value} ∈ "
-                f"{[d.value for d in caps.gpu_supported_dtypes]}"
-            )
+            reason = f"{manifest.quantization.dtype.value} ∈ {[d.value for d in dtypes]}"
         sections.append(_section_pass("gpu_dtype", reason))
     except ROSCapabilityMismatch as exc:
         sections.append(_section_fail("gpu_dtype", str(exc), "quantization"))
