@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import pathlib
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -88,6 +89,7 @@ from openral_reasoner.context import (
     PromptRecord,
     reflect_on_failure,
     reflect_on_retry_cap,
+    render_playbooks_block,
     render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
@@ -371,7 +373,7 @@ class ReasonerNode(LifecycleNode):
             deployment, CLAUDE.md §1.9).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915  # reason: lifecycle node wires many subsystems in one ctor; one attr over the 50-statement threshold
         self,
         *,
         node_name: str = "openral_reasoner",
@@ -529,6 +531,9 @@ class ReasonerNode(LifecycleNode):
         # non-retry_cap tick happens (a different tool, a dispatch, an error, or
         # a new operator prompt that resets the streak).
         self._retry_cap_warned: bool = False
+        # ADR-0071 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
+        # collected from installed capability-matched playbook rSkills at seed time.
+        self._playbooks_block: str = ""
         self._palette: ToolPalette = palette or ToolPalette(execute_rskill_ids=frozenset())
         # ADR-0039 — offer the read-only query tools only when a backend is wired.
         if spatial_memory is not None and not self._palette.spatial_memory_available:
@@ -709,9 +714,14 @@ class ReasonerNode(LifecycleNode):
         # so the system prompt carries a ``## THIS ROBOT`` block; ``None``
         # leaves the robot-agnostic brief unchanged. The base brief honours
         # the ``OPENRAL_REASONER_SYSTEM_PROMPT`` deployment override.
+        base_prompt = resolve_reasoner_system_prompt(self._robot_capabilities)
+        # ADR-0071 Phase 3 — append installed playbooks (empty block = no-op).
+        system_prompt = (
+            f"{base_prompt}\n\n{self._playbooks_block}" if self._playbooks_block else base_prompt
+        )
         self._core = ReasonerCore(
             client=client,
-            system_prompt=resolve_reasoner_system_prompt(self._robot_capabilities),
+            system_prompt=system_prompt,
         )
 
         self.get_logger().info(
@@ -1058,6 +1068,41 @@ class ReasonerNode(LifecycleNode):
         except Exception as exc:  # reason: memory accrual must never break the tick
             self.get_logger().debug(f"spatial-memory ingest failed: {exc!s}")
 
+    def _collect_playbooks_block(
+        self, manifests: list[RSkillManifest], paths: list[pathlib.Path]
+    ) -> str:
+        """Render the ``## PLAYBOOKS`` block from installed, matched playbook rSkills.
+
+        ADR-0071 Phase 3: for each ``kind: playbook`` manifest this robot satisfies
+        (embodiment + capability flags), read its ``PLAYBOOK.md`` body and render it
+        for the system prompt. Returns ``""`` when none match.
+        """
+        from openral_core.exceptions import ROSCapabilityMismatch
+        from openral_rskill.loader import rSkill
+
+        entries: list[tuple[str, str]] = []
+        for manifest, path in zip(manifests, paths, strict=True):
+            if manifest.kind != "playbook" or manifest.playbook is None:
+                continue
+            if self._robot_capabilities is not None:
+                try:
+                    rSkill.check_capabilities(manifest, self._robot_capabilities)
+                except ROSCapabilityMismatch as exc:
+                    self.get_logger().info(f"playbook {manifest.name!r} not installed: {exc}")
+                    continue
+            body_path = (path.parent / manifest.playbook.body_uri).resolve()
+            try:
+                body = body_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"playbook {manifest.name!r}: cannot read body {body_path}: {exc}",
+                )
+                continue
+            entries.append((f"{manifest.name} — {manifest.playbook.trigger}", body))
+        if entries:
+            self.get_logger().info(f"playbooks: injected {len(entries)} into the system prompt")
+        return render_playbooks_block(entries)
+
     def _maybe_seed_palette_from_search_paths(self) -> None:  # noqa: PLR0912, PLR0915  # reason: linear palette-seed pipeline (load → capability filter → ros-server probe → state-contract probe → import-deps probe → build); splitting hides the filter order
         """Populate the palette from in-tree ``rskills/<id>/rskill.yaml`` files.
 
@@ -1079,8 +1124,6 @@ class ReasonerNode(LifecycleNode):
         Per-file errors are warned, not raised, so a single broken
         manifest doesn't block the bring-up.
         """
-        import pathlib
-
         from openral_core import RobotDescription, RSkillManifest
 
         robot_yaml: str = self.get_parameter("robot_yaml").get_parameter_value().string_value
@@ -1115,13 +1158,21 @@ class ReasonerNode(LifecycleNode):
                 continue
             manifest_paths.extend(sorted(root.glob("*/rskill.yaml")))
 
+        loaded_paths: list[pathlib.Path] = []
         for path in manifest_paths:
             try:
                 manifests.append(RSkillManifest.from_yaml(str(path)))
+                loaded_paths.append(path)
             except (OSError, ValueError) as exc:
                 self.get_logger().warning(
                     f"palette seed: skipping unloadable rskill {path!s}: {exc}",
                 )
+
+        # ADR-0071 Phase 3 — collect installed, capability-matched `kind: playbook`
+        # rSkills and render their PLAYBOOK.md bodies into the `## PLAYBOOKS`
+        # system-prompt block. Playbooks are role:s2 (excluded from the ExecuteSkill
+        # palette); they reach the LLM as authored decision-procedure *content*.
+        self._playbooks_block = self._collect_playbooks_block(manifests, loaded_paths)
 
         # ADR-0025 — merge any deploy-time lifecycle peer node ids
         # (e.g. /openral_slam_toolbox when --enable-slam was passed) into
