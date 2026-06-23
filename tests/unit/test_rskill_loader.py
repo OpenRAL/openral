@@ -615,19 +615,19 @@ class TestCheckCapabilities:
 
     def test_perception_kind_exempt_from_embodiment_match(self) -> None:
         """Detector / vlm rSkills are embodiment-agnostic: the gate passes on any
-        robot regardless of tags.
+        robot via the explicit ``["any"]`` wildcard (ADR-0071).
 
-        Real in-tree perception manifests (CLAUDE.md §1.11) ship empty
-        ``embodiment_tags`` and must clear ``check_embodiment_tags`` against a
-        robot whose embodiment they never enumerate — proving the exemption is
-        kind-driven, not just an empty-tags coincidence.
+        Real in-tree perception manifests (CLAUDE.md §1.11) ship
+        ``embodiment_tags: ["any"]`` and must clear ``check_embodiment_tags``
+        against a robot whose embodiment they never enumerate.
         """
         repo = Path(__file__).resolve().parents[2]
         caps = RobotCapabilities(embodiment_tags=["some_unrelated_robot"])
         for name in ("rtdetr-coco-r18", "qwen35-4b-nf4"):
             m = RSkillManifest.from_yaml(str(repo / "rskills" / name / "rskill.yaml"))
             assert m.kind in {"detector", "vlm"}
-            rSkill.check_embodiment_tags(m, caps)  # exempt — must not raise
+            assert m.embodiment_tags == ["any"]
+            rSkill.check_embodiment_tags(m, caps)  # "any" wildcard — must not raise
 
     def test_bool_flag_fail_raises(self) -> None:
         """Required bool capability not met raises ROSCapabilityMismatch."""

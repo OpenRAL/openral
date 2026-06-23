@@ -133,7 +133,7 @@ def test_find_object_fixture_loads() -> None:
     assert "plan" in [a.value for a in m.actions]
     assert not m.actuators_required
     assert m.weights_uri is None
-    assert m.embodiment_tags == []  # embodiment-agnostic
+    assert m.embodiment_tags == ["any"]  # explicit embodiment-agnostic wildcard
     assert m.playbook is not None
     assert m.playbook.max_steps == 12
     assert "recall_object" in m.playbook.composes_tools
@@ -145,7 +145,7 @@ def test_find_object_fixture_loads() -> None:
 def test_missing_playbook_block_raises() -> None:
     data = _playbook_manifest_dict()
     del data["playbook"]
-    with pytest.raises(ValidationError, match="requires a .playbook. block"):
+    with pytest.raises(ValidationError, match=r"requires a .playbook. block"):
         RSkillManifest.model_validate(data)
 
 
@@ -175,7 +175,7 @@ def test_actuators_required_non_empty_raises() -> None:
     data["actuators_required"] = [
         {"kind": "body_twist", "control_mode_semantics": {"mode": "absolute"}}
     ]
-    with pytest.raises(ValidationError, match="actuators_required. to be empty"):
+    with pytest.raises(ValidationError, match=r"actuators_required. to be empty"):
         RSkillManifest.model_validate(data)
 
 
@@ -197,28 +197,33 @@ def test_non_playbook_kind_rejects_playbook_block() -> None:
         "done_predicate": "d",
         "max_steps": 4,
     }
-    with pytest.raises(ValidationError, match="forbids a .playbook. block"):
+    with pytest.raises(ValidationError, match=r"forbids a .playbook. block"):
         RSkillManifest.model_validate(data)
 
 
 # ─── Embodiment-approval contract (ADR-0071) ───────────────────────────────────
 
 
-def test_playbook_empty_tags_is_embodiment_agnostic() -> None:
-    """A playbook with empty ``embodiment_tags`` is approved on ANY robot
-    (match-any: the "all embodiments approved" contract), while declared tags
-    still gate it. Exercises the real loader embodiment gate, not a mock.
+def test_playbook_any_tag_is_embodiment_agnostic() -> None:
+    """A playbook declares ``embodiment_tags: ["any"]`` to run on every robot
+    (ADR-0071); an EMPTY list is rejected (agnosticism is declared, not derived),
+    and declared specific tags still gate. Exercises the real loader gate.
     """
     from openral_core.exceptions import ROSCapabilityMismatch
     from openral_core.schemas import RobotCapabilities
     from openral_rskill.loader import rSkill
 
     m = RSkillManifest.from_yaml(str(_FIND_OBJECT_FIXTURE))
-    assert m.embodiment_tags == []
+    assert m.embodiment_tags == ["any"]
     caps = RobotCapabilities(embodiment_tags=["totally_unrelated_robot"])
-    # Empty tags → match-any → must NOT raise on a non-matching robot.
+    # "any" → match-any → must NOT raise on a non-matching robot.
     rSkill.check_embodiment_tags(m, caps)
-    # But a playbook that *declares* tags is still gated to them.
+    # A playbook that declares specific tags is still gated to them.
     tagged = m.model_copy(update={"embodiment_tags": ["so100_follower"]})
     with pytest.raises(ROSCapabilityMismatch):
         rSkill.check_embodiment_tags(tagged, caps)
+    # And an EMPTY tag list is rejected at validation time (all kinds).
+    data = _playbook_manifest_dict()
+    data["embodiment_tags"] = []
+    with pytest.raises(ValidationError, match="embodiment_tags must be non-empty"):
+        RSkillManifest.model_validate(data)

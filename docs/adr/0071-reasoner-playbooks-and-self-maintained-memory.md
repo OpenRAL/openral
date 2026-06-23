@@ -154,7 +154,7 @@ mirroring the `vlm`/`reward` precedent):
 | `action_contract`, `state_contract`, `envelope` | FORBIDDEN. |
 | `detector`, `ros_integration`, `processors`, `image_preprocessing`, `n_action_steps`, `starting_pose` | FORBIDDEN. |
 | `capabilities_required` | OPTIONAL — composing-tool gate (e.g. a playbook that opens containers may require `manipulation`); the loader filters a playbook out of the active set when the robot lacks a required capability. |
-| `embodiment_tags` | OPTIONAL — empty = embodiment-agnostic (most playbooks are). |
+| `embodiment_tags` | REQUIRED non-empty (like every kind). A playbook is normally embodiment-agnostic and declares the explicit wildcard `["any"]`; it MAY instead name specific embodiments to restrict itself. Empty is rejected — agnosticism is declared, not derived (CLAUDE.md §1.4). |
 | `objects`, `scenes` | OPTIONAL metadata — the object/scene domains the playbook applies to (e.g. `scenes: [kitchen, indoor]`), surfaced in the discovery view. |
 
 **`PlaybookContract`** (new Pydantic model in `schemas.py`, `extra="forbid"`,
@@ -251,7 +251,7 @@ description: >-
   S2 decision procedure: locate a named object, falling back to bounded
   commonsense active search and finally human handoff. Composes recall_object,
   resolve_place, locate_in_view and NAVIGATE/OPEN skills. ADR-0071.
-embodiment_tags: []             # embodiment-agnostic
+embodiment_tags: ["any"]        # explicit embodiment-agnostic wildcard (never empty)
 capabilities_required: {has_vision: true}   # real RobotCapabilities flag (camera needed to locate)
 scenes: [kitchen, indoor]
 objects: [open-vocabulary object]
