@@ -315,16 +315,15 @@ hal:
 # Cameras declared by the openarm_tabletop_pnp MJCF scene. The HAL's
 # offscreen renderer publishes each to /openral/cameras/<name>/image
 # and the WorldStateAggregator forwards them onto observation.images.
-# These three SensorSpecs satisfy the pi05-openarm rskill's
-# ``sensors_required`` entries (``observation.images.{base,left_wrist,
-# right_wrist}``) at the eval capability gate. Per ADR-0069 the
-# HAL-facing sensor names are canonical (``top`` / ``wrist_left`` /
-# ``wrist_right``); the checkpoint-facing ``vla_feature_key`` is frozen
-# per checkpoint and so retains ``observation.images.{base,left_wrist,
-# right_wrist}`` (the rskill manifest's ``image_preprocessing.aliases``
-# bridges scene-side → checkpoint-side names). The MJCF camera is also
-# named ``top``, so ``sim_camera_name`` is no longer needed (the HAL's
-# ``read_images`` falls back to the sensor name when it is unset).
+# Per ADR-0069 the HAL-facing sensor names are canonical; the
+# checkpoint-facing ``vla_feature_key`` is frozen per checkpoint and
+# the rskill manifest's ``image_preprocessing.aliases`` bridges
+# scene-side → checkpoint-side names.
+#
+# ``front``: operator-facing view from world +Y side — mirrors the
+#   upstream enactic/openarm_mujoco ``front_camera`` (pos=[0,2,0.5]).
+# ``top``: overhead workspace overview (mddoai dataset POV).
+# ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
   - name: "top"
     modality: "rgb"
@@ -341,6 +340,21 @@ sensors:
     vla_feature_key: "observation.images.base"
     vendor: "sim"
     model: "mujoco_top"
+  - name: "front"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 10.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 640.0
+      fy: 640.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.front"
+    vendor: "sim"
+    model: "mujoco_front"
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"

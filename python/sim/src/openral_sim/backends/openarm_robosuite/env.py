@@ -452,7 +452,7 @@ class _OpenArmTabletopRollout:
     _max_steps: int = 500
     _step_count: int = 0
     _last_pixels: NDArray[np.uint8] | None = None
-    _image_keys: tuple[str, str, str] = ("top", "wrist_left", "wrist_right")
+    _image_keys: tuple[str, ...] = ("top", "wrist_left", "wrist_right", "front")
     _render_width: int = _DEFAULT_RENDER_WIDTH
     _render_height: int = _DEFAULT_RENDER_HEIGHT
     # ``"left_first"`` (default — matches robots/openarm/robot.yaml and
@@ -813,6 +813,10 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
     top_camera_target = _parse_xyz(opts_compose.get("top_camera_target"), "top_camera_target")
     top_camera_fovy_raw = opts_compose.get("top_camera_fovy")
     top_camera_fovy = float(top_camera_fovy_raw) if top_camera_fovy_raw is not None else None
+    front_camera_pos = _parse_xyz(opts_compose.get("front_camera_pos"), "front_camera_pos")
+    front_camera_target = _parse_xyz(opts_compose.get("front_camera_target"), "front_camera_target")
+    front_camera_fovy_raw = opts_compose.get("front_camera_fovy")
+    front_camera_fovy = float(front_camera_fovy_raw) if front_camera_fovy_raw is not None else None
 
     # Load the OpenArm v2 manifest once and feed it to the composer
     # (so the actuator inventory + ``scene_defaults.top_camera`` come
@@ -835,6 +839,9 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
         top_camera_pos=top_camera_pos,
         top_camera_target=top_camera_target,
         top_camera_fovy=top_camera_fovy,
+        front_camera_pos=front_camera_pos,
+        front_camera_target=front_camera_target,
+        front_camera_fovy=front_camera_fovy,
         robot_description=robot_description,
     )
     # Drop the composed XML next to the upstream meshdir so the relative
