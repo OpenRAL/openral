@@ -145,7 +145,9 @@ def save_episode_mp4(
     try:
         for i in range(n):
             if show_two:
-                top = _annotate_panel(top_seq[i], f"policy inputs ({result.num_input_cameras} cams)")
+                top = _annotate_panel(
+                    top_seq[i], f"policy inputs ({result.num_input_cameras} cams)"
+                )
             else:
                 top = _annotate_panel(
                     top_seq[i],

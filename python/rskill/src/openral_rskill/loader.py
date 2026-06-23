@@ -611,7 +611,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Example:
             >>> # rSkill.check_compatibility(manifest, robot)
         """
-        rSkill.check_capabilities(manifest, robot.capabilities, compute=robot.compute_edge or robot.compute_local)
+        rSkill.check_capabilities(
+            manifest, robot.capabilities, compute=robot.compute_edge or robot.compute_local
+        )
         rSkill.check_sensors(manifest, robot.sensors)
 
     # ── Sensor-match helpers ──────────────────────────────────────────────────

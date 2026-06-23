@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-
 from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
 

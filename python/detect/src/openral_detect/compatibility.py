@@ -331,10 +331,7 @@ def _evaluate_sections(
         if not dtypes:
             reason = f"host dtypes unknown — accepted {manifest.quantization.dtype.value}"
         else:
-            reason = (
-                f"{manifest.quantization.dtype.value} ∈ "
-                f"{[d.value for d in dtypes]}"
-            )
+            reason = f"{manifest.quantization.dtype.value} ∈ {[d.value for d in dtypes]}"
         sections.append(_section_pass("gpu_dtype", reason))
     except ROSCapabilityMismatch as exc:
         sections.append(_section_fail("gpu_dtype", str(exc), "quantization"))

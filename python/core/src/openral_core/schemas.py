@@ -553,7 +553,7 @@ class ComputeSpec(BaseModel):
         compute_tops: Peak compute in INT8 TOPS (0 = unknown).
         system_memory_gb: Total system / unified RAM in GB (0 = unknown).
         num_gpus: Number of GPUs on this node (default 1; use > 1 for cloud
-            multi-GPU pods — total VRAM budget = ``gpu_vram_gb × num_gpus``).
+            multi-GPU pods — total VRAM budget = ``gpu_vram_gb * num_gpus``).
         gpu_vram_gb: VRAM of a single GPU in GB (0 when no discrete GPU).
         cuda_compute_capability: Highest CUDA compute capability (major, minor),
             e.g. ``(8, 9)`` for Ada Lovelace, ``(10, 0)`` for Blackwell.
@@ -601,31 +601,6 @@ class ComputeSpec(BaseModel):
     nvmm_available: bool = False
     endpoint: str | None = None
     network_latency_ms: float | None = None
-
-    def supports_cumotion(self) -> bool:
-        """Whether this compute spec meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).
-
-        cuMotion's CUDA motion planner requires an Ampere-or-newer GPU (compute
-        capability >= 8.0), CUDA toolkit >= 13.0, and a nominal 8 GB card. The
-        MoveIt planner gate uses this to choose the cuMotion planning pipeline;
-        when ``False`` it falls back to OMPL.
-
-        Returns:
-            ``True`` only when compute capability, CUDA toolkit version, and
-            VRAM all clear the cuMotion floor. ``False`` on any non-CUDA host or
-            when the CUDA toolkit version is unknown (the floor cannot be
-            confirmed, so the gate stays closed).
-        """
-        if self.cuda_compute_capability is None:
-            return False
-        if self.cuda_compute_capability < _CUMOTION_MIN_COMPUTE_CAPABILITY:
-            return False
-        if self.cuda_toolkit_version is None:
-            return False
-        cuda_major = _cuda_major(self.cuda_toolkit_version)
-        if cuda_major is None or cuda_major < _CUMOTION_MIN_CUDA_MAJOR:
-            return False
-        return self.gpu_vram_gb >= _CUMOTION_MIN_VRAM_GIB
 
     def supports_cumotion(self) -> bool:
         """Whether this compute spec meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).

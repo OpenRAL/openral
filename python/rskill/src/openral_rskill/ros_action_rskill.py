@@ -448,7 +448,9 @@ class ROSActionRskill(rSkillBase):
         self._goal_dict = maybe_inject_cumotion_pipeline(
             self._goal_dict,
             interface_type=self._integration.interface_type,
-            compute=(self._description.compute_edge or self._description.compute_local) if self._description is not None else None,
+            compute=(self._description.compute_edge or self._description.compute_local)
+            if self._description is not None
+            else None,
         )
 
         if kind == "action":

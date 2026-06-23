@@ -62,10 +62,12 @@ class TestVisionSlamCapability:
 
     def test_defaults_false(self) -> None:
         from openral_core.schemas import RobotCapabilities
+
         assert RobotCapabilities().has_vision_slam is False
 
     def test_independent_of_has_lidar(self) -> None:
         from openral_core.schemas import RobotCapabilities
+
         caps = RobotCapabilities(has_lidar=False, has_vision_slam=True)
         assert caps.has_lidar is False
         assert caps.has_vision_slam is True
@@ -138,9 +140,10 @@ class TestRobotDescriptionComputeField:
         """All existing manifests load with all compute slots None (no accelerator declared)."""
         for manifest in sorted((REPO_ROOT / "robots").glob("*/robot.yaml")):
             desc = RobotDescription.from_yaml(str(manifest))
-            assert desc.compute_edge is None, f"{manifest.parent.name}: expected compute_edge=None"
-            assert desc.compute_local is None, f"{manifest.parent.name}: expected compute_local=None"
-            assert desc.compute_cloud is None, f"{manifest.parent.name}: expected compute_cloud=None"
+            name = manifest.parent.name
+            assert desc.compute_edge is None, f"{name}: expected compute_edge=None"
+            assert desc.compute_local is None, f"{name}: expected compute_local=None"
+            assert desc.compute_cloud is None, f"{name}: expected compute_cloud=None"
 
     def test_compute_spec_round_trips_on_description(self, tmp_path: Path) -> None:
         src = REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"

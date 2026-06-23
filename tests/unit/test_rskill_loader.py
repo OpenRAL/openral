@@ -715,9 +715,7 @@ class TestCheckCapabilities:
 
     def test_runtime_supported_passes(self) -> None:
         m = self._manifest_with_runtime(RSkillRuntime.TENSORRT)
-        caps = self._caps_with_gpu_support(
-            runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT]
-        )
+        caps = self._caps_with_gpu_support(runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT])
         rSkill.check_capabilities(m, caps)
 
     def test_runtime_unknown_skips_check(self) -> None:

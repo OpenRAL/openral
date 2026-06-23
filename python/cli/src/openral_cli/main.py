@@ -488,7 +488,7 @@ def _check_colcon() -> CheckResult:
     return CheckResult("colcon", "ok" if path else "missing", path or "")
 
 
-def _check_gpu(result: "GpuProbeResult", warnings: list[str]) -> list[CheckResult]:
+def _check_gpu(result: GpuProbeResult, warnings: list[str]) -> list[CheckResult]:
     """Return one row per detected GPU / SoC accelerator.
 
     Args:
@@ -525,7 +525,7 @@ def _check_gpu(result: "GpuProbeResult", warnings: list[str]) -> list[CheckResul
     return rows
 
 
-def _check_compute_spec(result: "GpuProbeResult") -> list[CheckResult]:
+def _check_compute_spec(result: GpuProbeResult) -> list[CheckResult]:
     """Build :class:`~openral_core.ComputeSpec` rows from the GPU probe.
 
     Shares the same :class:`~openral_detect.GpuProbeResult` already obtained
@@ -549,7 +549,7 @@ def _check_compute_spec(result: "GpuProbeResult") -> list[CheckResult]:
     from openral_detect import build_compute_spec
     from openral_detect.report import DetectionReport, GpuProbeResult
 
-    def _spec_rows(gpu: "GpuProbeResult", tier: str) -> list[CheckResult]:
+    def _spec_rows(gpu: GpuProbeResult, tier: str) -> list[CheckResult]:
         report = DetectionReport(
             detected_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             gpu=gpu,

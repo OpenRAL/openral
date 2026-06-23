@@ -38,7 +38,6 @@ from typing import Any
 import pytest
 import yaml
 
-
 # ─── Explicit registries — update when adding a manifest ──────────────────────
 
 _ROBOT_IDS: list[str] = [
@@ -142,8 +141,7 @@ def test_robot_registry_is_complete() -> None:
     """Every ``robots/<id>/robot.yaml`` on disk is listed in ``_ROBOT_IDS``."""
     root = _require_root()
     on_disk = sorted(
-        d.name for d in (root / "robots").iterdir()
-        if d.is_dir() and (d / "robot.yaml").is_file()
+        d.name for d in (root / "robots").iterdir() if d.is_dir() and (d / "robot.yaml").is_file()
     )
     registered = sorted(_ROBOT_IDS)
     unlisted = [r for r in on_disk if r not in registered]
@@ -272,12 +270,9 @@ def test_sensor_spec_validates(sensor_id: str, sensor_raw: dict[str, Any]) -> No
 
     if spec.modality in (SensorModality.LIDAR_2D, SensorModality.POINT_CLOUD):
         missing = [
-            f for f in ("n_channels", "range_min_m", "range_max_m")
-            if getattr(spec, f) is None
+            f for f in ("n_channels", "range_min_m", "range_max_m") if getattr(spec, f) is None
         ]
-        assert not missing, (
-            f"{sensor_id}: lidar/point-cloud sensor missing fields: {missing}."
-        )
+        assert not missing, f"{sensor_id}: lidar/point-cloud sensor missing fields: {missing}."
 
 
 # ─── BenchmarkScene validation ────────────────────────────────────────────────
