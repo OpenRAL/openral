@@ -6,7 +6,7 @@ resolve their ``camera_keys`` and look up ``obs["images"]`` by the VLA
 slot (``camera1`` / ``camera2`` / ...) — the LIBERO convention
 ``openral sim run`` and the rldx adapter already use. Without a realignment
 a manifest whose RGB sensors are descriptively named (franka: ``top`` /
-``wrist`` per ADR-0069) hands the pi0.5 adapter
+``wrist`` per ADR-0070) hands the pi0.5 adapter
 ``obs["images"]["top"]`` while it looks up ``camera1`` and its
 ``cam_alias`` maps ``camera1 -> image`` for the checkpoint — so the
 policy sees no frames.
@@ -116,7 +116,7 @@ class TestBuildRuntimeSkillSceneCameras:
         """Sensor-name ``scene_cameras`` (what runtime_node passes) → VLA slots.
 
         ``runtime_node`` forwards ``camera_names`` (manifest sensor names,
-        e.g. ``top`` / ``wrist`` per ADR-0069) as ``scene_cameras``; the
+        e.g. ``top`` / ``wrist`` per ADR-0070) as ``scene_cameras``; the
         adapter needs the VLA slots (``camera1`` / ``camera2``) so its
         ``cam_alias`` maps ``camera1 -> image`` for the checkpoint. Capture
         the ``env_cfg.scene.cameras`` the policy factory receives by

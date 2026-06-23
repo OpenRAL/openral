@@ -199,7 +199,7 @@ class _RoboCasaSim:
     robosuite's env returns a flat dict observation keyed by topic
     (e.g. ``robot0_agentview_left_image``); we map each camera in
     declaration order to the scene's canonical camera names (per
-    ADR-0069 — e.g. ``shoulder_left`` / ``shoulder_right`` / ``wrist`` on
+    ADR-0070 — e.g. ``shoulder_left`` / ``shoulder_right`` / ``wrist`` on
     panda_mobile, falling back to ``camera{i+1}``) and concatenate
     robot proprioception into ``state`` so the eval-layer contract
     matches the other adapters.
@@ -537,7 +537,7 @@ class _RoboCasaSim:
         # its native robosuite name (so a lerobot pi0.5 / pi0 checkpoint
         # that consumes ``observation.images.robot0_agentview_left_image``
         # works without an alias map) and under the canonical scene
-        # camera names (per ADR-0069: e.g. ``shoulder_left`` / ``shoulder_right``
+        # camera names (per ADR-0070: e.g. ``shoulder_left`` / ``shoulder_right``
         # / ``wrist`` on panda_mobile; falls back to ``camera{i+1}`` when
         # the scene leaves ``cameras`` empty).
         images: dict[str, NDArray[np.uint8]] = {}
@@ -794,7 +794,7 @@ class _RoboCasaSim:
 
         We pluck those, concatenate the five state arrays into the
         openral 29-D order, and expose the camera under the scene's
-        first canonical camera name (per ADR-0069 — e.g. ``head`` on
+        first canonical camera name (per ADR-0070 — e.g. ``head`` on
         the GR1 tabletop scene; falls back to ``camera1``) plus
         ``video.ego_view`` (the short canonical key the rldx adapter
         sends to the FT-GR1 sidecar).
@@ -1436,7 +1436,7 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         # GR1 humanoid uses a single head-mounted "egoview" camera.
         # robocasa's GR1*KeyConverter.get_camera_config() pins exactly
         # this one; the bot-harness scene contract exposes it under the
-        # scene's first canonical camera name (per ADR-0069 — typically
+        # scene's first canonical camera name (per ADR-0070 — typically
         # ``head`` on the gr1 tabletop scene).
         camera_names: list[str] = ["egoview"]
         camera_keys: tuple[str, ...] = ("egoview_image",)

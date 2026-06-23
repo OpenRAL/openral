@@ -14,7 +14,7 @@ The scene mirrors the LIBERO contract so a LIBERO-finetuned rSkill (act-libero /
 smolvla-libero) can drive it through ``openral sim run`` unchanged:
 
 * obs ``images``: ``camera1`` = front agent-view, ``camera2`` = secondary prop view
-  (legacy ordinal slots predating ADR-0069; the HAL bridge tolerates the
+  (legacy ordinal slots predating ADR-0070; the HAL bridge tolerates the
   mismatch with the canonical sensor name via ``vla_feature_key`` fallback —
   TODO: extend the isaac-sidecar protocol so the host can pass canonical
   scene-side names and emit them directly);

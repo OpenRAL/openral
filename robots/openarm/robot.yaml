@@ -315,7 +315,7 @@ hal:
 # Cameras declared by the openarm_tabletop_pnp MJCF scene. The HAL's
 # offscreen renderer publishes each to /openral/cameras/<name>/image
 # and the WorldStateAggregator forwards them onto observation.images.
-# Per ADR-0069 the HAL-facing sensor names are canonical; the
+# Per ADR-0070 the HAL-facing sensor names are canonical; the
 # checkpoint-facing ``vla_feature_key`` is frozen per checkpoint and
 # the rskill manifest's ``image_preprocessing.aliases`` bridges
 # scene-side → checkpoint-side names.

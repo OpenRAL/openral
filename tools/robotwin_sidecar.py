@@ -86,7 +86,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 # LeRobot's `robotwin` env exposes its three cameras under these native keys
 # (head + per-wrist). The openral scene refers to them by the canonical sensor
-# names declared in robots/aloha_agilex/robot.yaml (per ADR-0069 — typically
+# names declared in robots/aloha_agilex/robot.yaml (per ADR-0070 — typically
 # ``top`` / ``wrist_left`` / ``wrist_right``); we re-key in fixed
 # head→left→right order to whatever names the scene's ``cameras`` list
 # provides.
@@ -100,7 +100,7 @@ class _RoboTwinEnv:
     "task"}``. LeRobot's robotwin obs is a dict with ``pixels`` (per-camera HWC
     uint8) + ``agent_pos``; we re-key the env's native cameras
     (:data:`_ENV_CAMERA_NAMES`) to the openral scene camera names (canonical
-    per ADR-0069) in order and expose ``agent_pos`` as ``state``.
+    per ADR-0070) in order and expose ``agent_pos`` as ``state``.
     """
 
     def __init__(

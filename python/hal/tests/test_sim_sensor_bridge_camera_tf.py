@@ -9,7 +9,7 @@ from openral_hal.sim_sensor_bridge import _optical_frame_rgb_cameras
 def test_panda_mobile_shoulder_cameras_are_liftable_wrist_is_not() -> None:
     """RGB cameras with a dedicated *_optical_frame get a TF; a link-framed one does not.
 
-    panda_mobile's ``shoulder_left`` / ``shoulder_right`` (per ADR-0069) declare
+    panda_mobile's ``shoulder_left`` / ``shoulder_right`` (per ADR-0070) declare
     ``*_optical_frame`` frames (the SimSensorBridge broadcasts
     ``base_link -> <camera>_optical_frame`` from the live MuJoCo pose so the
     object-lift can project the world voxel map into them). The eye-in-hand

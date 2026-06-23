@@ -260,7 +260,7 @@ OPENARM_DESCRIPTION = RobotDescription(
     # SimSensorBridge publishes these via MujocoArmHAL.read_images, which renders
     # the MJCF camera `sim_camera_name or name`. Kept in sync with
     # robots/openarm/robot.yaml. The MJCF overview camera is named "top" and the
-    # canonical sensor name (per ADR-0069) is also "top", so sim_camera_name is
+    # canonical sensor name (per ADR-0070) is also "top", so sim_camera_name is
     # no longer set explicitly. vla_feature_key values are checkpoint-frozen.
     sensors=[
         SensorSpec(

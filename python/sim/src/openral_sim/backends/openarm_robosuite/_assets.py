@@ -362,7 +362,7 @@ def _rename_upstream_wrist_cameras(xml: str) -> str:
     """Rename upstream ``camera_wrist_{left,right}`` → ``wrist_{left,right}``.
 
     The upstream OpenArm v2 MJCF already provides wrist-mounted camera tags
-    parented inside each ``openarm_*_ee_base_link`` body. Per ADR-0069 the
+    parented inside each ``openarm_*_ee_base_link`` body. Per ADR-0070 the
     canonical HAL/sensor name is ``wrist_left`` / ``wrist_right``, so the
     composer preserves the upstream camera IDs and only renames them. The
     rollout renderer may re-aim those named cameras at runtime when the

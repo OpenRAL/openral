@@ -175,7 +175,7 @@ end_effectors:
 # `lerobot/robotwin_unified` dataset). The public `lerobot/smolvla_robotwin`
 # checkpoint's `config.json` consumes them at 256×256 under the generic feature
 # keys observation.images.camera1/2/3 (the same naming the franka_panda /
-# ManiSkill rSkills use). Per ADR-0069 the HAL-facing sensor names are
+# ManiSkill rSkills use). Per ADR-0070 the HAL-facing sensor names are
 # canonical (top / wrist_left / wrist_right); the checkpoint-facing
 # `vla_feature_key` stays camera1/2/3 since it is frozen per checkpoint. The
 # RoboTwin sidecar re-keys the env's three cameras to scene cameras in

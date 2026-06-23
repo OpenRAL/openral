@@ -187,11 +187,11 @@ safety:
 # Two RGB camera streams that mirror LIBERO's `agentview` and
 # `eye_in_hand` observations (renamed to `image` / `image2` by the
 # stored SmolVLA preprocessor and surfaced as `top` / `wrist` by
-# the openral_sim LIBERO scene adapter per ADR-0069). Declared here so the
+# the openral_sim LIBERO scene adapter per ADR-0070). Declared here so the
 # rSkill compatibility check on a `openral sim run --config <libero>.yaml`
 # rollout matches `observation.images.camera{1,2}` against a real
 # SensorSpec on the robot — same pattern as aloha_bimanual's `top`.
-# The HAL-facing sensor name (`top`, `wrist`) is canonical per ADR-0069;
+# The HAL-facing sensor name (`top`, `wrist`) is canonical per ADR-0070;
 # the checkpoint-facing `vla_feature_key` stays camera1/2 since it is
 # frozen per checkpoint.
 # Drift-guard intentionally does not assert sensors against the HAL

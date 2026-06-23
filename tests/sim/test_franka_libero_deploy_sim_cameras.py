@@ -2,7 +2,7 @@
 
 Resolves spec risk #1 (the robosuite ``robot0_joint*`` mapping) and the camera-key
 fix (scene obs keyed ``camera1``/``camera2``, mapped to the ``front``/``wrist``
-topics by ``SimSensorBridge`` at publish time per ADR-0069) on a REAL LIBERO
+topics by ``SimSensorBridge`` at publish time per ADR-0070) on a REAL LIBERO
 SimScene. Drives raw HAL reads (no VLA) so it is GPU-independent for inference.
 
 Environment gate: the LIBERO backend pulls ``lerobot[libero]`` → robosuite 1.4.0,
@@ -48,7 +48,7 @@ def test_franka_libero_scene_attach_state_and_images() -> None:
         # Camera frames: the LIBERO backend keys obs['images'] by the VLA camera
         # slot (camera1/camera2), NOT the manifest sensor name. SimSensorBridge maps
         # franka's front->camera1 / wrist->camera2 (vla_feature_key) at publish
-        # time per ADR-0069; here at the HAL level we assert the scene obs keys + shape.
+        # time per ADR-0070; here at the HAL level we assert the scene obs keys + shape.
         images = hal.read_images()
         assert {"camera1", "camera2"} <= set(images), f"missing camera frames: {sorted(images)}"
         assert images["camera1"].shape == (256, 256, 3)

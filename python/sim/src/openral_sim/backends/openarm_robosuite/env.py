@@ -649,7 +649,7 @@ class _OpenArmTabletopRollout:
                 height=self._render_height,
             )
         out: dict[str, NDArray[np.uint8]] = {}
-        # Per ADR-0069 the sensor / output keys are canonical (``top`` /
+        # Per ADR-0070 the sensor / output keys are canonical (``top`` /
         # ``wrist_left`` / ``wrist_right``); the openarm MJCF composer renames
         # the upstream wrist cameras to match, so the same name is used for both
         # the renderer lookup and the output dict.

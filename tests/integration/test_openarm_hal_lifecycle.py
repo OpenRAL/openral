@@ -153,7 +153,7 @@ def test_cameras_publish_rgb_frames() -> None:
     """SimSensorBridge + OpenArmMujocoHAL.read_images publish the manifest cameras.
 
     issue #191 Phase 3b — the composed scene's MJCF camera "top" renders the
-    "top" RGB sensor (the MJCF and sensor names match per ADR-0069); the frame
+    "top" RGB sensor (the MJCF and sensor names match per ADR-0070); the frame
     is published on ``/openral/cameras/top/image`` headless (EGL on the
     executor thread).
     """

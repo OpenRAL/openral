@@ -327,7 +327,7 @@ safety:
 # the `robot0_agentview_left_image` / `robot0_agentview_right_image` /
 # `robot0_eye_in_hand_image` observation keys; the
 # openral_sim.adapters.robocasa adapter surfaces them with the canonical
-# HAL-facing names `shoulder_left` / `shoulder_right` / `wrist` (ADR-0069).
+# HAL-facing names `shoulder_left` / `shoulder_right` / `wrist` (ADR-0070).
 # Their `vla_feature_key` stays camera1/2/3 (checkpoint-frozen). The
 # RC365 rSkill (rldx1-ft-rc365-nf4) consumes all three; single-camera
 # rSkills (pi05, smolvla) just bind `shoulder_left`.

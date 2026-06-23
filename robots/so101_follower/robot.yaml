@@ -120,7 +120,7 @@ end_effectors:
 # ``so101_box`` sim scene routes the in-scene OAK-D Pro overhead
 # stream into ``observation.images.camera1`` and the MJCF wrist
 # camera into ``observation.images.camera2`` (the ``vla_feature_key``
-# values stay camera1/2 since they are checkpoint-frozen per ADR-0069).
+# values stay camera1/2 since they are checkpoint-frozen per ADR-0070).
 sensors:
   - name: "top"
     modality: "rgb"

@@ -211,7 +211,7 @@ class _ManiSkill3Sim:
         ManiSkill3's ``sensor_data`` sub-dict carries one entry per
         registered camera (e.g. ``base_camera`` + ``hand_camera`` on
         ``panda_wristcam``). We surface them in declaration order under
-        the scene's ``cameras`` list (canonical per ADR-0069 — e.g.
+        the scene's ``cameras`` list (canonical per ADR-0070 — e.g.
         ``front`` / ``wrist``), falling back to ``camera{i+1}`` when the
         scene leaves that list empty. An rSkill manifest's
         ``image_preprocessing.aliases`` block then renames them to
@@ -295,7 +295,7 @@ def _extract_rgb_streams(
 
     Returns an ordered ``{name: rgb, ...}`` map mirroring the declaration
     order in ``sensor_data``. When ``camera_names`` is supplied (typically
-    ``scene.cameras`` per ADR-0069) the i-th sensor is keyed by
+    ``scene.cameras`` per ADR-0070) the i-th sensor is keyed by
     ``camera_names[i]``; otherwise the ordinal fallback ``camera{i+1}`` is
     used. An rSkill manifest's ``image_preprocessing.aliases`` block then
     renames the resulting keys to model-side keys before preprocessing.

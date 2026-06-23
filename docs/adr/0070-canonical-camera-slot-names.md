@@ -1,4 +1,4 @@
-# ADR-0069 — Canonical Camera Slot Names
+# ADR-0070 — Canonical Camera Slot Names
 
 **Status:** Accepted  
 **Date:** 2026-06-22  

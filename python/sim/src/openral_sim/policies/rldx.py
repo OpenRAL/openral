@@ -611,7 +611,7 @@ class _Gr00tFamilySidecarAdapter:
     # Per-camera rolling frame history (len=_RLDX_VIDEO_HISTORY). On reset
     # we clear; on the first frame after reset we pad by repeating the
     # current frame so the model sees a static 4-frame stack instead of
-    # garbage from a previous episode. Per ADR-0069 the canonical scene
+    # garbage from a previous episode. Per ADR-0070 the canonical scene
     # camera names (e.g. ``front`` / ``wrist``) live on ``_camera_keys``;
     # the keys below are INTERNAL buffer aliases that the obs assembler
     # uses to refer to "first camera" / "second camera" / "third camera"
@@ -1861,7 +1861,7 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     if isinstance(cam_keys_raw, (list, tuple)) and len(cam_keys_raw) == _RLDX_CAMERA_PAIR_LEN:
         camera_keys = (str(cam_keys_raw[0]), str(cam_keys_raw[1]))
     else:
-        # Per ADR-0069: fall back to the scene's canonical camera names
+        # Per ADR-0070: fall back to the scene's canonical camera names
         # (e.g. ``("front", "wrist")`` on franka_panda) when the rskill
         # manifest does not pin ``vla.extra.camera_keys`` explicitly. The
         # ordinal ``("camera1", "camera2")`` legacy default is retained
