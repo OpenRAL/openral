@@ -73,22 +73,21 @@ _GRIPPER_ENCODER_DEADBAND = 0.05
 # (bimanual kinematics are Y-mirrored, so the same body frame holds for
 # both arms throughout symmetric motions).
 #
-# pos: 14 cm in body +X (= 14 cm above EEF in world Z) and 6 cm in body
+# pos: 12 cm in body +X (= 12 cm above EEF in world Z) and 6 cm in body
 # -Z (= 6 cm forward toward the fingertips along the approach axis).
-# This clears the gripper housing and places the camera at roughly
-# fingertip height when looking straight down.
+# This places the camera close to the gripper for a detailed view.
 #
 # quat (wxyz, MuJoCo convention): computed from look/up vectors so the
 # camera is orthogonal to the jaw opening direction:
 #   image right = body -Y = world -Y  (jaw axis → jaws open left↔right)
-#   look        = mostly body -X (world -Z, downward) + slight body -Z
-#                 (world +X, forward) — no body-Y component, so the look
-#                 direction is strictly perpendicular to the jaw axis.
-#   image up    = body +Z (world +X, toward workspace) × slight body +X
+#   look        = body -X*0.80 + body -Z*0.60  (mostly world -Z downward,
+#                 some world +X forward) — zero Y component = strictly
+#                 perpendicular to jaw axis.
+#   image up    = body +Z (world +X, toward workspace)
 # Quaternion derived analytically from R = [right | up | -look] column matrix.
-_WRIST_CAM_LOCAL_POS = np.asarray([0.14, 0.0, -0.06], dtype=np.float64)
-_WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray([0.611289, -0.355423, 0.355423, -0.611289], dtype=np.float64)
-_WRIST_CAMERA_FOVY = 85.0
+_WRIST_CAM_LOCAL_POS = np.asarray([0.12, 0.0, -0.06], dtype=np.float64)
+_WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray([0.632177, -0.316784, 0.316784, -0.632177], dtype=np.float64)
+_WRIST_CAMERA_FOVY = 80.0
 
 
 def _parse_xyz(raw: object, field_name: str) -> tuple[float, float, float] | None:
