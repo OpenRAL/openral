@@ -147,8 +147,10 @@ class _ACTAdapter:
         images = observation.get("images", {})
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
+        # Record every camera the policy consumed so the debug video does not
+        # hide multi-camera setups behind a single wrist-only preview.
         preview_frames: list[NDArray[np.uint8]] = []
-        for i, cam_key in enumerate(self._camera_keys):
+        for cam_key in self._camera_keys:
             img = images.get(cam_key)
             if img is None:
                 continue

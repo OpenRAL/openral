@@ -20,15 +20,15 @@ Strategy (per the user's clarification):
    intrinsics, FOV, encoding, rate.  Detected serial numbers and
    ``needs_calibration`` flags land in ``SensorSpec.metadata``.
 
-3. **Promote GPU caps onto :class:`RobotCapabilities`.**
-   The probed accelerator records (NVIDIA, Jetson, Apple Silicon)
-   populate ``onboard_compute_tops``, ``onboard_memory_gb``,
-   ``gpu_vram_gb``, ``cuda_compute_capability``,
-   ``cuda_toolkit_version``, ``tensorrt_version``,
-   ``gpu_supported_runtimes``, ``gpu_supported_dtypes`` so the
-   downstream skill compatibility check (commit 8) can match
-   ``RSkillManifest.runtime`` and ``quantization.dtype`` against the
-   real host.
+3. **Populate :class:`~openral_core.ComputeSpec` on :attr:`RobotDescription.compute`.**
+   The probed accelerator records (NVIDIA, Jetson, Apple Silicon) are
+   passed to :func:`build_compute_spec` which fills
+   ``onboard_compute_tops``, ``onboard_memory_gb``, ``gpu_vram_gb``,
+   ``cuda_compute_capability``, ``cuda_toolkit_version``,
+   ``tensorrt_version``, ``gpu_supported_runtimes``,
+   ``gpu_supported_dtypes``, ``nvmm_available``.  The same function is
+   called by ``openral doctor`` so both commands produce identical
+   :class:`~openral_core.ComputeSpec` values from the same probe data.
 
 The function never raises on a missing catalog entry — it falls back to
 a generic ``SensorSpec`` and adds a warning to the description's
@@ -69,7 +69,45 @@ from openral_detect.report import (
     V4l2CameraInfo,
 )
 
-__all__ = ["assemble_robot_description"]
+__all__ = ["assemble_robot_description", "build_compute_spec"]
+
+
+def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeSpec:
+    """Build a :class:`~openral_core.ComputeSpec` from a GPU probe + report.
+
+    Extracts the same fields that :func:`assemble_robot_description` writes into
+    ``RobotDescription.compute``, so callers that only need the compute spec
+    (e.g. ``openral doctor``) do not have to run the full assembly pipeline.
+
+    Args:
+        gpu: The GPU probe result (nvidia, jetson, apple_silicon fields).
+        report: The full :class:`DetectionReport`; its
+            :meth:`~DetectionReport.derived_runtimes` /
+            :meth:`~DetectionReport.derived_dtypes` methods are used to derive
+            the runtime + dtype lists.
+
+    Returns:
+        A fully-populated :class:`~openral_core.ComputeSpec` instance.
+        All fields default to zero / ``None`` / empty when no accelerator was
+        detected, matching the semantics of an empty host.
+    """
+    return ComputeSpec(
+        onboard_compute_tops=_max_tops(gpu),
+        onboard_memory_gb=_system_memory_gb(gpu),
+        gpu_vram_gb=_max_vram_gb(gpu),
+        cuda_compute_capability=_highest_compute_capability(gpu),
+        cuda_toolkit_version=_first_non_empty(
+            [g.cuda_toolkit_version for g in gpu.nvidia]
+            + ([gpu.jetson.cuda_toolkit_version] if gpu.jetson else [])
+        ),
+        tensorrt_version=_first_non_empty(
+            [g.tensorrt_version for g in gpu.nvidia]
+            + ([gpu.jetson.tensorrt_version] if gpu.jetson else [])
+        ),
+        gpu_supported_runtimes=report.derived_runtimes(),
+        gpu_supported_dtypes=report.derived_dtypes(),
+        nvmm_available=_probe_nvmm_available(),
+    )
 
 
 def assemble_robot_description(
@@ -320,32 +358,18 @@ def _enrich_compute(description: RobotDescription, detection: DetectionReport) -
     onboard["host_os"] = detection.host_os
     onboard["python_version"] = detection.python_version
 
-    tops = _max_tops(gpu)
-    vram_gb = _max_vram_gb(gpu)
-    memory_gb = _system_memory_gb(gpu)
-    cc = _highest_compute_capability(gpu)
-    cuda_toolkit = _first_non_empty(
-        [g.cuda_toolkit_version for g in gpu.nvidia]
-        + ([gpu.jetson.cuda_toolkit_version] if gpu.jetson else [])
-    )
-    tensorrt_v = _first_non_empty(
-        [g.tensorrt_version for g in gpu.nvidia]
-        + ([gpu.jetson.tensorrt_version] if gpu.jetson else [])
-    )
-    runtimes = detection.derived_runtimes()
-    dtypes = detection.derived_dtypes()
-
+    probed = build_compute_spec(gpu, detection)
     existing = description.compute or ComputeSpec()
     new_compute = ComputeSpec(
-        onboard_compute_tops=max(existing.onboard_compute_tops, tops),
-        onboard_memory_gb=max(existing.onboard_memory_gb, memory_gb),
-        gpu_vram_gb=max(existing.gpu_vram_gb, vram_gb),
-        cuda_compute_capability=cc or existing.cuda_compute_capability,
-        cuda_toolkit_version=cuda_toolkit or existing.cuda_toolkit_version,
-        tensorrt_version=tensorrt_v or existing.tensorrt_version,
-        gpu_supported_runtimes=runtimes,
-        gpu_supported_dtypes=dtypes,
-        nvmm_available=_probe_nvmm_available(),
+        onboard_compute_tops=max(existing.onboard_compute_tops, probed.onboard_compute_tops),
+        onboard_memory_gb=max(existing.onboard_memory_gb, probed.onboard_memory_gb),
+        gpu_vram_gb=max(existing.gpu_vram_gb, probed.gpu_vram_gb),
+        cuda_compute_capability=probed.cuda_compute_capability or existing.cuda_compute_capability,
+        cuda_toolkit_version=probed.cuda_toolkit_version or existing.cuda_toolkit_version,
+        tensorrt_version=probed.tensorrt_version or existing.tensorrt_version,
+        gpu_supported_runtimes=probed.gpu_supported_runtimes,
+        gpu_supported_dtypes=probed.gpu_supported_dtypes,
+        nvmm_available=probed.nvmm_available,
     )
     capabilities = description.capabilities.model_copy(
         update={"has_vision": description.capabilities.has_vision}

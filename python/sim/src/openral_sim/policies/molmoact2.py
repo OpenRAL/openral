@@ -427,7 +427,7 @@ class _MolmoAct2Adapter:
         raw = observation.get("images", {})
         images: list[NDArray[np.uint8]] = []
         preview_frames: list[NDArray[np.uint8]] = []
-        for i, cam_key in enumerate(self._camera_keys):
+        for cam_key in self._camera_keys:
             img = raw.get(cam_key)
             if img is None:
                 continue

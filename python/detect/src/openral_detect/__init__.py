@@ -2,7 +2,7 @@
 
 __version__ = "0.1.0"
 
-from openral_detect.assemble import assemble_robot_description
+from openral_detect.assemble import assemble_robot_description, build_compute_spec
 from openral_detect.compatibility import (
     CompatibilityReport,
     RSkillCompatRow,
@@ -52,6 +52,7 @@ __all__ = [
     "UsbProbeResult",
     "V4l2CameraInfo",
     "assemble_robot_description",
+    "build_compute_spec",
     "check_installed_rskills",
     "check_single_rskill",
     "detect_hardware",

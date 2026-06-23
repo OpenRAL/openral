@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from openral_core import BenchmarkScene, RSkillEvalResult, VLASpec
     from openral_core.schemas import RSkillManifest
     from openral_detect import CompatibilityReport, RSkillCompatRow
+    from openral_detect.report import GpuProbeResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
 
@@ -487,16 +488,14 @@ def _check_colcon() -> CheckResult:
     return CheckResult("colcon", "ok" if path else "missing", path or "")
 
 
-def _check_gpu() -> list[CheckResult]:
+def _check_gpu(result: "GpuProbeResult", warnings: list[str]) -> list[CheckResult]:
     """Return one row per detected GPU / SoC accelerator.
 
-    Delegates to `openral_detect.probes.probe_gpus` so the CLI
-    and the auto-provisioning flow share one enumeration code path.
+    Args:
+        result: Pre-probed :class:`~openral_detect.GpuProbeResult` (shared
+            with :func:`_check_compute_spec` so the probe runs exactly once).
+        warnings: Non-fatal probe warnings to surface when no GPU is found.
     """
-    from openral_detect.probes import probe_gpus
-
-    warnings: list[str] = []
-    result = probe_gpus(warnings=warnings)
     rows: list[CheckResult] = []
     for gpu in result.nvidia:
         rows.append(
@@ -523,6 +522,61 @@ def _check_gpu() -> list[CheckResult]:
             rows.append(CheckResult("GPU", "absent", warnings[0]))
         else:
             rows.append(CheckResult("GPU", "absent", "no accelerator detected"))
+    return rows
+
+
+def _check_compute_spec(result: "GpuProbeResult") -> list[CheckResult]:
+    """Build a :class:`~openral_core.ComputeSpec` from the GPU probe and surface key fields.
+
+    Shares the same :class:`~openral_detect.GpuProbeResult` already obtained
+    by :func:`_check_gpu` so no second probe is issued.  The assembled
+    ``ComputeSpec`` mirrors exactly what ``openral detect`` would write into
+    ``RobotDescription.compute`` — doctor and detect stay in sync.
+
+    Rows emitted:
+    - **ComputeSpec / runtimes** — comma-separated list of supported runtimes.
+    - **ComputeSpec / dtypes** — comma-separated list of supported quantization dtypes.
+    - **ComputeSpec / cuMotion** — ok when ``supports_cumotion()`` is True, info otherwise.
+    - **ComputeSpec / NVMM** — ok/absent for zero-copy NVMM availability.
+    """
+    import datetime
+
+    from openral_detect import build_compute_spec
+    from openral_detect.report import DetectionReport
+
+    # Construct a minimal report so derived_runtimes / derived_dtypes reuse
+    # their existing logic without duplication.
+    report = DetectionReport(
+        detected_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        gpu=result,
+    )
+    spec = build_compute_spec(result, report)
+
+    rows: list[CheckResult] = []
+
+    runtimes_str = ", ".join(r.value for r in spec.gpu_supported_runtimes) or "none"
+    rows.append(CheckResult("ComputeSpec / runtimes", "info", runtimes_str))
+
+    dtypes_str = ", ".join(d.value for d in spec.gpu_supported_dtypes) or "none"
+    rows.append(CheckResult("ComputeSpec / dtypes", "info", dtypes_str))
+
+    cumotion = spec.supports_cumotion()
+    rows.append(
+        CheckResult(
+            "ComputeSpec / cuMotion",
+            "ok" if cumotion else "info",
+            "supported" if cumotion else "not supported (needs Ampere+, CUDA≥13, ≥8 GB VRAM)",
+        )
+    )
+
+    rows.append(
+        CheckResult(
+            "ComputeSpec / NVMM",
+            "ok" if spec.nvmm_available else "absent",
+            "zero-copy NVMM available" if spec.nvmm_available else "not available",
+        )
+    )
+
     return rows
 
 
@@ -693,16 +747,26 @@ def _check_reasoner_llm() -> list[CheckResult]:
 def _gather_checks() -> list[CheckResult]:
     """Run all checks and return the combined result list.
 
+    The GPU probe is issued exactly once and shared between
+    :func:`_check_gpu` (hardware rows) and :func:`_check_compute_spec`
+    (derived ``ComputeSpec`` rows) so ``openral doctor`` and
+    ``openral detect`` build the same ``ComputeSpec`` from the same data.
+
     Returns:
         List of `CheckResult` in display order.
     """
+    from openral_detect.probes import probe_gpus
+
     checks: list[CheckResult] = []
     checks.append(_check_python())
     checks.append(_check_platform())
     checks.append(_check_openral_core())
     checks.extend(_check_ros2())
     checks.append(_check_colcon())
-    checks.extend(_check_gpu())
+    gpu_warnings: list[str] = []
+    gpu_result = probe_gpus(warnings=gpu_warnings)
+    checks.extend(_check_gpu(gpu_result, gpu_warnings))
+    checks.extend(_check_compute_spec(gpu_result))
     checks.extend(_check_usb())
     checks.append(_check_just())
     checks.extend(_check_reasoner_llm())

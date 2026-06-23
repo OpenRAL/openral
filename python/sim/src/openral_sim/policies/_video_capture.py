@@ -63,24 +63,52 @@ def tile_input_frames(images: list[object | None]) -> NDArray[np.uint8] | None:
 
     Returns:
         A single HWC uint8 RGB frame. One camera returns unchanged; multiple
-        cameras are resized to a common height and tiled left-to-right.
+        cameras are arranged into a padded near-square grid so downstream video
+        resizing keeps each stream readable.
     """
     frames = [to_input_frame(image) for image in images if image is not None]
     if not frames:
         return None
     if len(frames) == 1:
         return frames[0]
-    target_h = min(frame.shape[0] for frame in frames)
-    tiled = [_resize_to_height(frame, target_h) for frame in frames]
-    return np.ascontiguousarray(np.concatenate(tiled, axis=1), dtype=np.uint8)
+    cols = 2
+    rows = (len(frames) + cols - 1) // cols
+    cell_h = min(frame.shape[0] for frame in frames)
+    cell_w = min(frame.shape[1] for frame in frames)
+    canvas = np.zeros((rows * cell_h, cols * cell_w, 3), dtype=np.uint8)
+    for idx, frame in enumerate(frames):
+        row = idx // cols
+        col = idx % cols
+        fitted = _fit_frame(frame, cell_w=cell_w, cell_h=cell_h)
+        y0 = row * cell_h + (cell_h - fitted.shape[0]) // 2
+        x0 = col * cell_w + (cell_w - fitted.shape[1]) // 2
+        canvas[y0 : y0 + fitted.shape[0], x0 : x0 + fitted.shape[1]] = fitted
+    return _pad_to_square(canvas)
 
 
-def _resize_to_height(frame: NDArray[np.uint8], height: int) -> NDArray[np.uint8]:
-    """Resize a debug-preview frame to ``height`` while preserving aspect."""
+def _fit_frame(
+    frame: NDArray[np.uint8],
+    *,
+    cell_w: int,
+    cell_h: int,
+) -> NDArray[np.uint8]:
+    """Resize a preview frame to fit within one grid cell, preserving aspect."""
     from PIL import Image
 
-    if frame.shape[0] == height:
+    if frame.shape[0] <= cell_h and frame.shape[1] <= cell_w:
         return frame
-    width = max(1, round(frame.shape[1] * (height / frame.shape[0])))
+    scale = min(cell_w / frame.shape[1], cell_h / frame.shape[0])
+    width = max(1, round(frame.shape[1] * scale))
+    height = max(1, round(frame.shape[0] * scale))
     resized = Image.fromarray(frame).resize((width, height), Image.Resampling.BILINEAR)
     return np.asarray(resized, dtype=np.uint8)
+
+
+def _pad_to_square(frame: NDArray[np.uint8]) -> NDArray[np.uint8]:
+    """Center-pad a preview canvas to square so later resize is not misleading."""
+    side = max(frame.shape[0], frame.shape[1])
+    out = np.zeros((side, side, 3), dtype=np.uint8)
+    y0 = (side - frame.shape[0]) // 2
+    x0 = (side - frame.shape[1]) // 2
+    out[y0 : y0 + frame.shape[0], x0 : x0 + frame.shape[1]] = frame
+    return out

@@ -19,12 +19,13 @@ def test_tile_input_frames_returns_single_frame_unchanged() -> None:
     assert np.array_equal(tiled, image)
 
 
-def test_tile_input_frames_concatenates_multiple_cameras() -> None:
+def test_tile_input_frames_arranges_multiple_cameras_into_square_grid() -> None:
     left = np.full((6, 4, 3), 10, dtype=np.uint8)
-    right = np.full((3, 2, 3), 200, dtype=np.uint8)
-    tiled = tile_input_frames([left, right])
+    right = np.full((6, 4, 3), 200, dtype=np.uint8)
+    bottom = np.full((6, 4, 3), 120, dtype=np.uint8)
+    tiled = tile_input_frames([left, right, bottom])
     assert tiled is not None
-    assert tiled.shape[0] == 3
-    assert tiled.shape[1] > right.shape[1]
-    assert int(tiled[:, :2].mean()) == 10
-    assert int(tiled[:, -2:].mean()) == 200
+    assert tiled.shape[0] == tiled.shape[1]
+    assert int(tiled[1:5, 3:5].mean()) == 10
+    assert int(tiled[1:5, 7:9].mean()) == 200
+    assert int(tiled[7:11, 3:5].mean()) == 120

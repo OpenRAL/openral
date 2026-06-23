@@ -179,14 +179,13 @@ class _PI05Adapter:
 
         images = observation.get("images", {})
         cam_alias = {"camera1": "image", "camera2": "image2", **self._camera_aliases}
-        from openral_sim.policies._video_capture import to_input_frame
+        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
-        # See smolvla.py for rationale: capture the wrist / mounted
-        # camera (last entry in ``camera_keys``), not the static agent
-        # view, so the top-left "VLA input" panel matches what the
-        # policy is actually attending to during manipulation.
+        # Record a stitched preview of every camera handed to the policy so
+        # the debug video shows the real multi-camera input, not only the last
+        # stream in the adapter loop.
         preview_frames: list[NDArray[np.uint8]] = []
-        for i, cam_key in enumerate(self._camera_keys):
+        for cam_key in self._camera_keys:
             img = images.get(cam_key)
             if img is None:
                 continue
@@ -205,7 +204,6 @@ class _PI05Adapter:
             t = t.unsqueeze(0).to(self.device)
             batch_key = self._image_input_template.format(cam=cam_alias.get(cam_key, cam_key))
             batch[batch_key] = t
-        from openral_sim.policies._video_capture import tile_input_frames
 
         self._last_input_frame = tile_input_frames(preview_frames)
 

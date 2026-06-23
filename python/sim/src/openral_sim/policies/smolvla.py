@@ -249,8 +249,10 @@ class _SmolVLAAdapter:
         # rename step (image → camera1, image2 → camera2) lines up.
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
+        # Record every camera the policy consumed so the debug video does not
+        # collapse multi-camera input to only the last stream in the loop.
         preview_frames: list[NDArray[np.uint8]] = []
-        for i, cam_key in enumerate(self._camera_keys):
+        for cam_key in self._camera_keys:
             img = images.get(cam_key)
             if img is None:
                 continue
