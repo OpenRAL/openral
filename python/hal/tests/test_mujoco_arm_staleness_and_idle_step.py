@@ -113,9 +113,7 @@ def test_idle_step_returns_false_after_estop() -> None:
         hal.estop()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface; estop always raises
     assert hal.idle_step() is False  # type: ignore[attr-defined]  # reason: disconnected → no step
     assert hal.sim_time_ns() is None  # type: ignore[attr-defined]  # disconnected/e-stopped
-    assert (
-        hal.clock_authority().origin is ClockOrigin.HOST_WALL
-    )  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
+    assert hal.clock_authority().origin is ClockOrigin.HOST_WALL  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
 
 
 def test_last_action_ns_updates_on_send_action() -> None:

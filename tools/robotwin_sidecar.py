@@ -41,6 +41,20 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+# Attribute names a gym/SAPIEN wrapper may use to expose the env it wraps. The
+# nesting walk in ``_sim_time_candidates`` follows these one level deep, twice.
+_NESTED_ENV_ATTRS = (
+    "unwrapped",
+    "env",
+    "_env",
+    "gym_env",
+    "base_env",
+    "scene",
+    "_scene",
+    "sim",
+    "_sim",
+)
+
 # ── msgpack ndarray codec (matches openral_sim.sidecar) ───────────────────────
 
 
@@ -123,14 +137,14 @@ def _sim_time_candidates(env: object) -> list[object]:
         out.append(obj)
 
     add(env)
-    for name in ("unwrapped", "env", "_env", "gym_env", "base_env", "scene", "_scene", "sim", "_sim"):
+    for name in _NESTED_ENV_ATTRS:
         add(getattr(env, name, None))
     for name in ("envs", "_envs", "venv"):
         value = getattr(env, name, None)
         if isinstance(value, (list, tuple)) and value:
             add(value[0])
     for obj in list(out):
-        for name in ("unwrapped", "env", "_env", "gym_env", "base_env", "scene", "_scene", "sim", "_sim"):
+        for name in _NESTED_ENV_ATTRS:
             add(getattr(obj, name, None))
     return out
 

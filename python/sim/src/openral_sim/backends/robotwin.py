@@ -113,6 +113,10 @@ _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 600.0
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
+# Last-resort sim-time cadence the sidecar uses only when the live SAPIEN env
+# exposes neither an elapsed-time scalar nor a control period (control_timestep/
+# control_dt/control_freq); RoboTwin's default control rate is ~30 Hz.
+_FALLBACK_SIM_DT_S = 1.0 / 30.0
 
 
 def _scene_default_port(task_id: str, robot_id: str) -> int:
@@ -421,7 +425,7 @@ def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
         "--success-key",
         env_cfg.task.success_key or "is_success",
         "--fallback-dt-s",
-        str(1.0 / 30.0),
+        str(_FALLBACK_SIM_DT_S),
         "--robotwin-root",
         str(_robotwin_root()),
         "--host",
