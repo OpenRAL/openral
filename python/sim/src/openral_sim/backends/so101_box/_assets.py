@@ -115,13 +115,16 @@ class BoxSceneOptions:
     robot_base_xyz: tuple[float, float, float] = (0.50, 0.50, 0.0)
     robot_base_yaw_deg: float = 0.0
 
-    # Wrist camera, parented to the terminal gripper body and tuned to look in
-    # the direction orthogonal to the jaw open/close motion while keeping about
-    # 20% of the frame on the gripper and most of the rest on the workspace.
-    wrist_camera_pos_local: tuple[float, float, float] = (-0.02, 0.02, 0.0)
-    wrist_camera_target_local: tuple[float, float, float] = (-0.02, -0.08, 0.0)
-    wrist_camera_up_local: tuple[float, float, float] = (0.0, 0.0, 1.0)
-    wrist_camera_fovy: float = 58.0
+    # Wrist camera, mounted on the static (Fixed_Jaw) finger face — matching the
+    # real lerobot SO-101 phone-on-bracket rig (Cornito/so101_test2). It sits
+    # ~60 mm out along the finger-face normal + ~35 mm toward the fingertips and
+    # is rolled 180° (``up = (0, 0, -1)``, the phone is mounted inverted) so the
+    # open jaws hang up into the bottom ~20% of the frame and the workspace +
+    # grasped object fill the rest. fovy 90 ≈ the wide phone lens.
+    wrist_camera_pos_local: tuple[float, float, float] = (-0.0084, 0.0834, -0.0545)
+    wrist_camera_target_local: tuple[float, float, float] = (-0.0074, -0.091, -0.1886)
+    wrist_camera_up_local: tuple[float, float, float] = (0.0, 0.0, -1.0)
+    wrist_camera_fovy: float = 90.0
 
     oak_top_camera_pos: tuple[float, float, float] = (0.50, 0.3075, 0.749)
     oak_top_camera_target: tuple[float, float, float] = (0.50, 0.3075, 0.0)

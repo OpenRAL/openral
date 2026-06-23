@@ -195,7 +195,12 @@ def test_so101_box_wrist_camera_sees_lit_scene(env_cfg) -> None:
 
 
 def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg) -> None:
-    """The wrist camera matches the orthogonal gripper-facing tuned pose."""
+    """The wrist camera matches the static-finger-mounted, inverted phone pose.
+
+    The pose replicates the real lerobot SO-101 wrist rig (Cornito/so101_test2):
+    mounted on the static finger face, rolled 180° (``up = (0, 0, -1)``) and
+    pitched so the open jaws hang into the bottom ~20% of the frame.
+    """
     from openral_sim import SCENES
 
     rollout = SCENES.get("so101_box")(env_cfg)
@@ -211,10 +216,12 @@ def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg) -> None:
     cam_pos_local = grip_xmat.T @ (cam_pos - grip_pos)
     cam_forward_local = grip_xmat.T @ (-cam_xmat[:, 2])
     cam_up_local = grip_xmat.T @ cam_xmat[:, 1]
-    np.testing.assert_allclose(cam_pos_local, np.array([-0.02, 0.02, 0.0]), atol=2e-3)
-    expected_forward = np.array([0.0, -1.0, 0.0])
+    np.testing.assert_allclose(cam_pos_local, np.array([-0.0084, 0.0834, -0.0545]), atol=2e-3)
+    # forward points down-and-forward toward the grasp; up is rolled (inverted phone).
+    expected_forward = np.array([0.0045, -0.7926, -0.6098])
+    expected_up = np.array([-0.0035, 0.6098, -0.7926])
     assert float(np.dot(cam_forward_local, expected_forward)) > 0.999
-    assert float(np.dot(cam_up_local, np.array([0.0, 0.0, 1.0]))) > 0.999
+    assert float(np.dot(cam_up_local, expected_up)) > 0.999
 
 
 def test_so101_box_nonzero_action_moves_arm(env_cfg) -> None:
