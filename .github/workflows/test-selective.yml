@@ -137,6 +137,50 @@ jobs:
         if: steps.select.outputs.any == 'true'
         run: uv sync --frozen --all-packages || uv sync --all-packages
 
+      # Asset fetchers lazily `git clone` a shared cache the first time a
+      # description is resolved: `robot_descriptions` (rd: refs) and the openarm
+      # v2 fetcher (openarm: refs). The "Run selected targets" step below launches
+      # every test-root partition CONCURRENTLY, so a broad diff that selects
+      # several asset-resolving tests has them all racing the same first clone:
+      # "fatal: Unable to create '…/.git/shallow.lock': File exists" → exit 128.
+      # Pre-warm every cache serially here so the parallel partitions only ever
+      # read an already-populated cache. The rd: list is DERIVED from the robot
+      # manifests (not hand-maintained) so it can never drift behind a new ref —
+      # a stale hand-list is what let g1/sawyer URDF clones race in the first
+      # place. Warm failures are non-fatal — a missing extra just means that
+      # description isn't exercised this run.
+      - name: Pre-warm asset caches (robot_descriptions + openarm)
+        if: steps.select.outputs.any == 'true'
+        run: |
+          uv run python - <<'PY'
+          import importlib
+          import pathlib
+          import re
+
+          # Every `rd:<module>` referenced by a robots/*/robot.yaml — URDF and
+          # MJCF alike (panda_description AND panda_mj_description clone different
+          # repos, so both must warm).
+          refs: set[str] = set()
+          for mf in pathlib.Path("robots").glob("*/robot.yaml"):
+              refs.update(re.findall(r"rd:([a-z0-9_]+)", mf.read_text()))
+          for m in sorted(refs):
+              try:
+                  importlib.import_module(f"robot_descriptions.{m}")
+                  print(f"warmed rd:{m}")
+              except Exception as exc:  # noqa: BLE001 — best-effort warm
+                  print(f"skip rd:{m}: {exc}")
+
+          # openarm: refs use a separate fetcher + cache (~/.cache/openral),
+          # not robot_descriptions — warm it too so partitions don't race it.
+          try:
+              from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
+
+              ensure_openarm_v2_mjcf()
+              print("warmed openarm v2")
+          except Exception as exc:  # noqa: BLE001 — best-effort warm
+              print(f"skip openarm v2: {exc}")
+          PY
+
       - name: Run full suite (blast-radius change)
         if: steps.select.outputs.full_run == 'true'
         run: |
