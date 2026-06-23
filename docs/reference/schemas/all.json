@@ -5614,6 +5614,7 @@
             "enum": [
               "aloha",
               "aloha_agilex",
+              "any",
               "custom",
               "franka_panda",
               "g1",

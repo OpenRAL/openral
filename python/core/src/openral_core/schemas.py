@@ -3586,6 +3586,7 @@ class EmbodimentExtra(BaseModel):
 EmbodimentTag: TypeAlias = Literal[
     "aloha",
     "aloha_agilex",
+    "any",
     "custom",
     "franka_panda",
     "g1",
@@ -3605,7 +3606,16 @@ EmbodimentTag: TypeAlias = Literal[
     "widowx",
 ]
 """Canonical embodiment tags — one per ``robots/<id>/robot.yaml`` shipped in tree,
-plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch.
+plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
+``"any"`` as the explicit **embodiment-agnostic wildcard**.
+
+``"any"`` is the *declared* way to say "this rSkill runs on every embodiment"
+(ADR-0071): perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
+decision procedures use ``embodiment_tags: ["any"]``. An empty ``embodiment_tags``
+is rejected by :meth:`RSkillManifest._check_embodiment_tags_present` — agnosticism
+must be declared, never derived from an empty list (CLAUDE.md §1.4). The rSkill↔robot
+gate (``openral_rskill.loader.rSkill.check_embodiment_tags``) treats ``"any"`` in a
+skill's tags as match-any; a robot never declares ``"any"``.
 
 ``"mobile_base"`` is a CLASS tag (not a specific robot): any robot with a planar
 base + ``body_twist`` actuator declares it so base-only rSkills (Nav2
@@ -3824,18 +3834,12 @@ RSkillKind: TypeAlias = Literal[
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
 
-# Perception rSkills are embodiment-agnostic: they consume camera frames and
-# emit detections / scene text with no action contract, so a robot's embodiment
-# is not a meaningful match axis. They MAY declare an empty ``embodiment_tags``
-# (match-any) — see ``_check_embodiment_tags_present`` below — and the
-# rSkill↔robot gate exempts them (``openral_rskill.loader._EMBODIMENT_AGNOSTIC_KINDS``).
-_PERCEPTION_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
-
-# Kinds whose skills are embodiment-agnostic and MAY declare an empty
-# ``embodiment_tags`` (match-any): the perception kinds above, plus ``playbook``
-# (ADR-0071) — a symbolic decision procedure gated by ``capabilities_required``,
-# not by embodiment. ``_check_embodiment_tags_present`` exempts these.
-_EMBODIMENT_AGNOSTIC_KINDS: frozenset[str] = _PERCEPTION_KINDS | frozenset({"playbook"})
+# Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
+# ``playbook`` decision procedures) do not target a specific embodiment. They
+# declare this **explicitly** with the wildcard ``embodiment_tags: ["any"]``
+# (ADR-0071) — never an empty list, which ``_check_embodiment_tags_present``
+# rejects. The rSkill↔robot gate (``openral_rskill.loader.rSkill.check_embodiment_tags``)
+# treats ``"any"`` in a skill's tags as match-any.
 
 
 class RosIntegration(BaseModel):
@@ -4434,8 +4438,9 @@ class RSkillManifest(BaseModel):
     # Required when `kind == "vla"`, forbidden otherwise (enforced by
     # :meth:`_check_kind_consistency`).
     model_family: ModelFamily | None = None
-    # Non-perception kinds must declare >=1 tag; perception kinds (detector /
-    # vlm) MAY be empty (match-any) — enforced by `_check_embodiment_tags_present`.
+    # Every kind must declare >=1 tag (enforced by `_check_embodiment_tags_present`):
+    # actuating kinds name their embodiments; agnostic kinds (detector / vlm /
+    # reward / playbook) declare the explicit wildcard ["any"]. Empty is rejected.
     embodiment_tags: list[EmbodimentTag] = Field(default_factory=list)
     embodiment_extra: EmbodimentExtra | None = None
     capabilities_required: dict[str, bool | float | int | str] = Field(default_factory=dict)
@@ -4510,24 +4515,21 @@ class RSkillManifest(BaseModel):
 
     @model_validator(mode="after")
     def _check_embodiment_tags_present(self) -> RSkillManifest:
-        """Non-perception rSkills must declare at least one embodiment tag.
+        """Every rSkill must declare at least one embodiment tag (ADR-0071).
 
-        Embodiment-agnostic kinds (``detector`` / ``vlm`` / ``reward`` /
-        ``playbook``, see :data:`_EMBODIMENT_AGNOSTIC_KINDS`) MAY ship an empty
-        ``embodiment_tags`` (match-any; the rSkill↔robot gate exempts them):
-        perception kinds are camera-in → detections/text-out with no action
-        contract, and a ``playbook`` is a symbolic decision procedure gated by
-        ``capabilities_required`` rather than embodiment (ADR-0071). Every other
-        kind (``vla`` / ``wam`` / ``ros_action`` / ``ros_service``) still
-        actuates a specific embodiment and must target one, preserving the prior
-        ``min_length=1`` guarantee.
+        Empty ``embodiment_tags`` is rejected for **all** kinds: agnosticism is a
+        contract to declare, not to derive from an empty list (CLAUDE.md §1.4).
+        An rSkill that genuinely runs on every embodiment — perception kinds
+        (``detector`` / ``vlm`` / ``reward``) and ``playbook`` decision
+        procedures — declares the explicit wildcard ``embodiment_tags: ["any"]``;
+        actuating kinds (``vla`` / ``ros_action`` / ``ros_service`` / ``wam``)
+        name the specific embodiments they target.
         """
-        if self.kind not in _EMBODIMENT_AGNOSTIC_KINDS and not self.embodiment_tags:
+        if not self.embodiment_tags:
             raise ValueError(
-                f"RSkillManifest({self.name!r}): kind={self.kind!r} requires at "
-                "least one embodiment_tag. Only embodiment-agnostic kinds "
-                f"{sorted(_EMBODIMENT_AGNOSTIC_KINDS)} may be embodiment-agnostic "
-                "(empty tags)."
+                f"RSkillManifest({self.name!r}): embodiment_tags must be non-empty. "
+                'Declare the specific embodiment(s) this skill targets, or ["any"] '
+                "for an embodiment-agnostic skill (perception / playbook kinds)."
             )
         return self
 
@@ -4684,7 +4686,7 @@ class RSkillManifest(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912, PLR0915  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
+    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0911, PLR0912, PLR0915  # reason: each branch is a separate kind (one early return each) — splitting would obscure the per-kind contract table
         """Enforce the per-:attr:`kind` field shape for VLA vs ROS-wrapper vs detector.
 
         Rules:

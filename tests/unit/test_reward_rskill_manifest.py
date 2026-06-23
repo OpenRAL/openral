@@ -105,7 +105,7 @@ def test_robometer_fixture_validates() -> None:
     assert manifest.reward.target_fps > 0.0
     assert manifest.weights_uri is not None, "reward requires weights_uri"
     assert manifest.actuators_required == [], "reward must have no actuators"
-    assert manifest.embodiment_tags == [], "reward is embodiment-agnostic"
+    assert manifest.embodiment_tags == ["any"], "reward is embodiment-agnostic (wildcard)"
     assert RSkillAction.MONITOR in manifest.actions
     # A reward monitor has no VLA identity / perception-producer fields
     assert manifest.model_family is None
@@ -124,7 +124,7 @@ _VALID_REWARD: dict = {
     "license": "apache-2.0",
     "role": "s2",
     "kind": "reward",
-    "embodiment_tags": [],
+    "embodiment_tags": ["any"],
     "sensors_required": [{"modality": "rgb", "min_width": 224, "min_height": 224}],
     "actuators_required": [],
     "runtime": "pytorch",

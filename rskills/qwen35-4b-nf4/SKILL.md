@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s2
   kind: vlm
+  embodiment_tags: [any]
   actions: [query]
   objects: [open-vocabulary object, text, scene region, spatial relation]
   scenes: [tabletop, kitchen, indoor, outdoor, warehouse, driving]
@@ -41,6 +42,7 @@ An OpenRAL **vision-language model** (`role: s2`, `kind: vlm`). Qwen3.5-4B nativ
 - **Verbs:** query
 - **Objects:** open-vocabulary object · text · scene region · spatial relation
 - **Scenes:** tabletop · kitchen · indoor · outdoor · warehouse · driving
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

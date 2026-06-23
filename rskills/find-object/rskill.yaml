@@ -14,8 +14,9 @@ role: "s2"
 kind: "playbook"
 
 # Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
-# specific embodiment, so embodiment_tags is intentionally empty (match-any).
-embodiment_tags: []
+# specific embodiment. Declared explicitly with the "any" wildcard (never an
+# empty list, which the manifest validator rejects — ADR-0071).
+embodiment_tags: ["any"]
 
 # Real RobotCapabilities flag: locating an object requires a camera. The loader's
 # capability gate (openral_rskill.loader.check_capability_flags) raises
