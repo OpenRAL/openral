@@ -3,7 +3,7 @@
 - **Status:** Accepted 2026-06-23 — Phase 1 implemented.
 - **Date:** 2026-06-23
 - **Amendment 2026-06-23:** Finalised `ComputeSpec` field set after design review. `onboard_compute_tops` renamed to `compute_tops`; `onboard_memory_gb` renamed to `system_memory_gb` (the `onboard_` prefix is wrong for local/cloud tiers). Added `num_gpus: int = 1`, `endpoint: str | None = None`, `network_latency_ms: float | None = None` (see D1 revised schema below). `nvmm_available` remains shared across all tiers — probed on every host and returns `False` gracefully when absent (can be `True` on local/cloud Tegra nodes too). `compute_cloud_endpoint` moved inside `ComputeSpec` as `endpoint` so each spec is self-contained and multiple cloud endpoints are independent.
-- **Amendment 2026-06-23 (Phase 1 complete):** Phase 1 implemented in PR `fix/robot-scene-sensor-manifest-validation`. `RobotDescription.compute` replaced with `compute_edge`, `compute_local`, `compute_cloud`. `schema_version: "0.2"` added. `_migrate_v0_1` model validator provides transparent backward compatibility for old YAMLs with `compute:`. Migrator `tools/migrate_robot_yaml.py` ships. All 17 in-tree robot manifests updated to `schema_version: '0.2'`. `openral doctor` now labels rows `ComputeSpec (edge)` / `ComputeSpec (local)`. `_resolve_compute` semantics inlined at each call site (`compute_edge or compute_local`). 3271 unit tests passing.
+- **Amendment 2026-06-23 (Phase 1 complete):** Phase 1 implemented in PR `fix/robot-scene-sensor-manifest-validation`. `RobotDescription.compute` replaced with `compute_edge`, `compute_local`, `compute_cloud`. `schema_version: "0.2"` added to the schema and all 17 in-tree robot manifests. No backward-compat shim — old `compute:` YAMLs are not supported (repo is clean). `openral doctor` now labels rows `ComputeSpec (edge)` / `ComputeSpec (local)`. `_resolve_compute` semantics inlined at each call site (`compute_edge or compute_local`). 3271 unit tests passing.
 - **ADR number:** `0069` (0068 is the highest accepted).
 - **Related:**
   - ADR-0008 — `openral_detect` auto-provisioning package: the origin of `ComputeSpec` population.
@@ -199,7 +199,7 @@ cuMotion requires Ampere+ *on the machine running `move_group`*. In a tethered d
 - The existing "unknown → skip" fallback is preserved for static manifests without any compute slots filled.
 
 **Negative / risks:**
-- **Schema migration:** `compute` → `compute_edge` + `compute_local` + `compute_cloud` is a backward-incompatible field rename. Any YAML hand-authored with `compute:` will fail `extra="forbid"` validation. In-tree YAMLs are all `compute: null` (no data), so migration is a schema-version bump with a one-line migrator.
+- **Schema migration:** `compute` → `compute_edge` + `compute_local` + `compute_cloud` is a backward-incompatible field rename. Any YAML hand-authored with `compute:` will fail `extra="forbid"` validation. All in-tree YAMLs carry `schema_version: '0.2'` and no `compute:` key.
 - **SSH probe surface:** D3 introduces a new network operation. It must be gated behind `--cloud`, never automatic, and must never log the remote `DetectionReport` at INFO level (sensitive hardware info).
 - **S1 cloud opt-in adds an env var:** `OPENRAL_ALLOW_CLOUD_S1=1` is a deployment-specific override. It must be documented in the runner README and not set by default anywhere in the OpenRAL codebase.
 - **`_resolve_compute` edge→local fallback** means a tethered laptop deployment continues to work after the migration with no manifest changes — this is the correct graceful degradation. But it means a Jetson-equipped robot that is also tethered will use `compute_edge` for edge skills and silently ignore `compute_local` for them, which is the desired behavior.
@@ -210,11 +210,10 @@ cuMotion requires Ampere+ *on the machine running `move_group`*. In a tethered d
 
 Each phase is an independently mergeable PR. Phase 1 is the only mandatory unlock for the others.
 
-**Phase 1 — Schema + migration (mandatory, ADR ratification gate) ✅ DONE**
+**Phase 1 — Schema (mandatory, ADR ratification gate) ✅ DONE**
 - `RobotDescription.compute` → `compute_edge` + `compute_local` + `compute_cloud`.
-- `schema_version: "0.2"` added; `_migrate_v0_1` validator handles old `compute:` YAML transparently.
-- `tools/migrate_robot_yaml.py` ships with comment-preserving text-append for the no-`compute:` case.
-- All 17 in-tree robot manifests updated to `schema_version: '0.2'`.
+- `schema_version: "0.2"` added to `RobotDescription`; all 17 in-tree robot manifests updated.
+- No backward-compat shim — repo is clean; old `compute:` YAMLs are not valid.
 - `_enrich_compute` / `build_compute_spec` populate `compute_edge` (Jetson) vs `compute_local` (discrete NVIDIA / Apple Silicon / CPU-only).
 - `rSkill.check_compatibility` / `maybe_inject_cumotion_pipeline` / `compatibility.py` all resolve via `compute_edge or compute_local`.
 - `openral doctor` labels rows `ComputeSpec (edge)` / `ComputeSpec (local)` based on detected tier.

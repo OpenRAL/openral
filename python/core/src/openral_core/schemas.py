@@ -1528,27 +1528,6 @@ class RobotDescription(BaseModel):
     # Old manifests without this field load with the default below.
     schema_version: Literal["0.2"] = "0.2"
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_v0_1(cls, data: object) -> object:
-        """Transparently migrate pre-0.2 manifests that still carry ``compute:``."""
-        if not isinstance(data, dict) or "compute" not in data:
-            return data
-        compute = data.pop("compute")
-        if compute is None:
-            return data
-        # Determine tier from the gpu_probe backend written by ``openral detect``.
-        onboard = data.get("onboard_compute")
-        backend = ""
-        if isinstance(onboard, dict):
-            probe = onboard.get("gpu_probe", {})
-            backend = (probe or {}).get("backend", "") if isinstance(probe, dict) else ""
-        if backend == "jtop":
-            data.setdefault("compute_edge", compute)
-        else:
-            data.setdefault("compute_local", compute)
-        return data
-
     @model_validator(mode="after")
     def _validate_footprint_polygon(self) -> RobotDescription:
         """A declared footprint polygon needs >= 3 vertices with finite coords."""
