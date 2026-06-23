@@ -251,13 +251,6 @@ _FALLBACK_TOP_CAMERA_POS: tuple[float, float, float] = (0.20, 0.0, 0.95)
 _FALLBACK_TOP_CAMERA_TARGET: tuple[float, float, float] = (0.65, 0.0, 0.05)
 _FALLBACK_TOP_CAMERA_FOVY: float = 65.0
 
-# Fallback for the ``front`` camera — positioned forward of the grippers,
-# looking back at the forearms and workspace. Shoulders stay out of frame;
-# only forearms, grippers, and task objects are visible.
-_FALLBACK_FRONT_CAMERA_POS: tuple[float, float, float] = (0.75, 0.0, 0.55)
-_FALLBACK_FRONT_CAMERA_TARGET: tuple[float, float, float] = (0.45, 0.0, 0.33)
-_FALLBACK_FRONT_CAMERA_FOVY: float = 75.0
-
 
 # MuJoCo (w, x, y, z) look-at quaternion — promoted to the shared gaze-geometry
 # helper in ADR-0044 Phase 1; the "-z" default is the MuJoCo camera convention
@@ -443,9 +436,6 @@ def compose_openarm_tabletop_mjcf(
     top_camera_pos: tuple[float, float, float] | None = None,
     top_camera_target: tuple[float, float, float] | None = None,
     top_camera_fovy: float | None = None,
-    front_camera_pos: tuple[float, float, float] | None = None,
-    front_camera_target: tuple[float, float, float] | None = None,
-    front_camera_fovy: float | None = None,
     robot_description: RobotDescription | None = None,
 ) -> tuple[str, Path]:
     """Return ``(xml_string, meshdir)`` for the tabletop scene.
@@ -486,14 +476,6 @@ def compose_openarm_tabletop_mjcf(
         top_camera_fovy: Vertical field-of-view in degrees for the
             ``top`` camera. ``None`` falls back to
             ``robot_description.scene_defaults.top_camera.fovy``.
-        front_camera_pos: ``(x, y, z)`` world position of the ``front``
-            camera (operator-facing view from the +Y side). ``None``
-            falls back to ``_FALLBACK_FRONT_CAMERA_POS``.
-        front_camera_target: ``(x, y, z)`` world point the ``front``
-            camera aims at. ``None`` falls back to
-            ``_FALLBACK_FRONT_CAMERA_TARGET``.
-        front_camera_fovy: Vertical field-of-view for the ``front``
-            camera. ``None`` falls back to ``_FALLBACK_FRONT_CAMERA_FOVY``.
         robot_description: Loaded :class:`RobotDescription`. Defaults
             to :func:`load_openarm_description` (the in-tree OpenArm
             HAL constant). Drives both the actuator inventory and the
@@ -546,20 +528,8 @@ def compose_openarm_tabletop_mjcf(
         f'fovy="{fovy}"/>'
     )
 
-    f_pos = front_camera_pos or _FALLBACK_FRONT_CAMERA_POS
-    f_tgt = front_camera_target or _FALLBACK_FRONT_CAMERA_TARGET
-    f_fovy = front_camera_fovy if front_camera_fovy is not None else _FALLBACK_FRONT_CAMERA_FOVY
-    f_quat = _look_at_quat(f_pos, f_tgt)
-    front_camera_xml = (
-        f'<camera name="front" pos="{f_pos[0]} {f_pos[1]} {f_pos[2]}" '
-        f'quat="{f_quat[0]} {f_quat[1]} {f_quat[2]} {f_quat[3]}" '
-        f'fovy="{f_fovy}"/>'
-    )
-
     # Splice the scene bodies + the per-call top camera into the existing <worldbody>.
-    indented = "\n    ".join(
-        (_SCENE_BODIES.strip() + "\n" + top_camera_xml + "\n" + front_camera_xml).splitlines()
-    )
+    indented = "\n    ".join((_SCENE_BODIES.strip() + "\n" + top_camera_xml).splitlines())
     body, n_subs = re.subn(
         r"(</worldbody>)",
         f"    {indented}\n  \\1",

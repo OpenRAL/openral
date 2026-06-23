@@ -320,8 +320,6 @@ hal:
 # the rskill manifest's ``image_preprocessing.aliases`` bridges
 # scene-side → checkpoint-side names.
 #
-# ``front``: positioned forward of the grippers looking back — shows
-#   forearms + grippers + task objects; shoulders are out of frame.
 # ``top``: overhead workspace overview (mddoai dataset POV).
 # ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
@@ -340,21 +338,6 @@ sensors:
     vla_feature_key: "observation.images.base"
     vendor: "sim"
     model: "mujoco_top"
-  - name: "front"
-    modality: "rgb"
-    frame_id: "world"
-    rate_hz: 10.0
-    intrinsics:
-      width: 640
-      height: 480
-      fx: 640.0
-      fy: 640.0
-      cx: 320.0
-      cy: 240.0
-    encoding: "rgb8"
-    vla_feature_key: "observation.images.front"
-    vendor: "sim"
-    model: "mujoco_front"
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
