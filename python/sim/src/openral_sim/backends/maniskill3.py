@@ -141,6 +141,68 @@ def _suppress_unsupported_robot_warning() -> Iterator[None]:
         logger.removeFilter(filt)
 
 
+def _scalar_float(value: object) -> float | None:
+    """Return the first scalar value from a tensor/array-like object."""
+    if value is None:
+        return None
+    if callable(value):
+        return None
+    try:
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _first_scalar_attr(obj: object, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        value = getattr(obj, name, None)
+        scalar = _scalar_float(value)
+        if scalar is not None:
+            return scalar
+    return None
+
+
+def _sapien_sim_time_ns(env: object) -> int | None:
+    """Derive elapsed SAPIEN/ManiSkill control time from a live env.
+
+    ManiSkill3/SimplerEnv expose the elapsed control step counter as an array or
+    tensor (`elapsed_steps` / `_elapsed_steps`) and the control period as a
+    scalar (`control_timestep`, `control_dt`, or a `control_freq` inverse).
+    """
+    candidates = (env, getattr(env, "unwrapped", env))
+    elapsed_s_names = ("elapsed_time", "time_elapsed", "sim_time", "elapsed_seconds")
+    step_names = ("elapsed_steps", "_elapsed_steps")
+    dt_names = ("control_timestep", "_control_timestep", "control_dt", "dt")
+    freq_names = ("control_freq", "_control_freq")
+
+    for candidate in candidates:
+        elapsed_s = _first_scalar_attr(candidate, elapsed_s_names)
+        if elapsed_s is not None:
+            return round(elapsed_s * 1_000_000_000)
+
+        steps = _first_scalar_attr(candidate, step_names)
+        if steps is None:
+            continue
+
+        dt_s = _first_scalar_attr(candidate, dt_names)
+        if dt_s is None:
+            freq_hz = _first_scalar_attr(candidate, freq_names)
+            if freq_hz is not None and freq_hz > 0:
+                dt_s = 1.0 / freq_hz
+        if dt_s is not None:
+            return round(steps * dt_s * 1_000_000_000)
+    return None
+
+
 @dataclass
 class _ManiSkill3Sim:
     """Thin :class:`SimRollout` wrapper around a ManiSkill3 gym env.
@@ -177,6 +239,10 @@ class _ManiSkill3Sim:
             truncated=bool(_unbatch(truncated)),
             info=_unbatch_info(info),
         )
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
+        return _sapien_sim_time_ns(self._env)
 
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()

@@ -42,6 +42,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.maniskill3 import (
     _extract_rgb,
     _extract_state,
+    _sapien_sim_time_ns,
     _unbatch,
     _unbatch_info,
     _unbatch_obs,
@@ -277,6 +278,10 @@ class _SimplerEnvSim:
             truncated=bool(_unbatch(truncated)),
             info=_unbatch_info(info),
         )
+
+    def sim_time_ns(self) -> int | None:
+        """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
+        return _sapien_sim_time_ns(self._env)
 
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()

@@ -46,11 +46,11 @@ _CONFIG = _REPO_ROOT / "scenes" / "benchmark" / "widowx_carrot_on_plate.yaml"
 
 @pytest.fixture(scope="module")
 def scene_env():
-    from openral_core import SimScene, load_scene_strict
+    from openral_core import BenchmarkScene, load_scene_strict
 
     if not _CONFIG.exists():
         pytest.skip(f"sim config not found at {_CONFIG}")
-    return load_scene_strict(str(_CONFIG), SimScene)
+    return load_scene_strict(str(_CONFIG), BenchmarkScene)
 
 
 @pytest.fixture(scope="module")
@@ -95,7 +95,12 @@ class TestSimplerEnvAdapter:
 
     def test_step_propagates_action(self, sim) -> None:
         sim.reset(seed=0)
+        t0 = sim.sim_time_ns()
+        assert t0 is not None
         result = sim.step(np.zeros(7, dtype=np.float32))
+        t1 = sim.sim_time_ns()
         assert np.isfinite(result.reward)
         assert "success" in result.info
         assert isinstance(result.info["success"], (bool, np.bool_))
+        assert t1 is not None
+        assert t1 > t0
