@@ -35,12 +35,13 @@ scene:
     top_camera_pos: [0.20, 0.0, 0.95]
     top_camera_target: [0.65, 0.0, 0.05]
     top_camera_fovy: 65.0
-    # Front camera: operator-facing view from the +Y side, mirroring the
-    # upstream enactic/openarm_mujoco ``front_camera`` (pos=[0,2,0.5])
-    # scaled to a more practical 1.5 m distance.
-    front_camera_pos: [0.45, 1.5, 0.5]
-    front_camera_target: [0.45, 0.0, 0.4]
-    front_camera_fovy: 65.0
+    # Front camera: centered between both arms, slightly elevated, facing
+    # slightly down toward the workspace. Mirrors the spirit of the upstream
+    # enactic/openarm_mujoco ``front_camera`` but positioned in front of
+    # the workspace rather than to the side.
+    front_camera_pos: [0.90, 0.0, 0.65]
+    front_camera_target: [0.45, 0.0, 0.33]
+    front_camera_fovy: 70.0
 
 task:
   id: openarm/pnp_cube_to_drawer
