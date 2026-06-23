@@ -83,7 +83,7 @@ processors:
 image_preprocessing:
   flip_180: true
   aliases:
-    front: "image"
+    top: "image"
     wrist: "image2"
 state_contract:
   dim: 8

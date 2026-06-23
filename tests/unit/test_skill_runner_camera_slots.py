@@ -5,9 +5,9 @@ Deploy-sim keys ``WorldState.image_frames`` by the manifest SENSOR NAME
 resolve their ``camera_keys`` and look up ``obs["images"]`` by the VLA
 slot (``camera1`` / ``camera2`` / ...) — the LIBERO convention
 ``openral sim run`` and the rldx adapter already use. Without a realignment
-a manifest whose RGB sensors are descriptively named (franka: ``front`` /
+a manifest whose RGB sensors are descriptively named (franka: ``top`` /
 ``wrist`` per ADR-0069) hands the pi0.5 adapter
-``obs["images"]["front"]`` while it looks up ``camera1`` and its
+``obs["images"]["top"]`` while it looks up ``camera1`` and its
 ``cam_alias`` maps ``camera1 -> image`` for the checkpoint — so the
 policy sees no frames.
 
@@ -63,12 +63,12 @@ def _rgb_frame(name: str, *, fill: int, h: int = 2, w: int = 2) -> SensorFrame:
 
 class TestVlaCameraSlots:
     def test_franka_slots_in_manifest_order(self) -> None:
-        # front -> observation.images.camera1, wrist -> ...camera2.
+        # top -> observation.images.camera1, wrist -> ...camera2.
         assert _vla_camera_slots(_franka()) == ("camera1", "camera2")
 
     def test_franka_name_to_slot_map(self) -> None:
         assert _sensor_name_to_vla_slot(_franka()) == {
-            "front": "camera1",
+            "top": "camera1",
             "wrist": "camera2",
         }
 
@@ -116,7 +116,7 @@ class TestBuildRuntimeSkillSceneCameras:
         """Sensor-name ``scene_cameras`` (what runtime_node passes) → VLA slots.
 
         ``runtime_node`` forwards ``camera_names`` (manifest sensor names,
-        e.g. ``front`` / ``wrist`` per ADR-0069) as ``scene_cameras``; the
+        e.g. ``top`` / ``wrist`` per ADR-0069) as ``scene_cameras``; the
         adapter needs the VLA slots (``camera1`` / ``camera2``) so its
         ``cam_alias`` maps ``camera1 -> image`` for the checkpoint. Capture
         the ``env_cfg.scene.cameras`` the policy factory receives by
@@ -141,7 +141,7 @@ class TestBuildRuntimeSkillSceneCameras:
             _build_runtime_skill_from_manifest(
                 yaml_path=yaml_path,
                 prompt="pick up the milk",
-                scene_cameras=("front", "wrist"),  # sensor names, as runtime_node passes
+                scene_cameras=("top", "wrist"),  # sensor names, as runtime_node passes
                 description=_franka(),
             )
 

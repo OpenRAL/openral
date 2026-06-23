@@ -199,7 +199,7 @@ class _RoboCasaSim:
     robosuite's env returns a flat dict observation keyed by topic
     (e.g. ``robot0_agentview_left_image``); we map each camera in
     declaration order to the scene's canonical camera names (per
-    ADR-0069 — e.g. ``front_left`` / ``front_right`` / ``wrist`` on
+    ADR-0069 — e.g. ``shoulder_left`` / ``shoulder_right`` / ``wrist`` on
     panda_mobile, falling back to ``camera{i+1}``) and concatenate
     robot proprioception into ``state`` so the eval-layer contract
     matches the other adapters.
@@ -537,7 +537,7 @@ class _RoboCasaSim:
         # its native robosuite name (so a lerobot pi0.5 / pi0 checkpoint
         # that consumes ``observation.images.robot0_agentview_left_image``
         # works without an alias map) and under the canonical scene
-        # camera names (per ADR-0069: e.g. ``front_left`` / ``front_right``
+        # camera names (per ADR-0069: e.g. ``shoulder_left`` / ``shoulder_right``
         # / ``wrist`` on panda_mobile; falls back to ``camera{i+1}`` when
         # the scene leaves ``cameras`` empty).
         images: dict[str, NDArray[np.uint8]] = {}

@@ -110,7 +110,7 @@ processors:
 image_preprocessing:
   flip_180: false
   aliases:
-    front: "up"
+    top: "up"
     wrist: "wrist"
 state_contract:
   dim: 9

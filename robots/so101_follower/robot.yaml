@@ -114,7 +114,7 @@ end_effectors:
     max_payload_kg: 0.5
     workspace_radius_m: 0.32
 
-# SO-101 ships with optional USB cameras. ``front`` mirrors the
+# SO-101 ships with optional USB cameras. ``top`` mirrors the
 # overhead third-person view used by the lerobot SO-101 datasets;
 # ``wrist`` is the wrist-mounted view on the gripper body. The
 # ``so101_box`` sim scene routes the in-scene OAK-D Pro overhead
@@ -122,12 +122,12 @@ end_effectors:
 # camera into ``observation.images.camera2`` (the ``vla_feature_key``
 # values stay camera1/2 since they are checkpoint-frozen per ADR-0069).
 sensors:
-  - name: "front"
+  - name: "top"
     modality: "rgb"
     frame_id: "world"
     rate_hz: 30.0
     # ADR-0065 — sim placement for the overhead OAK-D Pro. The generic HAL
-    # camera rig splices this `front` camera into the bare SO-101 MJCF for
+    # camera rig splices this `top` camera into the bare SO-101 MJCF for
     # `deploy sim` (the upstream arm ships zero cameras, issue #88), world-fixed
     # above the arm's workspace looking straight down. Poses are in metres
     # relative to the arm base at the MJCF origin (the bare twin is NOT

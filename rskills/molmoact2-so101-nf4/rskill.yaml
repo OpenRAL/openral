@@ -121,7 +121,7 @@ image_preprocessing:
   # raise it via vla.extra.image_max_crops if you have VRAM headroom.
   image_max_crops: 4
   aliases:
-    front: "top"
+    top: "top"
     wrist: "side"
 state_contract:
   dim: 6

@@ -25,7 +25,7 @@ Two orthogonal naming spaces exist in the codebase:
 
 | Space | Field | Owner | Example |
 |-------|-------|-------|---------|
-| **HAL / robot-facing** | `SensorSpec.name` | robot manifest | `front` |
+| **HAL / robot-facing** | `SensorSpec.name` | robot manifest | `top` |
 | **Checkpoint-facing** | `SensorSpec.vla_feature_key` | rSkill checkpoint | `observation.images.camera1` |
 
 The `vla_feature_key` is **frozen per trained checkpoint** and must not change.
@@ -39,11 +39,11 @@ Only the `name` field is standardised here.
 
 | Name | Meaning |
 |------|---------|
-| `front` | Fixed front/third-person workspace overview (monocular arm) |
-| `front_left` | Left-of-centre front view (mobile base with two workspace cams) |
-| `front_right` | Right-of-centre front view |
-| `top` | Overhead / top-down view, world-fixed or head-mounted |
+| `front` | Fixed front/third-person workspace overview (e.g. MetaWorld sawyer corner view) |
+| `top` | Overhead / top-down view, world-fixed or head-mounted (preferred for cameras placed above the workspace looking down) |
 | `head` | Head-mounted camera on humanoid robots |
+| `shoulder_left` | Body-mounted camera on the left shoulder of a mobile manipulator (anatomical placement; preferred over `front_left`) |
+| `shoulder_right` | Body-mounted camera on the right shoulder of a mobile manipulator |
 | `wrist` | Wrist / end-effector camera, single arm |
 | `wrist_left` | Wrist camera, left arm (bimanual) |
 | `wrist_right` | Wrist camera, right arm (bimanual) |
@@ -54,6 +54,20 @@ Only the `name` field is standardised here.
 `robots/*/robot.yaml` must be drawn from this table or be a qualified extension
 (`<base>_<qualifier>`, e.g. `front_depth`).
 
+**Rationale — `top` over `front` for overhead cams.** `top` is used when the
+camera is positioned overhead looking at the workspace (e.g. so100/so101
+overhead OAK-D, franka_panda LIBERO agentview at z≈1.35 m). `front` is reserved
+for genuine front-facing workspace views (e.g. MetaWorld sawyer corner).
+
+**Rationale — `shoulder_left/right` over `front_left/right` for mobile bases.**
+Body-mounted cameras on a mobile manipulator (PR2, Fetch, TIAGo, panda_mobile)
+are described by anatomical position (`shoulder_*`) rather than direction
+(`front_*`). This (a) generalises across robot orientations — a turned base
+doesn't change a "shoulder" camera into a "rear" one, (b) matches real
+mobile-manipulator vocabulary, and (c) avoids the ambiguity between "camera
+facing the front-left direction" and "left-side camera on the front of the
+robot".
+
 ### Changes to robot manifests
 
 | Robot | Old name | New name |
@@ -61,9 +75,11 @@ Only the `name` field is standardised here.
 | `aloha_agilex` | `camera1` | `top` |
 | `aloha_agilex` | `camera2` | `wrist_left` |
 | `aloha_agilex` | `camera3` | `wrist_right` |
-| `franka_panda` | `agentview` | `front` |
-| `panda_mobile` | `agentview_left` | `front_left` |
-| `panda_mobile` | `agentview_right` | `front_right` |
+| `so100_follower` | `front` | `top` |
+| `so101_follower` | `front` | `top` |
+| `franka_panda` | `agentview` | `top` |
+| `panda_mobile` | `agentview_left` | `shoulder_left` |
+| `panda_mobile` | `agentview_right` | `shoulder_right` |
 | `widowx` | `overhead` | `top` |
 | `sawyer` | `corner` | `front` |
 | `pusht_2d` | `topdown` | `top` |
@@ -72,7 +88,8 @@ Only the `name` field is standardised here.
 | `openarm` | `right_wrist` | `wrist_right` |
 
 Already-canonical names (no change): `wrist` (so100, so101, franka_panda wrist),
-`front` (so100, so101), `top` (aloha_bimanual), `head` (gr1, google_robot).
+`front` (sawyer / MetaWorld corner view), `top` (aloha_bimanual), `head` (gr1,
+google_robot).
 
 ### Scene `cameras` lists
 

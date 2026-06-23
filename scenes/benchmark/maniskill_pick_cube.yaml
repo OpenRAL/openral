@@ -10,7 +10,7 @@ scene:
   backend: mujoco            # SAPIEN under the hood; mujoco enum slot reused
   observation_height: 256
   observation_width: 256
-  cameras: ["front", "wrist"]
+  cameras: ["top", "wrist"]
   backend_options:
     control_mode: "pd_joint_pos"   # 8-D (7 arm joints + 1 gripper) — matches
                                    # smolvla-maniskill-franka action_contract.dim

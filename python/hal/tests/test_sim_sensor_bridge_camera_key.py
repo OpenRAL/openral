@@ -15,16 +15,16 @@ from openral_hal.sim_sensor_bridge import _frame_for_camera, _obs_key_for_sensor
 def test_franka_sensors_map_to_vla_feature_key_suffix() -> None:
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
     by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    assert _obs_key_for_sensor(by_name["front"]) == "camera1"
+    assert _obs_key_for_sensor(by_name["top"]) == "camera1"
     assert _obs_key_for_sensor(by_name["wrist"]) == "camera2"
 
 
 def test_so101_sensors_map_name_to_vla_slot() -> None:
-    # so101's sensor names (front / wrist) differ from their VLA slots
+    # so101's sensor names (top / wrist) differ from their VLA slots
     # (camera1 / camera2) — the mismatch that hid issue #88's frame lookup.
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    assert _obs_key_for_sensor(by_name["front"]) == "camera1"
+    assert _obs_key_for_sensor(by_name["top"]) == "camera1"
     assert _obs_key_for_sensor(by_name["wrist"]) == "camera2"
 
 

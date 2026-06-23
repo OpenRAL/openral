@@ -73,8 +73,8 @@ image_preprocessing:
   flip_180: false
   flip_vertical: true
   aliases:
-    front_left: "robot0_agentview_left_image"
-    front_right: "robot0_agentview_right_image"
+    shoulder_left: "robot0_agentview_left_image"
+    shoulder_right: "robot0_agentview_right_image"
     wrist: "robot0_eye_in_hand_image"
 state_contract:
   layout: "human300_16d"

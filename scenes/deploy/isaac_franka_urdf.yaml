@@ -29,7 +29,7 @@ scene:
   backend: isaacsim
   observation_height: 256
   observation_width: 256
-  cameras: ["front"]
+  cameras: ["top"]
   backend_options:
     layout: "manifest"
     headless: true

@@ -327,10 +327,10 @@ safety:
 # the `robot0_agentview_left_image` / `robot0_agentview_right_image` /
 # `robot0_eye_in_hand_image` observation keys; the
 # openral_sim.adapters.robocasa adapter surfaces them with the canonical
-# HAL-facing names `front_left` / `front_right` / `wrist` (ADR-0069).
+# HAL-facing names `shoulder_left` / `shoulder_right` / `wrist` (ADR-0069).
 # Their `vla_feature_key` stays camera1/2/3 (checkpoint-frozen). The
 # RC365 rSkill (rldx1-ft-rc365-nf4) consumes all three; single-camera
-# rSkills (pi05, smolvla) just bind `front_left`.
+# rSkills (pi05, smolvla) just bind `shoulder_left`.
 #
 # NOTE on orientation -- these are robosuite robot-mounted cameras
 # (parent_body=mobilebase0_support in robocasa's camera_utils.py),
@@ -343,14 +343,14 @@ safety:
 # enable the MuJoCo passive viewer via the HAL's ``viewer_enabled``
 # ROS parameter (auto-on for ``openral deploy sim`` on panda_mobile).
 sensors:
-  - name: "front_left"
+  - name: "shoulder_left"
     modality: "rgb"
     # ADR-0035 cross-frame object-lift — a dedicated optical frame (NOT the
     # world origin) so the SimSensorBridge broadcasts base_link -> this frame
     # from the live MuJoCo camera pose, letting the world-state lifter project
     # the world voxel map into this camera. metadata.mjcf_camera names the
     # robosuite camera the optical-TF helper looks up.
-    frame_id: "agentview_left_optical_frame"
+    frame_id: "shoulder_left_optical_frame"
     rate_hz: 20.0
     intrinsics:
       width: 256
@@ -365,9 +365,9 @@ sensors:
     model: "robocasa_agentview_left"
     metadata:
       mjcf_camera: "robot0_agentview_left"
-  - name: "front_right"
+  - name: "shoulder_right"
     modality: "rgb"
-    frame_id: "agentview_right_optical_frame"
+    frame_id: "shoulder_right_optical_frame"
     rate_hz: 20.0
     intrinsics:
       width: 256

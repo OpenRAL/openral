@@ -9,7 +9,7 @@ scene:
   backend: mujoco
   observation_height: 128
   observation_width: 128
-  cameras: ["front_left", "front_right", "wrist"]
+  cameras: ["shoulder_left", "shoulder_right", "wrist"]
   backend_options:
     mode: prebuilt
     prebuilt_task: PickPlaceCounterToCabinet

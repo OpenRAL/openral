@@ -9,7 +9,7 @@ scene:
   backend: mujoco
   observation_height: 256
   observation_width: 256
-  cameras: ["front_left", "front_right", "wrist"]
+  cameras: ["shoulder_left", "shoulder_right", "wrist"]
   backend_options:
     # NavigateKitchen is one of RoboCasa's prebuilt atomic tasks. The scene
     # id resolves the env name, but RoboCasaBackendOptions still requires
