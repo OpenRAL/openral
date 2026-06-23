@@ -8,7 +8,8 @@ The full ``predict_action`` chunk path is exercised live in
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -17,7 +18,10 @@ from openral_sim.policies.openvla import (
     _as_action_chunk,
     _decode_prompt,
     _extra_bool,
+    _install_legacy_openvla_model_compat,
+    _install_prismatic_oft_compat,
     _install_tokenization_compat,
+    _legacy_openvla_timm_version_guard,
     _postprocess_action_chunk,
     _unnormalize_action,
 )
@@ -126,3 +130,89 @@ def test_tokenization_compat_installs_missing_remote_code_imports() -> None:
 
     for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
         assert getattr(tokenization_utils, name) is getattr(tokenization_base, name)
+
+
+def test_tokenization_compat_patches_importable_submodule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokenization_utils = ModuleType("transformers.tokenization_utils")
+    tokenization_base = ModuleType("transformers.tokenization_utils_base")
+    for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
+        setattr(tokenization_base, name, object())
+    monkeypatch.setitem(sys.modules, "transformers.tokenization_utils", tokenization_utils)
+    monkeypatch.setitem(sys.modules, "transformers.tokenization_utils_base", tokenization_base)
+
+    _install_tokenization_compat(SimpleNamespace())
+
+    for name in ("PaddingStrategy", "PreTokenizedInput", "TextInput", "TruncationStrategy"):
+        assert getattr(tokenization_utils, name) is getattr(tokenization_base, name)
+
+
+def test_prismatic_oft_compat_installs_constants_and_masks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch
+    from openral_sim.policies import openvla
+
+    for name in (
+        "prismatic",
+        "prismatic.training",
+        "prismatic.training.train_utils",
+        "prismatic.vla",
+        "prismatic.vla.constants",
+    ):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    real_find_spec = openvla.importlib.util.find_spec
+    monkeypatch.setattr(
+        openvla.importlib.util,
+        "find_spec",
+        lambda name: None if name == "prismatic" else real_find_spec(name),
+    )
+
+    _install_prismatic_oft_compat()
+
+    from prismatic.training.train_utils import get_current_action_mask, get_next_actions_mask
+    from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK, NormalizationType
+
+    assert ACTION_DIM == 7
+    assert NUM_ACTIONS_CHUNK == 8
+    assert NormalizationType.BOUNDS_Q99.value == "bounds_q99"
+    token_ids = torch.tensor([[31744, 31745, -100, 31746, 31747]])
+    np.testing.assert_array_equal(
+        get_current_action_mask(token_ids).cpu().numpy(),
+        np.array([[True, True, False, True, True]]),
+    )
+    np.testing.assert_array_equal(
+        get_next_actions_mask(token_ids).cpu().numpy(),
+        np.array([[False, False, False, False, False]]),
+    )
+
+
+def test_legacy_openvla_timm_version_guard_restores_modern_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timm = SimpleNamespace(__version__="1.0.27")
+    monkeypatch.setitem(sys.modules, "timm", timm)
+
+    with _legacy_openvla_timm_version_guard():
+        assert timm.__version__ == "0.9.16"
+
+    assert timm.__version__ == "1.0.27"
+
+
+def test_legacy_openvla_model_compat_ignores_new_tie_weights_kwargs() -> None:
+    class LegacyBase:
+        def __init__(self) -> None:
+            self.tied = False
+
+        def tie_weights(self) -> None:
+            self.tied = True
+
+    class RemoteModel(LegacyBase):
+        pass
+
+    _install_legacy_openvla_model_compat(RemoteModel)
+    model = RemoteModel()
+    model.tie_weights(recompute_mapping=False)
+
+    assert model.tied is True

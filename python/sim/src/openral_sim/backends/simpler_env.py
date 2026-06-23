@@ -32,6 +32,8 @@ envs (``GraspSingleOpenedCokeCanInScene``, ``MoveNearGoogleBakedTexInScene``,
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -75,6 +77,19 @@ _DEPLOY_NOOP_SUFFIX = "/_hal_deploy_noop"
 # calling it directly errors on a fresh MS3 install. Override via
 # ``scene.backend_options.obs_mode`` if a future upstream relaxes it.
 _DEFAULT_OBS_MODE = "rgb+segmentation"
+
+
+@contextmanager
+def _headless_display_guard(*, view_requested: bool) -> Iterator[None]:
+    """Keep headless SAPIEN env construction away from inherited X displays."""
+    if view_requested or "DISPLAY" not in os.environ:
+        yield
+        return
+    display = os.environ.pop("DISPLAY")
+    try:
+        yield
+    finally:
+        os.environ["DISPLAY"] = display
 
 
 def _parse_task_id(task_id: str) -> str:
@@ -421,13 +436,14 @@ def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
     # back to 60 steps. MS3's ``TimeLimitWrapper`` introspects the
     # ``gym.make`` frame and prefers the caller-supplied value when
     # non-None (see ``mani_skill.utils.registration.TimeLimitWrapper``).
-    env = gym.make(
-        env_id,
-        obs_mode=obs_mode,
-        render_mode=None,
-        max_episode_steps=env_cfg.task.max_steps,
-        **env_kwargs,
-    )
+    with _headless_display_guard(view_requested=view_pending):
+        env = gym.make(
+            env_id,
+            obs_mode=obs_mode,
+            render_mode=None,
+            max_episode_steps=env_cfg.task.max_steps,
+            **env_kwargs,
+        )
     return _SimplerEnvSim(
         scene=env_cfg.scene,
         task=env_cfg.task,

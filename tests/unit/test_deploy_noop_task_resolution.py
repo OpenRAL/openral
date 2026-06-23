@@ -7,11 +7,14 @@ gym factory must map that synthetic id to a real default task before building.
 
 from __future__ import annotations
 
+import os
+
+import pytest
 from openral_core import PhysicsBackend, SceneSpec, SimEnvironment, TaskSpec, VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_sim.backends.maniskill3 import _action_dim_from_space, _task_id_for_env
 from openral_sim.backends.robotwin import _task_name_for_env as _robotwin_task_name_for_env
-from openral_sim.backends.simpler_env import _task_name_for_env
+from openral_sim.backends.simpler_env import _headless_display_guard, _task_name_for_env
 
 
 def _env(scene_id: str, task_id: str, *, deploy_task_id: str | None = None) -> SimEnvironment:
@@ -85,6 +88,17 @@ def test_simpler_env_regular_task_still_parses_task_id() -> None:
     env_cfg = _env("simpler_env", "simpler_env/widowx_carrot_on_plate")
 
     assert _task_name_for_env(env_cfg) == "widowx_carrot_on_plate"
+
+
+def test_simpler_env_headless_display_guard_restores_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DISPLAY", ":1")
+
+    with _headless_display_guard(view_requested=False):
+        assert "DISPLAY" not in os.environ
+
+    assert os.environ["DISPLAY"] == ":1"
 
 
 def test_sapien_action_dim_uses_single_env_action_width() -> None:
