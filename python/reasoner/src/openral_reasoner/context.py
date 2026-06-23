@@ -34,9 +34,12 @@ __all__ = [
     "DEFAULT_BUFFER_SIZE",
     "DEFAULT_PROMPT_PRIORITY",
     "ContextRenderer",
+    "ExecutionEventRecord",
     "FailureEventRecord",
     "PerceptionEventRecord",
     "PromptRecord",
+    "reflect_on_failure",
+    "reflect_on_retry_cap",
     "render_robot_self_model",
 ]
 
@@ -107,6 +110,73 @@ class PromptRecord:
     metadata_json: str
     stamp_ns: int
     priority: int = DEFAULT_PROMPT_PRIORITY
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionEventRecord:
+    """One entry in the reasoner's rolling **execution-feedback** buffer.
+
+    ADR-0071 Decision 2.2 (Inner Monologue): a typed one-line outcome appended
+    after every dispatched skill — on *success as well as failure*, so the LLM
+    reasons on what actually happened (closed loop) instead of only seeing
+    failures. On failure it also carries a :attr:`reflection` strategy hint
+    (Decision 2.3, Reflexion).
+    """
+
+    rskill_id: str
+    outcome: str  # "ok" | "failed"
+    summary: str  # short NL outcome ("trace=abc12345", "object not in gripper")
+    reflection: str | None  # Decision 2.3 strategy hint (failures only)
+    stamp_ns: int
+
+
+def reflect_on_failure(outcome_state: str, detail: str) -> str:
+    """One-line strategy hint from a terminal skill outcome (ADR-0071 §2.3).
+
+    Reflexion-style: convert a raw failure into a *next-step* hint so the
+    replanning ladder advances instead of blindly retrying. Deterministic — no
+    LLM call.
+
+    Args:
+        outcome_state: The terminal state — ``"aborted"`` / ``"canceled"`` /
+            ``"failed"`` / ``"error"``.
+        detail: Free-text failure reason (matched for ``timeout`` / ``deadline``).
+
+    Example:
+        >>> "infeasible" in reflect_on_failure("aborted", "joint limit")
+        True
+    """
+    state = outcome_state.lower()
+    if "timeout" in detail.lower() or "deadline" in detail.lower():
+        return (
+            "the skill timed out — it may be stuck; try a shorter-horizon step "
+            "or a different skill."
+        )
+    if state == "aborted":
+        return (
+            "the controller aborted mid-execution — the action is likely infeasible from "
+            "here; reposition or substitute a different skill rather than retrying."
+        )
+    if state == "canceled":
+        return (
+            "the action was canceled — re-check the goal and preconditions before re-dispatching."
+        )
+    return (
+        "the skill failed — don't repeat the same call; try a different skill "
+        "or replan the subgoal."
+    )
+
+
+def reflect_on_retry_cap(tool: str, cap: int) -> str:
+    """Strategy hint when the per-kind retry ladder is exhausted (ADR-0071 §2.3).
+
+    Upgrades the bare retry counter into an explicit "stop repeating, change
+    approach" reflection the next tick can act on.
+    """
+    return (
+        f"'{tool}' was selected {cap}+ ticks in a row with no progress — the retry ladder "
+        "is exhausted; substitute a different skill, adjust parameters, or replan the goal."
+    )
 
 
 def render_robot_self_model(description: RobotDescription) -> str:
@@ -216,6 +286,7 @@ class ContextRenderer:
         self._buffer_size = buffer_size
         self._robot_model = robot_model
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
+        self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
         # Prompt buffer is a list (not a deque) because we order it by
         # priority on insert (ADR-0018 §3.F10 — human-source prompts
@@ -245,6 +316,15 @@ class ContextRenderer:
     def append_failure(self, record: FailureEventRecord) -> None:
         """Push a failure event onto the rolling buffer."""
         self._failures.append(record)
+        self._seq += 1
+
+    def append_execution(self, record: ExecutionEventRecord) -> None:
+        """Push a skill execution outcome onto the rolling buffer (ADR-0071 §2.2).
+
+        A completed skill is a meaningful event, so this bumps :attr:`seq` —
+        the success/failure feedback should wake an otherwise-idle heartbeat.
+        """
+        self._executions.append(record)
         self._seq += 1
 
     def append_perception(self, record: PerceptionEventRecord) -> None:
@@ -313,6 +393,9 @@ class ContextRenderer:
         sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
+            "",
+            "## EXECUTION",
+            self._render_executions(),
             "",
             "## FAILURES",
             self._render_failures(),
@@ -384,6 +467,22 @@ class ContextRenderer:
             )
         return "\n".join(lines)
 
+    def _render_executions(self) -> str:
+        """Render the execution-feedback buffer; one line per outcome, oldest first.
+
+        ``[ok] skill=<id>: <summary>`` for successes; failures append the
+        Reflexion strategy hint: ``[failed] skill=<id>: <summary> — reflect: <hint>``.
+        """
+        if not self._executions:
+            return "(none)"
+        lines: list[str] = []
+        for rec in self._executions:
+            line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
+            if rec.reflection:
+                line += f" — reflect: {rec.reflection}"
+            lines.append(line)
+        return "\n".join(lines)
+
     def _render_perception(self) -> str:
         """Render the perception buffer; one line per event, oldest first."""
         if not self._perception:
@@ -402,6 +501,11 @@ class ContextRenderer:
     def failures(self) -> tuple[FailureEventRecord, ...]:
         """Return a snapshot of the failure buffer (oldest first)."""
         return tuple(self._failures)
+
+    @property
+    def executions(self) -> tuple[ExecutionEventRecord, ...]:
+        """Return a snapshot of the execution-feedback buffer (oldest first)."""
+        return tuple(self._executions)
 
     @property
     def perception_events(self) -> tuple[PerceptionEventRecord, ...]:
