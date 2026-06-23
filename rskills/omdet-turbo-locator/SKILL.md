@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s1
   kind: detector
+  embodiment_tags: [any]
   actions: [detect]
   objects: [open-vocabulary queried object]
   scenes: [tabletop, kitchen, indoor, household, office]
@@ -42,6 +43,7 @@ An OpenRAL **object detector** (`role: s1`, `kind: detector`). OmDet-Turbo (Swin
 - **Verbs:** detect
 - **Objects:** open-vocabulary queried object
 - **Scenes:** tabletop · kitchen · indoor · household · office
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

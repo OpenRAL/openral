@@ -38,7 +38,8 @@ upstream model. Its provenance is [ADR-0071](../../docs/adr/0071-reasoner-playbo
 
 ## Supported robots
 
-Embodiment-agnostic (`embodiment_tags: []`). Gated by `capabilities_required`
+Embodiment-agnostic — declares the explicit wildcard `embodiment_tags: ["any"]`
+(never an empty list). Gated by `capabilities_required`
 (`has_vision: true` — a real `RobotCapabilities` flag): the loader filters it out
 on robots without a camera. Navigation / container-opening are gated at runtime by
 the composed tools, not by this playbook's flags.

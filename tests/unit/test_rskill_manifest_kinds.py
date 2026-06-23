@@ -128,17 +128,27 @@ def test_non_perception_kind_requires_embodiment_tag() -> None:
         RSkillManifest(**_ros_action_kwargs(embodiment_tags=[]))
 
 
-def test_perception_kinds_allow_empty_embodiment_tags() -> None:
-    """Detector / vlm rSkills are embodiment-agnostic — empty tags validate.
+def test_perception_kinds_use_any_wildcard() -> None:
+    """Detector / vlm rSkills are embodiment-agnostic — they declare the explicit
+    ``["any"]`` wildcard (ADR-0071), never an empty list.
 
     Uses the real in-tree perception manifests (no synthetic placeholders,
-    CLAUDE.md §1.11): they ship ``embodiment_tags: []`` and must load.
+    CLAUDE.md §1.11): they ship ``embodiment_tags: ["any"]`` and must load.
     """
     repo = pathlib.Path(__file__).resolve().parents[2]
     for name in ("rtdetr-coco-r18", "qwen35-4b-nf4"):
         m = RSkillManifest.from_yaml(str(repo / "rskills" / name / "rskill.yaml"))
         assert m.kind in {"detector", "vlm"}
-        assert list(m.embodiment_tags) == []
+        assert list(m.embodiment_tags) == ["any"]
+
+
+def test_empty_embodiment_tags_rejected_for_all_kinds() -> None:
+    """An empty ``embodiment_tags`` is rejected for every kind (ADR-0071) —
+    agnosticism is declared with ``["any"]``, not derived from emptiness.
+    """
+    for kwargs in (_vla_kwargs, _ros_action_kwargs):
+        with pytest.raises(ValidationError, match="embodiment_tags must be non-empty"):
+            RSkillManifest(**kwargs(embodiment_tags=[]))
 
 
 # ── kind == "ros_action" ────────────────────────────────────────────────────

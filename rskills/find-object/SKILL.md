@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s2
   kind: playbook
+  embodiment_tags: [any]
   actions: [plan]
   objects: [open-vocabulary object]
   scenes: [kitchen, indoor]
@@ -36,6 +37,7 @@ An OpenRAL **decision-procedure playbook (weightless)** (`role: s2`, `kind: play
 - **Verbs:** plan
 - **Objects:** open-vocabulary object
 - **Scenes:** kitchen · indoor
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

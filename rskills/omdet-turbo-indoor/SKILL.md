@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s1
   kind: detector
+  embodiment_tags: [any]
   actions: [detect]
   objects: ['kitchenware (cup, mug, bottle, bowl, plate, pot, pan, kettle, utensils)', 'food
     (fruit, vegetables, bread, packaged food)', 'appliances (fridge, microwave, oven,
@@ -51,6 +52,7 @@ An OpenRAL **object detector** (`role: s1`, `kind: detector`). OmDet-Turbo (Swin
 - **Verbs:** detect
 - **Objects:** kitchenware (cup, mug, bottle, bowl, plate, pot, pan, kettle, utensils) · food (fruit, vegetables, bread, packaged food) · appliances (fridge, microwave, oven, toaster, kettle, TV) · electronics (laptop, monitor, keyboard, phone, remote, charger, cables) · furniture (chair, sofa, table, desk, bed, shelf, cabinet, drawer) · bathroom items (toilet, sink, towel, soap, toothbrush, mirror) · office and stationery (book, pen, scissors, stapler, folder, notebook) · cleaning and laundry (broom, mop, bucket, sponge, spray bottle, hamper) · containers and personal items (box, basket, bag, backpack, keys, glasses) · tools and hardware (hammer, screwdriver, drill, switch, outlet, door handle) · clothing and wearables (shoe, hat, glove, jacket) · toys (teddy bear, doll, ball, blocks)
 - **Scenes:** tabletop · kitchen · indoor · household · office · bathroom
+- **Embodiments:** any
 
 ## Why this is discovery-only
 
