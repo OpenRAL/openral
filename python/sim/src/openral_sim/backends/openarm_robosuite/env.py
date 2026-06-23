@@ -70,16 +70,23 @@ _GRIPPER_ENCODER_DEADBAND = 0.05
 #   body -Z  → world +X (approach axis, toward workspace)
 # Camera default look direction in MuJoCo is body -Z.
 #
-# pos: 18 cm in body +X ("above" the wrist in task space) so the camera
-# clears the gripper shell; no lateral or approach offset keeps it
-# symmetrically centred on the EEF axis.
+# Both left and right EEF bodies share identical world-frame orientation
+# (the bimanual kinematics are Y-axis-mirrored, so at reset pose and
+# throughout symmetric motions both EEFs have the same body frame).
+# Using the same euler for both cameras gives equivalent forward-down
+# views from each gripper's perspective.
 #
-# euler: 35° rotation around body Y tilts the look direction from purely
-# along the approach axis toward slightly downward in task space — this
-# keeps the gripper tip and the target object in frame during a downward
-# pick motion.
-_WRIST_CAM_LOCAL_POS = np.asarray([0.18, 0.0, 0.0], dtype=np.float64)
-_WRIST_CAM_LOCAL_EULER_XYZ = np.asarray([0.0, 0.611, 0.0], dtype=np.float64)  # 35°
+# pos: 10 cm in body +X places the camera above the wrist clear of the
+# gripper shell; no lateral or approach offset keeps it centred on the
+# EEF axis.
+#
+# euler (XYZ): derived from the upstream OpenArm MJCF camera_wrist_left
+# definition.  The -1.5708 Z-rotation is a frame correction that aligns
+# image-up with world +Z (without it the image appears rotated 90°).
+# The 0.90 Y-rotation (≈ 52°) tilts the look direction downward so the
+# gripper tip and task objects stay in frame during a pick motion.
+_WRIST_CAM_LOCAL_POS = np.asarray([0.10, 0.0, 0.0], dtype=np.float64)
+_WRIST_CAM_LOCAL_EULER_XYZ = np.asarray([-0.366519, 0.90, -1.5708], dtype=np.float64)
 _WRIST_CAMERA_FOVY = 90.0
 
 
@@ -656,15 +663,19 @@ class _OpenArmTabletopRollout:
     def _update_dynamic_wrist_camera(self, mujoco: Any, cam_name: str) -> None:
         """Fix the wrist camera to be properly body-parented to the EEF link.
 
-        The upstream OpenArm MJCF positions the wrist cameras inside the
-        gripper shell looking back at the fingers (original euler=-1.5708 on Z
-        produces a sideways view that renders mostly gripper geometry). This
-        function overrides position and orientation **in the EEF body-local
-        frame** using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_EULER_XYZ``
-        so the camera stays rigidly attached to the wrist throughout a
-        trajectory, rather than floating at a world-space offset (the old
-        ``cam_bodyid = 0`` approach). Called once per render step so the
-        camera tracks the live EEF pose.
+        The upstream OpenArm MJCF places the wrist cameras inside the gripper
+        shell at fingertip level with only a -90° Z-rotation, which renders
+        mostly gripper geometry from an uninformative angle. This function
+        overrides position and orientation **in the EEF body-local frame**
+        using ``_WRIST_CAM_LOCAL_POS`` / ``_WRIST_CAM_LOCAL_EULER_XYZ`` so
+        the camera sits 10 cm above the wrist and looks forward-and-down at
+        the workspace. The camera stays rigidly attached to the EEF body
+        rather than floating at a world-space offset. Called once per render
+        step so the camera tracks the live EEF pose.
+
+        Both left and right cameras use the same euler because the bimanual
+        EEF bodies maintain identical world-frame orientations throughout
+        symmetric motions (Y-mirrored kinematics → same local frame).
         """
         side = cam_name.split("_", 1)[1]  # "wrist_left" → "left"
         body_name = f"openarm_{side}_ee_base_link"
@@ -677,11 +688,7 @@ class _OpenArmTabletopRollout:
             )
         # Keep the camera body-parented (follows the EEF through the trajectory).
         self._model.cam_bodyid[cam_id] = body_id
-        # Local position in EEF frame — 18 cm along body +X clears the gripper shell.
         self._model.cam_pos[cam_id] = _WRIST_CAM_LOCAL_POS.copy()
-        # Local orientation: 35° tilt around body Y tilts the look direction from
-        # purely along the approach axis (body -Z) toward slightly downward, so
-        # the gripper tip and target object stay in frame during picking.
         quat = np.zeros(4, dtype=np.float64)
         mujoco.mju_euler2Quat(quat, _WRIST_CAM_LOCAL_EULER_XYZ, "XYZ")
         self._model.cam_quat[cam_id] = quat
