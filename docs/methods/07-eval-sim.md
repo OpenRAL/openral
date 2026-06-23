@@ -103,10 +103,10 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 _Shared 3-panel rollout-debug MP4 helper (was `examples/_video.py`)._
 
 - `save_episode_mp4(result: EpisodeResult, path: Path, *, title: str = "") -> Path` — Render `(policy input grid | joint plot)` for one episode, falling back to the rollout/world stream only when the adapter recorded no input frames. Re-exported from `openral_sim`. (L62)
-- `_stack_padded_states(states) -> NDArray[np.float32]` — Pad ragged joint-position arrays for plotting. (L165)
-- `_resize_sequence(frames, target) -> list[NDArray[np.uint8]]` (L180)
-- `_resize_frame(frame, target) -> NDArray[np.uint8]` (L218)
-- `class _JointPlotRenderer` — Reusable matplotlib canvas rasteriser. (L238)
+- `_stack_padded_states(states) -> NDArray[np.float32]` — Pad ragged joint-position arrays for plotting. (L167)
+- `_resize_sequence(frames, target) -> list[NDArray[np.uint8]]` (L182)
+- `_resize_frame(frame, target) -> NDArray[np.uint8]` (L220)
+- `class _JointPlotRenderer` — Reusable matplotlib canvas rasteriser. (L240)
   - `__init__`, `render_at_step`, `_snapshot`, `__del__`
 
 ### `python/sim/src/openral_sim/_website_video.py`

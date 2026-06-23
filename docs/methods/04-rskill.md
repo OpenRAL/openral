@@ -81,18 +81,18 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
   - `check_runtime(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.runtime` ∈ `gpu_supported_runtimes`; skipped when the legacy capability field is missing or empty (the GPU support fields moved to `ComputeSpec`, so missing means "unknown" for now). (L454)
   - `check_quantization_dtype(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.quantization.dtype` ∈ `gpu_supported_dtypes`; skipped when the legacy capability field is missing or empty. (L483)
   - `check_capabilities(manifest, robot_capabilities) -> None` [@staticmethod] — Composition of the four narrower checks; raises on first failure. (L511)
-  - `_check_license(manifest, *, commercial_use) -> None` [@staticmethod] — Enforce license guards (CLAUDE §7.4, §12). (L706)
-  - `_validate_eval_jsons(skill_dir) -> None` [@staticmethod] — Validate every `<skill_dir>/eval/*.json` against `RSkillEvalResult` (CLAUDE §6.4). (L807)
-  - `_register(entry, registry_path) -> None` [@staticmethod] (L833)
-  - `__repr__() -> str` (L857)
-- `resolve_rskill_local_dir(uri) -> Path | None` — Return the absolute on-disk directory of an in-tree rSkill referenced by a bare skill ref (bare name, `rskills/<name>`, or Hub repo id), or `None` for Hub-only refs with no in-tree shim. Used by `openral benchmark run` to write `<skill_dir>/eval/<id>.json` and update `<skill_dir>/rskill.yaml` regardless of cwd or which ref form the user typed. (L869)
-- `_candidate_local_paths(uri) -> list[Path]` — Enumerate on-disk candidates (cwd-relative + repo-root anchored) for a skill reference. Also unwraps HF Hub form `<org>/rskill-<name>` to in-tree `rskills/<name>`. (L890)
-- `discover_intree_rskills() -> list[tuple[str, RSkillManifest]]` — Walk `<repo>/rskills/*/rskill.yaml` and return `(name, manifest)` pairs. Malformed entries are skipped with a stderr warning. (L925)
-- `_find_repo_root_from(start) -> Path | None` — Walk up from `start` for the first ancestor containing both `pyproject.toml` and `rskills/`. (L956)
-- `_validate_skill_ref(raw) -> str` — Validate and return a bare rSkill reference unchanged. Accepts bare names, `rskills/<name>` paths, or HF repo ids; rejects inputs carrying a known URI scheme (`hf://`, `local://`, `file://`, `http(s)://`). Private — used internally by the CLI and loader. (L969)
-- `load_rskill_manifest(uri) -> RSkillManifest` — Resolve a bare skill reference to a parsed manifest. Tries local path → in-tree mapping → HF Hub download. In-process memoised. (L1009)
-- `resolve_rskill_to_hf(uri) -> str` — Resolve a skill reference to either the underlying HF Hub repo id (`hf://...`) or an absolute local path (`local://...`); both forms are accepted by `from_pretrained` helpers. (L1081)
-- `resolve_rskill_to_hf_with_revision(uri) -> tuple[str, str | None]` — Like `resolve_rskill_to_hf` but splits the optional `@<branch-or-sha>` pin off an `hf://` `weights_uri` into a separate `revision` so loaders can pass it to `from_pretrained`/`snapshot_download` instead of gluing it onto the repo id where HF drops it (security audit 2026-06, H4). (L1115)
+  - `_check_license(manifest, *, commercial_use) -> None` [@staticmethod] — Enforce license guards (CLAUDE §7.4, §12). (L709)
+  - `_validate_eval_jsons(skill_dir) -> None` [@staticmethod] — Validate every `<skill_dir>/eval/*.json` against `RSkillEvalResult` (CLAUDE §6.4). (L810)
+  - `_register(entry, registry_path) -> None` [@staticmethod] (L836)
+  - `__repr__() -> str` (L860)
+- `resolve_rskill_local_dir(uri) -> Path | None` — Return the absolute on-disk directory of an in-tree rSkill referenced by a bare skill ref (bare name, `rskills/<name>`, or Hub repo id), or `None` for Hub-only refs with no in-tree shim. Used by `openral benchmark run` to write `<skill_dir>/eval/<id>.json` and update `<skill_dir>/rskill.yaml` regardless of cwd or which ref form the user typed. (L872)
+- `_candidate_local_paths(uri) -> list[Path]` — Enumerate on-disk candidates (cwd-relative + repo-root anchored) for a skill reference. Also unwraps HF Hub form `<org>/rskill-<name>` to in-tree `rskills/<name>`. (L893)
+- `discover_intree_rskills() -> list[tuple[str, RSkillManifest]]` — Walk `<repo>/rskills/*/rskill.yaml` and return `(name, manifest)` pairs. Malformed entries are skipped with a stderr warning. (L928)
+- `_find_repo_root_from(start) -> Path | None` — Walk up from `start` for the first ancestor containing both `pyproject.toml` and `rskills/`. (L959)
+- `_validate_skill_ref(raw) -> str` — Validate and return a bare rSkill reference unchanged. Accepts bare names, `rskills/<name>` paths, or HF repo ids; rejects inputs carrying a known URI scheme (`hf://`, `local://`, `file://`, `http(s)://`). Private — used internally by the CLI and loader. (L972)
+- `load_rskill_manifest(uri) -> RSkillManifest` — Resolve a bare skill reference to a parsed manifest. Tries local path → in-tree mapping → HF Hub download. In-process memoised. (L1012)
+- `resolve_rskill_to_hf(uri) -> str` — Resolve a skill reference to either the underlying HF Hub repo id (`hf://...`) or an absolute local path (`local://...`); both forms are accepted by `from_pretrained` helpers. (L1084)
+- `resolve_rskill_to_hf_with_revision(uri) -> tuple[str, str | None]` — Like `resolve_rskill_to_hf` but splits the optional `@<branch-or-sha>` pin off an `hf://` `weights_uri` into a separate `revision` so loaders can pass it to `from_pretrained`/`snapshot_download` instead of gluing it onto the repo id where HF drops it (security audit 2026-06, H4). (L1118)
 
 ### `python/rskill/src/openral_rskill/gpu_passthrough.py`
 _GpuPassthroughSkill — minimal rSkill whose per-step image processing provably runs on GPU (M8 PR I/10)._
@@ -137,9 +137,9 @@ _ROS-wrapping rSkill adapter — bridges arbitrary ROS 2 action / service server
 - `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client). Two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()` and raises `ROSRskillGoalSatisfied` after the last; result-only mode awaits the wrapped result and raises `ROSRskillGoalSatisfied` on success without emitting any `Action`. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L301)
   - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L334)
   - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L405)
-  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L493)
-  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L496)
-  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L513)
+  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L495)
+  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L498)
+  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L515)
 
 ### `python/rskill/src/openral_rskill/look_at_rskill.py`
 _ADR-0044 Phase 3 — camera-aiming MoveGroup skill. Selected by `make_default_skill_resolver` when `manifest.ros_integration.goal_builder == "look_at"` (new `RosIntegration.goal_builder` field; `RSkillAction` gains `LOOK = "look"`)._
