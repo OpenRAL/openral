@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://www.physicalintelligence.company/blog/pi05",
+    "arxiv": null,
+    "model_variant": "pi05",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/openarm_tabletop.yaml --rskill rskills/pi05-openarm-vision-nf4",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "openarm_tabletop_pnp",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=500",
+    "robot": "openarm",
+    "simulator": "openarm_tabletop_pnp"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 500,
+    "vla_id": "pi05",
+    "weights_uri": "rskills/pi05-openarm-vision-nf4"
+  },
+  "results": {
+    "openarm/pnp_cube_to_drawer_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 26.707751618043403
+  },
+  "baselines": {},
+  "trace_id": null
+}
