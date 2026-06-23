@@ -29,7 +29,7 @@ from openral_core import (
 )
 from openral_runner import InferenceRunner
 from openral_sim import SimRunner
-from openral_sim.sim_runner import _resolve_step_instruction
+from openral_sim.sim_runner import _count_policy_input_cameras, _resolve_step_instruction
 
 
 def _mock_env(
@@ -330,3 +330,24 @@ def test_non_string_obs_task_falls_through() -> None:
         task_instruction="noop",
     )
     assert instr == "noop"
+
+
+def test_count_policy_input_cameras_prefers_resolved_adapter_keys() -> None:
+    runner = SimRunner(_mock_env())
+    runner.activate()
+    try:
+        object.__setattr__(runner._policy, "_camera_keys", ("overhead", "front", "wrist"))
+        assert _count_policy_input_cameras(runner._policy, runner._env_cfg) == 3
+    finally:
+        runner.deactivate()
+
+
+def test_count_policy_input_cameras_falls_back_to_vla_extra() -> None:
+    env_cfg = _mock_env()
+    env_cfg.vla.extra["camera_keys"] = ["oak_top", "wrist"]
+    runner = SimRunner(env_cfg)
+    runner.activate()
+    try:
+        assert _count_policy_input_cameras(runner._policy, runner._env_cfg) == 2
+    finally:
+        runner.deactivate()

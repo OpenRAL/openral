@@ -207,3 +207,4 @@ onboard_compute:
   command_topic: "/sawyer_arm_controller/joint_trajectory"
   joint_state_topic: "/robot/joint_states"
   estop_topic: "/robot/set_super_stop"
+schema_version: '0.2'

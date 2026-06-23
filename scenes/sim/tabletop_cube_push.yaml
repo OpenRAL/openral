@@ -38,10 +38,9 @@ scene:
     top_camera_pos: [0.0, -0.30, 0.90]
     front_camera_pos: [0.0, -1.05, 0.45]
 
-    # Wrist camera parented to the SO-101 end-effector body. This body name is
-    # robot-specific (so101/so100 → "gripper", Franka → "hand"); drop this key
-    # to run with only the two world cameras (works for any robot).
-    wrist_camera_mount_body: "gripper"
+    # Wrist camera mount is inferred from the robot manifest's
+    # sensors[].sim_placement.parent_body for the logical `wrist` camera, so the
+    # same YAML works for both SO-101 and SO-100.
     wrist_camera_pos_local: [0.03, -0.02, -0.06]
     wrist_camera_fovy: 75.0
 

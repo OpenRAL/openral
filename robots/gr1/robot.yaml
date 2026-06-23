@@ -233,3 +233,4 @@ sensors:
 sdk_kind: "open"
 # ADR-0031 — no HAL: gr1 is scene-only (benchmark/sim run), so hal.sim and
 # hal.real both default to null. build_hal raises ROSCapabilityMismatch if called.
+schema_version: '0.2'

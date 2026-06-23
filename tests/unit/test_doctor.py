@@ -12,6 +12,7 @@ import pytest
 from openral_cli.main import (
     CheckResult,
     _check_colcon,
+    _check_compute_spec,
     _check_gpu,
     _check_just,
     _check_openral_core,
@@ -151,11 +152,8 @@ def test_check_gpu_nvidia_ok() -> None:
         driver_version="550.78",
         cuda_compute_capability=(8, 9),
     )
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(nvidia=[nv], backend="nvml"),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    results = _check_gpu(probe, [])
     assert len(results) == 1
     assert results[0].status == "ok"
     assert "RTX 4090" in results[0].details
@@ -185,11 +183,8 @@ def test_check_gpu_multi() -> None:
             cuda_compute_capability=(8, 6),
         ),
     ]
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(nvidia=cards, backend="nvml"),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(nvidia=cards, backend="nvml")
+    results = _check_gpu(probe, [])
     assert len(results) == 2
     assert results[0].check == "GPU 0"
     assert results[1].check == "GPU 1"
@@ -197,34 +192,25 @@ def test_check_gpu_multi() -> None:
 
 def test_check_gpu_nvsmi_query_fails() -> None:
     # Probe failed → empty result with a warning; doctor surfaces "absent".
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub()
+    results = _check_gpu(probe, ["nvml unavailable"])
     assert results[0].status == "absent"
 
 
 def test_check_gpu_absent_non_mac() -> None:
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub()
+    results = _check_gpu(probe, [])
     assert results[0].status == "absent"
 
 
 def test_check_gpu_apple_silicon() -> None:
     from openral_detect.report import AppleSiliconInfo
 
-    with patch(
-        "openral_detect.probes.probe_gpus",
-        return_value=_gpu_probe_stub(
-            apple_silicon=AppleSiliconInfo(chip="Apple M3 Max", gpu_cores=40),
-            backend="system_profiler",
-        ),
-    ):
-        results = _check_gpu()
+    probe = _gpu_probe_stub(
+        apple_silicon=AppleSiliconInfo(chip="Apple M3 Max", gpu_cores=40),
+        backend="system_profiler",
+    )
+    results = _check_gpu(probe, [])
     assert results[0].status == "info"
     assert "Apple Silicon" in results[0].details
 
@@ -392,7 +378,73 @@ def test_gather_checks_returns_list() -> None:
     names = [c.check for c in checks]
     assert "Python" in names
     assert "Platform" in names
-    assert "Reasoner LLM" in names
+    # ComputeSpec rows always present regardless of GPU availability (tier label varies)
+    assert any("ComputeSpec" in n and "runtimes" in n for n in names)
+    assert any("ComputeSpec" in n and "dtypes" in n for n in names)
+    assert any("ComputeSpec" in n and "cuMotion" in n for n in names)
+    assert any("ComputeSpec" in n and "NVMM" in n for n in names)
+
+
+# ── _check_compute_spec ───────────────────────────────────────────────────────
+
+
+def test_check_compute_spec_cpu_only() -> None:
+    probe = _gpu_probe_stub()
+    rows = _check_compute_spec(probe)
+    # CPU-only → "local" tier
+    checks = {r.check: r for r in rows}
+    assert "ComputeSpec (local) / runtimes" in checks
+    assert "ComputeSpec (local) / dtypes" in checks
+    cumotion = checks["ComputeSpec (local) / cuMotion"]
+    assert cumotion.status == "info"
+    assert "not supported" in cumotion.details
+
+
+def test_check_compute_spec_ampere_cuda13_qualifies_cumotion() -> None:
+    from openral_detect.report import NvidiaGpuInfo
+
+    nv = NvidiaGpuInfo(
+        index=0,
+        name="RTX 4090",
+        vram_total_mib=24576,
+        vram_free_mib=24000,
+        pci_bus_id="0000:01:00.0",
+        driver_version="550.78",
+        cuda_compute_capability=(8, 9),
+        cuda_toolkit_version="13.2",
+    )
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    rows = _check_compute_spec(probe)
+    # Discrete NVIDIA → "local" tier
+    checks = {r.check: r for r in rows}
+    assert checks["ComputeSpec (local) / cuMotion"].status == "ok"
+    assert checks["ComputeSpec (local) / cuMotion"].details == "supported"
+
+
+def test_check_compute_spec_runtimes_include_tensorrt_for_nvidia() -> None:
+    from openral_detect.report import NvidiaGpuInfo
+
+    nv = NvidiaGpuInfo(
+        index=0,
+        name="RTX 3090",
+        vram_total_mib=24576,
+        vram_free_mib=24000,
+        pci_bus_id="0000:01:00.0",
+        driver_version="550",
+        cuda_compute_capability=(8, 6),
+    )
+    probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
+    rows = _check_compute_spec(probe)
+    # Discrete NVIDIA → "local" tier
+    runtimes_row = next(r for r in rows if "runtimes" in r.check)
+    assert "tensorrt" in runtimes_row.details
+
+
+def test_check_compute_spec_nvmm_row_present() -> None:
+    probe = _gpu_probe_stub()
+    rows = _check_compute_spec(probe)
+    nvmm = next(r for r in rows if "NVMM" in r.check)
+    assert nvmm.status in ("ok", "absent")
 
 
 # ── CLI integration (typer CliRunner) ─────────────────────────────────────────

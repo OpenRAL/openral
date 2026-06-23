@@ -422,19 +422,19 @@ class _MolmoAct2Adapter:
         ``[agentview_rgb, wrist_rgb]``); ``_camera_keys`` already encodes that
         order (LIBERO ``camera1`` = agentview/front, ``camera2`` = wrist).
         """
-        from openral_sim.policies._video_capture import to_input_frame
+        from openral_sim.policies._video_capture import tile_input_frames
 
         raw = observation.get("images", {})
         images: list[NDArray[np.uint8]] = []
-        wrist_idx = len(self._camera_keys) - 1
-        for i, cam_key in enumerate(self._camera_keys):
+        preview_frames: list[NDArray[np.uint8]] = []
+        for cam_key in self._camera_keys:
             img = raw.get(cam_key)
             if img is None:
                 continue
             frame = self._orient(np.asarray(img))
-            if i == wrist_idx:
-                self._last_input_frame = to_input_frame(img, flip_180=self._flip_images_180)
+            preview_frames.append(np.ascontiguousarray(frame, dtype=np.uint8))
             images.append(np.ascontiguousarray(frame, dtype=np.uint8))
+        self._last_input_frame = tile_input_frames(preview_frames)
         if not images:
             raise ROSConfigError(
                 "MolmoAct2 adapter got no camera frames; expected observation "

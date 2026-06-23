@@ -46,6 +46,7 @@ from typing import Any
 import structlog
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSError
 from openral_core.schemas import (
+    ComputeSpec,
     RobotCapabilities,
     RobotDescription,
     RSkillEvalResult,
@@ -453,63 +454,82 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     def check_runtime(
         manifest: RSkillManifest,
         robot_capabilities: RobotCapabilities,
+        *,
+        compute: ComputeSpec | None = None,
     ) -> None:
         """Verify the manifest's runtime is in the robot's supported set.
 
-        Skipped when ``robot_capabilities.gpu_supported_runtimes`` is empty
-        (unknown — treat as "host has not been probed").
+        Reads ``gpu_supported_runtimes`` from *compute* when provided (the
+        preferred path after the ``ComputeSpec`` split); falls back to the
+        same field on *robot_capabilities* for legacy callers.  Skipped when
+        the resolved list is empty (host not yet probed — treat as unknown).
 
         Raises:
             ROSCapabilityMismatch: If the runtime is not supported.
         """
-        if (
-            robot_capabilities.gpu_supported_runtimes
-            and manifest.runtime not in robot_capabilities.gpu_supported_runtimes
-        ):
+        supported_runtimes = (
+            compute.gpu_supported_runtimes
+            if compute is not None
+            else getattr(robot_capabilities, "gpu_supported_runtimes", [])
+        )
+        if supported_runtimes and manifest.runtime not in supported_runtimes:
             raise ROSCapabilityMismatch(
                 f"rSkill '{manifest.name}' requires runtime "
                 f"'{manifest.runtime.value}', but robot only supports "
-                f"{[r.value for r in robot_capabilities.gpu_supported_runtimes]}."
+                f"{[r.value for r in supported_runtimes]}."
             )
 
     @staticmethod
     def check_quantization_dtype(
         manifest: RSkillManifest,
         robot_capabilities: RobotCapabilities,
+        *,
+        compute: ComputeSpec | None = None,
     ) -> None:
         """Verify the manifest's quantization dtype is in the robot's set.
 
-        Skipped when ``robot_capabilities.gpu_supported_dtypes`` is empty.
+        Reads ``gpu_supported_dtypes`` from *compute* when provided; falls
+        back to *robot_capabilities* for legacy callers.  Skipped when the
+        resolved list is empty.
 
         Raises:
             ROSCapabilityMismatch: If the dtype is not supported.
         """
-        if (
-            robot_capabilities.gpu_supported_dtypes
-            and manifest.quantization.dtype not in robot_capabilities.gpu_supported_dtypes
-        ):
+        supported_dtypes = (
+            compute.gpu_supported_dtypes
+            if compute is not None
+            else getattr(robot_capabilities, "gpu_supported_dtypes", [])
+        )
+        if supported_dtypes and manifest.quantization.dtype not in supported_dtypes:
             raise ROSCapabilityMismatch(
                 f"rSkill '{manifest.name}' requires quantization dtype "
                 f"'{manifest.quantization.dtype.value}', but robot only supports "
-                f"{[d.value for d in robot_capabilities.gpu_supported_dtypes]}."
+                f"{[d.value for d in supported_dtypes]}."
             )
 
     @staticmethod
     def check_capabilities(
         manifest: RSkillManifest,
         robot_capabilities: RobotCapabilities,
+        *,
+        compute: ComputeSpec | None = None,
     ) -> None:
         """Verify that the robot satisfies the rSkill's capability requirements.
 
         Composition of :meth:`check_embodiment_tags`,
         :meth:`check_capability_flags`, :meth:`check_runtime`, and
         :meth:`check_quantization_dtype` — raises on the first mismatch.
-        Callers that want a per-section verdict (e.g. ``openral rskill check
-        <rskill_id>``) should call the four narrower methods directly.
+        Pass ``compute=robot.compute_edge or robot.compute_local`` to enable
+        runtime / dtype checks against the robot's :class:`ComputeSpec`.
 
         Args:
             manifest: The rSkill manifest to check.
             robot_capabilities: The target robot's declared capabilities.
+            compute: Optional compute spec resolved from the deployment tier
+                (:attr:`RobotDescription.compute_edge` falling back to
+                :attr:`RobotDescription.compute_local`; ADR-0069).  When
+                ``None``, runtime and dtype checks are skipped if the legacy
+                capability fields are also absent.
 
         Raises:
             ROSCapabilityMismatch: If any required capability is not satisfied
@@ -522,8 +542,8 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         """
         rSkill.check_embodiment_tags(manifest, robot_capabilities)
         rSkill.check_capability_flags(manifest, robot_capabilities)
-        rSkill.check_runtime(manifest, robot_capabilities)
-        rSkill.check_quantization_dtype(manifest, robot_capabilities)
+        rSkill.check_runtime(manifest, robot_capabilities, compute=compute)
+        rSkill.check_quantization_dtype(manifest, robot_capabilities, compute=compute)
 
     @staticmethod
     def check_sensors(
@@ -591,7 +611,9 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Example:
             >>> # rSkill.check_compatibility(manifest, robot)
         """
-        rSkill.check_capabilities(manifest, robot.capabilities)
+        rSkill.check_capabilities(
+            manifest, robot.capabilities, compute=robot.compute_edge or robot.compute_local
+        )
         rSkill.check_sensors(manifest, robot.sensors)
 
     # ── Sensor-match helpers ──────────────────────────────────────────────────

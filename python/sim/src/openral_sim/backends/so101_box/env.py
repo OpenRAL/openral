@@ -121,6 +121,7 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> BoxSceneOptions
             "robot_base_xyz",
             "wrist_camera_pos_local",
             "wrist_camera_target_local",
+            "wrist_camera_up_local",
             "oak_top_camera_pos",
             "oak_top_camera_target",
             "slot_block_size",

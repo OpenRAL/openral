@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from openral_core import BenchmarkScene, RSkillEvalResult, VLASpec
     from openral_core.schemas import RSkillManifest
     from openral_detect import CompatibilityReport, RSkillCompatRow
+    from openral_detect.report import GpuProbeResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
 
@@ -487,16 +488,14 @@ def _check_colcon() -> CheckResult:
     return CheckResult("colcon", "ok" if path else "missing", path or "")
 
 
-def _check_gpu() -> list[CheckResult]:
+def _check_gpu(result: GpuProbeResult, warnings: list[str]) -> list[CheckResult]:
     """Return one row per detected GPU / SoC accelerator.
 
-    Delegates to `openral_detect.probes.probe_gpus` so the CLI
-    and the auto-provisioning flow share one enumeration code path.
+    Args:
+        result: Pre-probed :class:`~openral_detect.GpuProbeResult` (shared
+            with :func:`_check_compute_spec` so the probe runs exactly once).
+        warnings: Non-fatal probe warnings to surface when no GPU is found.
     """
-    from openral_detect.probes import probe_gpus
-
-    warnings: list[str] = []
-    result = probe_gpus(warnings=warnings)
     rows: list[CheckResult] = []
     for gpu in result.nvidia:
         rows.append(
@@ -524,6 +523,77 @@ def _check_gpu() -> list[CheckResult]:
         else:
             rows.append(CheckResult("GPU", "absent", "no accelerator detected"))
     return rows
+
+
+def _check_compute_spec(result: GpuProbeResult) -> list[CheckResult]:
+    """Build :class:`~openral_core.ComputeSpec` rows from the GPU probe.
+
+    Shares the same :class:`~openral_detect.GpuProbeResult` already obtained
+    by :func:`_check_gpu` so no second probe is issued.  The assembled
+    ``ComputeSpec`` mirrors exactly what ``openral detect`` would write into
+    ``RobotDescription.compute_edge`` / ``compute_local`` — doctor and detect
+    stay in sync (ADR-0069).
+
+    Tier labelling:
+    - Jetson SoC detected → rows prefixed ``ComputeSpec (edge)``
+    - Discrete NVIDIA / Apple Silicon / CPU-only → ``ComputeSpec (local)``
+
+    Rows emitted per tier:
+    - **runtimes** — comma-separated list of supported runtimes.
+    - **dtypes** — comma-separated list of supported quantization dtypes.
+    - **cuMotion** — ok when ``supports_cumotion()`` is True, info otherwise.
+    - **NVMM** — ok/absent for zero-copy NVMM availability.
+    """
+    import datetime
+
+    from openral_detect import build_compute_spec
+    from openral_detect.report import DetectionReport, GpuProbeResult
+
+    def _spec_rows(gpu: GpuProbeResult, tier: str) -> list[CheckResult]:
+        report = DetectionReport(
+            detected_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            gpu=gpu,
+        )
+        spec = build_compute_spec(gpu, report)
+        prefix = f"ComputeSpec ({tier})"
+        rows: list[CheckResult] = []
+
+        runtimes_str = ", ".join(r.value for r in spec.gpu_supported_runtimes) or "none"
+        rows.append(CheckResult(f"{prefix} / runtimes", "info", runtimes_str))
+
+        dtypes_str = ", ".join(d.value for d in spec.gpu_supported_dtypes) or "none"
+        rows.append(CheckResult(f"{prefix} / dtypes", "info", dtypes_str))
+
+        cumotion = spec.supports_cumotion()
+        rows.append(
+            CheckResult(
+                f"{prefix} / cuMotion",
+                "ok" if cumotion else "info",
+                "supported" if cumotion else "not supported (needs Ampere+, CUDA≥13, ≥8 GB VRAM)",
+            )
+        )
+
+        rows.append(
+            CheckResult(
+                f"{prefix} / NVMM",
+                "ok" if spec.nvmm_available else "absent",
+                "zero-copy NVMM available" if spec.nvmm_available else "not available",
+            )
+        )
+        return rows
+
+    all_rows: list[CheckResult] = []
+    if result.jetson is not None:
+        gpu_edge = GpuProbeResult(jetson=result.jetson, backend="jtop")
+        all_rows.extend(_spec_rows(gpu_edge, "edge"))
+    if result.nvidia or result.apple_silicon or result.jetson is None:
+        gpu_local = GpuProbeResult(
+            nvidia=result.nvidia,
+            apple_silicon=result.apple_silicon,
+            backend=result.backend,
+        )
+        all_rows.extend(_spec_rows(gpu_local, "local"))
+    return all_rows
 
 
 def _check_usb() -> list[CheckResult]:
@@ -693,16 +763,26 @@ def _check_reasoner_llm() -> list[CheckResult]:
 def _gather_checks() -> list[CheckResult]:
     """Run all checks and return the combined result list.
 
+    The GPU probe is issued exactly once and shared between
+    :func:`_check_gpu` (hardware rows) and :func:`_check_compute_spec`
+    (derived ``ComputeSpec`` rows) so ``openral doctor`` and
+    ``openral detect`` build the same ``ComputeSpec`` from the same data.
+
     Returns:
         List of `CheckResult` in display order.
     """
+    from openral_detect.probes import probe_gpus
+
     checks: list[CheckResult] = []
     checks.append(_check_python())
     checks.append(_check_platform())
     checks.append(_check_openral_core())
     checks.extend(_check_ros2())
     checks.append(_check_colcon())
-    checks.extend(_check_gpu())
+    gpu_warnings: list[str] = []
+    gpu_result = probe_gpus(warnings=gpu_warnings)
+    checks.extend(_check_gpu(gpu_result, gpu_warnings))
+    checks.extend(_check_compute_spec(gpu_result))
     checks.extend(_check_usb())
     checks.append(_check_just())
     checks.extend(_check_reasoner_llm())

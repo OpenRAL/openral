@@ -157,13 +157,13 @@ sensors:
     parent_frame: "gripper"
     rate_hz: 30.0
     # ADR-0065 — sim placement for the wrist camera. The rig parents it to the
-    # MJCF `gripper` body (the roll-mounted end body), pose in that body's local
-    # frame, looking along the gripper approach axis (gripper-local -X = the
-    # finger/grasp direction) so the jaw + workspace ahead stay in frame.
+    # MJCF `gripper` body (the roll-mounted end body), mounted on top of the
+    # wrist/gripper housing (+X in that local frame) and looking along the
+    # link's forward direction (+Z/-Z tuned in sim) with a slight downward pitch.
     sim_placement:
       parent_body: "gripper"
-      pos: [0.03, -0.02, -0.06]
-      target: [-0.25, -0.02, -0.06]
+      pos: [0.03, -0.03, 0.08]
+      target: [0.0, -0.03, -0.10]
     intrinsics:
       width: 256
       height: 256
@@ -271,3 +271,4 @@ allowed_collision_pairs:
   - [lower_arm, upper_arm]
   - [lower_arm, wrist]
   - [shoulder, upper_arm]
+schema_version: '0.2'

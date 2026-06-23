@@ -202,6 +202,122 @@
       "title": "CapsuleShape",
       "type": "object"
     },
+    "ComputeSpec": {
+      "description": "Compute profile for one deployment tier \u2014 runtime inference and GPU capabilities.\n\nUsed for all three deployment tiers (ADR-0069):\n\n* **Edge** \u2014 on-robot SoC (Jetson AGX Orin, NVIDIA Thor).\n* **Local** \u2014 laptop / workstation tethered to the robot or running the simulation.\n* **Cloud** \u2014 remote GPU node reachable via SSH or HTTP.\n\nAttached to :class:`RobotDescription` as ``compute_edge``, ``compute_local``,\nand ``compute_cloud`` (ADR-0069).  Consumed by ``rSkill.check_runtime`` and\n``rSkill.check_quantization_dtype`` to match ``RSkillManifest.runtime`` /\n``quantization.dtype`` against what the hardware can actually execute.\n\nAttributes:\n    compute_tops: Peak compute in INT8 TOPS (0 = unknown).\n    system_memory_gb: Total system / unified RAM in GB (0 = unknown).\n    num_gpus: Number of GPUs on this node (default 1; use > 1 for cloud\n        multi-GPU pods \u2014 total VRAM budget = ``gpu_vram_gb * num_gpus``).\n    gpu_vram_gb: VRAM of a single GPU in GB (0 when no discrete GPU).\n    cuda_compute_capability: Highest CUDA compute capability (major, minor),\n        e.g. ``(8, 9)`` for Ada Lovelace, ``(10, 0)`` for Blackwell.\n        ``None`` on non-CUDA hosts.\n    cuda_toolkit_version: ``nvcc`` version string, e.g. ``\"12.4\"``.\n        ``None`` when CUDA is absent or the version cannot be determined.\n    tensorrt_version: TensorRT runtime version string when importable.\n    gpu_supported_runtimes: Inference runtimes the hardware can execute,\n        used by ``rSkill.check_capabilities`` to match\n        ``RSkillManifest.runtime``.  Empty list = \"unknown \u2014 skip check\".\n    gpu_supported_dtypes: Quantization dtypes the accelerator supports\n        (derived from CUDA compute capability or platform).  Empty =\n        \"unknown \u2014 skip check\".\n    nvmm_available: Whether ``libnvbufsurface.so`` is present on this node\n        (Tegra L4T multimedia stack).  ``True`` enables the NVMM zero-copy\n        sensor-ingest path; probed on all tiers and returns ``False``\n        gracefully when the library is absent (ADR-0013).\n    endpoint: Remote access address for cloud / SSH nodes.\n        Format: ``ssh://user@host[:port]`` or ``https://host:port``.\n        ``None`` for edge and local nodes.\n    network_latency_ms: Measured round-trip latency to this node in ms.\n        Populated by the SSH probe; ``None`` for local/edge (no network hop).\n        Used by the reasoner dispatcher to decide whether cloud dispatch\n        fits within a skill's latency budget.\n\nExample:\n    >>> spec = ComputeSpec(\n    ...     gpu_vram_gb=24.0,\n    ...     cuda_compute_capability=(8, 9),\n    ...     cuda_toolkit_version=\"13.2\",\n    ... )\n    >>> spec.supports_cumotion()\n    True",
+      "properties": {
+        "compute_tops": {
+          "default": 0.0,
+          "title": "Compute Tops",
+          "type": "number"
+        },
+        "system_memory_gb": {
+          "default": 0.0,
+          "title": "System Memory Gb",
+          "type": "number"
+        },
+        "num_gpus": {
+          "default": 1,
+          "title": "Num Gpus",
+          "type": "integer"
+        },
+        "gpu_vram_gb": {
+          "default": 0.0,
+          "title": "Gpu Vram Gb",
+          "type": "number"
+        },
+        "cuda_compute_capability": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cuda Compute Capability"
+        },
+        "cuda_toolkit_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cuda Toolkit Version"
+        },
+        "tensorrt_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tensorrt Version"
+        },
+        "gpu_supported_runtimes": {
+          "items": {
+            "$ref": "#/$defs/RSkillRuntime"
+          },
+          "title": "Gpu Supported Runtimes",
+          "type": "array"
+        },
+        "gpu_supported_dtypes": {
+          "items": {
+            "$ref": "#/$defs/QuantizationDtype"
+          },
+          "title": "Gpu Supported Dtypes",
+          "type": "array"
+        },
+        "nvmm_available": {
+          "default": false,
+          "title": "Nvmm Available",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Endpoint"
+        },
+        "network_latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Network Latency Ms"
+        }
+      },
+      "title": "ComputeSpec",
+      "type": "object"
+    },
     "ControlMode": {
       "description": "Action space / control interface exposed by a robot or skill.",
       "enum": [
@@ -807,7 +923,7 @@
       "type": "string"
     },
     "RobotCapabilities": {
-      "description": "Capability flags used for skill compatibility checking.\n\nAttributes:\n    locomotion: Locomotion types available.\n    can_lift_kg: Maximum payload in kg.\n    has_dexterous_hands: Whether dexterous hands are present.\n    has_tactile: Whether tactile sensing is available.\n    has_force_control: Whether force/impedance control is supported.\n    has_vision: Whether camera(s) are present.\n    has_lidar: Whether LiDAR is present. Gates the 2D-lidar\n        ``slam_toolbox`` backend (ADR-0025).\n    has_vision_slam: Whether the robot should run camera-based visual\n        SLAM (cuVSLAM + nvblox) for localization/mapping, for robots\n        that lack a lidar. Gates the visual SLAM backend (ADR-0064).\n        Independent of ``has_lidar``; when both are set the lidar\n        backend wins (it does not require an AI depth model).\n    has_audio: Whether audio I/O is present.\n    bimanual: Whether the robot has two arms.\n    onboard_compute_tops: Peak onboard compute in TOPS.\n    onboard_memory_gb: Onboard RAM in GB.\n    gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).\n    cuda_compute_capability: Highest CUDA compute capability (major, minor),\n        e.g. (8, 9) for Ada Lovelace, (10, 0) for Blackwell.  ``None`` on\n        non-CUDA hosts.\n    cuda_toolkit_version: ``nvcc`` version string when present.\n    tensorrt_version: TensorRT runtime version string when importable.\n    gpu_supported_runtimes: Inference runtimes the host can execute, used\n        by ``rSkill.check_capabilities`` to match ``RSkillManifest.runtime``.\n    gpu_supported_dtypes: Quantization dtypes the host accelerator\n        supports (derived from CUDA compute capability or platform).\n    supported_control_modes: List of supported ControlMode values.\n    supported_vla_embodiments: VLA embodiment IDs this robot can run.\n    embodiment_tags: Short tags mapping to VLA heads / dataset splits.\n    nvmm_available: Whether ``libnvbufsurface.so`` is present on the host\n        (Tegra L4T multimedia stack).  ``True`` enables the NVMM\n        zero-copy sensor-ingest path on Jetson; always ``False`` on x86\n        and on stripped L4T images.  Populated by\n        :func:`openral_detect.probes.gpu._probe_nvmm_available`.\n        Added in v0.5 per ADR-0013.",
+      "description": "Physical capability flags for a robot body.\n\nDescribes what the *robot* can do (sensors, actuation, embodiment tags).\nRuntime compute / GPU properties live on :class:`ComputeSpec` and are\nattached to the :class:`RobotDescription` via its ``compute`` field.\n\nAttributes:\n    locomotion: Locomotion types available.\n    can_lift_kg: Maximum payload in kg.\n    has_dexterous_hands: Whether dexterous hands are present.\n    has_tactile: Whether tactile sensing is available.\n    has_force_control: Whether force/impedance control is supported.\n    has_vision: Whether camera(s) are present.\n    has_lidar: Whether LiDAR is present. Gates the 2D-lidar\n        ``slam_toolbox`` backend (ADR-0025).\n    has_vision_slam: Whether the robot should run camera-based visual\n        SLAM (cuVSLAM + nvblox) for localization/mapping, for robots\n        that lack a lidar. Gates the visual SLAM backend (ADR-0064).\n        Independent of ``has_lidar``; when both are set the lidar\n        backend wins (it does not require an AI depth model).\n    has_audio: Whether audio I/O is present.\n    bimanual: Whether the robot has two arms.\n    supported_control_modes: List of supported ControlMode values.\n    supported_vla_embodiments: VLA embodiment IDs this robot can run.\n    embodiment_tags: Short tags mapping to VLA heads / dataset splits.",
       "properties": {
         "locomotion": {
           "items": {
@@ -868,81 +984,6 @@
           "title": "Bimanual",
           "type": "boolean"
         },
-        "onboard_compute_tops": {
-          "default": 0.0,
-          "title": "Onboard Compute Tops",
-          "type": "number"
-        },
-        "onboard_memory_gb": {
-          "default": 0.0,
-          "title": "Onboard Memory Gb",
-          "type": "number"
-        },
-        "gpu_vram_gb": {
-          "default": 0.0,
-          "title": "Gpu Vram Gb",
-          "type": "number"
-        },
-        "cuda_compute_capability": {
-          "anyOf": [
-            {
-              "maxItems": 2,
-              "minItems": 2,
-              "prefixItems": [
-                {
-                  "type": "integer"
-                },
-                {
-                  "type": "integer"
-                }
-              ],
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cuda Compute Capability"
-        },
-        "cuda_toolkit_version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cuda Toolkit Version"
-        },
-        "tensorrt_version": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Tensorrt Version"
-        },
-        "gpu_supported_runtimes": {
-          "items": {
-            "$ref": "#/$defs/RSkillRuntime"
-          },
-          "title": "Gpu Supported Runtimes",
-          "type": "array"
-        },
-        "gpu_supported_dtypes": {
-          "items": {
-            "$ref": "#/$defs/QuantizationDtype"
-          },
-          "title": "Gpu Supported Dtypes",
-          "type": "array"
-        },
         "supported_control_modes": {
           "items": {
             "$ref": "#/$defs/ControlMode"
@@ -963,11 +1004,6 @@
           },
           "title": "Embodiment Tags",
           "type": "array"
-        },
-        "nvmm_available": {
-          "default": false,
-          "title": "Nvmm Available",
-          "type": "boolean"
         }
       },
       "title": "RobotCapabilities",
@@ -1916,7 +1952,7 @@
       "type": "object"
     }
   },
-  "description": "Top-level robot manifest \u2014 one per robot, published to HuggingFace Hub.\n\nAttributes:\n    name: Robot name, e.g. \"so100_follower\".\n    embodiment_kind: Top-level kinematic class.\n    assets: Unified URDF / MJCF / SRDF reference block (ADR-0058).\n        Refs share the :func:`openral_core.assets.resolve_asset`\n        grammar; the URDF's ``robot_state_publisher`` wiring lives on\n        :attr:`AssetRefs.urdf` (ADR-0027). Empty by default.\n    base_frame: Base link tf2 frame name.\n    odom_frame: Odometry tf2 frame name.\n    map_frame: Map tf2 frame name.\n    joints: List of joint specifications.\n    end_effectors: List of end-effector specifications.\n    sensors: List of individual sensor specs.\n    sensor_bundles: List of multi-modal sensor bundles.\n    capabilities: Capability flags for skill matching.\n    safety: Safety envelope constraints.\n    ros2_namespace: ROS 2 namespace prefix.\n    middleware: ROS 2 middleware selection.\n    onboard_compute: Onboard compute descriptors.\n    sdk_kind: Whether the SDK is open or closed.\n    hal: Simulation + real-hardware HAL import strings. ``deploy sim``\n        constructs ``hal.sim`` (or derives ``MujocoArmHAL`` from\n        :attr:`sim`); ``deploy run`` constructs ``hal.real``. ADR-0031.\n    observation_spec: VLA observation configuration.\n    action_spec: VLA action configuration.\n    sim: Optional MuJoCo wiring consumed by\n        :class:`openral_hal.MujocoArmHAL`.  When set, the HAL can be\n        constructed entirely from the manifest via\n        :meth:`MujocoArmHAL.from_description`; no per-robot Python\n        subclass is required.\n    scene_defaults: Optional per-robot scene rendering defaults.\n        Today carries :class:`TopCameraDefaults` consumed by the\n        ``openarm_tabletop_pnp`` MJCF composer (see\n        :mod:`openral_sim.backends.openarm_robosuite._assets`).\n        Added in openral-core 0.6.0 to replace the dataset-specific\n        module-level constants that previously lived in the sim\n        backend.\n    base_joints: Optional ordered list of :attr:`JointSpec.name`\n        references identifying the **planar mobile base** joints.\n        When the robot has a holonomic / differential / omnidirectional\n        base, the three entries are conventionally ``[forward_axis,\n        side_axis, yaw_axis]``. Consumed by the generic ray-cast\n        helpers in :mod:`openral_sim.backends.robocasa` and the\n        ROS HAL lifecycle nodes to resolve MJCF joint names without\n        hardcoding robot-specific conventions. ``None`` for\n        fixed-base manipulators. ADR-0025.\n    collision_geometry: Per-link convex collision primitives\n        (capsules / spheres) the safety kernel uses for self- and\n        world-collision checking. Empty by default. ADR-0030.\n    allowed_collision_pairs: Link-name pairs excluded from\n        self-collision (adjacent links touch by design); the\n        allowed-collision matrix. On real robots this is sourced from\n        the SRDF ``disable_collisions`` block (named by\n        :attr:`AssetRefs.srdf`). ADR-0030.\n\nExample:\n    >>> desc = RobotDescription(\n    ...     name=\"smoke_robot\",\n    ...     embodiment_kind=EmbodimentKind.MANIPULATOR,\n    ...     joints=[\n    ...         JointSpec(\n    ...             name=\"j1\",\n    ...             joint_type=JointType.REVOLUTE,\n    ...             parent_link=\"base_link\",\n    ...             child_link=\"link_1\",\n    ...         )\n    ...     ],\n    ...     capabilities=RobotCapabilities(\n    ...         supported_control_modes=[ControlMode.JOINT_POSITION],\n    ...         embodiment_tags=[\"smoke\"],\n    ...     ),\n    ...     safety=SafetyEnvelope(),\n    ... )\n    >>> assert desc.name == \"smoke_robot\"",
+  "description": "Top-level robot manifest \u2014 one per robot, published to HuggingFace Hub.\n\nAttributes:\n    name: Robot name, e.g. \"so100_follower\".\n    embodiment_kind: Top-level kinematic class.\n    assets: Unified URDF / MJCF / SRDF reference block (ADR-0058).\n        Refs share the :func:`openral_core.assets.resolve_asset`\n        grammar; the URDF's ``robot_state_publisher`` wiring lives on\n        :attr:`AssetRefs.urdf` (ADR-0027). Empty by default.\n    base_frame: Base link tf2 frame name.\n    odom_frame: Odometry tf2 frame name.\n    map_frame: Map tf2 frame name.\n    joints: List of joint specifications.\n    end_effectors: List of end-effector specifications.\n    sensors: List of individual sensor specs.\n    sensor_bundles: List of multi-modal sensor bundles.\n    capabilities: Capability flags for skill matching.\n    safety: Safety envelope constraints.\n    ros2_namespace: ROS 2 namespace prefix.\n    middleware: ROS 2 middleware selection.\n    onboard_compute: Onboard compute descriptors.\n    sdk_kind: Whether the SDK is open or closed.\n    hal: Simulation + real-hardware HAL import strings. ``deploy sim``\n        constructs ``hal.sim`` (or derives ``MujocoArmHAL`` from\n        :attr:`sim`); ``deploy run`` constructs ``hal.real``. ADR-0031.\n    observation_spec: VLA observation configuration.\n    action_spec: VLA action configuration.\n    sim: Optional MuJoCo wiring consumed by\n        :class:`openral_hal.MujocoArmHAL`.  When set, the HAL can be\n        constructed entirely from the manifest via\n        :meth:`MujocoArmHAL.from_description`; no per-robot Python\n        subclass is required.\n    scene_defaults: Optional per-robot scene rendering defaults.\n        Today carries :class:`TopCameraDefaults` consumed by the\n        ``openarm_tabletop_pnp`` MJCF composer (see\n        :mod:`openral_sim.backends.openarm_robosuite._assets`).\n        Added in openral-core 0.6.0 to replace the dataset-specific\n        module-level constants that previously lived in the sim\n        backend.\n    base_joints: Optional ordered list of :attr:`JointSpec.name`\n        references identifying the **planar mobile base** joints.\n        When the robot has a holonomic / differential / omnidirectional\n        base, the three entries are conventionally ``[forward_axis,\n        side_axis, yaw_axis]``. Consumed by the generic ray-cast\n        helpers in :mod:`openral_sim.backends.robocasa` and the\n        ROS HAL lifecycle nodes to resolve MJCF joint names without\n        hardcoding robot-specific conventions. ``None`` for\n        fixed-base manipulators. ADR-0025.\n    collision_geometry: Per-link convex collision primitives\n        (capsules / spheres) the safety kernel uses for self- and\n        world-collision checking. Empty by default. ADR-0030.\n    allowed_collision_pairs: Link-name pairs excluded from\n        self-collision (adjacent links touch by design); the\n        allowed-collision matrix. On real robots this is sourced from\n        the SRDF ``disable_collisions`` block (named by\n        :attr:`AssetRefs.srdf`). ADR-0030.\n    compute_edge: Compute spec for the on-robot accelerator (e.g. Jetson\n        AGX Orin SoC).  Populated by ``openral detect`` when a Jetson /\n        embedded SoC is found.  Falls back to ``compute_local`` when\n        ``None`` (tethered robot, SoC not yet probed).  ADR-0069.\n    compute_local: Compute spec for the workstation / laptop directly\n        attached to the robot.  Populated by ``openral detect`` for\n        discrete NVIDIA GPUs, Apple Silicon, or CPU-only hosts.\n        ADR-0069.\n    compute_cloud: Optional remote compute endpoint (SSH or HTTPS).\n        Set manually or via ``openral detect --target cloud``.\n        ADR-0069.\n    schema_version: On-disk schema version for migration tooling.\n        ``\"0.2\"`` introduces the three-slot compute layout (ADR-0069).\n        Existing manifests without this field load with the default.\n\nExample:\n    >>> desc = RobotDescription(\n    ...     name=\"smoke_robot\",\n    ...     embodiment_kind=EmbodimentKind.MANIPULATOR,\n    ...     joints=[\n    ...         JointSpec(\n    ...             name=\"j1\",\n    ...             joint_type=JointType.REVOLUTE,\n    ...             parent_link=\"base_link\",\n    ...             child_link=\"link_1\",\n    ...         )\n    ...     ],\n    ...     capabilities=RobotCapabilities(\n    ...         supported_control_modes=[ControlMode.JOINT_POSITION],\n    ...         embodiment_tags=[\"smoke\"],\n    ...     ),\n    ...     safety=SafetyEnvelope(),\n    ... )\n    >>> assert desc.name == \"smoke_robot\"",
   "properties": {
     "name": {
       "title": "Name",
@@ -2148,6 +2184,45 @@
       ],
       "default": null,
       "title": "Footprint Polygon"
+    },
+    "compute_edge": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComputeSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "compute_local": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComputeSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "compute_cloud": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComputeSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": "0.2",
+      "default": "0.2",
+      "title": "Schema Version",
+      "type": "string"
     }
   },
   "required": [

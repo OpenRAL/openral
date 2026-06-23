@@ -324,3 +324,4 @@ allowed_collision_pairs:
   - [panda_link4, panda_link7]
   - [panda_link5, panda_link6]
   - [panda_link6, panda_link7]
+schema_version: '0.2'

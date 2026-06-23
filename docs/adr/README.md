@@ -101,6 +101,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0063](0063-openvla-oft-policy-family.md) | OpenVLA / OpenVLA-OFT policy family (in-process custom-code, token de-norm) | Accepted | renumbered from 0061; new `ModelFamily`; refs 0046, 0060 gate |
 | [0048](0048-deploy-sim-clock-publisher.md) | A sim `/clock` publisher for the deploy-sim graph | Proposed | refs 0034 idle-stepper; safety-WG-gated |
 | [0050](0050-single-resident-skill-vram-eviction.md) | Single-resident-skill VRAM eviction (unload-on-switch) | Proposed | — |
+| [0069](0069-compute-deployment-targets.md) | Compute deployment targets — edge / local / cloud slots on `RobotDescription` | Proposed | extends ComputeSpec split (Jun 2026); builds on 0008, 0010, 0016, 0018; refs 0046, 0065 |
 
 ## G · Safety & collision
 

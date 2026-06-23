@@ -513,3 +513,4 @@ sdk_kind: "open"
 hal:
   sim: "openral_hal.panda_mobile:PandaMobileHAL"
   real: null
+schema_version: '0.2'
