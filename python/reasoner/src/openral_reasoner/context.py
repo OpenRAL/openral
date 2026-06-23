@@ -40,6 +40,7 @@ __all__ = [
     "PromptRecord",
     "reflect_on_failure",
     "reflect_on_retry_cap",
+    "render_playbooks_block",
     "render_robot_self_model",
 ]
 
@@ -177,6 +178,42 @@ def reflect_on_retry_cap(tool: str, cap: int) -> str:
         f"'{tool}' was selected {cap}+ ticks in a row with no progress — the retry ladder "
         "is exhausted; substitute a different skill, adjust parameters, or replan the goal."
     )
+
+
+def render_playbooks_block(entries: list[tuple[str, str]]) -> str:
+    r"""Render the ``## PLAYBOOKS`` system-prompt block (ADR-0071 Decision 1 / Phase 3).
+
+    Each entry is ``(header, body_markdown)`` — the playbook's ``name — trigger``
+    header and its hand-authored ``PLAYBOOK.md`` SOP. The reasoner appends this to
+    its system prompt at configure time so the LLM follows an installed decision
+    procedure when its trigger matches the goal. The playbook guides *decisions*
+    only — every motion still goes through ``execute_rskill`` and the C++ safety
+    kernel (CLAUDE.md §1.1).
+
+    Returns ``""`` when no playbooks are installed, so appending it to a system
+    prompt is a no-op (the block is omitted entirely).
+
+    Example:
+        >>> render_playbooks_block([])
+        ''
+        >>> block = render_playbooks_block([("find-object — locate X", "## Steps\\n1. ...")])
+        >>> "## PLAYBOOKS" in block
+        True
+    """
+    if not entries:
+        return ""
+    parts = [
+        "## PLAYBOOKS",
+        (
+            "Installed decision procedures (SOPs). When a goal matches a playbook's "
+            "trigger, follow its steps, verify its done predicate, and use its "
+            "fallbacks. Playbooks guide your decisions; every motion still goes "
+            "through execute_rskill and the safety kernel."
+        ),
+    ]
+    for header, body in entries:
+        parts.append(f"\n--- playbook: {header} ---\n{body.strip()}")
+    return "\n".join(parts)
 
 
 def render_robot_self_model(description: RobotDescription) -> str:
