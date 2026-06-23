@@ -623,9 +623,11 @@ def _check_just() -> CheckResult:
 
 
 # PROVIDER values whose endpoint enforces auth and so require
-# OPENRAL_REASONER_LLM_API_KEY. Bare ``openai-compatible`` is the
-# exception because a local Ollama / llama-server doesn't.
-_REASONER_PROVIDERS_REQUIRING_KEY: frozenset[str] = frozenset({"anthropic", "openrouter"})
+# OPENRAL_REASONER_LLM_API_KEY. Bare ``openai-compatible`` and ``ollama``
+# are the exceptions because a local Ollama / llama-server doesn't.
+_REASONER_PROVIDERS_REQUIRING_KEY: frozenset[str] = frozenset(
+    {"anthropic", "openrouter", "gemini", "xai", "deepseek"}
+)
 
 # Provider-default base URLs used when the user hasn't set
 # OPENRAL_REASONER_LLM_BASE_URL. Mirrors tool_use.py constants but kept
@@ -635,6 +637,11 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "anthropic": "https://api.anthropic.com",
     "openai-compatible": "https://api.openai.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "ollama": "http://localhost:11434/v1",
+    "vllm": "http://localhost:8000/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "xai": "https://api.x.ai/v1",
+    "deepseek": "https://api.deepseek.com",
 }
 
 
@@ -660,9 +667,10 @@ def _check_reasoner_llm() -> list[CheckResult]:
     top-to-bottom and see exactly what to export.
 
     When the resolved endpoint is loopback (Ollama / local vLLM /
-    llama-server), an additional ``Ollama`` row TCP-probes the port so
-    a user trying the local baseline gets an immediate diagnosis if the
-    daemon isn't running.
+    llama-server), an additional probe row (labelled ``vLLM`` for
+    ``provider=vllm``, else ``Ollama``) TCP-probes the port so a user
+    trying the local baseline gets an immediate diagnosis if the daemon
+    isn't running.
 
     The API key value is never printed — only ``set`` / ``unset``.
     """
@@ -732,17 +740,27 @@ def _check_reasoner_llm() -> list[CheckResult]:
     else:
         rows.append(CheckResult("Reasoner LLM", "ok", summary))
 
-    # Ollama / local-endpoint probe. Only meaningful when the resolved
-    # base_url is loopback; we never reach out to a cloud endpoint from
-    # `openral doctor`.
+    # Local-endpoint probe. Only meaningful when the resolved base_url is
+    # loopback; we never reach out to a cloud endpoint from `openral doctor`.
+    # Label + remediation are provider-aware so a vLLM endpoint isn't
+    # mislabelled as Ollama. The default port matches the daemon's own:
+    # 8000 for vLLM, 11434 otherwise.
     if _is_local_base_url(base_url):
         parsed = urlparse(base_url)
-        port = parsed.port or 11434
         host = parsed.hostname or "localhost"
+        if provider == "vllm":
+            probe_label = "vLLM"
+            default_port = 8000
+            hint = "start the server with `vllm serve <model>`"
+        else:
+            probe_label = "Ollama"
+            default_port = 11434
+            hint = "run `just bootstrap-ollama` or `ollama serve`"
+        port = parsed.port or default_port
         if _probe_tcp(host, port):
             rows.append(
                 CheckResult(
-                    "Ollama",
+                    probe_label,
                     "ok",
                     f"endpoint reachable at {host}:{port}",
                 )
@@ -750,10 +768,9 @@ def _check_reasoner_llm() -> list[CheckResult]:
         else:
             rows.append(
                 CheckResult(
-                    "Ollama",
+                    probe_label,
                     "warn",
-                    f"endpoint unreachable at {host}:{port} — "
-                    "run `just bootstrap-ollama` or `ollama serve`.",
+                    f"endpoint unreachable at {host}:{port} — {hint}.",
                 )
             )
 
