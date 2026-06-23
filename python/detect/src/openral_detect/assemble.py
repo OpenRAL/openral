@@ -23,7 +23,7 @@ Strategy (per the user's clarification):
 3. **Populate :class:`~openral_core.ComputeSpec` on :attr:`RobotDescription.compute`.**
    The probed accelerator records (NVIDIA, Jetson, Apple Silicon) are
    passed to :func:`build_compute_spec` which fills
-   ``onboard_compute_tops``, ``onboard_memory_gb``, ``gpu_vram_gb``,
+   ``compute_tops``, ``system_memory_gb``, ``gpu_vram_gb``,
    ``cuda_compute_capability``, ``cuda_toolkit_version``,
    ``tensorrt_version``, ``gpu_supported_runtimes``,
    ``gpu_supported_dtypes``, ``nvmm_available``.  The same function is
@@ -92,8 +92,8 @@ def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeS
         detected, matching the semantics of an empty host.
     """
     return ComputeSpec(
-        onboard_compute_tops=_max_tops(gpu),
-        onboard_memory_gb=_system_memory_gb(gpu),
+        compute_tops=_max_tops(gpu),
+        system_memory_gb=_system_memory_gb(gpu),
         gpu_vram_gb=_max_vram_gb(gpu),
         cuda_compute_capability=_highest_compute_capability(gpu),
         cuda_toolkit_version=_first_non_empty(
@@ -361,8 +361,8 @@ def _enrich_compute(description: RobotDescription, detection: DetectionReport) -
     probed = build_compute_spec(gpu, detection)
     existing = description.compute or ComputeSpec()
     new_compute = ComputeSpec(
-        onboard_compute_tops=max(existing.onboard_compute_tops, probed.onboard_compute_tops),
-        onboard_memory_gb=max(existing.onboard_memory_gb, probed.onboard_memory_gb),
+        compute_tops=max(existing.compute_tops, probed.compute_tops),
+        system_memory_gb=max(existing.system_memory_gb, probed.system_memory_gb),
         gpu_vram_gb=max(existing.gpu_vram_gb, probed.gpu_vram_gb),
         cuda_compute_capability=probed.cuda_compute_capability or existing.cuda_compute_capability,
         cuda_toolkit_version=probed.cuda_toolkit_version or existing.cuda_toolkit_version,

@@ -40,9 +40,8 @@ call out dependencies.
   (`PROVIDER` ∈ `anthropic | openai-compatible | openrouter | ollama`).
 - **`RobotDescription` is monolithic** (`schemas.py`): sensors are an inline
   `list[SensorSpec]`; `safety: SafetyEnvelope` is an inline field; compute is
-  capability flags plus `RobotCapabilities.onboard_compute_tops` (on
-  `RobotCapabilities`, *not* `RobotDescription` — the manifest only carries an
-  untyped `onboard_compute: dict`); **no "rig"** (multi-robot composite). Note
+  now in `ComputeSpec.compute_tops` (attached as `RobotDescription.compute`,
+  ADR-0069 — was formerly `RobotCapabilities.onboard_compute_tops`); **no "rig"** (multi-robot composite). Note
   `SensorSpec` already exists as a standalone, reusable Pydantic *class* (with its
   own `frame_id` / `parent_frame` / `static_transform_xyz_rpy`) — what's missing
   is authoring a sensor as a standalone *record resolved by id* and referencing

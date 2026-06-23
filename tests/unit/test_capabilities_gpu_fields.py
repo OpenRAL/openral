@@ -146,7 +146,7 @@ class TestRobotDescriptionComputeField:
         desc = desc.model_copy(update={
             "compute": ComputeSpec(
                 gpu_vram_gb=64.0,
-                onboard_compute_tops=275.0,
+                compute_tops=275.0,
                 cuda_compute_capability=(8, 7),
                 cuda_toolkit_version="12.2",
                 tensorrt_version="8.6",

@@ -2,6 +2,7 @@
 
 - **Status:** Proposed 2026-06-23.
 - **Date:** 2026-06-23
+- **Amendment 2026-06-23:** Finalised `ComputeSpec` field set after design review. `onboard_compute_tops` renamed to `compute_tops`; `onboard_memory_gb` renamed to `system_memory_gb` (the `onboard_` prefix is wrong for local/cloud tiers). Added `num_gpus: int = 1`, `endpoint: str | None = None`, `network_latency_ms: float | None = None` (see D1 revised schema below). `nvmm_available` remains shared across all tiers — probed on every host and returns `False` gracefully when absent (can be `True` on local/cloud Tegra nodes too). `compute_cloud_endpoint` moved inside `ComputeSpec` as `endpoint` so each spec is self-contained and multiple cloud endpoints are independent.
 - **ADR number:** `0069` (0068 is the highest accepted).
 - **Related:**
   - ADR-0008 — `openral_detect` auto-provisioning package: the origin of `ComputeSpec` population.
@@ -57,32 +58,35 @@ This ADR makes that implicit topology **explicit and enforceable in the schema**
 ### D1 — Replace `RobotDescription.compute` with three named slots
 
 ```python
+class ComputeSpec(BaseModel):
+    # ── Compute power ──────────────────────────────────────────────────────────
+    compute_tops: float = 0.0          # INT8 TOPS (0 = unknown); replaces onboard_compute_tops
+    system_memory_gb: float = 0.0      # total RAM / unified mem GB; replaces onboard_memory_gb
+    num_gpus: int = 1                  # GPU count; > 1 for cloud multi-GPU pods
+    gpu_vram_gb: float = 0.0           # VRAM of one GPU in GB
+
+    # ── CUDA stack ─────────────────────────────────────────────────────────────
+    cuda_compute_capability: tuple[int, int] | None = None
+    cuda_toolkit_version: str | None = None
+    tensorrt_version: str | None = None
+
+    # ── Runtime gates ──────────────────────────────────────────────────────────
+    gpu_supported_runtimes: list[RSkillRuntime] = []
+    gpu_supported_dtypes: list[QuantizationDtype] = []
+
+    # ── Platform-specific ──────────────────────────────────────────────────────
+    nvmm_available: bool = False       # probed on all tiers; False gracefully when absent
+
+    # ── Remote access (cloud / SSH; None for edge / local) ─────────────────────
+    endpoint: str | None = None        # ssh://user@host[:port] or https://host:port
+    network_latency_ms: float | None = None  # probed round-trip ms; None = local
+
 class RobotDescription(BaseModel):
     # ... existing fields ...
-
-    # Replaces compute: ComputeSpec | None = None
     compute_edge:  ComputeSpec | None = None
-    """On-robot SoC compute (Jetson, Thor, Isaac ARC, …).
-    Populated by ``openral detect`` when an embedded accelerator is detected on
-    the local host (jtop backend) or declared statically in robot.yaml for
-    robots with known fixed hardware. None for arm-only robots without onboard GPU."""
-
     compute_local: ComputeSpec | None = None
-    """Workstation / laptop compute on the machine that runs ``openral detect``.
-    Always populated by ``openral detect`` (a laptop with no GPU gets a
-    CPU-only ComputeSpec with pytorch/onnx/gguf runtimes). None only in a
-    static robot.yaml that has never been through ``openral detect``."""
-
     compute_cloud: ComputeSpec | None = None
-    """Remote compute reachable via SSH or HTTP.
-    Populated by ``openral detect --cloud <target>`` when a remote endpoint is
-    specified. None when no cloud backend is configured."""
-
-    compute_cloud_endpoint: str | None = None
-    """Address of the cloud compute endpoint.
-    Format: ``ssh://<user>@<host>[:<port>]`` for SSH-probed endpoints, or
-    ``http[s]://<host>:<port>`` for HTTP inference servers.
-    Required when compute_cloud is set; None otherwise."""
+    # compute_cloud_endpoint removed — lives inside compute_cloud.endpoint
 ```
 
 **Migration:** `compute` is removed. All existing robot YAMLs have `compute: null` (or absent) — no data loss. A one-time migration note in the schema docstring covers in-tree YAMLs; `from_yaml` validation catches any YAML that uses the old field name via Pydantic's `extra="forbid"`.

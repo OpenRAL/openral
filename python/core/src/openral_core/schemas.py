@@ -536,22 +536,25 @@ def _cuda_major(version: str) -> int | None:
 
 
 class ComputeSpec(BaseModel):
-    """Onboard compute profile — runtime inference and GPU capabilities.
+    """Compute profile for one deployment tier — runtime inference and GPU capabilities.
 
-    Describes the compute hardware available on a robot or the detected host.
-    Populated either statically in ``robot.yaml`` (for robots with known fixed
-    hardware, e.g. a Jetson AGX Orin) or at runtime by
-    :func:`openral_detect.assemble.assemble_robot_description` probing the
-    live host (NVIDIA GPU, Jetson, Apple Silicon).
+    Used for all three deployment tiers (ADR-0069):
 
-    Consumed by ``rSkill.check_runtime`` and ``rSkill.check_quantization_dtype``
-    to match ``RSkillManifest.runtime`` / ``quantization.dtype`` against what
-    the hardware can actually execute.
+    * **Edge** — on-robot SoC (Jetson AGX Orin, NVIDIA Thor).
+    * **Local** — laptop / workstation tethered to the robot or running the simulation.
+    * **Cloud** — remote GPU node reachable via SSH or HTTP.
+
+    Attached to :class:`RobotDescription` as ``compute_edge``, ``compute_local``,
+    and ``compute_cloud`` (ADR-0069).  Consumed by ``rSkill.check_runtime`` and
+    ``rSkill.check_quantization_dtype`` to match ``RSkillManifest.runtime`` /
+    ``quantization.dtype`` against what the hardware can actually execute.
 
     Attributes:
-        onboard_compute_tops: Peak onboard compute in INT8 TOPS (0 = unknown).
-        onboard_memory_gb: Total system RAM in GB (0 = unknown).
-        gpu_vram_gb: Largest single-GPU VRAM in GB (0 when no discrete GPU).
+        compute_tops: Peak compute in INT8 TOPS (0 = unknown).
+        system_memory_gb: Total system / unified RAM in GB (0 = unknown).
+        num_gpus: Number of GPUs on this node (default 1; use > 1 for cloud
+            multi-GPU pods — total VRAM budget = ``gpu_vram_gb × num_gpus``).
+        gpu_vram_gb: VRAM of a single GPU in GB (0 when no discrete GPU).
         cuda_compute_capability: Highest CUDA compute capability (major, minor),
             e.g. ``(8, 9)`` for Ada Lovelace, ``(10, 0)`` for Blackwell.
             ``None`` on non-CUDA hosts.
@@ -564,12 +567,17 @@ class ComputeSpec(BaseModel):
         gpu_supported_dtypes: Quantization dtypes the accelerator supports
             (derived from CUDA compute capability or platform).  Empty =
             "unknown — skip check".
-        nvmm_available: Whether ``libnvbufsurface.so`` is present on the host
+        nvmm_available: Whether ``libnvbufsurface.so`` is present on this node
             (Tegra L4T multimedia stack).  ``True`` enables the NVMM zero-copy
-            sensor-ingest path on Jetson; always ``False`` on x86 and on
-            stripped L4T images.  Populated by
-            :func:`openral_detect.probes.gpu._probe_nvmm_available`
-            (ADR-0013).
+            sensor-ingest path; probed on all tiers and returns ``False``
+            gracefully when the library is absent (ADR-0013).
+        endpoint: Remote access address for cloud / SSH nodes.
+            Format: ``ssh://user@host[:port]`` or ``https://host:port``.
+            ``None`` for edge and local nodes.
+        network_latency_ms: Measured round-trip latency to this node in ms.
+            Populated by the SSH probe; ``None`` for local/edge (no network hop).
+            Used by the reasoner dispatcher to decide whether cloud dispatch
+            fits within a skill's latency budget.
 
     Example:
         >>> spec = ComputeSpec(
@@ -581,8 +589,9 @@ class ComputeSpec(BaseModel):
         True
     """
 
-    onboard_compute_tops: float = 0.0
-    onboard_memory_gb: float = 0.0
+    compute_tops: float = 0.0
+    system_memory_gb: float = 0.0
+    num_gpus: int = 1
     gpu_vram_gb: float = 0.0
     cuda_compute_capability: tuple[int, int] | None = None
     cuda_toolkit_version: str | None = None
@@ -590,6 +599,33 @@ class ComputeSpec(BaseModel):
     gpu_supported_runtimes: list[RSkillRuntime] = Field(default_factory=list)
     gpu_supported_dtypes: list[QuantizationDtype] = Field(default_factory=list)
     nvmm_available: bool = False
+    endpoint: str | None = None
+    network_latency_ms: float | None = None
+
+    def supports_cumotion(self) -> bool:
+        """Whether this compute spec meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).
+
+        cuMotion's CUDA motion planner requires an Ampere-or-newer GPU (compute
+        capability >= 8.0), CUDA toolkit >= 13.0, and a nominal 8 GB card. The
+        MoveIt planner gate uses this to choose the cuMotion planning pipeline;
+        when ``False`` it falls back to OMPL.
+
+        Returns:
+            ``True`` only when compute capability, CUDA toolkit version, and
+            VRAM all clear the cuMotion floor. ``False`` on any non-CUDA host or
+            when the CUDA toolkit version is unknown (the floor cannot be
+            confirmed, so the gate stays closed).
+        """
+        if self.cuda_compute_capability is None:
+            return False
+        if self.cuda_compute_capability < _CUMOTION_MIN_COMPUTE_CAPABILITY:
+            return False
+        if self.cuda_toolkit_version is None:
+            return False
+        cuda_major = _cuda_major(self.cuda_toolkit_version)
+        if cuda_major is None or cuda_major < _CUMOTION_MIN_CUDA_MAJOR:
+            return False
+        return self.gpu_vram_gb >= _CUMOTION_MIN_VRAM_GIB
 
     def supports_cumotion(self) -> bool:
         """Whether this compute spec meets the cuMotion (Isaac ROS) GPU floor (ADR-0065).

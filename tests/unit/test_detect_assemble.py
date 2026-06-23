@@ -191,7 +191,7 @@ class TestComputeEnrichment:
         )
         desc = assemble_robot_description(report)
         assert desc.compute is not None
-        assert desc.compute.onboard_compute_tops == 1321.0
+        assert desc.compute.compute_tops == 1321.0
         assert desc.compute.gpu_vram_gb == 24.0
         assert desc.compute.cuda_compute_capability == (8, 9)
         assert desc.compute.cuda_toolkit_version == "12.4"
@@ -217,8 +217,8 @@ class TestComputeEnrichment:
         )
         desc = assemble_robot_description(report)
         assert desc.compute is not None
-        assert desc.compute.onboard_compute_tops == 275.0
-        assert desc.compute.onboard_memory_gb == 64.0
+        assert desc.compute.compute_tops == 275.0
+        assert desc.compute.system_memory_gb == 64.0
         assert desc.compute.cuda_compute_capability == (8, 7)
 
 
@@ -256,9 +256,9 @@ class TestIdempotence:
         r2 = _empty_report()
         d2 = assemble_robot_description(r2)
         assert d1.compute is not None
-        assert d1.compute.onboard_compute_tops == 275.0
+        assert d1.compute.compute_tops == 275.0
         assert d2.compute is not None
-        assert d2.compute.onboard_compute_tops == 0.0
+        assert d2.compute.compute_tops == 0.0
 
 
 class TestRoundTripAfterAssemble:

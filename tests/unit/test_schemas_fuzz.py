@@ -174,8 +174,8 @@ _capabilities_st = st.builds(
 
 _compute_spec_st = st.builds(
     ComputeSpec,
-    onboard_compute_tops=_pos_float,
-    onboard_memory_gb=_pos_float,
+    compute_tops=_pos_float,
+    system_memory_gb=_pos_float,
     gpu_vram_gb=_pos_float,
 )
 

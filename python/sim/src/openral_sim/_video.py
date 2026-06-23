@@ -1,15 +1,13 @@
 """Shared MP4 helper for the runnable eval examples.
 
-Every example writes the same three-panel debug video:
+Every example writes the same debug video:
 
-    +-----------------------+-----------------------+
-    |   VLA input view      |  rollout / world view |
-    |   (post-preprocess    |  (env.render frame)   |
-    |    image the policy   |                       |
-    |    saw)               |                       |
-    +-----------------------+-----------------------+
+    +-----------------------------------------------+
+    |   VLA input view / policy camera grid         |
+    |   (post-preprocess image(s) the policy saw)   |
+    +-----------------------------------------------+
     |    joint positions over time (line plot)      |
-    +-------------------------------------------------+
+    +-----------------------------------------------+
 
 This is the one helper every example must use — there is no
 example-specific video processing. Differences in the underlying VLA
@@ -26,8 +24,7 @@ Implementation notes
   plot but yields a *moving cursor* on the time axis that follows the
   rollout, which is what makes the video useful for debugging.
 * If ``vla_input_frames`` is empty (mock / scripted policies that don't
-  consume images), the top-left panel is replaced with a black tile so
-  the layout stays stable.
+  consume images), the top panel falls back to the rollout/world stream.
 * If ``joint_positions`` is empty (env doesn't expose ``state``), the
   bottom panel is replaced with a "no proprioception" placeholder.
 """
@@ -58,6 +55,8 @@ _GRAYSCALE_NDIM = 2
 # How many joints can fit in the legend before we drop labels (otherwise
 # the legend dominates the plot).
 _MAX_LEGEND_JOINTS = 8
+_LABEL_PAD = 6
+_LABEL_BAR_H = 24
 
 
 def save_episode_mp4(
@@ -71,9 +70,9 @@ def save_episode_mp4(
 
     Args:
         result: An :class:`EpisodeResult` produced by :class:`SimRunner` with
-            ``record_video=True``. ``frames`` (rollout) populates the
-            top-right panel; ``vla_input_frames`` populates the top-left;
-            ``joint_positions`` populates the bottom plot.
+            ``record_video=True``. ``vla_input_frames`` populates the top
+            panel when present; otherwise ``frames`` (rollout/world) is used
+            as the fallback. ``joint_positions`` populates the bottom plot.
         path: Destination ``.mp4`` file. Parent directories are created.
         fps: Playback frame rate.
         title: Optional title text rendered above the joint plot.
@@ -108,23 +107,21 @@ def save_episode_mp4(
     n_state = len(result.joint_positions)
     n = max(n_rollout, n_vla, n_state, 1)
 
-    # Single-cam VLAs (PushT, ALOHA top-only, MetaWorld) feed the same
-    # frame to both panels — the env's only render *is* the VLA input.
-    # Collapse to one full-width tile in that case. Multi-cam VLAs
-    # (LIBERO: wrist + agent-view) keep the two-panel layout.
+    # Multi-cam VLAs already encode their camera set into the stitched
+    # ``vla_input_frames`` preview. Show that grid full-width; the rollout
+    # render is often redundant or misleadingly similar to one of the cameras.
+    # For policies without input frames, fall back to the rollout/world view.
     show_two = result.num_input_cameras > 1 and bool(result.vla_input_frames)
 
     states = _stack_padded_states(result.joint_positions, n)
     if show_two:
         top_w = _TILE_SIZE * 2
-        rollout_seq = _resize_sequence(result.frames, _TILE_SIZE, _TILE_SIZE, target_len=n)
-        vla_seq = _resize_sequence(result.vla_input_frames, _TILE_SIZE, _TILE_SIZE, target_len=n)
+        top_seq = _resize_sequence(result.vla_input_frames, top_w, _TILE_SIZE, target_len=n)
     else:
         top_w = _TILE_SIZE * 2
         # Pick whichever stream is non-empty; prefer the rollout view.
         primary = result.frames or result.vla_input_frames
-        rollout_seq = _resize_sequence(primary, top_w, _TILE_SIZE, target_len=n)
-        vla_seq = []  # unused
+        top_seq = _resize_sequence(primary, top_w, _TILE_SIZE, target_len=n)
 
     plot_renderer = _JointPlotRenderer(
         states=states,
@@ -148,9 +145,12 @@ def save_episode_mp4(
     try:
         for i in range(n):
             if show_two:
-                top = np.concatenate([vla_seq[i], rollout_seq[i]], axis=1)  # (H, 2W, 3)
+                top = _annotate_panel(top_seq[i], f"policy inputs ({result.num_input_cameras} cams)")
             else:
-                top = rollout_seq[i]  # already (H, 2W, 3) when single-panel
+                top = _annotate_panel(
+                    top_seq[i],
+                    "rollout / policy view",
+                )  # already (H, 2W, 3) when single-panel
             plot = plot_renderer.render_at_step(i)  # (PLOT_H, CANVAS_W, 3)
             canvas = np.concatenate([top, plot], axis=0)  # (CANVAS_H, CANVAS_W, 3)
             writer.append_data(canvas)
@@ -199,6 +199,20 @@ def _resize_sequence(
         idx = min(int(i * n / max(target_len, 1)), n - 1)
         out.append(_resize_frame(frames[idx], width, height))
     return out
+
+
+def _annotate_panel(frame: NDArray[np.uint8], label: str) -> NDArray[np.uint8]:
+    """Add a small text banner to a video panel without changing its shape."""
+    from PIL import Image, ImageDraw
+
+    img = Image.fromarray(frame)
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle(
+        (0, 0, frame.shape[1], _LABEL_BAR_H),
+        fill=(20, 20, 20, 190),
+    )
+    draw.text((_LABEL_PAD, 4), label, fill=(255, 255, 255, 255))
+    return np.asarray(img, dtype=np.uint8)
 
 
 def _resize_frame(
