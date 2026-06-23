@@ -287,6 +287,13 @@ class _SimplerEnvSim:
             info=_unbatch_info(info),
         )
 
+    @property
+    def action_dim(self) -> int:
+        """Single-env action width reported by the live SimplerEnv action space."""
+        from openral_sim.backends.maniskill3 import _action_dim_from_space
+
+        return _action_dim_from_space(self._env.action_space)
+
     def sim_time_ns(self) -> int | None:
         """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
         return _sapien_sim_time_ns(self._env)

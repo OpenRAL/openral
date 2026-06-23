@@ -8,7 +8,8 @@ gym factory must map that synthetic id to a real default task before building.
 from __future__ import annotations
 
 from openral_core import PhysicsBackend, SceneSpec, SimEnvironment, TaskSpec, VLASpec
-from openral_sim.backends.maniskill3 import _task_id_for_env
+from openral_core.exceptions import ROSConfigError
+from openral_sim.backends.maniskill3 import _action_dim_from_space, _task_id_for_env
 from openral_sim.backends.simpler_env import _task_name_for_env
 
 
@@ -67,3 +68,22 @@ def test_simpler_env_regular_task_still_parses_task_id() -> None:
     env_cfg = _env("simpler_env", "simpler_env/widowx_carrot_on_plate")
 
     assert _task_name_for_env(env_cfg) == "widowx_carrot_on_plate"
+
+
+def test_sapien_action_dim_uses_single_env_action_width() -> None:
+    class Space:
+        shape = (1, 8)
+
+    assert _action_dim_from_space(Space()) == 8
+
+
+def test_sapien_action_dim_requires_shaped_space() -> None:
+    class Space:
+        shape = ()
+
+    try:
+        _action_dim_from_space(Space())
+    except ROSConfigError as exc:
+        assert "action_space has no shape" in str(exc)
+    else:
+        raise AssertionError("expected ROSConfigError")

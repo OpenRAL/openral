@@ -248,6 +248,11 @@ class _ManiSkill3Sim:
             info=_unbatch_info(info),
         )
 
+    @property
+    def action_dim(self) -> int:
+        """Single-env action width reported by the live ManiSkill action space."""
+        return _action_dim_from_space(self._env.action_space)
+
     def sim_time_ns(self) -> int | None:
         """Elapsed SAPIEN/ManiSkill simulation time in nanoseconds."""
         return _sapien_sim_time_ns(self._env)
@@ -313,6 +318,14 @@ def _unbatch(value: Any) -> Any:
         value = value.cpu().numpy()
     arr = np.asarray(value)
     return arr.reshape(-1)[0] if arr.size else arr
+
+
+def _action_dim_from_space(action_space: Any) -> int:
+    """Return the single-environment action width from a gym-style action space."""
+    shape = getattr(action_space, "shape", None)
+    if not shape:
+        raise ROSConfigError("ManiSkill action_space has no shape; cannot resolve action_dim.")
+    return int(shape[-1])
 
 
 def _unbatch_info(info: dict[str, Any]) -> dict[str, Any]:
