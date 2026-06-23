@@ -893,6 +893,12 @@ class RSkillAction(str, Enum):
       checkpoints (e.g. RoboCasa-365, DROID, MetaWorld-MT50). The palette
       surfaces a generalist skill for goals that don't match a specific
       verb.
+    - Perception / reasoning (non-actuating S2 kinds): ``DETECT`` (detector),
+      ``QUERY`` (scene VLM, ADR-0047), ``MONITOR`` (reward monitor, ADR-0057),
+      ``PLAN`` (playbook decision procedure, ADR-0071). These verbs are
+      registry/discovery metadata only — their skills are reached via
+      read-only reasoner tools or system-prompt injection, never an
+      ``ExecuteSkill`` dispatch.
     """
 
     PICK = "pick"
@@ -919,6 +925,7 @@ class RSkillAction(str, Enum):
     DETECT = "detect"
     QUERY = "query"
     MONITOR = "monitor"
+    PLAN = "plan"
 
 
 class ObservationSpec(BaseModel):
@@ -3763,7 +3770,7 @@ class RSkillProcessors(BaseModel):
 
 
 RSkillKind: TypeAlias = Literal[
-    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward"
+    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward", "playbook"
 ]
 """Discriminator selecting how an rSkill is instantiated at the loader.
 
@@ -3800,6 +3807,19 @@ RSkillKind: TypeAlias = Literal[
   ``ros_integration``, ``processors``, ``image_preprocessing``,
   ``n_action_steps``, and ``starting_pose`` are FORBIDDEN. ``model_family``
   is OPTIONAL metadata. ADR-0047.
+* ``"playbook"`` — a symbolic, human-authored **decision procedure** (a
+  Markdown standard-operating-procedure) the S2 Reasoner *reads*, not code it
+  executes. Carries no weights, no actuators, no ROS server, no Action
+  contract — it is the symbolic counterpart to a ``vla`` policy. Requires a
+  :class:`PlaybookContract` block and ``role: "s2"``; ``chunk_size`` MUST be
+  ``1`` (required field, no Action rows); ``actuators_required`` MUST be empty;
+  ``actions`` MUST include :attr:`RSkillAction.PLAN`. ``weights_uri``,
+  ``model_family``, ``min_vram_gb``, ``detector``, ``reward``,
+  ``ros_integration``, ``processors``, ``image_preprocessing``,
+  ``action_contract``, ``state_contract``, ``n_action_steps``, ``starting_pose``
+  are FORBIDDEN. Surfaced to the reasoner by injecting its ``PLAYBOOK.md`` body
+  into the system prompt (or via a retrieval tool at scale), never as an
+  ``ExecuteSkill`` policy. ADR-0071.
 """
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
@@ -3810,6 +3830,12 @@ _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
 # (match-any) — see ``_check_embodiment_tags_present`` below — and the
 # rSkill↔robot gate exempts them (``openral_rskill.loader._EMBODIMENT_AGNOSTIC_KINDS``).
 _PERCEPTION_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
+
+# Kinds whose skills are embodiment-agnostic and MAY declare an empty
+# ``embodiment_tags`` (match-any): the perception kinds above, plus ``playbook``
+# (ADR-0071) — a symbolic decision procedure gated by ``capabilities_required``,
+# not by embodiment. ``_check_embodiment_tags_present`` exempts these.
+_EMBODIMENT_AGNOSTIC_KINDS: frozenset[str] = _PERCEPTION_KINDS | frozenset({"playbook"})
 
 
 class RosIntegration(BaseModel):
@@ -4131,6 +4157,63 @@ class RewardContract(BaseModel):
         return v
 
 
+class PlaybookContract(BaseModel):
+    """Manifest contract for ``kind: "playbook"`` rSkills (ADR-0071).
+
+    A **playbook** is a human-authored standard-operating-procedure — a
+    structured Markdown document describing *how the S2 Reasoner should approach
+    a class of task*: its trigger, the ordered decision steps it composes from
+    existing reasoner tools, the bound on those steps, and its verifiable
+    acceptance (``done``) predicate. It is **content the reasoner reads, never
+    code it executes**, and carries no weights, actuators, ROS server, or Action
+    contract — the symbolic counterpart to a ``vla`` policy.
+
+    Required when :attr:`RSkillManifest.kind` is ``"playbook"``; forbidden for
+    all other kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).
+    The ``body_uri`` Markdown body is what the reasoner injects into its system
+    prompt (or retrieves by ``trigger`` similarity at scale); the manifest
+    ``description`` + ``trigger`` drive selection. Advisory only — a playbook
+    changes what the LLM *decides*, never its actuation authority: every motion
+    it triggers is still an ``ExecuteRskill`` → Action chunk → C++ safety kernel
+    (CLAUDE.md §1.1).
+
+    Attributes:
+        trigger: Natural-language description of when this playbook applies.
+            Used as the retrieval key when more playbooks are installed than
+            fit the system prompt (the deferred ``load_playbook`` tool).
+        body_uri: Repo-relative path to the Markdown SOP (e.g. ``"./PLAYBOOK.md"``).
+        composes_tools: The ``ReasonerToolCall`` discriminators the SOP uses
+            (``execute_rskill``, ``recall_object``, ``locate_in_view``,
+            ``query_scene``, ``query_task_progress``, ``memory_write``,
+            ``memory_search`` …). Advisory — a manifest-level hint of the
+            playbook's tool surface; at least one entry is required.
+        done_predicate: Natural-language acceptance test the playbook verifies
+            before declaring success (e.g. ``"the target object is in the
+            gripper"``).
+        max_steps: Hard bound on the number of tool calls before the playbook
+            must terminate (no hidden default — CLAUDE.md §1.4). Must be > 0.
+
+    Example:
+        >>> p = PlaybookContract(
+        ...     trigger="the goal names a physical object whose location is not given",
+        ...     body_uri="./PLAYBOOK.md",
+        ...     composes_tools=["recall_object", "locate_in_view", "execute_rskill"],
+        ...     done_predicate="the target object is confirmed in view at a known pose",
+        ...     max_steps=12,
+        ... )
+        >>> p.max_steps
+        12
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    trigger: str = Field(min_length=1, max_length=500)
+    body_uri: str = Field(min_length=1)
+    composes_tools: list[str] = Field(min_length=1)
+    done_predicate: str = Field(min_length=1, max_length=500)
+    max_steps: int = Field(gt=0)
+
+
 class RSkillManifest(BaseModel):
     """Pydantic model of the ``rskill.yaml`` package manifest (V1).
 
@@ -4429,18 +4512,22 @@ class RSkillManifest(BaseModel):
     def _check_embodiment_tags_present(self) -> RSkillManifest:
         """Non-perception rSkills must declare at least one embodiment tag.
 
-        Perception kinds (``detector`` / ``vlm``, see :data:`_PERCEPTION_KINDS`)
-        are embodiment-agnostic — camera-in → detections/text-out, no action
-        contract — so they MAY ship an empty ``embodiment_tags`` (match-any; the
-        rSkill↔robot gate exempts them). Every other kind (``vla`` / ``wam`` /
-        ``ros_action`` / ``ros_service``) still actuates a specific embodiment
-        and must target one, preserving the prior ``min_length=1`` guarantee.
+        Embodiment-agnostic kinds (``detector`` / ``vlm`` / ``reward`` /
+        ``playbook``, see :data:`_EMBODIMENT_AGNOSTIC_KINDS`) MAY ship an empty
+        ``embodiment_tags`` (match-any; the rSkill↔robot gate exempts them):
+        perception kinds are camera-in → detections/text-out with no action
+        contract, and a ``playbook`` is a symbolic decision procedure gated by
+        ``capabilities_required`` rather than embodiment (ADR-0071). Every other
+        kind (``vla`` / ``wam`` / ``ros_action`` / ``ros_service``) still
+        actuates a specific embodiment and must target one, preserving the prior
+        ``min_length=1`` guarantee.
         """
-        if self.kind not in _PERCEPTION_KINDS and not self.embodiment_tags:
+        if self.kind not in _EMBODIMENT_AGNOSTIC_KINDS and not self.embodiment_tags:
             raise ValueError(
                 f"RSkillManifest({self.name!r}): kind={self.kind!r} requires at "
-                "least one embodiment_tag. Only perception kinds "
-                f"{sorted(_PERCEPTION_KINDS)} may be embodiment-agnostic (empty tags)."
+                "least one embodiment_tag. Only embodiment-agnostic kinds "
+                f"{sorted(_EMBODIMENT_AGNOSTIC_KINDS)} may be embodiment-agnostic "
+                "(empty tags)."
             )
         return self
 
@@ -4553,6 +4640,13 @@ class RSkillManifest(BaseModel):
     # advisory-only (never gates motors).
     reward: RewardContract | None = None
 
+    # Playbook decision-procedure contract (ADR-0071). REQUIRED when
+    # ``kind == "playbook"``; FORBIDDEN otherwise. Carries the SOP body pointer,
+    # the trigger/done predicate, and the tool-call step bound. A playbook is a
+    # symbolic, authored decision procedure the S2 Reasoner reads — it carries no
+    # weights and never actuates (its proposed motions still cross the kernel).
+    playbook: PlaybookContract | None = None
+
     # ADR-0026 — optional JSON-Schema (OpenAPI / JSON-Schema 7 shape)
     # describing the per-skill ``goal_params_json`` payload the LLM may
     # attach to an ``ExecuteRskillTool`` dispatch. The reasoner's
@@ -4628,6 +4722,15 @@ class RSkillManifest(BaseModel):
           because the WAM dispatch path is not implemented in this PR
           (tracked separately).
         """
+        # A ``playbook`` block belongs only to kind='playbook'. One guard here
+        # forbids it for every other kind (ADR-0071), so the per-kind branches
+        # below stay focused on their own required/forbidden fields.
+        if self.kind != "playbook" and self.playbook is not None:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids a "
+                "`playbook` block (it is for kind='playbook' decision procedures only)."
+            )
+
         if self.kind == "vla":
             if self.model_family is None:
                 raise ValueError(
@@ -4814,6 +4917,64 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='reward' requires "
                     f"`actuators_required` to be empty (got {len(self.actuators_required)} "
                     "entries). A reward monitor actuates nothing."
+                )
+            return self
+
+        if self.kind == "playbook":
+            if self.playbook is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires a "
+                    "`playbook` block (trigger, body_uri, done_predicate, max_steps)."
+                )
+            if self.role != "s2":
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires role='s2' "
+                    f"(got {self.role!r}); a playbook is an S2 decision procedure."
+                )
+            if RSkillAction.PLAN not in self.actions:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires the "
+                    f"'plan' action verb in `actions` (got "
+                    f"{[a.value for a in self.actions]!r})."
+                )
+            if self.chunk_size != 1:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires "
+                    f"chunk_size=1, got {self.chunk_size}. A playbook emits no "
+                    "Action rows."
+                )
+            forbidden_playbook = {
+                "model_family": self.model_family,
+                "weights_uri": self.weights_uri,
+                "min_vram_gb": self.min_vram_gb,
+                "detector": self.detector,
+                "reward": self.reward,
+                "ros_integration": self.ros_integration,
+                "processors": self.processors,
+                "image_preprocessing": self.image_preprocessing,
+                "action_contract": self.action_contract,
+                "state_contract": self.state_contract,
+                "n_action_steps": self.n_action_steps,
+                "starting_pose": self.starting_pose,
+                "envelope": self.envelope,
+            }
+            set_playbook_forbidden = sorted(
+                name for name, value in forbidden_playbook.items() if value is not None
+            )
+            if set_playbook_forbidden:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' forbids "
+                    f"these fields: {set_playbook_forbidden!r}. A playbook is a "
+                    "symbolic decision procedure — it has no weights, no actuators, "
+                    "no ROS wrapper, no detector/reward block, and no VLA inference "
+                    "lifecycle."
+                )
+            if self.actuators_required:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires "
+                    f"`actuators_required` to be empty (got "
+                    f"{len(self.actuators_required)} entries). A playbook actuates "
+                    "nothing."
                 )
             return self
 
