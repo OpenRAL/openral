@@ -35,12 +35,12 @@ scene:
     top_camera_pos: [0.20, 0.0, 0.95]
     top_camera_target: [0.65, 0.0, 0.05]
     top_camera_fovy: 65.0
-    # Front camera: chest-mounted between the arms at pedestal-top height,
-    # looking forward toward the workspace — robot POV, not an external
-    # camera. Matches how bimanual robots like ALOHA mount a head/chest cam.
-    front_camera_pos: [0.05, 0.0, 0.85]
-    front_camera_target: [0.55, 0.0, 0.35]
-    front_camera_fovy: 80.0
+    # Front camera: positioned forward of the grippers (past the workspace),
+    # looking back toward the forearms and grippers. Shoulders are out of
+    # frame — only forearms, grippers, and the task objects are visible.
+    front_camera_pos: [0.75, 0.0, 0.55]
+    front_camera_target: [0.45, 0.0, 0.33]
+    front_camera_fovy: 75.0
 
 task:
   id: openarm/pnp_cube_to_drawer

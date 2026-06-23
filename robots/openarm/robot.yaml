@@ -320,9 +320,8 @@ hal:
 # the rskill manifest's ``image_preprocessing.aliases`` bridges
 # scene-side → checkpoint-side names.
 #
-# ``front``: chest-mounted between the arms at pedestal-top height,
-#   looking forward toward the workspace (robot POV — analogous to the
-#   head/chest camera on ALOHA and similar bimanual platforms).
+# ``front``: positioned forward of the grippers looking back — shows
+#   forearms + grippers + task objects; shoulders are out of frame.
 # ``top``: overhead workspace overview (mddoai dataset POV).
 # ``wrist_left`` / ``wrist_right``: body-parented, orthogonal to jaw axis.
 sensors:
