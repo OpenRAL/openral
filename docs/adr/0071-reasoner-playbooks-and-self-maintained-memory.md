@@ -611,10 +611,12 @@ affected docs in the same PR (§1.14). Phases are independently landable.
      `reflect_on_retry_cap` (Reflexion): a deterministic NL strategy hint is
      appended on a skill failure and once when the per-kind retry ladder is
      exhausted, so the next tick changes approach instead of looping.
-3. **Playbook loading (default path).** `on_configure` injects installed,
-   capability-matched `PLAYBOOK.md` bodies into the system prompt. Author
-   **find-object** and **decompose-mission** (+ the **subtask-with-goal** contract)
-   as the first three; sim test on the home fixture (reuses ADR-0039's wine task).
+3. **Playbook loading (default path) — landed.** `reasoner_node._collect_playbooks_block`
+   gathers installed, capability-matched `kind: playbook` rSkills at seed time, reads
+   their `PLAYBOOK.md` bodies, and `render_playbooks_block` appends a `## PLAYBOOKS`
+   section to the reasoner's system prompt (empty = no-op). The **find-object** playbook
+   ships as the first; **decompose-mission** + the **subtask-with-goal** contract, and a
+   live-LLM sim test on the home fixture (ADR-0039 wine task), are the remaining authoring.
 4. **`MEMORY.md` core (Decision 3, read + `memory_write` add/update/supersede).**
    File schema + loader + the `memory_write`/`memory_search` tools + reader/writer
    split. Author **verify-outcome** and **clarify-ambiguity** (they drive most
