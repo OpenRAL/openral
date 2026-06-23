@@ -21,7 +21,7 @@ scene:
   backend: mujoco
   observation_height: 480
   observation_width: 640
-  cameras: ["top", "wrist_left", "wrist_right", "front"]
+  cameras: ["top", "wrist_left", "wrist_right"]
   backend_options:
     render_width: 640
     render_height: 480
@@ -35,12 +35,6 @@ scene:
     top_camera_pos: [0.20, 0.0, 0.95]
     top_camera_target: [0.65, 0.0, 0.05]
     top_camera_fovy: 65.0
-    # Front camera: positioned forward of the grippers (past the workspace),
-    # looking back toward the forearms and grippers. Shoulders are out of
-    # frame — only forearms, grippers, and the task objects are visible.
-    front_camera_pos: [0.75, 0.0, 0.55]
-    front_camera_target: [0.45, 0.0, 0.33]
-    front_camera_fovy: 75.0
 
 task:
   id: openarm/pnp_cube_to_drawer

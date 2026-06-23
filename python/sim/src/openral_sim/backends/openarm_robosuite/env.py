@@ -26,7 +26,6 @@ from numpy.typing import NDArray
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 
-
 # `mujoco` is imported lazily inside `_build_openarm_tabletop_scene` —
 # the parent `openral_sim` package eagerly registers every backend at
 # import time, and a top-level `import mujoco` here puts mujoco in the
@@ -86,7 +85,9 @@ _GRIPPER_ENCODER_DEADBAND = 0.05
 #   image up    = body +Z (world +X, toward workspace)
 # Quaternion derived analytically from R = [right | up | -look] column matrix.
 _WRIST_CAM_LOCAL_POS = np.asarray([0.12, 0.0, -0.06], dtype=np.float64)
-_WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray([0.632177, -0.316784, 0.316784, -0.632177], dtype=np.float64)
+_WRIST_CAM_LOCAL_QUAT_WXYZ = np.asarray(
+    [0.632177, -0.316784, 0.316784, -0.632177], dtype=np.float64
+)
 _WRIST_CAMERA_FOVY = 80.0
 
 
@@ -452,7 +453,7 @@ class _OpenArmTabletopRollout:
     _max_steps: int = 500
     _step_count: int = 0
     _last_pixels: NDArray[np.uint8] | None = None
-    _image_keys: tuple[str, ...] = ("top", "wrist_left", "wrist_right", "front")
+    _image_keys: tuple[str, ...] = ("top", "wrist_left", "wrist_right")
     _render_width: int = _DEFAULT_RENDER_WIDTH
     _render_height: int = _DEFAULT_RENDER_HEIGHT
     # ``"left_first"`` (default — matches robots/openarm/robot.yaml and
@@ -813,10 +814,6 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
     top_camera_target = _parse_xyz(opts_compose.get("top_camera_target"), "top_camera_target")
     top_camera_fovy_raw = opts_compose.get("top_camera_fovy")
     top_camera_fovy = float(top_camera_fovy_raw) if top_camera_fovy_raw is not None else None
-    front_camera_pos = _parse_xyz(opts_compose.get("front_camera_pos"), "front_camera_pos")
-    front_camera_target = _parse_xyz(opts_compose.get("front_camera_target"), "front_camera_target")
-    front_camera_fovy_raw = opts_compose.get("front_camera_fovy")
-    front_camera_fovy = float(front_camera_fovy_raw) if front_camera_fovy_raw is not None else None
 
     # Load the OpenArm v2 manifest once and feed it to the composer
     # (so the actuator inventory + ``scene_defaults.top_camera`` come
@@ -839,9 +836,6 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
         top_camera_pos=top_camera_pos,
         top_camera_target=top_camera_target,
         top_camera_fovy=top_camera_fovy,
-        front_camera_pos=front_camera_pos,
-        front_camera_target=front_camera_target,
-        front_camera_fovy=front_camera_fovy,
         robot_description=robot_description,
     )
     # Drop the composed XML next to the upstream meshdir so the relative
