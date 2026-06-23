@@ -16,7 +16,7 @@ side); only the MJCF mesh set differs.
 | `embodiment_kind` | `manipulator` |
 | Joints | 6 (5 revolute arm + 1 revolute gripper) |
 | End-effector | parallel gripper (1 DoF, 5 N max grip force, 0.5 kg payload, 0.32 m workspace radius) |
-| Sensors | OAK-D Pro overhead RGB (`front` → `observation.images.camera1`) + 256×256 wrist RGB on the gripper body (`wrist` → `observation.images.camera2`) |
+| Sensors | OAK-D Pro overhead RGB (`front` → `observation.images.camera1`) + 256×256 wrist RGB on the terminal gripper body (`wrist` → `observation.images.camera2`) |
 | Embodiment tags | `so101_follower`, `lerobot` |
 | Supported control modes | `joint_position`, `gripper_position` |
 | `sdk_kind` | `open` (LeRobot SDK, Apache-2.0) |

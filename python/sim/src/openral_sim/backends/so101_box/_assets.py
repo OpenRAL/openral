@@ -115,18 +115,13 @@ class BoxSceneOptions:
     robot_base_xyz: tuple[float, float, float] = (0.50, 0.50, 0.0)
     robot_base_yaw_deg: float = 0.0
 
-    # Wrist camera, parented to the gripper body. It must look along the
-    # gripper APPROACH axis (where the fingers point / what gets grasped) so
-    # it tracks the workspace at every pose. In the gripper-body local frame
-    # the approach axis is -X (verified: gripper-local +X maps to world +Z, so
-    # -X is world-down = the finger/approach direction); the previous default
-    # aimed along -Y, which points sideways into a box wall — the camera saw a
-    # blank dark plane. These defaults sit the camera just above/behind the
-    # fingertips looking down -X so the gripper jaw + the object ahead are in
-    # frame.
-    wrist_camera_pos_local: tuple[float, float, float] = (0.03, -0.02, -0.06)
-    wrist_camera_target_local: tuple[float, float, float] = (-0.25, -0.02, -0.06)
-    wrist_camera_fovy: float = 75.0
+    # Wrist camera, parented to the terminal gripper body and tuned to look in
+    # the direction orthogonal to the jaw open/close motion while keeping about
+    # 20% of the frame on the gripper and most of the rest on the workspace.
+    wrist_camera_pos_local: tuple[float, float, float] = (-0.02, 0.02, 0.0)
+    wrist_camera_target_local: tuple[float, float, float] = (-0.02, -0.08, 0.0)
+    wrist_camera_up_local: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    wrist_camera_fovy: float = 58.0
 
     oak_top_camera_pos: tuple[float, float, float] = (0.50, 0.3075, 0.749)
     oak_top_camera_target: tuple[float, float, float] = (0.50, 0.3075, 0.0)
@@ -277,15 +272,16 @@ def _splice_wrist_camera(
     xml: str,
     pos_local: tuple[float, float, float],
     target_local: tuple[float, float, float],
+    up_local: tuple[float, float, float],
     fovy: float,
 ) -> str:
-    """Insert a ``<camera name="wrist">`` element inside the ``<body name="gripper">`` body.
+    """Insert a ``<camera name="wrist">`` element inside the terminal gripper body.
 
-    The camera is parented to the gripper body so it tracks the
-    end-effector pose. ``pos_local`` / ``target_local`` are expressed
-    in the gripper body's local frame.
+    The camera is parented to the SO-101's ``gripper`` body, matching the
+    direct MJCF snippet used to tune the pose. ``pos_local`` / ``target_local``
+    are expressed in that body's local frame.
     """
-    quat = _look_at_quat(pos_local, target_local)
+    quat = _look_at_quat(pos_local, target_local, up=up_local)
     cam = (
         f'<camera name="wrist" pos="{pos_local[0]} {pos_local[1]} {pos_local[2]}" '
         f'quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}" fovy="{fovy}" '
@@ -295,8 +291,8 @@ def _splice_wrist_camera(
     xml, n = pattern.subn(rf"\g<1>\n        {cam}", xml, count=1)
     if n != 1:
         raise ROSConfigError(
-            'so101_box: cannot find <body name="gripper"> in the upstream SO-101 '
-            "MJCF — wrist camera cannot be parented.",
+            'so101_box: cannot find <body name="gripper"> in the '
+            "upstream SO-101 MJCF — wrist camera cannot be parented.",
         )
     return xml
 
@@ -585,6 +581,7 @@ def compose_so101_box_mjcf(
         body,
         opts.wrist_camera_pos_local,
         opts.wrist_camera_target_local,
+        opts.wrist_camera_up_local,
         opts.wrist_camera_fovy,
     )
 

@@ -75,14 +75,12 @@ scene:
     robot_base_xyz: [0.50, 0.50, 0.00]
     robot_base_yaw_deg: 0.0
 
-    # Wrist camera — parented to the gripper body, mounted just above the
-    # fingertips and aimed along the gripper APPROACH axis (gripper-local -X
-    # = world-down at home) so the jaw + the object being grasped stay in
-    # frame at every pose. (The old [0,-0.03,0]→[0,-0.10,-0.05] aim pointed
-    # sideways into a box wall — a blank dark view.)
-    wrist_camera_pos_local: [0.03, -0.02, -0.06]
-    wrist_camera_target_local: [-0.25, -0.02, -0.06]
-    wrist_camera_fovy: 75.0
+    # Wrist camera — gripper-mounted, facing orthogonal to the jaw open/close
+    # motion, with about 20% gripper and most of the rest on the workspace.
+    wrist_camera_pos_local: [-0.02, 0.02, 0.0]
+    wrist_camera_target_local: [-0.02, -0.08, 0.0]
+    wrist_camera_up_local: [0.0, 0.0, 1.0]
+    wrist_camera_fovy: 58.0
 
     # OAK-D Pro overhead — centred horizontally over the box,
     # mounted at the ceiling (z = box_height - 1 mm), looking down.

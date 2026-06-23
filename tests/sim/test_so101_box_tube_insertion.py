@@ -194,6 +194,29 @@ def test_so101_box_wrist_camera_sees_lit_scene(env_cfg) -> None:
     )
 
 
+def test_so101_box_wrist_camera_matches_tuned_gripper_pose(env_cfg) -> None:
+    """The wrist camera matches the orthogonal gripper-facing tuned pose."""
+    from openral_sim import SCENES
+
+    rollout = SCENES.get("so101_box")(env_cfg)
+    rollout.reset(seed=0)
+    model, data = rollout.mujoco_handles()
+    cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist")
+    grip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper")
+    cam_pos = np.asarray(data.cam_xpos[cam_id], dtype=np.float64)
+    cam_xmat = np.asarray(data.cam_xmat[cam_id], dtype=np.float64).reshape(3, 3)
+    grip_pos = np.asarray(data.xpos[grip_id], dtype=np.float64)
+    grip_xmat = np.asarray(data.xmat[grip_id], dtype=np.float64).reshape(3, 3)
+    rollout.close()
+    cam_pos_local = grip_xmat.T @ (cam_pos - grip_pos)
+    cam_forward_local = grip_xmat.T @ (-cam_xmat[:, 2])
+    cam_up_local = grip_xmat.T @ cam_xmat[:, 1]
+    np.testing.assert_allclose(cam_pos_local, np.array([-0.02, 0.02, 0.0]), atol=2e-3)
+    expected_forward = np.array([0.0, -1.0, 0.0])
+    assert float(np.dot(cam_forward_local, expected_forward)) > 0.999
+    assert float(np.dot(cam_up_local, np.array([0.0, 0.0, 1.0]))) > 0.999
+
+
 def test_so101_box_nonzero_action_moves_arm(env_cfg) -> None:
     """A non-zero joint-position target actually moves the arm.
 

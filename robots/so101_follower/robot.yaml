@@ -116,7 +116,7 @@ end_effectors:
 
 # SO-101 ships with optional USB cameras. ``camera1`` mirrors the
 # overhead third-person view used by the lerobot SO-101 datasets;
-# ``camera2`` is the wrist-mounted view on the gripper body. The
+# ``camera2`` is the wrist-mounted view on the terminal gripper body. The
 # ``so101_box`` sim scene routes the in-scene OAK-D Pro overhead
 # stream into ``observation.images.camera1`` and the MJCF wrist
 # camera into ``observation.images.camera2``.
@@ -148,21 +148,21 @@ sensors:
     model: "oak_d_pro"
   - name: "wrist"
     modality: "rgb"
-    # The wrist camera is bolted to the gripper body (it rolls with wrist_roll);
-    # its own optical frame is `wrist_camera`, parented to the `gripper` URDF
-    # link. `wrist_roll` is a joint, not a tf frame; `wrist` is the arm link and
-    # must not be reused as the camera frame (it would gain a second parent).
+    # The wrist camera is bolted to the terminal gripper body; its own optical
+    # frame is `wrist_camera`, parented to the `gripper` URDF link. `wrist_roll` is a joint,
+    # not a tf frame; `wrist` is the arm link and must not be reused as the
+    # camera frame (it would gain a second parent).
     frame_id: "wrist_camera"
     parent_frame: "gripper"
     rate_hz: 30.0
     # ADR-0065 — sim placement for the wrist camera. The rig parents it to the
-    # MJCF `gripper` body (the roll-mounted end body), pose in that body's local
-    # frame, looking along the gripper approach axis (gripper-local -X = the
-    # finger/grasp direction) so the jaw + workspace ahead stay in frame.
+    # MJCF `gripper` body, facing orthogonal to the jaw open/close motion so
+    # the gripper stays partially visible while most of the frame sees the
+    # workspace ahead.
     sim_placement:
       parent_body: "gripper"
-      pos: [0.03, -0.02, -0.06]
-      target: [-0.25, -0.02, -0.06]
+      pos: [-0.02, 0.02, 0.0]
+      target: [-0.02, -0.08, 0.0]
     intrinsics:
       width: 256
       height: 256
@@ -270,3 +270,4 @@ allowed_collision_pairs:
   - [lower_arm, upper_arm]
   - [lower_arm, wrist]
   - [shoulder, upper_arm]
+schema_version: '0.2'
