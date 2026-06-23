@@ -60,18 +60,22 @@ The reasoner is wire-protocol agnostic — every provider satisfies the
 ### Named provider presets
 
 `OPENRAL_REASONER_LLM_PROVIDER` accepts these named values. Each is just
-a `ToolUseClient` selection plus, for the cloud presets, a pre-filled
-`OPENRAL_REASONER_LLM_BASE_URL` so you don't hand-configure it. An
-explicit `OPENRAL_REASONER_LLM_BASE_URL` always overrides the preset
-(proxy / staging gateway). `gemini` / `xai` / `deepseek` are thin
-shortcuts over the same `OpenAICompatibleToolUseClient` as `openrouter`,
-pointed at each vendor's own OpenAI-compatible endpoint.
+a `ToolUseClient` selection plus a pre-filled `OPENRAL_REASONER_LLM_BASE_URL`
+(except `anthropic` / bare `openai-compatible`) so you don't hand-configure
+it. An explicit `OPENRAL_REASONER_LLM_BASE_URL` always overrides the preset
+(proxy / staging gateway / non-default port). The cloud presets
+(`openrouter` / `gemini` / `xai` / `deepseek`) and the local presets
+(`ollama` / `vllm`) are all thin shortcuts over the same
+`OpenAICompatibleToolUseClient`, pointed at each target's OpenAI-compatible
+endpoint; the local ones also drop the API-key requirement and get a longer
+default timeout to absorb a cold first call.
 
 | `PROVIDER` | Client | Default base URL | API key |
 |---|---|---|---|
 | `anthropic` | `AnthropicToolUseClient` | `https://api.anthropic.com` | required |
 | `openai-compatible` | `OpenAICompatibleToolUseClient` | `https://api.openai.com/v1` (set yours) | optional¹ |
 | `ollama` | `OpenAICompatibleToolUseClient` | `http://localhost:11434/v1` | none |
+| `vllm` | `OpenAICompatibleToolUseClient` | `http://localhost:8000/v1` | none² |
 | `openrouter` | `OpenAICompatibleToolUseClient` | `https://openrouter.ai/api/v1` | required |
 | `gemini` | `OpenAICompatibleToolUseClient` | `https://generativelanguage.googleapis.com/v1beta/openai/` | required |
 | `xai` | `OpenAICompatibleToolUseClient` | `https://api.x.ai/v1` | required |
@@ -79,6 +83,11 @@ pointed at each vendor's own OpenAI-compatible endpoint.
 
 ¹ `openai-compatible` ignores the key for local endpoints (vLLM /
 llama-server) that don't enforce auth; set it when targeting cloud OpenAI.
+² `vllm` is the convenience preset for a local `vllm serve` (loopback,
+no auth); set `OPENRAL_REASONER_LLM_API_KEY` only if you started vLLM with
+`--api-key`, and `OPENRAL_REASONER_LLM_BASE_URL` for a remote host / non-8000
+port. A vLLM endpoint reachable only via a custom URL still works under bare
+`openai-compatible` — `vllm` just saves you typing the default.
 
 ```bash
 # Gemini (Google AI Studio key)
@@ -96,7 +105,13 @@ export OPENRAL_REASONER_LLM_PROVIDER=deepseek
 export OPENRAL_REASONER_LLM_MODEL=deepseek-chat
 export OPENRAL_REASONER_LLM_API_KEY=sk-...
 
-uv add openai --package openral-reasoner      # one-time, all three
+# vLLM (local, self-hosted) — start `vllm serve <model>` first (listens on :8000)
+export OPENRAL_REASONER_LLM_PROVIDER=vllm
+export OPENRAL_REASONER_LLM_MODEL=qwen2.5-7b-instruct
+# OPENRAL_REASONER_LLM_BASE_URL only if not on localhost:8000;
+# OPENRAL_REASONER_LLM_API_KEY only if you ran `vllm serve --api-key ...`
+
+uv add openai --package openral-reasoner      # one-time, all four
 ```
 
 No cloud lock-in: the open-core path requires the deployment to pick

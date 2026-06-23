@@ -16,6 +16,7 @@ from openral_reasoner.tool_use import (
     GEMINI_BASE_URL,
     OLLAMA_BASE_URL,
     OPENROUTER_BASE_URL,
+    VLLM_BASE_URL,
     XAI_BASE_URL,
     AnthropicToolUseClient,
     OpenAICompatibleToolUseClient,
@@ -48,6 +49,7 @@ def test_provider_unset_raises_with_message() -> None:
     assert "openai-compatible" in msg
     assert "openrouter" in msg
     assert "ollama" in msg
+    assert "vllm" in msg
     assert "gemini" in msg
     assert "xai" in msg
     assert "deepseek" in msg
@@ -167,6 +169,31 @@ def test_ollama_explicit_base_url_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client._base_url == "https://ollama-gateway.internal/v1"
 
 
+def test_vllm_default_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`vllm` with no BASE_URL pins to the local vLLM default and needs no key."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "qwen2.5-7b-instruct"
+    assert client._base_url == VLLM_BASE_URL == "http://localhost:8000/v1"
+    # Self-hosted vLLM enforces no auth by default.
+    assert client._api_key is None
+
+
+def test_vllm_explicit_base_url_and_key_win(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit BASE_URL / API_KEY override the vLLM defaults — e.g. a
+    remote `vllm serve --api-key` deployment on a non-default port."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "served-key")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://gpu-box.internal:8001/v1")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._base_url == "http://gpu-box.internal:8001/v1"
+    assert client._api_key == "served-key"
+
+
 # ── Named cloud presets (gemini / xai / deepseek) ──────────────────────────────
 # Thin auth-required convenience wrappers over OpenAICompatibleToolUseClient
 # that pre-fill the vendor's own OpenAI-compatible base URL (issue #74).
@@ -212,9 +239,7 @@ def test_named_preset_explicit_base_url_wins(
 
 
 @pytest.mark.parametrize("provider", ["gemini", "xai", "deepseek"])
-def test_named_preset_without_key_raises(
-    monkeypatch: pytest.MonkeyPatch, provider: str
-) -> None:
+def test_named_preset_without_key_raises(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     """The named presets all enforce auth, like openrouter."""
     monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
     monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "some-model")

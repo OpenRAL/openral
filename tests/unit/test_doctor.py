@@ -403,6 +403,41 @@ def test_check_reasoner_llm_named_cloud_preset_missing_key(
     assert "deepseek" in key_row.details
 
 
+def test_check_reasoner_llm_vllm_probe_row_labelled_vllm(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """`provider=vllm` defaults to the local :8000 endpoint, needs no key, and
+    its loopback probe row is labelled vLLM (not Ollama) with a vLLM hint."""
+    # Port 1 is guaranteed-closed so the probe always warns deterministically.
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1:1/v1")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    # No model/key missing → ok (auth not required for vllm).
+    assert summary.status == "ok"
+    assert "provider=vllm" in summary.details
+    probe = next(r for r in rows if r.check == "vLLM")
+    assert probe.status == "warn"
+    assert "vllm serve" in probe.details
+    # Must not be mislabelled / hinted as Ollama.
+    assert not any(r.check == "Ollama" for r in rows)
+    assert "bootstrap-ollama" not in probe.details
+
+
+def test_check_reasoner_llm_vllm_default_port(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """With no BASE_URL, vllm resolves the :8000 loopback default in the summary."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert "localhost:8000/v1" in summary.details
+    # Loopback → a vLLM probe row is emitted (reachable or not).
+    assert any(r.check == "vLLM" for r in rows)
+
+
 def test_check_reasoner_llm_local_endpoint_unreachable(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
