@@ -28,6 +28,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from openral_core import ClockOrigin
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 
 
@@ -85,9 +86,17 @@ def test_idle_step_advances_state_and_is_recoverable() -> None:
     """
     hal = _build_bare_arm()
     assert callable(getattr(hal, "idle_step", None)), "MujocoArmHAL must expose idle_step"
+    t0 = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
+    assert t0 is not None
+    authority = hal.clock_authority()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
+    assert authority.origin is ClockOrigin.SIMULATION
+    assert authority.clock_id == "mujoco"
 
     hal._last_state_time -= 1.0  # type: ignore[attr-defined]  # reason: prove idle_step refreshes it
     assert hal.idle_step() is True  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
+    t1 = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
+    assert t1 is not None
+    assert t1 > t0
     # idle_step advanced the sim → clock fresh, so the publisher thread's
     # snapshot read is never stale while idle.
     assert (time.monotonic() - hal._last_state_time) < 0.5  # type: ignore[attr-defined]
@@ -99,9 +108,14 @@ def test_idle_step_returns_false_after_estop() -> None:
     The idle stepper must never autonomously step a HAL that has e-stopped.
     """
     hal = _build_bare_arm()
+    assert hal.sim_time_ns() is not None  # type: ignore[attr-defined]  # connected bare sim
     with pytest.raises(ROSEStopRequested):
         hal.estop()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface; estop always raises
     assert hal.idle_step() is False  # type: ignore[attr-defined]  # reason: disconnected → no step
+    assert hal.sim_time_ns() is None  # type: ignore[attr-defined]  # disconnected/e-stopped
+    assert (
+        hal.clock_authority().origin is ClockOrigin.HOST_WALL
+    )  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
 
 
 def test_last_action_ns_updates_on_send_action() -> None:
@@ -115,6 +129,10 @@ def test_last_action_ns_updates_on_send_action() -> None:
     state = hal.read_state()  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
     hold = list(state.position)
     action = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[hold])
+    before = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
     hal.send_action(action)  # type: ignore[attr-defined]  # reason: MujocoArmHAL surface
+    after = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: MujocoArmHAL clock seam
 
     assert int(hal.last_action_ns) > 0  # type: ignore[attr-defined]  # stamped by send_action
+    assert before is not None and after is not None
+    assert after > before

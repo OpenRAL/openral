@@ -462,17 +462,15 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     }
 
 
-def _resolve_clock_origin(*, hal_mode: str, config: Path | None, hal: _HalSpec) -> str:
+def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
     Real deployments use host wall time. Sim deployments use simulator elapsed
-    time only when the HAL is scene-attached and the backend exposes
-    ``sim_time_ns``; otherwise the graph stays in host-wall time so ROS node
-    clocks never pin at zero.
+    time when the deploy scene backend exposes a sim clock. Scene-attached HALs
+    and bare MuJoCo twins both expose ``sim_time_ns``; clock-less scenes stay in
+    host-wall time so ROS node clocks never pin at zero.
     """
     if hal_mode != "sim":
-        return "host_wall"
-    if hal.bare_twin_sim:
         return "host_wall"
     return "simulation" if _scene_backend_has_sim_clock(config) else "host_wall"
 
@@ -687,7 +685,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             s.modality in ("depth", "point_cloud") and s.intrinsics is not None
             for s in description.sensors
         )
-    clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config, hal=hal)
+    clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config)
 
     # ADR-0035/0037 — the object-detection leg is ON by default (deploy sim is a
     # perception-driven stack; ``--no-object-detector`` turns it off). The default

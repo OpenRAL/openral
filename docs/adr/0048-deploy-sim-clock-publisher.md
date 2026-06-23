@@ -153,12 +153,11 @@ gate that already defers the Nav2 include is the natural hook.
 
 ### 4. Backend-capability gate (the CLI must refuse silent breakage)
 
-`openral deploy sim` resolves `clock_origin` against both the scene backend and the HAL topology:
+`openral deploy sim` resolves `clock_origin` against the scene backend's clock capability:
 
-- scene-attached HAL plus backend exposes sim-time (`sim_time_ns() is not None`) →
+- scene-attached and bare-twin HALs whose backend exposes sim-time (`sim_time_ns() is not None`) →
   `clock_origin=simulation`;
-- bare-twin HAL, backend returns `None` (sidecars before the protocol bump; clock-less gym envs), or
-  no deploy scene →
+- backend returns `None` (sidecars before the protocol bump; clock-less gym envs), or no deploy scene →
   `clock_origin=host_wall` and the graph stays on system time. Never set `use_sim_time=true` for
   a backend that cannot feed `/clock`; that reintroduces the exact `t=0` bug.
 
@@ -168,7 +167,7 @@ gate that already defers the Nav2 include is the natural hook.
 |---|---|---|---|
 | robocasa / robosuite (MuJoCo) | `MjData.time` | ✅ | Primary target; idle stepper already advances it |
 | LIBERO / MetaWorld / aloha (MuJoCo) | `MjData.time` | ✅ | Same accessor |
-| bare-twin MuJoCo HALs (OpenArm / SO-100 / SO-101) | not yet exposed via `sim_time_ns()` | ❌ | Forced host-wall until the bare HALs publish an authority |
+| bare-twin MuJoCo HALs (OpenArm / SO-100 / SO-101) | `MjData.time` | ✅ | `MujocoArmHAL.sim_time_ns()` exposes the same authority |
 | Isaac Sim (ADR-0045 sidecar) | PhysX sim-time, **inside the sidecar** | ✅ | ZMQ reply carries `sim_time_ns` |
 | GR00T (ADR-0046 sidecar) | n/a (policy, not sim) | n/a | Not a sim backend |
 | pusht / clock-less gym | none | ❌ | Forced wall-clock |
