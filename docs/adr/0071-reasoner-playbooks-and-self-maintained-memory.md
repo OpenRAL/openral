@@ -596,8 +596,14 @@ affected docs in the same PR (§1.14). Phases are independently landable.
    every other kind). Fuzz + in-tree-manifest tests. *No runtime behavior yet.*
 2. **Context grounding (Decision 2.1–2.3).** Robot self-model block, success/failure
    `## EXECUTION` feedback, ladder reflection line. Pure-Python + a reasoner
-   integration test on a real robot fixture. *Highest leverage, no new kind needed —
-   could land first.*
+   integration test on a real robot fixture. *Highest leverage, no new kind needed.*
+   - **2.1 robot self-model — landed.** `render_robot_self_model(description)`
+     (`openral_reasoner.context`) renders the `## ROBOT` resume (embodiment, DOF,
+     end-effectors, locomotion, payload, capability flags, cameras+FOV, control
+     modes); `ContextRenderer.set_robot_model` surfaces it, wired in
+     `reasoner_node` at palette-seed time. Unit-tested on real `so100_follower` /
+     `panda_mobile` fixtures.
+   - **2.2 execution feedback + 2.3 ladder reflection — remaining.**
 3. **Playbook loading (default path).** `on_configure` injects installed,
    capability-matched `PLAYBOOK.md` bodies into the system prompt. Author
    **find-object** and **decompose-mission** (+ the **subtask-with-goal** contract)

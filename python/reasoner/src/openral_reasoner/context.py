@@ -25,6 +25,7 @@ from collections import deque
 from openral_core import (
     FailureEvidence,
     PerceptionEventMetadata,
+    RobotDescription,
     WorldState,
 )
 from pydantic import TypeAdapter
@@ -36,6 +37,7 @@ __all__ = [
     "FailureEventRecord",
     "PerceptionEventRecord",
     "PromptRecord",
+    "render_robot_self_model",
 ]
 
 # Each rolling buffer is sized so an entire window fits in ~1 KB of
@@ -107,6 +109,74 @@ class PromptRecord:
     priority: int = DEFAULT_PROMPT_PRIORITY
 
 
+def render_robot_self_model(description: RobotDescription) -> str:
+    """Render the static **robot self-model** ("robot resume") text block.
+
+    A one-time, deterministic summary of what the robot *is and can do* —
+    embodiment, DOF, end-effectors, locomotion, payload, capability flags, and
+    cameras (with field-of-view) — derived from the :class:`RobotDescription`.
+    The reasoner injects this as the ``## ROBOT`` context section (computed once
+    at configure time) so the LLM can judge feasibility — "is the target in
+    reach / in view?" — before dispatching a skill, instead of guessing (ADR-0071
+    Decision 2.1, the EMOS "Robot Resume" idea). Pixel-free (ADR-0018 §4).
+
+    Args:
+        description: The robot manifest loaded from ``robots/<id>/robot.yaml``.
+
+    Returns:
+        A deterministic multi-line block (no trailing newline).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/so100_follower/robot.yaml")
+        >>> "name: so100_follower" in render_robot_self_model(d)
+        True
+    """
+    caps = description.capabilities
+    lines: list[str] = [
+        f"name: {description.name} (embodiment={description.embodiment_kind.value})",
+        f"dof: {len(description.joints)} joints",
+    ]
+    if description.end_effectors:
+        ees = ", ".join(f"{e.name}({e.kind})" for e in description.end_effectors)
+        lines.append(f"end_effectors: {ees}")
+    if caps.locomotion:
+        # LocomotionKind is a Literal[str], so the items are already strings.
+        lines.append(f"locomotion: {', '.join(sorted(caps.locomotion))}")
+    if caps.can_lift_kg > 0.0:
+        lines.append(f"payload_kg: {caps.can_lift_kg:.1f}")
+    flags = [
+        name
+        for name, present in (
+            ("vision", caps.has_vision),
+            ("force_control", caps.has_force_control),
+            ("tactile", caps.has_tactile),
+            ("dexterous_hands", caps.has_dexterous_hands),
+            ("lidar", caps.has_lidar),
+            ("audio", caps.has_audio),
+            ("bimanual", caps.bimanual),
+        )
+        if present
+    ]
+    if flags:
+        lines.append(f"capabilities: {', '.join(flags)}")
+    # Cameras = sensors carrying pinhole intrinsics or a declared FOV. The FOV
+    # (frustum) is the LLM's "what can I see and how wide" cue for view feasibility.
+    cameras: list[str] = []
+    for sensor in description.sensors:
+        if sensor.intrinsics is None and sensor.fov_h_deg is None:
+            continue
+        if sensor.fov_h_deg is not None and sensor.fov_v_deg is not None:
+            cameras.append(f"{sensor.name}(fov {sensor.fov_h_deg:.0f}x{sensor.fov_v_deg:.0f}deg)")
+        else:
+            cameras.append(sensor.name)
+    if cameras:
+        lines.append(f"cameras: {', '.join(cameras)}")
+    if caps.supported_control_modes:
+        lines.append(f"control_modes: {', '.join(m.value for m in caps.supported_control_modes)}")
+    return "\n".join(lines)
+
+
 class ContextRenderer:
     """Stateful structured-text builder for the reasoner LLM.
 
@@ -127,13 +197,24 @@ class ContextRenderer:
         True
     """
 
-    def __init__(self, *, buffer_size: int = DEFAULT_BUFFER_SIZE) -> None:
-        """Stash buffer capacity and arm empty FIFOs."""
+    def __init__(
+        self, *, buffer_size: int = DEFAULT_BUFFER_SIZE, robot_model: str | None = None
+    ) -> None:
+        """Stash buffer capacity, the static robot self-model, and arm empty FIFOs.
+
+        Args:
+            buffer_size: Per-category rolling-buffer retention.
+            robot_model: Pre-rendered robot self-model text (ADR-0071 Decision
+                2.1, from :func:`render_robot_self_model`), rendered as the
+                ``## ROBOT`` section. ``None`` omits the section (e.g. before the
+                robot description is loaded).
+        """
         if buffer_size < 1:
             raise ValueError(
                 f"ContextRenderer.buffer_size must be >= 1; got {buffer_size!r}",
             )
         self._buffer_size = buffer_size
+        self._robot_model = robot_model
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
         # Prompt buffer is a list (not a deque) because we order it by
@@ -147,6 +228,17 @@ class ContextRenderer:
         # since the last successful tick the LLM call is wasted.
         # ADR-0018 amendment 2026-05-25 §2 ("heartbeat_idle").
         self._seq: int = 0
+
+    # ── static robot self-model ─────────────────────────────────────────────
+
+    def set_robot_model(self, robot_model: str | None) -> None:
+        """Set (or clear) the static robot self-model rendered as ``## ROBOT``.
+
+        Called once after the ``RobotDescription`` is loaded (ADR-0071 Decision
+        2.1). Static config, not an event: it does not touch the rolling buffers
+        or bump :attr:`seq`, so it is safe to call on a live renderer.
+        """
+        self._robot_model = robot_model
 
     # ── rolling buffer mutators ─────────────────────────────────────────────
 
@@ -211,11 +303,14 @@ class ContextRenderer:
                 the aggregator has not yet produced one.
 
         Returns:
-            A multi-section text block with ``## WORLD_STATE``,
-            ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``
-            sections.
+            A multi-section text block: an optional ``## ROBOT`` self-model
+            (when provided at construction) followed by ``## WORLD_STATE``,
+            ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS`` sections.
         """
-        sections: list[str] = [
+        sections: list[str] = []
+        if self._robot_model is not None:
+            sections += ["## ROBOT", self._robot_model, ""]
+        sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
             "",
