@@ -132,35 +132,37 @@ class TestSupportsCuMotion:
 
 
 class TestRobotDescriptionComputeField:
-    """``RobotDescription.compute`` carries the compute spec."""
+    """``RobotDescription`` compute slots (ADR-0069)."""
 
     def test_compute_defaults_to_none(self) -> None:
-        """All existing manifests load with compute=None (no accelerator declared)."""
+        """All existing manifests load with all compute slots None (no accelerator declared)."""
         for manifest in sorted((REPO_ROOT / "robots").glob("*/robot.yaml")):
             desc = RobotDescription.from_yaml(str(manifest))
-            assert desc.compute is None, f"{manifest.parent.name}: expected compute=None"
+            assert desc.compute_edge is None, f"{manifest.parent.name}: expected compute_edge=None"
+            assert desc.compute_local is None, f"{manifest.parent.name}: expected compute_local=None"
+            assert desc.compute_cloud is None, f"{manifest.parent.name}: expected compute_cloud=None"
 
     def test_compute_spec_round_trips_on_description(self, tmp_path: Path) -> None:
         src = REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"
         desc = RobotDescription.from_yaml(str(src))
-        desc = desc.model_copy(update={
-            "compute": ComputeSpec(
-                gpu_vram_gb=64.0,
-                compute_tops=275.0,
-                cuda_compute_capability=(8, 7),
-                cuda_toolkit_version="12.2",
-                tensorrt_version="8.6",
-                gpu_supported_runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT],
-                gpu_supported_dtypes=[QuantizationDtype.FP16, QuantizationDtype.INT8],
-            )
-        })
+        spec = ComputeSpec(
+            gpu_vram_gb=64.0,
+            compute_tops=275.0,
+            cuda_compute_capability=(8, 7),
+            cuda_toolkit_version="12.2",
+            tensorrt_version="8.6",
+            gpu_supported_runtimes=[RSkillRuntime.PYTORCH, RSkillRuntime.TENSORRT],
+            gpu_supported_dtypes=[QuantizationDtype.FP16, QuantizationDtype.INT8],
+        )
+        desc = desc.model_copy(update={"compute_edge": spec})
         out = tmp_path / "robot.yaml"
         out.write_text(yaml.safe_dump(desc.model_dump(mode="json")))
         rebuilt = RobotDescription.from_yaml(str(out))
-        assert rebuilt.compute is not None
-        assert rebuilt.compute.gpu_vram_gb == 64.0
-        assert rebuilt.compute.cuda_compute_capability == (8, 7)
-        assert rebuilt.compute.supports_cumotion() is False  # CUDA 12.2 < 13
+        assert rebuilt.compute_edge is not None
+        assert rebuilt.compute_local is None
+        assert rebuilt.compute_edge.gpu_vram_gb == 64.0
+        assert rebuilt.compute_edge.cuda_compute_capability == (8, 7)
+        assert rebuilt.compute_edge.supports_cumotion() is False  # CUDA 12.2 < 13
 
 
 class TestExistingManifestsLoad:
@@ -173,5 +175,7 @@ class TestExistingManifestsLoad:
     )
     def test_existing_robot_manifests_load(self, manifest: Path) -> None:
         desc = RobotDescription.from_yaml(str(manifest))
-        # New compute field defaults to None — no accelerator declared.
-        assert desc.compute is None
+        # All compute slots default to None — no accelerator declared.
+        assert desc.compute_edge is None
+        assert desc.compute_local is None
+        assert desc.compute_cloud is None

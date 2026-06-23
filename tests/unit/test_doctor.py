@@ -378,11 +378,11 @@ def test_gather_checks_returns_list() -> None:
     names = [c.check for c in checks]
     assert "Python" in names
     assert "Platform" in names
-    # ComputeSpec rows always present regardless of GPU availability
-    assert "ComputeSpec / runtimes" in names
-    assert "ComputeSpec / dtypes" in names
-    assert "ComputeSpec / cuMotion" in names
-    assert "ComputeSpec / NVMM" in names
+    # ComputeSpec rows always present regardless of GPU availability (tier label varies)
+    assert any("ComputeSpec" in n and "runtimes" in n for n in names)
+    assert any("ComputeSpec" in n and "dtypes" in n for n in names)
+    assert any("ComputeSpec" in n and "cuMotion" in n for n in names)
+    assert any("ComputeSpec" in n and "NVMM" in n for n in names)
 
 
 # ── _check_compute_spec ───────────────────────────────────────────────────────
@@ -391,10 +391,11 @@ def test_gather_checks_returns_list() -> None:
 def test_check_compute_spec_cpu_only() -> None:
     probe = _gpu_probe_stub()
     rows = _check_compute_spec(probe)
+    # CPU-only → "local" tier
     checks = {r.check: r for r in rows}
-    assert "ComputeSpec / runtimes" in checks
-    assert "ComputeSpec / dtypes" in checks
-    cumotion = checks["ComputeSpec / cuMotion"]
+    assert "ComputeSpec (local) / runtimes" in checks
+    assert "ComputeSpec (local) / dtypes" in checks
+    cumotion = checks["ComputeSpec (local) / cuMotion"]
     assert cumotion.status == "info"
     assert "not supported" in cumotion.details
 
@@ -414,9 +415,10 @@ def test_check_compute_spec_ampere_cuda13_qualifies_cumotion() -> None:
     )
     probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
     rows = _check_compute_spec(probe)
+    # Discrete NVIDIA → "local" tier
     checks = {r.check: r for r in rows}
-    assert checks["ComputeSpec / cuMotion"].status == "ok"
-    assert checks["ComputeSpec / cuMotion"].details == "supported"
+    assert checks["ComputeSpec (local) / cuMotion"].status == "ok"
+    assert checks["ComputeSpec (local) / cuMotion"].details == "supported"
 
 
 def test_check_compute_spec_runtimes_include_tensorrt_for_nvidia() -> None:
@@ -433,14 +435,15 @@ def test_check_compute_spec_runtimes_include_tensorrt_for_nvidia() -> None:
     )
     probe = _gpu_probe_stub(nvidia=[nv], backend="nvml")
     rows = _check_compute_spec(probe)
-    runtimes_row = next(r for r in rows if r.check == "ComputeSpec / runtimes")
+    # Discrete NVIDIA → "local" tier
+    runtimes_row = next(r for r in rows if "runtimes" in r.check)
     assert "tensorrt" in runtimes_row.details
 
 
 def test_check_compute_spec_nvmm_row_present() -> None:
     probe = _gpu_probe_stub()
     rows = _check_compute_spec(probe)
-    nvmm = next(r for r in rows if r.check == "ComputeSpec / NVMM")
+    nvmm = next(r for r in rows if "NVMM" in r.check)
     assert nvmm.status in ("ok", "absent")
 
 

@@ -1,8 +1,9 @@
 # ADR-0069 — Compute deployment targets: edge / local / cloud
 
-- **Status:** Proposed 2026-06-23.
+- **Status:** Accepted 2026-06-23 — Phase 1 implemented.
 - **Date:** 2026-06-23
 - **Amendment 2026-06-23:** Finalised `ComputeSpec` field set after design review. `onboard_compute_tops` renamed to `compute_tops`; `onboard_memory_gb` renamed to `system_memory_gb` (the `onboard_` prefix is wrong for local/cloud tiers). Added `num_gpus: int = 1`, `endpoint: str | None = None`, `network_latency_ms: float | None = None` (see D1 revised schema below). `nvmm_available` remains shared across all tiers — probed on every host and returns `False` gracefully when absent (can be `True` on local/cloud Tegra nodes too). `compute_cloud_endpoint` moved inside `ComputeSpec` as `endpoint` so each spec is self-contained and multiple cloud endpoints are independent.
+- **Amendment 2026-06-23 (Phase 1 complete):** Phase 1 implemented in PR `fix/robot-scene-sensor-manifest-validation`. `RobotDescription.compute` replaced with `compute_edge`, `compute_local`, `compute_cloud`. `schema_version: "0.2"` added. `_migrate_v0_1` model validator provides transparent backward compatibility for old YAMLs with `compute:`. Migrator `tools/migrate_robot_yaml.py` ships. All 17 in-tree robot manifests updated to `schema_version: '0.2'`. `openral doctor` now labels rows `ComputeSpec (edge)` / `ComputeSpec (local)`. `_resolve_compute` semantics inlined at each call site (`compute_edge or compute_local`). 3271 unit tests passing.
 - **ADR number:** `0069` (0068 is the highest accepted).
 - **Related:**
   - ADR-0008 — `openral_detect` auto-provisioning package: the origin of `ComputeSpec` population.
@@ -209,16 +210,15 @@ cuMotion requires Ampere+ *on the machine running `move_group`*. In a tethered d
 
 Each phase is an independently mergeable PR. Phase 1 is the only mandatory unlock for the others.
 
-**Phase 1 — Schema + migration (mandatory, ADR ratification gate)**
-- Rename `RobotDescription.compute` → `compute_edge` + `compute_local` + `compute_cloud` + `compute_cloud_endpoint`.
-- Bump `schema_version` → `"0.2"` (backward-incompatible field rename; first bump since publish).
-- Ship a migrator: `python tools/migrate_robot_yaml.py <path>` reads a v0.1 YAML with `compute:` and writes a v0.2 YAML with `compute_edge:` or `compute_local:` based on the detected hardware type in `onboard_compute["gpu_probe"]`.
-- Update `rSkill.check_runtime` / `check_quantization_dtype` / `check_capabilities` / `check_compatibility` to accept `deployment_target` and call `_resolve_compute`.
-- Update `_enrich_compute` / `build_compute_spec` in `assemble.py` to populate `compute_edge` vs `compute_local`.
-- Update `maybe_inject_cumotion_pipeline` per D6.
-- Update all tests (test_capabilities_gpu_fields, test_detect_assemble, test_cumotion_pipeline_select, test_doctor, test_schemas_fuzz).
-- Update `docs/methods/00-core-schemas.md` + `docs/methods/04-rskill.md`.
-- Update repo-state-map.
+**Phase 1 — Schema + migration (mandatory, ADR ratification gate) ✅ DONE**
+- `RobotDescription.compute` → `compute_edge` + `compute_local` + `compute_cloud`.
+- `schema_version: "0.2"` added; `_migrate_v0_1` validator handles old `compute:` YAML transparently.
+- `tools/migrate_robot_yaml.py` ships with comment-preserving text-append for the no-`compute:` case.
+- All 17 in-tree robot manifests updated to `schema_version: '0.2'`.
+- `_enrich_compute` / `build_compute_spec` populate `compute_edge` (Jetson) vs `compute_local` (discrete NVIDIA / Apple Silicon / CPU-only).
+- `rSkill.check_compatibility` / `maybe_inject_cumotion_pipeline` / `compatibility.py` all resolve via `compute_edge or compute_local`.
+- `openral doctor` labels rows `ComputeSpec (edge)` / `ComputeSpec (local)` based on detected tier.
+- All tests updated (test_capabilities_gpu_fields, test_detect_assemble, test_cumotion_pipeline_select, test_doctor, test_schemas_fuzz); 3271 passing.
 
 **Phase 2 — `RSkillManifest.deployment_target` + loader enforcement**
 - Add `deployment_target` field to `RSkillManifest` with default `"edge"`.

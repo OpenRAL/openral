@@ -519,16 +519,17 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Composition of :meth:`check_embodiment_tags`,
         :meth:`check_capability_flags`, :meth:`check_runtime`, and
         :meth:`check_quantization_dtype` — raises on the first mismatch.
-        Pass ``compute=robot.compute`` to enable runtime / dtype checks
-        against the robot's :class:`ComputeSpec`.
+        Pass ``compute=robot.compute_edge or robot.compute_local`` to enable
+        runtime / dtype checks against the robot's :class:`ComputeSpec`.
 
         Args:
             manifest: The rSkill manifest to check.
             robot_capabilities: The target robot's declared capabilities.
-            compute: Optional onboard compute spec (from
-                :attr:`RobotDescription.compute`).  When ``None``, runtime
-                and dtype checks are skipped if the legacy capability fields
-                are also absent.
+            compute: Optional compute spec resolved from the deployment tier
+                (:attr:`RobotDescription.compute_edge` falling back to
+                :attr:`RobotDescription.compute_local`; ADR-0069).  When
+                ``None``, runtime and dtype checks are skipped if the legacy
+                capability fields are also absent.
 
         Raises:
             ROSCapabilityMismatch: If any required capability is not satisfied
@@ -610,7 +611,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Example:
             >>> # rSkill.check_compatibility(manifest, robot)
         """
-        rSkill.check_capabilities(manifest, robot.capabilities, compute=robot.compute)
+        rSkill.check_capabilities(manifest, robot.capabilities, compute=robot.compute_edge or robot.compute_local)
         rSkill.check_sensors(manifest, robot.sensors)
 
     # ── Sensor-match helpers ──────────────────────────────────────────────────

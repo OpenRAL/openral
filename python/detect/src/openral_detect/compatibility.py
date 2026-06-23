@@ -293,7 +293,7 @@ def _evaluate_sections(
     """
     sections: list[SectionVerdict] = []
     caps = robot.capabilities
-    compute = robot.compute
+    compute = robot.compute_edge or robot.compute_local
 
     try:
         rSkill.check_embodiment_tags(manifest, caps)

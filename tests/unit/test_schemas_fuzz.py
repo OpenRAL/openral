@@ -209,7 +209,9 @@ _robot_description_st = st.builds(
     safety=_safety_st,
     sdk_kind=st.sampled_from(["open", "closed_with_api", "closed"]),
     hal=_hal_entrypoints_st,
-    compute=st.one_of(st.none(), _compute_spec_st),
+    compute_edge=st.one_of(st.none(), _compute_spec_st),
+    compute_local=st.one_of(st.none(), _compute_spec_st),
+    compute_cloud=st.one_of(st.none(), _compute_spec_st),
 )
 
 _joint_state_st = st.builds(

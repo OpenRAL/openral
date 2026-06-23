@@ -526,58 +526,74 @@ def _check_gpu(result: "GpuProbeResult", warnings: list[str]) -> list[CheckResul
 
 
 def _check_compute_spec(result: "GpuProbeResult") -> list[CheckResult]:
-    """Build a :class:`~openral_core.ComputeSpec` from the GPU probe and surface key fields.
+    """Build :class:`~openral_core.ComputeSpec` rows from the GPU probe.
 
     Shares the same :class:`~openral_detect.GpuProbeResult` already obtained
     by :func:`_check_gpu` so no second probe is issued.  The assembled
     ``ComputeSpec`` mirrors exactly what ``openral detect`` would write into
-    ``RobotDescription.compute`` — doctor and detect stay in sync.
+    ``RobotDescription.compute_edge`` / ``compute_local`` — doctor and detect
+    stay in sync (ADR-0069).
 
-    Rows emitted:
-    - **ComputeSpec / runtimes** — comma-separated list of supported runtimes.
-    - **ComputeSpec / dtypes** — comma-separated list of supported quantization dtypes.
-    - **ComputeSpec / cuMotion** — ok when ``supports_cumotion()`` is True, info otherwise.
-    - **ComputeSpec / NVMM** — ok/absent for zero-copy NVMM availability.
+    Tier labelling:
+    - Jetson SoC detected → rows prefixed ``ComputeSpec (edge)``
+    - Discrete NVIDIA / Apple Silicon / CPU-only → ``ComputeSpec (local)``
+
+    Rows emitted per tier:
+    - **runtimes** — comma-separated list of supported runtimes.
+    - **dtypes** — comma-separated list of supported quantization dtypes.
+    - **cuMotion** — ok when ``supports_cumotion()`` is True, info otherwise.
+    - **NVMM** — ok/absent for zero-copy NVMM availability.
     """
     import datetime
 
     from openral_detect import build_compute_spec
-    from openral_detect.report import DetectionReport
+    from openral_detect.report import DetectionReport, GpuProbeResult
 
-    # Construct a minimal report so derived_runtimes / derived_dtypes reuse
-    # their existing logic without duplication.
-    report = DetectionReport(
-        detected_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        gpu=result,
-    )
-    spec = build_compute_spec(result, report)
-
-    rows: list[CheckResult] = []
-
-    runtimes_str = ", ".join(r.value for r in spec.gpu_supported_runtimes) or "none"
-    rows.append(CheckResult("ComputeSpec / runtimes", "info", runtimes_str))
-
-    dtypes_str = ", ".join(d.value for d in spec.gpu_supported_dtypes) or "none"
-    rows.append(CheckResult("ComputeSpec / dtypes", "info", dtypes_str))
-
-    cumotion = spec.supports_cumotion()
-    rows.append(
-        CheckResult(
-            "ComputeSpec / cuMotion",
-            "ok" if cumotion else "info",
-            "supported" if cumotion else "not supported (needs Ampere+, CUDA≥13, ≥8 GB VRAM)",
+    def _spec_rows(gpu: "GpuProbeResult", tier: str) -> list[CheckResult]:
+        report = DetectionReport(
+            detected_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            gpu=gpu,
         )
-    )
+        spec = build_compute_spec(gpu, report)
+        prefix = f"ComputeSpec ({tier})"
+        rows: list[CheckResult] = []
 
-    rows.append(
-        CheckResult(
-            "ComputeSpec / NVMM",
-            "ok" if spec.nvmm_available else "absent",
-            "zero-copy NVMM available" if spec.nvmm_available else "not available",
+        runtimes_str = ", ".join(r.value for r in spec.gpu_supported_runtimes) or "none"
+        rows.append(CheckResult(f"{prefix} / runtimes", "info", runtimes_str))
+
+        dtypes_str = ", ".join(d.value for d in spec.gpu_supported_dtypes) or "none"
+        rows.append(CheckResult(f"{prefix} / dtypes", "info", dtypes_str))
+
+        cumotion = spec.supports_cumotion()
+        rows.append(
+            CheckResult(
+                f"{prefix} / cuMotion",
+                "ok" if cumotion else "info",
+                "supported" if cumotion else "not supported (needs Ampere+, CUDA≥13, ≥8 GB VRAM)",
+            )
         )
-    )
 
-    return rows
+        rows.append(
+            CheckResult(
+                f"{prefix} / NVMM",
+                "ok" if spec.nvmm_available else "absent",
+                "zero-copy NVMM available" if spec.nvmm_available else "not available",
+            )
+        )
+        return rows
+
+    all_rows: list[CheckResult] = []
+    if result.jetson is not None:
+        gpu_edge = GpuProbeResult(jetson=result.jetson, backend="jtop")
+        all_rows.extend(_spec_rows(gpu_edge, "edge"))
+    if result.nvidia or result.apple_silicon or result.jetson is None:
+        gpu_local = GpuProbeResult(
+            nvidia=result.nvidia,
+            apple_silicon=result.apple_silicon,
+            backend=result.backend,
+        )
+        all_rows.extend(_spec_rows(gpu_local, "local"))
+    return all_rows
 
 
 def _check_usb() -> list[CheckResult]:

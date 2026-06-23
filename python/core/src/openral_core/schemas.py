@@ -1432,14 +1432,20 @@ class RobotDescription(BaseModel):
             allowed-collision matrix. On real robots this is sourced from
             the SRDF ``disable_collisions`` block (named by
             :attr:`AssetRefs.srdf`). ADR-0030.
-        compute: Optional onboard compute profile. Set statically in
-            ``robot.yaml`` for robots with known fixed hardware (e.g. a
-            Jetson AGX Orin platform), or populated at runtime by
-            :func:`openral_detect.assemble.assemble_robot_description`.
-            ``rSkill.check_capabilities`` uses this to validate
-            ``RSkillManifest.runtime`` and ``quantization.dtype`` against
-            the real accelerator. ``None`` means "unknown — skip compute
-            checks".
+        compute_edge: Compute spec for the on-robot accelerator (e.g. Jetson
+            AGX Orin SoC).  Populated by ``openral detect`` when a Jetson /
+            embedded SoC is found.  Falls back to ``compute_local`` when
+            ``None`` (tethered robot, SoC not yet probed).  ADR-0069.
+        compute_local: Compute spec for the workstation / laptop directly
+            attached to the robot.  Populated by ``openral detect`` for
+            discrete NVIDIA GPUs, Apple Silicon, or CPU-only hosts.
+            ADR-0069.
+        compute_cloud: Optional remote compute endpoint (SSH or HTTPS).
+            Set manually or via ``openral detect --target cloud``.
+            ADR-0069.
+        schema_version: On-disk schema version for migration tooling.
+            ``"0.2"`` introduces the three-slot compute layout (ADR-0069).
+            Existing manifests without this field load with the default.
 
     Example:
         >>> desc = RobotDescription(
@@ -1512,7 +1518,36 @@ class RobotDescription(BaseModel):
     # falls back to the ``footprint_radius`` circle. Independent of
     # ``footprint_radius`` (a robot may declare either, both, or neither).
     footprint_polygon: list[tuple[float, float]] | None = Field(default=None)
-    compute: ComputeSpec | None = None
+    # ADR-0069 — three compute tiers replacing the single ``compute`` slot.
+    # Edge: on-robot SoC (Jetson). Local: workstation / tethered laptop.
+    # Cloud: SSH or HTTPS remote endpoint (set manually or via detect).
+    compute_edge: ComputeSpec | None = None
+    compute_local: ComputeSpec | None = None
+    compute_cloud: ComputeSpec | None = None
+    # schema_version "0.2" introduces the three-slot compute layout (ADR-0069).
+    # Old manifests without this field load with the default below.
+    schema_version: Literal["0.2"] = "0.2"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_v0_1(cls, data: object) -> object:
+        """Transparently migrate pre-0.2 manifests that still carry ``compute:``."""
+        if not isinstance(data, dict) or "compute" not in data:
+            return data
+        compute = data.pop("compute")
+        if compute is None:
+            return data
+        # Determine tier from the gpu_probe backend written by ``openral detect``.
+        onboard = data.get("onboard_compute")
+        backend = ""
+        if isinstance(onboard, dict):
+            probe = onboard.get("gpu_probe", {})
+            backend = (probe or {}).get("backend", "") if isinstance(probe, dict) else ""
+        if backend == "jtop":
+            data.setdefault("compute_edge", compute)
+        else:
+            data.setdefault("compute_local", compute)
+        return data
 
     @model_validator(mode="after")
     def _validate_footprint_polygon(self) -> RobotDescription:

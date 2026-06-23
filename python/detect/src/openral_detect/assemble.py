@@ -20,15 +20,22 @@ Strategy (per the user's clarification):
    intrinsics, FOV, encoding, rate.  Detected serial numbers and
    ``needs_calibration`` flags land in ``SensorSpec.metadata``.
 
-3. **Populate :class:`~openral_core.ComputeSpec` on :attr:`RobotDescription.compute`.**
+3. **Populate :class:`~openral_core.ComputeSpec` on the three compute slots.**
    The probed accelerator records (NVIDIA, Jetson, Apple Silicon) are
    passed to :func:`build_compute_spec` which fills
    ``compute_tops``, ``system_memory_gb``, ``gpu_vram_gb``,
    ``cuda_compute_capability``, ``cuda_toolkit_version``,
    ``tensorrt_version``, ``gpu_supported_runtimes``,
-   ``gpu_supported_dtypes``, ``nvmm_available``.  The same function is
-   called by ``openral doctor`` so both commands produce identical
-   :class:`~openral_core.ComputeSpec` values from the same probe data.
+   ``gpu_supported_dtypes``, ``nvmm_available``.
+
+   Tier selection (ADR-0069):
+
+   - Jetson / embedded SoC probe → ``compute_edge``
+   - Discrete NVIDIA / Apple Silicon / CPU-only → ``compute_local``
+
+   The same function is called by ``openral doctor`` so both commands
+   produce identical :class:`~openral_core.ComputeSpec` values from the
+   same probe data.
 
 The function never raises on a missing catalog entry — it falls back to
 a generic ``SensorSpec`` and adds a warning to the description's
@@ -76,8 +83,9 @@ def build_compute_spec(gpu: GpuProbeResult, report: DetectionReport) -> ComputeS
     """Build a :class:`~openral_core.ComputeSpec` from a GPU probe + report.
 
     Extracts the same fields that :func:`assemble_robot_description` writes into
-    ``RobotDescription.compute``, so callers that only need the compute spec
-    (e.g. ``openral doctor``) do not have to run the full assembly pipeline.
+    ``RobotDescription.compute_edge`` / ``compute_local``, so callers that only
+    need the compute spec (e.g. ``openral doctor``) do not have to run the full
+    assembly pipeline.
 
     Args:
         gpu: The GPU probe result (nvidia, jetson, apple_silicon fields).
@@ -351,33 +359,71 @@ def _build_v4l2_camera(
 # ── 3. Promote GPU caps onto RobotCapabilities ───────────────────────────────
 
 
+def _merge_compute(existing: ComputeSpec | None, probed: ComputeSpec) -> ComputeSpec:
+    """Merge a freshly-probed :class:`ComputeSpec` with any existing static spec.
+
+    Static manifest values (e.g. ``endpoint``, ``network_latency_ms``) are
+    preserved; probed values (runtimes, VRAM, TOPS) take the max so a
+    hand-tuned conservative spec is never silently overridden downward.
+    """
+    e = existing or ComputeSpec()
+    return ComputeSpec(
+        compute_tops=max(e.compute_tops, probed.compute_tops),
+        system_memory_gb=max(e.system_memory_gb, probed.system_memory_gb),
+        num_gpus=max(e.num_gpus, probed.num_gpus),
+        gpu_vram_gb=max(e.gpu_vram_gb, probed.gpu_vram_gb),
+        cuda_compute_capability=probed.cuda_compute_capability or e.cuda_compute_capability,
+        cuda_toolkit_version=probed.cuda_toolkit_version or e.cuda_toolkit_version,
+        tensorrt_version=probed.tensorrt_version or e.tensorrt_version,
+        gpu_supported_runtimes=probed.gpu_supported_runtimes,
+        gpu_supported_dtypes=probed.gpu_supported_dtypes,
+        nvmm_available=probed.nvmm_available,
+        # Preserve manually-set cloud / endpoint metadata.
+        endpoint=e.endpoint,
+        network_latency_ms=e.network_latency_ms,
+    )
+
+
 def _enrich_compute(description: RobotDescription, detection: DetectionReport) -> RobotDescription:
+    """Populate ``compute_edge`` or ``compute_local`` from the GPU probe.
+
+    Tier selection (ADR-0069):
+    - Jetson SoC detected  → ``compute_edge``
+    - Discrete NVIDIA / Apple Silicon / CPU-only → ``compute_local``
+
+    Both tiers can coexist on e.g. a Jetson with an attached discrete card,
+    but in practice each probe run is scoped to one host.
+    """
     gpu = detection.gpu
     onboard = dict(description.onboard_compute)
     onboard["gpu_probe"] = gpu.model_dump(mode="json")
     onboard["host_os"] = detection.host_os
     onboard["python_version"] = detection.python_version
 
-    probed = build_compute_spec(gpu, detection)
-    existing = description.compute or ComputeSpec()
-    new_compute = ComputeSpec(
-        compute_tops=max(existing.compute_tops, probed.compute_tops),
-        system_memory_gb=max(existing.system_memory_gb, probed.system_memory_gb),
-        gpu_vram_gb=max(existing.gpu_vram_gb, probed.gpu_vram_gb),
-        cuda_compute_capability=probed.cuda_compute_capability or existing.cuda_compute_capability,
-        cuda_toolkit_version=probed.cuda_toolkit_version or existing.cuda_toolkit_version,
-        tensorrt_version=probed.tensorrt_version or existing.tensorrt_version,
-        gpu_supported_runtimes=probed.gpu_supported_runtimes,
-        gpu_supported_dtypes=probed.gpu_supported_dtypes,
-        nvmm_available=probed.nvmm_available,
-    )
+    updates: dict[str, object] = {"onboard_compute": onboard}
+
+    if gpu.jetson is not None:
+        # Embedded SoC — build an edge-only probe result (no discrete cards).
+        gpu_edge = GpuProbeResult(jetson=gpu.jetson, backend="jtop")
+        edge_report = detection.model_copy(update={"gpu": gpu_edge})
+        probed_edge = build_compute_spec(gpu_edge, edge_report)
+        updates["compute_edge"] = _merge_compute(description.compute_edge, probed_edge)
+    else:
+        # Workstation / laptop — discrete NVIDIA, Apple Silicon, or CPU-only.
+        gpu_local = GpuProbeResult(
+            nvidia=gpu.nvidia,
+            apple_silicon=gpu.apple_silicon,
+            backend=gpu.backend,
+        )
+        local_report = detection.model_copy(update={"gpu": gpu_local})
+        probed_local = build_compute_spec(gpu_local, local_report)
+        updates["compute_local"] = _merge_compute(description.compute_local, probed_local)
+
     capabilities = description.capabilities.model_copy(
         update={"has_vision": description.capabilities.has_vision}
     )
-    return description.model_copy(
-        update={"onboard_compute": onboard, "capabilities": capabilities, "compute": new_compute},
-        deep=True,
-    )
+    updates["capabilities"] = capabilities
+    return description.model_copy(update=updates, deep=True)
 
 
 def _max_tops(gpu: GpuProbeResult) -> float:
