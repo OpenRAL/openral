@@ -18,17 +18,17 @@ _Sim rollout protocol — the typed contract every scene adapter must satisfy._
   fields: `observation, reward, terminated, truncated, info`
 - `class SimRollout(Protocol)` — Minimal gym-style env contract. (L86)
   - attr `scene: SceneSpec`, `task: TaskSpec`
-  - `reset(seed=None) -> Observation` (L153)
-  - `step(action) -> StepResult` (L156)
-  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L159)
-  - `close() -> None` (L162)
+  - `reset(seed=None) -> Observation` (L155)
+  - `step(action) -> StepResult` (L158)
+  - `render() -> NDArray[np.uint8] | None` — HWC uint8 RGB or `None`. (L161)
+  - `close() -> None` (L164)
   - duck-typed extension: `mujoco_handles() -> tuple[mujoco.MjModel, mujoco.MjData] | None` — Optional, NOT part of the Protocol; MuJoCo-backed adapters implement it so `openral sim run --view` can open a passive viewer. Callers MUST `getattr(env, "mujoco_handles", None)` and tolerate `None`.
-  - duck-typed extension: `sim_time_ns() -> int | None` — Optional, NOT part of the Protocol (ADR-0048 Phase 1); the backend's authoritative elapsed sim time in ns, the seam a sim `/clock` publisher reads. MuJoCo-backed adapters return `round(MjData.time * 1e9)` via `sim_time_ns_from_mujoco_handles`. Monotonic non-decreasing *within an episode*; backends that rewind `MjData.time` on `reset` (robocasa) restart it, so a cross-reset-monotonic consumer maintains its own offset (`SimAttachedHAL.sim_time_ns`). `None` = no sim clock (PushT, Isaac Sim sidecar). Callers MUST `getattr(env, "sim_time_ns", None)` and treat both missing + `None` as "no clock" (fall back to wall time).
+  - duck-typed extension: `sim_time_ns() -> int | None` — Optional, NOT part of the Protocol (ADR-0048 Phase 1); the backend's authoritative elapsed sim time in ns, the seam a sim `/clock` publisher reads. MuJoCo-backed adapters return `round(MjData.time * 1e9)` via `sim_time_ns_from_mujoco_handles`; sidecars that carry `sim_time_ns` expose that wire value. Monotonic non-decreasing *within an episode*; backends that rewind `MjData.time` on `reset` (robocasa) restart it, so a cross-reset-monotonic consumer maintains its own offset (`SimAttachedHAL.sim_time_ns`). `None` = no sim clock (PushT or a sidecar lacking time). Callers MUST `getattr(env, "sim_time_ns", None)` and treat both missing + `None` as "no clock" (fall back to wall time).
   - duck-typed extension: `enable_intrinsic_viewer() -> None` — Optional, NOT part of the Protocol; adapters whose engine draws its own window (e.g. gym_pusht) implement it so `SimRunner` can switch them into live-view mode at activate() time. When present, `SimRunner` skips the MuJoCo viewer path entirely.
 - `sim_time_ns_from_mujoco_handles(handles: tuple[Any, Any] | None) -> int | None` — Shared helper (ADR-0048 Phase 1): `round(MjData.time * 1e9)` from a `mujoco_handles()` `(model, data)` tuple, `None` when `handles` is `None`. The single place the MuJoCo-backed adapters' `sim_time_ns()` implementations route through. (L21)
-- `class EpisodeResult` — Outcome of one episode. (L167)
+- `class EpisodeResult` — Outcome of one episode. (L169)
   fields: `success, steps, total_reward, mean_step_latency_ms, max_step_latency_ms, latency_budget_ms, budget_violations, frames, metadata`
-  - `summary() -> str` — Human-readable single line. (L219)
+  - `summary() -> str` — Human-readable single line. (L221)
 
 ### `python/sim/src/openral_sim/registry.py`
 _Registries that map ID strings to backend factories._
@@ -147,26 +147,29 @@ _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a 
 #### `python/sim/src/openral_sim/backends/maniskill3.py`
 _ManiSkill3 (SAPIEN-backed) free-axis scene adapter. ADR-0014. Opt-in via the `maniskill3` dependency group; the scene factory calls `openral_sim._deps.ensure_backend_deps("maniskill3")` first so the user gets an interactive auto-install banner on first use (bypass with `OPENRAL_AUTO_INSTALL_DEPS=1`). Scene id `maniskill3`. Task id `maniskill3/<env_id>` (e.g. `maniskill3/PickCube-v1`)._
 - `_MANISKILL3_SCENE_ID = "maniskill3"` — module constant; scene-registry key. (L40)
-- `class _ManiSkill3Sim` — `SimRollout` wrapping a MS3 gym env with `num_envs=1`; unwraps the leading batch dim on every obs / step. (L145) — `reset/step/render/close/_wrap_obs`.
-- `_parse_task_id(task_id) -> str` — Validates `maniskill3/<env_id>` and returns `<env_id>`. (L49)
-- `_reconcile_robot_uids(env_id, robot_uids) -> None` — Validate a scene's requested `robot_uids` against the task's `SUPPORTED_ROBOTS`. Accepts a registered camera-variant subclass of a supported base (walks the agent's MRO uids — e.g. `panda_wristcam`→`panda`); raises `ROSCapabilityMismatch` for genuinely-unsupported robots instead of MS3's vague warning + downstream crash. (L58)
+- `_sapien_sim_time_ns(env) -> int | None` — Derive elapsed SAPIEN/ManiSkill sim time from a live env's elapsed step counter (`elapsed_steps` / `_elapsed_steps`) and control period (`control_timestep` / `control_dt` / `control_freq`). Returns `None` when the env does not expose a usable clock seam.
+- `class _ManiSkill3Sim` — `SimRollout` wrapping a MS3 gym env with `num_envs=1`; unwraps the leading batch dim on every obs / step. (L215) — `reset/step/action_dim/sim_time_ns/render/close/_wrap_obs`. `action_dim` returns the single-env width from the live gym action space for `SimAttachedHAL`; `sim_time_ns()` returns SAPIEN elapsed control time via `_sapien_sim_time_ns`.
+- `_parse_task_id(task_id) -> str` — Validates `maniskill3/<env_id>` and returns `<env_id>`. (L50)
+- `_task_id_for_env(env_cfg) -> str` — Resolves the concrete ManiSkill env id. Normal sim tasks parse `maniskill3/<env_id>`; deploy-sim's synthetic `_hal_deploy_noop` task maps to `scene.backend_options.deploy_task_id` or `PickCube-v1` so taskless DeployScenes still build a real backend env.
+- `_reconcile_robot_uids(env_id, robot_uids) -> None` — Validate a scene's requested `robot_uids` against the task's `SUPPORTED_ROBOTS`. Accepts a registered camera-variant subclass of a supported base (walks the agent's MRO uids — e.g. `panda_wristcam`→`panda`); raises `ROSCapabilityMismatch` for genuinely-unsupported robots instead of MS3's vague warning + downstream crash. (L66)
 - `class _DropUnsupportedRobotWarning(logging.Filter)` / `_suppress_unsupported_robot_warning()` — Context manager that drops MS3's false "not in the task's list of supported robots" log record (only that message) around `gym.make`, after `_reconcile_robot_uids` has validated the variant. (L113 / L123)
 - `_unbatch(value)`, `_unbatch_info(info)`, `_unbatch_obs(obs)` — recursive numpy / torch unbatch helpers shared with the SimplerEnv adapter. (L106 / L114 / L130)
-- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L277)
-- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L312)
-- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L328)
-- Module side effect: `SCENES.register("maniskill3")(_build_maniskill3_scene)` at import (L328).
+- `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L364)
+- `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L399)
+- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L415)
+- Module side effect: `SCENES.register("maniskill3")(_build_maniskill3_scene)` at import (L415).
 
 #### `python/sim/src/openral_sim/backends/simpler_env.py`
 _SimplerEnv real-to-sim correlator adapter. ADR-0014. Opt-in via the `simpler-env` dependency group (the package has no PyPI release; install hint in the typed `ROSConfigError`). Reuses the obs-extraction helpers from `backends/maniskill3` because SimplerEnv now sits on top of MS3 v3.0.x. Scene id `simpler_env`. Task id `simpler_env/<friendly_name>` (e.g. `simpler_env/widowx_carrot_on_plate`); friendly names are translated via `simpler_env.ENVIRONMENT_MAP` to the underlying MS3 env id + kwargs. Today only the four WidowX bridge tasks are wired end-to-end against MS3 v3.0.x; `google_robot_*` friendly names resolve to env ids that are not yet registered upstream._
-- `_SIMPLER_ENV_SCENE_ID = "simpler_env"` — module constant; scene-registry key. (L68)
-- `_DEFAULT_OBS_MODE = "rgb+segmentation"` — Only obs mode the MS3 v3.0.x Bridge envs advertise; overridable via `scene.backend_options.obs_mode`. (L75)
-- `class _SimplerEnvSim` — `SimRollout` wrapping a SimplerEnv-via-MS3 gym env. (L246) — `reset/step/render/close/_wrap_obs`. Reshapes the single-env action to `(1, action_dim)` to satisfy MS3's batched API.
-- `_parse_task_id(task_id) -> str` — Validates `simpler_env/<friendly_name>` and returns `<friendly_name>`. (L78)
-- `_bump_version_if_deprecated(env_id) -> str` — Rounds an upstream `-v0` env id up to the highest registered `-v*` suffix; upstream `simpler_env.ENVIRONMENT_MAP` still ships `-v0` but MS3 v3.0.x registers `-v1`. (L87)
-- `_resolve_friendly_name(task_name) -> tuple[str, dict[str, Any]]` — Translates a SimplerEnv friendly task name into `(ms3_env_id, kwargs)`. Falls back to passing the input through unchanged so users can author configs against raw MS3 env ids. (L110)
-- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L339)
-- Module side effect: `SCENES.register("simpler_env")(_build_simpler_env_scene)` at import (L339).
+- `_SIMPLER_ENV_SCENE_ID = "simpler_env"` — module constant; scene-registry key. (L71)
+- `_DEFAULT_OBS_MODE = "rgb+segmentation"` — Only obs mode the MS3 v3.0.x Bridge envs advertise; overridable via `scene.backend_options.obs_mode`. (L79)
+- `class _SimplerEnvSim` — `SimRollout` wrapping a SimplerEnv-via-MS3 gym env. (L270) — `reset/step/action_dim/sim_time_ns/render/close/_wrap_obs`. Reshapes the single-env action to `(1, action_dim)` to satisfy MS3's batched API. `action_dim` returns the single-env width from the live gym action space for `SimAttachedHAL`; `sim_time_ns()` returns SAPIEN elapsed control time via the shared ManiSkill helper.
+- `_parse_task_id(task_id) -> str` — Validates `simpler_env/<friendly_name>` and returns `<friendly_name>`. (L95)
+- `_task_name_for_env(env_cfg) -> str` — Resolves the concrete SimplerEnv friendly/raw task name. Normal sim tasks parse `simpler_env/<friendly_name>`; deploy-sim's synthetic `_hal_deploy_noop` task maps to `scene.backend_options.deploy_task_id` or `widowx_carrot_on_plate`.
+- `_bump_version_if_deprecated(env_id) -> str` — Rounds an upstream `-v0` env id up to the highest registered `-v*` suffix; upstream `simpler_env.ENVIRONMENT_MAP` still ships `-v0` but MS3 v3.0.x registers `-v1`. (L111)
+- `_resolve_friendly_name(task_name) -> tuple[str, dict[str, Any]]` — Translates a SimplerEnv friendly task name into `(ms3_env_id, kwargs)`. Falls back to passing the input through unchanged so users can author configs against raw MS3 env ids. (L134)
+- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L374)
+- Module side effect: `SCENES.register("simpler_env")(_build_simpler_env_scene)` at import (L374).
 
 #### `python/sim/src/openral_sim/sidecar.py`
 _Canonical openral-side out-of-process sidecar transport (ADR-0045) — ZMQ REQ/REP + a numpy-aware msgpack codec. Shared by new sidecar integrations (the Isaac Sim backend); the RLDX-1 adapter predates it and keeps its own wire-locked copy (its codec must match the upstream `__ndarray_class__` sentinel and its real path is un-runnable in CI)._
@@ -195,7 +198,7 @@ _All three layouts use Isaac Sim **core** (not Isaac Lab's env machinery, which 
 #### `python/sim/src/openral_sim/backends/robotwin.py`
 _RoboTwin 2.0 dual-arm SAPIEN scene adapter. ADR-0061. Single-robot (fixed) scene bound to the `aloha_agilex` embodiment (14-DoF), run in a separate py3.10 sidecar venv (RoboTwin pins SAPIEN/CuRobo/mplib/pytorch3d against py3.10/CUDA-12.1, incompatible with the openral py3.12 venv), over the shared `openral_sim.sidecar.SidecarClient`. Opt-in via the `robotwin` dependency group (pyzmq + msgpack on the openral side only); the heavy SAPIEN+RoboTwin stack is an externally-provisioned sidecar venv (large + CUDA-pinned, never vendored — CLAUDE.md §1.9; RoboTwin is MIT). The factory calls `ensure_backend_deps("robotwin_client")`, resolves the sidecar interpreter (`OPENRAL_ROBOTWIN_SIDECAR_PYTHON`) + script (`tools/robotwin_sidecar.py`), and auto-spawns on first use. Scene id `robotwin`. Task id `robotwin/<snake_case_task>`._
 - `_ROBOTWIN_SCENE_ID = "robotwin"` / `_ROBOTWIN_ROBOT_ID = "aloha_agilex"` — module constants; scene-registry key + fixed robot.
-- `class _RoboTwinSimSidecar` — `SimRollout` proxying `reset/step/render/close` to a `SidecarClient`; unwraps the eval-shaped Observation (`images` keyed `camera1/camera2/camera3` / `state` / `task`) via `client.require(...)`, caches the head frame for `render`, and exposes `action_dim` (14, read from the sidecar `ping`, cached) + `sim_time_ns`.
+- `class _RoboTwinSimSidecar` — `SimRollout` proxying `reset/step/render/close` to a `SidecarClient`; unwraps the eval-shaped Observation (`images` keyed `camera1/camera2/camera3` / `state` / `task`) via `client.require(...)`, caches the head frame for `render`, and exposes `action_dim` (14, read from the sidecar `ping`, cached) + `sim_time_ns` from the sidecar reply.
 - `_scene_default_port(task_id, robot_id) -> int` — deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)` (SHA-256 digest, not the salted builtin `hash`), so distinct tasks never share a sidecar endpoint; an explicit `backend_options.port` still wins.
 - `_robotwin_task_name(task_id) -> str` — strips the `robotwin/` namespace to the bare upstream task name the LeRobot env wants.
 - `_opt_num(opts, key, default, cast)` — coerce a `scene.backend_options` value (ignores `bool`, swallows `ValueError`/`TypeError`).
@@ -204,17 +207,17 @@ _RoboTwin 2.0 dual-arm SAPIEN scene adapter. ADR-0061. Single-robot (fixed) scen
 - Module side effect: `SCENES.register("robotwin", fixed_robot="aloha_agilex")(_build_robotwin_scene)` at import.
 
 #### `tools/robotwin_sidecar.py`
-_RoboTwin-side sidecar (runs under the py3.10 lerobot-main + RoboTwin + SAPIEN venv only; ADR-0061). Constructs LeRobot's native `robotwin` gym env (`RoboTwinEnvConfig` + `make_env`, single non-vectorised env) for the requested task and serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `_RoboTwinEnv` adapts the env's `{pixels, agent_pos}` obs to the eval-layer `{images, state, task}` shape, re-keying the env's native cameras (`head_camera`/`left_camera`/`right_camera`, `_ENV_CAMERA_NAMES`) to the openral scene's `camera1`/`camera2`/`camera3` in order. NOT imported by the openral venv — invoked as a subprocess._
+_RoboTwin-side sidecar (runs under the py3.10 lerobot-main + RoboTwin + SAPIEN venv only; ADR-0061). Constructs LeRobot's native `robotwin` gym env (`RoboTwinEnvConfig` + `make_env`, single non-vectorised env) for the requested task and serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `_RoboTwinEnv` adapts the env's `{pixels, agent_pos}` obs to the eval-layer `{images, state, task}` shape, re-keying the env's native cameras (`head_camera`/`left_camera`/`right_camera`, `_ENV_CAMERA_NAMES`) to the openral scene's `camera1`/`camera2`/`camera3` in order, and includes `sim_time_ns` in reset/step replies by deriving elapsed SAPIEN time from the wrapped env. NOT imported by the openral venv — invoked as a subprocess._
 
 #### `python/sim/src/openral_sim/backends/rlbench.py`
 _RLBench (CoppeliaSim/PyRep) single-robot (fixed `franka_panda`) scene adapter. ADR-0062. Drives an RLBench task that runs in a separate externally-provisioned py3.10 sidecar venv (CoppeliaSim is proprietary, free-EDU, never vendored — CLAUDE.md §1.9; the released 3D policies pin the `MohitShridhar/RLBench@peract` fork), over the shared `openral_sim.sidecar.SidecarClient`. Opt-in via the `rlbench` dependency group (pyzmq + msgpack on the openral side only). The factory calls `ensure_backend_deps("rlbench_client")`, resolves the sidecar interpreter (`OPENRAL_RLBENCH_SIDECAR_PYTHON`) + `COPPELIASIM_ROOT` + script (`tools/rlbench_sidecar.py`), wraps the launch with `env VAR=…` to inject CoppeliaSim's runtime vars, and auto-spawns on first use. Scene id `rlbench`; `step` takes an 8-D keyframe `[x y z qx qy qz qw gripper_open]`._
 - `_RLBENCH_SCENE_ID = "rlbench"`; `_scene_default_port(rlbench_task, variation)` — deterministic per-task ZMQ port (SHA-256, range 21000–21999).
-- `_RLBenchSidecar(scene, task, _client)` — `SimRollout` proxy; `_wrap_obs` carries `images`/`point_clouds` (dict per camera) + `gripper_pose`/`gripper_open` for the 3D keyframe policy.
+- `_RLBenchSidecar(scene, task, _client)` — `SimRollout` proxy; `_wrap_obs` carries `images`/`point_clouds` (dict per camera) + `gripper_pose`/`gripper_open` for the 3D keyframe policy. Caches `sim_time_ns` from reset/step replies and exposes `sim_time_ns()` for ADR-0048 clock projection.
 - `_build_rlbench_scene(env_cfg) -> _RLBenchSidecar` — factory; reads `backend_options.{rlbench_task,variation,port,max_tries}`. Connects a `SidecarClient(name="rlbench", …)`.
 - Module side effect: `SCENES.register("rlbench", fixed_robot="franka_panda")(_build_rlbench_scene)` at import.
 
 #### `tools/rlbench_sidecar.py`
-_RLBench-side scene sidecar (runs under the externally-provisioned py3.10 venv only; ADR-0062; no openral import). Launches CoppeliaSim/PyRep headless via RLBench's `Environment` (peract fork, `EndEffectorPoseViaPlanning` + `Discrete` gripper), serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `step` appends the peract-fork 9-D `ignore_collisions` channel and executes the keyframe via a plan-and-retry mover (re-tries until the EE reaches the target pose < 5 mm). Cameras: left_shoulder/right_shoulder/wrist/front (RGB + point cloud)._
+_RLBench-side scene sidecar (runs under the externally-provisioned py3.10 venv only; ADR-0062; no openral import). Launches CoppeliaSim/PyRep headless via RLBench's `Environment` (peract fork, `EndEffectorPoseViaPlanning` + `Discrete` gripper), serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `step` appends the peract-fork 9-D `ignore_collisions` channel and executes the keyframe via a plan-and-retry mover (re-tries until the EE reaches the target pose < 5 mm). Cameras: left_shoulder/right_shoulder/wrist/front (RGB + point cloud). Reset/step replies include `sim_time_ns`, read from PyRep's CoppeliaSim simulation clock (`get_simulation_time()`)._
 
 #### `python/sim/src/openral_sim/backends/aloha.py`
 _gym-aloha bimanual MuJoCo scene adapter. Opt-in via the `sim` dependency group (gym-aloha lives there alongside mujoco / gymnasium / lerobot); the scene factory calls `openral_sim._deps.ensure_backend_deps("aloha")` first so the user gets an interactive auto-install banner on first use._

@@ -36,6 +36,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -106,6 +107,7 @@ class _RLBenchSidecar:
     _client: SidecarClient
     _record_video: bool = False
     _last_image: NDArray[np.uint8] | None = None
+    _sim_time_ns: int | None = None
 
     @property
     def action_dim(self) -> int:
@@ -114,6 +116,7 @@ class _RLBenchSidecar:
 
     def reset(self, seed: int | None = None) -> Observation:
         reply = self._client.call("reset", {"seed": seed})
+        self._sim_time_ns = _wire_sim_time_ns(reply.get("sim_time_ns"))
         return self._wrap_obs(self._client.require(reply, "observation"))
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
@@ -127,6 +130,7 @@ class _RLBenchSidecar:
             info[_VIDEO_FRAMES_INFO_KEY] = [
                 np.asarray(frame, dtype=np.uint8) for frame in reply["video_frames"]
             ]
+        self._sim_time_ns = _wire_sim_time_ns(reply.get("sim_time_ns"))
         return StepResult(
             observation=self._wrap_obs(self._client.require(reply, "observation")),
             reward=float(self._client.require(reply, "reward")),
@@ -137,6 +141,9 @@ class _RLBenchSidecar:
 
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()
+
+    def sim_time_ns(self) -> int | None:
+        return self._sim_time_ns
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -170,6 +177,21 @@ class _RLBenchSidecar:
         for frame in images.values():
             return frame
         return None
+
+
+def _wire_sim_time_ns(value: object) -> int | None:
+    """Coerce the optional sidecar sim-time wire value into nanoseconds."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, np.ndarray):
+        if value.size != 1:
+            return None
+        value = value.reshape(()).item()
+    if isinstance(value, np.generic):
+        value = value.item()
+    if not isinstance(value, (int, float)):
+        return None
+    return int(value)
 
 
 def _sidecar_python() -> Path:
@@ -225,6 +247,16 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+def _sidecar_display_prefix() -> list[str]:
+    """Prefix the RLBench sidecar with Xvfb when no display server is present."""
+    if os.environ.get("DISPLAY"):
+        return []
+    xvfb_run = shutil.which("xvfb-run")
+    if xvfb_run is None:
+        return []
+    return [xvfb_run, "-a", "--server-args=-screen 0 1280x1024x24"]
+
+
 @SCENES.register(_RLBENCH_SCENE_ID, fixed_robot="franka_panda")
 def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
     """Build an RLBench task behind the out-of-process CoppeliaSim sidecar.
@@ -259,16 +291,17 @@ def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
 
     root = _coppeliasim_root()
     ld = f"{root}:{os.environ.get('LD_LIBRARY_PATH', '')}".rstrip(":")
-    display = os.environ.get("DISPLAY", ":1")
+    display = os.environ.get("DISPLAY")
     # Wrap with `env` so the sidecar's child process gets the CoppeliaSim vars
     # (SidecarClient._spawn inherits os.environ minus PYTHONPATH; an explicit
     # `env` prefix is clearer than mutating the parent's global environment).
     launch_argv = [
+        *_sidecar_display_prefix(),
         "env",
         f"{_COPPELIASIM_ROOT_ENV}={root}",
         f"LD_LIBRARY_PATH={ld}",
         f"QT_QPA_PLATFORM_PLUGIN_PATH={root}",
-        f"DISPLAY={display}",
+        *([f"DISPLAY={display}"] if display else []),
         str(_sidecar_python()),
         str(_locate_sidecar_script()),
         "--task",

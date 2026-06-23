@@ -108,6 +108,8 @@ class SimRollout(Protocol):
             * MuJoCo-backed adapters return ``round(MjData.time * 1e9)`` (the
               physics clock advanced by ``model.opt.timestep`` per step) via
               :func:`sim_time_ns_from_mujoco_handles`.
+            * SAPIEN / ManiSkill-backed adapters derive elapsed control time
+              from the live env's elapsed step counter and control timestep.
             * The value is **monotonic non-decreasing within a single
               episode**. It is NOT guaranteed monotonic across ``reset`` —
               backends that rewind ``MjData.time`` to ``0`` on reset (e.g.
@@ -115,8 +117,8 @@ class SimRollout(Protocol):
               cross-reset monotonicity maintains its own offset (see
               :meth:`openral_hal.sim_attached.SimAttachedHAL.sim_time_ns`).
             * Returns ``None`` when the backend has **no sim clock** —
-              clock-less backends (PushT) and out-of-process sidecars
-              (Isaac Sim) whose time the adapter cannot read.
+              clock-less backends (PushT) and sidecars whose wire protocol does
+              not carry elapsed time.
 
             Like the other extensions it is intentionally NOT part of the
             Protocol, so a clock-less adapter need not stub it. Callers MUST

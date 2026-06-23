@@ -11,11 +11,9 @@
 /**:
   ros__parameters:
     use_lifecycle_manager: false
-    # Wall-clock default: deploy-sim has no /clock publisher, so sim-time
-    # pins slam_toolbox's pose-graph at 0 → empty map → Nav2 plans through
-    # obstacles. The composed graph (sim_e2e.launch.py) overrides this via
-    # the enable_sim_clock flag; a standalone launch with a real /clock
-    # should pass use_sim_time:=true explicitly.
+    # Wall-clock default for standalone launches. The composed OpenRAL graph
+    # derives this from clock_origin: simulation publishes /clock from the HAL;
+    # host_wall leaves slam_toolbox on ROS system time.
     use_sim_time: false
 
     # ── Frame contract (matches the OpenRAL convention) ─────────────

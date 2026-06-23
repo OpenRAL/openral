@@ -57,7 +57,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import BODY_TWIST_DIM, SIM_EXECUTABLE_CONTROL_MODES, RobotDescription
+from openral_core import (
+    BODY_TWIST_DIM,
+    SIM_EXECUTABLE_CONTROL_MODES,
+    ClockAuthority,
+    RobotDescription,
+)
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
@@ -375,12 +380,14 @@ class SimAttachedHAL:
             env_reset_seed: Optional seed forwarded to ``env.reset``.
             env_action_dim: Override the auto-probed env action width;
                 useful for envs whose action space isn't introspectable.
-            body_twist_dt_s: Integration timestep used when a BODY_TWIST
-                action is applied via direct base-qpos write. Mirrors
-                :attr:`PandaMobileHAL._dt_s` (default 0.05 — 20 Hz nav
-                control rate). The caller should publish ``/cmd_vel`` /
-                send ``Action(BODY_TWIST)`` at the corresponding rate so
-                each tick advances the base by ``velocity * dt``.
+            body_twist_dt_s: Logical control timestep used when a
+                BODY_TWIST action is applied via direct base-qpos write.
+                Mirrors :attr:`PandaMobileHAL._dt_s` (default 0.05 — 20 Hz
+                nav control rate). In deploy-sim this is the action tick,
+                not a render cadence or wall-clock sleep: each tick advances
+                the base by ``velocity * dt`` and advances MuJoCo elapsed sim
+                time by the same ``dt`` so `/clock`, odom, TF, and Nav2
+                deadlines share one timestep definition.
         """
         self._env = env
         self.description = description
@@ -1165,6 +1172,12 @@ class SimAttachedHAL:
         # Wrap to [-π, π] so long sessions don't accumulate drift.
         new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
         data.qpos[addrs[2]] = new_yaw
+        # The direct-qpos path intentionally bypasses env.step, but it is still
+        # a simulation timestep. Advance MuJoCo's elapsed time by the same
+        # command interval used for kinematic integration so SimRollout
+        # sim_time_ns() (and therefore deploy-sim /clock) cannot freeze while
+        # Nav2 is actively streaming BODY_TWIST commands.
+        data.time = float(data.time) + dt
         # Propagate the qpos change into derived state (body xforms +
         # sensor positions) so the live MuJoCo viewer + ``/scan``
         # ray-cast see the new base pose on the same tick. No physics
@@ -1322,6 +1335,22 @@ class SimAttachedHAL:
         if current is None:
             return None
         return self._sim_time_offset_ns + current
+
+    def clock_authority(self) -> ClockAuthority:
+        """Return the timestamp authority this HAL contributes to the graph.
+
+        A sim-attached HAL with a live backend clock is the simulation-time
+        authority and may be projected onto ROS ``/clock`` by the lifecycle
+        node. A clock-less wrapped rollout falls back to host wall time; callers
+        must then keep the graph on the host-wall clock authority.
+        """
+        if self.sim_time_ns() is None:
+            return ClockAuthority.host_wall()
+        return ClockAuthority.simulation(
+            type(self._env).__name__,
+            timestep_s=self._body_twist_dt_s,
+            publishes_ros_clock=True,
+        )
 
     def _mujoco_handles(self) -> tuple[Any, Any] | None:
         """Return the env's MJCF (model, data) tuple, or None.

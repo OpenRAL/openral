@@ -54,6 +54,26 @@ class JointType(str, Enum):
     PLANAR = "planar"
 
 
+class ClockOrigin(str, Enum):
+    """Authoritative source for OpenRAL ``stamp_ns`` values.
+
+    ``/clock`` is not an origin; it is the ROS 2 projection of one of these
+    authorities into nodes that run with ``use_sim_time=true``.
+    """
+
+    HOST_WALL = "host_wall"
+    SIMULATION = "simulation"
+    HARDWARE_SYNCED = "hardware_synced"
+
+
+class ClockEpoch(str, Enum):
+    """Epoch that a ``stamp_ns`` value is measured from."""
+
+    UNIX = "unix"
+    SIMULATION_ELAPSED = "simulation_elapsed"
+    HARDWARE = "hardware"
+
+
 JointRole: TypeAlias = Literal[
     "arm",
     "base",
@@ -76,6 +96,86 @@ which silently misclassifies any joint with ``"gripper"`` in the name).
 ``"unknown"`` is the default so legacy manifests load unchanged; the
 fleet annotates incrementally as ADR-0028 sub-PRs land.
 """
+
+
+class ClockAuthority(BaseModel):
+    """Named origin for OpenRAL timestamps across sim, rSkills, ROS, and hardware.
+
+    The invariant is: every serialized ``stamp_ns`` is measured in the active
+    deployment's OpenRAL timestamp domain. Simulation deployments may publish
+    that domain onto ROS ``/clock``; real deployments normally use host wall
+    time or a PTP/hardware clock already synchronized into the graph. rSkills
+    consume stamps from this domain; they do not create a separate clock.
+
+    Attributes:
+        origin: Physical/logical source of the timestamp domain.
+        epoch: Epoch used by ``stamp_ns``.
+        clock_id: Stable human-readable authority identifier.
+        publishes_ros_clock: Whether this authority is projected onto ROS
+            ``/clock`` for nodes using ``use_sim_time``.
+        timestep_s: Optional logical simulation/control timestep in seconds.
+            ``None`` means event-driven or externally determined.
+        notes: Optional operator-facing context.
+
+    Example:
+        >>> ClockAuthority.simulation("robocasa", timestep_s=0.05).epoch
+        <ClockEpoch.SIMULATION_ELAPSED: 'simulation_elapsed'>
+    """
+
+    origin: ClockOrigin
+    epoch: ClockEpoch
+    clock_id: str = Field(min_length=1)
+    publishes_ros_clock: bool = False
+    timestep_s: float | None = Field(default=None, gt=0)
+    notes: str | None = None
+
+    @classmethod
+    def host_wall(cls, clock_id: str = "host_wall") -> ClockAuthority:
+        """Return the default real-deployment authority: host wall/ROS system time."""
+        return cls(origin=ClockOrigin.HOST_WALL, epoch=ClockEpoch.UNIX, clock_id=clock_id)
+
+    @classmethod
+    def simulation(
+        cls,
+        clock_id: str,
+        *,
+        timestep_s: float | None = None,
+        publishes_ros_clock: bool = True,
+    ) -> ClockAuthority:
+        """Return a simulator-owned elapsed-time authority."""
+        return cls(
+            origin=ClockOrigin.SIMULATION,
+            epoch=ClockEpoch.SIMULATION_ELAPSED,
+            clock_id=clock_id,
+            publishes_ros_clock=publishes_ros_clock,
+            timestep_s=timestep_s,
+        )
+
+    @classmethod
+    def hardware_synced(
+        cls,
+        clock_id: str,
+        *,
+        epoch: ClockEpoch = ClockEpoch.UNIX,
+    ) -> ClockAuthority:
+        """Return a hardware/PTP authority already synchronized to the graph."""
+        return cls(origin=ClockOrigin.HARDWARE_SYNCED, epoch=epoch, clock_id=clock_id)
+
+    @model_validator(mode="after")
+    def _validate_origin_epoch(self) -> ClockAuthority:
+        if (
+            self.origin is ClockOrigin.SIMULATION
+            and self.epoch is not ClockEpoch.SIMULATION_ELAPSED
+        ):
+            raise ValueError("simulation clock authorities must use epoch='simulation_elapsed'")
+        if self.origin is ClockOrigin.HOST_WALL and self.epoch is not ClockEpoch.UNIX:
+            raise ValueError("host_wall clock authorities must use epoch='unix'")
+        if self.origin is ClockOrigin.HARDWARE_SYNCED and self.publishes_ros_clock:
+            raise ValueError(
+                "hardware_synced authorities must be mapped into the ROS graph clock, "
+                "not published as a competing /clock source"
+            )
+        return self
 
 
 class ControlMode(str, Enum):
