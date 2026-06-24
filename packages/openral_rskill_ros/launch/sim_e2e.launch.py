@@ -285,6 +285,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     spatial_memory_ingest = LaunchConfiguration("spatial_memory_ingest").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # ADR-0071 Decision 3 / 3b — the deploy memory bundle. `memory_md_path` loads the
+    # self-maintained MEMORY.md (+ enables the memory_write / memory_search tools);
+    # `map_path` seeds a static 2D occupancy grid into nav2 map_server. Both are the
+    # bundle's text/grid modalities alongside spatial_memory_path's scene graph.
+    memory_md_path = LaunchConfiguration("memory_md_path").perform(context)
+    map_path = LaunchConfiguration("map_path").perform(context)
     # ADR-0036 — deploy-path selector for the reasoner's action-mode
     # palette gate. ``openral deploy sim`` shells this launch with
     # ``hal_mode:=sim`` (digital-twin path: the scene's robosuite OSC
@@ -627,6 +633,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # spatial-memory query backend when a path is provided.
     if spatial_memory_path:
         reasoner_params["spatial_memory_path"] = spatial_memory_path
+    # ADR-0071 §3 — load the self-maintained MEMORY.md (read path) and enable the
+    # memory_write / memory_search tools when a bundle path is provided.
+    if memory_md_path:
+        reasoner_params["memory_md_path"] = memory_md_path
     # ADR-0038 — accumulate the durable scene graph live from the ADR-0035
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
@@ -1314,6 +1324,33 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         extra_nodes.append(critic_producer)
 
+    # ADR-0071 Decision 3b — deploy memory bundle: seed the saved 2D occupancy grid.
+    # When ``map_path`` points at a nav2 ``map.yaml`` AND live SLAM isn't already
+    # owning ``/map``, bring up a standalone nav2 ``map_server`` that latches ``/map``
+    # (TRANSIENT_LOCAL) from the first tick, so the nav costmap + the reasoner's
+    # ADR-0044 approach-refinement grid have the saved prior immediately. With SLAM on,
+    # slam_toolbox / cuVSLAM owns ``/map`` and we skip the seed to avoid two publishers.
+    # The grid stays advisory (ADR-0071 §1.1): the C++ kernel keeps its own ephemeral
+    # ADR-0030 collision grid; this map never feeds it.
+    if map_path and not enable_slam:
+        map_server = LifecycleNode(
+            package="nav2_map_server",
+            executable="map_server",
+            name="openral_map_server",
+            namespace="",
+            parameters=[
+                {
+                    "yaml_filename": map_path,
+                    "topic_name": "map",
+                    "frame_id": "map",
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            output="screen",
+        )
+        extra_nodes.append(map_server)
+        autostart += _autostart_lifecycle(map_server, "openral_map_server")
+
     nodes: list = [
         safety_kernel,
         runtime,
@@ -1468,6 +1505,28 @@ def generate_launch_description() -> LaunchDescription:
                 "WorldState.detected_objects (auto-creating an empty backend "
                 "if no spatial_memory_path was preloaded), so recall_object "
                 "recalls what the robot has actually seen. Default false."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "memory_md_path",
+            default_value="",
+            description=(
+                "ADR-0071 §3 — absolute path to the self-maintained MEMORY.md "
+                "(the deploy memory bundle's narrative/semantic modality). When "
+                "set, the reasoner loads it as the ## MEMORY context block and "
+                "offers the memory_write / memory_search tools. Empty = disabled."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "map_path",
+            default_value="",
+            description=(
+                "ADR-0071 Decision 3b — absolute path to a saved nav2 map.yaml "
+                "(the bundle's 2D occupancy-grid modality). When set and SLAM is "
+                "off, a standalone nav2 map_server latches /map from the saved "
+                "map so the costmap + ADR-0044 approach grid have the prior at "
+                "boot. With SLAM on it is ignored (SLAM owns /map). Empty = "
+                "disabled."
             ),
         ),
         DeclareLaunchArgument(
