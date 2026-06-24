@@ -322,6 +322,9 @@ class ContextRenderer:
             )
         self._buffer_size = buffer_size
         self._robot_model = robot_model
+        # ADR-0071 §3 / Phase 4b — the rendered `## MEMORY` block (the self-
+        # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
+        self._memory_block: str | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -347,6 +350,14 @@ class ContextRenderer:
         or bump :attr:`seq`, so it is safe to call on a live renderer.
         """
         self._robot_model = robot_model
+
+    def set_memory_block(self, memory_block: str | None) -> None:
+        """Set (or clear) the ``## MEMORY`` block — the self-maintained MEMORY.md.
+
+        ADR-0071 §3 / Phase 4b. Re-set after each ``memory_write`` so the LLM sees
+        the updated memory next tick. Static config — does not bump :attr:`seq`.
+        """
+        self._memory_block = memory_block
 
     # ── rolling buffer mutators ─────────────────────────────────────────────
 
@@ -420,13 +431,15 @@ class ContextRenderer:
                 the aggregator has not yet produced one.
 
         Returns:
-            A multi-section text block: an optional ``## ROBOT`` self-model
-            (when provided at construction) followed by ``## WORLD_STATE``,
-            ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS`` sections.
+            A multi-section text block: optional ``## ROBOT`` self-model and
+            ``## MEMORY`` (when set) followed by ``## WORLD_STATE``,
+            ``## EXECUTION``, ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``.
         """
         sections: list[str] = []
         if self._robot_model is not None:
             sections += ["## ROBOT", self._robot_model, ""]
+        if self._memory_block is not None:
+            sections += [self._memory_block, ""]
         sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
