@@ -117,7 +117,7 @@ class PromptRecord:
 class ExecutionEventRecord:
     """One entry in the reasoner's rolling **execution-feedback** buffer.
 
-    ADR-0071 Decision 2.2 (Inner Monologue): a typed one-line outcome appended
+    ADR-0072 Decision 2.2 (Inner Monologue): a typed one-line outcome appended
     after every dispatched skill — on *success as well as failure*, so the LLM
     reasons on what actually happened (closed loop) instead of only seeing
     failures. On failure it also carries a :attr:`reflection` strategy hint
@@ -132,7 +132,7 @@ class ExecutionEventRecord:
 
 
 def reflect_on_failure(outcome_state: str, detail: str) -> str:
-    """One-line strategy hint from a terminal skill outcome (ADR-0071 §2.3).
+    """One-line strategy hint from a terminal skill outcome (ADR-0072 §2.3).
 
     Reflexion-style: convert a raw failure into a *next-step* hint so the
     replanning ladder advances instead of blindly retrying. Deterministic — no
@@ -169,7 +169,7 @@ def reflect_on_failure(outcome_state: str, detail: str) -> str:
 
 
 def reflect_on_retry_cap(tool: str, cap: int) -> str:
-    """Strategy hint when the per-kind retry ladder is exhausted (ADR-0071 §2.3).
+    """Strategy hint when the per-kind retry ladder is exhausted (ADR-0072 §2.3).
 
     Upgrades the bare retry counter into an explicit "stop repeating, change
     approach" reflection the next tick can act on.
@@ -181,7 +181,7 @@ def reflect_on_retry_cap(tool: str, cap: int) -> str:
 
 
 def render_playbooks_block(entries: list[tuple[str, str]]) -> str:
-    r"""Render the ``## PLAYBOOKS`` system-prompt block (ADR-0071 Decision 1 / Phase 3).
+    r"""Render the ``## PLAYBOOKS`` system-prompt block (ADR-0072 Decision 1 / Phase 3).
 
     Each entry is ``(header, body_markdown)`` — the playbook's ``name — trigger``
     header and its hand-authored ``PLAYBOOK.md`` SOP. The reasoner appends this to
@@ -227,7 +227,7 @@ def render_robot_self_model(description: RobotDescription) -> str:
     cameras (with field-of-view) — derived from the :class:`RobotDescription`.
     The reasoner injects this as the ``## ROBOT`` context section (computed once
     at configure time) so the LLM can judge feasibility — "is the target in
-    reach / in view?" — before dispatching a skill, instead of guessing (ADR-0071
+    reach / in view?" — before dispatching a skill, instead of guessing (ADR-0072
     Decision 2.1, the EMOS "Robot Resume" idea). Pixel-free (ADR-0018 §4).
 
     Args:
@@ -314,7 +314,7 @@ class ContextRenderer:
 
         Args:
             buffer_size: Per-category rolling-buffer retention.
-            robot_model: Pre-rendered robot self-model text (ADR-0071 Decision
+            robot_model: Pre-rendered robot self-model text (ADR-0072 Decision
                 2.1, from :func:`render_robot_self_model`), rendered as the
                 ``## ROBOT`` section. ``None`` omits the section (e.g. before the
                 robot description is loaded).
@@ -325,7 +325,7 @@ class ContextRenderer:
             )
         self._buffer_size = buffer_size
         self._robot_model = robot_model
-        # ADR-0071 §3 / Phase 4b — the rendered `## MEMORY` block (the self-
+        # ADR-0072 §3 / Phase 4b — the rendered `## MEMORY` block (the self-
         # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
         self._memory_block: str | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
@@ -348,7 +348,7 @@ class ContextRenderer:
     def set_robot_model(self, robot_model: str | None) -> None:
         """Set (or clear) the static robot self-model rendered as ``## ROBOT``.
 
-        Called once after the ``RobotDescription`` is loaded (ADR-0071 Decision
+        Called once after the ``RobotDescription`` is loaded (ADR-0072 Decision
         2.1). Static config, not an event: it does not touch the rolling buffers
         or bump :attr:`seq`, so it is safe to call on a live renderer.
         """
@@ -357,7 +357,7 @@ class ContextRenderer:
     def set_memory_block(self, memory_block: str | None) -> None:
         """Set (or clear) the ``## MEMORY`` block — the self-maintained MEMORY.md.
 
-        ADR-0071 §3 / Phase 4b. Re-set after each ``memory_write`` so the LLM sees
+        ADR-0072 §3 / Phase 4b. Re-set after each ``memory_write`` so the LLM sees
         the updated memory next tick. Static config — does not bump :attr:`seq`.
         """
         self._memory_block = memory_block
@@ -370,7 +370,7 @@ class ContextRenderer:
         self._seq += 1
 
     def append_execution(self, record: ExecutionEventRecord) -> None:
-        """Push a skill execution outcome onto the rolling buffer (ADR-0071 §2.2).
+        """Push a skill execution outcome onto the rolling buffer (ADR-0072 §2.2).
 
         A completed skill is a meaningful event, so this bumps :attr:`seq` —
         the success/failure feedback should wake an otherwise-idle heartbeat.

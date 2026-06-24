@@ -892,7 +892,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             },
         )
 
-    # ADR-0071 §3 — the self-maintained MEMORY.md tools are surfaced only when the
+    # ADR-0072 §3 — the self-maintained MEMORY.md tools are surfaced only when the
     # reasoner_node has a MEMORY.md wired (memory_md_path param). The reasoner
     # already READS current memory every tick (the ## MEMORY context block); these
     # add the WRITE path (memory_write — the reasoner's first actuation-free

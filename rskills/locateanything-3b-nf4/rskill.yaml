@@ -9,7 +9,7 @@ kind: "detector"
 # camera, not a specific robot. The rSkill<->robot gate exempts these kinds
 # (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
 # it matches any robot/scene.
-embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0071)
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0072)
 
 sensors_required:
   - modality: "rgb"

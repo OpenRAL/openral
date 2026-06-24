@@ -130,7 +130,7 @@ def test_non_perception_kind_requires_embodiment_tag() -> None:
 
 def test_perception_kinds_use_any_wildcard() -> None:
     """Detector / vlm rSkills are embodiment-agnostic — they declare the explicit
-    ``["any"]`` wildcard (ADR-0071), never an empty list.
+    ``["any"]`` wildcard (ADR-0072), never an empty list.
 
     Uses the real in-tree perception manifests (no synthetic placeholders,
     CLAUDE.md §1.11): they ship ``embodiment_tags: ["any"]`` and must load.
@@ -143,7 +143,7 @@ def test_perception_kinds_use_any_wildcard() -> None:
 
 
 def test_empty_embodiment_tags_rejected_for_all_kinds() -> None:
-    """An empty ``embodiment_tags`` is rejected for every kind (ADR-0071) —
+    """An empty ``embodiment_tags`` is rejected for every kind (ADR-0072) —
     agnosticism is declared with ``["any"]``, not derived from emptiness.
     """
     for kwargs in (_vla_kwargs, _ros_action_kwargs):

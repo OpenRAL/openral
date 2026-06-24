@@ -4,7 +4,7 @@
 # locate a named object, falling back to bounded commonsense active search and
 # finally human handoff. Composes existing read-only + actuating reasoner tools;
 # carries no weights and never actuates directly (every motion it triggers is an
-# ExecuteRskill → Action chunk → C++ safety kernel). See ADR-0071.
+# ExecuteRskill → Action chunk → C++ safety kernel). See ADR-0072.
 
 schema_version: "0.1"
 name: "OpenRAL/rskill-find-object"
@@ -15,7 +15,7 @@ kind: "playbook"
 
 # Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
 # specific embodiment. Declared explicitly with the "any" wildcard (never an
-# empty list, which the manifest validator rejects — ADR-0071).
+# empty list, which the manifest validator rejects — ADR-0072).
 embodiment_tags: ["any"]
 
 # Real RobotCapabilities flag: locating an object requires a camera. The loader's
@@ -40,7 +40,7 @@ latency_budget:
 description: >
   S2 decision procedure: locate a named object, falling back to bounded
   commonsense active search and finally human handoff. Composes recall_object,
-  resolve_place, locate_in_view and NAVIGATE/OPEN skills. ADR-0071.
+  resolve_place, locate_in_view and NAVIGATE/OPEN skills. ADR-0072.
 
 # RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
 # never an ExecuteSkill dispatch verb).
@@ -55,9 +55,9 @@ scenes:
 
 # Provenance citation (a playbook has no weights / upstream model repo, so the
 # authoring ADR is the citation — `paper_url`, mirroring the ROS-wrapped skills).
-paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md"
+paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md"
 
-# The playbook decision-procedure contract (ADR-0071).
+# The playbook decision-procedure contract (ADR-0072).
 playbook:
   trigger: "the goal names a physical object whose location is not given"
   body_uri: "./PLAYBOOK.md"

@@ -249,7 +249,7 @@ def _check_rskills(repo_root: Path, robot_tags: set[str]) -> tuple[int, list[Che
 
     for rskill_id, manifest in manifests:
         tags = set(manifest.embodiment_tags)
-        # The explicit "any" wildcard (ADR-0071) is embodiment-agnostic by design
+        # The explicit "any" wildcard (ADR-0072) is embodiment-agnostic by design
         # and matches no specific robot tag — never flag it. Only flag a concrete
         # tag set that intersects no robot in the repo (likely a typo).
         if tags and "any" not in tags and not (tags & robot_tags):

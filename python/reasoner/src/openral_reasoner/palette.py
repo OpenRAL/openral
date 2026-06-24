@@ -252,7 +252,7 @@ class ToolPalette(BaseModel):
     from ``scene_query_available``: ``query_scene`` returns free text, this
     returns normalized progress/success scalars + trends."""
     memory_available: bool = False
-    """ADR-0071 §3 — when ``True`` the LLM additionally sees the self-maintained
+    """ADR-0072 §3 — when ``True`` the LLM additionally sees the self-maintained
     semantic-memory tools: the write-capable ``memory_write``
     (``add``/``update``/``supersede``/``delete`` over a ``MemorySection``) and the
     read-only ``memory_search`` (archival recall). Set by the reasoner_node only
@@ -367,7 +367,7 @@ def build_tool_palette(
             when a reward monitor exposes
             ``/openral/perception/query_task_progress``.
         memory_available: When ``True`` the palette advertises the ``memory_write``
-            + ``memory_search`` tools (ADR-0071 §3); set by the reasoner when a
+            + ``memory_search`` tools (ADR-0072 §3); set by the reasoner when a
             ``MEMORY.md`` is wired via the ``memory_md_path`` param.
 
     Returns:

@@ -23,7 +23,7 @@ kind: "detector"  # ADR-0037: perception producer; emits ObjectsMetadata, no Act
 # camera, not a specific robot. The rSkill<->robot gate exempts these kinds
 # (loader._EMBODIMENT_AGNOSTIC_KINDS, ADR-0037), so the tag list is empty —
 # it matches any robot/scene.
-embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0071)
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0072)
 
 # The detector reads any RGB camera stream. vla_feature_key is omitted so
 # the loader accepts any camera key, not just "camera1".
