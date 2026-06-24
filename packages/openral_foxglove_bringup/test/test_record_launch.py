@@ -67,7 +67,7 @@ _FORBIDDEN_TOPIC_LITERALS = [
 # ``topics.py`` as part of Phase 4.  Using an explicit set here lets the test
 # express intent without depending on the coordinator's merge order.
 _EXPECTED_ALLOWED: set[str] = {
-    "/openral/cameras/0/image",
+    "/openral/cameras/top/image",
     "/openral/world_collisions_markers",  # Phase-3 Bucket-2 — coordinator adds to whitelist
     "/openral/world_voxels_cloud",  # Phase-3 Bucket-2 — coordinator adds to whitelist
     "/map",

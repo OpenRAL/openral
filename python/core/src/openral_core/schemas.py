@@ -3355,6 +3355,393 @@ def canonical_slots_for_representation(
     return slots
 
 
+# ─── TaskSpace — layer-neutral action-space view (ADR-0071, DRAFT) ─────────────
+
+
+class TaskSpaceFamily(str, Enum):
+    """Coarse classification of a :class:`ControlMode` for task-space views.
+
+    ADR-0071. Redundant with :class:`ControlMode` (derivable via
+    :data:`_FAMILY_FOR_MODE`) but stored on :class:`TaskSpaceSegment` so the
+    object reads cleanly in logs / dashboards and so family↔mode consistency is
+    validated once at construction.
+    """
+
+    JOINT = "joint"  # joint_position / joint_velocity / joint_torque / joint_trajectory
+    CARTESIAN = "cartesian"  # cartesian_pose / cartesian_delta / cartesian_twist
+    GRIPPER = "gripper"  # gripper_binary / gripper_position
+    BASE = "base"  # body_twist / foot_placement
+    DEX_HAND = "dex_hand"  # dex_hand_joint
+    COMPOSITE = "composite"  # composite_mode multiplexer flag
+
+
+# Single source of truth mapping every ControlMode to its TaskSpaceFamily. Keyed
+# exhaustively over the enum so a new ControlMode without a family entry trips
+# the lockstep test (tests/unit/test_task_space.py::test_every_mode_has_family).
+_FAMILY_FOR_MODE: dict[ControlMode, TaskSpaceFamily] = {
+    ControlMode.JOINT_POSITION: TaskSpaceFamily.JOINT,
+    ControlMode.JOINT_VELOCITY: TaskSpaceFamily.JOINT,
+    ControlMode.JOINT_TORQUE: TaskSpaceFamily.JOINT,
+    ControlMode.JOINT_TRAJECTORY: TaskSpaceFamily.JOINT,
+    ControlMode.CARTESIAN_POSE: TaskSpaceFamily.CARTESIAN,
+    ControlMode.CARTESIAN_DELTA: TaskSpaceFamily.CARTESIAN,
+    ControlMode.CARTESIAN_TWIST: TaskSpaceFamily.CARTESIAN,
+    ControlMode.BODY_TWIST: TaskSpaceFamily.BASE,
+    ControlMode.FOOT_PLACEMENT: TaskSpaceFamily.BASE,
+    ControlMode.GRIPPER_BINARY: TaskSpaceFamily.GRIPPER,
+    ControlMode.GRIPPER_POSITION: TaskSpaceFamily.GRIPPER,
+    ControlMode.DEX_HAND_JOINT: TaskSpaceFamily.DEX_HAND,
+    ControlMode.COMPOSITE_MODE: TaskSpaceFamily.COMPOSITE,
+}
+
+
+class TaskSpaceSegment(BaseModel):
+    """One typed slice of an action vector, layer-neutral (ADR-0071).
+
+    The normalized form of an :class:`ActionSlot` (rSkill side) or a robot's
+    advertised control mode (robot side), stripped of the slot's absolute
+    ``[start, end]`` indices so robot capabilities and scene expectations — which
+    are not policy vectors — can be expressed in the same vocabulary.
+
+    Attributes:
+        family: Coarse classification, derived from ``control_mode`` and
+            validated to match :data:`_FAMILY_FOR_MODE`.
+        control_mode: The :class:`ControlMode` this slice routes to.
+        width: Number of scalar dimensions the slice occupies (> 0). For the
+            gripper this is the audit's "is the gripper a dimension?" answered
+            structurally — a 1-D ``GRIPPER_*`` segment.
+        target: End-effector name for ``CARTESIAN_*`` / ``GRIPPER_*`` /
+            ``DEX_HAND_JOINT`` modes (the frame / actuator the slice drives);
+            ``None`` for joint / base / composite modes. May be ``None`` even for
+            EE modes when the producer could not resolve an end-effector (e.g. a
+            representation-expanded skill on a robot with no declared EE) — the
+            matcher reports that as a reason rather than failing construction.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: TaskSpaceFamily
+    control_mode: ControlMode
+    width: int = Field(gt=0)
+    target: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_family(self) -> TaskSpaceSegment:
+        expected = _FAMILY_FOR_MODE[self.control_mode]
+        if self.family is not expected:
+            raise ValueError(
+                f"TaskSpaceSegment: family={self.family.value!r} does not match "
+                f"control_mode={self.control_mode.value!r} (expected "
+                f"family={expected.value!r})"
+            )
+        return self
+
+
+class TaskSpaceMatch(BaseModel):
+    """Result of :func:`task_space_compatible` (ADR-0071).
+
+    Attributes:
+        ok: ``True`` when every skill segment is executable on the robot.
+        reasons: Human-readable explanation of each incompatibility; empty when
+            ``ok`` is ``True``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    reasons: list[str] = Field(default_factory=list)
+
+
+class TaskSpace(BaseModel):
+    """Layer-neutral view of an action interface as ordered typed segments.
+
+    ADR-0071. Produced from an rSkill's :class:`ActionContract` (and, in a later
+    phase, declared by a scene) so the three asset layers — robots, rSkills,
+    scenes — share one comparable object instead of three implicit encodings
+    (a flat ``supported_control_modes`` set, an ``ActionContract``, and a
+    runtime-probed ``action_dim``). It is *derived*, never a hand-authored
+    manifest field, so it cannot drift from the primitives it is built on.
+
+    Attributes:
+        segments: Ordered, non-empty list of :class:`TaskSpaceSegment`. Order
+            matches the flat action-vector layout for skill-derived spaces.
+        representation: The source :class:`ActionRepresentation` when known
+            (carried through from :class:`ActionContract`), for diagnostics.
+
+    Example:
+        >>> ts = TaskSpace(
+        ...     segments=[
+        ...         TaskSpaceSegment(
+        ...             family=TaskSpaceFamily.CARTESIAN,
+        ...             control_mode=ControlMode.CARTESIAN_DELTA,
+        ...             width=6,
+        ...             target="panda_hand",
+        ...         ),
+        ...         TaskSpaceSegment(
+        ...             family=TaskSpaceFamily.GRIPPER,
+        ...             control_mode=ControlMode.GRIPPER_POSITION,
+        ...             width=1,
+        ...             target="panda_hand",
+        ...         ),
+        ...     ],
+        ... )
+        >>> ts.total_dim
+        7
+        >>> sorted(m.value for m in ts.control_modes) == ["cartesian_delta", "gripper_position"]
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    segments: list[TaskSpaceSegment]
+    representation: ActionRepresentation | None = None
+
+    @model_validator(mode="after")
+    def _validate_nonempty(self) -> TaskSpace:
+        if not self.segments:
+            raise ValueError("TaskSpace.segments must be a non-empty list")
+        return self
+
+    @property
+    def total_dim(self) -> int:
+        """Sum of segment widths — the flat action-vector dimensionality."""
+        return sum(seg.width for seg in self.segments)
+
+    @property
+    def control_modes(self) -> set[ControlMode]:
+        """The distinct :class:`ControlMode` s this space drives."""
+        return {seg.control_mode for seg in self.segments}
+
+    @classmethod
+    def from_action_contract(cls, action: ActionContract, robot: RobotDescription) -> TaskSpace:
+        """Build the task space an rSkill emits, expanding slots / representation.
+
+        ADR-0071 + ADR-0036. Resolution order:
+
+        1. ``action.slots`` set → one segment per non-discard slot.
+        2. else ``action.representation`` set → expand via
+           :func:`canonical_slots_for_representation` (returns ``None`` for joint
+           representations, falling through to step 3).
+        3. else → a single whole-vector ``JOINT_POSITION`` segment (legacy path).
+
+        Args:
+            action: The rSkill's per-checkpoint action contract.
+            robot: The robot the skill is being matched against — used by the
+                representation expander to resolve the primary end-effector.
+
+        Returns:
+            The normalized :class:`TaskSpace` the checkpoint's action vector
+            occupies.
+
+        Example:
+            >>> from openral_core.schemas import (
+            ...     ActionSlot,
+            ...     EmbodimentKind,
+            ...     EndEffectorSpec,
+            ...     JointSpec,
+            ...     JointType,
+            ...     RobotCapabilities,
+            ...     SafetyEnvelope,
+            ... )
+            >>> robot = RobotDescription(
+            ...     name="franka_panda",
+            ...     embodiment_kind=EmbodimentKind.MANIPULATOR,
+            ...     joints=[
+            ...         JointSpec(
+            ...             name="j1",
+            ...             joint_type=JointType.REVOLUTE,
+            ...             parent_link="base_link",
+            ...             child_link="link_1",
+            ...         )
+            ...     ],
+            ...     end_effectors=[EndEffectorSpec(name="panda_hand", kind="parallel_gripper")],
+            ...     capabilities=RobotCapabilities(
+            ...         supported_control_modes=[ControlMode.JOINT_POSITION],
+            ...         embodiment_tags=["franka_panda"],
+            ...     ),
+            ...     safety=SafetyEnvelope(),
+            ... )
+            >>> ac = ActionContract(
+            ...     dim=7,
+            ...     slots=[
+            ...         ActionSlot(
+            ...             range=(0, 5),
+            ...             control_mode=ControlMode.CARTESIAN_DELTA,
+            ...             ee="panda_hand",
+            ...             frame="panda_hand",
+            ...         ),
+            ...         ActionSlot(
+            ...             range=(6, 6), control_mode=ControlMode.GRIPPER_POSITION, ee="panda_hand"
+            ...         ),
+            ...     ],
+            ... )
+            >>> ts = TaskSpace.from_action_contract(ac, robot)
+            >>> ts.total_dim
+            7
+            >>> [seg.family.value for seg in ts.segments] == ["cartesian", "gripper"]
+            True
+        """
+        slots = action.slots
+        if slots is None and action.representation is not None:
+            slots = canonical_slots_for_representation(
+                action.representation, dim=action.dim, description=robot
+            )
+        if slots is None:
+            # Legacy whole-vector path: an undeclared layout is joint-position.
+            return cls(
+                segments=[
+                    TaskSpaceSegment(
+                        family=TaskSpaceFamily.JOINT,
+                        control_mode=ControlMode.JOINT_POSITION,
+                        width=action.dim,
+                    )
+                ],
+                representation=action.representation,
+            )
+        segments: list[TaskSpaceSegment] = []
+        for slot in slots:
+            mode = slot.control_mode
+            if mode is None:  # discard slot — occupies range, emits no Action.
+                continue
+            lo, hi = slot.range
+            segments.append(
+                TaskSpaceSegment(
+                    family=_FAMILY_FOR_MODE[mode],
+                    control_mode=mode,
+                    width=hi - lo + 1,
+                    target=slot.ee,
+                )
+            )
+        return cls(segments=segments, representation=action.representation)
+
+
+def task_space_compatible(
+    skill_space: TaskSpace,
+    robot: RobotDescription,
+    *,
+    hal_mode: Literal["sim", "real"] = "real",
+) -> TaskSpaceMatch:
+    """Check an rSkill's :class:`TaskSpace` is executable on a robot (ADR-0071).
+
+    The single cross-layer gate that subsumes today's implicit wiring
+    (``embodiment_tags`` string match + raw dim equality + adapter magic). A skill
+    is compatible when, for every segment:
+
+    * the segment's ``control_mode`` is executable on the chosen ``hal_mode`` —
+      mirroring the reasoner deploy gate ``_action_executable`` (ADR-0036):
+
+      - ``"sim"`` → the mode is in :data:`SIM_EXECUTABLE_CONTROL_MODES` (a
+        robosuite OSC / composite controller synthesises cartesian + gripper +
+        base goals into joint commands, so a Franka that advertises only
+        ``joint_position`` still runs a ``cartesian_delta`` LIBERO skill in sim);
+      - ``"real"`` → the robot advertises the mode in
+        ``capabilities.supported_control_modes`` (real hardware needs the actual
+        controller — no hidden OSC translation).
+
+    * ``CARTESIAN_*`` / ``GRIPPER_*`` / ``DEX_HAND_JOINT`` segments name a real
+      ``end_effector`` (when ``target`` is set) — physical fact, both modes;
+    * the total joint-segment width does not exceed the robot's joint count —
+      physical fact, both modes.
+
+    Args:
+        skill_space: The task space the rSkill emits
+            (:meth:`TaskSpace.from_action_contract`).
+        robot: The target robot description.
+        hal_mode: ``"sim"`` (default-sim OSC packers) or ``"real"`` (hardware
+            controllers). Selects which control-mode set the segments are
+            checked against — the same split the reasoner palette gate uses.
+
+    Returns:
+        A :class:`TaskSpaceMatch` — ``ok`` plus a reason per incompatibility.
+
+    Example:
+        >>> from openral_core.schemas import (
+        ...     EmbodimentKind,
+        ...     EndEffectorSpec,
+        ...     JointSpec,
+        ...     JointType,
+        ...     RobotCapabilities,
+        ...     SafetyEnvelope,
+        ... )
+        >>> robot = RobotDescription(
+        ...     name="franka_panda",
+        ...     embodiment_kind=EmbodimentKind.MANIPULATOR,
+        ...     joints=[
+        ...         JointSpec(
+        ...             name="j1",
+        ...             joint_type=JointType.REVOLUTE,
+        ...             parent_link="base_link",
+        ...             child_link="link_1",
+        ...         )
+        ...     ],
+        ...     end_effectors=[EndEffectorSpec(name="panda_hand", kind="parallel_gripper")],
+        ...     capabilities=RobotCapabilities(
+        ...         supported_control_modes=[ControlMode.JOINT_POSITION],
+        ...         embodiment_tags=["franka_panda"],
+        ...     ),
+        ...     safety=SafetyEnvelope(),
+        ... )
+        >>> space = TaskSpace(
+        ...     segments=[
+        ...         TaskSpaceSegment(
+        ...             family=TaskSpaceFamily.CARTESIAN,
+        ...             control_mode=ControlMode.CARTESIAN_DELTA,
+        ...             width=6,
+        ...             target="panda_hand",
+        ...         )
+        ...     ]
+        ... )
+        >>> # Real hardware needs a cartesian controller the Franka does not declare:
+        >>> task_space_compatible(space, robot, hal_mode="real").ok
+        False
+        >>> # In sim the robosuite OSC packer synthesises it from joint commands:
+        >>> task_space_compatible(space, robot, hal_mode="sim").ok
+        True
+    """
+    reasons: list[str] = []
+    if hal_mode == "sim":
+        executable: set[ControlMode] = set(SIM_EXECUTABLE_CONTROL_MODES)
+    else:
+        executable = {ControlMode(m) for m in robot.capabilities.supported_control_modes}
+    ee_names = {ee.name for ee in robot.end_effectors}
+    n_joints = len(robot.joints)
+
+    joint_width = 0
+    for seg in skill_space.segments:
+        if seg.control_mode not in executable:
+            reasons.append(
+                f"control_mode {seg.control_mode.value!r} not executable in "
+                f"hal_mode={hal_mode!r} (segment family={seg.family.value!r}, "
+                f"width={seg.width})"
+            )
+        if seg.family in (
+            TaskSpaceFamily.CARTESIAN,
+            TaskSpaceFamily.GRIPPER,
+            TaskSpaceFamily.DEX_HAND,
+        ):
+            if seg.target is None:
+                reasons.append(
+                    f"{seg.family.value} segment ({seg.control_mode.value}) has no "
+                    "target end-effector to address"
+                )
+            elif seg.target not in ee_names:
+                reasons.append(
+                    f"{seg.family.value} segment targets end-effector "
+                    f"{seg.target!r}, not declared on robot {robot.name!r} "
+                    f"(have: {sorted(ee_names)})"
+                )
+        if seg.family is TaskSpaceFamily.JOINT:
+            joint_width += seg.width
+
+    if joint_width > n_joints:
+        reasons.append(
+            f"joint-segment width {joint_width} exceeds robot joint count "
+            f"{n_joints} on {robot.name!r}"
+        )
+
+    return TaskSpaceMatch(ok=not reasons, reasons=reasons)
+
+
 GripperConvention: TypeAlias = Literal[
     "normalized_open_unit",
     "normalized_open_symmetric",

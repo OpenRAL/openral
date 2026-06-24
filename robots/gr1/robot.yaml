@@ -170,13 +170,20 @@ joints:
     actuator_kind: "bldc"
 
 end_effectors:
+  # Fourier hands: 6 actuated finger DoF each (the 12 hand dims of the GR1
+  # 29-D whole-body action = 3 waist + 7+7 arms + 6+6 hands). The individual
+  # finger joints are owned by the gripper model (see the joints: header note)
+  # and surfaced here as the EE's n_dof — the eval-layer / dataset-bridge
+  # contract addresses them as a DEX_HAND_JOINT slice on this EE (ADR-0071).
   - name: "right_hand"
     kind: "dexterous_hand"
+    n_dof: 6
     parent_link: "right_wrist_pitch_link"
     actuated: true
     grasp_force_n: 40.0
   - name: "left_hand"
     kind: "dexterous_hand"
+    n_dof: 6
     parent_link: "left_wrist_pitch_link"
     actuated: true
     grasp_force_n: 40.0
@@ -195,6 +202,16 @@ capabilities:
   has_vision: true
   has_lidar: false
   has_humanoid_balance: true
+  # The RoboCasa GR1 BASIC composite controller drives a 29-D whole-body
+  # joint-position action (3 waist + 7+7 arms + 6+6 Fourier-hand finger DoF).
+  # The body is joint-position control; the 12 hand DoF are EE-owned (modelled
+  # as the two dexterous-hand end-effectors below, n_dof=6 each) rather than
+  # enumerated joints. Was empty — that dropped the GR1 embodiment from the
+  # ADR-0071 task-space gate / reasoner palette entirely (ADR-0036).
+  supported_control_modes:
+    - "joint_position"
+  supported_vla_embodiments:
+    - "gr1"
   embodiment_tags:
     - "gr1"
     - "fourier_gr1"

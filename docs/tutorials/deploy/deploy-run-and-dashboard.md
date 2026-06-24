@@ -141,7 +141,8 @@ What happens:
 port `--dashboard-port`, default **4318**). It's a read-only pane over the OTel
 stream — the most recent `rskill.execute`, `skill.chunk_inference`, and
 `safety.check` spans, rolling metric histograms, per-camera thumbnails, and an
-event log.
+event log. Operator discovery / write endpoints still exist for explicit tooling
+flows, but they are kept off the main dashboard surface.
 
 ```
 http://localhost:4318

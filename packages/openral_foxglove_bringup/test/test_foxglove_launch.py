@@ -75,7 +75,7 @@ def test_safety_topics_not_whitelisted(topic: str) -> None:
 @pytest.mark.parametrize(
     "topic",
     [
-        "/openral/cameras/0/image",
+        "/openral/cameras/top/image",
         "/map",
         "/octomap_point_cloud_centers",
         "/joint_states",
@@ -94,7 +94,7 @@ def test_bucket1_topics_are_whitelisted(topic: str) -> None:
 @pytest.mark.parametrize(
     "topic",
     [
-        "/openral/cameras/0/image/compressed",
+        "/openral/cameras/top/image/compressed",
         "/openral/cameras/base/image/compressed",
         "/openral/cameras/left_wrist/image/compressed",
         "/openral/cameras/right_wrist/image/compressed",
