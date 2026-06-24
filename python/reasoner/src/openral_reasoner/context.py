@@ -28,6 +28,7 @@ from openral_core import (
     RobotDescription,
     WorldState,
 )
+from openral_reasoner.mission import MissionState, TaskState
 from pydantic import TypeAdapter
 
 __all__ = [
@@ -328,6 +329,10 @@ class ContextRenderer:
         # ADR-0072 §3 / Phase 4b — the rendered `## MEMORY` block (the self-
         # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
         self._memory_block: str | None = None
+        # ADR-0073 §1 — the active mission (ordered task queue). Set via
+        # `set_mission`, advanced via `advance_mission`; rendered as `## MISSION`.
+        # None (or an empty mission) omits the section.
+        self._mission: MissionState | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -361,6 +366,51 @@ class ContextRenderer:
         the updated memory next tick. Static config — does not bump :attr:`seq`.
         """
         self._memory_block = memory_block
+
+    # ── mission (ADR-0073 §1 — sequential task queue) ───────────────────────
+
+    def set_mission(self, mission: MissionState | None) -> None:
+        """Set (or clear) the active mission rendered as ``## MISSION``.
+
+        A new mission is a new goal — an **event** — so this bumps :attr:`seq`
+        to wake an otherwise-idle heartbeat (unlike the static
+        :meth:`set_robot_model` / :meth:`set_memory_block`). The active task's
+        text is the goal the reasoner pursues until it is verified and the queue
+        advances.
+        """
+        self._mission = mission
+        self._seq += 1
+
+    @property
+    def mission(self) -> MissionState | None:
+        """The active :class:`MissionState`, or ``None``.
+
+        The node mutates it in place for non-waking bookkeeping
+        (:meth:`MissionState.record_attempt` / :meth:`MissionState.mark_verifying`);
+        completion/abandonment go through :meth:`advance_mission` so the next
+        active task wakes the reasoner.
+        """
+        return self._mission
+
+    def advance_mission(self, *, done: bool, verdict: str) -> TaskState | None:
+        """Terminate the active task and activate the next, bumping :attr:`seq`.
+
+        ``done=True`` marks the active task ``done`` (verified complete);
+        ``done=False`` marks it ``abandoned`` (ladder exhausted / unverifiable).
+        Advancing the queue is an event — the new active task must wake the
+        reasoner to dispatch it — so this bumps :attr:`seq` whenever a mission is
+        present. Returns the newly-active :class:`TaskState`, or ``None`` when the
+        mission is finished. A no-op (no mission / no active task) does not bump.
+        """
+        if self._mission is None:
+            return None
+        nxt = (
+            self._mission.complete_active(verdict)
+            if done
+            else self._mission.abandon_active(verdict)
+        )
+        self._seq += 1
+        return nxt
 
     # ── rolling buffer mutators ─────────────────────────────────────────────
 
@@ -434,8 +484,9 @@ class ContextRenderer:
                 the aggregator has not yet produced one.
 
         Returns:
-            A multi-section text block: optional ``## ROBOT`` self-model and
-            ``## MEMORY`` (when set) followed by ``## WORLD_STATE``,
+            A multi-section text block: optional ``## ROBOT`` self-model,
+            ``## MEMORY``, and ``## MISSION`` (the active task queue, when a
+            non-empty mission is set) followed by ``## WORLD_STATE``,
             ``## EXECUTION``, ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``.
         """
         sections: list[str] = []
@@ -443,6 +494,8 @@ class ContextRenderer:
             sections += ["## ROBOT", self._robot_model, ""]
         if self._memory_block is not None:
             sections += [self._memory_block, ""]
+        if self._mission is not None and not self._mission.is_empty():
+            sections += ["## MISSION", self._mission.render(), ""]
         sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
