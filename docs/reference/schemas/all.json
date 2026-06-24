@@ -109,6 +109,7 @@
         "joint_velocities",
         "delta_ee_6d_plus_gripper",
         "delta_ee_6d",
+        "delta_ee_3d_plus_gripper",
         "cartesian_pose"
       ]
     },
@@ -2060,6 +2061,7 @@
             "joint_velocities",
             "delta_ee_6d_plus_gripper",
             "delta_ee_6d",
+            "delta_ee_3d_plus_gripper",
             "cartesian_pose"
           ],
           "title": "ActionRepresentation",
@@ -2124,6 +2126,7 @@
             "joint_velocities",
             "delta_ee_6d_plus_gripper",
             "delta_ee_6d",
+            "delta_ee_3d_plus_gripper",
             "cartesian_pose"
           ],
           "title": "ActionRepresentation",
@@ -4426,6 +4429,7 @@
             "joint_velocities",
             "delta_ee_6d_plus_gripper",
             "delta_ee_6d",
+            "delta_ee_3d_plus_gripper",
             "cartesian_pose"
           ],
           "title": "ActionRepresentation",
