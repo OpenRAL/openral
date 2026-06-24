@@ -18,6 +18,24 @@
   - [ADR-0036](0036-osc-action-contracts-deploy-path-gate.md) — the deploy-path
     action gate and its continuous-deploy auto-reset amendment; unchanged, but the
     reason the runner's `result.success` is a poor completion signal for VLAs.
+  - [ADR-0072](0072-reasoner-playbooks-and-self-maintained-memory.md) — the
+    `kind: "playbook"` S2 decision procedures the reasoner reads into its system
+    prompt. **Central to this ADR**: `decompose-mission`, `verify-outcome`, and
+    `preflight-reach` already describe the *strategy* (how to split a compound
+    goal, how to verify an outcome, how to check reachability). This ADR is the
+    deterministic *substrate* those playbooks ride on — it does not re-implement
+    them. (The decisive evidence: all six playbooks were injected into the system
+    prompt in the failed run, and the reasoner still neither decomposed nor
+    advanced — see Context.)
+  - [ADR-0064 (vision SLAM)](0064-vision-slam-lidarless-cuvslam-nvblox-monodepth.md)
+    — cuVSLAM + nvblox + Depth-Anything-3 metric depth: the map frame, robot pose,
+    and 3D object/occupancy geometry that ground a subtask's target and its
+    navigation feasibility (powering the `find-object` / `stage-for-manipulation`
+    playbooks the mission orchestrates).
+  - [ADR-0065](0065-cumotion-cuda-moveit-planning.md) — cuMotion GPU MoveIt
+    planning: a fast collision-aware reachability check that makes the
+    `preflight-reach` playbook a *pre-dispatch feasibility gate* (stage or hand off
+    instead of burning a 60 s VLA attempt on an unreachable target).
   - Investigation that motivates this ADR:
     [`docs/investigations/reasoner-success-gating-and-multitask.md`](../investigations/reasoner-success-gating-and-multitask.md)
     — the full code map (file:line anchors) and the live run that exposed the gap.
@@ -61,11 +79,34 @@ VLA's reward caps below threshold). That problem makes the grasp *fail*; this AD
 is about the reasoner *not noticing* and *not advancing* — it is needed regardless
 of how good the policy is.
 
+**The strategy already existed and was not enough.** The failed run logged
+`playbooks: injected 6 into the system prompt` — `decompose-mission`,
+`verify-outcome`, `preflight-reach`, `find-object`, `stage-for-manipulation`, and
+`clarify-ambiguity` (ADR-0072) were all in front of the LLM. They *describe* how
+to split a compound goal, verify an outcome, and check reachability. The reasoner
+still did none of it. That is the load-bearing evidence for this ADR: a
+prompt-only (playbook-only) approach cannot carry task lifecycle when the
+tool-calling model is unreliable. The fix is therefore not *more* strategy text —
+it is a deterministic lifecycle the strategy plugs into.
+
 ## Decision
 
 Introduce **deterministic mission scaffolding in the Reasoner (S2)**. Keep the LLM
 for *skill selection*; move *task lifecycle* (sequencing + completion) into
 `ReasonerCore`, where it is bookkeeping, not judgement.
+
+The scaffolding is the **substrate the existing ADR-0072 playbooks orchestrate**,
+not a replacement for them. The division of labour:
+
+| Concern | Strategy (LLM, ADR-0072 playbook) | Lifecycle (deterministic, this ADR) |
+|---|---|---|
+| Split a compound goal | `decompose-mission` | `MissionState.tasks` populated; `split_mission` fallback |
+| Verify an outcome | `verify-outcome` (`query_scene` + `query_task_progress`) | auto reward gate → `complete_active` / `abandon_active` |
+| Check reachability | `preflight-reach` (cuMotion + SLAM/detector) | pre-dispatch gate → stage or `abandon_active`, no wasted run |
+
+The playbooks decide *what is true*; the `MissionState` records it and *advances
+the queue* so the decision is not lost on the next pull-once drain or the next
+flaky tool-call.
 
 ### 1. Typed `MissionState` (sequential task queue)
 
@@ -101,6 +142,15 @@ This mirrors the useful part of coding-agent harnesses (explicit todo ledger,
 one active item, visible status) without importing their file/checkpoint
 machinery: the robot needs a mission ledger, not a second project manager.
 
+**Population — deterministic split, with the playbook as the upgrade.** The queue
+is filled deterministically by `split_mission` (on `" | "` and `", then"`), which
+handles the deploy-CLI join and simple operator phrasing. For a genuinely compound
+goal the `decompose-mission` playbook (ADR-0072) is the richer path: the LLM
+produces an ordered subtask list, which **populates the same `MissionState.tasks`**
+rather than living only in the prompt. Either way the queue is the durable record;
+the split is the floor, the playbook the ceiling. This keeps decomposition
+*strategy* in the playbook and decomposition *persistence* in the lifecycle.
+
 ### 2. Reward-gated completion (deterministic gate; the LLM still drives the skill)
 
 On `execute_rskill` return, the reasoner **does not** mark the task done on
@@ -135,6 +185,28 @@ The gate appends the verdict to mission/execution feedback after the state
 transition. The existing LLM-selected `query_task_progress` tool may still
 publish its advisory re-prompt, but automatic completion gating is typed
 node-side bookkeeping.
+
+**The reward gate is the floor; `verify-outcome` is the ceiling.** The automatic
+`query_task_progress` gate is the deterministic backstop that always runs. The
+`verify-outcome` playbook (ADR-0072) is the richer semantic check — it composes
+`query_scene` ("is the bowl actually in the drawer?") with `query_task_progress`
+and classifies success/failure with evidence. When the LLM runs `verify-outcome`,
+its conclusion drives the **same** `complete_active` / `abandon_active`
+transitions as the automatic gate. The numeric reward catches the common case
+without the LLM; the VLM check resolves the ambiguous case the reward can't score.
+Both write to the one queue, so the verdict is never lost.
+
+### 2b. Pre-dispatch feasibility gate (ground the honest-handoff decision)
+
+Before `record_attempt` on a manipulation task, the reasoner may run the
+`preflight-reach` playbook (ADR-0072), which is only *useful* with the new
+backends: **cuMotion** (ADR-0065) answers "is this target reachable + collision
+free from here?" and **vision SLAM / a detector** (ADR-0064) answers "where is the
+target in the map?". If the target is unreachable, the lifecycle stages the robot
+(a `stage-for-manipulation` step) or `abandon_active`s the task **without burning a
+60 s VLA attempt** — turning the honest-handoff decision from a reward-timeout into
+a *grounded* feasibility verdict. This piece is optional and gated on the backends
+being present; it does not block Pieces 1–2.
 
 ### 3. Critic stall drives the ladder only when task-scoped
 
@@ -176,11 +248,22 @@ the observed run. Piece 3 is hardening and may land in a follow-up.
 
 ## Alternatives considered
 
-- **Prompt-only fix (improve the system prompt so the LLM verifies + sequences).**
-  Rejected as the *primary* mechanism: the live run showed the local tool-calling
-  model is unreliable (11× `no tool_calls`), so task lifecycle cannot depend on the
-  LLM acting correctly every tick. The system prompt is still updated to *describe*
-  the now-automatic gating, but it is not the enforcement.
+- **Prompt-only fix (improve the system prompt / write better playbooks so the LLM
+  verifies + sequences).** Rejected as the *primary* mechanism, with direct
+  evidence: the failed run had all six ADR-0072 playbooks — including
+  `decompose-mission` and `verify-outcome` — already injected into the system
+  prompt, and the local tool-calling model still neither decomposed nor advanced
+  (11× `no tool_calls`). Better strategy text cannot carry task lifecycle when the
+  model is unreliable. The playbooks are kept and *relied on* for strategy; this
+  ADR adds the deterministic lifecycle they were missing.
+
+- **Re-implement decomposition / verification in the lifecycle (ignore the
+  playbooks).** Rejected: `decompose-mission` and `verify-outcome` already encode
+  the strategy and compose the right tools (`query_scene` + `query_task_progress`).
+  Duplicating that as hard-coded logic would fork the behaviour and rot. The
+  lifecycle instead *consumes* the playbooks' conclusions (they call
+  `complete_active` / `abandon_active` / populate `tasks`) and only owns the
+  bookkeeping the LLM cannot be trusted to hold.
 
 - **Gate on the runner's `result.success`.** Rejected: for a VLA this is `True`
   whenever the policy ran its deadline without crashing
