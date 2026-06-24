@@ -5639,6 +5639,14 @@ class DeployScene(BaseModel):
     robot_id: str | None = None
     base_pose: Pose6D | None = None
     composition: SceneComposition | None = None
+    memory_dir: str | None = None
+    """ADR-0071 Decision 3b — path to a per-robot deploy memory bundle directory
+    holding any of ``MEMORY.md`` (self-maintained semantic memory), ``scene_graph.json``
+    (3D world-state graph → ``recall_object``), and ``map.yaml`` (2D occupancy grid →
+    nav2 ``map_server``). ``openral deploy sim`` derives the three launch paths from it
+    by convention (each artifact loaded by its correct consumer). ``--memory-dir`` on
+    the CLI overrides this. ``None`` = no bundle (the reasoner starts with empty
+    memory). Advisory only — never a safety-kernel input (§1.1)."""
 
     @model_validator(mode="before")
     @classmethod
