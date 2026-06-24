@@ -617,10 +617,17 @@ affected docs in the same PR (§1.14). Phases are independently landable.
    section to the reasoner's system prompt (empty = no-op). The **find-object** playbook
    ships as the first; **decompose-mission** + the **subtask-with-goal** contract, and a
    live-LLM sim test on the home fixture (ADR-0039 wine task), are the remaining authoring.
-4. **`MEMORY.md` core (Decision 3, read + `memory_write` add/update/supersede).**
-   File schema + loader + the `memory_write`/`memory_search` tools + reader/writer
-   split. Author **verify-outcome** and **clarify-ambiguity** (they drive most
-   writes). Live reasoner test: a correction persists and is recalled next task.
+4. **`MEMORY.md` core (Decision 3).**
+   - **4a tool contracts — landed.** `MemoryWriteTool` (the reasoner's first
+     write-capable variant — explicit `add`/`update`/`supersede`/`delete` over a
+     `MemorySection`, with `content`/`target` field-requirement validators) and
+     `MemorySearchTool` (read-only archival query) added to the `ReasonerToolCall`
+     union, with round-trip/decode/validator tests. Typed contracts only — not yet
+     dispatched (mirrors ADR-0039 Phase 1).
+   - **4b remaining.** The `MEMORY.md` file model + loader/renderer (the `## MEMORY`
+     block), the `memory_write`/`memory_search` node dispatch, the archival JSONL,
+     and the reader/writer split. Author **verify-outcome** + **clarify-ambiguity**
+     (they drive most writes). Live reasoner test: a correction persists + recalls.
 4b. **Deploy memory bundle (Decision 3b).** Standardize the bundle layout: place
    `scene_graph.json` at the conventional path (**reuses** the shipped
    `spatial_memory_path` loader — no new code) and add the `map_path` ROS param +

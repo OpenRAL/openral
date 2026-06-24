@@ -6939,6 +6939,81 @@ class QueryTaskProgressTool(_ReasonerToolBase):
     task: str = ""
 
 
+MemorySection: TypeAlias = Literal[
+    "home_map", "preferences", "lessons", "object_locations", "open_tasks"
+]
+"""The fixed sections of the self-maintained ``MEMORY.md`` core (ADR-0071 §3).
+
+* ``home_map`` — stable places / region-connectivity (EDIT in place).
+* ``preferences`` — distilled user-preference *rules* (TidyBot; EDIT in place).
+* ``lessons`` — distilled human corrections / hard-won lessons (DROC; APPEND).
+* ``object_locations`` — timestamped object→place log (SUPERSEDE on re-observation).
+* ``open_tasks`` — recurring commitments / open items (EDIT; remove on completion).
+"""
+
+
+class MemoryWriteTool(_ReasonerToolBase):
+    """Tool variant (**write**) — edit the robot's self-maintained ``MEMORY.md`` (ADR-0071 §3).
+
+    The reasoner's **first write-capable tool**. It edits the persistent,
+    human-readable *semantic* memory (preferences, corrections, lessons, durable
+    home facts, object locations, open tasks) through an **explicit operation** —
+    never a free-form rewrite (Mem0 ``ADD/UPDATE/DELETE`` + Zep temporal
+    supersession). It writes ONLY to the advisory memory file and **holds no
+    authority over actuation** (ADR-0018 §4): a wrong memory yields a bad plan the
+    C++ kernel still vetoes (CLAUDE.md §1.1). The dispatch that applies the edit is
+    wired in a later phase — this is the typed contract.
+
+    Attributes:
+        tool: Discriminator (always ``"memory_write"``).
+        op: The edit operation — ``add`` / ``update`` / ``supersede`` / ``delete``.
+        section: Which :data:`MemorySection` to edit.
+        content: The fact, as a distilled NL rule/line. Required for every op
+            except ``delete`` (validated).
+        importance: LLM-assigned salience in ``[0, 1]`` (Generative Agents), used
+            by recency-importance-relevance retrieval when the section is capped.
+        target: The existing entry this op acts on. Required for
+            ``update`` / ``supersede`` / ``delete``; omitted for ``add`` (validated).
+    """
+
+    tool: Literal["memory_write"] = "memory_write"
+    op: Literal["add", "update", "supersede", "delete"]
+    section: MemorySection
+    content: str = ""
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    target: str | None = None
+
+    @model_validator(mode="after")
+    def _check_op_fields(self) -> MemoryWriteTool:
+        """``content`` required unless deleting; ``target`` required unless adding."""
+        if self.op != "delete" and not self.content:
+            raise ValueError(f"MemoryWriteTool: op={self.op!r} requires non-empty `content`.")
+        if self.op in ("update", "supersede", "delete") and not self.target:
+            raise ValueError(f"MemoryWriteTool: op={self.op!r} requires a `target` entry.")
+        return self
+
+
+class MemorySearchTool(_ReasonerToolBase):
+    """Tool variant (**read-only**) — search the archival memory log (ADR-0071 §3).
+
+    Pages in entries evicted from the bounded ``MEMORY.md`` core into the archival
+    JSONL (MemGPT recall), so the LLM can recall an older fact — e.g. a ``stale``
+    object location used as a search prior — without loading the whole history.
+    Read-only; no actuation (ADR-0018 §4).
+
+    Attributes:
+        tool: Discriminator (always ``"memory_search"``).
+        query: Free-text query over archived memory.
+        section: Optional :data:`MemorySection` filter.
+        limit: Maximum number of results to return.
+    """
+
+    tool: Literal["memory_search"] = "memory_search"
+    query: str = Field(min_length=1)
+    section: MemorySection | None = None
+    limit: int = Field(default=5, ge=1, le=100)
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
@@ -6949,6 +7024,8 @@ ReasonerToolCall: TypeAlias = (
     | LocateInViewTool
     | QuerySceneTool
     | QueryTaskProgressTool
+    | MemoryWriteTool
+    | MemorySearchTool
 )
 """Discriminated union over the reasoner tool variants (ADR-0018 §4; ADR-0039).
 
