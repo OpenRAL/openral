@@ -112,3 +112,54 @@ def test_context_renderer_includes_memory_section_when_set() -> None:
     assert out.index("## MEMORY") < out.index("## WORLD_STATE")
     # Omitted when not set.
     assert "## MEMORY" not in ContextRenderer().render(world_state=None)
+
+
+# ── ADR-0071 Phase 5 — retrieval under cap + consolidation ────────────────────
+
+
+def test_to_context_block_cap_keeps_top_by_importance_and_notes_hidden() -> None:
+    s = MemoryStore()
+    s.apply(op="add", section="preferences", content="low one", importance=0.2,
+            target=None, now="2026-06-24T10:00:00")
+    s.apply(op="add", section="preferences", content="high one", importance=0.95,
+            target=None, now="2026-06-24T10:00:00")
+    s.apply(op="add", section="lessons", content="mid one", importance=0.6,
+            target=None, now="2026-06-24T10:00:00")
+    block = s.to_context_block(cap=2)
+    assert "high one" in block and "mid one" in block  # top 2 by importance
+    assert "low one" not in block  # dropped from the live context
+    assert "1 lower-priority older memories hidden" in block
+    assert "memory_search" in block
+    # No cap → everything renders, no footer.
+    full = s.to_context_block()
+    assert "low one" in full and "hidden" not in full
+
+
+def test_to_context_block_under_cap_renders_all() -> None:
+    s = MemoryStore()
+    s.apply(op="add", section="preferences", content="only one", importance=0.5,
+            target=None, now="2026-06-24T10:00:00")
+    block = s.to_context_block(cap=5)
+    assert "only one" in block and "hidden" not in block
+
+
+def test_consolidate_dedups_identical_facts_keeping_best() -> None:
+    s = MemoryStore()
+    s.apply(op="add", section="object_locations", content="mug in cupboard", importance=0.4,
+            target=None, now="2026-06-22T10:00:00")
+    s.apply(op="add", section="object_locations", content="mug in cupboard", importance=0.9,
+            target=None, now="2026-06-24T10:00:00")
+    removed = s.consolidate()
+    # The duplicate (lower importance) is removed and returned for archival.
+    assert [e.importance for e in removed] == [0.4]
+    kept = [e for e in s.entries if e.content == "mug in cupboard"]
+    assert len(kept) == 1 and kept[0].importance == 0.9
+
+
+def test_consolidate_is_noop_without_duplicates() -> None:
+    s = MemoryStore([
+        MemoryEntry("preferences", "a", 0.5, "2026-06-24T10:00:00", "current"),
+        MemoryEntry("lessons", "b", 0.5, "2026-06-24T10:00:00", "current"),
+    ])
+    assert s.consolidate() == []
+    assert len(s.entries) == 2
