@@ -29,17 +29,17 @@ sensors_required:
     min_width: 96
     min_height: 96
 
-# Output side (ADR-0013). The pusht_2d scene-pseudo-robot exposes a 2-D
-# (x, y) absolute position; robots/pusht_2d/robot.yaml advertises
-# `cartesian_pose` as its supported control mode (the codebase
-# convention for the PushT 2-D action regardless of dimensionality).
+# Output side (ADR-0013). The pusht_2d scene-pseudo-robot exposes its 2-D
+# (x, y) pusher position as two synthetic prismatic joints (tip_x, tip_y);
+# robots/pusht_2d/robot.yaml advertises `joint_position` over those 2 DoF.
+# The gym-pusht action IS the absolute target of those joints, so the
+# robot-side actuator is joint_position (ADR-0071 — matches every other
+# rSkill, where `kind` names the robot actuator, not the policy encoding).
 # The loader auto-fills n_dof (2) + vla_action_key from the robot YAML.
-# PushT actions are absolute (x, y) targets in the world/scene frame.
 actuators_required:
-  - kind: "cartesian_pose"
+  - kind: "joint_position"
     control_mode_semantics:
       mode: "absolute"
-      reference_frame: "world"
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
@@ -97,3 +97,7 @@ scenes:
 # to bind the LeRobot v3 `action` feature shape).
 action_contract:
   dim: 2
+  # ADR-0071 — absolute positions of the 2 prismatic tip_x/tip_y joints.
+  # Declared explicitly so the contract states joint-space rather than relying
+  # on the undeclared-layout fallback.
+  representation: "joint_positions"

@@ -113,3 +113,9 @@ scenes:
 # to bind the LeRobot v3 `action` feature shape).
 action_contract:
   dim: 4
+  # ADR-0071 — MetaWorld's mocap controller drives a 3-D end-effector
+  # translation delta + 1 gripper scalar (see openral_sim.backends.metaworld:
+  # "4-D action (delta XYZ + gripper)"). NOT joint positions: declaring it
+  # explicitly stops the undeclared-layout fallback from mis-modelling the
+  # 4-vector as 4 Sawyer joints.
+  representation: "delta_ee_3d_plus_gripper"
