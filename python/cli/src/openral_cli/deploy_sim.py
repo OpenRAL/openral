@@ -967,8 +967,18 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # rejects an empty ``name:=`` value; the launch file defaults both to "").
     if reward_monitor_manifest:
         argv_template.append(f"reward_monitor_manifest:={reward_monitor_manifest}")
-    if reward_monitor_task:
-        argv_template.append(f"reward_monitor_task:={reward_monitor_task}")
+    # The reward monitor's always-on critic_score path scores against its
+    # `task` param; an empty task makes `_publish_critic_score` silently skip
+    # every tick (it never scores, never spawns the robometer sidecar). Default
+    # it to the first startup subtask so a deploy with `tasks:`/`--initial-task`
+    # gets a background progress signal out of the box (an explicit
+    # `--reward-monitor-task` still wins; the reasoner's `query_task_progress`
+    # polls already carry the live subtask when it dispatches with a deadline).
+    effective_reward_task = reward_monitor_task
+    if not effective_reward_task and _resolved_initial_prompt:
+        effective_reward_task = _resolved_initial_prompt.split(" | ")[0].strip()
+    if effective_reward_task:
+        argv_template.append(f"reward_monitor_task:={effective_reward_task}")
     # ADR-0056 — only forward the locator list when non-empty (ros2 launch rejects
     # an empty ``name:=`` value; the launch file defaults it to "").
     if resolved_object_detector_locators:
