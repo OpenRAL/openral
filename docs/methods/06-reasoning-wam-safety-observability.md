@@ -82,6 +82,13 @@ _ADR-0039 §3 Phase 4 — bounded active object search over the scene graph (pur
 - `class SearchProgress` — attempt counter against a `SearchBudget`: `record_attempt() -> bool` (True while budget remains), `attempts`, `exhausted`, `reset()`. The runaway bound.
 - `format_search_frontier(candidates, target_text) -> str` — LLM-readable frontier text (empty → "hand off to a human").
 
+### `python/reasoner/src/openral_reasoner/mission.py`
+_ADR-0073 §1 — typed sequential task queue for multi-task deploy goals. Reasoner-internal bookkeeping (no rclpy/Pydantic); the node drives transitions, the `ContextRenderer` renders the `## MISSION` ledger._
+- `TaskStatus` (TypeAlias = `Literal["pending","active","verifying","done","abandoned"]`) — subtask lifecycle; `done`/`abandoned` terminal (never re-queued).
+- `split_mission(text: str) -> list[str]` — deterministic split of an operator goal into ordered subtasks on `` | `` (deploy-CLI join) and `, then` / ` then ` (case-insensitive); trims + drops empties; does NOT split bare `and`.
+- `class TaskState` (dataclass, slots) — one subtask: fields `task_id, text, status=pending, attempts=0, last_rskill_id, last_trace_id, last_verdict`.
+- `class MissionState` — ordered queue, ≤1 task `active`/`verifying`. `from_prompt(text)` classmethod (splits + activates first); readers `tasks`, `active() -> TaskState | None`, `is_empty()`, `is_complete()`, `__len__`; mutators `record_attempt(*, rskill_id, trace_id=None)`, `mark_verifying()`, `complete_active(verdict) -> TaskState | None`, `abandon_active(reason) -> TaskState | None` (each returns the newly-active task or `None` when finished); `render() -> str` (the `## MISSION` ledger: done ✓ / active ▶ / verifying ? / abandoned ✗ + pending count).
+
 ### `python/reasoner/src/openral_reasoner/context.py`
 _ADR-0018 F4 — `ContextRenderer` builds the structured **text** snapshot the LLM consumes per tick (no pixels in v1)._
 
