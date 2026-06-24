@@ -26,11 +26,14 @@ def test_block_injects_real_find_object_playbook() -> None:
     m = RSkillManifest.from_yaml(str(_FIND_OBJECT / "rskill.yaml"))
     assert m.kind == "playbook" and m.playbook is not None
     body = (_FIND_OBJECT / m.playbook.body_uri).read_text()
-    block = render_playbooks_block([(f"{m.name} — {m.playbook.trigger}", body)])
+    label = m.name.split("/")[-1].removeprefix("rskill-")
+    block = render_playbooks_block([(f"{label} — {m.playbook.trigger}", body)])
 
     assert block.startswith("## PLAYBOOKS")
     assert "execute_rskill and the safety kernel" in block  # the guard line
-    assert f"--- playbook: {m.name} — {m.playbook.trigger} ---" in block
+    assert "A playbook is NOT a skill" in block
+    assert f"--- playbook: {label} — {m.playbook.trigger} ---" in block
+    assert m.name not in block
     # The SOP body (its own headings) is carried verbatim.
     assert "## Steps" in block
     assert "recall_object" in block

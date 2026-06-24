@@ -1186,7 +1186,12 @@ class ReasonerNode(LifecycleNode):
                     f"playbook {manifest.name!r}: cannot read body {body_path}: {exc}",
                 )
                 continue
-            entries.append((f"{manifest.name} — {manifest.playbook.trigger}", body))
+            # Label with the bare playbook name (strip the ``<org>/rskill-`` prefix):
+            # the full machine id reads like an executable skill id and tempts the
+            # LLM to call ``execute_rskill`` on the playbook itself (ADR-0071 — a
+            # playbook is an SOP to follow, never a dispatch target).
+            label = manifest.name.split("/")[-1].removeprefix("rskill-")
+            entries.append((f"{label} — {manifest.playbook.trigger}", body))
         if entries:
             self.get_logger().info(f"playbooks: injected {len(entries)} into the system prompt")
         return render_playbooks_block(entries)
