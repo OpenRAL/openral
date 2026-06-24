@@ -1134,17 +1134,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # extrinsics, so the world-state lifter can project the world voxel map
         # into it). The detection's ``sensor_id`` MUST be that camera — not a
         # depth sensor — so the lifter resolves the right intrinsics/extrinsics.
-        # Generic over robots; falls back to the historical ``agentview_left``.
+        # Generic over robots; prefer an optical-frame RGB camera but fall back
+        # to the robot's first RGB camera so the detector still gets frames.
+        # (Post-ADR-0069 camera rename, franka_panda publishes ``top``/``wrist``,
+        # neither optical-framed; the old hardcoded ``agentview_left`` fallback
+        # was a dead topic — the detector cached no frame and every
+        # ``locate_in_view`` returned found=False, looping the reasoner.)
         det_camera = "agentview_left"
         try:
             with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
                 _robot_doc = yaml.safe_load(_rh) or {}
-            for _s in _robot_doc.get("sensors", []):
-                if _s.get("modality") == "rgb" and str(_s.get("frame_id", "")).endswith(
-                    "_optical_frame"
-                ):
-                    det_camera = str(_s["name"])
-                    break
+            _rgb_sensors = [
+                _s
+                for _s in _robot_doc.get("sensors", [])
+                if _s.get("modality") == "rgb" and _s.get("name")
+            ]
+            if _rgb_sensors:
+                det_camera = str(_rgb_sensors[0]["name"])
+                for _s in _rgb_sensors:
+                    if str(_s.get("frame_id", "")).endswith("_optical_frame"):
+                        det_camera = str(_s["name"])
+                        break
         except (OSError, yaml.YAMLError):
             pass
         det_image_topic = f"/openral/cameras/{det_camera}/image"
