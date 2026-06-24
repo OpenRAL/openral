@@ -233,6 +233,13 @@ class SimSensorBridge:
         # base-mounted camera doesn't voxelise the arm into its own world map.
         self._depth_self_bodies: frozenset[int] = frozenset()
         self._tf_broadcaster: Any = None
+        # Static world->base_frame TF (ADR-0027 — gives a fixed-base sim arm the
+        # world root its TF tree otherwise lacks, so task-space state layouts
+        # like ``libero_eef8d`` can read the WORLD-frame EE pose the policy was
+        # trained on). Published once from the base body's MuJoCo world pose;
+        # skipped for mobile bases (they publish odom->base).
+        self._static_tf_broadcaster: Any = None
+        self._world_base_published: bool = False
         # ADR-0035 cross-frame lift — RGB cameras whose optical-frame TF failed
         # to resolve (no MJCF camera); warned once, then skipped.
         self._camera_tf_disabled: set[str] = set()
@@ -307,6 +314,8 @@ class SimSensorBridge:
         self._depth_self_bodies = frozenset()
         self._camera_tf_disabled.clear()
         self._tf_broadcaster = None
+        self._static_tf_broadcaster = None
+        self._world_base_published = False
         if self._viewer is not None:
             with contextlib.suppress(Exception):  # reason: viewer already closed
                 self._viewer.close()
@@ -456,6 +465,9 @@ class SimSensorBridge:
         if self._depth_base_body is None:
             return
 
+        # ADR-0027 — publish the world root for a fixed-base sim arm (once).
+        self._publish_world_base_tf(model, data)
+
         from geometry_msgs.msg import TransformStamped
         from openral_core.exceptions import ROSConfigError
 
@@ -494,6 +506,63 @@ class SimSensorBridge:
             tf.transform.rotation.z = quat[2]
             tf.transform.rotation.w = quat[3]
             self._tf_broadcaster.sendTransform(tf)
+
+    def _publish_world_base_tf(self, model: object, data: object) -> None:
+        """Publish a static ``world -> base_frame`` TF from the base body's sim pose.
+
+        A robosuite-attached fixed-base arm (LIBERO franka, ur5e, ...) roots its
+        TF tree at ``base_frame`` (panda_link0) with NO parent, yet the robot
+        sits at a non-origin world pose (LIBERO mounts the franka at world
+        ``[-0.66, 0, 0.912]``, varying by suite). The benchmark feeds the policy
+        the WORLD-frame EE pose (robosuite ``robot0_eef_pos``); without this
+        transform the ``libero_eef8d`` task-space state layout could only read
+        the base-relative EE pose (off by the mount — the policy would see the
+        EE ~0.9 m below where it trained). Publishing the base body's live
+        MuJoCo world pose as ``world -> base_frame`` makes
+        ``tf_lookup("world", "panda_hand_tcp")`` equal robosuite's eef.
+
+        Static (the base is fixed) + latched, so the skill_runner's tf_lookup
+        gets it even joining late. Skipped for MOBILE bases — they publish a
+        live ``odom -> base`` and a second parent for ``base`` would corrupt the
+        tree (detected via ``capabilities.footprint_radius``, which only mobile
+        robots declare).
+        """
+        if self._world_base_published:
+            return
+        caps = getattr(self._description, "capabilities", None)
+        if caps is not None and getattr(caps, "footprint_radius", None) is not None:
+            self._world_base_published = True  # mobile: odom owns base->world; nothing to do
+            return
+        if self._depth_base_body_id < 0:
+            return
+
+        from geometry_msgs.msg import TransformStamped
+        from tf2_ros import StaticTransformBroadcaster
+
+        bid = self._depth_base_body_id
+        pos = data.xpos[bid]  # type: ignore[attr-defined]  # world position of the base body
+        quat_wxyz = data.xquat[bid]  # type: ignore[attr-defined]  # MuJoCo quaternion is wxyz
+        if self._static_tf_broadcaster is None:
+            self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
+        base_frame_id = getattr(self._description, "base_frame", "base_link")
+        tf = TransformStamped()
+        tf.header.stamp = self._node.get_clock().now().to_msg()
+        tf.header.frame_id = "world"
+        tf.child_frame_id = base_frame_id
+        tf.transform.translation.x = float(pos[0])
+        tf.transform.translation.y = float(pos[1])
+        tf.transform.translation.z = float(pos[2])
+        tf.transform.rotation.w = float(quat_wxyz[0])
+        tf.transform.rotation.x = float(quat_wxyz[1])
+        tf.transform.rotation.y = float(quat_wxyz[2])
+        tf.transform.rotation.z = float(quat_wxyz[3])
+        self._static_tf_broadcaster.sendTransform(tf)
+        self._world_base_published = True
+        self._node.get_logger().info(
+            f"published static world->{base_frame_id} at "
+            f"[{float(pos[0]):.3f}, {float(pos[1]):.3f}, {float(pos[2]):.3f}] "
+            "(fixed-base sim world root, ADR-0027)"
+        )
 
     # -- Sim-only free-running idle stepper (ADR-0034 amendment) --
     def _setup_idle_stepper(self) -> None:
