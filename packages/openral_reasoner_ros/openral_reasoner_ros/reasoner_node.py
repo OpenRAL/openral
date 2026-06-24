@@ -465,6 +465,10 @@ class ReasonerNode(LifecycleNode):
         # ADR-0071 §3 / Phase 4b — path to the self-maintained MEMORY.md (read at
         # configure into the `## MEMORY` context block). Empty omits the section.
         self.declare_parameter("memory_md_path", "")
+        # ADR-0071 §3 / Phase 5 — retrieval-under-cap: render at most this many
+        # memory entries in the always-on `## MEMORY` block (top by importance then
+        # recency; the tail stays searchable via memory_search). 0 = no cap.
+        self.declare_parameter("memory_context_cap", 0)
         # ADR-0038 live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -1015,13 +1019,19 @@ class ReasonerNode(LifecycleNode):
         self._memory_store = MemoryStore.from_markdown(text)
         self._memory_md_path = p
         self._memory_archive = self._load_memory_archive(p)
-        self._renderer.set_memory_block(self._memory_store.to_context_block())
+        self._renderer.set_memory_block(self._render_memory_block())
         if not self._palette.memory_available:
             self._palette = self._palette.model_copy(update={"memory_available": True})
         self.get_logger().info(
             f"memory: loaded {len(self._memory_store.entries)} entries "
             f"(+{len(self._memory_archive)} archived) from {path!r}; write tools enabled",
         )
+
+    def _render_memory_block(self) -> str:
+        """Render the ``## MEMORY`` block under the ``memory_context_cap`` param (Phase 5)."""
+        assert self._memory_store is not None
+        cap = self.get_parameter("memory_context_cap").get_parameter_value().integer_value
+        return self._memory_store.to_context_block(cap=cap if cap > 0 else None)
 
     @staticmethod
     def _memory_archive_path(memory_md_path: pathlib.Path) -> pathlib.Path:
@@ -2130,8 +2140,12 @@ class ReasonerNode(LifecycleNode):
         )
         if archived is not None:
             self._archive_memory_entry(archived)
+        # ADR-0071 Phase 5 — consolidate: merge any exact-duplicate facts the write
+        # may have introduced, paging the removed copies to the archive (Mem0).
+        for dup in self._memory_store.consolidate():
+            self._archive_memory_entry(dup)
         self._persist_memory()
-        self._renderer.set_memory_block(self._memory_store.to_context_block())
+        self._renderer.set_memory_block(self._render_memory_block())
         detail = f"{call.op} [{call.section}]"
         body = call.target if call.op == "delete" else call.content
         self.get_logger().info(f"dispatch: memory_write {detail} {body!r} → persisted")
