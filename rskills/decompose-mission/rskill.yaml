@@ -1,0 +1,72 @@
+# rSkill manifest — decompose-mission (kind: playbook)
+#
+# A symbolic S2 *decision procedure* the Reasoner reads (not a neural policy):
+# break a compound, multi-step instruction into an ordered list of subtasks, each
+# with its own verifiable done-condition, executing and verifying them in order.
+# Composes existing read-only + actuating reasoner tools; carries no weights and
+# never actuates directly (every motion it triggers is an ExecuteRskill → Action
+# chunk → C++ safety kernel). See ADR-0071.
+
+schema_version: "0.1"
+name: "OpenRAL/rskill-decompose-mission"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s2"
+kind: "playbook"
+
+# Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
+# specific embodiment. Declared explicitly with the "any" wildcard (never an
+# empty list, which the manifest validator rejects — ADR-0071).
+embodiment_tags: ["any"]
+
+# Pure planning / orchestration: decomposing and sequencing subtasks needs no
+# specific RobotCapabilities flag, so this is an empty mapping (kept explicit —
+# the playbook works on any robot). Each subtask it dispatches is gated at runtime
+# by the composed tools' own requirements, not by this playbook's flags.
+capabilities_required: {}
+
+# A playbook actuates nothing itself.
+actuators_required: []
+
+# Required field; pinned to 1 like the perception kinds (no Action rows).
+chunk_size: 1
+
+# S2 planning budget (~0.2 Hz tick). CI enforces on the reference host.
+latency_budget:
+  per_chunk_ms: 5000.0
+
+description: >
+  S2 decision procedure: break a compound, multi-step instruction into an ordered
+  list of subtasks, each with its own verifiable done-condition (an internal TODO
+  list), executing and verifying them in order. Composes execute_rskill,
+  query_scene, query_task_progress, memory_write and memory_search. ADR-0071.
+
+# RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
+# never an ExecuteSkill dispatch verb).
+actions:
+  - "plan"
+
+objects:
+  - "compound task"
+scenes:
+  - "kitchen"
+  - "indoor"
+  - "household"
+
+# Provenance citation (a playbook has no weights / upstream model repo, so the
+# authoring ADR is the citation — `paper_url`, mirroring the ROS-wrapped skills).
+paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md"
+
+# The playbook decision-procedure contract (ADR-0071).
+playbook:
+  trigger: "the goal is a compound, multi-step instruction (multiple verbs, a 'then'/'after' sequence, or several sub-goals)"
+  body_uri: "./PLAYBOOK.md"
+  composes_tools:
+    - "execute_rskill"
+    - "query_scene"
+    - "query_task_progress"
+    - "memory_write"
+    - "memory_search"
+    - "emit_prompt"
+  done_predicate: "every subtask's verifiable goal has been confirmed met, or the mission has been handed off"
+  max_steps: 24
