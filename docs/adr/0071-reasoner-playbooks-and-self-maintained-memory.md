@@ -657,6 +657,17 @@ affected docs in the same PR (§1.14). Phases are independently landable.
    on Jazzy): a real `nav2_map_server` loads a saved `map.yaml`, `/map` reaches the
    reasoner (it builds its ADR-0044 occupancy grid), and with the scene graph also
    wired `recall_object` still answers — both bundle modalities loaded at deploy start.
+   **Operator path (CLI):** `openral deploy sim --memory-dir <dir>` (or the
+   `DeployScene.memory_dir` field) derives the three launch paths by convention via
+   `_memory_bundle_launch_args` — closing the gap where the launch args were otherwise
+   only settable through raw `ros2 launch`. **Live franka + LIBERO deploy verified**
+   (`scenes/deploy/libero_pnp.yaml`, real `gemma4` reasoner): the full graph booted with
+   the bundle loaded end-to-end — `map_server` activated from the bundle's `map.yaml`
+   (reasoner: "occupancy grid online 20×20"), `scene_graph.json` loaded (recall_object
+   enabled), `MEMORY.md` loaded ("write tools enabled"); on an operator prompt the
+   reasoner dispatched `recall_object` against the scene graph and chained into an
+   `execute_rskill` ("open the fridge") — the self-maintained memory bundle live in a
+   real franka deploy.
 5. **Consolidation + remaining playbooks.** The `consolidate` reflection pass;
    **preflight-reach**, **stage-for-manipulation**. Importance×recency×relevance
    retrieval under cap; archival paging.

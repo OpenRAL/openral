@@ -569,6 +569,36 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
+    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir (ADR-0071 §3b).
+
+    The bundle is a directory holding any of ``MEMORY.md`` (semantic memory),
+    ``scene_graph.json`` (3D world-state graph), and ``map.yaml`` (2D occupancy grid).
+    Each artifact is forwarded to its own consumer's launch arg. The dir must exist
+    (the robot writes ``MEMORY.md`` into it); ``scene_graph.json`` / ``map.yaml`` are
+    forwarded only when present, so a fresh bundle (empty dir) just starts the reasoner
+    with empty memory and no preloaded scene/map.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    d = Path(memory_dir).expanduser()
+    if not d.is_dir():
+        raise ROSConfigError(
+            f"--memory-dir {memory_dir!r} is not an existing directory. Create the bundle "
+            "dir first (the robot writes MEMORY.md into it; place scene_graph.json / map.yaml "
+            "there to preload the scene graph + occupancy grid)."
+        )
+    # memory_md_path may not exist yet — the reasoner creates it on the first memory_write.
+    args = [f"memory_md_path:={d / 'MEMORY.md'}"]
+    scene_graph = d / "scene_graph.json"
+    if scene_graph.is_file():
+        args.append(f"spatial_memory_path:={scene_graph}")
+    map_yaml = d / "map.yaml"
+    if map_yaml.is_file():
+        args.append(f"map_path:={map_yaml}")
+    return args
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -595,6 +625,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_critic: bool = False,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
+    memory_dir: str | None = None,
     enable_dashboard: bool = True,
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
@@ -929,6 +960,17 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
         if dataset_license:
             argv_template.append(f"dataset_license:={dataset_license}")
+
+    # ADR-0071 Decision 3b — the deploy memory bundle. ``--memory-dir`` (CLI) wins;
+    # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
+    # launch paths by convention and forward them (each to its consumer's arg).
+    effective_memory_dir = memory_dir
+    if effective_memory_dir is None and config is not None:
+        from openral_core import DeployScene
+
+        effective_memory_dir = DeployScene.from_yaml(str(config)).memory_dir
+    if effective_memory_dir:
+        argv_template.extend(_memory_bundle_launch_args(effective_memory_dir))
 
     return LaunchInvocation(
         robot_id=robot_id,
@@ -1860,6 +1902,18 @@ def deploy_sim_command(
             "detector is."
         ),
     ),
+    memory_dir: str | None = typer.Option(
+        None,
+        "--memory-dir",
+        help=(
+            "ADR-0071 — path to a deploy memory bundle directory. The reasoner "
+            "loads MEMORY.md (semantic memory + memory_write/search tools) from it; "
+            "if the dir also holds scene_graph.json it preloads the 3D world-state "
+            "graph (recall_object), and if it holds map.yaml a nav2 map_server seeds "
+            "the 2D occupancy grid. The dir must exist (the robot writes MEMORY.md "
+            "into it). Overrides the DeployScene's own memory_dir."
+        ),
+    ),
     dashboard: bool = typer.Option(
         True,
         "--dashboard/--no-dashboard",
@@ -1946,6 +2000,7 @@ def deploy_sim_command(
             enable_critic=enable_critic,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
+            memory_dir=memory_dir,
             enable_dashboard=dashboard,
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
