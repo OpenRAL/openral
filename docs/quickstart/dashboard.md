@@ -93,6 +93,10 @@ draining (no `Connection refused` retries on the way down).
   Log lines are bucketed by OTLP `severity_number`
   (DEBUG→`debug`, INFO→`info`, WARN→`warn`, ERROR/FATAL→`error`).
 
+The main page stays focused on telemetry. Discovery (`GET /api/robots`) and the
+guarded write endpoints (`POST /api/skill/execute`, `POST /api/param/set`) stay
+available for operator tooling, but they are not surfaced as dashboard cards.
+
 ## Endpoints
 
 | Path           | What it serves                                       |
