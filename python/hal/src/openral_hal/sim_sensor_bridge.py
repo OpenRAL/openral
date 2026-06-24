@@ -152,7 +152,7 @@ class SimSensorBridge:
         scan_min_range_m: Sensor min range (near-field filter).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915 — flat attribute-init list; extracting helpers would only obscure it
         self,
         node: Any,
         hal: Any,

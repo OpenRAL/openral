@@ -3,7 +3,7 @@
 Proves the deploy-path state vector byte-matches the LIBERO benchmark's
 task-space construction (``eef_pos(3) ‖ eef_axisangle(3) ‖ gripper_qpos(2)``),
 so a LIBERO VLA receives the same proprioception in ``openral deploy sim`` as
-in ``openral sim run`` (where it scores 0.9–1.0 on libero_spatial).
+in ``openral sim run`` (where it scores 0.9-1.0 on libero_spatial).
 
 The ``tf_lookup`` Protocol is the documented rclpy-free injection point
 (``_protocol.TfLookup``), so these run without a ROS graph — no mock of any
@@ -17,7 +17,6 @@ import math
 import numpy as np
 import pytest
 from openral_core import ROSConfigError, StateContractBindings
-
 from openral_state_adapter._protocol import TransformView
 from openral_state_adapter.layouts.libero_eef8d import (
     _quat_xyzw_to_axisangle,
@@ -79,7 +78,9 @@ def test_single_gripper_joint_mirrors_to_v_minus_v() -> None:
     bindings = StateContractBindings(
         eef_frame=_EEF_FRAME, world_frame=_WORLD_FRAME, gripper_qpos_joints=["panda_finger_joint1"]
     )
-    out = assemble_libero_eef8d(bindings, {"panda_finger_joint1": 0.041}, _tf((0, 0, 0), (0, 0, 0, 1)))
+    out = assemble_libero_eef8d(
+        bindings, {"panda_finger_joint1": 0.041}, _tf((0, 0, 0), (0, 0, 0, 1))
+    )
     assert np.allclose(out[6:8], np.array([0.041, -0.041]), atol=1e-6)
 
 

@@ -55,7 +55,7 @@ def _quat_xyzw_to_axisangle(
 
     Byte-for-byte the same formula as the benchmark's ``_quat_to_axisangle``
     (``openral_sim.backends.libero``) so the deploy state matches the training
-    distribution: ``angle = 2·acos(w)``, ``axis = (x, y, z) / sqrt(1 − w²)``,
+    distribution: ``angle = 2·acos(w)``, ``axis = (x, y, z) / sqrt(1 - w**2)``,
     output ``axis · angle``; the near-identity rotation (``den ≤ eps``) maps to
     the zero vector.
     """

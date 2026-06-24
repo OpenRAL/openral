@@ -145,7 +145,8 @@ def test_franka_manifest_declares_vision_for_libero_cameras() -> None:
     """Franka's LIBERO camera pair must surface as a vision-capable robot."""
     franka = _franka()
     assert franka.capabilities.has_vision is True
-    assert [sensor.name for sensor in franka.sensors if sensor.modality == "rgb"] == ["top", "wrist"]
+    rgb_names = [sensor.name for sensor in franka.sensors if sensor.modality == "rgb"]
+    assert rgb_names == ["top", "wrist"]
 
 
 def test_cartesian_executable_on_sim() -> None:
