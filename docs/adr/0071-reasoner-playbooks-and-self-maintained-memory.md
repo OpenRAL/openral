@@ -631,11 +631,19 @@ affected docs in the same PR (§1.14). Phases are independently landable.
      Zep-style supersession), and archival `search()`. `reasoner_node._maybe_load_memory`
      loads it from the `memory_md_path` param at configure so the LLM **reads** memory
      every tick. Unit-tested (apply ops, supersession, round-trip, search, `## MEMORY`).
-   - **4c remaining.** Expose the memory tools in the provider palette + wire the
-     `memory_write`/`memory_search` node **dispatch** (apply edit → persist → archival
-     JSONL → re-render; search → re-prompt), and the reader/writer split. Author
-     **verify-outcome** + **clarify-ambiguity** (they drive most writes). Live test:
-     a correction persists + recalls next task.
+   - **4c dispatch + palette — landed.** `ToolPalette.memory_available` (+
+     `build_tool_palette` param) gates the `memory_write` / `memory_search` tools in
+     `_tool_palette_to_anthropic_tools`; `reasoner_node._maybe_load_memory` flips it
+     and loads the `<MEMORY.md>.archive.jsonl` recall log at configure.
+     `_dispatch_memory_write` applies the op → archives the displaced entry → persists
+     `MEMORY.md` → re-renders the `## MEMORY` block → re-prompts a confirmation
+     (frame_id `memory`); `_dispatch_memory_search` recalls archived entries (MemGPT)
+     and re-prompts. The reader (always-on `## MEMORY` block) and writer (explicit-op
+     `memory_write`, never a free-form rewrite) are structurally split (Statler).
+     **Live ROS verified** (`test_memory_write_persists_to_disk_and_reprompts`,
+     `test_memory_search_recalls_archived_entry_and_reprompts` on Jazzy): a write
+     persists to disk and a search recalls an archived fact. **Remaining authoring:**
+     **verify-outcome** + **clarify-ambiguity** playbooks (they drive most writes).
 4b. **Deploy memory bundle (Decision 3b).** Standardize the bundle layout: place
    `scene_graph.json` at the conventional path (**reuses** the shipped
    `spatial_memory_path` loader — no new code) and add the `map_path` ROS param +
