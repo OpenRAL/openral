@@ -120,5 +120,13 @@ scenes:
 
 # ADR-0019 — per-checkpoint action contract (consumed by the dataset bridge
 # to bind the LeRobot v3 `action` feature shape).
+# Left slot-less: the 29-D GR1 whole-body action = 3 waist + 7+7 arms + 6+6
+# Fourier-hand finger DoF, driven directly by the RoboCasa robosuite BASIC
+# composite controller (gr1_unified wrapper) via the rldx sidecar — it never
+# routes through the deploy-sim `_dispatch_slots` OSC path, and the 12 hand
+# DoF are EE-owned (not enumerated as joints; see robots/gr1/robot.yaml). A
+# typed slot layout would have to use DEX_HAND_JOINT, which the deploy-sim
+# runner does not dispatch — so the contract stays a bare dim. ADR-0071
+# records the resulting 29-vs-17 DOF-accounting gap in KNOWN_SIM_GAPS.
 action_contract:
   dim: 29
