@@ -26,7 +26,58 @@ import dataclasses
 import re
 from typing import Literal
 
-__all__ = ["MissionState", "TaskState", "TaskStatus", "split_mission"]
+__all__ = [
+    "DEFAULT_MAX_ATTEMPTS",
+    "MissionState",
+    "TaskState",
+    "TaskStatus",
+    "VerdictAction",
+    "evaluate_task_verdict",
+    "split_mission",
+]
+
+VerdictAction = Literal["complete", "abandon", "retry"]
+"""What the reward gate decides for the active task after a skill returns
+(ADR-0073 §2): ``complete`` (verified), ``abandon`` (ladder exhausted), or
+``retry`` (try again — keep the task active)."""
+
+DEFAULT_MAX_ATTEMPTS: int = 3
+"""Default per-task attempt cap before the reward gate abandons + hands off."""
+
+
+def evaluate_task_verdict(
+    *,
+    ok: bool,
+    succeeded: bool,
+    success_now: float,
+    attempts: int,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> tuple[VerdictAction, str]:
+    """Pure reward-gate decision for the active task (ADR-0073 §2).
+
+    Decides whether a just-returned skill verified the active task. Inputs mirror
+    the reward monitor's ``QueryTaskProgress`` response (``ok``, ``succeeded`` =
+    ``success_now >= success_threshold`` over the window, ``success_now``) plus the
+    task's attempt count. The window already smooths per-frame noise, so
+    ``succeeded`` is the dwell-equivalent gate; no fake success is ever returned
+    when the reward is unavailable (the caller handles ``ok=False`` upstream).
+
+    Returns ``(action, verdict_text)`` where ``verdict_text`` is the short
+    human-readable note recorded on the task.
+
+    Example:
+        >>> evaluate_task_verdict(ok=True, succeeded=True, success_now=0.91, attempts=1)
+        ('complete', 'success=0.91')
+        >>> evaluate_task_verdict(ok=True, succeeded=False, success_now=0.40, attempts=1)[0]
+        'retry'
+        >>> evaluate_task_verdict(ok=True, succeeded=False, success_now=0.40, attempts=3)[0]
+        'abandon'
+    """
+    if ok and succeeded:
+        return "complete", f"success={success_now:.2f}"
+    if attempts >= max_attempts:
+        return "abandon", f"unverified after {attempts} attempt(s) (success={success_now:.2f})"
+    return "retry", f"not verified (success={success_now:.2f}), attempt {attempts}/{max_attempts}"
 
 TaskStatus = Literal["pending", "active", "verifying", "done", "abandoned"]
 """Lifecycle of a single subtask. ``pending → active → verifying → done |

@@ -97,7 +97,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.memory import MemoryEntry, MemoryStore
-from openral_reasoner.mission import MissionState
+from openral_reasoner.mission import MissionState, evaluate_task_verdict
 from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
@@ -217,6 +217,11 @@ _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change"
 _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
     {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory"}
 )
+
+# ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
+# Matches the reward_monitor's default rolling window so `succeeded` reflects the
+# end-of-attempt state, not a single frame.
+_MISSION_VERIFY_WINDOW_S: float = 8.0
 
 # FailureTrigger constants — IDL-mirror per openral_observability.failure_bus
 # (kept inline rather than importing the helper so the reasoner_node can
@@ -2107,6 +2112,137 @@ class ReasonerNode(LifecycleNode):
             f"dispatch: query_task_progress → re-prompt ok={resp.ok} ({len(text)} chars)",
         )
 
+    # ── ADR-0073 §2 — automatic reward-gated task verification ──────────────
+
+    def _maybe_verify_active_mission_task(
+        self, call: ExecuteRskillTool, *, traceparent: str | None
+    ) -> None:
+        """Verify the active mission task against the reward signal after a skill returns.
+
+        Only acts when a reward monitor is available (``task_progress_available``):
+        a VLA never self-terminates, so its runner "success" cannot confirm the
+        task. Without a reward monitor the task stays active and the LLM/playbook
+        drives — never an auto-complete on deadline alone (no fake success). Issues
+        a windowed ``query_task_progress`` for the active task; the gate runs in
+        :meth:`_on_mission_verify_response`.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None:
+            return
+        if not self._task_progress_available:
+            return
+        # Only verify the skill that was dispatched for this task.
+        if active.last_rskill_id is not None and active.last_rskill_id != call.rskill_id:
+            return
+        mission.mark_verifying()
+        try:
+            from openral_msgs.srv import QueryTaskProgress
+        except ImportError:
+            return
+        if self._query_task_progress_client is None:
+            self._query_task_progress_client = self.create_client(
+                QueryTaskProgress, "/openral/perception/query_task_progress"
+            )
+        client = self._query_task_progress_client
+        if not client.service_is_ready() and not client.wait_for_service(
+            timeout_sec=_LIFECYCLE_SERVER_PROBE_S,
+        ):
+            self.get_logger().warning(
+                "mission verify: query_task_progress not on graph; active task stays active",
+            )
+            return
+        req = QueryTaskProgress.Request()
+        req.window_s = _MISSION_VERIFY_WINDOW_S
+        req.task = active.text
+        future = client.call_async(req)
+        future.add_done_callback(
+            lambda fut: self._on_mission_verify_response(active.text, fut, traceparent=traceparent),
+        )
+        self.get_logger().info(
+            f"mission verify: querying reward for active task {active.text[:60]!r} "
+            f"(attempt {active.attempts})",
+        )
+
+    def _on_mission_verify_response(
+        self, task_text: str, future: Any, *, traceparent: str | None
+    ) -> None:
+        """Apply the reward gate (ADR-0073 §2): complete / abandon / retry.
+
+        Runs ``evaluate_task_verdict`` on the reward response and the active task's
+        attempt count, then advances the deterministic queue. ``complete`` →
+        advance to the next task; ``abandon`` (ladder exhausted) → mark abandoned,
+        advance, and on mission end emit an honest handoff; ``retry`` → keep the
+        task active. A forced tick wakes the reasoner to act on the new state.
+        """
+        try:
+            resp = future.result()
+        except Exception as exc:  # best-effort; a failed verify must not kill the loop
+            self.get_logger().warning(f"mission verify: query failed: {exc}")
+            return
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None or active.text != task_text:
+            return  # the mission advanced or changed under us; stale verdict
+        action, verdict = evaluate_task_verdict(
+            ok=bool(resp.ok),
+            succeeded=bool(resp.succeeded),
+            success_now=float(resp.success_now),
+            attempts=active.attempts,
+        )
+        if action == "retry":
+            self.get_logger().info(f"mission verify: {verdict} — retrying active task")
+            self._on_tick(force=True, tier="C")
+            return
+        done = action == "complete"
+        nxt = self._renderer.advance_mission(done=done, verdict=verdict)
+        label = "done ✓" if done else "abandoned ✗"
+        if nxt is not None:
+            self.get_logger().info(
+                f"mission: task {active.task_id} {label} ({verdict}); "
+                f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
+            )
+        else:
+            self.get_logger().info(
+                f"mission: task {active.task_id} {label} ({verdict}); MISSION COMPLETE",
+            )
+            self._emit_mission_complete(mission, traceparent=traceparent)
+        self._on_tick(force=True, tier="C")
+
+    def _emit_mission_complete(self, mission: MissionState, *, traceparent: str | None) -> None:
+        """Emit an honest operator-facing mission summary (self-prompt, ADR-0073 §2).
+
+        Frame_id ``openral_reasoner`` so it reaches operator surfaces but the
+        reasoner's own subscriber filters it (no feedback loop). A new operator
+        goal supersedes the finished mission via :meth:`_on_prompt`.
+        """
+        if self._prompt_pub is None:
+            return
+        done = sum(1 for t in mission.tasks if t.status == "done")
+        abandoned = sum(1 for t in mission.tasks if t.status == "abandoned")
+        ledger = "; ".join(
+            f"{t.task_id} {t.status}" + (f" [{t.last_verdict}]" if t.last_verdict else "")
+            for t in mission.tasks
+        )
+        text = (
+            f"Mission finished: {done} completed, {abandoned} abandoned. {ledger}. "
+            "Awaiting the next goal."
+        )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_reasoner"
+        metadata: dict[str, Any] = {"source": "openral_reasoner", "mission": "complete"}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.text = text
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+        self.get_logger().info(f"mission: {text}")
+
     def _memory_now(self) -> str:
         """An ISO-8601 timestamp from the ROS clock (sim-time-aware) for memory entries."""
         secs = self.get_clock().now().nanoseconds / 1e9
@@ -2269,6 +2405,14 @@ class ReasonerNode(LifecycleNode):
                 traceparent=traceparent,
             )
             return
+
+        # ADR-0073 §2 — count this dispatch as an attempt at the active mission
+        # task so the reward gate can bound retries (abandon + hand off after the
+        # cap). execute_rskill is the actuation tool; locate/query are separate
+        # tools, so a dispatch here is a manipulation attempt at the active task.
+        mission = self._renderer.mission
+        if mission is not None and mission.active() is not None:
+            mission.record_attempt(rskill_id=call.rskill_id, trace_id=traceparent)
 
         # ADR-0050 — free GPU lifecycle peers (the object detector) before the
         # policy loads, then reactivate when the skill finishes. Sequenced so
@@ -2576,6 +2720,10 @@ class ReasonerNode(LifecycleNode):
                     stamp_ns=now_ns,
                 )
             )
+            # ADR-0073 §2 — runner "success" for a VLA means "ran to its deadline
+            # without a controller fault", NOT "task accomplished". Verify the
+            # active mission task against the reward signal before advancing.
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
         self.get_logger().warning(
             f"execute_rskill failed rskill_id={call.rskill_id!r} status={status} "
@@ -2605,6 +2753,12 @@ class ReasonerNode(LifecycleNode):
             traceparent=traceparent,
             trace_id=result.trace_id or None,
         )
+        # ADR-0073 §2 — an aborted (terminal) episode still ran the policy, so it
+        # is a real attempt at the active task; verify so a repeatedly-aborting
+        # task is bounded by the attempt cap (abandon → hand off) rather than
+        # looping forever. Canceled (status 5) is operator-driven, not an attempt.
+        if status == 6:
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
 
     def _on_execute_rskill_deadline(
         self,

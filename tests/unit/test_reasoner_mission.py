@@ -9,7 +9,12 @@ the LLM as one opaque string and forgotten on the pull-once prompt drain.
 from __future__ import annotations
 
 import pytest
-from openral_reasoner import MissionState, TaskState, split_mission
+from openral_reasoner import (
+    MissionState,
+    TaskState,
+    evaluate_task_verdict,
+    split_mission,
+)
 
 
 # ── split_mission ────────────────────────────────────────────────────────────
@@ -166,3 +171,46 @@ def test_taskstate_defaults() -> None:
     t = TaskState(task_id="t1", text="x")
     assert t.status == "pending" and t.attempts == 0
     assert t.last_rskill_id is None and t.last_verdict is None
+
+
+# ── evaluate_task_verdict (ADR-0073 §2 — the reward gate decision) ───────────
+
+
+def test_verdict_complete_on_success() -> None:
+    action, verdict = evaluate_task_verdict(
+        ok=True, succeeded=True, success_now=0.91, attempts=1
+    )
+    assert action == "complete"
+    assert verdict == "success=0.91"
+
+
+def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
+    action, verdict = evaluate_task_verdict(
+        ok=True, succeeded=False, success_now=0.40, attempts=1, max_attempts=3
+    )
+    assert action == "retry"
+    assert "attempt 1/3" in verdict
+
+
+def test_verdict_abandon_when_attempts_exhausted() -> None:
+    action, verdict = evaluate_task_verdict(
+        ok=True, succeeded=False, success_now=0.40, attempts=3, max_attempts=3
+    )
+    assert action == "abandon"
+    assert "after 3 attempt(s)" in verdict
+
+
+def test_verdict_never_completes_without_succeeded_flag() -> None:
+    # Even with a high raw score, completion requires the reward monitor's own
+    # succeeded flag (success_now >= its threshold). No fake success.
+    action, _ = evaluate_task_verdict(
+        ok=True, succeeded=False, success_now=0.79, attempts=1
+    )
+    assert action == "retry"
+
+
+def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
+    # ok=False (stale/errored reward) is treated as "not verified": retry until
+    # the attempt cap, then abandon — never an accidental complete.
+    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=1)[0] == "retry"
+    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=3)[0] == "abandon"
