@@ -159,7 +159,11 @@ capabilities:
   has_dexterous_hands: false
   has_tactile: false
   has_force_control: true
-  has_vision: false
+  # Two RGB cameras are declared below (`top` = LIBERO agentview, `wrist` =
+  # eye_in_hand), so the robot has vision — this must be true to match it (was
+  # erroneously false despite the sensors, which dropped vision-gated rSkills /
+  # reasoner playbooks like find-object / verify-outcome on a Franka deploy).
+  has_vision: true
   has_lidar: false
   has_audio: false
   bimanual: false
