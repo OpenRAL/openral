@@ -115,19 +115,14 @@ def _resolve_tag_to_fixture(tag: str, fixtures: set[str]) -> str | None:
     return None
 
 
-# Known deferred exception, keyed by the manifest's ``name`` field. MetaWorld
-# emits a 3-D end-effector delta + 1-D gripper (dim=4); that representation has
-# no ``ActionRepresentation`` / ``ControlMode`` yet (it needs a future ADR-0036
-# follow-up ``DELTA_EE_6D``-style ``DELTA_EE_3D_PLUS_GRIPPER``). So its bare
-# ``dim=4`` contract on the sawyer fixture (8 joints) genuinely fails the
-# bare-dim==joints rule. The test SKIPS validation for these names but ALSO
-# asserts each is *still* failing (below) so the exception self-removes the
-# moment the skill is fixed.
+# Known deferred exception, keyed by the manifest's ``name`` field. The test
+# SKIPS validation for these names but ALSO asserts each is *still* failing
+# (below) so the exception self-removes the moment the skill is fixed.
+#
+# (smolvla-metaworld was here until ADR-0071 Phase 4 added the
+# ``DELTA_EE_3D_PLUS_GRIPPER`` representation it needed; its contract now
+# declares a 3-D EE delta + gripper and passes the rule, so it was removed.)
 _KNOWN_DEFERRED: dict[str, str] = {
-    "OpenRAL/rskill-smolvla-metaworld": (
-        "MetaWorld 3-D EE delta+gripper needs ADR-0036 follow-up "
-        "DELTA_EE_3D_PLUS_GRIPPER; tracked separately"
-    ),
     "OpenRAL/rskill-3d-diffuser-actor-rlbench": (
         "3D Diffuser Actor emits end-effector cartesian_pose trajectories; the "
         "deploy-sim OSC path executes delta/joint modes only (ADR-0036). RLBench "

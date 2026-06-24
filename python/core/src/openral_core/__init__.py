@@ -29,6 +29,7 @@ from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_
 from openral_core.schemas import (
     BODY_TWIST_DIM,
     CONTROL_MODE_TO_UINT8,
+    SCENE_FAMILY_TASK_SPACE,
     SIM_EXECUTABLE_CONTROL_MODES,
     UINT8_TO_CONTROL_MODE,
     WRAPPED_TASK_SPACE_LAYOUTS,
@@ -144,6 +145,7 @@ from openral_core.schemas import (
     SceneDefaults,
     SceneGraph,
     SceneSpec,
+    SceneTaskSpace,
     SelfVerifyEvidence,
     SensorBundle,
     SensorFrame,
@@ -184,12 +186,15 @@ from openral_core.schemas import (
     control_modes_for_representation,
     extract_base_sim_joint_names,
     scale_intrinsics_to,
+    scene_family,
+    scene_task_space_compatible,
     task_space_compatible,
 )
 
 __all__ = [
     "BODY_TWIST_DIM",
     "CONTROL_MODE_TO_UINT8",
+    "SCENE_FAMILY_TASK_SPACE",
     "SIM_EXECUTABLE_CONTROL_MODES",
     "UINT8_TO_CONTROL_MODE",
     "WRAPPED_TASK_SPACE_LAYOUTS",
@@ -325,6 +330,7 @@ __all__ = [
     "SceneDefaults",
     "SceneGraph",
     "SceneSpec",
+    "SceneTaskSpace",
     "SelfVerifyEvidence",
     "SensorBundle",
     "SensorFrame",
@@ -368,6 +374,8 @@ __all__ = [
     "load_scene_strict",
     "raise_on_invalid_suite",
     "scale_intrinsics_to",
+    "scene_family",
+    "scene_task_space_compatible",
     "task_space_compatible",
 ]
 __version__ = "0.1.0"

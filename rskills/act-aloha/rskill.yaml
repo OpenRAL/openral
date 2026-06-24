@@ -103,6 +103,8 @@ scenes:
 # to bind the LeRobot v3 `action` feature shape).
 action_contract:
   dim: 14
+  # ADR-0071 — ACT on ALOHA emits absolute joint positions (2×(6 arm + 1 gripper)).
+  representation: "joint_positions"
 
 # ADR-0019 — per-checkpoint state contract.
 state_contract:

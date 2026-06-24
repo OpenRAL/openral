@@ -130,3 +130,7 @@ scenes:
 # records the resulting 29-vs-17 DOF-accounting gap in KNOWN_SIM_GAPS.
 action_contract:
   dim: 29
+  # ADR-0071 — GR1 whole-body action is absolute joint positions (waist + arms +
+  # the EE-owned Fourier-hand finger DoF); declared explicitly even though the
+  # bare dim already drives the legacy whole-vector JOINT_POSITION path.
+  representation: "joint_positions"

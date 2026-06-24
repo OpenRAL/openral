@@ -97,7 +97,12 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.memory import MemoryEntry, MemoryStore
-from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
+from openral_reasoner.palette import (
+    ToolPalette,
+    build_tool_palette,
+    locate_in_view_service,
+    task_space_disagreement,
+)
 from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
 from openral_reasoner.tool_use import (
     ToolUseClient,
@@ -1445,17 +1450,29 @@ class ReasonerNode(LifecycleNode):
         executable_repr = sorted(c.value for c in executable_modes)
         action_executable: list[RSkillManifest] = []
         for m in state_compatible:
-            if m.kind == "vla" and not _action_executable(m, description, hal_mode):
-                required_repr = sorted(c.value for c in _required_control_modes(m))
-                self.get_logger().warning(
-                    f"palette: dropping rSkill {m.name!r} "
-                    f"(model_family={m.model_family!r}): requires control modes "
-                    f"{required_repr} which are not executable on this deployment "
-                    f"(hal_mode={hal_mode!r}; executable={executable_repr}). "
-                    f"Pick an action-compatible rSkill or bring up a controller "
-                    f"that executes these modes."
-                )
-                continue
+            if m.kind == "vla":
+                legacy_ok = _action_executable(m, description, hal_mode)
+                # ADR-0071 Phase 2 — shadow the canonical TaskSpace gate alongside
+                # the legacy mode check (warn-only; the legacy verdict still
+                # decides the drop). Surfaces cross-layer mismatches the
+                # ``_action_executable`` mode-set check misses — an EE-addressed
+                # slot naming an end-effector the robot does not declare, or a
+                # joint segment wider than the robot's joint count. Phase 4 makes
+                # ``task_space_compatible`` authoritative.
+                ts_warning = task_space_disagreement(m, description, hal_mode, legacy_ok)
+                if ts_warning is not None:
+                    self.get_logger().warning(ts_warning)
+                if not legacy_ok:
+                    required_repr = sorted(c.value for c in _required_control_modes(m))
+                    self.get_logger().warning(
+                        f"palette: dropping rSkill {m.name!r} "
+                        f"(model_family={m.model_family!r}): requires control modes "
+                        f"{required_repr} which are not executable on this deployment "
+                        f"(hal_mode={hal_mode!r}; executable={executable_repr}). "
+                        f"Pick an action-compatible rSkill or bring up a controller "
+                        f"that executes these modes."
+                    )
+                    continue
             action_executable.append(m)
 
         # Import-deps filter on capability-matched survivors only.

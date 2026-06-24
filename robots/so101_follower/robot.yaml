@@ -104,6 +104,10 @@ joints:
     velocity_limit: 4.5
     effort_limit: 3.35
     actuator_kind: "servo"
+    # ADR-0071 — tag the gripper joint (was role: unknown) so the runner /
+    # dataset bridge identify it structurally, matching so100_follower. The
+    # gripper is one of the 6 enumerated joints (not a separate channel).
+    role: "gripper"
 
 end_effectors:
   - name: "gripper"

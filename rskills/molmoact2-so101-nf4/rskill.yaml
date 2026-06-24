@@ -163,3 +163,5 @@ scenes:
 # joint-position action (5 arm joints + 1 gripper).
 action_contract:
   dim: 6
+  # ADR-0071 — SO-101 emits absolute joint positions (5 arm joints + 1 gripper).
+  representation: "joint_positions"
