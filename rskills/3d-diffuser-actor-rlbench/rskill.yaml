@@ -83,7 +83,7 @@ action_contract:
   dim: 8
   slots:
     - {range: [0, 6], control_mode: "cartesian_pose", ee: "panda_hand", frame: "panda_link0"}
-    - {range: [7, 7], control_mode: "gripper_position", ee: "panda_gripper"}
+    - {range: [7, 7], control_mode: "gripper_position", ee: "panda_hand"}
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2402.10885"
