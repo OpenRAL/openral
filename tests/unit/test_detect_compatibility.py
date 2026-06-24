@@ -112,7 +112,7 @@ class TestInTreeSkillsAgainstSo100:
         # (their embodiment intersects so100_follower). A skill may still fail
         # on an orthogonal sensor/capability check — e.g. the `kind: detector`
         # RT-DETR rSkills are embodiment-agnostic (``embodiment_tags: ["any"]``,
-        # ADR-0071) so they clear the embodiment gate but still require a 640x480
+        # ADR-0072) so they clear the embodiment gate but still require a 640x480
         # RGB camera the bare SO-100 manifest doesn't declare
         # (failure_kind="sensor_modality") — which is the sensor case, not the
         # embodiment case under test here.

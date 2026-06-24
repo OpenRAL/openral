@@ -1,4 +1,4 @@
-"""Tests for reasoner execution feedback + reflection (ADR-0071 Decision 2.2/2.3).
+"""Tests for reasoner execution feedback + reflection (ADR-0072 Decision 2.2/2.3).
 
 Covers:
 - :func:`~openral_reasoner.context.reflect_on_failure` /

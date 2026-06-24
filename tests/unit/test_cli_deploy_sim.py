@@ -1673,7 +1673,7 @@ def test_deploy_sim_foxglove_custom_port_forwarded() -> None:
     assert "foxglove_port:=9999" in " ".join(invocation.argv_template)
 
 
-# ── ADR-0071 Decision 3b — deploy memory bundle (--memory-dir) ─────────────────
+# ── ADR-0072 Decision 3b — deploy memory bundle (--memory-dir) ─────────────────
 
 
 def _resolve_with_memory_dir(memory_dir: str) -> object:
@@ -1688,7 +1688,7 @@ def _resolve_with_memory_dir(memory_dir: str) -> object:
 
 
 def test_deploy_sim_memory_dir_forwards_all_present_bundle_artifacts(tmp_path: Path) -> None:
-    """ADR-0071 §3b — --memory-dir forwards a launch arg per present bundle artifact."""
+    """ADR-0072 §3b — --memory-dir forwards a launch arg per present bundle artifact."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "scene_graph.json").write_text("{}", encoding="utf-8")

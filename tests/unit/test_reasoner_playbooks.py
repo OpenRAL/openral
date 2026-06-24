@@ -1,4 +1,4 @@
-"""Tests for playbook system-prompt injection (ADR-0071 Decision 1 / Phase 3).
+"""Tests for playbook system-prompt injection (ADR-0072 Decision 1 / Phase 3).
 
 Covers :func:`~openral_reasoner.context.render_playbooks_block` against the real
 in-tree ``rskills/find-object`` playbook (no synthetic placeholders, §1.11).

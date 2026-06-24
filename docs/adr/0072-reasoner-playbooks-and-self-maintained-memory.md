@@ -1,4 +1,4 @@
-# ADR-0071: Reasoner playbooks (`kind: "playbook"`) + a self-maintained `MEMORY.md`
+# ADR-0072: Reasoner playbooks (`kind: "playbook"`) + a self-maintained `MEMORY.md`
 
 - **Status:** Proposed
 - **Date:** 2026-06-23
@@ -250,7 +250,7 @@ latency_budget: {per_chunk_ms: 5000.0}
 description: >-
   S2 decision procedure: locate a named object, falling back to bounded
   commonsense active search and finally human handoff. Composes recall_object,
-  resolve_place, locate_in_view and NAVIGATE/OPEN skills. ADR-0071.
+  resolve_place, locate_in_view and NAVIGATE/OPEN skills. ADR-0072.
 embodiment_tags: ["any"]        # explicit embodiment-agnostic wildcard (never empty)
 capabilities_required: {has_vision: true}   # real RobotCapabilities flag (camera needed to locate)
 scenes: [kitchen, indoor]

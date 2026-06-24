@@ -1,6 +1,6 @@
 # rskill-decompose-mission
 
-A `kind: playbook` rSkill (ADR-0071): a symbolic S2 **decision procedure** the
+A `kind: playbook` rSkill (ADR-0072): a symbolic S2 **decision procedure** the
 Reasoner reads, not a neural policy. It carries no weights — the authored
 [`PLAYBOOK.md`](./PLAYBOOK.md) *is* its runtime.
 
@@ -35,7 +35,7 @@ tool calls the reasoner makes while following the SOP, bounded by
 ## How it was authored / Upstream provenance
 
 N/A — a playbook is **hand-authored**, not trained: it has no weights and no
-upstream model. Its provenance is [ADR-0071](../../docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md)
+upstream model. Its provenance is [ADR-0072](../../docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md)
 (also linked via `paper_url`). To change behaviour, edit `PLAYBOOK.md` and bump
 `version`.
 
@@ -72,7 +72,7 @@ print(m.playbook.trigger)
 Packaging-only: the manifest + SOP are validated by
 `tests/unit/test_playbook_rskill_manifest.py`. There is no benchmark number to
 reproduce; the playbook's behaviour is exercised by the reasoner integration
-tests in later ADR-0071 phases.
+tests in later ADR-0072 phases.
 
 ## Evaluation
 
@@ -85,5 +85,5 @@ N/A — no `eval/*.json`; a playbook produces no benchmarkable policy output.
 
 ## See also
 
-- [ADR-0071](../../docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md) — the `playbook` kind + reasoner memory.
+- [ADR-0072](../../docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md) — the `playbook` kind + reasoner memory.
 - [`PLAYBOOK.md`](./PLAYBOOK.md) — the decision procedure itself.

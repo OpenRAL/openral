@@ -4,7 +4,7 @@
 # when the goal is underspecified or ambiguous, resolve it from memory/scene or
 # ask the operator a concise question before acting. Composes existing read-only
 # reasoner tools; carries no weights and never actuates directly (it gates the
-# downstream ExecuteRskill → Action chunk → C++ safety kernel). See ADR-0071.
+# downstream ExecuteRskill → Action chunk → C++ safety kernel). See ADR-0072.
 
 schema_version: "0.1"
 name: "OpenRAL/rskill-clarify-ambiguity"
@@ -15,14 +15,14 @@ kind: "playbook"
 
 # Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
 # specific embodiment. Declared explicitly with the "any" wildcard (never an
-# empty list, which the manifest validator rejects — ADR-0071).
+# empty list, which the manifest validator rejects — ADR-0072).
 embodiment_tags: ["any"]
 
 # No capability flags: resolving an ambiguous reference is operator interaction
 # plus memory/scene queries — it works on any robot. The kept-empty mapping
 # `capabilities_required: {}` is the explicit "no flags" form; the read-only
 # scene/memory queries the SOP performs are gated at runtime by the composed
-# tools' own requirements, not by this playbook (ADR-0071).
+# tools' own requirements, not by this playbook (ADR-0072).
 capabilities_required: {}
 
 # A playbook actuates nothing itself.
@@ -39,7 +39,7 @@ description: >
   S2 decision procedure: when the goal is underspecified or ambiguous, resolve
   it from memory/scene or ask the operator a concise question before acting —
   never guessing on an irreversible action. Composes query_scene, memory_search,
-  recall_object and emit_prompt. ADR-0071.
+  recall_object and emit_prompt. ADR-0072.
 
 # RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
 # never an ExecuteSkill dispatch verb).
@@ -54,9 +54,9 @@ scenes:
 
 # Provenance citation (a playbook has no weights / upstream model repo, so the
 # authoring ADR is the citation — `paper_url`, mirroring the ROS-wrapped skills).
-paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md"
+paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md"
 
-# The playbook decision-procedure contract (ADR-0071).
+# The playbook decision-procedure contract (ADR-0072).
 playbook:
   trigger: "the goal is underspecified or ambiguous — multiple candidate referents, a missing target or destination, or an unsafe-to-guess choice"
   body_uri: "./PLAYBOOK.md"
