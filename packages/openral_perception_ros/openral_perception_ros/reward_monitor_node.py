@@ -291,6 +291,16 @@ def main(args: Any = None) -> None:
             msg.threshold = threshold
             msg.trace_id = current_traceparent() or ""
             self._critic_pub.publish(msg)
+            # Trace the reward stream: without this the continuous score is only
+            # observable on the wire (the producer logs nothing until it detects a
+            # stall), so a run leaves no reward-progress record. INFO is correct —
+            # this is advisory operator signal at the critic's ~1 Hz cadence, not a
+            # hot loop.
+            self.get_logger().info(
+                f"critic_score: score={score:.3f} threshold={threshold:.3f} "
+                f"progress={float(a['progress_now']):.3f} success={float(a['success_now']):.3f} "
+                f"progress_trend={float(a['progress_trend']):+.3f} frames={int(a['frames_seen'])}"
+            )
 
     rclpy.init(args=args)
     node = RewardMonitorNode()
