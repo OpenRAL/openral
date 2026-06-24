@@ -43,6 +43,7 @@ Parameters:
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -301,6 +302,18 @@ def main(args: Any = None) -> None:
                 f"progress={float(a['progress_now']):.3f} success={float(a['success_now']):.3f} "
                 f"progress_trend={float(a['progress_trend']):+.3f} frames={int(a['frames_seen'])}"
             )
+
+        def destroy_node(self) -> None:
+            """Terminate the out-of-process reward sidecar before tearing down.
+
+            ``RobometerReward.close()`` signals the sidecar's process group so
+            its forked torch-inductor ``compile_worker`` children die with it.
+            Without this the sidecar (and ~one compile_worker per CPU) orphaned
+            on every shutdown, pinning the GPU until manually killed.
+            """
+            with contextlib.suppress(Exception):
+                self._monitor.close()
+            super().destroy_node()
 
     rclpy.init(args=args)
     node = RewardMonitorNode()

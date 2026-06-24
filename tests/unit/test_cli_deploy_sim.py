@@ -1501,8 +1501,48 @@ def test_orphan_needles_cover_tf_publishers_and_sidecar() -> None:
     assert _cmdline_is_openral_graph_process(static_tf)
     assert _cmdline_is_openral_graph_process(rsp)
     assert _cmdline_is_openral_graph_process(sidecar)
+    # Robometer reward sidecar + its forked torch-inductor compile_worker
+    # children. Both carry the openral-specific venv path in cmdline, so the
+    # single needle reaps the whole tree (regression for the lingering
+    # ~3.3 GiB sidecar + one worker per CPU). Argv signatures are the real
+    # ones observed live via ``/proc/<pid>/cmdline``.
+    robometer_server = (
+        "/home/u/.cache/openral/robometer-sidecar/.venv/bin/python "
+        "/home/u/workspace/openral/tools/_robometer_server.py "
+        "--weights OpenRAL/rskill-robometer-4b-nf4 --host 127.0.0.1 --port 5769"
+    )
+    compile_worker = (
+        "/home/u/.cache/openral/robometer-sidecar/.venv/bin/python "
+        "/home/u/.cache/openral/robometer-sidecar/.venv/lib/python3.12/site-packages/"
+        "torch/_inductor/compile_worker/__main__.py --kind=fork --workers=4 --parent=123"
+    )
+    assert _cmdline_is_openral_graph_process(robometer_server)
+    assert _cmdline_is_openral_graph_process(compile_worker)
+    # Perception / critic graph nodes (were leaking when graceful shutdown
+    # overran ``grace_s``).
+    reward_node = (
+        "python3 /ws/install/lib/openral_perception_ros/reward_monitor_node.py "
+        "--ros-args -r __node:=openral_reward_monitor"
+    )
+    detector_node = (
+        "python3 /ws/install/lib/openral_perception_ros/ros_image_detector_node.py "
+        "--ros-args -r __node:=openral_ros_image_detector_omdet_turbo_locator"
+    )
+    critic_node = (
+        "python3 /ws/install/lib/openral_reasoner_ros/critic_producer_node.py "
+        "--ros-args -r __node:=openral_critic_producer"
+    )
+    assert _cmdline_is_openral_graph_process(reward_node)
+    assert _cmdline_is_openral_graph_process(detector_node)
+    assert _cmdline_is_openral_graph_process(critic_node)
     # An unrelated user process must NOT match.
     assert not _cmdline_is_openral_graph_process("/usr/bin/python3 -m http.server 8000")
+    # An unrelated torch compile_worker (not under the openral sidecar venv)
+    # must NOT match — the needle is the openral cache path, not torch itself.
+    assert not _cmdline_is_openral_graph_process(
+        "/usr/bin/python /usr/lib/python3.12/site-packages/torch/_inductor/"
+        "compile_worker/__main__.py --kind=fork"
+    )
     # A non-openral static_transform_publisher (different executable path
     # prefix is still tf2_ros, so this WOULD match) — but an unrelated
     # editor / shell must not.
