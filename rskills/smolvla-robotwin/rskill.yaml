@@ -144,3 +144,6 @@ scenes:
 # ── Per-checkpoint action contract (ADR-0019) ──────────────────────────────
 action_contract:
   dim: 14
+  # ADR-0071 — RoboTwin aloha-agilex emits absolute joint positions
+  # (2×(6 arm + 1 gripper)).
+  representation: "joint_positions"

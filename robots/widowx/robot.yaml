@@ -104,6 +104,8 @@ capabilities:
   supported_control_modes:
     - "joint_position"
     - "cartesian_pose"
+    # ADR-0071 — the parallel gripper accepts position commands.
+    - "gripper_position"
   supported_vla_embodiments: ["widowx", "bridge"]
   embodiment_tags:
     - "widowx"

@@ -239,6 +239,9 @@ capabilities:
   bimanual: true
   supported_control_modes:
     - "joint_position"
+    # ADR-0071 — the two parallel grippers (see end_effectors) accept position
+    # commands; advertise the mode so a gripper-driving skill matches the gate.
+    - "gripper_position"
   supported_vla_embodiments: ["aloha_agilex", "aloha", "lerobot"]
   embodiment_tags:
     - "aloha_agilex"

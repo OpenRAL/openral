@@ -120,6 +120,8 @@ capabilities:
   supported_control_modes:
     - "joint_position"
     - "cartesian_pose"
+    # ADR-0071 — the parallel gripper accepts position commands.
+    - "gripper_position"
   supported_vla_embodiments: ["google_robot"]
   embodiment_tags:
     - "google_robot"

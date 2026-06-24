@@ -75,8 +75,13 @@ capabilities:
   has_lidar: false
   has_audio: false
   bimanual: false
+  # ADR-0071 — the gym-pusht env commands the absolute position of the two
+  # synthetic prismatic tip_x/tip_y joints (the pusher tip), so the control
+  # mode is joint_position over those 2 DoF. (Was "cartesian_pose", which
+  # contradicted the joint-space action the pymunk backend actually drives and
+  # left the diffusion-pusht checkpoint's joint(2) contract real-incompatible.)
   supported_control_modes:
-    - "cartesian_pose"
+    - "joint_position"
   supported_vla_embodiments: ["pusht", "lerobot"]
   embodiment_tags:
     - "pusht"

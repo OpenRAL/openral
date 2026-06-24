@@ -121,9 +121,12 @@ validated once at construction (reusing the existing `_JOINT_MODES` /
   therefore inspects `robot.capabilities.supported_control_modes`, `robot.joints`
   (`role`), and `robot.end_effectors` directly. (A future `from_robot` capability
   descriptor is possible but deferred — it is not needed for the check.)
-- **Scene** → declares an optional `expected_action_dim` (and, later, an optional
-  full `TaskSpace`) so the runtime-probed env dim can be asserted at config-load
-  time, not at rollout.
+- **Scene** → the executed task space is declared once per scene-adapter family in
+  `SCENE_FAMILY_TASK_SPACE` (a `SceneTaskSpace` of `modes` + optional fixed
+  `action_dim`), keyed by the `evaluated_tasks` vocabulary. `scene_task_space_
+  compatible(family, skill_ts)` is the matcher. (See §5 — this supersedes the
+  originally-planned per-scene `expected_action_dim` field, which would have
+  drifted across 40 YAMLs.)
 
 ### 3. One validator, three layers — sim vs real aware
 
@@ -185,6 +188,61 @@ they run under `openral deploy sim` today).
 `schema_version` on the rSkill/robot manifests does **not** bump in Phase 1: no
 on-disk field changes (the `TaskSpace` is derived). It bumps in Phase 3 only for
 manifests that gain a `representation` / `slots` they lacked.
+
+### 5. Phase 4 amendment — the scene leg, completed (implemented)
+
+A follow-up exhaustive audit (robots × rSkills × scenes × backends, across every
+benchmark / sim / deploy-sim scene) confirmed the rSkill↔robot leg was sound but
+surfaced that the **scene leg was still unconnected**: nothing statically tied an
+rSkill's `TaskSpace` to the scene it runs in, and two rSkills *mislabelled* their
+action space and only passed the rSkill↔robot gate by coincidence of dimension.
+Phase 4 closes both.
+
+**Scene task space — a central family registry, not a per-scene field.** The
+originally-planned `scene.expected_action_dim` is **superseded** by
+`SCENE_FAMILY_TASK_SPACE: dict[str, SceneTaskSpace]` in `openral_core`. The
+executed control interface is a property of the *scene-adapter family* (LIBERO
+OSC, RoboCasa composite, gym-aloha joints, the RLBench PyRep sidecar), **not** of
+the coarse `PhysicsBackend` (one `MUJOCO` value spans LIBERO / MetaWorld /
+RoboCasa / aloha, each driving a different interface) and **not** of the
+individual scene instance (the four LIBERO suites and RoboCasa's ~100 prebuilt
+tasks share one adapter). So the task space is declared **once per family**, keyed
+by the same vocabulary rSkills already use in `evaluated_tasks` (the leading token
+before any `/`). This is the same "derive / declare once, don't hand-author per
+asset" principle that rejected a per-manifest `task_space:` block (Alternatives
+§1): a per-scene `expected_action_dim` on 40 YAMLs would immediately drift.
+`SceneTaskSpace` carries `(modes, action_dim | None, runs_via_default_packers)`;
+the `runs_via_default_packers=False` flag marks the dedicated-controller adapters
+(RLBench `CARTESIAN_POSE` motion planner; RoboCasa-GR1 whole-body BASIC composite)
+— the scene-leg analogue of `KNOWN_SIM_GAPS`.
+
+`scene_task_space_compatible(family, skill_ts) -> TaskSpaceMatch` is the third leg
+of the gate: every mode the skill emits must be in the family's executed set, and
+— when the family fixes a width — the dims must match. Together with
+`task_space_compatible` (rSkill × robot) this closes the rSkill × robot × scene
+triangle the audit found open. The repo-wide sweep gains
+`test_scene_families_are_declared` (a new task family must record what it drives)
+and `test_scene_executability_matches_known_state` (exact, like the sim sweep;
+`KNOWN_SCENE_GAPS` is empty after the fixes below).
+
+**Two mislabels fixed — every rSkill `TaskSpace` is now honest.**
+
+- `smolvla-metaworld` declared a bare `dim=4`, which fell through to the legacy
+  `JOINT_POSITION(4)` path and passed only because Sawyer has ≥4 joints. MetaWorld
+  actually drives a 3-D EE translation delta + 1 gripper. Phase 4 adds
+  `ActionRepresentation.DELTA_EE_3D_PLUS_GRIPPER` (and a 3-wide cartesian slice in
+  `canonical_slots_for_representation`, vs the existing 6-wide), and the manifest
+  now declares it → `cartesian_delta(3) + gripper_position(1)`, executable in sim,
+  correctly *not* on real Sawyer hardware (which advertises no OSC controller).
+- `diffusion-pusht` / `pusht_2d`: the robot advertised `cartesian_pose` while its
+  two DoF are literal prismatic `tip_x`/`tip_y` joints and the gym-pusht env
+  commands their absolute position. The robot mode is now `joint_position` and the
+  skill declares `joint_positions(2)`, making it real-executable (was a real-mode
+  contradiction) — no new "planar" enum needed.
+
+The `DELTA_EE_3D_PLUS_GRIPPER` addition retires the `smolvla-metaworld` entry from
+`_KNOWN_DEFERRED` in `test_rskill_action_contracts_executable.py` (the self-policing
+guard forced its removal the moment the representation existed).
 
 ## Alternatives considered
 

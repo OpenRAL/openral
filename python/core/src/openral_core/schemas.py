@@ -867,6 +867,11 @@ class ActionRepresentation(str, Enum):
     JOINT_VELOCITIES = "joint_velocities"
     DELTA_EE_6D_PLUS_GRIPPER = "delta_ee_6d_plus_gripper"
     DELTA_EE_6D = "delta_ee_6d"
+    # 3-D end-effector translation delta (dx, dy, dz) + 1 gripper scalar = 4-D.
+    # The MetaWorld mocap controller and similar planar-reach envs drive only EE
+    # translation, not orientation (ADR-0071 Phase 4). Distinct from the 6-D
+    # variants so the derived cartesian segment is 3 wide, not 6.
+    DELTA_EE_3D_PLUS_GRIPPER = "delta_ee_3d_plus_gripper"
     CARTESIAN_POSE = "cartesian_pose"
 
 
@@ -3165,6 +3170,7 @@ class ActionContract(BaseModel):
 # target robot must advertise, and (b) the typed ``ActionSlot`` layout
 # the runner dispatches the flat policy vector through.
 _EE_6D_WIDTH = 6  # (dx, dy, dz, drx, dry, drz) — 6-DoF cartesian slice.
+_EE_3D_WIDTH = 3  # (dx, dy, dz) — translation-only cartesian slice (MetaWorld-style).
 
 
 def control_modes_for_representation(rep: ActionRepresentation) -> set[ControlMode]:
@@ -3193,7 +3199,10 @@ def control_modes_for_representation(rep: ActionRepresentation) -> set[ControlMo
         return {ControlMode.JOINT_VELOCITY}
     if rep is ActionRepresentation.DELTA_EE_6D:
         return {ControlMode.CARTESIAN_DELTA}
-    if rep is ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER:
+    if rep in (
+        ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER,
+        ActionRepresentation.DELTA_EE_3D_PLUS_GRIPPER,
+    ):
         return {ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}
     # CARTESIAN_POSE — the only remaining enum member.
     return {ControlMode.CARTESIAN_POSE}
@@ -3316,8 +3325,16 @@ def canonical_slots_for_representation(
     # tf frame the cartesian pose/delta is expressed in.
     ee_frame = ee_name
 
-    has_gripper = rep is ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER
-    min_dim = _EE_6D_WIDTH + 1 if has_gripper else _EE_6D_WIDTH
+    has_gripper = rep in (
+        ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER,
+        ActionRepresentation.DELTA_EE_3D_PLUS_GRIPPER,
+    )
+    # Translation-only representations carry a 3-wide cartesian slice; all
+    # others (6-DoF delta / cartesian pose) carry the full 6-wide slice.
+    cart_width = (
+        _EE_3D_WIDTH if rep is ActionRepresentation.DELTA_EE_3D_PLUS_GRIPPER else _EE_6D_WIDTH
+    )
+    min_dim = cart_width + 1 if has_gripper else cart_width
     if dim < min_dim:
         raise ROSConfigError(
             f"canonical_slots_for_representation: representation {rep.value!r} requires "
@@ -3331,7 +3348,7 @@ def canonical_slots_for_representation(
     )
     slots: list[ActionSlot] = [
         ActionSlot(
-            range=(0, _EE_6D_WIDTH - 1),
+            range=(0, cart_width - 1),
             control_mode=cart_mode,
             ee=ee_name,
             frame=ee_frame,
@@ -3340,7 +3357,7 @@ def canonical_slots_for_representation(
     if has_gripper:
         slots.append(
             ActionSlot(
-                range=(_EE_6D_WIDTH, dim - 1),
+                range=(cart_width, dim - 1),
                 control_mode=ControlMode.GRIPPER_POSITION,
                 ee=ee_name,
             )
@@ -3732,6 +3749,186 @@ def task_space_compatible(
             f"{n_joints} on {robot.name!r}"
         )
 
+    return TaskSpaceMatch(ok=not reasons, reasons=reasons)
+
+
+# ─── Scene side of the task space — the third layer (ADR-0071 Phase 4) ─────────
+
+
+class SceneTaskSpace(BaseModel):
+    """The action interface a scene-adapter family executes (ADR-0071 Phase 4).
+
+    The scene leg of the cross-layer task-space contract. A scene picks a
+    *backend adapter* (LIBERO OSC, RoboCasa composite, gym-aloha joints, the
+    RLBench PyRep sidecar, …) and that adapter — not the coarse
+    :class:`PhysicsBackend` and not the individual scene instance — fixes which
+    :class:`ControlMode` s the policy's flat action vector is interpreted as.
+    Many scenes share one adapter (the four LIBERO suites, RoboCasa's ~100
+    prebuilt PnP tasks), so the executed task space is declared once per
+    *family* and keyed by the same vocabulary rSkills already use in
+    :attr:`RSkillManifest.evaluated_tasks` (the leading token before any
+    ``"/"``: ``"libero_spatial"``, ``"rlbench"``, ``"robocasa"``, …).
+
+    Attributes:
+        modes: The :class:`ControlMode` s the adapter executes. An rSkill is
+            scene-compatible when its :class:`TaskSpace` control modes are a
+            subset of this set.
+        action_dim: The flat action-vector width the adapter steps, when fixed
+            (LIBERO 7, MetaWorld 4, ALOHA 14). ``None`` when it varies by task
+            or robot composition (RoboCasa 11-vs-12 base skew, ManiSkill
+            per-task), in which case only ``modes`` is checked.
+        runs_via_default_packers: ``True`` when every mode is in
+            :data:`SIM_EXECUTABLE_CONTROL_MODES` (the deploy-sim default packers
+            could also drive it). ``False`` for adapters that drive a dedicated
+            controller path outside the default packers — RLBench's
+            ``CARTESIAN_POSE`` motion planner, RoboCasa-GR1's whole-body BASIC
+            composite — mirroring ``KNOWN_SIM_GAPS`` in the sweep.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    modes: frozenset[ControlMode]
+    action_dim: int | None = Field(default=None, gt=0)
+    runs_via_default_packers: bool = True
+
+
+def scene_family(task_id: str) -> str:
+    """Reduce an ``evaluated_tasks`` entry to its scene-family key.
+
+    The family is the leading token before any ``"/"`` — ``"rlbench/open_drawer"``
+    → ``"rlbench"``, ``"libero_spatial"`` → ``"libero_spatial"`` (ADR-0071 Phase 4).
+
+    Example:
+        >>> scene_family("rlbench/open_drawer")
+        'rlbench'
+        >>> scene_family("metaworld")
+        'metaworld'
+    """
+    return task_id.split("/", 1)[0]
+
+
+# Single source of truth for the control interface each scene-adapter family
+# executes. Keyed by ``scene_family(evaluated_task)``. Adding an rSkill that
+# declares a new task family with no entry here trips the scene sweep
+# (tests/unit/test_task_space_sweep.py::test_scene_families_are_declared), so a
+# new backend must record what it actually drives — the same lockstep discipline
+# SIM_EXECUTABLE_CONTROL_MODES has with the packers.
+SCENE_FAMILY_TASK_SPACE: dict[str, SceneTaskSpace] = {
+    # LIBERO robosuite OSC: 7-D [xyz_delta(3) | axis_angle_delta(3) | gripper(1)].
+    "libero_spatial": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=7,
+    ),
+    "libero_object": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=7,
+    ),
+    "libero_goal": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=7,
+    ),
+    "libero_10": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=7,
+    ),
+    # MetaWorld mocap: 4-D [xyz_delta(3) | gripper(1)] — translation only.
+    "metaworld": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=4,
+    ),
+    # SimplerEnv WidowX bridge OSC: 7-D [xyz_delta(3) | rpy_delta(3) | gripper(1)].
+    "simpler_env": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_DELTA, ControlMode.GRIPPER_POSITION}),
+        action_dim=7,
+    ),
+    # gym-aloha bimanual joints: 14-D [2 x (6 arm + 1 gripper)].
+    "aloha_transfer_cube": SceneTaskSpace(
+        modes=frozenset({ControlMode.JOINT_POSITION}), action_dim=14
+    ),
+    "aloha_insertion": SceneTaskSpace(modes=frozenset({ControlMode.JOINT_POSITION}), action_dim=14),
+    # RoboTwin SAPIEN dual-arm joints: 14-D, via the out-of-process sidecar.
+    "robotwin": SceneTaskSpace(modes=frozenset({ControlMode.JOINT_POSITION}), action_dim=14),
+    # ManiSkill3 pd_joint_pos: width is per-task (LiftCube 8) — left unfixed.
+    "maniskill3": SceneTaskSpace(modes=frozenset({ControlMode.JOINT_POSITION}), action_dim=None),
+    # PushT pymunk: 2-D absolute pusher position, driven as the robot's two
+    # prismatic tip_x/tip_y joints (ADR-0071 Phase 4 — robot mode aligned).
+    "pusht": SceneTaskSpace(modes=frozenset({ControlMode.JOINT_POSITION}), action_dim=2),
+    # RoboCasa panda_mobile BASIC/HybridMobileBase composite: arm OSC delta +
+    # gripper + base joint-velocity + the composite multiplexer flag. Width is
+    # 11 (BASIC) or 12 (HybridMobileBase) — left unfixed.
+    "robocasa": SceneTaskSpace(
+        modes=frozenset(
+            {
+                ControlMode.CARTESIAN_DELTA,
+                ControlMode.GRIPPER_POSITION,
+                ControlMode.JOINT_VELOCITY,
+                ControlMode.COMPOSITE_MODE,
+            }
+        ),
+        action_dim=None,
+    ),
+    # RLBench CoppeliaSim/PyRep: 8-D [pos(3) | quat(4) | gripper(1)] absolute
+    # keypose, executed by a motion planner — NOT the default sim packers.
+    "rlbench": SceneTaskSpace(
+        modes=frozenset({ControlMode.CARTESIAN_POSE, ControlMode.GRIPPER_POSITION}),
+        action_dim=8,
+        runs_via_default_packers=False,
+    ),
+}
+
+
+def scene_task_space_compatible(family: str, skill_space: TaskSpace) -> TaskSpaceMatch:
+    """Check an rSkill's :class:`TaskSpace` is executable by a scene family.
+
+    The third leg of the cross-layer gate (ADR-0071 Phase 4): a skill fits a
+    scene when every :class:`ControlMode` it emits is in the scene family's
+    executed set, and — when the family fixes a width — its total dimensionality
+    matches. Pairs with :func:`task_space_compatible` (rSkill x robot); together
+    they close the rSkill x robot x scene triangle the audit found unconnected.
+
+    Args:
+        family: The scene-family key (see :func:`scene_family`).
+        skill_space: The task space the rSkill emits
+            (:meth:`TaskSpace.from_action_contract`).
+
+    Returns:
+        A :class:`TaskSpaceMatch` — ``ok`` plus a reason per incompatibility.
+        An unknown ``family`` is reported as a single reason (not an exception)
+        so a sweep can collect every gap in one pass.
+
+    Example:
+        >>> space = TaskSpace(
+        ...     segments=[
+        ...         TaskSpaceSegment(
+        ...             family=TaskSpaceFamily.JOINT,
+        ...             control_mode=ControlMode.JOINT_POSITION,
+        ...             width=14,
+        ...         )
+        ...     ]
+        ... )
+        >>> scene_task_space_compatible("robotwin", space).ok
+        True
+    """
+    spec = SCENE_FAMILY_TASK_SPACE.get(family)
+    if spec is None:
+        return TaskSpaceMatch(
+            ok=False,
+            reasons=[
+                f"scene family {family!r} has no declared task space in SCENE_FAMILY_TASK_SPACE"
+            ],
+        )
+    reasons: list[str] = []
+    extra = skill_space.control_modes - spec.modes
+    if extra:
+        reasons.append(
+            f"control mode(s) {sorted(m.value for m in extra)} not executable by "
+            f"scene family {family!r} (executes {sorted(m.value for m in spec.modes)})"
+        )
+    if spec.action_dim is not None and skill_space.total_dim != spec.action_dim:
+        reasons.append(
+            f"action dim {skill_space.total_dim} != scene family {family!r} "
+            f"expected dim {spec.action_dim}"
+        )
     return TaskSpaceMatch(ok=not reasons, reasons=reasons)
 
 
