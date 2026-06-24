@@ -1962,3 +1962,174 @@ def test_recall_object_approach_is_grid_refined_when_map_latched() -> None:
     assert "wine_bottle" in text
     assert "approach from (2.82, 0.38" not in text, f"blocked geometric pose leaked: {text}"
     assert "approach from" in text, f"no grid-refined approach rendered: {text}"
+
+
+def _write_nav2_map(d: Any, *, width: int = 20, height: int = 20) -> Any:
+    """Write a free-space nav2 map bundle (PGM P5 + map.yaml); return the yaml path."""
+    pgm = d / "map.pgm"
+    pgm.write_bytes(b"P5\n%d %d\n255\n" % (width, height) + bytes([254] * (width * height)))
+    yaml = d / "map.yaml"
+    yaml.write_text(
+        f"image: {pgm.name}\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n"
+        "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\nmode: trinary\n",
+        encoding="utf-8",
+    )
+    return yaml
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
+    """ADR-0071 Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
+
+    The REAL deploy path (not a faked /map publisher): a saved nav2 ``map.yaml`` is
+    loaded by a standalone ``nav2_map_server`` — exactly what ``sim_e2e.launch.py``
+    brings up when ``map_path`` is set — which latches ``/map``. We assert (a) the
+    saved map reaches ``/map`` (the costmap is populated from the bundle), (b) the
+    reasoner consumes it into its ADR-0044 occupancy grid, and (c) with the bundle's
+    scene graph also wired, ``recall_object`` still answers — the two bundle
+    modalities loaded together at deploy start.
+    """
+    import os
+    import shutil
+    import signal
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    if shutil.which("ros2") is None:
+        pytest.skip("ros2 CLI not on PATH — nav2 map_server unavailable")
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    pytest.importorskip("nav_msgs.msg")
+
+    from nav_msgs.msg import OccupancyGrid
+    from openral_core import EmitPromptTool, RecallObjectTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from openral_world_state import SpatialMemory
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture = repo_root / "tests" / "unit" / "fixtures" / "home_scene_graph.json"
+    assert fixture.exists(), f"scene-graph fixture missing: {fixture}"
+    autostart_tool = repo_root / "tools" / "lifecycle_autostart.py"
+    yaml = _write_nav2_map(tmp_path)
+
+    # Spawn the real nav2 map_server on the saved map.yaml (the launch's map_path leg).
+    # `start_new_session=True` puts it in its own process group so teardown can
+    # SIGTERM the whole group — `ros2 run` forks the executable as a child that a
+    # plain proc.terminate() would orphan, leaving a stray /map publisher that
+    # pollutes sibling tests.
+    map_server = subprocess.Popen(
+        ["ros2", "run", "nav2_map_server", "map_server", "--ros-args",
+         "-r", "__node:=openral_map_server", "-p", f"yaml_filename:={yaml}",
+         "-p", "use_sim_time:=false"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    rclpy.init()
+    received: list[PromptStamped] = []
+    maps: list[OccupancyGrid] = []
+    received_event = threading.Event()
+    try:
+        time.sleep(2.0)
+        # Drive UNCONFIGURED -> ACTIVE with the same tool _autostart_lifecycle mirrors.
+        rc = subprocess.run(
+            [sys.executable, str(autostart_tool), "--node", "/openral_map_server",
+             "--target", "active", "--service-timeout-s", "20.0"],
+            timeout=40, check=False,
+        ).returncode
+        assert rc == 0, f"map_server did not reach active (rc={rc})"
+
+        client = FakeToolUseClient(
+            responses=[
+                RecallObjectTool(query="bottle of wine", rationale="operator asked for wine"),
+                *[
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
+                    for _ in range(4)
+                ],
+            ],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            spatial_memory=SpatialMemory.load(fixture),
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        map_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        sub_node = rclpy.create_node("openral_test_map_bundle_sub")
+        sub_node.create_subscription(OccupancyGrid, "/map", maps.append, map_qos)
+
+        def cb(msg: PromptStamped) -> None:
+            if msg.header.frame_id == "spatial_memory":
+                received.append(msg)
+                received_event.set()
+
+        sub_node.create_subscription(PromptStamped, "/openral/prompt", cb, qos)
+        pub_node = rclpy.create_node("openral_test_map_bundle_pub")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(sub_node)
+
+        # Let the latched map land + the reasoner consume it before the query.
+        settle = time.monotonic() + 2.0
+        while time.monotonic() < settle:
+            executor.spin_once(timeout_sec=0.1)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_test_map_bundle_pub"
+        msg.text = "bring me a cup of wine"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not received_event.is_set():
+            executor.spin_once(timeout_sec=0.1)
+
+        # (a) the saved map reached /map (costmap populated from the bundle).
+        assert maps, "saved map.yaml did not reach /map via nav2 map_server"
+        assert maps[-1].info.width == 20 and maps[-1].info.height == 20
+        # (b) the reasoner consumed it into its ADR-0044 occupancy grid.
+        assert reasoner._occupancy_grid is not None, "reasoner did not consume the seeded /map"
+        # (c) the bundle's scene graph still answers recall_object.
+        assert received, "recall_object did not re-prompt within 5 s"
+        assert "wine_bottle" in received[-1].text
+
+        executor.remove_node(reasoner)
+        executor.remove_node(sub_node)
+        sub_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+        # Kill the whole process group (the ros2-run wrapper + the map_server child).
+        pgid = os.getpgid(map_server.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            map_server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGKILL)
