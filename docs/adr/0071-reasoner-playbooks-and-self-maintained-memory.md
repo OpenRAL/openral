@@ -644,13 +644,19 @@ affected docs in the same PR (§1.14). Phases are independently landable.
      `test_memory_search_recalls_archived_entry_and_reprompts` on Jazzy): a write
      persists to disk and a search recalls an archived fact. **Remaining authoring:**
      **verify-outcome** + **clarify-ambiguity** playbooks (they drive most writes).
-4b. **Deploy memory bundle (Decision 3b).** Standardize the bundle layout: place
-   `scene_graph.json` at the conventional path (**reuses** the shipped
-   `spatial_memory_path` loader — no new code) and add the `map_path` ROS param +
-   `map_server` seeding for the 2D occupancy grid, exposed in `sim_e2e.launch.py`
-   alongside `spatial_memory_path`. Integration test: a deploy boots with a seeded
-   `scene_graph.json` + `map.yaml` and the reasoner answers `recall_object` while
-   the nav costmap is populated from the saved map.
+4b. **Deploy memory bundle (Decision 3b) — landed.** `sim_e2e.launch.py` gains two
+   launch args alongside `spatial_memory_path`: **`memory_md_path`** (forwarded to the
+   reasoner — loads `MEMORY.md` + enables the memory tools; this also closed a gap
+   where the Decision-3 param was never wired into the launch) and **`map_path`**
+   (when set and SLAM is off, a standalone `nav2_map_server` latches `/map` from the
+   saved `map.yaml` so the costmap + the ADR-0044 approach grid have the prior at
+   boot; with SLAM on it is ignored — SLAM owns `/map`). `scene_graph.json` keeps
+   using the shipped `spatial_memory_path` loader (no new persistence code). The grid
+   stays advisory — the C++ kernel keeps its own ephemeral ADR-0030 collision grid
+   (§1.1). **Live ROS verified** (`test_deploy_map_bundle_seeds_reasoner_occupancy_grid`
+   on Jazzy): a real `nav2_map_server` loads a saved `map.yaml`, `/map` reaches the
+   reasoner (it builds its ADR-0044 occupancy grid), and with the scene graph also
+   wired `recall_object` still answers — both bundle modalities loaded at deploy start.
 5. **Consolidation + remaining playbooks.** The `consolidate` reflection pass;
    **preflight-reach**, **stage-for-manipulation**. Importance×recency×relevance
    retrieval under cap; archival paging.
