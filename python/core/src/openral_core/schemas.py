@@ -2828,6 +2828,14 @@ StateLayout: TypeAlias = Literal[
     # ``video.image`` camera, sticky-gripper postprocessing).
     "simpler_widowx",
     "simpler_google",
+    # LIBERO 8-D task-space proprio (ADR-0027). ``eef_pos(3) ‖
+    # eef_axisangle(3) ‖ gripper_qpos(2)`` in the world frame — what the
+    # lerobot/smolvla_libero, pi05-libero and xvla-libero checkpoints were
+    # trained on. The benchmark (``openral sim run``) supplies it directly;
+    # deploy assembles it from live TF (EE pose) + JointState (gripper) via the
+    # ``libero_eef8d`` assembler. Without it the runner would feed raw
+    # joint-space state to a task-space policy.
+    "libero_eef8d",
 ]
 """Closed set of per-checkpoint proprioception layouts. ADR-0014 + ADR-0027.
 
@@ -2841,7 +2849,7 @@ function that joins shape + bindings + live JointState + live TF.
 
 
 WRAPPED_TASK_SPACE_LAYOUTS: frozenset[StateLayout] = frozenset(
-    {"rc365", "human300_16d"},
+    {"rc365", "human300_16d", "libero_eef8d"},
 )
 """Layouts that are TASK-space composites (Cartesian poses + gripper widths),
 NOT one-scalar-per-joint. These layouts REQUIRE
@@ -2952,6 +2960,21 @@ class StateContract(BaseModel):
                         f"StateContract.layout={self.layout!r} requires "
                         f"bindings.{', bindings.'.join(missing)} — these "
                         f"layouts include EE and base poses.",
+                    )
+            elif self.layout == "libero_eef8d":
+                # Absolute world-frame EE pose + gripper — needs eef_frame and
+                # at least one gripper joint; base_frame is irrelevant (the
+                # franka is fixed-base, the pose is taken in the world frame).
+                if self.bindings.eef_frame is None:
+                    raise ValueError(
+                        "StateContract.layout='libero_eef8d' requires "
+                        "bindings.eef_frame — it reads the world-frame EE pose.",
+                    )
+                if not self.bindings.gripper_qpos_joints:
+                    raise ValueError(
+                        "StateContract.layout='libero_eef8d' requires "
+                        "bindings.gripper_qpos_joints (1 parallel-gripper joint "
+                        "or 2 per-finger joints) for the gripper slot.",
                     )
         elif self.bindings is not None:
             raise ValueError(
