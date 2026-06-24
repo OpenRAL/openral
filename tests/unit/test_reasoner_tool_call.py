@@ -12,6 +12,8 @@ from openral_core import (
     EmitPromptTool,
     ExecuteRskillTool,
     LifecycleTransitionTool,
+    MemorySearchTool,
+    MemoryWriteTool,
     ReasonerToolCall,
     ReloadGstPipelineTool,
 )
@@ -31,6 +33,47 @@ def test_execute_skill_round_trip() -> None:
     decoded = ADAPTER.validate_json(src.model_dump_json())
     assert isinstance(decoded, ExecuteRskillTool)
     assert decoded == src
+
+
+def test_memory_write_round_trip_and_decode() -> None:
+    """MemoryWriteTool decodes via the union by its `memory_write` discriminator."""
+    src = MemoryWriteTool(
+        op="supersede",
+        section="object_locations",
+        content="water bottle in the fridge",
+        importance=0.9,
+        target="water bottle on the counter",
+    )
+    decoded = ADAPTER.validate_json(src.model_dump_json())
+    assert isinstance(decoded, MemoryWriteTool)
+    assert decoded == src
+    assert decoded.tool == "memory_write"
+
+
+def test_memory_write_requires_content_unless_delete() -> None:
+    with pytest.raises(ValidationError, match=r"requires non-empty .content."):
+        MemoryWriteTool(op="add", section="lessons", content="")
+    # delete may omit content but needs a target:
+    ok = MemoryWriteTool(op="delete", section="open_tasks", target="water the plants")
+    assert ok.op == "delete"
+
+
+def test_memory_write_requires_target_for_update_supersede_delete() -> None:
+    for op in ("update", "supersede", "delete"):
+        with pytest.raises(ValidationError, match=r"requires a .target. entry"):
+            MemoryWriteTool(op=op, section="preferences", content="x")
+
+
+def test_memory_search_round_trip_and_decode() -> None:
+    src = MemorySearchTool(query="where was the mug", section="object_locations", limit=3)
+    decoded = ADAPTER.validate_json(src.model_dump_json())
+    assert isinstance(decoded, MemorySearchTool)
+    assert decoded == src and decoded.tool == "memory_search"
+
+
+def test_memory_section_is_closed() -> None:
+    with pytest.raises(ValidationError):
+        MemoryWriteTool(op="add", section="not_a_section", content="x")  # type: ignore[arg-type]
 
 
 def test_reload_gst_pipeline_round_trip() -> None:
