@@ -290,6 +290,9 @@ capabilities:
     - "joint_velocity"
     # ADR-0028d — sim-only HybridMobileBase composite mux flag.
     - "composite_mode"
+    # ADR-0071 — the panda_gripper EE accepts position commands (the rc365
+    # skills already drive a gripper_position slot on it).
+    - "gripper_position"
   embodiment_tags:
     - "panda_mobile"
     - "robocasa"
