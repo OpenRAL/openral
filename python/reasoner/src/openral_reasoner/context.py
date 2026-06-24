@@ -208,7 +208,10 @@ def render_playbooks_block(entries: list[tuple[str, str]]) -> str:
             "Installed decision procedures (SOPs). When a goal matches a playbook's "
             "trigger, follow its steps, verify its done predicate, and use its "
             "fallbacks. Playbooks guide your decisions; every motion still goes "
-            "through execute_rskill and the safety kernel."
+            "through execute_rskill and the safety kernel. A playbook is NOT a "
+            "skill: never pass a playbook name to execute_rskill. The only "
+            "executable skills are the ones in your tool list; a playbook only "
+            "tells you which of those to dispatch and in what order."
         ),
     ]
     for header, body in entries:
