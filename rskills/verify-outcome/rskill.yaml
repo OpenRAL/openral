@@ -5,7 +5,7 @@
 # scene/reward queries before the reasoner proceeds (Inner Monologue closed loop).
 # Composes existing read-only + actuating reasoner tools; carries no weights and
 # never actuates directly (every motion it triggers is an ExecuteRskill → Action
-# chunk → C++ safety kernel). See ADR-0071.
+# chunk → C++ safety kernel). See ADR-0072.
 
 schema_version: "0.1"
 name: "OpenRAL/rskill-verify-outcome"
@@ -16,7 +16,7 @@ kind: "playbook"
 
 # Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
 # specific embodiment. Declared explicitly with the "any" wildcard (never an
-# empty list, which the manifest validator rejects — ADR-0071).
+# empty list, which the manifest validator rejects — ADR-0072).
 embodiment_tags: ["any"]
 
 # Real RobotCapabilities flag: verifying an outcome requires a camera. The
@@ -42,7 +42,7 @@ description: >
   S2 closed-loop decision procedure (Inner Monologue): after a skill or subtask
   completes, check whether it ACTUALLY succeeded using scene/reward queries
   before the reasoner proceeds. Composes query_scene, query_task_progress,
-  locate_in_view, memory_write and emit_prompt. ADR-0071.
+  locate_in_view, memory_write and emit_prompt. ADR-0072.
 
 # RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
 # never an ExecuteSkill dispatch verb).
@@ -57,9 +57,9 @@ scenes:
 
 # Provenance citation (a playbook has no weights / upstream model repo, so the
 # authoring ADR is the citation — `paper_url`, mirroring the ROS-wrapped skills).
-paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md"
+paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md"
 
-# The playbook decision-procedure contract (ADR-0071).
+# The playbook decision-procedure contract (ADR-0072).
 playbook:
   trigger: "a skill or subtask has just completed and its success is not directly observable from the action result"
   body_uri: "./PLAYBOOK.md"

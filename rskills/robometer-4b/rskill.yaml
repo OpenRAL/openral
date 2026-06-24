@@ -7,7 +7,7 @@ kind: "reward"
 
 # Embodiment-agnostic: a reward monitor scores any rollout video + task
 # instruction and is exempt from the rSkill<->robot embodiment gate.
-embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0071)
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0072)
 
 # Consumes the same RGB camera stream the co-active VLA uses. No actuators.
 sensors_required:

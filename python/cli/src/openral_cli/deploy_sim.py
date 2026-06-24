@@ -581,7 +581,7 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
 
 
 def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
-    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir (ADR-0071 §3b).
+    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir (ADR-0072 §3b).
 
     The bundle is a directory holding any of ``MEMORY.md`` (semantic memory),
     ``scene_graph.json`` (3D world-state graph), and ``map.yaml`` (2D occupancy grid).
@@ -1001,7 +1001,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if dataset_license:
             argv_template.append(f"dataset_license:={dataset_license}")
 
-    # ADR-0071 Decision 3b — the deploy memory bundle. ``--memory-dir`` (CLI) wins;
+    # ADR-0072 Decision 3b — the deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
     # launch paths by convention and forward them (each to its consumer's arg).
     effective_memory_dir = memory_dir
@@ -1953,7 +1953,7 @@ def deploy_sim_command(
         None,
         "--memory-dir",
         help=(
-            "ADR-0071 — path to a deploy memory bundle directory. The reasoner "
+            "ADR-0072 — path to a deploy memory bundle directory. The reasoner "
             "loads MEMORY.md (semantic memory + memory_write/search tools) from it; "
             "if the dir also holds scene_graph.json it preloads the 3D world-state "
             "graph (recall_object), and if it holds map.yaml a nav2 map_server seeds "

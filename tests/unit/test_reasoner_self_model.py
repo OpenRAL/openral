@@ -1,4 +1,4 @@
-"""Tests for the reasoner robot self-model (ADR-0071 Decision 2.1).
+"""Tests for the reasoner robot self-model (ADR-0072 Decision 2.1).
 
 Covers:
 - :func:`~openral_reasoner.context.render_robot_self_model` against real

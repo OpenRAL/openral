@@ -615,7 +615,7 @@ class TestCheckCapabilities:
 
     def test_perception_kind_exempt_from_embodiment_match(self) -> None:
         """Detector / vlm rSkills are embodiment-agnostic: the gate passes on any
-        robot via the explicit ``["any"]`` wildcard (ADR-0071).
+        robot via the explicit ``["any"]`` wildcard (ADR-0072).
 
         Real in-tree perception manifests (CLAUDE.md §1.11) ship
         ``embodiment_tags: ["any"]`` and must clear ``check_embodiment_tags``

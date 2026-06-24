@@ -1,7 +1,7 @@
 ---
 name: stage-for-manipulation
 description: >-
-  S2 decision-procedure playbook (weightless). Capabilities: plan on manipulation target. S2 decision procedure: move the robot into a manipulation skill's declared pre-grasp / starting pose (and verify it) before the manipulation policy runs, reducing grasp failures from bad initial poses. Composes resolve_place, execute_rskill, query_scene and memory_write over a collision-aware approach skill (ADR-0051). ADR-0071. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S2 decision-procedure playbook (weightless). Capabilities: plan on manipulation target. S2 decision procedure: move the robot into a manipulation skill's declared pre-grasp / starting pose (and verify it) before the manipulation policy runs, reducing grasp failures from bad initial poses. Composes resolve_place, execute_rskill, query_scene and memory_write over a collision-aware approach skill (ADR-0051). ADR-0072. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -17,7 +17,7 @@ metadata:
   latency_budget: {per_chunk_ms: 5000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  paper_url: https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md
+  paper_url: https://github.com/OpenRAL/openral/blob/master/docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md
 ---
 
 # stage-for-manipulation — rSkill discovery view
@@ -30,7 +30,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **decision-procedure playbook (weightless)** (`role: s2`, `kind: playbook`). S2 decision procedure: move the robot into a manipulation skill's declared pre-grasp / starting pose (and verify it) before the manipulation policy runs, reducing grasp failures from bad initial poses. Composes resolve_place, execute_rskill, query_scene and memory_write over a collision-aware approach skill (ADR-0051). ADR-0071.
+An OpenRAL **decision-procedure playbook (weightless)** (`role: s2`, `kind: playbook`). S2 decision procedure: move the robot into a manipulation skill's declared pre-grasp / starting pose (and verify it) before the manipulation policy runs, reducing grasp failures from bad initial poses. Composes resolve_place, execute_rskill, query_scene and memory_write over a collision-aware approach skill (ADR-0051). ADR-0072.
 
 ## Capabilities
 

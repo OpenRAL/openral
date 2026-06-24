@@ -83,7 +83,7 @@ _ALLOW_NONCOMMERCIAL_ENV = "OPENRAL_ALLOW_NONCOMMERCIAL"
 _REQUIRE_SIGNED_ENV = "OPENRAL_REQUIRE_SIGNED_SKILLS"
 """Set to ``"1"`` to acknowledge non-commercial research use of restricted weights."""
 
-# The explicit embodiment-agnostic wildcard (ADR-0071). An rSkill that runs on
+# The explicit embodiment-agnostic wildcard (ADR-0072). An rSkill that runs on
 # every embodiment — perception kinds (detector / vlm / reward) and ``playbook``
 # decision procedures — declares ``embodiment_tags: ["any"]``; the rSkill↔robot
 # embodiment gate treats this as match-any. Agnosticism is *declared*, never
@@ -396,7 +396,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         """Verify the manifest's embodiment tags intersect the robot's.
 
         Embodiment-agnostic rSkills declare the explicit wildcard
-        ``embodiment_tags: ["any"]`` (ADR-0071) — perception kinds (detector /
+        ``embodiment_tags: ["any"]`` (ADR-0072) — perception kinds (detector /
         vlm / reward) and ``playbook`` decision procedures — and run on any
         robot. Agnosticism is declared, not derived: the manifest validator
         rejects an empty tag list, so emptiness never silently means match-any.

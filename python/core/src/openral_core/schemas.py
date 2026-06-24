@@ -895,7 +895,7 @@ class RSkillAction(str, Enum):
       verb.
     - Perception / reasoning (non-actuating S2 kinds): ``DETECT`` (detector),
       ``QUERY`` (scene VLM, ADR-0047), ``MONITOR`` (reward monitor, ADR-0057),
-      ``PLAN`` (playbook decision procedure, ADR-0071). These verbs are
+      ``PLAN`` (playbook decision procedure, ADR-0072). These verbs are
       registry/discovery metadata only — their skills are reached via
       read-only reasoner tools or system-prompt injection, never an
       ``ExecuteSkill`` dispatch.
@@ -4030,7 +4030,7 @@ plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
 ``"any"`` as the explicit **embodiment-agnostic wildcard**.
 
 ``"any"`` is the *declared* way to say "this rSkill runs on every embodiment"
-(ADR-0071): perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
+(ADR-0072): perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
 decision procedures use ``embodiment_tags: ["any"]``. An empty ``embodiment_tags``
 is rejected by :meth:`RSkillManifest._check_embodiment_tags_present` — agnosticism
 must be declared, never derived from an empty list (CLAUDE.md §1.4). The rSkill↔robot
@@ -4249,7 +4249,7 @@ RSkillKind: TypeAlias = Literal[
   ``action_contract``, ``state_contract``, ``n_action_steps``, ``starting_pose``
   are FORBIDDEN. Surfaced to the reasoner by injecting its ``PLAYBOOK.md`` body
   into the system prompt (or via a retrieval tool at scale), never as an
-  ``ExecuteSkill`` policy. ADR-0071.
+  ``ExecuteSkill`` policy. ADR-0072.
 """
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
@@ -4257,7 +4257,7 @@ _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
 # Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
 # ``playbook`` decision procedures) do not target a specific embodiment. They
 # declare this **explicitly** with the wildcard ``embodiment_tags: ["any"]``
-# (ADR-0071) — never an empty list, which ``_check_embodiment_tags_present``
+# (ADR-0072) — never an empty list, which ``_check_embodiment_tags_present``
 # rejects. The rSkill↔robot gate (``openral_rskill.loader.rSkill.check_embodiment_tags``)
 # treats ``"any"`` in a skill's tags as match-any.
 
@@ -4582,7 +4582,7 @@ class RewardContract(BaseModel):
 
 
 class PlaybookContract(BaseModel):
-    """Manifest contract for ``kind: "playbook"`` rSkills (ADR-0071).
+    """Manifest contract for ``kind: "playbook"`` rSkills (ADR-0072).
 
     A **playbook** is a human-authored standard-operating-procedure — a
     structured Markdown document describing *how the S2 Reasoner should approach
@@ -4935,7 +4935,7 @@ class RSkillManifest(BaseModel):
 
     @model_validator(mode="after")
     def _check_embodiment_tags_present(self) -> RSkillManifest:
-        """Every rSkill must declare at least one embodiment tag (ADR-0071).
+        """Every rSkill must declare at least one embodiment tag (ADR-0072).
 
         Empty ``embodiment_tags`` is rejected for **all** kinds: agnosticism is a
         contract to declare, not to derive from an empty list (CLAUDE.md §1.4).
@@ -5062,7 +5062,7 @@ class RSkillManifest(BaseModel):
     # advisory-only (never gates motors).
     reward: RewardContract | None = None
 
-    # Playbook decision-procedure contract (ADR-0071). REQUIRED when
+    # Playbook decision-procedure contract (ADR-0072). REQUIRED when
     # ``kind == "playbook"``; FORBIDDEN otherwise. Carries the SOP body pointer,
     # the trigger/done predicate, and the tool-call step bound. A playbook is a
     # symbolic, authored decision procedure the S2 Reasoner reads — it carries no
@@ -5145,7 +5145,7 @@ class RSkillManifest(BaseModel):
           (tracked separately).
         """
         # A ``playbook`` block belongs only to kind='playbook'. One guard here
-        # forbids it for every other kind (ADR-0071), so the per-kind branches
+        # forbids it for every other kind (ADR-0072), so the per-kind branches
         # below stay focused on their own required/forbidden fields.
         if self.kind != "playbook" and self.playbook is not None:
             raise ValueError(
@@ -6074,7 +6074,7 @@ class DeployScene(BaseModel):
     base_pose: Pose6D | None = None
     composition: SceneComposition | None = None
     memory_dir: str | None = None
-    """ADR-0071 Decision 3b — path to a per-robot deploy memory bundle directory
+    """ADR-0072 Decision 3b — path to a per-robot deploy memory bundle directory
     holding any of ``MEMORY.md`` (self-maintained semantic memory), ``scene_graph.json``
     (3D world-state graph → ``recall_object``), and ``map.yaml`` (2D occupancy grid →
     nav2 ``map_server``). ``openral deploy sim`` derives the three launch paths from it
@@ -7396,7 +7396,7 @@ class QueryTaskProgressTool(_ReasonerToolBase):
 MemorySection: TypeAlias = Literal[
     "home_map", "preferences", "lessons", "object_locations", "open_tasks"
 ]
-"""The fixed sections of the self-maintained ``MEMORY.md`` core (ADR-0071 §3).
+"""The fixed sections of the self-maintained ``MEMORY.md`` core (ADR-0072 §3).
 
 * ``home_map`` — stable places / region-connectivity (EDIT in place).
 * ``preferences`` — distilled user-preference *rules* (TidyBot; EDIT in place).
@@ -7407,7 +7407,7 @@ MemorySection: TypeAlias = Literal[
 
 
 class MemoryWriteTool(_ReasonerToolBase):
-    """Tool variant (**write**) — edit the robot's self-maintained ``MEMORY.md`` (ADR-0071 §3).
+    """Tool variant (**write**) — edit the robot's self-maintained ``MEMORY.md`` (ADR-0072 §3).
 
     The reasoner's **first write-capable tool**. It edits the persistent,
     human-readable *semantic* memory (preferences, corrections, lessons, durable
@@ -7448,7 +7448,7 @@ class MemoryWriteTool(_ReasonerToolBase):
 
 
 class MemorySearchTool(_ReasonerToolBase):
-    """Tool variant (**read-only**) — search the archival memory log (ADR-0071 §3).
+    """Tool variant (**read-only**) — search the archival memory log (ADR-0072 §3).
 
     Pages in entries evicted from the bounded ``MEMORY.md`` core into the archival
     JSONL (MemGPT recall), so the LLM can recall an older fact — e.g. a ``stale``

@@ -1,4 +1,4 @@
-"""Tests for the self-maintained MEMORY.md file model (ADR-0071 §3 / Phase 4b).
+"""Tests for the self-maintained MEMORY.md file model (ADR-0072 §3 / Phase 4b).
 
 Covers :class:`~openral_reasoner.memory.MemoryStore` (apply ops, supersession,
 round-trip render/parse, archival search) and the ``## MEMORY`` context section.
@@ -114,7 +114,7 @@ def test_context_renderer_includes_memory_section_when_set() -> None:
     assert "## MEMORY" not in ContextRenderer().render(world_state=None)
 
 
-# ── ADR-0071 Phase 5 — retrieval under cap + consolidation ────────────────────
+# ── ADR-0072 Phase 5 — retrieval under cap + consolidation ────────────────────
 
 
 def test_to_context_block_cap_keeps_top_by_importance_and_notes_hidden() -> None:
