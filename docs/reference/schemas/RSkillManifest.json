@@ -556,7 +556,7 @@
       "type": "string"
     },
     "RSkillLatencyBudget": {
-      "description": "Per-stage latency budget declared in ``rskill.yaml``.\n\nAttributes:\n    per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on\n        the reference host (CLAUDE.md \u00a77.4).\n    warmup_ms: Maximum allowed warm-up time during ``activate()``.\n    load_ms: Maximum allowed weight-load time during ``configure()``.",
+      "description": "Per-stage latency budget declared in ``rskill.yaml``.\n\nAttributes:\n    per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on\n        the reference host (CLAUDE.md \u00a77.4).\n    warmup_ms: Maximum allowed warm-up time during ``activate()``.\n    load_ms: Maximum allowed weight-load time during ``configure()``.\n    max_execution_s: Total wall-clock budget for a single ``execute_rskill``\n        goal (one task attempt). A VLA policy never self-terminates (only\n        wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy\n        dispatch with ``deadline_s=0`` (the LLM's \"use the manifest default\"\n        sentinel) would otherwise run forever. The skill_runner resolves\n        ``deadline_s<=0`` to this value (or a global default) and aborts the\n        goal when it lapses so the reasoner re-evaluates the outcome \u2014\n        CLAUDE.md \u00a73 \"Deadline fallback mandatory\". ``None`` = fall back to\n        the runner's global default.",
       "properties": {
         "per_chunk_ms": {
           "exclusiveMinimum": 0,
@@ -588,6 +588,19 @@
           ],
           "default": null,
           "title": "Load Ms"
+        },
+        "max_execution_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Execution S"
         }
       },
       "required": [
@@ -1062,7 +1075,8 @@
                 "gr1",
                 "rc365",
                 "simpler_widowx",
-                "simpler_google"
+                "simpler_google",
+                "libero_eef8d"
               ],
               "type": "string"
             },

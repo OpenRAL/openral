@@ -105,9 +105,10 @@ class TestRSkillManifestRoundTrip:
 def test_wrapped_set_matches_task_space_definition() -> None:
     """Pins the canonical set so a future PR that adds a new layout to
     StateLayout has to consciously choose joint-space vs task-space."""
-    assert {"human300_16d", "rc365"} == WRAPPED_TASK_SPACE_LAYOUTS
+    assert {"human300_16d", "rc365", "libero_eef8d"} == WRAPPED_TASK_SPACE_LAYOUTS
     assert "human300_16d" in WRAPPED_TASK_SPACE_LAYOUTS
     assert "rc365" in WRAPPED_TASK_SPACE_LAYOUTS
+    assert "libero_eef8d" in WRAPPED_TASK_SPACE_LAYOUTS  # ADR-0027 LIBERO task-space proprio
     # pi0_16d / eef_pose_7d / base_pose_7d were robocasa sim-observation
     # layouts with no state-adapter assembler — removed (to be recreated
     # later); they must not advertise as wrapped-task-space layouts.

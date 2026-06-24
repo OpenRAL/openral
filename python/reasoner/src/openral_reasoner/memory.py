@@ -152,8 +152,7 @@ class MemoryStore:
         keep = set(ranked[:cap])
         hidden = len(self._entries) - len(keep)
         footer = (
-            f"\n\n_({hidden} lower-priority older memories hidden — "
-            "use memory_search to recall.)_"
+            f"\n\n_({hidden} lower-priority older memories hidden — use memory_search to recall.)_"
         )
         return f"## MEMORY\n{self._render_sections_capped(keep).rstrip()}{footer}"
 

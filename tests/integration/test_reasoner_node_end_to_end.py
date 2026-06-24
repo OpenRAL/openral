@@ -2029,10 +2029,21 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
     # plain proc.terminate() would orphan, leaving a stray /map publisher that
     # pollutes sibling tests.
     map_server = subprocess.Popen(
-        ["ros2", "run", "nav2_map_server", "map_server", "--ros-args",
-         "-r", "__node:=openral_map_server", "-p", f"yaml_filename:={yaml}",
-         "-p", "use_sim_time:=false"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [
+            "ros2",
+            "run",
+            "nav2_map_server",
+            "map_server",
+            "--ros-args",
+            "-r",
+            "__node:=openral_map_server",
+            "-p",
+            f"yaml_filename:={yaml}",
+            "-p",
+            "use_sim_time:=false",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
     rclpy.init()
@@ -2043,9 +2054,18 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
         time.sleep(2.0)
         # Drive UNCONFIGURED -> ACTIVE with the same tool _autostart_lifecycle mirrors.
         rc = subprocess.run(
-            [sys.executable, str(autostart_tool), "--node", "/openral_map_server",
-             "--target", "active", "--service-timeout-s", "20.0"],
-            timeout=40, check=False,
+            [
+                sys.executable,
+                str(autostart_tool),
+                "--node",
+                "/openral_map_server",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "20.0",
+            ],
+            timeout=40,
+            check=False,
         ).returncode
         assert rc == 0, f"map_server did not reach active (rc={rc})"
 
