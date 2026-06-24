@@ -5631,6 +5631,20 @@ class DeployScene(BaseModel):
     deploy sim`` threads it to the manifest-driven HAL node, which composes the
     MJCF and builds a bare twin off the result. ``None`` = no scene composition
     (a bare-arm twin; cameras come from the robot's own sensor placements).
+
+    ``tasks`` encodes the ordered list of natural-language subtasks that
+    ``openral deploy sim`` delivers to the reasoner as an initial operator
+    prompt at startup — no separate ``openral prompt`` invocation required.
+    When non-empty, the CLI joins them with `` | `` as a multi-task prompt
+    that the reasoner decomposes into ordered :class:`~openral_core.ExecuteRskillTool`
+    calls at its first tick. When empty (the default) the reasoner idles until
+    an operator prompt arrives via ``openral prompt`` or the dashboard.
+
+    Example::
+
+        tasks:
+          - "pick the black bowl from the table and place it on the plate"
+          - "push the red mug to the back of the counter"
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -5647,6 +5661,18 @@ class DeployScene(BaseModel):
     by convention (each artifact loaded by its correct consumer). ``--memory-dir`` on
     the CLI overrides this. ``None`` = no bundle (the reasoner starts with empty
     memory). Advisory only — never a safety-kernel input (§1.1)."""
+
+    tasks: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered natural-language subtasks delivered to the reasoner as an "
+            "initial operator prompt at ``openral deploy sim`` startup. Each entry "
+            "is one atomic goal; the CLI joins them with ' | ' as a single "
+            "multi-task prompt the reasoner decomposes into :class:`ExecuteRskillTool` "
+            "calls. Empty (default) = no startup prompt; the reasoner idles until an "
+            "operator sends a prompt via ``openral prompt`` or the dashboard."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

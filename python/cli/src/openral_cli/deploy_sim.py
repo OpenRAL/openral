@@ -394,6 +394,17 @@ class LaunchInvocation:
     foxglove_port: int
     """ADR-0059 — Foxglove WebSocket port. Forwarded as ``foxglove_port:=…``.
     Default 8765 (the ``foxglove_bridge`` upstream default)."""
+    initial_task_prompt: str
+    """Multi-task deploy — the startup operator prompt delivered to the reasoner.
+
+    Resolved from :attr:`DeployScene.tasks` (joined with ``' | '``) when the
+    scene config carries a ``tasks:`` block, or from an explicit
+    ``--initial-task`` CLI flag. Empty string means no startup prompt: the
+    reasoner idles until a manual ``openral prompt`` or dashboard prompt
+    arrives. Forwarded as ``initial_task_prompt:=<text>`` to the launch file
+    when non-empty; the ``prompt_router_node`` then publishes it onto
+    ``/openral/prompt`` at ``on_activate`` time with ``cli``-level priority
+    (100) so the reasoner's first tick sees the full multi-task goal."""
     argv_template: list[str]
     """``argv_template`` carries ``HAL_PARAMS_FILE_PLACEHOLDER`` where
     the temp HAL-params YAML path goes. The dispatcher substitutes it
@@ -629,6 +640,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_dashboard: bool = True,
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
+    initial_task_prompt: str | None = None,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -643,7 +655,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
     """
-    from openral_core import RobotDescription  # reason: defer schema import
+    from openral_core import (  # reason: defer schema import
+        DeployScene,
+        RobotDescription,
+        load_scene_strict,
+    )
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
@@ -655,6 +671,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "robot_id is undefined: pass ``--robot <id>`` or (for ``deploy sim``) "
             "set ``robot_id:`` in the DeployScene YAML / use a fixed-robot scene."
         )
+
+    # Resolve the initial_task_prompt from:
+    # 1. The caller-supplied `initial_task_prompt` arg (explicit CLI override wins).
+    # 2. The DeployScene.tasks list in the config YAML (auto-read when non-empty).
+    # 3. Nothing (empty = reasoner idles until a manual ``openral prompt``).
+    _resolved_initial_prompt: str = initial_task_prompt or ""
+    if not _resolved_initial_prompt and config is not None and hal_mode == "sim":
+        try:
+            _deploy_scene = load_scene_strict(str(config), DeployScene)
+            if _deploy_scene.tasks:
+                _resolved_initial_prompt = " | ".join(_deploy_scene.tasks)
+        except Exception:  # reason: defensive — config may not load as DeployScene (wrong tier)
+            pass
+
     # ADR-0034 — a --robot override that differs from the scene's declared robot
     # composes a different arm than the scene was authored for. The scene's cameras
     # + asset mounts (e.g. tabletop_push's wrist_camera_mount_body="gripper") are
@@ -972,6 +1002,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if effective_memory_dir:
         argv_template.extend(_memory_bundle_launch_args(effective_memory_dir))
 
+    # Multi-task deploy — forward the startup prompt only when non-empty.
+    # The launch file defaults ``initial_task_prompt`` to "" (no prompt),
+    # so omitting it keeps the idle behaviour for deploy scenes without tasks.
+    if _resolved_initial_prompt:
+        argv_template.append(f"initial_task_prompt:={_resolved_initial_prompt}")
+
     return LaunchInvocation(
         robot_id=robot_id,
         robot_yaml=robot_yaml,
@@ -994,6 +1030,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         approach_skill_id=approach_skill,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
+        initial_task_prompt=_resolved_initial_prompt,
         argv_template=argv_template,
     )
 
@@ -1957,6 +1994,20 @@ def deploy_sim_command(
             "Ignored unless ``--foxglove`` is set."
         ),
     ),
+    initial_task: str | None = typer.Option(
+        None,
+        "--initial-task",
+        help=(
+            "Multi-task deploy — override the startup operator prompt delivered to "
+            "the reasoner at graph activate time. When set, this string is passed as "
+            "``initial_task_prompt`` to the launch (overriding any ``tasks:`` list in "
+            "the DeployScene YAML). Use ``' | '`` to delimit ordered subtasks, e.g. "
+            "``--initial-task 'pick the bowl | place it on the plate'``. When omitted, "
+            "the ``tasks:`` field in the DeployScene YAML is used automatically (joined "
+            "with ' | '). Empty config and no flag = reasoner idles until a manual "
+            "``openral prompt``."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -2004,6 +2055,7 @@ def deploy_sim_command(
             enable_dashboard=dashboard,
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
+            initial_task_prompt=initial_task,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
@@ -2077,6 +2129,15 @@ def deploy_sim_command(
         )
     )
     _console.print("  envelope:      synthesised at launch time from robot.yaml (no envelope file)")
+    _console.print(
+        "  startup_prompt: "
+        + (
+            f"[green]{invocation.initial_task_prompt!r}[/green] "
+            "(from DeployScene.tasks; delivered to reasoner at activate)"
+            if invocation.initial_task_prompt
+            else "[dim](none — reasoner idles until openral prompt or dashboard)[/dim]"
+        )
+    )
 
     if dry_run:
         printed = [

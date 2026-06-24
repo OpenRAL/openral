@@ -43,6 +43,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OPENARM_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "openarm_tabletop.yaml"
 _PANDA_MOBILE_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "robocasa_pnp.yaml"
 _SO101_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "so101_box.yaml"
+_LIBERO_PNP_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "libero_pnp.yaml"
 
 
 def test_bh_deploy_sim_help_renders() -> None:
@@ -1726,3 +1727,78 @@ def test_deploy_sim_memory_dir_must_be_existing_directory(tmp_path: Path) -> Non
     """A --memory-dir that is not an existing directory fails loud (not a silent skip)."""
     with pytest.raises(ROSConfigError, match=r"not an existing directory"):
         _resolve_with_memory_dir(str(tmp_path / "does_not_exist"))
+
+
+# ── Multi-task deploy (LIBERO spatial) ────────────────────────────────────
+
+
+def test_deploy_sim_libero_pnp_tasks_forwarded_as_initial_task_prompt() -> None:
+    """libero_pnp DeployScene.tasks → initial_task_prompt joined with ' | '."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    invocation = resolve_launch_invocation(
+        config=_LIBERO_PNP_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    # The libero_pnp.yaml carries two tasks; they must be joined with ' | '.
+    assert invocation.initial_task_prompt != ""
+    assert " | " in invocation.initial_task_prompt
+    # The initial_task_prompt is forwarded to the launch argv.
+    assert any("initial_task_prompt:=" in arg for arg in invocation.argv_template), (
+        f"initial_task_prompt not in argv_template: {invocation.argv_template}"
+    )
+
+
+def test_deploy_sim_cli_initial_task_overrides_yaml_tasks() -> None:
+    """--initial-task CLI flag wins over DeployScene.tasks from the YAML."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    override = "override task from CLI flag"
+    invocation = resolve_launch_invocation(
+        config=_LIBERO_PNP_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        initial_task_prompt=override,
+    )
+    assert invocation.initial_task_prompt == override
+    assert any(f"initial_task_prompt:={override}" in arg for arg in invocation.argv_template)
+
+
+def test_deploy_sim_no_tasks_no_initial_prompt() -> None:
+    """A DeployScene without tasks: produces empty initial_task_prompt (idle mode)."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.initial_task_prompt == ""
+    # No initial_task_prompt:= in argv when there are no tasks.
+    assert all("initial_task_prompt:=" not in arg for arg in invocation.argv_template)
+
+
+def test_deploy_sim_dry_run_libero_shows_startup_prompt() -> None:
+    """``openral deploy sim --config libero_pnp.yaml --dry-run`` prints the startup prompt."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["deploy", "sim", "--config", str(_LIBERO_PNP_CONFIG), "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    # The rich summary block must mention the startup prompt
+    assert "startup_prompt" in result.output
+    # And the argv must carry the initial_task_prompt argument
+    assert "initial_task_prompt:=" in result.output
+
+
+def test_deploy_sim_help_includes_initial_task_flag() -> None:
+    """``openral deploy sim --help`` documents the --initial-task flag."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["deploy", "sim", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--initial-task" in result.output
