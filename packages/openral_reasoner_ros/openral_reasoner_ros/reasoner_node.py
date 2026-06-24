@@ -93,6 +93,7 @@ from openral_reasoner.context import (
     render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
+from openral_reasoner.memory import MemoryStore
 from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
 from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
 from openral_reasoner.tool_use import (
@@ -458,6 +459,9 @@ class ReasonerNode(LifecycleNode):
         # ``recall_object`` / ``resolve_place`` tools against a preloaded map.
         # Empty = disabled.
         self.declare_parameter("spatial_memory_path", "")
+        # ADR-0071 §3 / Phase 4b — path to the self-maintained MEMORY.md (read at
+        # configure into the `## MEMORY` context block). Empty omits the section.
+        self.declare_parameter("memory_md_path", "")
         # ADR-0038 live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -534,6 +538,9 @@ class ReasonerNode(LifecycleNode):
         # ADR-0071 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
         # collected from installed capability-matched playbook rSkills at seed time.
         self._playbooks_block: str = ""
+        # ADR-0071 §3 / Phase 4b — the self-maintained MEMORY.md store (read path:
+        # loaded at configure and rendered as the `## MEMORY` context block).
+        self._memory_store: MemoryStore | None = None
         self._palette: ToolPalette = palette or ToolPalette(execute_rskill_ids=frozenset())
         # ADR-0039 — offer the read-only query tools only when a backend is wired.
         if spatial_memory is not None and not self._palette.spatial_memory_available:
@@ -688,6 +695,7 @@ class ReasonerNode(LifecycleNode):
         # before the palette seed, so the rebuilt palette offers the query
         # tools when a map is preloaded.
         self._maybe_load_spatial_memory()
+        self._maybe_load_memory()
 
         # ADR-0050 — GPU lifecycle peers to deactivate before a VLA dispatch and
         # reactivate after (the object detector is the canonical one). Read
@@ -975,6 +983,28 @@ class ReasonerNode(LifecycleNode):
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
             task_progress_available=self._task_progress_available,
+        )
+
+    def _maybe_load_memory(self) -> None:
+        """Load the self-maintained ``MEMORY.md`` into the ``## MEMORY`` block (ADR-0071 §3).
+
+        Read path (Phase 4b): when the ``memory_md_path`` ROS parameter is set, parse
+        the file (or start empty if absent) and render it as the reasoner's persistent
+        ``## MEMORY`` context section. Advisory only — never gates the safety kernel.
+        """
+        path = self.get_parameter("memory_md_path").get_parameter_value().string_value
+        if not path:
+            return
+        p = pathlib.Path(path)
+        try:
+            text = p.read_text(encoding="utf-8") if p.exists() else ""
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to read {path!r}: {exc}; starting empty")
+            text = ""
+        self._memory_store = MemoryStore.from_markdown(text)
+        self._renderer.set_memory_block(self._memory_store.to_context_block())
+        self.get_logger().info(
+            f"memory: loaded {len(self._memory_store.entries)} entries from {path!r}",
         )
 
     def _maybe_load_spatial_memory(self) -> None:
