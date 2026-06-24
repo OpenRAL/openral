@@ -114,6 +114,45 @@ Two caveats:
   `so101_follower`. Under a real deploy-sim, set only
   `with_robot_state_publisher:=true` (the sim is the `/joint_states` source).
 
+## Verified against the LIBERO + Franka-Panda deploy scene (2026-06-24)
+
+Ran the real `openral deploy sim --config scenes/deploy/libero_pnp.yaml
+--foxglove --no-object-detector` graph on an RTX 4070 Laptop (8 GiB), HAL +
+reasoner + safety kernel + dashboard + `robot_state_publisher` (Franka URDF via
+`rd:panda_description`) all up. Connected a Foxglove-protocol client to
+`ws://127.0.0.1:8765`.
+
+| Result | Evidence |
+|---|---|
+| Subprotocol negotiated | client offered `foxglove.sdk.v1`, accepted |
+| Read-only caps | `serverInfo.capabilities = [assets, connectionGraph, time]` — **no `clientPublish`/`services`** |
+| Bridge advertises Bucket-1 only | 8 channels: `/joint_states`, `/tf`, `/tf_static`, `/robot_description`, `/map`, `/openral/cameras/{top,wrist,agentview_left}/image` |
+| Safety topics excluded, live | `/openral/estop`, `/openral/safe_action`, `/openral/candidate_action`, `/openral/failure/safety` on the graph but **not advertised** |
+| **End-to-end delivery** (not just advertised) | through the bridge in ~20 s: `/joint_states` 1175, `/tf` 799, `/robot_description` 1 (latched URDF), `/openral/cameras/top/image` 100, `/openral/cameras/wrist/image` 100 |
+| Robot model renders | RSP turns `/joint_states` + Franka URDF → `/tf` (`panda_link0…7`, `panda_hand`) + `/robot_description` on the bus; 3D-panel fixed frame `map` |
+| Sim clock advances | `/clock` 63.85 s → 66.10 s over 3 s wall (~0.75×) via the HAL idle-stepper (10 Hz) — cameras stream at idle with no skill running |
+
+### Bug found + fixed: stale default-layout camera topic
+
+`config/openral_layout.json`'s Image panel pointed at `/openral/cameras/0/image`
+— the pre-ADR-0069 numeric slot name that **no robot publishes anymore**. In
+the verified LIBERO deploy scene that auto-resolves to `franka_panda`, the
+canonical third-person slot is `top` (ADR-0070 renamed the old LIBERO
+`agentview` camera to `top`). Repointed the layout to
+`/openral/cameras/top/image`; on robots without `top` (for example
+`panda_mobile`, where old `agentview_left` became `shoulder_left`) use the
+panel's topic dropdown to switch slots. README table + the representative-topic
+samples in `test/` updated to match.
+
+### Observation (not fixed): `agentview_left` ghost channel
+
+The bridge advertised `/openral/cameras/agentview_left/image` but a direct
+subscription found **0 publishers / 0 frames** (vs `top` + `wrist`, 1 publisher
+and ~4.6 Hz each). This is the documented foxglove-sdk-cpp v0.18.0 stale-bridge
+gotcha above — a publisher existed briefly during HAL configure/reset, died, and
+the bridge kept the channel. Not referenced by the layout; the live cameras
+forward fine. Cosmetic, upstream.
+
 ## Host note
 
 `cam2image` could not be remapped onto a camera topic in this environment

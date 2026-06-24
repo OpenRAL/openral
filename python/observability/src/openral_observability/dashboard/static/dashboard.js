@@ -881,50 +881,6 @@
     .then((cfg) => { JAEGER_URL = (cfg && cfg.jaeger_ui_url) ? String(cfg.jaeger_ui_url).replace(/\/$/, "") : ""; })
     .catch(() => { JAEGER_URL = ""; });
 
-  // ── Write-controls panel (issue #75c / ADR-0064) ──────────────────────────
-  // Fetches /api/config once on load; reveals #controls-panel and wires the
-  // two operator forms only when write_controls_enabled is true (default OFF).
-  // Responses are rendered with textContent — never innerHTML — to prevent XSS.
-  async function initWriteControls() {
-    let cfg;
-    try {
-      const r = await fetch("/api/config");
-      cfg = r.ok ? await r.json() : {};
-    } catch (_) {
-      cfg = {};
-    }
-    if (!cfg.write_controls_enabled) return;
-    const panel = document.getElementById("controls-panel");
-    if (!panel) return;
-    panel.hidden = false;
-    const out = document.getElementById("controls-result");
-    document.getElementById("skill-switch-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const r = await fetch("/api/skill/execute", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          skill_id: document.getElementById("skill-id").value,
-          prompt: document.getElementById("skill-prompt").value,
-        }),
-      });
-      if (out) out.textContent = "skill: " + r.status + " " + JSON.stringify(await r.json());
-    };
-    document.getElementById("param-set-form").onsubmit = async (e) => {
-      e.preventDefault();
-      const r = await fetch("/api/param/set", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          node: document.getElementById("param-node").value,
-          name: document.getElementById("param-name").value,
-          value: document.getElementById("param-value").value,
-        }),
-      });
-      if (out) out.textContent = "param: " + r.status + " " + JSON.stringify(await r.json());
-    };
-  }
-  initWriteControls();
-
-
   function renderTrace(trace) {
     const el = $("trace-id");
     const linkEl = $("jaeger-link");
@@ -1410,42 +1366,4 @@
   // Metrics group filter chips (issue 2) are rendered + wired dynamically in
   // renderMetricChips() since the namespace set depends on live data.
 
-  // ── Add Robot · mDNS discovery panel (issue #75b) ──────────────────────────
-  // Polls /api/robots every 5 s (mDNS results change slowly). When discovery is
-  // disabled server-side the panel stays hidden. Pin stores the chosen robot name
-  // in localStorage; the endpoint is copied to the clipboard so the operator can
-  // paste it straight into OTEL_EXPORTER_OTLP_ENDPOINT.
-  const SERVICE_SUFFIX = "._openral-otlp._tcp.local.";
-  async function refreshRobots() {
-    let data;
-    try {
-      data = await (await fetch("/api/robots")).json();
-    } catch (_) {
-      return;
-    }
-    const panel = document.getElementById("robots-panel");
-    const list = document.getElementById("robots-list");
-    if (!data.enabled) { panel.hidden = true; return; }
-    panel.hidden = false;
-    list.innerHTML = "";
-    for (const r of data.robots) {
-      const addr = (r.addresses && r.addresses[0]) || "?";
-      const endpoint = `http://${addr}:${r.port}`;
-      const row = document.createElement("div");
-      row.className = "robot-row";
-      const label = document.createElement("span");
-      label.textContent = `${r.name.replace(SERVICE_SUFFIX, "")} · ${endpoint}`;
-      const pin = document.createElement("button");
-      pin.textContent = localStorage.getItem("pinned-robot") === r.name ? "Pinned" : "Pin";
-      pin.onclick = () => {
-        localStorage.setItem("pinned-robot", r.name);
-        navigator.clipboard?.writeText(endpoint);
-        refreshRobots();
-      };
-      row.append(label, pin);
-      list.appendChild(row);
-    }
-  }
-  setInterval(refreshRobots, 5000);
-  refreshRobots();
 })();

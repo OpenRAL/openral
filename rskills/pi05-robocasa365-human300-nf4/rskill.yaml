@@ -165,7 +165,7 @@ scenes:
 action_contract:
   dim: 12
   slots:
-    - {range: [0, 5],   control_mode: "cartesian_delta",  ee: "panda_hand",    frame: "panda_link0"}
+    - {range: [0, 5],   control_mode: "cartesian_delta",  ee: "panda_gripper", frame: "panda_link0"}
     - {range: [6, 6],   control_mode: "gripper_position", ee: "panda_gripper"}
     - {range: [7, 9],   control_mode: "joint_velocity",   joint_names: ["base_x", "base_y", "base_yaw"]}
     - {range: [10, 10], discard: true}

@@ -199,6 +199,8 @@ async def test_index_serves_html() -> None:
         assert resp.status_code == 200
         assert "OpenRAL · Live Dashboard".encode() in resp.content
         assert "<title>OpenRAL · Live Dashboard</title>".encode() in resp.content
+        assert b"Add Robot" not in resp.content
+        assert b"Write-controls enabled" not in resp.content
 
 
 @pytest.mark.asyncio
