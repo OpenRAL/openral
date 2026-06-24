@@ -668,9 +668,23 @@ affected docs in the same PR (§1.14). Phases are independently landable.
    reasoner dispatched `recall_object` against the scene graph and chained into an
    `execute_rskill` ("open the fridge") — the self-maintained memory bundle live in a
    real franka deploy.
-5. **Consolidation + remaining playbooks.** The `consolidate` reflection pass;
-   **preflight-reach**, **stage-for-manipulation**. Importance×recency×relevance
-   retrieval under cap; archival paging.
+5. **Consolidation + remaining playbooks — landed.** Five new playbook rSkills ship
+   under `rskills/` (each: `rskill.yaml` `kind: playbook` + `PLAYBOOK.md` SOP +
+   `README.md` + generated `SKILL.md`): **decompose-mission** (break a compound goal
+   into ordered subtasks with per-subtask verifiable goals — an internal TODO; the
+   Phase-3 authoring), **verify-outcome** (Inner-Monologue success check after a
+   skill) and **clarify-ambiguity** (ask-don't-guess on ambiguous goals; the Phase-4c
+   authoring), and **preflight-reach** + **stage-for-manipulation** (reachability /
+   pre-grasp staging). All validate against the manifest schema + the `SKILL.md`
+   `--check` gate. **Memory retrieval under cap + consolidation:** `MemoryStore`
+   gains `to_context_block(cap=N)` — renders only the top-`N` entries by importance
+   then recency (current over `stale`) with a "use memory_search to recall" footer, so
+   the always-on `## MEMORY` block stays bounded on a long-running robot — and
+   `consolidate()` (Mem0 ADD-merge: drops exact `(section, content)` duplicates,
+   keeping the best, returning the rest to archive). `reasoner_node` adds a
+   `memory_context_cap` param (0 = off) threaded through `_render_memory_block`, and
+   runs `consolidate()` after every `memory_write` (paging duplicates to the archival
+   JSONL). Relevance-weighted retrieval (query-conditioned) stays in `memory_search`.
 6. **Deferred / next-iteration.** Fused situation report (2.4), scene-graph
    expand/contract (2.5), `load_playbook` retrieval at scale, Voyager-style
    **verified-playbook promotion** (the agent proposes a new playbook only after a
