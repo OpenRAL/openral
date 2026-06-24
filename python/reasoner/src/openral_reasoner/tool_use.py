@@ -671,7 +671,7 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
     return " ".join(parts)
 
 
-def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:
+def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:  # noqa: PLR0912  # reason: a flat one-branch-per-optional-tool-group table is clearer than nesting
     """Render the palette as Anthropic ``tools`` schemas.
 
     ADR-0022: when ``palette.skills`` is populated, the LLM gets one
@@ -889,6 +889,47 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                     "No actuation."
                 ),
                 "input_schema": QueryTaskProgressTool.model_json_schema(),
+            },
+        )
+
+    # ADR-0071 §3 — the self-maintained MEMORY.md tools are surfaced only when the
+    # reasoner_node has a MEMORY.md wired (memory_md_path param). The reasoner
+    # already READS current memory every tick (the ## MEMORY context block); these
+    # add the WRITE path (memory_write — the reasoner's first actuation-free
+    # write-capable tool) and archival recall (memory_search). Advisory only — a
+    # wrong memory yields a bad plan the C++ safety kernel still vetoes.
+    if palette.memory_available:
+        from openral_core import MemorySearchTool, MemoryWriteTool  # noqa: PLC0415
+
+        tools.append(
+            {
+                "name": "memory_write",
+                "description": (
+                    "Persist a durable fact to the robot's self-maintained semantic memory "
+                    "(MEMORY.md). Use SPARINGLY for facts useful across tasks/sessions: a user "
+                    "PREFERENCE ('clothes go in the bedroom drawer'), a learned LESSON / "
+                    "correction ('grasp mugs by the handle'), a durable HOME-MAP fact, a "
+                    "long-lived OBJECT-LOCATION, or an OPEN-TASK commitment. Pick 'section'. Ops: "
+                    "'add' a new fact; 'update' to replace a 'target' fact's text in place; "
+                    "'supersede' when a fact CHANGED (keeps the old one as a stale search hint); "
+                    "'delete' a wrong/obsolete 'target'. Set 'importance' (0-1). Do NOT store "
+                    "transient world state (live poses, battery) — that lives in world state. "
+                    "No actuation."
+                ),
+                "input_schema": MemoryWriteTool.model_json_schema(),
+            },
+        )
+        tools.append(
+            {
+                "name": "memory_search",
+                "description": (
+                    "Read-only: recall facts from the memory ARCHIVE (superseded / deleted "
+                    "entries no longer in the live ## MEMORY block) by keyword. Current memory is "
+                    "always in context already; use this only to retrieve an older fact you lost — "
+                    "e.g. where an object USED to be. Optionally restrict to a 'section'. "
+                    "No actuation."
+                ),
+                "input_schema": MemorySearchTool.model_json_schema(),
             },
         )
     return tools
