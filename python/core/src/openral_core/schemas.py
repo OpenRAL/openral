@@ -2700,11 +2700,21 @@ class RSkillLatencyBudget(BaseModel):
             the reference host (CLAUDE.md §7.4).
         warmup_ms: Maximum allowed warm-up time during ``activate()``.
         load_ms: Maximum allowed weight-load time during ``configure()``.
+        max_execution_s: Total wall-clock budget for a single ``execute_rskill``
+            goal (one task attempt). A VLA policy never self-terminates (only
+            wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy
+            dispatch with ``deadline_s=0`` (the LLM's "use the manifest default"
+            sentinel) would otherwise run forever. The skill_runner resolves
+            ``deadline_s<=0`` to this value (or a global default) and aborts the
+            goal when it lapses so the reasoner re-evaluates the outcome —
+            CLAUDE.md §3 "Deadline fallback mandatory". ``None`` = fall back to
+            the runner's global default.
     """
 
     per_chunk_ms: float = Field(gt=0)
     warmup_ms: float | None = Field(default=None, gt=0)
     load_ms: float | None = Field(default=None, gt=0)
+    max_execution_s: float | None = Field(default=None, gt=0)
 
 
 class SensorRequirement(BaseModel):

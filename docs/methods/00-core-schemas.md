@@ -151,7 +151,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall wher
 **Pydantic models — skill packaging (rSkill)**
 
 - `class RSkillLatencyBudget(BaseModel)` — Per-stage latency budget. (L799)
-  fields: `per_chunk_ms, warmup_ms, load_ms`
+  fields: `per_chunk_ms, warmup_ms, load_ms, max_execution_s` (`max_execution_s` — total wall-clock budget for one `execute_rskill` goal; the skill_runner resolves a dispatched `deadline_s=0` to it, else a global default, so a VLA — which never self-terminates — is bounded, CLAUDE.md §3)
 - `class SensorRequirement(BaseModel)` — One sensor an rSkill needs the robot to provide. (L980)
   fields: `modality, vla_feature_key, min_width, min_height, count`
 - `class ControlModeSemantics(BaseModel)` — Action-space semantics on each `ActuatorRequirement` (rSkill self-containment audit, Gap 2). (L1180)
