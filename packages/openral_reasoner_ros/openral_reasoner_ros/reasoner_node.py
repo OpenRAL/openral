@@ -49,6 +49,7 @@ The reasoner **never** publishes ``openral_msgs/ActionChunk`` (ADR-0018
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
 import pathlib
 import sys
@@ -67,6 +68,8 @@ from openral_core import (
     ExecuteRskillTool,
     LifecycleTransitionTool,
     LocateInViewTool,
+    MemorySearchTool,
+    MemoryWriteTool,
     QuerySceneTool,
     QueryTaskProgressTool,
     RecallObjectTool,
@@ -93,7 +96,7 @@ from openral_reasoner.context import (
     render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
-from openral_reasoner.memory import MemoryStore
+from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.palette import ToolPalette, build_tool_palette, locate_in_view_service
 from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
 from openral_reasoner.tool_use import (
@@ -538,9 +541,14 @@ class ReasonerNode(LifecycleNode):
         # ADR-0071 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
         # collected from installed capability-matched playbook rSkills at seed time.
         self._playbooks_block: str = ""
-        # ADR-0071 §3 / Phase 4b — the self-maintained MEMORY.md store (read path:
-        # loaded at configure and rendered as the `## MEMORY` context block).
+        # ADR-0071 §3 — the self-maintained MEMORY.md store (Phase 4b read path:
+        # loaded at configure + rendered as the `## MEMORY` context block; Phase 4c
+        # write path: `memory_write` edits + `memory_search` archival recall). The
+        # archive is the append-only log of superseded/deleted entries that left the
+        # live file (MemGPT recall storage); persisted as `<MEMORY.md>.archive.jsonl`.
         self._memory_store: MemoryStore | None = None
+        self._memory_md_path: pathlib.Path | None = None
+        self._memory_archive: list[MemoryEntry] = []
         self._palette: ToolPalette = palette or ToolPalette(execute_rskill_ids=frozenset())
         # ADR-0039 — offer the read-only query tools only when a backend is wired.
         if spatial_memory is not None and not self._palette.spatial_memory_available:
@@ -990,7 +998,10 @@ class ReasonerNode(LifecycleNode):
 
         Read path (Phase 4b): when the ``memory_md_path`` ROS parameter is set, parse
         the file (or start empty if absent) and render it as the reasoner's persistent
-        ``## MEMORY`` context section. Advisory only — never gates the safety kernel.
+        ``## MEMORY`` context section. Write path (Phase 4c): record the path + load the
+        ``<MEMORY.md>.archive.jsonl`` recall log, and advertise the ``memory_write`` /
+        ``memory_search`` tools by flipping ``memory_available`` on the palette.
+        Advisory only — never gates the safety kernel.
         """
         path = self.get_parameter("memory_md_path").get_parameter_value().string_value
         if not path:
@@ -1002,10 +1013,47 @@ class ReasonerNode(LifecycleNode):
             self.get_logger().warning(f"memory: failed to read {path!r}: {exc}; starting empty")
             text = ""
         self._memory_store = MemoryStore.from_markdown(text)
+        self._memory_md_path = p
+        self._memory_archive = self._load_memory_archive(p)
         self._renderer.set_memory_block(self._memory_store.to_context_block())
+        if not self._palette.memory_available:
+            self._palette = self._palette.model_copy(update={"memory_available": True})
         self.get_logger().info(
-            f"memory: loaded {len(self._memory_store.entries)} entries from {path!r}",
+            f"memory: loaded {len(self._memory_store.entries)} entries "
+            f"(+{len(self._memory_archive)} archived) from {path!r}; write tools enabled",
         )
+
+    @staticmethod
+    def _memory_archive_path(memory_md_path: pathlib.Path) -> pathlib.Path:
+        """The append-only recall log beside the ``MEMORY.md`` (MemGPT archival store)."""
+        return memory_md_path.with_name(memory_md_path.name + ".archive.jsonl")
+
+    def _load_memory_archive(self, memory_md_path: pathlib.Path) -> list[MemoryEntry]:
+        """Parse the archival JSONL recall log (one entry per line); ``[]`` if absent/bad."""
+        archive_path = self._memory_archive_path(memory_md_path)
+        if not archive_path.exists():
+            return []
+        entries: list[MemoryEntry] = []
+        try:
+            for line in archive_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                entries.append(
+                    MemoryEntry(
+                        section=rec["section"],
+                        content=rec["content"],
+                        importance=float(rec.get("importance", 0.5)),
+                        timestamp=rec.get("timestamp", ""),
+                        status=rec.get("status", "stale"),
+                    )
+                )
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().warning(
+                f"memory: failed to read archive {archive_path!r}: {exc}; starting empty",
+            )
+            return []
+        return entries
 
     def _maybe_load_spatial_memory(self) -> None:
         """Wire the ADR-0038 spatial-memory backend at ``on_configure`` (ADR-0039 / ADR-0038).
@@ -1580,6 +1628,12 @@ class ReasonerNode(LifecycleNode):
         if isinstance(call, QueryTaskProgressTool):
             self._dispatch_query_task_progress(call, traceparent=traceparent)
             return
+        if isinstance(call, MemoryWriteTool):
+            self._dispatch_memory_write(call, traceparent=traceparent)
+            return
+        if isinstance(call, MemorySearchTool):
+            self._dispatch_memory_search(call, traceparent=traceparent)
+            return
         if isinstance(call, ReloadGstPipelineTool):
             # F6 sensor-package service IDL (e.g.
             # openral_sensor_msgs/srv/ReloadGstPipeline) is not yet on
@@ -1996,6 +2050,122 @@ class ReasonerNode(LifecycleNode):
         self.get_logger().info(
             f"dispatch: query_task_progress → re-prompt ok={resp.ok} ({len(text)} chars)",
         )
+
+    def _memory_now(self) -> str:
+        """An ISO-8601 timestamp from the ROS clock (sim-time-aware) for memory entries."""
+        secs = self.get_clock().now().nanoseconds / 1e9
+        return datetime.datetime.fromtimestamp(secs, tz=datetime.UTC).isoformat(timespec="seconds")
+
+    def _persist_memory(self) -> None:
+        """Write the live store back to ``MEMORY.md`` (advisory — a failure logs, never raises)."""
+        if self._memory_store is None or self._memory_md_path is None:
+            return
+        try:
+            self._memory_md_path.write_text(self._memory_store.to_markdown(), encoding="utf-8")
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to persist {self._memory_md_path!r}: {exc}")
+
+    def _archive_memory_entry(self, entry: MemoryEntry) -> None:
+        """Append one superseded/deleted entry to the JSONL recall log (best-effort)."""
+        self._memory_archive.append(entry)
+        if self._memory_md_path is None:
+            return
+        archive_path = self._memory_archive_path(self._memory_md_path)
+        record = {
+            "section": entry.section,
+            "content": entry.content,
+            "importance": entry.importance,
+            "timestamp": entry.timestamp,
+            "status": entry.status,
+        }
+        try:
+            with archive_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to append archive {archive_path!r}: {exc}")
+
+    def _reprompt_memory(self, text: str, *, traceparent: str | None) -> None:
+        """Re-prompt with a memory result so the next tick sees it (frame_id ``memory``)."""
+        assert self._prompt_pub is not None
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "memory"  # consumed by _on_prompt → next tick
+        msg.text = text
+        metadata: dict[str, Any] = {"source": "memory"}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+
+    def _dispatch_memory_write(
+        self,
+        call: MemoryWriteTool,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Apply one explicit MEMORY.md edit, persist it, and confirm (ADR-0071 §3 / Phase 4c).
+
+        The reasoner's first **write-capable** tool: an ``add``/``update``/``supersede``/
+        ``delete`` op over a typed :class:`~openral_core.MemorySection` — never a
+        free-form rewrite (the writer half of the Statler reader/writer split). The
+        edit is applied to the live store, any entry that *left* the file (an
+        ``update``-replaced or ``delete``-removed prior) is appended to the archival
+        recall log, the file is persisted, the ``## MEMORY`` context block is
+        re-rendered (so the next tick reads the new fact), and a short confirmation is
+        re-prompted. Advisory only — a wrong memory yields a bad plan the C++ safety
+        kernel still vetoes (CLAUDE.md §1.1).
+        """
+        if self._memory_store is None:
+            self.get_logger().warning(
+                "dispatch: memory_write received but no MEMORY.md backend is wired",
+            )
+            return
+        archived = self._memory_store.apply(
+            op=call.op,
+            section=call.section,
+            content=call.content,
+            importance=call.importance,
+            target=call.target,
+            now=self._memory_now(),
+        )
+        if archived is not None:
+            self._archive_memory_entry(archived)
+        self._persist_memory()
+        self._renderer.set_memory_block(self._memory_store.to_context_block())
+        detail = f"{call.op} [{call.section}]"
+        body = call.target if call.op == "delete" else call.content
+        self.get_logger().info(f"dispatch: memory_write {detail} {body!r} → persisted")
+        self._reprompt_memory(
+            f"memory updated: {detail} — {body!r}. Continue the task.",
+            traceparent=traceparent,
+        )
+
+    def _dispatch_memory_search(
+        self,
+        call: MemorySearchTool,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Recall archived memory entries by keyword and re-prompt (ADR-0071 §3 / Phase 4c).
+
+        Read-only (the reader half): current memory is already in the ``## MEMORY``
+        context block every tick, so this searches only the **archive** — superseded /
+        deleted entries that left the live file — ranked by importance then recency
+        (MemGPT recall). No actuation, no file write.
+        """
+        hits = MemoryStore.search(
+            self._memory_archive,
+            query=call.query,
+            section=call.section,
+            limit=call.limit,
+        )
+        if hits:
+            lines = "\n".join(h.render_line() for h in hits)
+            text = f"memory_search {call.query!r} — {len(hits)} archived match(es):\n{lines}"
+        else:
+            text = f"memory_search {call.query!r} — no archived memory matches."
+        self.get_logger().info(f"dispatch: memory_search {call.query!r} → {len(hits)} hit(s)")
+        self._reprompt_memory(text, traceparent=traceparent)
 
     def _dispatch_execute_rskill(
         self,
