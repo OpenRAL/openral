@@ -24,9 +24,20 @@ with an opaque list of ids.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any  # reason: pydantic model_validator(mode="before") receives untyped input
+from typing import (
+    Any,  # reason: pydantic model_validator(mode="before") receives untyped input
+    Literal,
+)
 
-from openral_core import DetectorMode, RobotCapabilities, RSkillAction, RSkillManifest
+from openral_core import (
+    DetectorMode,
+    RobotCapabilities,
+    RobotDescription,
+    RSkillAction,
+    RSkillManifest,
+    TaskSpace,
+    task_space_compatible,
+)
 from pydantic import BaseModel, ConfigDict, model_validator
 
 __all__ = [
@@ -38,7 +49,65 @@ __all__ = [
     "detector_alias",
     "detector_service_segment",
     "locate_in_view_service",
+    "task_space_disagreement",
 ]
+
+
+def task_space_disagreement(
+    manifest: RSkillManifest,
+    description: RobotDescription,
+    hal_mode: str,
+    legacy_ok: bool,
+) -> str | None:
+    """Compare the ADR-0071 ``task_space_compatible`` gate to the legacy verdict.
+
+    Phase 2 of ADR-0071 (warn-only). The reasoner's deploy palette filter and
+    ``rskill_publisher`` both run the legacy mode check (``_action_executable`` /
+    ``control_modes_for_representation``) to decide whether a VLA skill is
+    offered / publishable. This helper runs the canonical
+    :func:`task_space_compatible` gate over the same (skill, robot, hal_mode)
+    and returns a human-readable warning **only when the two disagree** — so the
+    caller can surface cross-layer mismatches the mode-set check misses (an
+    EE-addressed slot naming an end-effector the robot does not declare; a joint
+    segment wider than the robot's joint count) without changing any drop /
+    publish decision. Phase 4 makes ``task_space_compatible`` authoritative.
+
+    Pure (no ROS) so it is unit-testable without ``rclpy``; the caller owns the
+    drop/publish decision and the logging sink.
+
+    Args:
+        manifest: The rSkill manifest under consideration.
+        description: The target robot description.
+        hal_mode: ``"sim"`` (default-sim OSC packers) or anything else (treated
+            as ``"real"`` — robot's advertised modes).
+        legacy_ok: The legacy gate's verdict (``True`` = the caller would
+            offer / publish the skill).
+
+    Returns:
+        A warning message when the canonical gate disagrees with ``legacy_ok``,
+        else ``None``. Skills without an ``action_contract`` (detectors, VLMs,
+        rewards, ros_action) return ``None`` — they carry no task space.
+
+    Example:
+        >>> # A skill whose verdict matches the legacy gate produces no warning.
+        >>> # (Full worked examples live in tests/unit/test_task_space_phase2.py.)
+        >>> task_space_disagreement.__name__
+        'task_space_disagreement'
+    """
+    if manifest.action_contract is None:
+        return None
+    mode: Literal["sim", "real"] = "sim" if hal_mode == "sim" else "real"
+    space = TaskSpace.from_action_contract(manifest.action_contract, description)
+    match = task_space_compatible(space, description, hal_mode=mode)
+    if match.ok == legacy_ok:
+        return None
+    return (
+        f"ADR-0071 task_space_compatible disagrees with the legacy action gate "
+        f"for rSkill {manifest.name!r} on robot {description.name!r} "
+        f"(hal_mode={mode!r}): task_space_compatible.ok={match.ok}, "
+        f"legacy_ok={legacy_ok}; reasons={match.reasons or ['<compatible>']}. "
+        f"Warn-only (ADR-0071 Phase 2) — not yet enforced."
+    )
 
 
 class ContinuousDetectorEntry(BaseModel):

@@ -173,6 +173,59 @@ def _validate_manifest(skill_dir: Path) -> RSkillManifest:  # type: ignore[name-
     return manifest
 
 
+def _validate_task_space(manifest: RSkillManifest, skill_dir: Path) -> None:  # type: ignore[name-defined]  # noqa: F821
+    """ADR-0071 Phase 2 — warn-only cross-layer task-space check at publish time.
+
+    For an actuating rSkill (one carrying an ``action_contract``), build its
+    :class:`openral_core.TaskSpace` and run :func:`task_space_compatible`
+    (``hal_mode="sim"``) against every in-tree ``robots/<id>/robot.yaml`` whose
+    ``embodiment_tags`` the skill targets. Emits a warning per incompatible
+    (skill, robot) pair — catching slot end-effector-name mismatches and
+    joint-width overruns (the class of bug ADR-0071's sweep surfaced) before the
+    manifest reaches the Hub. **Never fails the publish** — Phase 4 makes this
+    gate blocking.
+
+    Args:
+        manifest: The validated rSkill manifest.
+        skill_dir: The local ``rskills/<name>`` directory (its great-grandparent
+            is the repo root holding ``robots/``).
+    """
+    from openral_core import RobotDescription, TaskSpace, task_space_compatible
+
+    if manifest.action_contract is None:
+        return  # detector / vlm / reward / ros_action — no task space to check.
+    robots_dir = skill_dir.resolve().parent.parent / "robots"
+    if not robots_dir.is_dir():
+        log.info("rskill_publisher.task_space_no_robots_dir", path=str(robots_dir))
+        return
+    tags = set(manifest.embodiment_tags or [])
+    matched = 0
+    for robot_yaml in sorted(robots_dir.glob("*/robot.yaml")):
+        try:
+            robot = RobotDescription.from_yaml(str(robot_yaml))
+        except Exception:  # reason: a malformed sibling robot must not block this skill's publish
+            continue
+        if not (tags & set(robot.capabilities.embodiment_tags or [])):
+            continue
+        matched += 1
+        space = TaskSpace.from_action_contract(manifest.action_contract, robot)
+        match = task_space_compatible(space, robot, hal_mode="sim")
+        if not match.ok:
+            log.warning(
+                "rskill_publisher.task_space_incompatible",
+                skill=manifest.name,
+                robot=robot.name,
+                reasons=match.reasons,
+                note="ADR-0071 Phase 2 — warn-only, not yet blocking",
+            )
+    if matched == 0:
+        log.info(
+            "rskill_publisher.task_space_no_matching_robot",
+            skill=manifest.name,
+            embodiment_tags=sorted(tags),
+        )
+
+
 def _bump_revision(manifest_path: Path, weights_uri_base: str, token: str) -> str:
     """Resolve the latest commit SHA for the upstream weights and patch rskill.yaml.
 
@@ -406,6 +459,9 @@ def main() -> None:
 
     # ── Validate manifest ──────────────────────────────────────────────────────
     manifest = _validate_manifest(skill_dir)
+
+    # ── Cross-layer task-space check (ADR-0071 Phase 2, warn-only) ──────────────
+    _validate_task_space(manifest, skill_dir)
 
     # ── Validate README + manifest documentation (CLAUDE.md §6.4) ──────────────
     # Runs in both dry-run and --publish paths so authors see the same report
