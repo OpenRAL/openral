@@ -418,6 +418,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ROS time toggle to drift from the authority.
     clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
     use_sim_time = clock_origin == "simulation"
+    # Multi-task deploy (DeployScene.tasks). When non-empty, the CLI joins the
+    # scene's task list into a single operator prompt and passes it here; the
+    # prompt_router_node publishes it onto /openral/prompt at on_activate so
+    # the reasoner's first tick sees the operator's goal without a manual
+    # ``openral prompt`` call. Empty string = no startup prompt (idle mode).
+    initial_task_prompt = LaunchConfiguration("initial_task_prompt").perform(context)
 
     # Synthesise the kernel envelope from the manifest. ``skill=None``
     # because ``openral deploy sim`` does not preselect an rSkill — the
@@ -665,6 +671,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         executable="prompt_router_node.py",
         name="openral_prompt_router",
         namespace="",
+        parameters=[{"startup_prompt": initial_task_prompt}],
         additional_env=otel_env,
         output="screen",
     )
@@ -1800,6 +1807,20 @@ def generate_launch_description() -> LaunchDescription:
                 "ADR-0059 — Foxglove WebSocket port "
                 "(ws://127.0.0.1:<foxglove_port>). Default 8765. "
                 "Ignored unless enable_foxglove is true."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "initial_task_prompt",
+            default_value="",
+            description=(
+                "Multi-task deploy — pre-seeded operator prompt delivered to the "
+                "reasoner at startup. ``openral deploy sim`` fills this from the "
+                "``DeployScene.tasks`` list (joined with ' | '); the "
+                "prompt_router_node publishes it onto /openral/prompt at "
+                "on_activate time with cli-level priority (100) so the reasoner's "
+                "first tick already sees the operator's goal. Empty (default) = "
+                "no startup prompt; the reasoner idles until a manual "
+                "``openral prompt`` or dashboard prompt arrives."
             ),
         ),
     ]

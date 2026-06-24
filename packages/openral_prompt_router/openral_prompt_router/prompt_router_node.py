@@ -18,12 +18,23 @@ Arbitration (per ADR-0018 §3 / capability review §3.F10):
   prompts get priority 100 so they overtake auto-prompts (priority
   10).
 * No silent drops; rate-limited bursts surface as a structlog warning.
+
+Startup prompt (multi-task deploy):
+
+``openral deploy sim`` can deliver a ``startup_prompt`` ROS string
+parameter. When non-empty, the node publishes it onto ``/openral/prompt``
+at ``on_activate`` time (before any operator can send a competing prompt),
+so the reasoner's first tick immediately sees the scene's ``tasks:`` goals
+without requiring a separate ``openral prompt`` invocation. The startup
+prompt is emitted with the ``"cli"`` source (priority 100) so it is
+treated as a human-level operator instruction.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from typing import Any
 
 import rclpy
@@ -52,6 +63,12 @@ _QOS_PROMPT = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.VOLATILE,
 )
+
+# Bound on how long on_activate waits for the reasoner's /openral/prompt
+# subscriber to be discovered before emitting the one-shot startup prompt.
+# Generous: the reasoner's on_configure loads the skill palette (seconds) and
+# only then creates the subscription; missing the prompt boots the run idle.
+_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S = 30.0
 
 # v1 adapter registry — only the CLI source is wired. Priorities chosen
 # so a human prompt overtakes an auto-prompt (CLAUDE.md §6.2 — the
@@ -90,6 +107,12 @@ class PromptRouterNode(LifecycleNode):
         self._sources = dict(sources or DEFAULT_SOURCES)
         self._pub: Any = None
         self._forwarded_count: int = 0
+        # Declare the startup_prompt parameter so `openral deploy sim`
+        # can pass `startup_prompt:=<text>` as a launch argument. The
+        # node reads it in on_activate and publishes it as the first
+        # operator-priority prompt. An empty string (the default) means
+        # "no startup prompt — idle until the operator sends one."
+        self.declare_parameter("startup_prompt", "")
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -116,8 +139,11 @@ class PromptRouterNode(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """No tick — the router is purely reactive."""
+        """Publish the startup prompt if configured; then idle (purely reactive)."""
         del state
+        startup_prompt = self.get_parameter("startup_prompt").get_parameter_value().string_value
+        if startup_prompt:
+            self._publish_startup_prompt(startup_prompt)
         self.get_logger().info("on_activate")
         return TransitionCallbackReturn.SUCCESS
 
@@ -158,6 +184,52 @@ class PromptRouterNode(LifecycleNode):
         self._forwarded_count += 1
         self.get_logger().info(
             f"forwarded prompt source={source} priority={priority} text={msg.text!r}",
+        )
+
+    def _publish_startup_prompt(self, text: str) -> None:
+        """Publish ``text`` as a ``cli``-priority operator prompt at activate time.
+
+        This is the multi-task deploy path: ``openral deploy sim`` passes the
+        scene's ``tasks:`` goals as the ``startup_prompt`` ROS parameter so the
+        reasoner's first tick already sees the operator's goal without requiring a
+        separate ``openral prompt`` invocation.
+
+        The prompt is tagged as source=``"cli"`` (priority 100) to match the
+        behaviour of a human operator typing ``openral prompt "..."`` in a
+        terminal — the same high-priority path that preempts any queued
+        auto-prompts.
+        """
+        if self._pub is None:
+            return
+        # `/openral/prompt` is RELIABLE + VOLATILE (ADR-0018 §1), so a sample
+        # published before the reasoner's subscriber has been discovered is
+        # silently dropped — the reasoner would boot idle and emit "provide a
+        # task" instead of seeing the scene's startup goal. The router activates
+        # before the reasoner finishes configuring, so wait (bounded) for at
+        # least one matched subscriber before emitting this one-shot prompt.
+        # DDS discovery runs on its own thread, so this poll does not deadlock
+        # the (separate-process) reasoner that we are waiting on.
+        deadline = time.monotonic() + _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S
+        while self._pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if self._pub.get_subscription_count() == 0:
+            self.get_logger().warning(
+                "startup_prompt: no subscriber on /openral/prompt after "
+                f"{_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S:.0f}s; publishing anyway "
+                "(reasoner may miss it under VOLATILE QoS)",
+            )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_prompt_router"
+        msg.text = text
+        msg.metadata_json = json.dumps(
+            {"source": "cli", "priority": DEFAULT_SOURCES["cli"], "startup": True},
+            sort_keys=True,
+        )
+        self._pub.publish(msg)
+        self._forwarded_count += 1
+        self.get_logger().info(
+            f"startup_prompt published source=cli priority={DEFAULT_SOURCES['cli']} text={text!r}",
         )
 
     # ── public helpers for tests ───────────────────────────────────────────

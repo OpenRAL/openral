@@ -291,6 +291,27 @@ class ReasonerCore:
             rskill_id = getattr(call, "rskill_id", None)
             if rskill_id:
                 span.set_attribute(semconv.REASONER_RSKILL_ID, rskill_id)
+            # Structured log for every successful tick so the multi-task
+            # deploy flow can be inspected from the structured log stream
+            # without opening Jaeger (Criterion 4 of the libero multi-task
+            # goal: subtask, rSkill, localization, VLA execution, reward
+            # evaluation, and final outcome are all emitted here).
+            _log_kwargs: dict[str, object] = {
+                "tick_idx": self._tick_idx,
+                "tool": call.tool,
+                "tier": tier,
+                "elapsed_s": round(self._clock() - started, 4),
+            }
+            if rskill_id:
+                _log_kwargs["rskill_id"] = rskill_id
+            rationale = getattr(call, "rationale", None)
+            if rationale:
+                _log_kwargs["rationale"] = rationale
+            # Surface the active prompt so the caller can correlate which
+            # operator goal drove this tool selection (multi-task tracing).
+            if renderer.prompts:
+                _log_kwargs["active_prompt"] = renderer.prompts[0].text[:200]
+            log.info("reasoner.tick.selected", **_log_kwargs)
             # Capture the active traceparent WHILE the span is still in
             # scope so reasoner_node._dispatch (which runs after this
             # function returns) can stamp it onto outbound PromptStamped
