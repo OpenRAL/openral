@@ -1232,6 +1232,21 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str, ...] = (
     # GR00T/RLDX weights resident and starves the GPU (~6.5 GiB) of the
     # next run. The cache dir is openral-specific, so this is unambiguous.
     "/.cache/openral/rldx-sidecar/",
+    # Robometer reward sidecar (ADR-0057). Same out-of-process pattern as
+    # rldx: ``reward_monitor_node`` spawns it in its own session, so killpg on
+    # the launch group never reaches it, and it forks one torch-inductor
+    # ``compile_worker`` per CPU. The venv path appears in the server's AND
+    # every compile_worker's cmdline, so this single needle reaps the whole
+    # sidecar tree (~3.3 GiB GPU) if the graceful ``close()`` doesn't run.
+    "/.cache/openral/robometer-sidecar/",
+    # Perception / critic graph nodes spawned by ``sim_e2e.launch.py``. These
+    # were absent from the sweep, so under a heavy graph whose graceful
+    # shutdown doesn't finish within ``grace_s`` they orphaned (the reward
+    # monitor holds the sidecar; the detector holds its model). Scoped to the
+    # in-tree node entry points so we never touch an unrelated process.
+    "openral_perception_ros/reward_monitor_node.py",
+    "openral_perception_ros/ros_image_detector_node.py",
+    "openral_reasoner_ros/critic_producer_node.py",
 )
 
 
