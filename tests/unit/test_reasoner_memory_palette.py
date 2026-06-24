@@ -1,4 +1,4 @@
-"""ADR-0071 §3 / Phase 4c — memory tools in the reasoner palette + decode routing.
+"""ADR-0072 §3 / Phase 4c — memory tools in the reasoner palette + decode routing.
 
 Pure-Python slices (the ROS ``reasoner_node`` dispatch is covered live in
 ``tests/integration/test_reasoner_node_end_to_end.py``):

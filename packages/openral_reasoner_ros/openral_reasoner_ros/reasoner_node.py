@@ -462,10 +462,10 @@ class ReasonerNode(LifecycleNode):
         # ``recall_object`` / ``resolve_place`` tools against a preloaded map.
         # Empty = disabled.
         self.declare_parameter("spatial_memory_path", "")
-        # ADR-0071 §3 / Phase 4b — path to the self-maintained MEMORY.md (read at
+        # ADR-0072 §3 / Phase 4b — path to the self-maintained MEMORY.md (read at
         # configure into the `## MEMORY` context block). Empty omits the section.
         self.declare_parameter("memory_md_path", "")
-        # ADR-0071 §3 / Phase 5 — retrieval-under-cap: render at most this many
+        # ADR-0072 §3 / Phase 5 — retrieval-under-cap: render at most this many
         # memory entries in the always-on `## MEMORY` block (top by importance then
         # recency; the tail stays searchable via memory_search). 0 = no cap.
         self.declare_parameter("memory_context_cap", 0)
@@ -542,10 +542,10 @@ class ReasonerNode(LifecycleNode):
         # non-retry_cap tick happens (a different tool, a dispatch, an error, or
         # a new operator prompt that resets the streak).
         self._retry_cap_warned: bool = False
-        # ADR-0071 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
+        # ADR-0072 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
         # collected from installed capability-matched playbook rSkills at seed time.
         self._playbooks_block: str = ""
-        # ADR-0071 §3 — the self-maintained MEMORY.md store (Phase 4b read path:
+        # ADR-0072 §3 — the self-maintained MEMORY.md store (Phase 4b read path:
         # loaded at configure + rendered as the `## MEMORY` context block; Phase 4c
         # write path: `memory_write` edits + `memory_search` archival recall). The
         # archive is the append-only log of superseded/deleted entries that left the
@@ -735,7 +735,7 @@ class ReasonerNode(LifecycleNode):
         # leaves the robot-agnostic brief unchanged. The base brief honours
         # the ``OPENRAL_REASONER_SYSTEM_PROMPT`` deployment override.
         base_prompt = resolve_reasoner_system_prompt(self._robot_capabilities)
-        # ADR-0071 Phase 3 — append installed playbooks (empty block = no-op).
+        # ADR-0072 Phase 3 — append installed playbooks (empty block = no-op).
         system_prompt = (
             f"{base_prompt}\n\n{self._playbooks_block}" if self._playbooks_block else base_prompt
         )
@@ -998,7 +998,7 @@ class ReasonerNode(LifecycleNode):
         )
 
     def _maybe_load_memory(self) -> None:
-        """Load the self-maintained ``MEMORY.md`` into the ``## MEMORY`` block (ADR-0071 §3).
+        """Load the self-maintained ``MEMORY.md`` into the ``## MEMORY`` block (ADR-0072 §3).
 
         Read path (Phase 4b): when the ``memory_md_path`` ROS parameter is set, parse
         the file (or start empty if absent) and render it as the reasoner's persistent
@@ -1161,7 +1161,7 @@ class ReasonerNode(LifecycleNode):
     ) -> str:
         """Render the ``## PLAYBOOKS`` block from installed, matched playbook rSkills.
 
-        ADR-0071 Phase 3: for each ``kind: playbook`` manifest this robot satisfies
+        ADR-0072 Phase 3: for each ``kind: playbook`` manifest this robot satisfies
         (embodiment + capability flags), read its ``PLAYBOOK.md`` body and render it
         for the system prompt. Returns ``""`` when none match.
         """
@@ -1188,7 +1188,7 @@ class ReasonerNode(LifecycleNode):
                 continue
             # Label with the bare playbook name (strip the ``<org>/rskill-`` prefix):
             # the full machine id reads like an executable skill id and tempts the
-            # LLM to call ``execute_rskill`` on the playbook itself (ADR-0071 — a
+            # LLM to call ``execute_rskill`` on the playbook itself (ADR-0072 — a
             # playbook is an SOP to follow, never a dispatch target).
             label = manifest.name.split("/")[-1].removeprefix("rskill-")
             entries.append((f"{label} — {manifest.playbook.trigger}", body))
@@ -1235,7 +1235,7 @@ class ReasonerNode(LifecycleNode):
             )
             return
         self._robot_capabilities = description.capabilities
-        # ADR-0071 Decision 2.1 — render the static robot self-model once and
+        # ADR-0072 Decision 2.1 — render the static robot self-model once and
         # surface it as the reasoner's `## ROBOT` context section so the LLM can
         # judge reach/view feasibility before dispatching a skill.
         self._renderer.set_robot_model(render_robot_self_model(description))
@@ -1261,7 +1261,7 @@ class ReasonerNode(LifecycleNode):
                     f"palette seed: skipping unloadable rskill {path!s}: {exc}",
                 )
 
-        # ADR-0071 Phase 3 — collect installed, capability-matched `kind: playbook`
+        # ADR-0072 Phase 3 — collect installed, capability-matched `kind: playbook`
         # rSkills and render their PLAYBOOK.md bodies into the `## PLAYBOOKS`
         # system-prompt block. Playbooks are role:s2 (excluded from the ExecuteSkill
         # palette); they reach the LLM as authored decision-procedure *content*.
@@ -1572,7 +1572,7 @@ class ReasonerNode(LifecycleNode):
                         "A new operator prompt resets the streak; otherwise it self-clears "
                         "when the model picks a different tool. (Repeats logged at debug.)",
                     )
-                    # ADR-0071 §2.3 — inject a Reflexion strategy hint into context
+                    # ADR-0072 §2.3 — inject a Reflexion strategy hint into context
                     # (once per streak) so the NEXT tick changes approach instead of
                     # looping. Appending bumps `seq`, so the next heartbeat runs
                     # rather than being suppressed as idle.
@@ -2118,7 +2118,7 @@ class ReasonerNode(LifecycleNode):
         *,
         traceparent: str | None,
     ) -> None:
-        """Apply one explicit MEMORY.md edit, persist it, and confirm (ADR-0071 §3 / Phase 4c).
+        """Apply one explicit MEMORY.md edit, persist it, and confirm (ADR-0072 §3 / Phase 4c).
 
         The reasoner's first **write-capable** tool: an ``add``/``update``/``supersede``/
         ``delete`` op over a typed :class:`~openral_core.MemorySection` — never a
@@ -2145,7 +2145,7 @@ class ReasonerNode(LifecycleNode):
         )
         if archived is not None:
             self._archive_memory_entry(archived)
-        # ADR-0071 Phase 5 — consolidate: merge any exact-duplicate facts the write
+        # ADR-0072 Phase 5 — consolidate: merge any exact-duplicate facts the write
         # may have introduced, paging the removed copies to the archive (Mem0).
         for dup in self._memory_store.consolidate():
             self._archive_memory_entry(dup)
@@ -2165,7 +2165,7 @@ class ReasonerNode(LifecycleNode):
         *,
         traceparent: str | None,
     ) -> None:
-        """Recall archived memory entries by keyword and re-prompt (ADR-0071 §3 / Phase 4c).
+        """Recall archived memory entries by keyword and re-prompt (ADR-0072 §3 / Phase 4c).
 
         Read-only (the reader half): current memory is already in the ``## MEMORY``
         context block every tick, so this searches only the **archive** — superseded /
@@ -2523,7 +2523,7 @@ class ReasonerNode(LifecycleNode):
                 f"execute_rskill succeeded rskill_id={call.rskill_id!r} "
                 f"trace_id={result.trace_id!r}",
             )
-            # ADR-0071 §2.2 — surface SUCCESS to the LLM (Inner Monologue). The
+            # ADR-0072 §2.2 — surface SUCCESS to the LLM (Inner Monologue). The
             # failure path already reaches the FAILURES buffer; success used to
             # pass through silently, leaving the reasoner blind to "it worked".
             self._renderer.append_execution(
@@ -2542,7 +2542,7 @@ class ReasonerNode(LifecycleNode):
         )
         outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
         detail = result.failure_reason or f"GoalStatus={status}"
-        # ADR-0071 §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
+        # ADR-0072 §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
         # the next tick advances the ladder instead of blindly retrying.
         self._renderer.append_execution(
             ExecutionEventRecord(

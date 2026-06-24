@@ -3,7 +3,7 @@
 > **Hand-authored decision procedure (SOP).** Unlike the generated `SKILL.md`
 > discovery view, this file is the *content the S2 Reasoner reads and follows*.
 > It is injected into the reasoner's system prompt when this playbook is
-> installed. The `rskill.yaml` `playbook.body_uri` points here. ADR-0071.
+> installed. The `rskill.yaml` `playbook.body_uri` points here. ADR-0072.
 
 ## Trigger
 The goal names a physical object (e.g. "bring the water bottle", "where is my

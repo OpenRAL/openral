@@ -6,7 +6,7 @@
 # stage the base or hand off if it is not. Composes existing read-only +
 # actuating reasoner tools; carries no weights and never actuates directly
 # (every motion it triggers is an ExecuteRskill → Action chunk → C++ safety
-# kernel). See ADR-0071.
+# kernel). See ADR-0072.
 
 schema_version: "0.1"
 name: "OpenRAL/rskill-preflight-reach"
@@ -17,7 +17,7 @@ kind: "playbook"
 
 # Embodiment-agnostic — a playbook is gated by capabilities_required, not by a
 # specific embodiment. Declared explicitly with the "any" wildcard (never an
-# empty list, which the manifest validator rejects — ADR-0071).
+# empty list, which the manifest validator rejects — ADR-0072).
 embodiment_tags: ["any"]
 
 # Real RobotCapabilities flag: confirming the target's pose requires a camera.
@@ -43,7 +43,7 @@ description: >
   S2 decision procedure: before dispatching a manipulation skill, check the
   target is within the robot's reachable workspace (using the robot self-model +
   object pose) and stage the base or hand off if it is not. Composes
-  recall_object, resolve_place, query_scene and NAVIGATE skills. ADR-0071.
+  recall_object, resolve_place, query_scene and NAVIGATE skills. ADR-0072.
 
 # RSkillAction.PLAN — registry/discovery metadata only (a playbook is role s2,
 # never an ExecuteSkill dispatch verb).
@@ -58,9 +58,9 @@ scenes:
 
 # Provenance citation (a playbook has no weights / upstream model repo, so the
 # authoring ADR is the citation — `paper_url`, mirroring the ROS-wrapped skills).
-paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0071-reasoner-playbooks-and-self-maintained-memory.md"
+paper_url: "https://github.com/OpenRAL/openral/blob/master/docs/adr/0072-reasoner-playbooks-and-self-maintained-memory.md"
 
-# The playbook decision-procedure contract (ADR-0071).
+# The playbook decision-procedure contract (ADR-0072).
 playbook:
   trigger: "about to dispatch a manipulation skill on a target whose reachability from the current base and arm pose is uncertain"
   body_uri: "./PLAYBOOK.md"

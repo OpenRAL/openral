@@ -443,7 +443,7 @@ def _drive_memory_node(
 ) -> list[Any]:
     """Boot a ReasonerNode with ``memory_md_path`` wired, run a tick, collect ``memory`` re-prompts.
 
-    Shared harness for the ADR-0071 §3 / Phase 4c dispatch tests: mirrors the
+    Shared harness for the ADR-0072 §3 / Phase 4c dispatch tests: mirrors the
     spatial-memory deployment wiring (param → configure → activate → publish a
     prompt → spin) but watches for the ``memory`` frame_id re-prompt.
     """
@@ -523,7 +523,7 @@ def _drive_memory_node(
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_memory_write_persists_to_disk_and_reprompts(tmp_path: Any) -> None:
-    """ADR-0071 §3 / Phase 4c — memory_write applies, persists MEMORY.md, and re-prompts.
+    """ADR-0072 §3 / Phase 4c — memory_write applies, persists MEMORY.md, and re-prompts.
 
     The ``memory_md_path`` param wires an (initially absent) MEMORY.md; a canned
     ``MemoryWriteTool(add)`` is dispatched. We assert the new fact is written to
@@ -563,7 +563,7 @@ def test_memory_write_persists_to_disk_and_reprompts(tmp_path: Any) -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_memory_search_recalls_archived_entry_and_reprompts(tmp_path: Any) -> None:
-    """ADR-0071 §3 / Phase 4c — memory_search recalls an archived fact via re-prompt.
+    """ADR-0072 §3 / Phase 4c — memory_search recalls an archived fact via re-prompt.
 
     A pre-existing archive JSONL (a fact that left the live file) is loaded
     alongside the MEMORY.md; a canned ``MemorySearchTool`` query recalls it and
@@ -1979,7 +1979,7 @@ def _write_nav2_map(d: Any, *, width: int = 20, height: int = 20) -> Any:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
-    """ADR-0071 Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
+    """ADR-0072 Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
 
     The REAL deploy path (not a faked /map publisher): a saved nav2 ``map.yaml`` is
     loaded by a standalone ``nav2_map_server`` — exactly what ``sim_e2e.launch.py``
