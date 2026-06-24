@@ -97,6 +97,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.memory import MemoryEntry, MemoryStore
+from openral_reasoner.mission import MissionState
 from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
@@ -207,6 +208,15 @@ _QOS_MAP = QoSProfile(
 # for consistency with the carried `rskill_id` field.
 _FAILURE_SOURCES: tuple[str, ...] = ("hal", "sensor", "rskill", "safety", "wam", "critic")
 _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change")
+
+# ADR-0073 §1 — prompt frame_ids the reasoner re-publishes onto /openral/prompt
+# for its OWN cascade (advisory query responses + spatial-memory re-prompts).
+# These are not new operator goals, so they must NOT (re)build the mission queue
+# — only a genuine operator/cli/dashboard prompt does. Self-emits (frame_id ==
+# the node name) are already dropped earlier in `_on_prompt`.
+_CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
+    {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory"}
+)
 
 # FailureTrigger constants — IDL-mirror per openral_observability.failure_bus
 # (kept inline rather than importing the helper so the reasoner_node can
@@ -889,6 +899,7 @@ class ReasonerNode(LifecycleNode):
         # against routing.
         if str(getattr(msg.header, "frame_id", "") or "") == self.get_name():
             return
+        source = str(getattr(msg.header, "frame_id", "") or "")
         self._renderer.append_prompt(
             PromptRecord(
                 text=msg.text,
@@ -896,6 +907,19 @@ class ReasonerNode(LifecycleNode):
                 stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
             ),
         )
+        # ADR-0073 §1 — a genuine operator goal (re)builds the deterministic
+        # mission queue: split into ordered subtasks so the reasoner sequences
+        # and the goal survives the pull-once prompt drain. Cascade re-prompts
+        # (advisory query responses, spatial-memory) are NOT new goals and must
+        # not reset the mission. `split_mission` is the deterministic floor; the
+        # `decompose-mission` playbook can later repopulate the same queue.
+        if source not in _CASCADE_PROMPT_SOURCES:
+            mission = MissionState.from_prompt(msg.text)
+            if not mission.is_empty():
+                self._renderer.set_mission(mission)
+                self.get_logger().info(
+                    f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
+                )
         if self._core is not None:
             self._core.reset_kind_streak()
         # A fresh *operator* prompt is a new goal — reset the active-search bound.
