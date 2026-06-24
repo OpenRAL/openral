@@ -3480,8 +3480,8 @@ class TaskSpace(BaseModel):
         ... )
         >>> ts.total_dim
         7
-        >>> sorted(m.value for m in ts.control_modes)
-        ['cartesian_delta', 'gripper_position']
+        >>> sorted(m.value for m in ts.control_modes) == ["cartesian_delta", "gripper_position"]
+        True
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -3506,9 +3506,7 @@ class TaskSpace(BaseModel):
         return {seg.control_mode for seg in self.segments}
 
     @classmethod
-    def from_action_contract(
-        cls, action: ActionContract, robot: RobotDescription
-    ) -> TaskSpace:
+    def from_action_contract(cls, action: ActionContract, robot: RobotDescription) -> TaskSpace:
         """Build the task space an rSkill emits, expanding slots / representation.
 
         ADR-0071 + ADR-0036. Resolution order:
@@ -3530,30 +3528,51 @@ class TaskSpace(BaseModel):
 
         Example:
             >>> from openral_core.schemas import (
-            ...     ActionSlot, EmbodimentKind, EndEffectorSpec, JointSpec,
-            ...     JointType, RobotCapabilities, SafetyEnvelope,
+            ...     ActionSlot,
+            ...     EmbodimentKind,
+            ...     EndEffectorSpec,
+            ...     JointSpec,
+            ...     JointType,
+            ...     RobotCapabilities,
+            ...     SafetyEnvelope,
             ... )
             >>> robot = RobotDescription(
             ...     name="franka_panda",
             ...     embodiment_kind=EmbodimentKind.MANIPULATOR,
-            ...     joints=[JointSpec(name="j1", joint_type=JointType.REVOLUTE,
-            ...                       parent_link="base_link", child_link="link_1")],
+            ...     joints=[
+            ...         JointSpec(
+            ...             name="j1",
+            ...             joint_type=JointType.REVOLUTE,
+            ...             parent_link="base_link",
+            ...             child_link="link_1",
+            ...         )
+            ...     ],
             ...     end_effectors=[EndEffectorSpec(name="panda_hand", kind="parallel_gripper")],
             ...     capabilities=RobotCapabilities(
             ...         supported_control_modes=[ControlMode.JOINT_POSITION],
-            ...         embodiment_tags=["franka_panda"]),
+            ...         embodiment_tags=["franka_panda"],
+            ...     ),
             ...     safety=SafetyEnvelope(),
             ... )
-            >>> ac = ActionContract(dim=7, slots=[
-            ...     ActionSlot(range=(0, 5), control_mode=ControlMode.CARTESIAN_DELTA,
-            ...                ee="panda_hand", frame="panda_hand"),
-            ...     ActionSlot(range=(6, 6), control_mode=ControlMode.GRIPPER_POSITION,
-            ...                ee="panda_hand")])
+            >>> ac = ActionContract(
+            ...     dim=7,
+            ...     slots=[
+            ...         ActionSlot(
+            ...             range=(0, 5),
+            ...             control_mode=ControlMode.CARTESIAN_DELTA,
+            ...             ee="panda_hand",
+            ...             frame="panda_hand",
+            ...         ),
+            ...         ActionSlot(
+            ...             range=(6, 6), control_mode=ControlMode.GRIPPER_POSITION, ee="panda_hand"
+            ...         ),
+            ...     ],
+            ... )
             >>> ts = TaskSpace.from_action_contract(ac, robot)
             >>> ts.total_dim
             7
-            >>> [seg.family.value for seg in ts.segments]
-            ['cartesian', 'gripper']
+            >>> [seg.family.value for seg in ts.segments] == ["cartesian", "gripper"]
+            True
         """
         slots = action.slots
         if slots is None and action.representation is not None:
@@ -3630,23 +3649,41 @@ def task_space_compatible(
 
     Example:
         >>> from openral_core.schemas import (
-        ...     EmbodimentKind, EndEffectorSpec, JointSpec, JointType,
-        ...     RobotCapabilities, SafetyEnvelope,
+        ...     EmbodimentKind,
+        ...     EndEffectorSpec,
+        ...     JointSpec,
+        ...     JointType,
+        ...     RobotCapabilities,
+        ...     SafetyEnvelope,
         ... )
         >>> robot = RobotDescription(
         ...     name="franka_panda",
         ...     embodiment_kind=EmbodimentKind.MANIPULATOR,
-        ...     joints=[JointSpec(name="j1", joint_type=JointType.REVOLUTE,
-        ...                       parent_link="base_link", child_link="link_1")],
+        ...     joints=[
+        ...         JointSpec(
+        ...             name="j1",
+        ...             joint_type=JointType.REVOLUTE,
+        ...             parent_link="base_link",
+        ...             child_link="link_1",
+        ...         )
+        ...     ],
         ...     end_effectors=[EndEffectorSpec(name="panda_hand", kind="parallel_gripper")],
         ...     capabilities=RobotCapabilities(
         ...         supported_control_modes=[ControlMode.JOINT_POSITION],
-        ...         embodiment_tags=["franka_panda"]),
+        ...         embodiment_tags=["franka_panda"],
+        ...     ),
         ...     safety=SafetyEnvelope(),
         ... )
-        >>> space = TaskSpace(segments=[TaskSpaceSegment(
-        ...     family=TaskSpaceFamily.CARTESIAN,
-        ...     control_mode=ControlMode.CARTESIAN_DELTA, width=6, target="panda_hand")])
+        >>> space = TaskSpace(
+        ...     segments=[
+        ...         TaskSpaceSegment(
+        ...             family=TaskSpaceFamily.CARTESIAN,
+        ...             control_mode=ControlMode.CARTESIAN_DELTA,
+        ...             width=6,
+        ...             target="panda_hand",
+        ...         )
+        ...     ]
+        ... )
         >>> # Real hardware needs a cartesian controller the Franka does not declare:
         >>> task_space_compatible(space, robot, hal_mode="real").ok
         False
