@@ -93,7 +93,19 @@ image_preprocessing:
     top: "image"
     wrist: "image2"
 state_contract:
+  # ADR-0027 — LIBERO checkpoints train on 8-D TASK-SPACE proprio
+  # (eef_pos ‖ eef_axisangle ‖ gripper). `openral sim run` supplies it directly;
+  # `openral deploy sim` assembles it from live TF + JointState via the
+  # `libero_eef8d` state-adapter. Without the layout the runner falls back to raw
+  # joint-space state and the policy never reaches the target. Shared verbatim
+  # with smolvla-libero — same franka_panda LIBERO 8-D contract.
+  layout: "libero_eef8d"
   dim: 8
+  bindings:
+    eef_frame: "panda_hand_tcp"       # robosuite grip site within ~6 mm
+    world_frame: "world"              # HAL-published static world->base root
+    gripper_qpos_joints:
+      - "panda_gripper"               # single deploy gripper joint, mirrored to [v,-v]
 
 # ── Execution semantics ────────────────────────────────────────────────────
 chunk_size: 50
