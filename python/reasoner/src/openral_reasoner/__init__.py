@@ -34,6 +34,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore, ReasonerTickResult
 from openral_reasoner.critic_watchdog import CriticWatchdog, CriticWatchdogGroup
+from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.null_reasoner import NullReasoner
 from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.plan import Plan, ToolCall
@@ -71,6 +72,8 @@ __all__ = [
     "CriticWatchdogGroup",
     "FailureEventRecord",
     "LLMClient",
+    "MemoryEntry",
+    "MemoryStore",
     "NullReasoner",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
