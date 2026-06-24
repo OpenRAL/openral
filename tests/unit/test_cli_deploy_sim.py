@@ -1670,3 +1670,59 @@ def test_deploy_sim_foxglove_custom_port_forwarded() -> None:
     )
     assert invocation.foxglove_port == 9999
     assert "foxglove_port:=9999" in " ".join(invocation.argv_template)
+
+
+# ── ADR-0071 Decision 3b — deploy memory bundle (--memory-dir) ─────────────────
+
+
+def _resolve_with_memory_dir(memory_dir: str) -> object:
+    return resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        memory_dir=memory_dir,
+    )
+
+
+def test_deploy_sim_memory_dir_forwards_all_present_bundle_artifacts(tmp_path: Path) -> None:
+    """ADR-0071 §3b — --memory-dir forwards a launch arg per present bundle artifact."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "scene_graph.json").write_text("{}", encoding="utf-8")
+    (bundle / "map.yaml").write_text("image: map.pgm\n", encoding="utf-8")
+    argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
+    assert f"memory_md_path:={bundle / 'MEMORY.md'}" in argv
+    assert f"spatial_memory_path:={bundle / 'scene_graph.json'}" in argv
+    assert f"map_path:={bundle / 'map.yaml'}" in argv
+
+
+def test_deploy_sim_memory_dir_omits_absent_artifacts(tmp_path: Path) -> None:
+    """A fresh bundle (only the dir) forwards memory_md_path but not scene_graph / map."""
+    bundle = tmp_path / "empty_bundle"
+    bundle.mkdir()
+    argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
+    assert any(a.startswith("memory_md_path:=") for a in argv)
+    assert not any(a.startswith("spatial_memory_path:=") for a in argv)
+    assert not any(a.startswith("map_path:=") for a in argv)
+
+
+def test_deploy_sim_no_memory_dir_forwards_no_bundle_args() -> None:
+    """Without --memory-dir (and no scene memory_dir) no bundle args are forwarded."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    argv = invocation.argv_template
+    assert not any(a.startswith("memory_md_path:=") for a in argv)
+    assert not any(a.startswith("map_path:=") for a in argv)
+
+
+def test_deploy_sim_memory_dir_must_be_existing_directory(tmp_path: Path) -> None:
+    """A --memory-dir that is not an existing directory fails loud (not a silent skip)."""
+    with pytest.raises(ROSConfigError, match=r"not an existing directory"):
+        _resolve_with_memory_dir(str(tmp_path / "does_not_exist"))
