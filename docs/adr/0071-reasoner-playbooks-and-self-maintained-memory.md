@@ -624,10 +624,18 @@ affected docs in the same PR (§1.14). Phases are independently landable.
      `MemorySearchTool` (read-only archival query) added to the `ReasonerToolCall`
      union, with round-trip/decode/validator tests. Typed contracts only — not yet
      dispatched (mirrors ADR-0039 Phase 1).
-   - **4b remaining.** The `MEMORY.md` file model + loader/renderer (the `## MEMORY`
-     block), the `memory_write`/`memory_search` node dispatch, the archival JSONL,
-     and the reader/writer split. Author **verify-outcome** + **clarify-ambiguity**
-     (they drive most writes). Live reasoner test: a correction persists + recalls.
+   - **4b file model + read path — landed.** `openral_reasoner.memory.MemoryStore`
+     (`MemoryEntry`) is the round-trip-stable `MEMORY.md` model: `from_markdown` /
+     `to_markdown`, `to_context_block()` (the `## MEMORY` section via
+     `ContextRenderer.set_memory_block`), `apply()` (add/update/supersede/delete with
+     Zep-style supersession), and archival `search()`. `reasoner_node._maybe_load_memory`
+     loads it from the `memory_md_path` param at configure so the LLM **reads** memory
+     every tick. Unit-tested (apply ops, supersession, round-trip, search, `## MEMORY`).
+   - **4c remaining.** Expose the memory tools in the provider palette + wire the
+     `memory_write`/`memory_search` node **dispatch** (apply edit → persist → archival
+     JSONL → re-render; search → re-prompt), and the reader/writer split. Author
+     **verify-outcome** + **clarify-ambiguity** (they drive most writes). Live test:
+     a correction persists + recalls next task.
 4b. **Deploy memory bundle (Decision 3b).** Standardize the bundle layout: place
    `scene_graph.json` at the conventional path (**reuses** the shipped
    `spatial_memory_path` loader — no new code) and add the `map_path` ROS param +
