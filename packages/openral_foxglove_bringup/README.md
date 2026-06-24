@@ -70,7 +70,7 @@ import the layout from `config/openral_layout.json`.
 
 | Panel | Topic | Message | Shows |
 |---|---|---|---|
-| Image | `/openral/cameras/0/image` | `sensor_msgs/Image` | Camera feed |
+| Image | `/openral/cameras/top/image` | `sensor_msgs/Image` | Camera feed (3rd-person overview slot; pick another slot — `wrist`, `base`, … — from the panel's topic dropdown for robots without `top`) |
 | 3D (top-down) | `/map`, `/odom`, `/scan` | `OccupancyGrid` + `Odometry` + `LaserScan` | 2D nav map |
 | 3D (perspective) | `/octomap_point_cloud_centers`, `/map` | `PointCloud2` | Voxels / world cloud in real 3D |
 | 3D (Bucket-2) | `/openral/world_collisions_markers`, `/openral/world_voxels_cloud` | `MarkerArray` + `PointCloud2` | Collision capsules + voxel grid (converter node) |

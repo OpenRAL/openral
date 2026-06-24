@@ -166,6 +166,10 @@ from openral_core.schemas import (
     StateLayout,
     StateRepresentation,
     SuppressedSummaryEvidence,
+    TaskSpace,
+    TaskSpaceFamily,
+    TaskSpaceMatch,
+    TaskSpaceSegment,
     TaskSpec,
     TickResult,
     TimeoutEvidence,
@@ -180,6 +184,7 @@ from openral_core.schemas import (
     control_modes_for_representation,
     extract_base_sim_joint_names,
     scale_intrinsics_to,
+    task_space_compatible,
 )
 
 __all__ = [
@@ -342,6 +347,10 @@ __all__ = [
     "StateLayout",
     "StateRepresentation",
     "SuppressedSummaryEvidence",
+    "TaskSpace",
+    "TaskSpaceFamily",
+    "TaskSpaceMatch",
+    "TaskSpaceSegment",
     "TaskSpec",
     "TickResult",
     "TimeoutEvidence",
@@ -359,5 +368,6 @@ __all__ = [
     "load_scene_strict",
     "raise_on_invalid_suite",
     "scale_intrinsics_to",
+    "task_space_compatible",
 ]
 __version__ = "0.1.0"

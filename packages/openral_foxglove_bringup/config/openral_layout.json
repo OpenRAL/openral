@@ -2,7 +2,7 @@
   "configById": {
     "Image!camera": {
       "imageMode": {
-        "imageTopic": "/openral/cameras/0/image"
+        "imageTopic": "/openral/cameras/top/image"
       }
     },
     "3D!nav": {
