@@ -42,6 +42,15 @@ _ENTRY_RE = re.compile(r"^- \[imp:([0-9.]+) ts:(\S+) st:(\w+)\] (.*)$")
 _SCHEMA_VERSION = "0.1"
 
 
+def _rank(entry: MemoryEntry) -> tuple[bool, float, str]:
+    """Rank key for retrieval/consolidation: current > stale, then importance, then recency.
+
+    ISO-8601 timestamps sort lexically by recency, so a plain string compare on the
+    ``timestamp`` field orders newest last — used descending for "most recent first".
+    """
+    return (entry.status == "current", entry.importance, entry.timestamp)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class MemoryEntry:
     """One remembered fact in a :class:`MemoryStore`."""
@@ -108,9 +117,67 @@ class MemoryStore:
         header = f"# MEMORY.md\n<!-- schema_version: {_SCHEMA_VERSION} -->\n\n"
         return f"{header}{self._render_sections()}"
 
-    def to_context_block(self) -> str:
-        """The ``## MEMORY`` block the reasoner injects into its context."""
-        return f"## MEMORY\n{self._render_sections().rstrip()}"
+    def _render_sections_capped(self, keep: set[int]) -> str:
+        """Render only the entries whose index is in ``keep`` (ADR-0071 Phase 5 cap)."""
+        blocks: list[str] = []
+        for section, title in _SECTION_TITLES.items():
+            blocks.append(f"## {title}")
+            rows = [
+                e.render_line()
+                for i, e in enumerate(self._entries)
+                if e.section == section and i in keep
+            ]
+            blocks.append("\n".join(rows) if rows else "(none)")
+            blocks.append("")
+        return "\n".join(blocks).rstrip() + "\n"
+
+    def to_context_block(self, *, cap: int | None = None) -> str:
+        """The ``## MEMORY`` block the reasoner injects into its context.
+
+        ADR-0071 Phase 5 — *retrieval under cap*: when ``cap`` is set and the store
+        holds more entries than ``cap``, only the top-``cap`` by **importance then
+        recency** (current entries rank above ``stale`` ones) are rendered, with a
+        footer telling the LLM the rest are recallable via ``memory_search``. This
+        bounds the always-on context for a long-running robot without losing the
+        low-priority tail (it stays in the file / archive, searchable). ``cap=None``
+        (or a store within cap) renders everything, unchanged.
+        """
+        if cap is None or len(self._entries) <= cap:
+            return f"## MEMORY\n{self._render_sections().rstrip()}"
+        ranked = sorted(
+            range(len(self._entries)),
+            key=lambda i: _rank(self._entries[i]),
+            reverse=True,
+        )
+        keep = set(ranked[:cap])
+        hidden = len(self._entries) - len(keep)
+        footer = (
+            f"\n\n_({hidden} lower-priority older memories hidden — "
+            "use memory_search to recall.)_"
+        )
+        return f"## MEMORY\n{self._render_sections_capped(keep).rstrip()}{footer}"
+
+    def consolidate(self) -> list[MemoryEntry]:
+        """Merge exact-duplicate facts, keeping the best; return the removed entries.
+
+        ADR-0071 Phase 5 — *consolidation* (Mem0 ADD-merge): when the same
+        ``(section, content)`` appears more than once (e.g. the LLM re-added a fact
+        it had already stored), keep only the highest-ranked copy (current over
+        ``stale``, then higher importance, then more recent) and remove the rest.
+        The removed entries are returned so the caller can append them to the
+        archival recall log — nothing is lost, the live file just stops repeating
+        itself. Order of the survivors is preserved.
+        """
+        best_by_key: dict[tuple[str, str], MemoryEntry] = {}
+        for e in self._entries:
+            key = (e.section, e.content)
+            prev = best_by_key.get(key)
+            if prev is None or _rank(e) > _rank(prev):
+                best_by_key[key] = e
+        survivors_set = set(id(e) for e in best_by_key.values())
+        removed = [e for e in self._entries if id(e) not in survivors_set]
+        self._entries = [e for e in self._entries if id(e) in survivors_set]
+        return removed
 
     @property
     def entries(self) -> tuple[MemoryEntry, ...]:
