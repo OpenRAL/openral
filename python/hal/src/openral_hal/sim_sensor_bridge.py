@@ -168,7 +168,7 @@ class SimSensorBridge:
         depth_rate_hz: float = 10.0,
         depth_max_range_m: float = 5.0,
         depth_pixel_stride: int = 4,
-        idle_hold_ms: float = 200.0,
+        idle_hold_ms: float = 2000.0,
         on_step: Any = None,
     ) -> None:
         """Bind the node + HAL + manifest; opens no publishers until :meth:`setup`.
@@ -176,7 +176,16 @@ class SimSensorBridge:
         ``idle_hold_ms`` is the sim-only idle stepper's quiet window: it
         advances the env with a zero/HOLD action only when no real action has
         arrived within this window (so an active skill always wins). Default
-        200 ms — long enough to never race a 30-200 Hz S1 skill stream.
+        2000 ms — it MUST exceed the slowest action cadence of an active skill,
+        which for a VLA is the re-inference gap (SmolVLA ≈ 0.45 s/chunk; π0.5 /
+        MolmoAct ≈ 1 s). The original 200 ms assumed a 30-200 Hz S1 stream and
+        so RACED a 2 Hz VLA: it injected ~8 HOLD steps between policy actions,
+        corrupting the trajectory and burning the episode horizon (~100 env
+        steps consumed in ~12 policy actions → the VLA never finished a grasp).
+        2 s sits comfortably above any VLA re-inference gap yet below the
+        reasoner's ~5 s idle tick, so idle-stepping resumes (cameras stay live)
+        within ~2 s once a skill stops. A truly idle scene (no action ever,
+        ``last_action_ns == 0``) idle-steps immediately.
 
         ``on_step`` (ADR-0049): an optional zero-arg callback invoked after each
         successful ``idle_step`` — the node uses it to refresh the proprio
