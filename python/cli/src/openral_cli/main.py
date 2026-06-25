@@ -69,9 +69,9 @@ from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
 
 if TYPE_CHECKING:
-    from openral_core import BenchmarkScene, RSkillEvalResult, VLASpec
+    from openral_core import BenchmarkScene, RobotEnvironment, RSkillEvalResult, VLASpec
     from openral_core.schemas import RSkillManifest
-    from openral_detect import CompatibilityReport, RSkillCompatRow
+    from openral_detect import CompatibilityReport, RSkillCompatRow, ScaffoldOverrides
     from openral_detect.report import GpuProbeResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
@@ -878,6 +878,14 @@ def detect(
         help="Comma-separated probe names to run (default: all). "
         "Choices: usb, dds, gpu, cameras_v4l2, cameras_realsense, network.",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="With --deployment, prompt for the fields detection cannot infer "
+        "(task, vla, workspace box, a friendly label) and fill them into the "
+        "deploy config instead of leaving TODO placeholders.",
+    ),
     no_write: bool = typer.Option(
         False, "--no-write", help="Print summary and skip writing robot.yaml"
     ),
@@ -934,11 +942,19 @@ def detect(
         default_flow_style=False,
     )
 
+    if interactive and deployment is None:
+        console.print(
+            "[yellow]--interactive has no effect without --deployment[/yellow] "
+            "(it only fills the deploy config); ignoring."
+        )
+
     if no_write:
         console.print("\n[dim]--no-write set — printing yaml to stdout:[/dim]\n")
         console.print(yaml_text)
         if deployment is not None:
-            _emit_deployment_scaffold(description, detection, deployment, assume_yes=yes)
+            _emit_deployment_scaffold(
+                description, detection, deployment, assume_yes=yes, interactive=interactive
+            )
         return
 
     if output.exists() and not yes:
@@ -952,7 +968,9 @@ def detect(
     console.print(f"[dim]Next step:[/dim] openral rskill check --robot {output}")
 
     if deployment is not None:
-        _emit_deployment_scaffold(description, detection, deployment, assume_yes=yes)
+        _emit_deployment_scaffold(
+            description, detection, deployment, assume_yes=yes, interactive=interactive
+        )
 
 
 def _emit_deployment_scaffold(
@@ -961,12 +979,12 @@ def _emit_deployment_scaffold(
     path: Path,
     *,
     assume_yes: bool,
+    interactive: bool = False,
 ) -> None:
     """Scaffold + write a RobotEnvironment deploy config next to robot.yaml."""
     import yaml as _yaml
     from openral_core import RobotDescription
     from openral_detect import DetectionReport, scaffold_robot_environment
-    from openral_detect.scaffold import TODO_TASK_ID, TODO_VLA_WEIGHTS_URI
 
     assert isinstance(description, RobotDescription)  # reason: typed input
     assert isinstance(detection, DetectionReport)  # reason: typed input
@@ -977,27 +995,114 @@ def _emit_deployment_scaffold(
             console.print("[yellow]Skipped deployment scaffold.[/yellow]")
             return
 
-    env = scaffold_robot_environment(description, detection)
-    banner = (
-        "# RobotEnvironment scaffolded by `openral detect --deployment`.\n"
-        f"# robot_id, hal.transport.port, and sensors were filled from detection.\n"
-        f"# Robot limits come from robots/{env.robot_id}/robot.yaml (safety: null).\n"
-        f"# EDIT BEFORE `openral deploy run`: set `task` (id={TODO_TASK_ID!r}) and\n"
-        f"# `vla` (weights_uri={TODO_VLA_WEIGHTS_URI!r}) — detection cannot know these.\n"
-    )
+    overrides = _prompt_scaffold_overrides() if interactive else None
+    env = scaffold_robot_environment(description, detection, overrides=overrides)
     yaml_text = _yaml.safe_dump(
         env.model_dump(mode="json"),
         sort_keys=False,
         default_flow_style=False,
     )
-    path.write_text(banner + yaml_text, encoding="utf-8")
+    path.write_text(_deployment_banner(env) + yaml_text, encoding="utf-8")
     n_sensors = len(env.sensors)
     console.print(
         f"[green]Wrote[/green] {path} (RobotEnvironment, {env.robot_id}, "
         f"{n_sensors} sensor reader(s))"
     )
+    todo = _edit_before_deploy(env)
+    if todo:
+        console.print(
+            f"[yellow]Edit {' + '.join(todo)} before deploy:[/yellow] "
+            f"openral deploy run --config {path}"
+        )
+    else:
+        console.print(f"[green]Ready:[/green] openral deploy run --config {path}")
+
+
+def _edit_before_deploy(env: RobotEnvironment) -> list[str]:
+    """The ``metadata.edit_before_deploy`` list, normalized to ``list[str]``."""
+    raw = env.metadata.get("edit_before_deploy")
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
+def _deployment_banner(env: RobotEnvironment) -> str:
+    """Comment header documenting what detection filled vs the human-only fields.
+
+    The flagged fields are exactly those detection cannot infer: ``task`` /
+    ``vla`` (the job + the policy), the ``safety`` workspace box / no-go zones,
+    physical camera mount poses (which live in the robot manifest's sensor
+    frames, not the deploy config), and a friendly ``metadata.label``.
+    """
+    todo = set(_edit_before_deploy(env))
+
+    def mark(key: str) -> str:
+        return "TODO — " if key in todo else "set — "
+
+    safety_note = (
+        "set on this deploy"
+        if env.safety is not None
+        else f"null → robots/{env.robot_id}/robot.yaml limits apply"
+    )
+    return (
+        "# RobotEnvironment scaffolded by `openral detect --deployment`.\n"
+        "# robot_id, hal.transport.port, and sensors were filled from detection.\n"
+        "# Detection cannot infer the rest — review before `openral deploy run`:\n"
+        f"#   task   {mark('task')}the job the robot should do (id + instruction)\n"
+        f"#   vla    {mark('vla')}the policy that drives it (id + weights_uri / rSkill ref)\n"
+        f"#   safety — {safety_note};\n"
+        "#            set workspace_box_min/max_xyz + no_go_zones to tighten the cell.\n"
+        "#   cameras — readers carry device + fps only; a camera's physical mount\n"
+        "#            pose lives in the robot manifest's sensor frames, not here.\n"
+        "#   metadata.label — optional friendly name for this deployment.\n"
+        "# Re-run with `--interactive` to be prompted for these instead.\n"
+    )
+
+
+def _prompt_scaffold_overrides() -> ScaffoldOverrides:
+    """Interactively collect the fields detection cannot infer.
+
+    Empty answers are left as ``TODO`` placeholders (the deploy guard still
+    flags them), so an operator can fill only what they know now.
+    """
+    from openral_detect import ScaffoldOverrides
+
     console.print(
-        f"[yellow]Edit task + vla before deploy:[/yellow] openral deploy run --config {path}"
+        "\n[bold]Interactive deploy config[/bold] — press Enter to leave any field as TODO.\n"
+    )
+
+    def _ask(label: str) -> str | None:
+        ans = typer.prompt(label, default="", show_default=False).strip()
+        return ans or None
+
+    def _ask_xyz(label: str) -> tuple[float, float, float] | None:
+        raw = typer.prompt(f"{label} (x,y,z metres)", default="", show_default=False).strip()
+        if not raw:
+            return None
+        try:
+            x, y, z = (float(v) for v in raw.split(","))
+        except ValueError:
+            console.print("[yellow]  not 3 comma-separated numbers — skipping.[/yellow]")
+            return None
+        return (x, y, z)
+
+    label = _ask("Deployment label (friendly name)")
+    task_instruction = _ask("Task: natural-language goal")
+    task_id = _ask("Task id (e.g. pick_and_place/desk)")
+    vla_weights_uri = _ask("VLA: rSkill reference or weights_uri")
+    vla_id = _ask("VLA adapter id (e.g. smolvla)")
+    wmin = _ask_xyz("Workspace box min corner")
+    wmax = _ask_xyz("Workspace box max corner")
+    if (wmin is None) != (wmax is None):
+        console.print("[yellow]Workspace box needs both corners — ignoring the lone one.[/yellow]")
+        wmin = wmax = None
+
+    return ScaffoldOverrides(
+        label=label,
+        task_id=task_id,
+        task_instruction=task_instruction,
+        vla_id=vla_id,
+        vla_weights_uri=vla_weights_uri,
+        workspace_box_min_xyz=wmin,
+        workspace_box_max_xyz=wmax,
     )
 
 

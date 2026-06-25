@@ -124,8 +124,64 @@ class TestBhDetect:
         # task + vla are TODO placeholders the operator must edit.
         assert env.task.id.startswith("TODO")
         assert env.vla.weights_uri.startswith("TODO")
-        # The banner warns the operator before deploy.
-        assert "EDIT BEFORE" in deploy.read_text()
+        # The banner flags the human-only fields detection cannot infer.
+        banner = deploy.read_text()
+        assert "review before `openral deploy run`" in banner
+        assert "task" in banner and "vla" in banner
+        assert "safety" in banner and "camera" in banner
+
+    def test_detect_interactive_fills_deployment(self, tmp_path: Path) -> None:
+        out = tmp_path / "robot.yaml"
+        deploy = tmp_path / "deploy.yaml"
+        # Answers in prompt order: label, task instruction, task id, vla ref,
+        # vla id, workspace min, workspace max.
+        answers = "\n".join(
+            [
+                "bench-arm",
+                "pick the red block",
+                "pick/desk",
+                "rskills/smolvla-so101",
+                "smolvla",
+                "-0.3,-0.3,0.0",
+                "0.3,0.3,0.5",
+            ]
+        )
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--deployment",
+                str(deploy),
+                "--interactive",
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+            input=answers + "\n",
+        )
+        assert result.exit_code == 0, result.output
+        from openral_core import RobotEnvironment
+
+        env = RobotEnvironment.from_yaml(str(deploy))
+        assert env.task.instruction == "pick the red block"
+        assert env.vla.weights_uri == "rskills/smolvla-so101"
+        assert env.metadata["label"] == "bench-arm"
+        assert env.safety is not None
+        assert env.metadata["edit_before_deploy"] == []
+
+    def test_interactive_without_deployment_warns(self) -> None:
+        result = runner.invoke(
+            app,
+            ["detect", "--no-write", "--interactive", "--include", "network", "--dds-timeout", "0"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "--interactive has no effect without --deployment" in result.output
 
     def test_detect_with_report_dump(self, tmp_path: Path) -> None:
         out = tmp_path / "robot.yaml"

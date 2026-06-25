@@ -17,7 +17,7 @@ from openral_core.schemas import (
     SensorModality,
     SensorSpec,
 )
-from openral_detect import scaffold_robot_environment
+from openral_detect import ScaffoldOverrides, scaffold_robot_environment
 from openral_detect.report import (
     DetectionReport,
     UsbDeviceRecord,
@@ -132,3 +132,42 @@ class TestScaffoldRoundTrips:
         assert reloaded.hal.transport["port"] == "/dev/ttyACM0"
         # Placeholders survive a round-trip and remain schema-valid.
         assert reloaded.vla.weights_uri == TODO_VLA_WEIGHTS_URI
+
+
+class TestScaffoldOverrides:
+    def test_overrides_fill_task_vla_safety_and_label(self) -> None:
+        ov = ScaffoldOverrides(
+            label="bench-arm",
+            task_id="pick/desk",
+            task_instruction="pick the red block",
+            vla_id="smolvla",
+            vla_weights_uri="rskills/smolvla-so101",
+            workspace_box_min_xyz=(-0.3, -0.3, 0.0),
+            workspace_box_max_xyz=(0.3, 0.3, 0.5),
+        )
+        env = scaffold_robot_environment(_so101_description(), None, overrides=ov)
+        assert env.task.id == "pick/desk"
+        assert env.task.instruction == "pick the red block"
+        assert env.vla.weights_uri == "rskills/smolvla-so101"
+        assert env.metadata["label"] == "bench-arm"
+        assert env.safety is not None
+        assert env.safety.workspace_box_min_xyz == (-0.3, -0.3, 0.0)
+        assert env.safety.workspace_box_max_xyz == (0.3, 0.3, 0.5)
+        # Nothing left to edit, so the deploy guard is empty.
+        assert env.metadata["edit_before_deploy"] == []
+
+    def test_partial_overrides_keep_remaining_todos(self) -> None:
+        # Only the task instruction is supplied; task.id + vla stay TODO, so the
+        # guard still flags both task (id is the blocking sentinel) and vla.
+        ov = ScaffoldOverrides(task_instruction="pick the red block")
+        env = scaffold_robot_environment(_so101_description(), None, overrides=ov)
+        assert env.task.instruction == "pick the red block"
+        assert env.task.id == TODO_TASK_ID
+        assert env.vla.weights_uri == TODO_VLA_WEIGHTS_URI
+        assert env.metadata["edit_before_deploy"] == ["task", "vla"]
+
+    def test_lone_workspace_corner_is_ignored(self) -> None:
+        # A box needs both corners to be a real constraint; one corner → no safety.
+        ov = ScaffoldOverrides(workspace_box_min_xyz=(-0.3, -0.3, 0.0))
+        env = scaffold_robot_environment(_so101_description(), None, overrides=ov)
+        assert env.safety is None
