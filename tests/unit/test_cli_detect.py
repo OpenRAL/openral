@@ -53,6 +53,136 @@ class TestBhDetect:
         assert "embodiment_kind" in data
         assert "safety" in data
 
+    def test_detect_robot_override_forces_so101(self, tmp_path: Path) -> None:
+        # No SO-101 hardware attached; the --robot override pins the manifest
+        # regardless of what USB/network probing finds.
+        out = tmp_path / "robot.yaml"
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = yaml.safe_load(out.read_text())
+        assert data["name"] == "so101_follower"
+
+    def test_detect_bad_robot_override_exits_1(self) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "not_a_robot",
+                "--no-write",
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "no committed" in result.output
+
+    def test_detect_emits_deployment_scaffold(self, tmp_path: Path) -> None:
+        out = tmp_path / "robot.yaml"
+        deploy = tmp_path / "deploy.yaml"
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--deployment",
+                str(deploy),
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert deploy.exists()
+        # The scaffold loads back as a valid RobotEnvironment.
+        from openral_core import RobotEnvironment
+
+        env = RobotEnvironment.from_yaml(str(deploy))
+        assert env.robot_id == "so101_follower"
+        assert env.safety is None
+        # task is the TODO placeholder the operator must edit.
+        assert env.task.id.startswith("TODO")
+        assert env.metadata["edit_before_deploy"] == ["task"]
+        # The banner flags the human-only fields detection cannot infer.
+        banner = deploy.read_text()
+        assert "review before `openral deploy run`" in banner
+        assert "task" in banner
+        assert "safety" in banner and "camera" in banner
+        # The rSkill is not pinned — the reasoner picks it at runtime.
+        assert "reasoner selects it at" in banner
+
+    def test_detect_interactive_fills_deployment(self, tmp_path: Path) -> None:
+        out = tmp_path / "robot.yaml"
+        deploy = tmp_path / "deploy.yaml"
+        # Answers in prompt order: label, task instruction, task id,
+        # workspace min, workspace max.
+        answers = "\n".join(
+            [
+                "bench-arm",
+                "pick the red block",
+                "pick/desk",
+                "-0.3,-0.3,0.0",
+                "0.3,0.3,0.5",
+            ]
+        )
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--deployment",
+                str(deploy),
+                "--interactive",
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+            input=answers + "\n",
+        )
+        assert result.exit_code == 0, result.output
+        from openral_core import RobotEnvironment
+
+        env = RobotEnvironment.from_yaml(str(deploy))
+        assert env.task.instruction == "pick the red block"
+        assert env.task.id == "pick/desk"
+        assert env.metadata["label"] == "bench-arm"
+        assert env.safety is not None
+        assert env.metadata["edit_before_deploy"] == []
+
+    def test_interactive_without_deployment_warns(self) -> None:
+        result = runner.invoke(
+            app,
+            ["detect", "--no-write", "--interactive", "--include", "network", "--dds-timeout", "0"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "--interactive has no effect without --deployment" in result.output
+
     def test_detect_with_report_dump(self, tmp_path: Path) -> None:
         out = tmp_path / "robot.yaml"
         report = tmp_path / "detection.json"

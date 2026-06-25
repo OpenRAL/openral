@@ -29,6 +29,7 @@ from openral_detect.report import (
     UsbProbeResult,
     V4l2CameraInfo,
 )
+from openral_detect.scaffold import ScaffoldOverrides, scaffold_robot_environment
 
 __all__ = [
     "PROBE_NAMES",
@@ -46,6 +47,7 @@ __all__ = [
     "RSkillCompatRow",
     "RealsenseDeviceInfo",
     "Ros2TopologyResult",
+    "ScaffoldOverrides",
     "SectionVerdict",
     "UsbDeviceRecord",
     "UsbMatchRecord",
@@ -56,4 +58,5 @@ __all__ = [
     "check_installed_rskills",
     "check_single_rskill",
     "detect_hardware",
+    "scaffold_robot_environment",
 ]

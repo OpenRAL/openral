@@ -43,6 +43,12 @@ _REPO_ROOT_CANDIDATES: tuple[Path, ...] = (
 
 
 _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
+    # The SO-101 shares the SO-100's Feetech USB controller (identical VID/PID)
+    # and the same `SO100FollowerHAL`, so USB auto-detection cannot tell them
+    # apart. The SO-101 is the current revision, so a bare plug-in defaults to
+    # it (see `openral_cli.autodetect._VID_PID_TABLE`); the older SO-100 is
+    # selected explicitly with `openral detect --robot so100`.
+    "so101": "so101_follower",
     "so100": "so100_follower",
     "aloha": "aloha_bimanual",
     # Future entries land here as new HAL adapters publish a canonical
@@ -56,25 +62,38 @@ _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
 def canonical_robot_path(bh_robot_type: str) -> Path | None:
     """Resolve a ``bh_robot_type`` slug to a committed ``robots/<name>/robot.yaml``.
 
+    Resolution is two-step: the slug is first translated through
+    :data:`_OPENRAL_ROBOT_TYPE_TO_DIR` (``"so100"`` → ``"so100_follower"``);
+    if it is not a known alias the slug is tried **verbatim** as a
+    ``robots/<slug>/`` directory name. The second step lets an explicit
+    ``openral detect --robot <name>`` override target any committed robot by
+    its canonical directory name (e.g. ``"so101_follower"``) without first
+    teaching the VID/PID table about it.
+
     Args:
         bh_robot_type: Slug as produced by
             ``openral_cli.autodetect.match_known_devices`` (USB VID/PID)
-            or ``infer_robot_from_topics`` (DDS topic-prefix).
+            or ``infer_robot_from_topics`` (DDS topic-prefix), or a canonical
+            ``robots/<name>`` directory name passed via an operator override.
 
     Returns:
-        Path to the canonical manifest if both the slug is known **and**
-        the file exists on disk; ``None`` otherwise (e.g. for ``"unknown"``,
-        for an unfamiliar slug, or when the workspace tree is absent at
-        runtime).
+        Path to the canonical manifest if the slug resolves (via alias or
+        directly) **and** the file exists on disk; ``None`` otherwise (e.g.
+        for ``"unknown"``, for an unfamiliar slug, or when the workspace tree
+        is absent at runtime).
 
     Example:
         >>> from openral_detect.registry import canonical_robot_path
         >>> p = canonical_robot_path("so100")
         >>> p is None or p.name == "robot.yaml"
         True
+        >>> # Canonical directory name resolves directly (no alias needed):
+        >>> q = canonical_robot_path("so101_follower")
+        >>> q is None or q.parent.name == "so101_follower"
+        True
     """
-    sub = _OPENRAL_ROBOT_TYPE_TO_DIR.get(bh_robot_type)
-    if sub is None:
+    sub = _OPENRAL_ROBOT_TYPE_TO_DIR.get(bh_robot_type, bh_robot_type)
+    if not sub:
         return None
     for root in _REPO_ROOT_CANDIDATES:
         candidate = root / "robots" / sub / "robot.yaml"

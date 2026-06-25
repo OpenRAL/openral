@@ -6401,21 +6401,17 @@ class RobotEnvironment(BaseModel):
     """A full hardware deployment configuration — the ``openral deploy`` artefact.
 
     Sibling of :class:`SimEnvironment` for real hardware. Loaded from YAML
-    by ``openral_runner`` (planned, ADR-0010) and consumed by the
-    hardware ``InferenceRunner``. The runner instantiates the HAL adapter,
-    opens every :class:`SensorReader`, wires the
-    :class:`~openral_world_state.aggregator.WorldStateAggregator`,
-    constructs the :class:`~openral_rskill.Skill` from
-    ``vla.weights_uri`` (a bare rSkill reference — name, path, or HF repo ID)
-    and ticks at ``rate_hz``.
+    by ``openral deploy run``, which shells the ``sim_e2e.launch.py`` ROS
+    graph with this config's ``robot_id`` + ``hal.transport``. The rSkill
+    that drives the robot is **not** pinned here: the reasoner selects it at
+    runtime from the installed registry (``rskills/``), filtered to the
+    robot's embodiment + capabilities — the same palette path as
+    ``openral deploy sim``.
 
     Cross-field invariants enforced in :meth:`model_post_init`:
 
     * Every :attr:`SensorReaderConfig.sensor_id` MUST be unique within
       :attr:`sensors`.
-    * :attr:`vla.weights_uri` MUST be a bare rSkill reference (no URI scheme)
-      — the rSkill manifest is the contract between robot/sensors/preprocessing
-      and policy weights (CLAUDE.md §6.4).
 
     Attributes:
         robot_id: ID into the ROBOTS registry — matches a
@@ -6428,8 +6424,6 @@ class RobotEnvironment(BaseModel):
         task: What the robot should achieve. Reused from
             :class:`SimEnvironment` so :attr:`TaskSpec.instruction` becomes
             the language prompt handed to the VLA.
-        vla: Policy that drives the robot. ``vla.weights_uri`` MUST be a
-            bare rSkill reference (name, path, or HF repo ID).
         safety: Optional :class:`SafetyEnvelope` override; falls back to the
             robot's :attr:`RobotDescription.safety` when ``None``.
         rate_hz: Foreground tick rate. Default 30 Hz (matches the
@@ -6457,10 +6451,6 @@ class RobotEnvironment(BaseModel):
         ...         scene_id="pick_cube/red",
         ...         instruction="pick up the red cube",
         ...     ),
-        ...     vla=VLASpec(
-        ...         id="smolvla",
-        ...         weights_uri="rskills/smolvla-so100",
-        ...     ),
         ... )
         >>> env.rate_hz
         30.0
@@ -6472,7 +6462,6 @@ class RobotEnvironment(BaseModel):
     hal: HalConfig
     sensors: list[SensorReaderConfig] = Field(default_factory=list)
     task: TaskSpec
-    vla: VLASpec
     safety: SafetyEnvelope | None = None
     rate_hz: float = Field(default=30.0, gt=0)
     thumbnail_hz: float = Field(default=25.0, ge=0)
@@ -6482,7 +6471,7 @@ class RobotEnvironment(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
 
     def model_post_init(self, _context: object) -> None:
-        """Cross-field validation: unique sensors, bare rSkill weights_uri."""
+        """Cross-field validation: unique sensor ids."""
         seen: set[str] = set()
         for sensor in self.sensors:
             if sensor.sensor_id in seen:
@@ -6492,15 +6481,6 @@ class RobotEnvironment(BaseModel):
                     f"sensor must be configured at most once."
                 )
             seen.add(sensor.sensor_id)
-        for bad in ("hf://", "local://", "file://", "http://", "https://"):
-            if self.vla.weights_uri.startswith(bad):
-                raise ValueError(
-                    f"RobotEnvironment({self.robot_id!r}).vla.weights_uri must "
-                    f"be a bare rSkill reference (name, path, or HF repo ID), "
-                    f"got {self.vla.weights_uri!r}; hardware deployments resolve "
-                    f"weights through an rSkill manifest for reproducibility "
-                    f"(CLAUDE.md §6.4)."
-                )
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotEnvironment:

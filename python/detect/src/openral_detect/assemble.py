@@ -48,6 +48,7 @@ import platform
 import socket
 from typing import Any
 
+from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     ComputeSpec,
     EmbodimentKind,
@@ -122,6 +123,7 @@ def assemble_robot_description(
     detection: DetectionReport,
     *,
     base_description: RobotDescription | None = None,
+    force_robot_type: str | None = None,
 ) -> RobotDescription:
     """Build a :class:`RobotDescription` from a probed host.
 
@@ -133,12 +135,25 @@ def assemble_robot_description(
             ``bh_robot_type`` (from USB matches or DDS inference) to
             ``robots/<name>/robot.yaml`` and loads it directly.  When no
             known robot matches, a minimal scaffold is synthesised.
+        force_robot_type: Operator override (``openral detect --robot``) that
+            pins the canonical base manifest regardless of what USB/DDS
+            inference found — accepts either a known slug (``"so100"``) or a
+            ``robots/<name>`` directory name (``"so100_follower"``). Needed
+            because the SO-100 and SO-101 are electrically indistinguishable
+            over USB (same Feetech controller); a bare plug-in defaults to the
+            SO-101, so this selects the SO-100. Ignored when ``base_description``
+            is supplied.
 
     Returns:
         A fully-populated :class:`RobotDescription` ready to be written to
         disk and consumed by :func:`openral_detect.check_installed_rskills`.
+
+    Raises:
+        ROSConfigError: When ``force_robot_type`` is set but does not resolve
+            to a committed ``robots/<name>/robot.yaml`` — surfaced loudly
+            rather than silently falling back to inference (CLAUDE.md §1.4).
     """
-    base = base_description or _pick_base(detection)
+    base = base_description or _pick_base(detection, force_robot_type=force_robot_type)
     base = _enrich_sensors(base, detection)
     base = _enrich_compute(base, detection)
     base = _enrich_ros2(base, detection)
@@ -148,8 +163,20 @@ def assemble_robot_description(
 # ── 1. Pick base ──────────────────────────────────────────────────────────────
 
 
-def _pick_base(detection: DetectionReport) -> RobotDescription:
-    """Look up canonical manifest by inferred robot type or synthesise scaffold."""
+def _pick_base(
+    detection: DetectionReport, *, force_robot_type: str | None = None
+) -> RobotDescription:
+    """Look up canonical manifest by override or inferred robot type, else scaffold."""
+    if force_robot_type:
+        path = canonical_robot_path(force_robot_type)
+        if path is None:
+            raise ROSConfigError(
+                f"openral detect --robot {force_robot_type!r}: no committed "
+                f"robots/<name>/robot.yaml resolves for that slug. Pass a known "
+                f"alias (e.g. 'so101') or a canonical directory name "
+                f"(e.g. 'so101_follower')."
+            )
+        return RobotDescription.from_yaml(str(path))
     inferred = _infer_bh_robot_type(detection)
     if inferred is not None:
         path = canonical_robot_path(inferred)

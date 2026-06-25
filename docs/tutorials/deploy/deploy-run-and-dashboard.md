@@ -26,10 +26,41 @@ Rizon 4, H1, G1, panda_mobile), and an installed rSkill (see
 
 Deployment configs live in
 [`deployments/`](https://github.com/OpenRAL/openral/blob/master/deployments/README.md).
-A `RobotEnvironment` pins one deployment: `(robot × HAL × sensors × task × VLA
-× safety)`. They are intentionally **not** shipped in the open-core tree —
+A `RobotEnvironment` pins one deployment: `(robot × HAL × sensors × task ×
+safety)` — the rSkill is reasoner-selected at runtime, not pinned. They are
+intentionally **not** shipped in the open-core tree —
 they encode a specific lab's robot IP / FCI port / camera serial — so you add
 your own.
+
+### Option A — scaffold it from `openral detect`
+
+If the robot is plugged in, let detection write most of the config for you.
+Detection knows the robot identity, the serial `port`, and every camera; it
+*cannot* know the task or the policy, so those land as `TODO` placeholders:
+
+```bash
+# A bare detect resolves a plugged-in Feetech arm to so101_follower by default
+# and emits the matching deploy config with --deployment:
+openral detect \
+    --output robots/so101_follower/robot.yaml \
+    --deployment deployments/so101_pick_cube.yaml
+```
+
+This pre-fills `robot_id`, `hal.transport.port` (the detected `/dev/tty*`),
+and one `sensors[]` reader per detected camera. `safety` is left `null` so the
+robot's own envelope from `robots/so101_follower/robot.yaml` applies. Open the
+file and replace the `TODO` `task` field (what to do), then continue to step 2.
+The rSkill that drives the robot is **not** set here — the reasoner selects it
+at runtime from the installed `rskills/` registry, filtered to the robot's
+embodiment (the same path `openral deploy sim` uses).
+
+> The SO-101 is electrically identical to the SO-100 over USB (same Feetech
+> controller), so the bus alone can't distinguish them — the current SO-101 is
+> the default. To target the older SO-100 instead, add `--robot so100` (the flag
+> accepts a short slug like `so100` or a manifest directory name like
+> `so100_follower`).
+
+### Option B — write it by hand
 
 Create `deployments/so100_pick_cube.yaml`:
 
@@ -45,16 +76,13 @@ task:
   id: pick_cube/red
   scene_id: pick_cube/red
   instruction: "pick up the red cube"   # becomes the VLA's language prompt
-vla:
-  id: molmoact2
-  weights_uri: rskills/molmoact2-so101-nf4   # skill reference (bare name or rskills/<name>)
 rate_hz: 30.0
 ```
 
-Two invariants the loader enforces: every `sensors[].sensor_id` is unique, and
-`vla.weights_uri` must be a valid skill reference — the rSkill manifest is the
-contract between the robot, sensors, preprocessing, and weights. The full
-schema is
+The driving rSkill is intentionally absent — at runtime the reasoner picks it
+from the installed `rskills/` registry, filtered to the robot's embodiment, so
+the config never pins a policy. The loader enforces that every
+`sensors[].sensor_id` is unique. The full schema is
 [`openral_core.schemas.RobotEnvironment`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py).
 `safety` is optional and falls back to the robot manifest's `SafetyEnvelope`.
 
@@ -73,9 +101,11 @@ HAL driven by a `SceneEnvironment` YAML — no robot required:
 
 ```bash
 openral deploy sim \
-  --config scenes/benchmark/libero_spatial.yaml \
-  --rskill rskills/smolvla-libero
+  --config scenes/benchmark/libero_spatial.yaml
 ```
+
+`deploy sim` takes no `--rskill` — the reasoner picks the active rSkill from the
+in-tree `rskills/` palette at `on_configure`, embodiment-filtered.
 
 This is the safe place to shake out manifest, sensor, and rSkill-compatibility
 errors.
@@ -92,7 +122,7 @@ by default; run it like so:
 ```bash
 just sync --group robocasa    # robosuite + deps (swaps out the libero/sim group)
 OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
-  --config scenes/deploy/robocasa_navigate.yaml --rskill <rskill>
+  --config scenes/deploy/robocasa_navigate.yaml
 ```
 
 Do **not** hand-install `robocasa` / `robosuite` — that pulls the wrong

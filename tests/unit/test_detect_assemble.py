@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from openral_core.schemas import (
     QuantizationDtype,
     RobotDescription,
@@ -89,6 +90,54 @@ class TestUnknownRobotScaffold:
         desc = assemble_robot_description(report)
         assert desc.name.startswith("unknown_")
         assert desc.capabilities.embodiment_tags == ["unknown"]
+
+
+class TestForceRobotType:
+    """`openral detect --robot <slug>` pins the canonical base manifest.
+
+    The SO-101 is electrically identical to the SO-100 over USB (same Feetech
+    controller / VID/PID), so USB inference always yields ``so100``. The
+    override is the only way to select the SO-101 manifest.
+    """
+
+    def _so100_usb_report(self) -> DetectionReport:
+        usb_dev = UsbDeviceRecord(
+            port="/dev/ttyACM1",
+            vid=0x1A86,
+            pid=0x7523,
+            description="CH340 Feetech bus",
+        )
+        return _empty_report(
+            usb=UsbProbeResult(
+                devices=[usb_dev],
+                matches=[
+                    UsbMatchRecord(
+                        device=usb_dev,
+                        chip="CH340",
+                        driver_hint="Feetech serial bus",
+                        embodiment_tag="so100_follower",
+                        bh_robot_type="so100",
+                    )
+                ],
+            ),
+        )
+
+    def test_force_so101_overrides_usb_so100_inference(self) -> None:
+        desc = assemble_robot_description(self._so100_usb_report(), force_robot_type="so101")
+        assert desc.name == "so101_follower"
+        assert "so101_follower" in desc.capabilities.embodiment_tags
+
+    def test_force_accepts_canonical_directory_name(self) -> None:
+        desc = assemble_robot_description(
+            self._so100_usb_report(), force_robot_type="so101_follower"
+        )
+        assert desc.name == "so101_follower"
+
+    def test_force_unknown_slug_raises_rosconfigerror(self) -> None:
+        from openral_core.exceptions import ROSConfigError
+
+        with pytest.raises(ROSConfigError, match="no committed"):
+            assemble_robot_description(self._so100_usb_report(), force_robot_type="not_a_robot")
 
 
 class TestSensorEnrichment:

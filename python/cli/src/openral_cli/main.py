@@ -69,9 +69,14 @@ from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
 
 if TYPE_CHECKING:
-    from openral_core import BenchmarkScene, RSkillEvalResult, VLASpec
+    from openral_core import (
+        BenchmarkScene,
+        RobotEnvironment,
+        RSkillEvalResult,
+        VLASpec,
+    )
     from openral_core.schemas import RSkillManifest
-    from openral_detect import CompatibilityReport, RSkillCompatRow
+    from openral_detect import CompatibilityReport, RSkillCompatRow, ScaffoldOverrides
     from openral_detect.report import GpuProbeResult
 
     from openral_cli._rskill_intel import RSkillFamily, RSkillPatch
@@ -849,6 +854,22 @@ def detect(
     output: Path = typer.Option(
         Path("robot.yaml"), "--output", "-o", help="Output robot.yaml path"
     ),
+    robot_type: str | None = typer.Option(
+        None,
+        "--robot",
+        "--as",
+        help="Force the canonical base manifest (slug e.g. 'so100' or dir name "
+        "'so100_follower'), overriding USB/DDS inference. A bare Feetech "
+        "plug-in defaults to the SO-101; use this to select the SO-100 (the "
+        "two are indistinguishable over USB).",
+    ),
+    deployment: Path | None = typer.Option(
+        None,
+        "--deployment",
+        help="Also scaffold a RobotEnvironment deploy config to this path "
+        "(robot_id + port + sensors pre-filled; task left as TODO; the rSkill "
+        "is reasoner-selected at runtime, not pinned).",
+    ),
     report: Path | None = typer.Option(
         None,
         "--report",
@@ -862,6 +883,14 @@ def detect(
         "--include",
         help="Comma-separated probe names to run (default: all). "
         "Choices: usb, dds, gpu, cameras_v4l2, cameras_realsense, network.",
+    ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="With --deployment, prompt for the fields detection cannot infer "
+        "(task, workspace box, a friendly label) and fill them into the "
+        "deploy config instead of leaving TODO placeholders.",
     ),
     no_write: bool = typer.Option(
         False, "--no-write", help="Print summary and skip writing robot.yaml"
@@ -908,16 +937,30 @@ def detect(
         report.write_text(detection.model_dump_json(indent=2), encoding="utf-8")
         console.print(f"[green]Wrote[/green] {report} (raw DetectionReport)")
 
-    description = assemble_robot_description(detection)
+    try:
+        description = assemble_robot_description(detection, force_robot_type=robot_type)
+    except ROSConfigError as exc:
+        console.print(f"[red]detect:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     yaml_text = _yaml.safe_dump(
         description.model_dump(mode="json"),
         sort_keys=False,
         default_flow_style=False,
     )
 
+    if interactive and deployment is None:
+        console.print(
+            "[yellow]--interactive has no effect without --deployment[/yellow] "
+            "(it only fills the deploy config); ignoring."
+        )
+
     if no_write:
         console.print("\n[dim]--no-write set — printing yaml to stdout:[/dim]\n")
         console.print(yaml_text)
+        if deployment is not None:
+            _emit_deployment_scaffold(
+                description, detection, deployment, assume_yes=yes, interactive=interactive
+            )
         return
 
     if output.exists() and not yes:
@@ -929,6 +972,142 @@ def detect(
     output.write_text(yaml_text, encoding="utf-8")
     console.print(f"\n[green]Wrote[/green] {output} (RobotDescription, {description.name})")
     console.print(f"[dim]Next step:[/dim] openral rskill check --robot {output}")
+
+    if deployment is not None:
+        _emit_deployment_scaffold(
+            description, detection, deployment, assume_yes=yes, interactive=interactive
+        )
+
+
+def _emit_deployment_scaffold(
+    description: object,
+    detection: object,
+    path: Path,
+    *,
+    assume_yes: bool,
+    interactive: bool = False,
+) -> None:
+    """Scaffold + write a RobotEnvironment deploy config next to robot.yaml."""
+    import yaml as _yaml
+    from openral_core import RobotDescription
+    from openral_detect import DetectionReport, scaffold_robot_environment
+
+    assert isinstance(description, RobotDescription)  # reason: typed input
+    assert isinstance(detection, DetectionReport)  # reason: typed input
+
+    if path.exists() and not assume_yes:
+        overwrite = typer.confirm(f"{path} already exists. Overwrite?", default=False)
+        if not overwrite:
+            console.print("[yellow]Skipped deployment scaffold.[/yellow]")
+            return
+
+    overrides = _prompt_scaffold_overrides() if interactive else None
+    env = scaffold_robot_environment(description, detection, overrides=overrides)
+    yaml_text = _yaml.safe_dump(
+        env.model_dump(mode="json"),
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    path.write_text(_deployment_banner(env) + yaml_text, encoding="utf-8")
+    n_sensors = len(env.sensors)
+    console.print(
+        f"[green]Wrote[/green] {path} (RobotEnvironment, {env.robot_id}, "
+        f"{n_sensors} sensor reader(s))"
+    )
+    todo = _edit_before_deploy(env)
+    if todo:
+        console.print(
+            f"[yellow]Edit {' + '.join(todo)} before deploy:[/yellow] "
+            f"openral deploy run --config {path}"
+        )
+    else:
+        console.print(f"[green]Ready:[/green] openral deploy run --config {path}")
+
+
+def _edit_before_deploy(env: RobotEnvironment) -> list[str]:
+    """The ``metadata.edit_before_deploy`` list, normalized to ``list[str]``."""
+    raw = env.metadata.get("edit_before_deploy")
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
+def _deployment_banner(env: RobotEnvironment) -> str:
+    """Comment header documenting what detection filled vs the human-only fields.
+
+    The flagged fields are exactly those detection cannot infer: ``task`` (the
+    job), the ``safety`` workspace box / no-go zones, physical camera mount
+    poses (which live in the robot manifest's sensor frames, not the deploy
+    config), and a friendly ``metadata.label``. The rSkill is intentionally
+    absent — the reasoner picks it at runtime from the installed registry.
+    """
+    todo = set(_edit_before_deploy(env))
+
+    def mark(key: str) -> str:
+        return "TODO — " if key in todo else "set — "
+
+    safety_note = (
+        "set on this deploy"
+        if env.safety is not None
+        else f"null → robots/{env.robot_id}/robot.yaml limits apply"
+    )
+    return (
+        "# RobotEnvironment scaffolded by `openral detect --deployment`.\n"
+        "# robot_id, hal.transport.port, and sensors were filled from detection.\n"
+        "# Detection cannot infer the rest — review before `openral deploy run`:\n"
+        f"#   task   {mark('task')}the job the robot should do (id + instruction)\n"
+        f"#   safety — {safety_note};\n"
+        "#            set workspace_box_min/max_xyz + no_go_zones to tighten the cell.\n"
+        "#   cameras — readers carry device + fps only; a camera's physical mount\n"
+        "#            pose lives in the robot manifest's sensor frames, not here.\n"
+        "#   metadata.label — optional friendly name for this deployment.\n"
+        "# The driving rSkill is not pinned here — the reasoner selects it at\n"
+        "# runtime from the installed rskills/ registry, embodiment-filtered.\n"
+        "# Re-run with `--interactive` to be prompted for these instead.\n"
+    )
+
+
+def _prompt_scaffold_overrides() -> ScaffoldOverrides:
+    """Interactively collect the fields detection cannot infer.
+
+    Empty answers are left as ``TODO`` placeholders (the deploy guard still
+    flags them), so an operator can fill only what they know now.
+    """
+    from openral_detect import ScaffoldOverrides
+
+    console.print(
+        "\n[bold]Interactive deploy config[/bold] — press Enter to leave any field as TODO.\n"
+    )
+
+    def _ask(label: str) -> str | None:
+        ans = typer.prompt(label, default="", show_default=False).strip()
+        return ans or None
+
+    def _ask_xyz(label: str) -> tuple[float, float, float] | None:
+        raw = typer.prompt(f"{label} (x,y,z metres)", default="", show_default=False).strip()
+        if not raw:
+            return None
+        try:
+            x, y, z = (float(v) for v in raw.split(","))
+        except ValueError:
+            console.print("[yellow]  not 3 comma-separated numbers — skipping.[/yellow]")
+            return None
+        return (x, y, z)
+
+    label = _ask("Deployment label (friendly name)")
+    task_instruction = _ask("Task: natural-language goal")
+    task_id = _ask("Task id (e.g. pick_and_place/desk)")
+    wmin = _ask_xyz("Workspace box min corner")
+    wmax = _ask_xyz("Workspace box max corner")
+    if (wmin is None) != (wmax is None):
+        console.print("[yellow]Workspace box needs both corners — ignoring the lone one.[/yellow]")
+        wmin = wmax = None
+
+    return ScaffoldOverrides(
+        label=label,
+        task_id=task_id,
+        task_instruction=task_instruction,
+        workspace_box_min_xyz=wmin,
+        workspace_box_max_xyz=wmax,
+    )
 
 
 def _render_detection_summary(detection: object) -> None:
@@ -985,28 +1164,32 @@ def _render_detection_summary(detection: object) -> None:
 
 @app.command()
 def connect(
-    robot: str = typer.Option(..., help="Robot type (so100, g1, ur5e, …)"),
+    robot: str = typer.Option(..., help="Robot type (so100, so101, g1, ur5e, …)"),
     port: str = typer.Option("", "--port", help="USB/serial port override, e.g. /dev/ttyUSB0"),
 ) -> None:
     """Open a HAL connection to a robot, read one joint state, and disconnect.
 
     Exits 0 on success; exits 1 with an error message on failure.
 
-    Supported robots: so100
+    Supported robots: so100, so101 (both drive the shared ``SO100FollowerHAL``
+    Feetech serial bus — the SO-101 is the same controller as the SO-100).
 
     Example:
         >>> # openral connect --robot so100
-        >>> # openral connect --robot so100 --port /dev/ttyUSB1
+        >>> # openral connect --robot so101 --port /dev/ttyUSB1
     """
-    if robot == "so100":
-        _connect_so100(port or "/dev/ttyUSB0")
+    # so100 and so101 share the Feetech SO100FollowerHAL (identical USB
+    # controller + driver); the label only changes the console banner.
+    so_follower_labels = {"so100": "SO-100", "so101": "SO-101"}
+    if robot in so_follower_labels:
+        _connect_so_follower(so_follower_labels[robot], port or "/dev/ttyUSB0")
     else:
-        console.print(f"[red]Unknown robot '{robot}'. Supported: so100[/red]")
+        console.print(f"[red]Unknown robot '{robot}'. Supported: so100, so101[/red]")
         raise typer.Exit(code=1)
 
 
-def _connect_so100(port: str) -> None:
-    """Connect to an SO-100 follower arm, read state, and disconnect."""
+def _connect_so_follower(label: str, port: str) -> None:
+    """Connect to an SO-100/SO-101 follower arm, read state, and disconnect."""
     try:
         from openral_hal.so100_follower import SO100FollowerHAL
     except ImportError:
@@ -1014,7 +1197,7 @@ def _connect_so100(port: str) -> None:
         raise typer.Exit(code=1)  # noqa: B904
 
     hal = SO100FollowerHAL(port=port)
-    console.print(f"Connecting to SO-100 on [bold]{port}[/bold] …")
+    console.print(f"Connecting to {label} on [bold]{port}[/bold] …")
     try:
         hal.connect()
     except ROSConfigError as exc:
@@ -2467,6 +2650,13 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
+    if manifest.model_family is None:
+        # Only `kind='vla'` skills carry a model_family; a detector/reward skill
+        # has none and cannot drive a VLASpec.
+        raise typer.BadParameter(
+            f"rSkill {raw!r} has no model_family (kind={manifest.kind!r}); "
+            f"--rskill expects a VLA skill."
+        )
     return VLASpec(
         id=manifest.model_family,
         weights_uri=uri,

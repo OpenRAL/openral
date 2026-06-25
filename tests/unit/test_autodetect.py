@@ -41,10 +41,20 @@ class TestVidPidTable:
     def test_ftdi_in_table(self) -> None:
         assert (0x0403, 0x6001) in _VID_PID_TABLE
 
-    def test_ch340_maps_to_so100(self) -> None:
+    def test_ch340_maps_to_so101_by_default(self) -> None:
+        # SO-100 and SO-101 are indistinguishable over USB; the current SO-101
+        # is the default (an SO-100 is selected via `--robot so100`).
         entry = _VID_PID_TABLE[(0x1A86, 0x7523)]
-        assert entry.bh_robot_type == "so100"
-        assert entry.embodiment_tag == "so100_follower"
+        assert entry.bh_robot_type == "so101"
+        assert entry.embodiment_tag == "so101_follower"
+
+    def test_ch343_cdc_acm_maps_to_so101(self) -> None:
+        # Many SO-101 control boards ship the WCH CH343 (1a86:55d3), which
+        # enumerates as a CDC-ACM /dev/ttyACM* node — it must map to SO-101
+        # just like the CH340/CH9102 variants.
+        entry = _VID_PID_TABLE[(0x1A86, 0x55D3)]
+        assert entry.bh_robot_type == "so101"
+        assert entry.embodiment_tag == "so101_follower"
 
     def test_known_device_is_named_tuple(self) -> None:
         entry = _VID_PID_TABLE[(0x1A86, 0x7523)]
@@ -69,7 +79,7 @@ class TestMatchKnownDevices:
         matches = match_known_devices([dev])
         assert len(matches) == 1
         assert matches[0].device is dev
-        assert matches[0].known.bh_robot_type == "so100"
+        assert matches[0].known.bh_robot_type == "so101"
 
     def test_unknown_vid_pid_not_matched(self) -> None:
         dev = UsbDevice(port="/dev/ttyUSB0", vid=0xDEAD, pid=0xBEEF, description="unknown")
@@ -130,7 +140,12 @@ class TestInferRobotFromTopics:
         topics = [DdsTopic("/follower_arms_position_goal", "std_msgs/msg/Float64MultiArray")]
         assert infer_robot_from_topics(topics) == "aloha"
 
-    def test_so100_topic(self) -> None:
+    def test_so101_topic(self) -> None:
+        topics = [DdsTopic("/so101/joint_state", "sensor_msgs/msg/JointState")]
+        assert infer_robot_from_topics(topics) == "so101"
+
+    def test_so100_topic_still_resolves_explicitly(self) -> None:
+        # An explicit SO-100 lifecycle node is still honoured as so100.
         topics = [DdsTopic("/so100/joint_state", "sensor_msgs/msg/JointState")]
         assert infer_robot_from_topics(topics) == "so100"
 
