@@ -48,6 +48,14 @@ class TestVidPidTable:
         assert entry.bh_robot_type == "so101"
         assert entry.embodiment_tag == "so101_follower"
 
+    def test_ch343_cdc_acm_maps_to_so101(self) -> None:
+        # Many SO-101 control boards ship the WCH CH343 (1a86:55d3), which
+        # enumerates as a CDC-ACM /dev/ttyACM* node — it must map to SO-101
+        # just like the CH340/CH9102 variants.
+        entry = _VID_PID_TABLE[(0x1A86, 0x55D3)]
+        assert entry.bh_robot_type == "so101"
+        assert entry.embodiment_tag == "so101_follower"
+
     def test_known_device_is_named_tuple(self) -> None:
         entry = _VID_PID_TABLE[(0x1A86, 0x7523)]
         assert isinstance(entry, KnownDevice)

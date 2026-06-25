@@ -123,6 +123,12 @@ _VID_PID_TABLE: dict[tuple[int, int], KnownDevice] = {
         "so101_follower",
         "so101",
     ),
+    (0x1A86, 0x55D3): KnownDevice(
+        "CH343",
+        "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
+        "so101_follower",
+        "so101",
+    ),
     (0x1A86, 0x55D4): KnownDevice(
         "CH9102",
         "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
@@ -232,7 +238,10 @@ def _enumerate_linux_pyudev() -> list[UsbDevice]:
         ctx = pyudev.Context()
         devices: list[UsbDevice] = []
         for dev in ctx.list_devices(subsystem="tty"):
-            parent = dev.find_parent("usb", "usb_interface")
+            # VID/PID/model live on the usb_device node, not the usb_interface
+            # — CDC-ACM boards (/dev/ttyACM*, e.g. the SO-101's CH343) leave them
+            # unset on the interface, so read them from the usb_device parent.
+            parent = dev.find_parent("usb", "usb_device")
             if parent is None:
                 continue
             port = dev.get("DEVNAME", "")
