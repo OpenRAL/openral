@@ -558,10 +558,17 @@ if _ROS2_AVAILABLE:
                 return
 
             data = bytes(getattr(msg, "data", b"") or b"")
-            now_ns = time.time_ns()
+            # ROS clock, NOT time.time_ns(): under deploy-sim every node runs on
+            # use_sim_time and the camera's header.stamp is sim time, so a wall
+            # `now` minus a sim stamp yields a nonsensical age (~1e8-1e12 ms on the
+            # dashboard). get_clock() is sim time under use_sim_time and wall on a
+            # real robot — the same domain as the publisher's stamp either way, so
+            # the age is correct in both. Matches this node's other stamps (voxels,
+            # depth points, world-state ticks).
+            now_ns = self.get_clock().now().nanoseconds
             # Source-stamp the frame: pull header.stamp when present so
             # the perception age reflects the publisher's clock, not the
-            # subscriber's. Falls back to wall time when the publisher
+            # subscriber's. Falls back to the ROS clock when the publisher
             # leaves the stamp empty.
             header = getattr(msg, "header", None)
             stamp_ros = getattr(header, "stamp", None) if header is not None else None
