@@ -2646,6 +2646,13 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
+    if manifest.model_family is None:
+        # Only `kind='vla'` skills carry a model_family; a detector/reward skill
+        # has none and cannot drive a VLASpec.
+        raise typer.BadParameter(
+            f"rSkill {raw!r} has no model_family (kind={manifest.kind!r}); "
+            f"--rskill expects a VLA skill."
+        )
     return VLASpec(
         id=manifest.model_family,
         weights_uri=uri,

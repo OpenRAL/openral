@@ -40,3 +40,9 @@ def test_local_scheme_rejected() -> None:
 def test_empty_rejected() -> None:
     with pytest.raises(typer.BadParameter):
         _parse_rskill_cli_arg("")
+
+
+def test_non_vla_rskill_rejected() -> None:
+    """A detector/reward skill has no `model_family`, so it cannot be a VLASpec."""
+    with pytest.raises(typer.BadParameter, match="no model_family"):
+        _parse_rskill_cli_arg("rskills/omdet-turbo-indoor")
