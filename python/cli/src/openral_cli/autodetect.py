@@ -109,19 +109,19 @@ _VID_PID_TABLE: dict[tuple[int, int], KnownDevice] = {
     # Used on cheap USB-to-TTL dongles, many SO-100 debug boards, LeKiwi.
     (0x1A86, 0x7523): KnownDevice(
         "CH340",
-        "Feetech serial bus — SO-100 / Koch / LeKiwi arm",
+        "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
         "so100_follower",
         "so100",
     ),
     (0x1A86, 0x7522): KnownDevice(
         "CH340C/K",
-        "Feetech serial bus — SO-100 / Koch / LeKiwi arm",
+        "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
         "so100_follower",
         "so100",
     ),
     (0x1A86, 0x55D4): KnownDevice(
         "CH9102",
-        "Feetech serial bus — SO-100 / Koch / LeKiwi arm",
+        "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
         "so100_follower",
         "so100",
     ),

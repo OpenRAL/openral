@@ -849,6 +849,20 @@ def detect(
     output: Path = typer.Option(
         Path("robot.yaml"), "--output", "-o", help="Output robot.yaml path"
     ),
+    robot_type: str | None = typer.Option(
+        None,
+        "--robot",
+        "--as",
+        help="Force the canonical base manifest (slug 'so101' or dir name "
+        "'so101_follower'), overriding USB/DDS inference. Needed for the "
+        "SO-101, which is electrically identical to the SO-100 over USB.",
+    ),
+    deployment: Path | None = typer.Option(
+        None,
+        "--deployment",
+        help="Also scaffold a RobotEnvironment deploy config to this path "
+        "(robot_id + port + sensors pre-filled; task + vla left as TODO).",
+    ),
     report: Path | None = typer.Option(
         None,
         "--report",
@@ -908,7 +922,11 @@ def detect(
         report.write_text(detection.model_dump_json(indent=2), encoding="utf-8")
         console.print(f"[green]Wrote[/green] {report} (raw DetectionReport)")
 
-    description = assemble_robot_description(detection)
+    try:
+        description = assemble_robot_description(detection, force_robot_type=robot_type)
+    except ROSConfigError as exc:
+        console.print(f"[red]detect:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     yaml_text = _yaml.safe_dump(
         description.model_dump(mode="json"),
         sort_keys=False,
@@ -918,6 +936,8 @@ def detect(
     if no_write:
         console.print("\n[dim]--no-write set — printing yaml to stdout:[/dim]\n")
         console.print(yaml_text)
+        if deployment is not None:
+            _emit_deployment_scaffold(description, detection, deployment, assume_yes=yes)
         return
 
     if output.exists() and not yes:
@@ -929,6 +949,55 @@ def detect(
     output.write_text(yaml_text, encoding="utf-8")
     console.print(f"\n[green]Wrote[/green] {output} (RobotDescription, {description.name})")
     console.print(f"[dim]Next step:[/dim] openral rskill check --robot {output}")
+
+    if deployment is not None:
+        _emit_deployment_scaffold(description, detection, deployment, assume_yes=yes)
+
+
+def _emit_deployment_scaffold(
+    description: object,
+    detection: object,
+    path: Path,
+    *,
+    assume_yes: bool,
+) -> None:
+    """Scaffold + write a RobotEnvironment deploy config next to robot.yaml."""
+    import yaml as _yaml
+    from openral_core import RobotDescription
+    from openral_detect import DetectionReport, scaffold_robot_environment
+    from openral_detect.scaffold import TODO_TASK_ID, TODO_VLA_WEIGHTS_URI
+
+    assert isinstance(description, RobotDescription)  # reason: typed input
+    assert isinstance(detection, DetectionReport)  # reason: typed input
+
+    if path.exists() and not assume_yes:
+        overwrite = typer.confirm(f"{path} already exists. Overwrite?", default=False)
+        if not overwrite:
+            console.print("[yellow]Skipped deployment scaffold.[/yellow]")
+            return
+
+    env = scaffold_robot_environment(description, detection)
+    banner = (
+        "# RobotEnvironment scaffolded by `openral detect --deployment`.\n"
+        f"# robot_id, hal.transport.port, and sensors were filled from detection.\n"
+        f"# Robot limits come from robots/{env.robot_id}/robot.yaml (safety: null).\n"
+        f"# EDIT BEFORE `openral deploy run`: set `task` (id={TODO_TASK_ID!r}) and\n"
+        f"# `vla` (weights_uri={TODO_VLA_WEIGHTS_URI!r}) — detection cannot know these.\n"
+    )
+    yaml_text = _yaml.safe_dump(
+        env.model_dump(mode="json"),
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    path.write_text(banner + yaml_text, encoding="utf-8")
+    n_sensors = len(env.sensors)
+    console.print(
+        f"[green]Wrote[/green] {path} (RobotEnvironment, {env.robot_id}, "
+        f"{n_sensors} sensor reader(s))"
+    )
+    console.print(
+        f"[yellow]Edit task + vla before deploy:[/yellow] openral deploy run --config {path}"
+    )
 
 
 def _render_detection_summary(detection: object) -> None:
@@ -985,28 +1054,32 @@ def _render_detection_summary(detection: object) -> None:
 
 @app.command()
 def connect(
-    robot: str = typer.Option(..., help="Robot type (so100, g1, ur5e, …)"),
+    robot: str = typer.Option(..., help="Robot type (so100, so101, g1, ur5e, …)"),
     port: str = typer.Option("", "--port", help="USB/serial port override, e.g. /dev/ttyUSB0"),
 ) -> None:
     """Open a HAL connection to a robot, read one joint state, and disconnect.
 
     Exits 0 on success; exits 1 with an error message on failure.
 
-    Supported robots: so100
+    Supported robots: so100, so101 (both drive the shared ``SO100FollowerHAL``
+    Feetech serial bus — the SO-101 is the same controller as the SO-100).
 
     Example:
         >>> # openral connect --robot so100
-        >>> # openral connect --robot so100 --port /dev/ttyUSB1
+        >>> # openral connect --robot so101 --port /dev/ttyUSB1
     """
-    if robot == "so100":
-        _connect_so100(port or "/dev/ttyUSB0")
+    # so100 and so101 share the Feetech SO100FollowerHAL (identical USB
+    # controller + driver); the label only changes the console banner.
+    so_follower_labels = {"so100": "SO-100", "so101": "SO-101"}
+    if robot in so_follower_labels:
+        _connect_so_follower(so_follower_labels[robot], port or "/dev/ttyUSB0")
     else:
-        console.print(f"[red]Unknown robot '{robot}'. Supported: so100[/red]")
+        console.print(f"[red]Unknown robot '{robot}'. Supported: so100, so101[/red]")
         raise typer.Exit(code=1)
 
 
-def _connect_so100(port: str) -> None:
-    """Connect to an SO-100 follower arm, read state, and disconnect."""
+def _connect_so_follower(label: str, port: str) -> None:
+    """Connect to an SO-100/SO-101 follower arm, read state, and disconnect."""
     try:
         from openral_hal.so100_follower import SO100FollowerHAL
     except ImportError:
@@ -1014,7 +1087,7 @@ def _connect_so100(port: str) -> None:
         raise typer.Exit(code=1)  # noqa: B904
 
     hal = SO100FollowerHAL(port=port)
-    console.print(f"Connecting to SO-100 on [bold]{port}[/bold] …")
+    console.print(f"Connecting to {label} on [bold]{port}[/bold] …")
     try:
         hal.connect()
     except ROSConfigError as exc:
