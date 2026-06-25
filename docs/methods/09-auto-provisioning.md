@@ -4,7 +4,7 @@
 
 ### `python/detect/src/openral_detect/__init__.py`
 - `detect_hardware(*, dds_timeout_s=5.0, include=None, exclude=None) -> DetectionReport` — Umbrella probe entry. (in `detect.py:L33`)
-- `assemble_robot_description(detection, *, base_description=None, force_robot_type=None) -> RobotDescription` — Identify-then-enrich. `force_robot_type` (slug `"so101"` or dir name `"so101_follower"`) pins the canonical base manifest over USB/DDS inference and raises `ROSConfigError` when it does not resolve — needed for the SO-101, electrically identical to the SO-100 over USB. (in `assemble.py:L72`)
+- `assemble_robot_description(detection, *, base_description=None, force_robot_type=None) -> RobotDescription` — Identify-then-enrich. `force_robot_type` (slug or `robots/<name>` dir) pins the canonical base manifest over USB/DDS inference and raises `ROSConfigError` when it does not resolve — e.g. `--robot so100` to select the older arm, since a bare Feetech plug-in defaults to the SO-101 (the two are USB-indistinguishable). (in `assemble.py:L72`)
 - `scaffold_robot_environment(description, detection=None) -> RobotEnvironment` — Build a deploy `RobotEnvironment` from a detected robot: pre-fills `robot_id`, HAL serial `port` (detected USB match → manifest default → `/dev/ttyUSB0`), and one `SensorReaderConfig` per camera (with the probed `/dev/video*` when known); leaves `task` / `vla` as `TODO` placeholders and `safety=None` so the robot's own envelope applies. (in `scaffold.py:L51`)
 - `check_installed_rskills(robot, *, registry_path=None, rskills_dir=None) -> CompatibilityReport` — Walk-all: run `rSkill.check_compatibility` against every installed (and optionally in-tree) skill. (in `compatibility.py:L107`)
 - `check_single_rskill(rskill_id, robot) -> CompatibilityReport` — Resolve one id via `load_rskill_manifest` and emit a one-row report with per-section verdicts. (in `compatibility.py:L294`)
@@ -33,10 +33,10 @@
 - `probe_network(*, warnings=None) -> NetworkProbeResult` — Hostname / per-interface MAC / IPv4 / MTU / link-speed / default route via psutil.
 
 ### `python/detect/src/openral_detect/registry.py`
-- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve `"so100"` / `"so101"` / `"aloha"` / … to `robots/<name>/robot.yaml`. Two-step: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR`, then the slug tried verbatim as a `robots/<slug>/` dir — so an operator override can name any committed robot directly (`"so101_follower"`). (L61)
-- `signature_for_realsense(model_id) -> SensorSignature` (L104)
-- `signature_for_v4l2(name) -> SensorSignature` (L109)
-- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L114)
+- `canonical_robot_path(bh_robot_type) -> Path | None` — Resolve `"so101"` / `"so100"` / `"aloha"` / … to `robots/<name>/robot.yaml`. Two-step: alias lookup in `_OPENRAL_ROBOT_TYPE_TO_DIR` (a bare Feetech plug-in resolves to `so101`), then the slug tried verbatim as a `robots/<slug>/` dir — so an operator override can name any committed robot directly (`"so100_follower"`). (L62)
+- `signature_for_realsense(model_id) -> SensorSignature` (L105)
+- `signature_for_v4l2(name) -> SensorSignature` (L110)
+- `signature_for_usb_uvc(vid, pid) -> SensorSignature` (L115)
 
 ### `python/detect/src/openral_detect/report.py`
 

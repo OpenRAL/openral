@@ -64,7 +64,7 @@ class KnownDevice(NamedTuple):
     Attributes:
         chip: USB chip name, e.g. ``"CH340"``.
         driver_hint: Human-readable hint about the robot this adapter drives.
-        embodiment_tag: openral embodiment tag, e.g. ``"so100_follower"``.
+        embodiment_tag: openral embodiment tag, e.g. ``"so101_follower"``.
             Empty string means multiple robots are possible with this adapter.
         bh_robot_type: Short robot type string for ``openral connect --robot``.
             Empty string means ambiguous.
@@ -106,44 +106,48 @@ class DdsTopic(NamedTuple):
 
 _VID_PID_TABLE: dict[tuple[int, int], KnownDevice] = {
     # ── CH34x USB-serial chips (WCH Semiconductor) ───────────────────────────
-    # Used on cheap USB-to-TTL dongles, many SO-100 debug boards, LeKiwi.
+    # Used on cheap USB-to-TTL dongles, the SO-100/SO-101 control boards, LeKiwi.
+    # The SO-101 is electrically identical to the SO-100 over USB (same Feetech
+    # controller / VID/PID), so the bus alone cannot distinguish them. The SO-101
+    # is the current revision, so a bare plug-in defaults to `so101_follower`;
+    # an SO-100 is selected explicitly with `openral detect --robot so100`.
     (0x1A86, 0x7523): KnownDevice(
         "CH340",
         "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     (0x1A86, 0x7522): KnownDevice(
         "CH340C/K",
         "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     (0x1A86, 0x55D4): KnownDevice(
         "CH9102",
         "Feetech serial bus — SO-100 / SO-101 / Koch / LeKiwi arm",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     # ── Silicon Labs CP210x ───────────────────────────────────────────────────
     # Used on many microcontroller dev boards and Feetech adapters.
     (0x10C4, 0xEA60): KnownDevice(
         "CP2102",
         "Feetech / Dynamixel serial bus",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     (0x10C4, 0xEA6A): KnownDevice(
         "CP2104",
         "Feetech / Dynamixel serial bus",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     (0x10C4, 0xEA70): KnownDevice(
         "CP2105",
         "dual-port Feetech / Dynamixel serial bus",
-        "so100_follower",
-        "so100",
+        "so101_follower",
+        "so101",
     ),
     # ── FTDI ─────────────────────────────────────────────────────────────────
     # Used by Dynamixel USB2Dynamixel, OpenCM 9.04, ALOHA leader/follower.
@@ -205,7 +209,8 @@ _TOPIC_ROBOT_MAP: dict[str, str] = {
     "/sportmodestate": "unitree_g1",
     "/follower_arms_position_goal": "aloha",  # HiLSeRL ALOHA / ACT
     "/bimanual_stretch": "aloha",
-    "/so100": "so100",  # openral SO-100 lifecycle node
+    "/so101": "so101",  # openral SO-101 lifecycle node (current default arm)
+    "/so100": "so100",  # explicit openral SO-100 lifecycle node
     "/joint_trajectory_controller/joint_trajectory": "ros2_control",
     "/lekiwi": "lekiwi",
 }

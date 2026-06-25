@@ -853,9 +853,10 @@ def detect(
         None,
         "--robot",
         "--as",
-        help="Force the canonical base manifest (slug 'so101' or dir name "
-        "'so101_follower'), overriding USB/DDS inference. Needed for the "
-        "SO-101, which is electrically identical to the SO-100 over USB.",
+        help="Force the canonical base manifest (slug e.g. 'so100' or dir name "
+        "'so100_follower'), overriding USB/DDS inference. A bare Feetech "
+        "plug-in defaults to the SO-101; use this to select the SO-100 (the "
+        "two are indistinguishable over USB).",
     ),
     deployment: Path | None = typer.Option(
         None,

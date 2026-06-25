@@ -7,6 +7,11 @@ three execution paths: real hardware (`SO100FollowerHAL`), the
 in-process kinematic twin (`SO100DigitalTwin`), and the real-physics
 MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
 
+> **Detection note.** The SO-100 and SO-101 share the same Feetech USB
+> controller (identical VID/PID), so `openral detect` cannot tell them apart
+> from the bus. The current SO-101 is the default, so to provision an SO-100 run
+> `openral detect --robot so100` (and `openral connect --robot so100`).
+
 ## At a glance
 
 | Field | Value |

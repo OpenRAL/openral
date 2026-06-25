@@ -1556,7 +1556,7 @@ const CROSS = [
     title: "Tests · HIL",
     pkg: "tests/hil",
     status: "yellow",
-    desc: "10 files: test_so100, test_realsense, test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), plus test_detect_so100_full_assemble, test_detect_realsense_live, test_detect_jetson_live for the auto-provisioning probes. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online. No lab runners registered yet — surface exists, hardware does not.",
+    desc: "10 files: test_so100, test_realsense, test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), plus test_detect_so101_full_assemble, test_detect_realsense_live, test_detect_jetson_live for the auto-provisioning probes. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online. No lab runners registered yet — surface exists, hardware does not.",
   },
   {
     title: "CI · Docker image build",

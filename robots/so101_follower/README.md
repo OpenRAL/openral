@@ -49,13 +49,14 @@ while the MJCF stays as upstream ships it.
 ## Detect & deploy
 
 The SO-101 is electrically identical to the SO-100 over USB — the same Feetech
-controller and USB VID/PID — so `openral detect` cannot tell them apart from the
-bus alone and reports `so100`. Pin this manifest with the `--robot` override,
-and optionally scaffold the matching `RobotEnvironment` in one shot:
+controller and USB VID/PID — so the bus alone cannot tell them apart. The SO-101
+is the current revision, so a bare `openral detect` resolves to **this** manifest
+by default (no `--robot` flag needed; an SO-100 is selected with `--robot
+so100`). Scaffold the matching `RobotEnvironment` in one shot:
 
 ```bash
 openral connect --robot so101                    # smoke-test the serial link
-openral detect --robot so101 \
+openral detect \
     --output robots/so101_follower/robot.yaml \
     --deployment deployments/so101.yaml          # robot_id + port + sensors pre-filled
 ```

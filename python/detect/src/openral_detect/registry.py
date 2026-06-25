@@ -43,12 +43,13 @@ _REPO_ROOT_CANDIDATES: tuple[Path, ...] = (
 
 
 _OPENRAL_ROBOT_TYPE_TO_DIR: dict[str, str] = {
-    "so100": "so100_follower",
-    # SO-101 shares the SO-100's Feetech USB controller (identical VID/PID) and
-    # the same `SO100FollowerHAL`, so USB auto-detection alone cannot tell the
-    # two apart — the slug is reachable only via the explicit `openral detect
-    # --robot so101` override (CLAUDE.md §1.4, explicit beats implicit).
+    # The SO-101 shares the SO-100's Feetech USB controller (identical VID/PID)
+    # and the same `SO100FollowerHAL`, so USB auto-detection cannot tell them
+    # apart. The SO-101 is the current revision, so a bare plug-in defaults to
+    # it (see `openral_cli.autodetect._VID_PID_TABLE`); the older SO-100 is
+    # selected explicitly with `openral detect --robot so100`.
     "so101": "so101_follower",
+    "so100": "so100_follower",
     "aloha": "aloha_bimanual",
     # Future entries land here as new HAL adapters publish a canonical
     # `robots/<name>/robot.yaml`:

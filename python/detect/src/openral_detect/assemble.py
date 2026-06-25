@@ -137,11 +137,12 @@ def assemble_robot_description(
             known robot matches, a minimal scaffold is synthesised.
         force_robot_type: Operator override (``openral detect --robot``) that
             pins the canonical base manifest regardless of what USB/DDS
-            inference found — accepts either a known slug (``"so101"``) or a
-            ``robots/<name>`` directory name (``"so101_follower"``). Needed
-            because the SO-101 is electrically indistinguishable from the
-            SO-100 over USB (same Feetech controller), so auto-detection alone
-            cannot pick it. Ignored when ``base_description`` is supplied.
+            inference found — accepts either a known slug (``"so100"``) or a
+            ``robots/<name>`` directory name (``"so100_follower"``). Needed
+            because the SO-100 and SO-101 are electrically indistinguishable
+            over USB (same Feetech controller); a bare plug-in defaults to the
+            SO-101, so this selects the SO-100. Ignored when ``base_description``
+            is supplied.
 
     Returns:
         A fully-populated :class:`RobotDescription` ready to be written to

@@ -38,10 +38,9 @@ Detection knows the robot identity, the serial `port`, and every camera; it
 *cannot* know the task or the policy, so those land as `TODO` placeholders:
 
 ```bash
-# The SO-101 is electrically identical to the SO-100 over USB (same Feetech
-# controller), so detection alone reports `so100`. Pin the SO-101 manifest with
-# --robot, and emit the matching deploy config with --deployment:
-openral detect --robot so101 \
+# A bare detect resolves a plugged-in Feetech arm to so101_follower by default
+# and emits the matching deploy config with --deployment:
+openral detect \
     --output robots/so101_follower/robot.yaml \
     --deployment deployments/so101_pick_cube.yaml
 ```
@@ -50,9 +49,13 @@ This pre-fills `robot_id`, `hal.transport.port` (the detected `/dev/tty*`),
 and one `sensors[]` reader per detected camera. `safety` is left `null` so the
 robot's own envelope from `robots/so101_follower/robot.yaml` applies. Open the
 file and replace the two `TODO` fields — `task` (what to do) and `vla` (which
-skill) — then continue to step 2. (`--robot` accepts a short slug like `so101`
-or a manifest directory name like `so101_follower`; drop it entirely to let USB
-/ DDS inference pick the robot.)
+skill) — then continue to step 2.
+
+> The SO-101 is electrically identical to the SO-100 over USB (same Feetech
+> controller), so the bus alone can't distinguish them — the current SO-101 is
+> the default. To target the older SO-100 instead, add `--robot so100` (the flag
+> accepts a short slug like `so100` or a manifest directory name like
+> `so100_follower`).
 
 ### Option B — write it by hand
 
