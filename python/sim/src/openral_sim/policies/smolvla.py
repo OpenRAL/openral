@@ -185,6 +185,13 @@ class _SmolVLAAdapter:
     _torch: Any
     _flip_images_180: bool = False
     _state_dim: int | None = None
+    # Dtype of the VLM backbone (the model's majority dtype — bf16 for the
+    # smolvla-libero checkpoint lerobot now loads dtype-preserving). The image
+    # tensors we build are float32 and feed the bf16 vision tower, so step()
+    # casts *only the image inputs* to this. ``observation.state`` is left
+    # float32 to match the model's float32 action expert (and the sampler's
+    # internal float32 noise/time). ``None`` (a fully-float32 load) → no cast.
+    _image_dtype: Any = None
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
     # Camera renames + image-batch-key template come from the rSkill
     # manifest's ``image_preprocessing`` block (or ``vla.extra``). The
@@ -211,10 +218,23 @@ class _SmolVLAAdapter:
         # Belt-and-suspenders device move (preprocessor sometimes returns CPU tensors).
         device_kind = self.device.split(":", 1)[0]
         for k, v in list(batch.items()):
-            if hasattr(v, "device") and getattr(v, "device", None) is not None:
-                v_dev = str(v.device)
-                if v_dev != self.device and not v_dev.startswith(device_kind):
-                    batch[k] = v.to(self.device)
+            if not hasattr(v, "device") or getattr(v, "device", None) is None:
+                continue
+            if str(v.device) != self.device and not str(v.device).startswith(device_kind):
+                v = v.to(self.device)
+            # Cast image inputs to the bf16 backbone dtype (float32 image × bf16
+            # vision weight raises "mat1 and mat2 must have the same dtype").
+            # state / everything else stays float32 to match the float32 action
+            # expert and the sampler's internal float32 tensors.
+            if (
+                self._image_dtype is not None
+                and "image" in k
+                and hasattr(v, "is_floating_point")
+                and v.is_floating_point()
+                and v.dtype != self._image_dtype
+            ):
+                v = v.to(self._image_dtype)
+            batch[k] = v
 
         action_tensor = run_inference(self._policy, batch)
         action_tensor = self._postprocessor(action_tensor)
@@ -317,6 +337,20 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     with _smolvla_phase("to_device", device=device):
         policy = policy.to(device)
     policy.eval()
+    # lerobot's from_pretrained now loads SmolVLA *mixed* — a bf16 VLM backbone
+    # but a float32 action expert (the flow-matching sampler allocates float32
+    # noise/time internally and needs the expert in float32). Keep that native
+    # layout: don't unify (fp32-unify ~doubles memory and OOMs the reward
+    # sidecar on 8 GB; bf16-unify breaks the sampler). step() instead casts only
+    # the image inputs to the backbone dtype. The backbone is the model's
+    # majority dtype by param count (the VLM dwarfs the small action expert).
+    from collections import Counter
+
+    dtypes = Counter(p.dtype for p in policy.parameters())
+    image_dtype = dtypes.most_common(1)[0][0] if dtypes else None
+    # No cast needed on a fully-float32 load (the float32 images already match).
+    if image_dtype == torch.float32:
+        image_dtype = None
 
     # `n_action_steps` precedence (apply_chunk_replay):
     # vla.extra > manifest.n_action_steps > chunk_size. SmolVLA on LIBERO
@@ -408,6 +442,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _torch=torch,
         _flip_images_180=ip.flip_180,
         _state_dim=state_dim,
+        _image_dtype=image_dtype,
         _camera_keys=cam_keys,
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,
