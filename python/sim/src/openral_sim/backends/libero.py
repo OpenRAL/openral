@@ -20,6 +20,7 @@ cross-field validation passes.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -118,6 +119,41 @@ class _LiberoSim:
     task: TaskSpec
     _env: Any  # LiberoEnv (lazy-imported)
     _last_pixels: dict[str, np.ndarray]  # type: ignore[type-arg]  # reason: heterogeneous numpy dict
+    # ADR-0036 — when True (set by SimAttachedHAL for deploy-sim) the episode runs
+    # continuously: lerobot's inline reset-on-terminated is suppressed so a task
+    # success / horizon does NOT re-randomise the scene mid-mission (which also
+    # re-creates the MjData and orphans the passive viewer). openral sim run keeps
+    # the default False (episodic benchmarking resets per episode).
+    _continuous: bool = False
+
+    def _robosuite_env(self) -> Any:
+        """The wrapped robosuite env (carries ``sim`` / ``ignore_done``), or None.
+
+        robosuite re-layers these paths across releases, so walk the same
+        candidate chain :meth:`mujoco_handles` / :attr:`action_dim` use.
+        """
+        candidates = (
+            getattr(self._env, "_env", None),
+            self._env,
+            getattr(getattr(self._env, "unwrapped", None), "_env", None),
+        )
+        return next((c for c in candidates if getattr(c, "sim", None) is not None), None)
+
+    def enable_continuous(self) -> None:
+        """Run the LIBERO episode continuously (deploy-sim; ADR-0036).
+
+        lerobot's ``LiberoEnv.step`` calls ``self.reset()`` inline the instant the
+        task succeeds or the horizon is reached, re-randomising the whole scene —
+        wrong for a multi-task deploy where the reasoner/mission own episode
+        boundaries, and it orphans the MuJoCo viewer. Set the robosuite env's
+        ``ignore_done`` so a continued (post-terminal) step does not raise, and
+        :meth:`step` then swallows the inline reset. No-op for ``openral sim run``.
+        """
+        self._continuous = True
+        rs = self._robosuite_env()
+        if rs is not None:
+            with contextlib.suppress(Exception):  # best-effort across robosuite releases
+                rs.ignore_done = True
 
     def reset(self, seed: int | None = None) -> Observation:
         obs, _info = self._env.reset(seed=seed)
@@ -125,7 +161,21 @@ class _LiberoSim:
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
         action_np = np.asarray(action, dtype=np.float32)
-        obs, reward, terminated, truncated, info = self._env.step(action_np)
+        if self._continuous:
+            # Suppress LiberoEnv.step()'s inline ``self.reset()`` (re-randomises
+            # the scene on terminated). robosuite ``ignore_done`` (enable_continuous)
+            # keeps the continued step from raising, so the scene simply persists.
+            libero_env = self._env
+            saved_reset = libero_env.reset
+            libero_env.reset = lambda *args, **kwargs: None
+            try:
+                obs, reward, terminated, truncated, info = libero_env.step(action_np)
+            finally:
+                libero_env.reset = saved_reset
+            terminated = False
+            truncated = False
+        else:
+            obs, reward, terminated, truncated, info = self._env.step(action_np)
         return StepResult(
             observation=self._wrap_obs(obs),
             reward=float(reward),
