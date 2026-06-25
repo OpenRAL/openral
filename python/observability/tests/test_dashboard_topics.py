@@ -422,3 +422,44 @@ def test_safety_kernel_latches_into_identity_from_safety_check() -> None:
         )
     )
     assert store.snapshot()["identity"]["safety.kernel"] == "null"
+
+
+def test_reasoner_tick_populates_reasoner_topic_with_mission() -> None:
+    """A reasoner.tick span feeds the Reasoner/Mission card, including the
+    ADR-0073 ``reasoner.mission_json`` task queue (decoded to a dict)."""
+    import json
+
+    from openral_reasoner.mission import MissionState
+
+    mission = MissionState.from_prompt("pick the bowl | place the butter")
+    mission.record_attempt(rskill_id="smolvla-libero")
+    mission.complete_active("success=0.91")  # t1 done, t2 now active
+
+    store = TelemetryStore()
+    span = _make_span(
+        "reasoner.tick",
+        attrs={
+            "reasoner.tick.idx": 7,
+            "reasoner.tool": "execute_rskill",
+            "reasoner.rskill_id": "smolvla-libero",
+            "reasoner.model": "claude-opus-4-8",
+            "reasoner.mission_json": json.dumps(mission.to_summary()),
+        },
+    )
+    store.ingest_spans(_wrap([span]))
+
+    reasoner = store.snapshot()["topics"]["reasoner"]
+    assert reasoner["tool"] == "execute_rskill"
+    assert reasoner["tick_idx"] == 7
+    mission_snap = reasoner["mission"]
+    assert mission_snap["max_attempts"] == 3
+    assert [t["status"] for t in mission_snap["tasks"]] == ["done", "active"]
+    assert mission_snap["tasks"][0]["verdict"] == "success=0.91"
+
+
+def test_reasoner_tick_without_mission_leaves_mission_none() -> None:
+    """A bare-goal deploy emits no ``reasoner.mission_json``; the slot stays None
+    rather than raising."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("reasoner.tick", attrs={"reasoner.tick.idx": 1})]))
+    assert store.snapshot()["topics"]["reasoner"]["mission"] is None
