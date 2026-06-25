@@ -17,10 +17,16 @@
 # ``reasoner.tick`` / ``rskill.tick`` so the run is diagnosable from the trace.
 #
 # Robot auto-resolves via ``SCENES.fixed_robot("libero_object") == "franka_panda"``.
-# Run: openral deploy sim --config scenes/deploy/libero_object.yaml
+# Run: OPENRAL_DASHBOARD_FLIP_180=1 openral deploy sim --config scenes/deploy/libero_object.yaml
 #      --enable-reward-monitor
 #      --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
 # Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+#
+# OPENRAL_DASHBOARD_FLIP_180=1 rotates the dashboard cameras 180° so LIBERO's
+# bottom-up MuJoCo render shows upright (display-only; the VLA already flips its
+# own copy via the manifest's image_preprocessing.flip_180). The scene runs the
+# episode continuously (ADR-0036) — a task success no longer resets the arena, so
+# the multi-task mission persists across tasks and the MuJoCo viewer stays in sync.
 
 scene:
   id: libero_object

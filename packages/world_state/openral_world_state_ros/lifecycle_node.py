@@ -158,6 +158,18 @@ if _ROS2_AVAILABLE:
                     against a stub ``RobotDescription``.
             """
             super().__init__("openral_world_state")
+            # Dashboard-only: rotate camera frames 180° before the thumbnail so the
+            # operator sees them upright. LIBERO (and other bottom-up MuJoCo
+            # renders) publish the raw frame the VLA wants — the VLA flips it via
+            # its manifest ``image_preprocessing.flip_180`` — but the dashboard
+            # shows that raw frame upside-down. Set OPENRAL_DASHBOARD_FLIP_180=1 to
+            # match the VLA's view. Display-only: the published topic the VLA reads
+            # is untouched.
+            import os  # reason: deploy-time display toggle, mirrors other env-gated flags
+
+            self._dashboard_flip_180 = os.environ.get(
+                "OPENRAL_DASHBOARD_FLIP_180", ""
+            ).strip().lower() in ("1", "true", "yes", "on")
             self.declare_parameter("robot_name", "robot")
             self.declare_parameter("publish_rate_hz_fast", 30.0)
             self.declare_parameter("publish_rate_hz_slow", 5.0)
@@ -558,6 +570,18 @@ if _ROS2_AVAILABLE:
                 return
 
             data = bytes(getattr(msg, "data", b"") or b"")
+            # Dashboard-only 180° rotation (OPENRAL_DASHBOARD_FLIP_180) so bottom-up
+            # MuJoCo renders (LIBERO) show upright. Only RGB/BGR frames; size-guarded.
+            if (
+                self._dashboard_flip_180
+                and encoding in (FrameEncoding.RGB8, FrameEncoding.BGR8)
+                and len(data) == width * height * 3
+            ):
+                import numpy as np  # reason: lazy — only on the camera path
+
+                data = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)[
+                    ::-1, ::-1
+                ].tobytes()
             # ROS clock, NOT time.time_ns(): under deploy-sim every node runs on
             # use_sim_time and the camera's header.stamp is sim time, so a wall
             # `now` minus a sim stamp yields a nonsensical age (~1e8-1e12 ms on the
