@@ -116,6 +116,9 @@ def test_locateanything_manifest_validates() -> None:
     assert m.runtime is RSkillRuntime.PYTORCH
     assert m.detector is not None
     assert "person" in m.detector.labels
+    # max_side caps the sidecar's grounding frame so LA-3B co-fits a reward model
+    # on an 8 GB GPU (ADR-0057 co-residency); the manifest pins 512.
+    assert m.detector.max_side == 512
 
 
 def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
@@ -138,7 +141,12 @@ def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
         assert isinstance(det, LocateAnythingDetector)
         # Static default query = the manifest's labels joined for the prompt.
         assert det._query == "</c>".join(m.detector.labels)
+        # source_repo (upstream) wins over weights_uri: the sidecar loads the
+        # upstream weights and quantizes on the fly (see _locateanything_server._load).
         assert weights_source_from_manifest(m) == "nvidia/LocateAnything-3B"
+        # The factory threads the manifest's max_side into the backend so the
+        # sidecar boots with --max-side 512 (lower grounding VRAM peak).
+        assert det._max_side == 512
     finally:
         det.close()
 

@@ -25,6 +25,8 @@
 scene:
   id: libero_object
   backend: mujoco
+  # 256 default. Higher (512+) sharpens frames for the locator but the LA-3B
+  # locator sidecar + Robometer reward + VLA already saturate an 8 GB GPU at 256.
   observation_height: 256
   observation_width: 256
 

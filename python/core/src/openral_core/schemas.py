@@ -4694,6 +4694,12 @@ class DetectorContract(BaseModel):
     score_threshold: float = Field(ge=0.0, le=1.0, default=0.5)
     engine: DetectorEngine | None = None
     mode: DetectorMode = DetectorMode.CONTINUOUS
+    # VLM-sidecar detectors (LocateAnything-3B) resize each frame so its longest
+    # edge is at most this many pixels before grounding. Lower = fewer image
+    # tokens = lower activation VRAM peak (the lever for co-residency with a
+    # reward model on a small GPU); higher = sharper. ``None`` keeps the
+    # backend default (1024). Ignored by ONNX/zero-shot detectors.
+    max_side: int | None = Field(default=None, gt=0)
 
     @field_validator("input_size")
     @classmethod

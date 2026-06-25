@@ -159,11 +159,14 @@ def build_manifest_detector(
             LocateAnythingDetector,
         )
 
-        vlm = LocateAnythingDetector(
-            labels=contract.labels,
-            model_id=manifest.name,
-            weights_source=weights_source_from_manifest(manifest),
-        )
+        vlm_kwargs: dict[str, Any] = {
+            "labels": contract.labels,
+            "model_id": manifest.name,
+            "weights_source": weights_source_from_manifest(manifest),
+        }
+        if contract.max_side is not None:
+            vlm_kwargs["max_side"] = contract.max_side
+        vlm = LocateAnythingDetector(**vlm_kwargs)
         return vlm, DetectorTier.VLM_SIDECAR
 
     if onnx_path is None:

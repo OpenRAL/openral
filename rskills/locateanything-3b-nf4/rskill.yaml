@@ -47,6 +47,10 @@ detector:
   # OmDet-Turbo) — e.g. an attribute-qualified or novel object. It is not the
   # always-on world-state producer.
   mode: "on_demand"
+  # Cap the grounding frame at 512px longest-edge (default 1024): 4x fewer image
+  # tokens → much lower activation VRAM peak, so the LA-3B sidecar can co-reside
+  # with the Robometer reward model on an 8 GB GPU. Sim frames are 256px anyway.
+  max_side: 512
   # LocateAnything is open-vocabulary: `labels` is the STATIC DEFAULT query set
   # the detector grounds every frame when no runtime override is supplied. The
   # reasoner can override it live via set_query (ADR-0037 2026-06-09 amendment,
