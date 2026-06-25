@@ -184,6 +184,7 @@ class MissionState:
         return tuple(self._tasks)
 
     def __len__(self) -> int:
+        """Number of tasks in the mission queue."""
         return len(self._tasks)
 
     def active(self) -> TaskState | None:
