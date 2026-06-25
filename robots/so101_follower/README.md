@@ -62,8 +62,10 @@ openral detect \
 ```
 
 The scaffold fills everything detection knows (identity, serial `port`,
-cameras) and leaves `task` + `vla` as `TODO` placeholders to edit before
-`openral deploy run` (`safety` is `null`, so the limits above apply). See the
+cameras) and leaves `task` as a `TODO` placeholder to edit before
+`openral deploy run` (`safety` is `null`, so the limits above apply). The rSkill
+is not pinned — the reasoner selects it at runtime from the installed `rskills/`
+registry. See the
 [deploy tutorial](../../docs/tutorials/deploy/deploy-run-and-dashboard.md).
 
 ## Pair with

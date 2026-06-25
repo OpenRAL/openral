@@ -26,8 +26,9 @@ Rizon 4, H1, G1, panda_mobile), and an installed rSkill (see
 
 Deployment configs live in
 [`deployments/`](https://github.com/OpenRAL/openral/blob/master/deployments/README.md).
-A `RobotEnvironment` pins one deployment: `(robot × HAL × sensors × task × VLA
-× safety)`. They are intentionally **not** shipped in the open-core tree —
+A `RobotEnvironment` pins one deployment: `(robot × HAL × sensors × task ×
+safety)` — the rSkill is reasoner-selected at runtime, not pinned. They are
+intentionally **not** shipped in the open-core tree —
 they encode a specific lab's robot IP / FCI port / camera serial — so you add
 your own.
 

@@ -11,11 +11,13 @@ deployments/   RobotEnvironment  → openral deploy run                 (real ha
 ```
 
 A `RobotEnvironment` pins a real deployment: `(robot × HAL × sensors × task ×
-VLA × safety)`. Per **ADR-0031**, `deploy run` is **real-hardware only** —
-`build_runner` loads `robots/<robot_id>/robot.yaml` and constructs the HAL via
-`openral_hal.build_hal(mode="real")` (the manifest's `hal.real` is the single
-source of truth). A simulation-only robot raises `ROSCapabilityMismatch`; use
-`openral deploy sim` with a `scenes/` config instead.
+safety)`. The rSkill is **not** pinned — the reasoner selects it at runtime from
+the installed `rskills/` registry, embodiment-filtered (the same path as
+`openral deploy sim`). Per **ADR-0031**, `deploy run` is **real-hardware only**:
+it loads `robots/<robot_id>/robot.yaml` and the HAL lifecycle node builds the
+real HAL via `openral_hal.build_hal(mode="real")` (the manifest's `hal.real` is
+the single source of truth). A simulation-only robot raises
+`ROSCapabilityMismatch`; use `openral deploy sim` with a `scenes/` config instead.
 
 ```bash
 # List the deployment configs here (paste-able --config paths):

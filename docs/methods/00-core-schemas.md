@@ -255,8 +255,8 @@ On-disk + runtime contracts for the hardware inference runner (`openral deploy -
 - `class HalConfig(BaseModel)` — Which HAL adapter to instantiate + transport params (serial port / FCI URI / ROS namespace). (L1786)
   fields: `adapter, transport, params`
 - `class RobotEnvironment(BaseModel)` — Full hardware deployment configuration; `openral deploy` artefact. Sibling of `SimEnvironment`. (L1819)
-  fields: `robot_id, hal, sensors, task, vla, safety, rate_hz, thumbnail_hz, deadline_overrun_policy, max_ticks, save_dir, metadata` (`thumbnail_hz: float = 25.0`, ge 0 — per-camera dashboard thumbnail rate, 0 disables)
-  - `model_post_init(_context: object) -> None` — Cross-field validation: unique sensor ids + `vla.weights_uri` must be a valid skill reference (bare name, `rskills/<name>`, or HF repo id — no `rskill://` scheme). (L1900)
+  fields: `robot_id, hal, sensors, task, safety, rate_hz, thumbnail_hz, deadline_overrun_policy, max_ticks, save_dir, metadata` (`thumbnail_hz: float = 25.0`, ge 0 — per-camera dashboard thumbnail rate, 0 disables). No rSkill is pinned — the reasoner selects it at runtime from the installed `rskills/` registry.
+  - `model_post_init(_context: object) -> None` — Cross-field validation: unique sensor ids. (L1900)
   - `from_yaml(cls, path: str) -> RobotEnvironment` [@classmethod] — Load and validate a `RobotEnvironment` YAML from disk. (L1918)
 - `class TickResult(BaseModel)` — One tick's record returned by `InferenceRunner.tick`. v2 (ADR-0010 amendment 1) adds five optional sim-only fields (`step_idx`, `episode_idx`, `reward`, `terminated`, `truncated`) and an optional `trace_context: str | None` (full W3C `traceparent` for the tick's `rskill.tick` span). All optional fields default to `None`; hardware ticks that don't carry sim metadata or a live trace context serialise byte-identically to v1 under `exclude_none=True`. (L1937)
   fields: `stamp_ns, tick_idx, sensors_ms, world_state_ms, inference_ms, safety_ms, hal_ms, tick_ms, chunk_index, safety_violations, action_applied, step_idx, episode_idx, reward, terminated, truncated`

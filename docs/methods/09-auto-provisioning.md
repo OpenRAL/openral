@@ -10,7 +10,7 @@
 - `check_installed_rskills(robot, *, registry_path=None, rskills_dir=None) -> CompatibilityReport` — Walk-all: run `rSkill.check_compatibility` against every installed (and optionally in-tree) skill. (in `compatibility.py:L107`)
 - `check_single_rskill(rskill_id, robot) -> CompatibilityReport` — Resolve one id via `load_rskill_manifest` and emit a one-row report with per-section verdicts. (in `compatibility.py:L294`)
 - const `PROBE_NAMES: frozenset[str]` — Names accepted by `detect_hardware(include=...)`.
-- const `TODO_TASK_ID` / `TODO_VLA_WEIGHTS_URI: str` — Self-documenting, schema-valid placeholder sentinels written into a scaffolded `RobotEnvironment`; the CLI banner greps for them to warn before deploy. (`scaffold.py`)
+- const `TODO_TASK_ID: str` — Self-documenting, schema-valid placeholder sentinel for the task id written into a scaffolded `RobotEnvironment`; `metadata.edit_before_deploy` flags it until the operator sets a real task. (`scaffold.py`)
 
 ### `python/detect/src/openral_detect/compatibility.py`
 - `class SectionVerdict(BaseModel)` — Per-section verdict for `openral rskill check <rskill_id>` (label, compatible, reason, failure_kind, informational). (L56)
