@@ -259,19 +259,3 @@ def test_thumbnail_due_disabled_returns_false() -> None:
         assert runner._thumbnail_due("cam", 2000.0) is False
     finally:
         _shutdown(skill)
-
-
-def test_factory_passes_thumbnail_hz() -> None:
-    from openral_core import RobotEnvironment
-    from openral_core.schemas import HalConfig, TaskSpec, VLASpec
-    from openral_runner.factory import build_runner
-
-    env = RobotEnvironment(
-        robot_id="so100_follower",
-        hal=HalConfig(adapter="so100_follower"),
-        task=TaskSpec(id="pick_cube/red", scene_id="pick_cube/red", instruction="pick"),
-        vla=VLASpec(id="gpu_passthrough", weights_uri="rskills/noop"),
-        thumbnail_hz=12.0,
-    )
-    runner, _skill = build_runner(env)
-    assert runner._thumbnail_hz == 12.0

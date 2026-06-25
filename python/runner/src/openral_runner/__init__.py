@@ -55,7 +55,6 @@ if TYPE_CHECKING:
     from openral_runner.factory import (
         SENSOR_BACKEND_REGISTRY,
         SKILL_REGISTRY,
-        build_runner,
     )
     from openral_runner.ros_publishing_hal import ROSPublishingHAL
     from openral_runner.safety import NullSafetyClient, SafetyClient
@@ -70,7 +69,6 @@ __all__ = [
     "ROSPublishingHAL",
     "SafetyClient",
     "SensorReader",
-    "build_runner",
     "precise_sleep",
     "sleep_until",
 ]
@@ -81,7 +79,6 @@ _LAZY_ATTRS: dict[str, tuple[str, str]] = {
     "InferenceRunnerBase": ("openral_runner.base", "InferenceRunnerBase"),
     "SENSOR_BACKEND_REGISTRY": ("openral_runner.factory", "SENSOR_BACKEND_REGISTRY"),
     "SKILL_REGISTRY": ("openral_runner.factory", "SKILL_REGISTRY"),
-    "build_runner": ("openral_runner.factory", "build_runner"),
     "DeployRunner": ("openral_runner.deploy_runner", "DeployRunner"),
     "NullSafetyClient": ("openral_runner.safety", "NullSafetyClient"),
     "ROSPublishingHAL": (

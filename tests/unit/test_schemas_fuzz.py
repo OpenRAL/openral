@@ -829,8 +829,7 @@ def test_fuzz_sim_environment(instance: SimEnvironment) -> None:
 # ─── Inference runner schemas (ADR-0010) ─────────────────────────────────────
 #
 # SensorFrame has a mutual-exclusion invariant on (data | topic | handle), so
-# the strategy below splits across the three valid carry-modes. RobotEnvironment
-# requires a bare rSkill reference for weights_uri.
+# the strategy below splits across the three valid carry-modes.
 
 
 @st.composite
@@ -937,20 +936,9 @@ def test_fuzz_hal_config(instance: HalConfig) -> None:
     _round_trip_and_validate(HalConfig, instance)
 
 
-_rskill_uri = _name
-_rskill_vla_st = st.builds(
-    VLASpec,
-    id=_name,
-    weights_uri=_rskill_uri,
-    device=st.sampled_from(["auto", "cpu", "cuda:0", "mps"]),
-    runtime=st.one_of(st.none(), st.sampled_from(list(RSkillRuntime))),
-    deterministic=st.booleans(),
-)
-
-
 @st.composite
 def _robot_environment_st(draw: st.DrawFn) -> RobotEnvironment:
-    """RobotEnvironment with unique sensor ids and a bare-ref weights_uri."""
+    """RobotEnvironment with unique sensor ids (the rSkill is not pinned here)."""
     n_sensors = draw(st.integers(min_value=0, max_value=4))
     ids = draw(st.lists(_name, min_size=n_sensors, max_size=n_sensors, unique=True))
     sensors = [
@@ -962,7 +950,6 @@ def _robot_environment_st(draw: st.DrawFn) -> RobotEnvironment:
         hal=draw(_hal_config_st),
         sensors=sensors,
         task=task,
-        vla=draw(_rskill_vla_st),
         rate_hz=draw(st.floats(min_value=1.0, max_value=1000.0, allow_nan=False)),
         thumbnail_hz=draw(st.floats(min_value=0.0, max_value=60.0, allow_nan=False)),
         deadline_overrun_policy=draw(st.sampled_from(list(DeadlineOverrunPolicy))),
@@ -973,11 +960,10 @@ def _robot_environment_st(draw: st.DrawFn) -> RobotEnvironment:
 @_FUZZ_SETTINGS
 @given(_robot_environment_st())
 def test_fuzz_robot_environment(instance: RobotEnvironment) -> None:
-    """RobotEnvironment round-trips, sensor ids stay unique, weights_uri is a bare ref."""
+    """RobotEnvironment round-trips and sensor ids stay unique."""
     _round_trip_and_validate(RobotEnvironment, instance)
     sensor_ids = [s.sensor_id for s in instance.sensors]
     assert len(sensor_ids) == len(set(sensor_ids))
-    assert not instance.vla.weights_uri.startswith(("rskill://", "hf://", "local://"))
 
 
 _tick_result_st = st.builds(

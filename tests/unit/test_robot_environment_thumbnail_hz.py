@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from openral_core import RobotEnvironment
-from openral_core.schemas import HalConfig, TaskSpec, VLASpec
+from openral_core.schemas import HalConfig, TaskSpec
 from pydantic import ValidationError
 
 
@@ -17,7 +17,6 @@ def _env(**kw: object) -> RobotEnvironment:
             scene_id="pick_cube/red",
             instruction="pick up the red cube",
         ),
-        vla=VLASpec(id="smolvla", weights_uri="rskills/smolvla-so100"),
         **kw,
     )
 

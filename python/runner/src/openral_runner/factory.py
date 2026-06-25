@@ -1,61 +1,37 @@
-"""Factory wiring `RobotEnvironment` YAML → live :class:`DeployRunner`.
+"""Typed registries that resolve a deployment's free axes.
 
-The factory is the single seam the CLI (`openral deploy --config R.yaml`) goes
-through to instantiate a runner. It resolves three free axes against
-typed registries:
+Two dict registries map a config id to its factory, each rejecting unknown ids
+with a typed ``ROSConfigError``:
 
-* ``env.robot_id`` → real :class:`HAL` via :func:`openral_hal.build_hal`
-  (``mode="real"``), reading the manifest's ``hal.real`` (ADR-0031).
-* ``env.vla.id`` → :class:`Skill` factory (SKILL_REGISTRY).
-* Each ``env.sensors[i].backend`` → :class:`SensorReader` factory
-  (SENSOR_BACKEND_REGISTRY).
+* ``SKILL_REGISTRY`` — :attr:`VLASpec.id` → :class:`Skill` factory. Today only
+  ``gpu_passthrough`` (a no-op rSkill for plumbing verification).
+* ``SENSOR_BACKEND_REGISTRY`` — :attr:`SensorReaderConfig.backend` →
+  :class:`SensorReader` factory (``opencv_thread`` / ``gstreamer``).
 
-The HAL is no longer chosen from a per-adapter registry: ``deploy run`` is
-**real hardware only** (ADR-0031). ``build_runner`` loads the robot manifest
-for ``env.robot_id`` and calls :func:`openral_hal.build_hal` with
-``mode="real"`` — the manifest's ``hal.real`` entry is the single source of
-truth, and an env-config flag can no longer select a simulation HAL (the old
-``transport.digital_twin=true`` twin path is gone; use ``deploy sim`` for a
-no-hardware run). A simulation-only robot raises ``ROSCapabilityMismatch``.
-
-Today's other registries are intentionally small:
-
-* Skill: ``gpu_passthrough`` (a no-op rSkill used for plumbing
-  verification before real VLA wiring).
-* SensorReader backend: ``opencv_thread``.
-
-Adding skills / backends is additive — each registry is a dict and the
-factory rejects unknown ids with a typed ``ROSConfigError``.
+Adding skills / backends is additive — append to the dict. The rSkill that
+drives a real deployment is selected at runtime by the reasoner from the
+installed registry (``rskills/``), not pinned in the deploy config.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 import structlog
 from openral_core import (
-    RobotDescription,
-    RobotEnvironment,
-    SafetyEnvelope,
     SensorReaderConfig,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_hal import build_hal
 from openral_rskill.base import rSkillBase
 from openral_rskill.gpu_passthrough import GpuPassthroughSkill
-from openral_world_state.aggregator import WorldStateAggregator
 
 from openral_runner.backends import OpenCVThreadSensorReader
 from openral_runner.backends.gstreamer.pipeline import PipelineSpec, Source
-from openral_runner.deploy_runner import DeployRunner
-from openral_runner.safety import NullSafetyClient
 from openral_runner.sensor_reader import SensorReader
 
 __all__ = [
     "SENSOR_BACKEND_REGISTRY",
     "SKILL_REGISTRY",
-    "build_runner",
 ]
 
 log = structlog.get_logger(__name__)
@@ -80,33 +56,6 @@ def _to_int(value: object, *, field: str, sensor_id: str) -> int:
         f"SensorReaderConfig({sensor_id!r}).backend_params.{field} has "
         f"unsupported type {type(value).__name__}"
     )
-
-
-def _repo_root_from(start: Path) -> Path:
-    """Walk up from ``start`` until a directory containing ``robots/`` is found."""
-    here = start.resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir():
-            return ancestor
-    raise ROSConfigError(
-        f"could not locate the OpenRAL repo root above {start} (no robots/ dir); "
-        "`openral deploy run` must be invoked from a checkout that ships robots/<id>/robot.yaml."
-    )
-
-
-def _load_robot_description(robot_id: str) -> RobotDescription:
-    """Resolve ``env.robot_id`` to its ``robots/<id>/robot.yaml`` manifest.
-
-    The manifest's ``hal.real`` entry is what :func:`build_hal` constructs for
-    ``deploy run`` (ADR-0031). Raises ``ROSConfigError`` if no manifest exists.
-    """
-    manifest = _repo_root_from(Path.cwd()) / "robots" / robot_id / "robot.yaml"
-    if not manifest.is_file():
-        raise ROSConfigError(
-            f"RobotEnvironment.robot_id={robot_id!r} has no manifest at {manifest}; "
-            "`openral deploy run` resolves the real HAL from robots/<robot_id>/robot.yaml."
-        )
-    return RobotDescription.from_yaml(str(manifest))
 
 
 def _make_gpu_passthrough_skill(extra: dict[str, object]) -> rSkillBase:
@@ -298,81 +247,3 @@ SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]
     "gstreamer": _make_gstreamer_reader,
 }
 """Registry of SensorReader factories. Keyed by :attr:`SensorReaderConfig.backend`."""
-
-
-def build_runner(env: RobotEnvironment) -> tuple[DeployRunner, rSkillBase]:
-    """Materialise a :class:`DeployRunner` from a :class:`RobotEnvironment`.
-
-    Returns the runner **and** the skill so the caller can drive the skill
-    lifecycle (``configure / activate / deactivate / shutdown``) around the
-    runner's own ``activate / deactivate``. The runner takes the skill
-    already-active (CLAUDE.md §6.4).
-
-    Args:
-        env: The validated :class:`RobotEnvironment` (typically loaded
-            via :meth:`RobotEnvironment.from_yaml`).
-
-    Returns:
-        A ``(runner, skill)`` pair. The skill is in the ``unconfigured``
-        state; the caller is expected to ``configure`` + ``activate`` it
-        before calling ``runner.run``.
-
-    Raises:
-        ROSConfigError: When ``env.hal.adapter``, ``env.vla.id``, or any
-            ``env.sensors[i].backend`` is not in the corresponding
-            registry.
-    """
-    # ADR-0031 — deploy run is real-hardware only. The manifest's hal.real is
-    # the single source of truth; build_hal raises ROSCapabilityMismatch for a
-    # simulation-only robot (use `deploy sim` instead). transport + params are
-    # threaded to the real HAL constructor (serial port, robot_ip, …).
-    description = _load_robot_description(env.robot_id)
-    hal = build_hal(description, mode="real", transport={**env.hal.transport, **env.hal.params})
-
-    skill_factory = SKILL_REGISTRY.get(env.vla.id)
-    if skill_factory is None:
-        raise ROSConfigError(
-            f"RobotEnvironment.vla.id={env.vla.id!r} is not registered; "
-            f"known skills: {sorted(SKILL_REGISTRY)}"
-        )
-    skill = skill_factory(env.vla.extra)
-
-    sensors: list[SensorReader] = []
-    for sensor_cfg in env.sensors:
-        backend = sensor_cfg.backend.value
-        backend_factory = SENSOR_BACKEND_REGISTRY.get(backend)
-        if backend_factory is None:
-            raise ROSConfigError(
-                f"SensorReaderConfig({sensor_cfg.sensor_id!r}).backend={backend!r} "
-                f"is not registered; known backends: {sorted(SENSOR_BACKEND_REGISTRY)}"
-            )
-        sensors.append(backend_factory(sensor_cfg))
-
-    aggregator = WorldStateAggregator(hal.description)
-    safety_envelope: SafetyEnvelope = (
-        env.safety if env.safety is not None else hal.description.safety
-    )
-    safety_client = NullSafetyClient(envelope=safety_envelope)
-
-    runner = DeployRunner(
-        hal=hal,
-        skill=skill,
-        aggregator=aggregator,
-        sensor_readers=sensors,
-        safety_client=safety_client,
-        rate_hz=env.rate_hz,
-        thumbnail_hz=env.thumbnail_hz,
-        deadline_overrun_policy=env.deadline_overrun_policy,
-        runner_name=f"{env.robot_id}/{env.vla.id}",
-        save_dir=env.save_dir,
-    )
-    log.info(
-        "factory.runner_built",
-        robot_id=env.robot_id,
-        vla_id=env.vla.id,
-        hal_adapter=env.hal.adapter,
-        n_sensors=len(sensors),
-        rate_hz=env.rate_hz,
-        thumbnail_hz=env.thumbnail_hz,
-    )
-    return runner, skill

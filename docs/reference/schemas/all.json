@@ -9476,83 +9476,6 @@
           "title": "HalConfig",
           "type": "object"
         },
-        "QuantizationBackend": {
-          "description": "Inference backend that will execute the quantized model.\n\nAttributes:\n    PYTORCH: ``torch.quantization`` / ``bitsandbytes`` / ``torchao``.\n    ONNX: ``onnxruntime`` with quantization pre-applied at export.\n    TENSORRT: NVIDIA TensorRT engine (INT8 / FP8 calibrated).\n    GGUF: llama.cpp / ggml GGUF format (CPU and Metal).\n    MLX: Apple MLX framework (Apple Silicon only).\n\nExample:\n    >>> QuantizationBackend.PYTORCH.value\n    'pytorch'",
-          "enum": [
-            "pytorch",
-            "onnx",
-            "tensorrt",
-            "gguf",
-            "mlx"
-          ],
-          "title": "QuantizationBackend",
-          "type": "string"
-        },
-        "QuantizationConfig": {
-          "description": "Full specification of how to quantize a skill's model weights.\n\nAttributes:\n    dtype: Target numeric format.\n    backend: Inference backend that will execute the model.\n    per_channel: Use per-channel (vs per-tensor) quantization.\n    calibration_dataset: HuggingFace dataset ID or local path used for\n        post-training calibration (INT8 / TensorRT only).\n    extra: Backend-specific overrides (e.g. ``{\"calibration_steps\": 128}``).\n\nExample:\n    >>> cfg = QuantizationConfig(dtype=QuantizationDtype.INT8)\n    >>> cfg.backend\n    <QuantizationBackend.PYTORCH: 'pytorch'>",
-          "properties": {
-            "dtype": {
-              "$ref": "#/$defs/QuantizationDtype",
-              "default": "fp32"
-            },
-            "backend": {
-              "$ref": "#/$defs/QuantizationBackend",
-              "default": "pytorch"
-            },
-            "per_channel": {
-              "default": false,
-              "title": "Per Channel",
-              "type": "boolean"
-            },
-            "calibration_dataset": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null,
-              "title": "Calibration Dataset"
-            },
-            "extra": {
-              "additionalProperties": true,
-              "title": "Extra",
-              "type": "object"
-            }
-          },
-          "title": "QuantizationConfig",
-          "type": "object"
-        },
-        "QuantizationDtype": {
-          "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
-          "enum": [
-            "fp32",
-            "fp16",
-            "bf16",
-            "int8",
-            "int4",
-            "fp4_nvfp4"
-          ],
-          "title": "QuantizationDtype",
-          "type": "string"
-        },
-        "RSkillRuntime": {
-          "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
-          "enum": [
-            "pytorch",
-            "onnx",
-            "tensorrt",
-            "trt_llm",
-            "vllm",
-            "gguf",
-            "mlx",
-            "jax"
-          ],
-          "title": "RSkillRuntime",
-          "type": "string"
-        },
         "SafetyEnvelope": {
           "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by ADR-0028b's per-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: ADR-0028b \u2014 per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: ADR-0028b \u2014 angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        :attr:`max_ee_speed_m_s`). ``None`` skips the check.\n    max_base_linear_speed_m_s: ADR-0028b \u2014 BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: ADR-0028b \u2014 BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.",
           "properties": {
@@ -9861,67 +9784,10 @@
           ],
           "title": "TaskSpec",
           "type": "object"
-        },
-        "VLASpec": {
-          "additionalProperties": false,
-          "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-libero``). The\n        :class:`openral_sim.SimRunner` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    runtime: Optional runtime override; ``None`` means \"use whatever the\n        policy/manifest declares\".\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
-          "properties": {
-            "id": {
-              "title": "Id",
-              "type": "string"
-            },
-            "weights_uri": {
-              "title": "Weights Uri",
-              "type": "string"
-            },
-            "device": {
-              "default": "auto",
-              "title": "Device",
-              "type": "string"
-            },
-            "runtime": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RSkillRuntime"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
-            "quantization": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/QuantizationConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
-            "deterministic": {
-              "default": false,
-              "title": "Deterministic",
-              "type": "boolean"
-            },
-            "extra": {
-              "additionalProperties": true,
-              "title": "Extra",
-              "type": "object"
-            }
-          },
-          "required": [
-            "id",
-            "weights_uri"
-          ],
-          "title": "VLASpec",
-          "type": "object"
         }
       },
       "additionalProperties": false,
-      "description": "A full hardware deployment configuration \u2014 the ``openral deploy`` artefact.\n\nSibling of :class:`SimEnvironment` for real hardware. Loaded from YAML\nby ``openral_runner`` (planned, ADR-0010) and consumed by the\nhardware ``InferenceRunner``. The runner instantiates the HAL adapter,\nopens every :class:`SensorReader`, wires the\n:class:`~openral_world_state.aggregator.WorldStateAggregator`,\nconstructs the :class:`~openral_rskill.Skill` from\n``vla.weights_uri`` (a bare rSkill reference \u2014 name, path, or HF repo ID)\nand ticks at ``rate_hz``.\n\nCross-field invariants enforced in :meth:`model_post_init`:\n\n* Every :attr:`SensorReaderConfig.sensor_id` MUST be unique within\n  :attr:`sensors`.\n* :attr:`vla.weights_uri` MUST be a bare rSkill reference (no URI scheme)\n  \u2014 the rSkill manifest is the contract between robot/sensors/preprocessing\n  and policy weights (CLAUDE.md \u00a76.4).\n\nAttributes:\n    robot_id: ID into the ROBOTS registry \u2014 matches a\n        :attr:`RobotDescription.name`. Examples: ``\"so100_follower\"``,\n        ``\"franka_panda\"``, ``\"ur5e\"``.\n    hal: HAL adapter + transport configuration.\n    sensors: Per-sensor reader backend choices. The runner opens one\n        :class:`SensorReader` per entry and feeds the\n        :class:`WorldStateAggregator`.\n    task: What the robot should achieve. Reused from\n        :class:`SimEnvironment` so :attr:`TaskSpec.instruction` becomes\n        the language prompt handed to the VLA.\n    vla: Policy that drives the robot. ``vla.weights_uri`` MUST be a\n        bare rSkill reference (name, path, or HF repo ID).\n    safety: Optional :class:`SafetyEnvelope` override; falls back to the\n        robot's :attr:`RobotDescription.safety` when ``None``.\n    rate_hz: Foreground tick rate. Default 30 Hz (matches the\n        :class:`WorldStateAggregator` publish rate).\n    thumbnail_hz: Per-camera rate at which the runner encodes a JPEG\n        thumbnail onto the ``sensors.read_latest`` span for the dashboard.\n        Default 25 Hz; decoupled from ``rate_hz``. ``0`` disables thumbnails.\n        End-to-end dashboard refresh is ``min(thumbnail_hz, span export\n        flush rate)`` \u2014 see ``OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS``.\n    deadline_overrun_policy: Behavior when tick wall-time exceeds\n        ``1 / rate_hz``.\n    max_ticks: Optional cap \u2014 the runner exits cleanly after this many\n        ticks. ``None`` means \"run until ``task.max_steps`` or external\n        stop\".\n    save_dir: Optional directory for traces / video / JSON summaries.\n    metadata: Free-form notes (operator, run id, \u2026).\n\nExample:\n    >>> env = RobotEnvironment(\n    ...     robot_id=\"so100_follower\",\n    ...     hal=HalConfig(adapter=\"so100_follower\"),\n    ...     sensors=[SensorReaderConfig(sensor_id=\"wrist_rgb\")],\n    ...     task=TaskSpec(\n    ...         id=\"pick_cube/red\",\n    ...         scene_id=\"pick_cube/red\",\n    ...         instruction=\"pick up the red cube\",\n    ...     ),\n    ...     vla=VLASpec(\n    ...         id=\"smolvla\",\n    ...         weights_uri=\"rskills/smolvla-so100\",\n    ...     ),\n    ... )\n    >>> env.rate_hz\n    30.0",
+      "description": "A full hardware deployment configuration \u2014 the ``openral deploy`` artefact.\n\nSibling of :class:`SimEnvironment` for real hardware. Loaded from YAML\nby ``openral deploy run``, which shells the ``sim_e2e.launch.py`` ROS\ngraph with this config's ``robot_id`` + ``hal.transport``. The rSkill\nthat drives the robot is **not** pinned here: the reasoner selects it at\nruntime from the installed registry (``rskills/``), filtered to the\nrobot's embodiment + capabilities \u2014 the same palette path as\n``openral deploy sim``.\n\nCross-field invariants enforced in :meth:`model_post_init`:\n\n* Every :attr:`SensorReaderConfig.sensor_id` MUST be unique within\n  :attr:`sensors`.\n\nAttributes:\n    robot_id: ID into the ROBOTS registry \u2014 matches a\n        :attr:`RobotDescription.name`. Examples: ``\"so100_follower\"``,\n        ``\"franka_panda\"``, ``\"ur5e\"``.\n    hal: HAL adapter + transport configuration.\n    sensors: Per-sensor reader backend choices. The runner opens one\n        :class:`SensorReader` per entry and feeds the\n        :class:`WorldStateAggregator`.\n    task: What the robot should achieve. Reused from\n        :class:`SimEnvironment` so :attr:`TaskSpec.instruction` becomes\n        the language prompt handed to the VLA.\n    safety: Optional :class:`SafetyEnvelope` override; falls back to the\n        robot's :attr:`RobotDescription.safety` when ``None``.\n    rate_hz: Foreground tick rate. Default 30 Hz (matches the\n        :class:`WorldStateAggregator` publish rate).\n    thumbnail_hz: Per-camera rate at which the runner encodes a JPEG\n        thumbnail onto the ``sensors.read_latest`` span for the dashboard.\n        Default 25 Hz; decoupled from ``rate_hz``. ``0`` disables thumbnails.\n        End-to-end dashboard refresh is ``min(thumbnail_hz, span export\n        flush rate)`` \u2014 see ``OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS``.\n    deadline_overrun_policy: Behavior when tick wall-time exceeds\n        ``1 / rate_hz``.\n    max_ticks: Optional cap \u2014 the runner exits cleanly after this many\n        ticks. ``None`` means \"run until ``task.max_steps`` or external\n        stop\".\n    save_dir: Optional directory for traces / video / JSON summaries.\n    metadata: Free-form notes (operator, run id, \u2026).\n\nExample:\n    >>> env = RobotEnvironment(\n    ...     robot_id=\"so100_follower\",\n    ...     hal=HalConfig(adapter=\"so100_follower\"),\n    ...     sensors=[SensorReaderConfig(sensor_id=\"wrist_rgb\")],\n    ...     task=TaskSpec(\n    ...         id=\"pick_cube/red\",\n    ...         scene_id=\"pick_cube/red\",\n    ...         instruction=\"pick up the red cube\",\n    ...     ),\n    ... )\n    >>> env.rate_hz\n    30.0",
       "properties": {
         "robot_id": {
           "title": "Robot Id",
@@ -9939,9 +9805,6 @@
         },
         "task": {
           "$ref": "#/$defs/TaskSpec"
-        },
-        "vla": {
-          "$ref": "#/$defs/VLASpec"
         },
         "safety": {
           "anyOf": [
@@ -10004,8 +9867,7 @@
       "required": [
         "robot_id",
         "hal",
-        "task",
-        "vla"
+        "task"
       ],
       "title": "RobotEnvironment",
       "type": "object",

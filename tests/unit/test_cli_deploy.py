@@ -38,9 +38,6 @@ def _write_robot_env_yaml(
         "  scene_id: deploy/zero\n"
         '  instruction: "deploy run smoke"\n'
         "  max_steps: 30\n"
-        "vla:\n"
-        "  id: gpu_passthrough\n"
-        '  weights_uri: "rskills/noop"\n'
         "rate_hz: 30.0\n"
     )
     return out

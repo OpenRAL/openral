@@ -495,7 +495,7 @@ const SCHEMAS = [
   { name: "Hand",                 where: "core",  kind: "enum" },
 
   // inference runner (ADR-0010)
-  { name: "RobotEnvironment",       where: "core",  kind: "manifest", note: "Sibling of SimScene for `openral deploy run` (hardware). Pins (robot × HAL × sensors × task × VLA × safety). from_yaml() loads `deployments/*.yaml`. Enforces unique sensor ids + rskill:// weights_uri. ADR-0010." },
+  { name: "RobotEnvironment",       where: "core",  kind: "manifest", note: "Sibling of SimScene for `openral deploy run` (hardware). Pins (robot × HAL × sensors × task × safety). from_yaml() loads `deployments/*.yaml`. Enforces unique sensor ids. No rSkill is pinned — the reasoner selects it at runtime from the rskills/ palette (same path as deploy sim). ADR-0010." },
   { name: "HalConfig",              where: "core",  kind: "part", note: "Which HAL adapter to instantiate + transport (serial port / FCI URI / ROS namespace) + adapter-specific params. ADR-0010." },
   { name: "SensorReaderConfig",     where: "core",  kind: "part", note: "Per-sensor backend (opencv_thread / ros2_image / gstreamer) + backend params + optional ROS-tee for observability. ADR-0010." },
   { name: "SensorReaderBackend",    where: "core",  kind: "enum", note: "opencv_thread (default, lerobot-pattern), ros2_image, gstreamer. ADR-0010." },

@@ -3,7 +3,7 @@
 Exercises the detect → deploy-config scaffold against the **real** canonical
 ``robots/so101_follower/robot.yaml`` and real schemas — no mocks (CLAUDE.md
 §1.11). The scaffold must pre-fill everything detection knows (robot_id, serial
-port, sensors) and leave only ``task`` / ``vla`` as ``TODO`` placeholders.
+port, sensors) and leave only ``task`` as a ``TODO`` placeholder.
 """
 
 from __future__ import annotations
@@ -24,10 +24,7 @@ from openral_detect.report import (
     UsbMatchRecord,
     UsbProbeResult,
 )
-from openral_detect.scaffold import (
-    TODO_TASK_ID,
-    TODO_VLA_WEIGHTS_URI,
-)
+from openral_detect.scaffold import TODO_TASK_ID
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SO101_YAML = REPO_ROOT / "robots" / "so101_follower" / "robot.yaml"
@@ -82,10 +79,10 @@ class TestScaffoldFromManifest:
         env = scaffold_robot_environment(_so101_description())
         assert env.safety is None
 
-    def test_task_and_vla_are_todo_placeholders(self) -> None:
+    def test_task_is_todo_placeholder(self) -> None:
         env = scaffold_robot_environment(_so101_description())
         assert env.task.id == TODO_TASK_ID
-        assert env.vla.weights_uri == TODO_VLA_WEIGHTS_URI
+        assert env.metadata["edit_before_deploy"] == ["task"]
 
     def test_one_sensor_reader_per_manifest_sensor(self) -> None:
         desc = _so101_description()
@@ -130,25 +127,22 @@ class TestScaffoldRoundTrips:
         reloaded = RobotEnvironment.from_yaml(str(path))
         assert reloaded.robot_id == "so101_follower"
         assert reloaded.hal.transport["port"] == "/dev/ttyACM0"
-        # Placeholders survive a round-trip and remain schema-valid.
-        assert reloaded.vla.weights_uri == TODO_VLA_WEIGHTS_URI
+        # The task placeholder survives a round-trip and remains schema-valid.
+        assert reloaded.task.id == TODO_TASK_ID
 
 
 class TestScaffoldOverrides:
-    def test_overrides_fill_task_vla_safety_and_label(self) -> None:
+    def test_overrides_fill_task_safety_and_label(self) -> None:
         ov = ScaffoldOverrides(
             label="bench-arm",
             task_id="pick/desk",
             task_instruction="pick the red block",
-            vla_id="smolvla",
-            vla_weights_uri="rskills/smolvla-so101",
             workspace_box_min_xyz=(-0.3, -0.3, 0.0),
             workspace_box_max_xyz=(0.3, 0.3, 0.5),
         )
         env = scaffold_robot_environment(_so101_description(), None, overrides=ov)
         assert env.task.id == "pick/desk"
         assert env.task.instruction == "pick the red block"
-        assert env.vla.weights_uri == "rskills/smolvla-so101"
         assert env.metadata["label"] == "bench-arm"
         assert env.safety is not None
         assert env.safety.workspace_box_min_xyz == (-0.3, -0.3, 0.0)
@@ -156,15 +150,14 @@ class TestScaffoldOverrides:
         # Nothing left to edit, so the deploy guard is empty.
         assert env.metadata["edit_before_deploy"] == []
 
-    def test_partial_overrides_keep_remaining_todos(self) -> None:
-        # Only the task instruction is supplied; task.id + vla stay TODO, so the
-        # guard still flags both task (id is the blocking sentinel) and vla.
+    def test_partial_overrides_keep_task_todo(self) -> None:
+        # Only the task instruction is supplied; task.id stays TODO, so the
+        # guard still flags task (id is the blocking sentinel).
         ov = ScaffoldOverrides(task_instruction="pick the red block")
         env = scaffold_robot_environment(_so101_description(), None, overrides=ov)
         assert env.task.instruction == "pick the red block"
         assert env.task.id == TODO_TASK_ID
-        assert env.vla.weights_uri == TODO_VLA_WEIGHTS_URI
-        assert env.metadata["edit_before_deploy"] == ["task", "vla"]
+        assert env.metadata["edit_before_deploy"] == ["task"]
 
     def test_lone_workspace_corner_is_ignored(self) -> None:
         # A box needs both corners to be a real constraint; one corner → no safety.

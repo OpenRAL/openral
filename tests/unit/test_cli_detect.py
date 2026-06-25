@@ -121,27 +121,27 @@ class TestBhDetect:
         env = RobotEnvironment.from_yaml(str(deploy))
         assert env.robot_id == "so101_follower"
         assert env.safety is None
-        # task + vla are TODO placeholders the operator must edit.
+        # task is the TODO placeholder the operator must edit.
         assert env.task.id.startswith("TODO")
-        assert env.vla.weights_uri.startswith("TODO")
+        assert env.metadata["edit_before_deploy"] == ["task"]
         # The banner flags the human-only fields detection cannot infer.
         banner = deploy.read_text()
         assert "review before `openral deploy run`" in banner
-        assert "task" in banner and "vla" in banner
+        assert "task" in banner
         assert "safety" in banner and "camera" in banner
+        # The rSkill is not pinned — the reasoner picks it at runtime.
+        assert "reasoner selects it at" in banner
 
     def test_detect_interactive_fills_deployment(self, tmp_path: Path) -> None:
         out = tmp_path / "robot.yaml"
         deploy = tmp_path / "deploy.yaml"
-        # Answers in prompt order: label, task instruction, task id, vla ref,
-        # vla id, workspace min, workspace max.
+        # Answers in prompt order: label, task instruction, task id,
+        # workspace min, workspace max.
         answers = "\n".join(
             [
                 "bench-arm",
                 "pick the red block",
                 "pick/desk",
-                "rskills/molmoact2-so101-nf4",  # real, embodiment-compatible
-                "molmoact2",
                 "-0.3,-0.3,0.0",
                 "0.3,0.3,0.5",
             ]
@@ -170,46 +170,10 @@ class TestBhDetect:
 
         env = RobotEnvironment.from_yaml(str(deploy))
         assert env.task.instruction == "pick the red block"
-        assert env.vla.weights_uri == "rskills/molmoact2-so101-nf4"
+        assert env.task.id == "pick/desk"
         assert env.metadata["label"] == "bench-arm"
         assert env.safety is not None
         assert env.metadata["edit_before_deploy"] == []
-
-    def test_interactive_rejects_incompatible_vla_then_skips(self, tmp_path: Path) -> None:
-        out = tmp_path / "robot.yaml"
-        deploy = tmp_path / "deploy.yaml"
-        # label, task, task-id, BAD vla (aloha embodiment), then Enter to skip
-        # the vla, vla-id, no workspace box.
-        answers = "\n".join(
-            ["desk", "pick", "pick/desk", "rskills/act-aloha", "", "", "", ""]
-        )
-        result = runner.invoke(
-            app,
-            [
-                "detect",
-                "--robot",
-                "so101",
-                "--output",
-                str(out),
-                "--deployment",
-                str(deploy),
-                "--interactive",
-                "--include",
-                "network",
-                "--dds-timeout",
-                "0",
-                "--yes",
-            ],
-            input=answers + "\n",
-        )
-        assert result.exit_code == 0, result.output
-        assert "not compatible" in result.output
-        from openral_core import RobotEnvironment
-
-        env = RobotEnvironment.from_yaml(str(deploy))
-        # The bad ref was refused; the operator skipped, so vla stays a TODO.
-        assert env.vla.weights_uri.startswith("TODO")
-        assert "vla" in env.metadata["edit_before_deploy"]
 
     def test_interactive_without_deployment_warns(self) -> None:
         result = runner.invoke(
