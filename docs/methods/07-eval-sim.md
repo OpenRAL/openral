@@ -135,8 +135,8 @@ _ADR-0030 — simulated depth camera via MuJoCo CPU ray-casting (the 3-D analogu
 #### `python/sim/src/openral_sim/backends/libero.py`
 - `class _LiberoSim` — `SimRollout` wrapping `LiberoEnv`. (L115) — `reset/step/render/close/action_dim/mujoco_handles/sim_time_ns/_wrap_obs/enable_continuous/_robosuite_env`. `enable_continuous()` (ADR-0036; called by `SimAttachedHAL.__init__` on deploy-sim, no-op for `openral sim run`) makes the episode run continuously — it sets the wrapped robosuite env's `ignore_done` (via `_robosuite_env()`) and has `step()` swallow lerobot's inline `LiberoEnv.step → if terminated: self.reset()`, so a task success / horizon no longer re-randomises the scene mid-mission (which also re-creates the MjData and orphans the passive viewer). `mujoco_handles()` reaches through robosuite's `env.sim.{model,data}._{model,data}` for `openral sim run --view`. `sim_time_ns()` returns `round(MjData.time * 1e9)` (ADR-0048 Phase 1). `action_dim` walks the `LiberoEnv→OffScreenRenderEnv` wrapper chain to sum robosuite `robots[*].action_dim` (LIBERO OSC_POSE = 7) so `SimAttachedHAL` can size cartesian actions on the `openral deploy sim` suite-scene path.
 - `_parse_task_id(task_id, scene_id) -> int` — Validate `<suite>/<int>` format. (L84)
-- `_quat_to_axisangle(quat) -> NDArray[np.float32]` — `[x,y,z,w]` → axis-angle. (L304)
-- `_build_libero_scene(env_cfg) -> _LiberoSim` (L362)
+- `_quat_to_axisangle(quat) -> NDArray[np.float32]` — `[x,y,z,w]` → axis-angle. (L315)
+- `_build_libero_scene(env_cfg) -> _LiberoSim` (L373)
 
 #### `python/sim/src/openral_sim/backends/metaworld.py`
 _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a `metaworld==3.0.0 --no-deps` pip install (its transitive deps conflict with the workspace lock); the scene factory calls `openral_sim._deps.ensure_backend_deps("metaworld")` first so the user gets an interactive auto-install banner on first use. Scene id `metaworld`. Task id `metaworld/<task-name>` (e.g. `metaworld/reach-v3`)._
