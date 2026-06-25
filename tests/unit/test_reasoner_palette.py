@@ -50,6 +50,29 @@ def test_palette_includes_capability_matched_skill() -> None:
     assert manifest.name in palette.execute_rskill_ids
 
 
+def test_palette_excludes_unresolved_scaffold_template() -> None:
+    """The ``rskills/template/`` scaffold is never offered as a dispatchable skill.
+
+    Regression: the in-tree ``rskills/*/rskill.yaml`` glob picks up
+    ``rskills/template/rskill.yaml`` (``name: TEMPLATE_ORG/rskill-TEMPLATE_ID``,
+    ``role: s1``). Without the :meth:`RSkillManifest.is_scaffold_placeholder`
+    gate it entered the palette as a "valid" id, so a weak reasoner LLM picked
+    it (the decode guard can't reject an id that IS in the palette) and
+    dispatched a non-existent skill. The template parses as a real manifest but
+    must never be dispatchable.
+    """
+    template = _load_manifest("template")
+    real = _load_manifest("smolvla-libero")
+    assert template.is_scaffold_placeholder is True
+    assert real.is_scaffold_placeholder is False
+    palette = build_tool_palette(
+        installed_skills=[template, real],
+        robot_capabilities=RobotCapabilities(embodiment_tags=list(real.embodiment_tags)),
+    )
+    assert template.name not in palette.execute_rskill_ids
+    assert real.name in palette.execute_rskill_ids
+
+
 def test_palette_excludes_skill_with_non_intersecting_embodiment() -> None:
     """A skill targeting a different embodiment is excluded."""
     manifest = _load_manifest("pi05-libero-nf4")

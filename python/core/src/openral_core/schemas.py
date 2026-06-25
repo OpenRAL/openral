@@ -4320,6 +4320,34 @@ _HF_DATASET_URI_PATTERN = (
     r"^hf:\/\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$"
 )
 _HTTPS_URL_PATTERN = r"^https?:\/\/[^\s]+$"
+
+# Unresolved-scaffold sentinels. ``rskills/template/rskill.yaml`` ships
+# ``name: "TEMPLATE_ORG/rskill-TEMPLATE_ID"`` and ``hf://TEMPLATE_ORG/TEMPLATE_ID``
+# placeholders that ``openral rskill new`` (``_rskill_scaffolder``) rewrites. The
+# publish gate (``_rskill_doc_validator`` / ``rskill_publisher``) rejects manifests
+# that still carry them, and the reasoner palette refuses to offer them as
+# dispatchable skills (:meth:`RSkillManifest.is_scaffold_placeholder`). Canonical
+# here so every consumer shares one definition. These never appear in a real,
+# published manifest.
+RSKILL_TEMPLATE_SENTINELS: tuple[str, ...] = ("TEMPLATE_ORG", "TEMPLATE_ID")
+
+
+def contains_rskill_template_sentinel(text: str | None) -> bool:
+    """True when ``text`` carries an unresolved rSkill scaffold sentinel.
+
+    Example:
+        >>> contains_rskill_template_sentinel("TEMPLATE_ORG/rskill-TEMPLATE_ID")
+        True
+        >>> contains_rskill_template_sentinel("OpenRAL/rskill-smolvla-libero")
+        False
+        >>> contains_rskill_template_sentinel(None)
+        False
+    """
+    if not text:
+        return False
+    return any(s in text for s in RSKILL_TEMPLATE_SENTINELS)
+
+
 # Per-file URI pattern accepted by :class:`RSkillProcessors`. Requires a
 # file tail (``/path/to/file.ext``) so the implicit-snapshot shape
 # ``hf://owner/repo`` is rejected. The whole point of the processors
@@ -5210,6 +5238,22 @@ class RSkillManifest(BaseModel):
         ``OPENRAL_ALLOW_NONCOMMERCIAL=1`` per CLAUDE.md §7.4.
         """
         return self.license in _LICENSES_ALLOWING_COMMERCIAL
+
+    @property
+    def is_scaffold_placeholder(self) -> bool:
+        """True when this is an unresolved ``rskills/template/`` scaffold.
+
+        Checks the identity fields (:attr:`name`, :attr:`weights_uri`,
+        :attr:`source_repo`) for the :data:`RSKILL_TEMPLATE_SENTINELS`. The
+        scaffold parses as a valid manifest (so tests can load it) but is not a
+        real, loadable skill: the reasoner palette must not offer it as
+        dispatchable, and the publish gate rejects it. One predicate so callers
+        don't re-derive the sentinel check.
+        """
+        return any(
+            contains_rskill_template_sentinel(field)
+            for field in (self.name, self.weights_uri, self.source_repo)
+        )
 
     # ── Preprocessing block ───────────────────────────────────────────────
     # Knobs the trained checkpoint needs to interpret IO. Grouped here so

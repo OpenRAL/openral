@@ -460,6 +460,14 @@ def build_tool_palette(
     for skill in installed_skills:
         if skill.role != "s1":
             continue
+        # Never admit the unresolved scaffold template to the palette. The
+        # `rskills/*/rskill.yaml` glob picks up `rskills/template/rskill.yaml`
+        # (name `TEMPLATE_ORG/rskill-TEMPLATE_ID`, `role: s1`); without this a
+        # weak reasoner LLM picks it as a "valid" palette id (the decode guard
+        # can't reject an id that IS in the palette) and dispatches a
+        # non-existent skill. The publish gate uses the same predicate.
+        if skill.is_scaffold_placeholder:
+            continue
         # ``detector`` rSkills are S1-rate perception producers (RT-DETR →
         # ObjectsMetadata, ADR-0035/0037), not ExecuteSkill-dispatchable
         # policies — they are activated as the perception ROS node / GStreamer

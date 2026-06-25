@@ -29,6 +29,7 @@ from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_
 from openral_core.schemas import (
     BODY_TWIST_DIM,
     CONTROL_MODE_TO_UINT8,
+    RSKILL_TEMPLATE_SENTINELS,
     SCENE_FAMILY_TASK_SPACE,
     SIM_EXECUTABLE_CONTROL_MODES,
     UINT8_TO_CONTROL_MODE,
@@ -183,6 +184,7 @@ from openral_core.schemas import (
     WorldCollisionPrimitive,
     WorldState,
     canonical_slots_for_representation,
+    contains_rskill_template_sentinel,
     control_modes_for_representation,
     extract_base_sim_joint_names,
     scale_intrinsics_to,
@@ -194,6 +196,7 @@ from openral_core.schemas import (
 __all__ = [
     "BODY_TWIST_DIM",
     "CONTROL_MODE_TO_UINT8",
+    "RSKILL_TEMPLATE_SENTINELS",
     "SCENE_FAMILY_TASK_SPACE",
     "SIM_EXECUTABLE_CONTROL_MODES",
     "UINT8_TO_CONTROL_MODE",
@@ -368,6 +371,7 @@ __all__ = [
     "WorldCollisionPrimitive",
     "WorldState",
     "canonical_slots_for_representation",
+    "contains_rskill_template_sentinel",
     "control_modes_for_representation",
     "extract_base_sim_joint_names",
     "load_benchmark_suite",
