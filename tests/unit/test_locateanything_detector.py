@@ -141,9 +141,10 @@ def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
         assert isinstance(det, LocateAnythingDetector)
         # Static default query = the manifest's labels joined for the prompt.
         assert det._query == "</c>".join(m.detector.labels)
-        # source_repo (upstream) wins over weights_uri: the sidecar loads the
-        # upstream weights and quantizes on the fly (see _locateanything_server._load).
-        assert weights_source_from_manifest(m) == "nvidia/LocateAnything-3B"
+        # weights_uri (the prequantized NF4 mirror this rSkill ships) wins over
+        # source_repo (upstream provenance): the sidecar loads the mirror directly
+        # via the prequantized path (see _locateanything_server._load).
+        assert weights_source_from_manifest(m) == "OpenRAL/rskill-locateanything-3b-nf4"
         # The factory threads the manifest's max_side into the backend so the
         # sidecar boots with --max-side 512 (lower grounding VRAM peak).
         assert det._max_side == 512
