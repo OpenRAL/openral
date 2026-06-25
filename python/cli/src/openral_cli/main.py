@@ -69,7 +69,13 @@ from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
 
 if TYPE_CHECKING:
-    from openral_core import BenchmarkScene, RobotEnvironment, RSkillEvalResult, VLASpec
+    from openral_core import (
+        BenchmarkScene,
+        RobotDescription,
+        RobotEnvironment,
+        RSkillEvalResult,
+        VLASpec,
+    )
     from openral_core.schemas import RSkillManifest
     from openral_detect import CompatibilityReport, RSkillCompatRow, ScaffoldOverrides
     from openral_detect.report import GpuProbeResult
@@ -995,7 +1001,7 @@ def _emit_deployment_scaffold(
             console.print("[yellow]Skipped deployment scaffold.[/yellow]")
             return
 
-    overrides = _prompt_scaffold_overrides() if interactive else None
+    overrides = _prompt_scaffold_overrides(description) if interactive else None
     env = scaffold_robot_environment(description, detection, overrides=overrides)
     yaml_text = _yaml.safe_dump(
         env.model_dump(mode="json"),
@@ -1057,11 +1063,56 @@ def _deployment_banner(env: RobotEnvironment) -> str:
     )
 
 
-def _prompt_scaffold_overrides() -> ScaffoldOverrides:
+def _check_vla_against_robot(reference: str, robot: RobotDescription) -> str | None:
+    """Return an error message if ``reference`` cannot deploy on ``robot``, else None.
+
+    Reuses :func:`openral_detect.check_single_rskill`, so a single call covers
+    both "is it installed/resolvable" (``manifest_load`` failure) and "does its
+    embodiment tag match the robot" (``embodiment_tag`` failure), plus the
+    capability-flag / action-contract sections. Detectors / VLMs are
+    embodiment-agnostic and pass the embodiment section by design.
+    """
+    from openral_detect import check_single_rskill
+
+    row = check_single_rskill(reference, robot).rows[0]
+    if row.compatible:
+        return None
+    if row.failure_kind == "manifest_load":
+        return f"rSkill {reference!r} is not installed / could not be resolved ({row.reason})."
+    return f"rSkill {reference!r} is not compatible with robot {robot.name!r}: {row.reason}"
+
+
+def _preflight_deploy_vla(env: RobotEnvironment, robot_yaml: Path) -> None:
+    """Fail fast (exit 1) if the deploy config's vla is not deployable.
+
+    Catches a never-edited ``TODO`` placeholder and an uninstalled / wrong-
+    embodiment rSkill *before* the ROS graph launches, instead of letting it
+    blow up deep inside the runner. ``robot_yaml`` is the manifest the launch
+    resolved, so the embodiment check is against the robot actually deploying.
+    """
+    from openral_core import RobotDescription
+    from openral_detect.scaffold import TODO_VLA_WEIGHTS_URI
+
+    ref = env.vla.weights_uri
+    if ref == TODO_VLA_WEIGHTS_URI or ref.startswith("TODO"):
+        console.print(
+            f"[red]deploy run:[/red] vla.weights_uri is still a placeholder ({ref!r}); "
+            "set a real rSkill first (e.g. `openral detect --deployment <cfg> --interactive`)."
+        )
+        raise typer.Exit(code=1)
+    err = _check_vla_against_robot(ref, RobotDescription.from_yaml(str(robot_yaml)))
+    if err is not None:
+        console.print(f"[red]deploy run:[/red] {err}")
+        raise typer.Exit(code=1)
+
+
+def _prompt_scaffold_overrides(robot: RobotDescription) -> ScaffoldOverrides:
     """Interactively collect the fields detection cannot infer.
 
     Empty answers are left as ``TODO`` placeholders (the deploy guard still
-    flags them), so an operator can fill only what they know now.
+    flags them), so an operator can fill only what they know now. A supplied
+    VLA reference is validated against ``robot`` (installed + embodiment match)
+    and re-prompted until valid or skipped.
     """
     from openral_detect import ScaffoldOverrides
 
@@ -1084,10 +1135,20 @@ def _prompt_scaffold_overrides() -> ScaffoldOverrides:
             return None
         return (x, y, z)
 
+    def _ask_vla() -> str | None:
+        while True:
+            ref = _ask("VLA: rSkill reference or weights_uri")
+            if ref is None:
+                return None
+            err = _check_vla_against_robot(ref, robot)
+            if err is None:
+                return ref
+            console.print(f"[red]  {err}[/red]\n  try another, or press Enter to leave as TODO.")
+
     label = _ask("Deployment label (friendly name)")
     task_instruction = _ask("Task: natural-language goal")
     task_id = _ask("Task id (e.g. pick_and_place/desk)")
-    vla_weights_uri = _ask("VLA: rSkill reference or weights_uri")
+    vla_weights_uri = _ask_vla()
     vla_id = _ask("VLA adapter id (e.g. smolvla)")
     wmin = _ask_xyz("Workspace box min corner")
     wmax = _ask_xyz("Workspace box max corner")
@@ -3393,6 +3454,10 @@ def deploy_run(
     except (ROSConfigError, ROSCapabilityMismatch) as exc:
         console.print(f"[red]deploy run:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    # Pre-flight the configured rSkill against the resolved robot: a placeholder,
+    # uninstalled, or wrong-embodiment vla fails here, not deep in the ROS graph.
+    _preflight_deploy_vla(env, invocation.robot_yaml)
 
     console.print(
         f"[cyan]deploy run[/cyan] {invocation.robot_id} → real HAL "

@@ -140,8 +140,8 @@ class TestBhDetect:
                 "bench-arm",
                 "pick the red block",
                 "pick/desk",
-                "rskills/smolvla-so101",
-                "smolvla",
+                "rskills/molmoact2-so101-nf4",  # real, embodiment-compatible
+                "molmoact2",
                 "-0.3,-0.3,0.0",
                 "0.3,0.3,0.5",
             ]
@@ -170,10 +170,46 @@ class TestBhDetect:
 
         env = RobotEnvironment.from_yaml(str(deploy))
         assert env.task.instruction == "pick the red block"
-        assert env.vla.weights_uri == "rskills/smolvla-so101"
+        assert env.vla.weights_uri == "rskills/molmoact2-so101-nf4"
         assert env.metadata["label"] == "bench-arm"
         assert env.safety is not None
         assert env.metadata["edit_before_deploy"] == []
+
+    def test_interactive_rejects_incompatible_vla_then_skips(self, tmp_path: Path) -> None:
+        out = tmp_path / "robot.yaml"
+        deploy = tmp_path / "deploy.yaml"
+        # label, task, task-id, BAD vla (aloha embodiment), then Enter to skip
+        # the vla, vla-id, no workspace box.
+        answers = "\n".join(
+            ["desk", "pick", "pick/desk", "rskills/act-aloha", "", "", "", ""]
+        )
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--deployment",
+                str(deploy),
+                "--interactive",
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+            input=answers + "\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert "not compatible" in result.output
+        from openral_core import RobotEnvironment
+
+        env = RobotEnvironment.from_yaml(str(deploy))
+        # The bad ref was refused; the operator skipped, so vla stays a TODO.
+        assert env.vla.weights_uri.startswith("TODO")
+        assert "vla" in env.metadata["edit_before_deploy"]
 
     def test_interactive_without_deployment_warns(self) -> None:
         result = runner.invoke(
