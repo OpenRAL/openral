@@ -127,17 +127,28 @@ class _LiberoSim:
     _continuous: bool = False
 
     def _robosuite_env(self) -> Any:
-        """The wrapped robosuite env (carries ``sim`` / ``ignore_done``), or None.
+        """The robosuite task env that actually computes ``done``, or None.
 
-        robosuite re-layers these paths across releases, so walk the same
-        candidate chain :meth:`mujoco_handles` / :attr:`action_dim` use.
+        LIBERO nests it two wrappers deep — ``LiberoEnv._env`` is an
+        ``OffScreenRenderEnv`` (which proxies ``.sim`` but does NOT carry
+        ``done``/``ignore_done``); its ``.env`` is the real
+        ``Libero_*_Manipulation`` robosuite env that latches ``done`` on
+        horizon/success and hard-raises on a post-terminal step. Walk
+        ``_env``/``env``/``unwrapped`` until we find the object carrying both
+        ``ignore_done`` and ``horizon`` (robust to robosuite's cross-release
+        re-layering) so :meth:`enable_continuous` targets the right env.
         """
-        candidates = (
-            getattr(self._env, "_env", None),
-            self._env,
-            getattr(getattr(self._env, "unwrapped", None), "_env", None),
-        )
-        return next((c for c in candidates if getattr(c, "sim", None) is not None), None)
+        seen: set[int] = set()
+        stack: list[Any] = [self._env]
+        while stack:
+            obj = stack.pop()
+            if obj is None or id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            if hasattr(obj, "ignore_done") and hasattr(obj, "horizon"):
+                return obj
+            stack.extend(getattr(obj, child, None) for child in ("_env", "env", "unwrapped"))
+        return None
 
     def enable_continuous(self) -> None:
         """Run the LIBERO episode continuously (deploy-sim; ADR-0036).

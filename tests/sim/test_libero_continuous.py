@@ -71,6 +71,13 @@ def test_enable_continuous_never_terminates_or_resets_past_horizon() -> None:
     try:
         sim.reset(seed=0)
         sim.enable_continuous()
+        # Regression: ignore_done must land on the env that actually latches `done`
+        # (Libero_*_Manipulation), NOT the OffScreenRenderEnv wrapper — otherwise
+        # the horizon/success `done` still hard-raises and the HAL re-randomises.
+        rs = sim._robosuite_env()
+        assert rs is not None and hasattr(rs, "horizon")
+        assert type(rs).__name__ != "OffScreenRenderEnv"
+        assert getattr(rs, "ignore_done", False) is True
         handles = sim.mujoco_handles()
         assert handles is not None, "need MjData to detect a reset's teleport"
         data = handles[1]
