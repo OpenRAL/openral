@@ -1,0 +1,38 @@
+# LIBERO object environment — deploy-sim digital twin (DeployScene; multi-task).
+#
+# Boots the full OpenRAL stack (HAL + reasoner + safety kernel + reward monitor
+# + object-locator) against the LIBERO *object* MuJoCo scene: a table holding
+# ten grocery items (alphabet soup, cream cheese, salad dressing, bbq sauce,
+# ketchup, tomato sauce, butter, milk, chocolate pudding, orange juice) and a
+# basket. Unlike libero_spatial (where the target is positionally fixed), the
+# object suite places every item in the scene at once — the operator goal names
+# *which* objects to move, so the reasoner must locate each one before picking.
+#
+# The ``tasks:`` block is joined with `` | `` into a single operator prompt at
+# activate time; the reasoner's MissionState (ADR-0073) splits it back into an
+# ordered queue, locates each named object via the omdet-turbo-locator, executes
+# smolvla-libero per subtask, reward-gates each attempt against robometer-4b,
+# and advances one task at a time until the queue is drained. Every subtask
+# selection, localisation, VLA execution, and reward verdict is an OTel span on
+# ``reasoner.tick`` / ``rskill.tick`` so the run is diagnosable from the trace.
+#
+# Robot auto-resolves via ``SCENES.fixed_robot("libero_object") == "franka_panda"``.
+# Run: openral deploy sim --config scenes/deploy/libero_object.yaml
+#      --enable-reward-monitor
+#      --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
+# Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
+
+scene:
+  id: libero_object
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+
+# Multi-task goal: three grocery items, each located then picked into the basket.
+# ``openral deploy sim`` joins these with `` | `` into one operator prompt; the
+# reasoner decomposes it into an ordered, individually reward-gated task queue.
+# Override at launch with ``--initial-task "<natural-language goal>"``.
+tasks:
+  - "pick up the milk and place it in the basket"
+  - "pick up the ketchup and place it in the basket"
+  - "pick up the alphabet soup and place it in the basket"
