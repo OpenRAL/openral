@@ -570,8 +570,15 @@ if _ROS2_AVAILABLE:
                 return
 
             data = bytes(getattr(msg, "data", b"") or b"")
-            # Dashboard-only 180° rotation (OPENRAL_DASHBOARD_FLIP_180) so bottom-up
-            # MuJoCo renders (LIBERO) show upright. Only RGB/BGR frames; size-guarded.
+            # OPENRAL_DASHBOARD_FLIP_180: LIBERO/robosuite renders bottom-up, so the
+            # dashboard shows the scene upside-down. Flip ONLY the dashboard thumbnail
+            # (``display_data`` below) — ``SensorFrame.data`` fed to the aggregator (and
+            # from there to the rSkill runner's policy observation via
+            # ``_decode_image_frames``) MUST stay in the raw publisher orientation. The
+            # VLA adapter applies its own ``image_preprocessing.flip_180``; flipping the
+            # policy frame here too double-flips it, so the policy sees an upside-down
+            # scene and the rollout collapses. Display-only; never touches actuation.
+            display_data = data
             if (
                 self._dashboard_flip_180
                 and encoding in (FrameEncoding.RGB8, FrameEncoding.BGR8)
@@ -579,9 +586,11 @@ if _ROS2_AVAILABLE:
             ):
                 import numpy as np  # reason: lazy — only on the camera path
 
-                data = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)[
-                    ::-1, ::-1
-                ].tobytes()
+                display_data = (
+                    np.frombuffer(data, dtype=np.uint8)
+                    .reshape(height, width, 3)[::-1, ::-1]
+                    .tobytes()
+                )
             # ROS clock, NOT time.time_ns(): under deploy-sim every node runs on
             # use_sim_time and the camera's header.stamp is sim time, so a wall
             # `now` minus a sim stamp yields a nonsensical age (~1e8-1e12 ms on the
@@ -618,7 +627,14 @@ if _ROS2_AVAILABLE:
                 },
             ) as sensor_span:
                 modality = ral_producer.modality_for_encoding(encoding)
-                thumb = ral_producer.encode_frame_thumbnail(frame)
+                # Thumbnail is display-only — encode it from the (possibly flipped)
+                # display copy; the raw ``frame`` is what reaches the policy.
+                thumb_frame = (
+                    frame
+                    if display_data is data
+                    else frame.model_copy(update={"data": display_data})
+                )
+                thumb = ral_producer.encode_frame_thumbnail(thumb_frame)
                 ral_producer.record_sensor_frame_attrs(
                     sensor_span,
                     modality=modality,
