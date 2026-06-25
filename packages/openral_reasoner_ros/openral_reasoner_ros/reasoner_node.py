@@ -2237,6 +2237,12 @@ class ReasonerNode(LifecycleNode):
         nxt = self._renderer.advance_mission(done=done, verdict=verdict)
         label = "done ✓" if done else "abandoned ✗"
         if nxt is not None:
+            # A new active task is a fresh goal — clear the per-kind tick streak so
+            # the next task isn't suppressed by `retry_cap` for re-using the same
+            # tool kind (e.g. execute_rskill) the just-finished task ended on.
+            # Mirrors the reset on a new operator prompt (see _on_prompt).
+            if self._core is not None:
+                self._core.reset_kind_streak()
             self.get_logger().info(
                 f"mission: task {active.task_id} {label} ({verdict}); "
                 f"advancing → {nxt.task_id}={nxt.text[:60]!r}",

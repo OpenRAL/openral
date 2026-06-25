@@ -204,6 +204,37 @@ def test_retry_cap_suppresses_after_n_identical_kinds() -> None:
     assert results[-1].suppressed_reason == "retry_cap"
 
 
+def test_reset_kind_streak_lets_the_next_same_kind_tick_through() -> None:
+    """reset_kind_streak() clears the streak so the next same-kind tick is not
+    suppressed — the mechanism the reasoner_node uses on mission-task advancement
+    (ADR-0073) so a new task is not blocked by the retry_cap the just-finished
+    task ended on.
+    """
+    palette = _palette()
+    clock_value = 0.0
+
+    def clock() -> float:
+        nonlocal clock_value
+        clock_value += 1.0
+        return clock_value
+
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text=f"m{i}") for i in range(4)],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3, clock=clock)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(4):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        if i == 3:
+            core.reset_kind_streak()  # simulate advancing to a new mission task
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    # Without the reset the 4th identical kind is suppressed (see
+    # test_retry_cap_suppresses_after_n_identical_kinds); the reset lets it through.
+    assert [r.tool_call is not None for r in results] == [True, True, True, True]
+    assert results[-1].suppressed_reason == ""  # not suppressed
+
+
 def test_different_kind_resets_retry_streak() -> None:
     """A different tool kind clears the streak — alternating calls never suppressed."""
     palette = _palette("openral/rskill-x")
