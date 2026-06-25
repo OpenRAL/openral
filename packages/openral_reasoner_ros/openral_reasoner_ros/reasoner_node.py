@@ -360,6 +360,20 @@ def _action_executable(
     return {ControlMode(m) for m in required} <= executable
 
 
+def _resets_search_episode(call: Any) -> bool:
+    """True when dispatching ``call`` should end the active-search episode (ADR-0039 §3).
+
+    The cascade bound counts only *consecutive* spatial-search queries, so any
+    non-search dispatch resets ``_spatial_search`` + ``_locate_escalated``. The
+    search actions that must NOT reset are ``recall_object`` / ``resolve_place``
+    (remembered objects) and ``locate_in_view`` (live detector) — the latter is
+    the regression this guards: if a directly-emitted ``locate_in_view`` reset
+    the budget, a ``recall → locate → recall`` loop against an undetectable
+    object would zero the counter every cycle and never hand off.
+    """
+    return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool)
+
+
 class ReasonerNode(LifecycleNode):
     """ROS 2 lifecycle wrapper around :class:`ReasonerCore` (ADR-0018 F4).
 
@@ -1664,8 +1678,9 @@ class ReasonerNode(LifecycleNode):
         stub pending the F6 sensor-package service IDL.
         """
         # ADR-0039 §3 — any non-search dispatch ends the search episode, so the
-        # cascade bound counts only *consecutive* spatial queries.
-        if not isinstance(call, RecallObjectTool | ResolvePlaceTool):
+        # cascade bound counts only *consecutive* spatial queries (incl. the live
+        # locate_in_view — see _resets_search_episode).
+        if _resets_search_episode(call):
             self._spatial_search.reset()
             self._locate_escalated.clear()
         if isinstance(call, EmitPromptTool):
@@ -1914,16 +1929,36 @@ class ReasonerNode(LifecycleNode):
             return
         assert self._prompt_pub is not None
         cam = resp.camera or call.camera or "default"
+        # A live locate counts as one spatial-search step (ADR-0039 §3): a miss
+        # consumes budget so a repeated "not visible" terminates in handoff
+        # instead of looping; a hit ends the search streak so the next find
+        # starts fresh.
+        frame_id = "detector"  # consumed by _on_prompt → feeds the next tick
         if resp.found:
+            self._spatial_search.reset()
+            self._locate_escalated.clear()
             text = (
                 f"locate_in_view: {call.query!r} IS visible in camera {cam!r} right now. "
                 f"detections={resp.metadata_json}"
             )
-        else:
+        elif self._spatial_search.record_attempt():
             text = f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now."
+        else:
+            # Budget exhausted → hand off. The reasoner's own frame_id makes
+            # _on_prompt filter it (no further tick): the cascade stops here.
+            frame_id = self.get_name()
+            text = (
+                f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now.\n"
+                f"active_search: query budget exhausted after {self._spatial_search.attempts} "
+                "consecutive lookups — handing off to a human."
+            )
+            self.get_logger().warning(
+                f"dispatch: locate_in_view {call.query!r} budget exhausted "
+                f"({self._spatial_search.attempts} lookups) — handing off",
+            )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "detector"  # consumed by _on_prompt → feeds the next tick
+        msg.header.frame_id = frame_id
         msg.text = text
         metadata: dict[str, Any] = {"source": "detector", "tool": call.tool}
         if traceparent is not None:
