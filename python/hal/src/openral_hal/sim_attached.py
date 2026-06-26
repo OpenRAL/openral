@@ -390,6 +390,14 @@ class SimAttachedHAL:
                 deadlines share one timestep definition.
         """
         self._env = env
+        # ADR-0036 — episodic backends (LIBERO) re-randomise the scene the instant
+        # a task succeeds (lerobot's LiberoEnv.step resets inline). In a continuous
+        # deploy twin the reasoner/mission own episode boundaries, not the env, so
+        # ask the env to run continuously when it supports the hook (no-op for
+        # backends without it, e.g. robocasa which already runs ignore_done).
+        enable_continuous = getattr(env, "enable_continuous", None)
+        if callable(enable_continuous):
+            enable_continuous()
         self.description = description
         self._action_packer = action_packer if action_packer is not None else pack_action_for_env
         self._reset_seed = env_reset_seed

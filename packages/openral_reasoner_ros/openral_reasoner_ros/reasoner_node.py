@@ -49,7 +49,9 @@ The reasoner **never** publishes ``openral_msgs/ActionChunk`` (ADR-0018
 from __future__ import annotations
 
 import contextlib
+import datetime
 import json
+import pathlib
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -62,10 +64,13 @@ from openral_core import (
     SIM_EXECUTABLE_CONTROL_MODES,
     ControllerEvidence,
     ControlMode,
+    DecomposeMissionTool,
     EmitPromptTool,
     ExecuteRskillTool,
     LifecycleTransitionTool,
     LocateInViewTool,
+    MemorySearchTool,
+    MemoryWriteTool,
     QuerySceneTool,
     QueryTaskProgressTool,
     RecallObjectTool,
@@ -77,16 +82,29 @@ from openral_core import (
     TimeoutEvidence,
     control_modes_for_representation,
 )
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
 from openral_reasoner.context import (
     ContextRenderer,
+    ExecutionEventRecord,
     FailureEventRecord,
     PerceptionEventRecord,
     PromptRecord,
+    reflect_on_failure,
+    reflect_on_invalid_plan,
+    reflect_on_retry_cap,
+    render_playbooks_block,
+    render_robot_self_model,
 )
 from openral_reasoner.core import ReasonerCore
+from openral_reasoner.memory import MemoryEntry, MemoryStore
+from openral_reasoner.mission import (
+    DEFAULT_MAX_SUBDIVIDE_DEPTH,
+    MissionState,
+    TaskState,
+    evaluate_task_verdict,
+)
 from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
@@ -197,6 +215,20 @@ _QOS_MAP = QoSProfile(
 # for consistency with the carried `rskill_id` field.
 _FAILURE_SOURCES: tuple[str, ...] = ("hal", "sensor", "rskill", "safety", "wam", "critic")
 _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change")
+
+# ADR-0073 §1 — prompt frame_ids the reasoner re-publishes onto /openral/prompt
+# for its OWN cascade (advisory query responses + spatial-memory re-prompts).
+# These are not new operator goals, so they must NOT (re)build the mission queue
+# — only a genuine operator/cli/dashboard prompt does. Self-emits (frame_id ==
+# the node name) are already dropped earlier in `_on_prompt`.
+_CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
+    {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
+)
+
+# ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
+# Matches the reward_monitor's default rolling window so `succeeded` reflects the
+# end-of-attempt state, not a single frame.
+_MISSION_VERIFY_WINDOW_S: float = 8.0
 
 # FailureTrigger constants — IDL-mirror per openral_observability.failure_bus
 # (kept inline rather than importing the helper so the reasoner_node can
@@ -335,6 +367,36 @@ def _action_executable(
     return {ControlMode(m) for m in required} <= executable
 
 
+def _resets_search_episode(call: Any) -> bool:
+    """True when dispatching ``call`` should end the active-search episode (ADR-0039 §3).
+
+    The cascade bound counts only *consecutive* spatial-search queries, so any
+    non-search dispatch resets ``_spatial_search`` + ``_locate_escalated``. The
+    search actions that must NOT reset are ``recall_object`` / ``resolve_place``
+    (remembered objects) and ``locate_in_view`` (live detector) — the latter is
+    the regression this guards: if a directly-emitted ``locate_in_view`` reset
+    the budget, a ``recall → locate → recall`` loop against an undetectable
+    object would zero the counter every cycle and never hand off.
+    """
+    return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool)
+
+
+def _should_offer_subdivision(
+    active: TaskState,
+    offered: set[str],
+    max_depth: int,
+) -> bool:
+    """True when a blocked task may be offered subdivision before abandonment (#123).
+
+    Bounded two ways so a task that refuses to decompose still terminates in
+    human-handoff rather than looping: **once per task id** (the ``offered`` set —
+    a second abandon of the same task falls through to the normal abandon/advance
+    ladder) and only while the task is **below** the re-decomposition depth bound
+    (a task already split to ``max_depth`` is handed off, not split again).
+    """
+    return active.depth < max_depth and active.task_id not in offered
+
+
 class ReasonerNode(LifecycleNode):
     """ROS 2 lifecycle wrapper around :class:`ReasonerCore` (ADR-0018 F4).
 
@@ -372,7 +434,7 @@ class ReasonerNode(LifecycleNode):
             deployment, CLAUDE.md §1.9).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915  # reason: lifecycle node wires many subsystems in one ctor; one attr over the 50-statement threshold
         self,
         *,
         node_name: str = "openral_reasoner",
@@ -422,6 +484,10 @@ class ReasonerNode(LifecycleNode):
         # repeated miss doesn't re-fire the detector every tick). Reset whenever
         # the active-search bound resets (new operator goal / non-search action).
         self._locate_escalated: set[str] = set()
+        # #123 — task ids already offered one subdivision before being abandoned.
+        # One offer per task so a task that declines to decompose still terminates
+        # in human-handoff; cleared when a new operator goal rebuilds the mission.
+        self._subdivide_offered: set[str] = set()
 
         # ROS parameters: when both are set, on_configure walks
         # `rskill_search_paths` for `*/rskill.yaml`, loads the
@@ -457,6 +523,13 @@ class ReasonerNode(LifecycleNode):
         # ``recall_object`` / ``resolve_place`` tools against a preloaded map.
         # Empty = disabled.
         self.declare_parameter("spatial_memory_path", "")
+        # ADR-0072 §3 / Phase 4b — path to the self-maintained MEMORY.md (read at
+        # configure into the `## MEMORY` context block). Empty omits the section.
+        self.declare_parameter("memory_md_path", "")
+        # ADR-0072 §3 / Phase 5 — retrieval-under-cap: render at most this many
+        # memory entries in the always-on `## MEMORY` block (top by importance then
+        # recency; the tail stays searchable via memory_search). 0 = no cap.
+        self.declare_parameter("memory_context_cap", 0)
         # ADR-0038 live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -530,6 +603,17 @@ class ReasonerNode(LifecycleNode):
         # non-retry_cap tick happens (a different tool, a dispatch, an error, or
         # a new operator prompt that resets the streak).
         self._retry_cap_warned: bool = False
+        # ADR-0072 Phase 3 — the rendered `## PLAYBOOKS` system-prompt block,
+        # collected from installed capability-matched playbook rSkills at seed time.
+        self._playbooks_block: str = ""
+        # ADR-0072 §3 — the self-maintained MEMORY.md store (Phase 4b read path:
+        # loaded at configure + rendered as the `## MEMORY` context block; Phase 4c
+        # write path: `memory_write` edits + `memory_search` archival recall). The
+        # archive is the append-only log of superseded/deleted entries that left the
+        # live file (MemGPT recall storage); persisted as `<MEMORY.md>.archive.jsonl`.
+        self._memory_store: MemoryStore | None = None
+        self._memory_md_path: pathlib.Path | None = None
+        self._memory_archive: list[MemoryEntry] = []
         self._palette: ToolPalette = palette or ToolPalette(execute_rskill_ids=frozenset())
         # ADR-0039 — offer the read-only query tools only when a backend is wired.
         if spatial_memory is not None and not self._palette.spatial_memory_available:
@@ -684,6 +768,7 @@ class ReasonerNode(LifecycleNode):
         # before the palette seed, so the rebuilt palette offers the query
         # tools when a map is preloaded.
         self._maybe_load_spatial_memory()
+        self._maybe_load_memory()
 
         # ADR-0050 — GPU lifecycle peers to deactivate before a VLA dispatch and
         # reactivate after (the object detector is the canonical one). Read
@@ -710,9 +795,14 @@ class ReasonerNode(LifecycleNode):
         # so the system prompt carries a ``## THIS ROBOT`` block; ``None``
         # leaves the robot-agnostic brief unchanged. The base brief honours
         # the ``OPENRAL_REASONER_SYSTEM_PROMPT`` deployment override.
+        base_prompt = resolve_reasoner_system_prompt(self._robot_capabilities)
+        # ADR-0072 Phase 3 — append installed playbooks (empty block = no-op).
+        system_prompt = (
+            f"{base_prompt}\n\n{self._playbooks_block}" if self._playbooks_block else base_prompt
+        )
         self._core = ReasonerCore(
             client=client,
-            system_prompt=resolve_reasoner_system_prompt(self._robot_capabilities),
+            system_prompt=system_prompt,
         )
 
         self.get_logger().info(
@@ -855,6 +945,7 @@ class ReasonerNode(LifecycleNode):
         # against routing.
         if str(getattr(msg.header, "frame_id", "") or "") == self.get_name():
             return
+        source = str(getattr(msg.header, "frame_id", "") or "")
         self._renderer.append_prompt(
             PromptRecord(
                 text=msg.text,
@@ -862,6 +953,20 @@ class ReasonerNode(LifecycleNode):
                 stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
             ),
         )
+        # ADR-0073 §1 — a genuine operator goal (re)builds the deterministic
+        # mission queue: split into ordered subtasks so the reasoner sequences
+        # and the goal survives the pull-once prompt drain. Cascade re-prompts
+        # (advisory query responses, spatial-memory) are NOT new goals and must
+        # not reset the mission. `split_mission` is the deterministic floor; the
+        # `decompose-mission` playbook can later repopulate the same queue.
+        if source not in _CASCADE_PROMPT_SOURCES:
+            mission = MissionState.from_prompt(msg.text)
+            if not mission.is_empty():
+                self._renderer.set_mission(mission)
+                self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
+                self.get_logger().info(
+                    f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
+                )
         if self._core is not None:
             self._core.reset_kind_streak()
         # A fresh *operator* prompt is a new goal — reset the active-search bound.
@@ -968,6 +1073,74 @@ class ReasonerNode(LifecycleNode):
             task_progress_available=self._task_progress_available,
         )
 
+    def _maybe_load_memory(self) -> None:
+        """Load the self-maintained ``MEMORY.md`` into the ``## MEMORY`` block (ADR-0072 §3).
+
+        Read path (Phase 4b): when the ``memory_md_path`` ROS parameter is set, parse
+        the file (or start empty if absent) and render it as the reasoner's persistent
+        ``## MEMORY`` context section. Write path (Phase 4c): record the path + load the
+        ``<MEMORY.md>.archive.jsonl`` recall log, and advertise the ``memory_write`` /
+        ``memory_search`` tools by flipping ``memory_available`` on the palette.
+        Advisory only — never gates the safety kernel.
+        """
+        path = self.get_parameter("memory_md_path").get_parameter_value().string_value
+        if not path:
+            return
+        p = pathlib.Path(path)
+        try:
+            text = p.read_text(encoding="utf-8") if p.exists() else ""
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to read {path!r}: {exc}; starting empty")
+            text = ""
+        self._memory_store = MemoryStore.from_markdown(text)
+        self._memory_md_path = p
+        self._memory_archive = self._load_memory_archive(p)
+        self._renderer.set_memory_block(self._render_memory_block())
+        if not self._palette.memory_available:
+            self._palette = self._palette.model_copy(update={"memory_available": True})
+        self.get_logger().info(
+            f"memory: loaded {len(self._memory_store.entries)} entries "
+            f"(+{len(self._memory_archive)} archived) from {path!r}; write tools enabled",
+        )
+
+    def _render_memory_block(self) -> str:
+        """Render the ``## MEMORY`` block under the ``memory_context_cap`` param (Phase 5)."""
+        assert self._memory_store is not None
+        cap = self.get_parameter("memory_context_cap").get_parameter_value().integer_value
+        return self._memory_store.to_context_block(cap=cap if cap > 0 else None)
+
+    @staticmethod
+    def _memory_archive_path(memory_md_path: pathlib.Path) -> pathlib.Path:
+        """The append-only recall log beside the ``MEMORY.md`` (MemGPT archival store)."""
+        return memory_md_path.with_name(memory_md_path.name + ".archive.jsonl")
+
+    def _load_memory_archive(self, memory_md_path: pathlib.Path) -> list[MemoryEntry]:
+        """Parse the archival JSONL recall log (one entry per line); ``[]`` if absent/bad."""
+        archive_path = self._memory_archive_path(memory_md_path)
+        if not archive_path.exists():
+            return []
+        entries: list[MemoryEntry] = []
+        try:
+            for line in archive_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                entries.append(
+                    MemoryEntry(
+                        section=rec["section"],
+                        content=rec["content"],
+                        importance=float(rec.get("importance", 0.5)),
+                        timestamp=rec.get("timestamp", ""),
+                        status=rec.get("status", "stale"),
+                    )
+                )
+        except (OSError, ValueError, KeyError) as exc:
+            self.get_logger().warning(
+                f"memory: failed to read archive {archive_path!r}: {exc}; starting empty",
+            )
+            return []
+        return entries
+
     def _maybe_load_spatial_memory(self) -> None:
         """Wire the ADR-0038 spatial-memory backend at ``on_configure`` (ADR-0039 / ADR-0038).
 
@@ -1059,6 +1232,46 @@ class ReasonerNode(LifecycleNode):
         except Exception as exc:  # reason: memory accrual must never break the tick
             self.get_logger().debug(f"spatial-memory ingest failed: {exc!s}")
 
+    def _collect_playbooks_block(
+        self, manifests: list[RSkillManifest], paths: list[pathlib.Path]
+    ) -> str:
+        """Render the ``## PLAYBOOKS`` block from installed, matched playbook rSkills.
+
+        ADR-0072 Phase 3: for each ``kind: playbook`` manifest this robot satisfies
+        (embodiment + capability flags), read its ``PLAYBOOK.md`` body and render it
+        for the system prompt. Returns ``""`` when none match.
+        """
+        from openral_core.exceptions import ROSCapabilityMismatch
+        from openral_rskill.loader import rSkill
+
+        entries: list[tuple[str, str]] = []
+        for manifest, path in zip(manifests, paths, strict=True):
+            if manifest.kind != "playbook" or manifest.playbook is None:
+                continue
+            if self._robot_capabilities is not None:
+                try:
+                    rSkill.check_capabilities(manifest, self._robot_capabilities)
+                except ROSCapabilityMismatch as exc:
+                    self.get_logger().info(f"playbook {manifest.name!r} not installed: {exc}")
+                    continue
+            body_path = (path.parent / manifest.playbook.body_uri).resolve()
+            try:
+                body = body_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                self.get_logger().warning(
+                    f"playbook {manifest.name!r}: cannot read body {body_path}: {exc}",
+                )
+                continue
+            # Label with the bare playbook name (strip the ``<org>/rskill-`` prefix):
+            # the full machine id reads like an executable skill id and tempts the
+            # LLM to call ``execute_rskill`` on the playbook itself (ADR-0072 — a
+            # playbook is an SOP to follow, never a dispatch target).
+            label = manifest.name.split("/")[-1].removeprefix("rskill-")
+            entries.append((f"{label} — {manifest.playbook.trigger}", body))
+        if entries:
+            self.get_logger().info(f"playbooks: injected {len(entries)} into the system prompt")
+        return render_playbooks_block(entries)
+
     def _maybe_seed_palette_from_search_paths(self) -> None:  # noqa: PLR0912, PLR0915  # reason: linear palette-seed pipeline (load → capability filter → ros-server probe → state-contract probe → import-deps probe → build); splitting hides the filter order
         """Populate the palette from in-tree ``rskills/<id>/rskill.yaml`` files.
 
@@ -1080,8 +1293,6 @@ class ReasonerNode(LifecycleNode):
         Per-file errors are warned, not raised, so a single broken
         manifest doesn't block the bring-up.
         """
-        import pathlib
-
         from openral_core import RobotDescription, RSkillManifest
 
         robot_yaml: str = self.get_parameter("robot_yaml").get_parameter_value().string_value
@@ -1100,6 +1311,10 @@ class ReasonerNode(LifecycleNode):
             )
             return
         self._robot_capabilities = description.capabilities
+        # ADR-0072 Decision 2.1 — render the static robot self-model once and
+        # surface it as the reasoner's `## ROBOT` context section so the LLM can
+        # judge reach/view feasibility before dispatching a skill.
+        self._renderer.set_robot_model(render_robot_self_model(description))
 
         manifests: list[RSkillManifest] = []
         manifest_paths: list[pathlib.Path] = []
@@ -1112,13 +1327,21 @@ class ReasonerNode(LifecycleNode):
                 continue
             manifest_paths.extend(sorted(root.glob("*/rskill.yaml")))
 
+        loaded_paths: list[pathlib.Path] = []
         for path in manifest_paths:
             try:
                 manifests.append(RSkillManifest.from_yaml(str(path)))
+                loaded_paths.append(path)
             except (OSError, ValueError) as exc:
                 self.get_logger().warning(
                     f"palette seed: skipping unloadable rskill {path!s}: {exc}",
                 )
+
+        # ADR-0072 Phase 3 — collect installed, capability-matched `kind: playbook`
+        # rSkills and render their PLAYBOOK.md bodies into the `## PLAYBOOKS`
+        # system-prompt block. Playbooks are role:s2 (excluded from the ExecuteSkill
+        # palette); they reach the LLM as authored decision-procedure *content*.
+        self._playbooks_block = self._collect_playbooks_block(manifests, loaded_paths)
 
         # ADR-0025 — merge any deploy-time lifecycle peer node ids
         # (e.g. /openral_slam_toolbox when --enable-slam was passed) into
@@ -1437,6 +1660,21 @@ class ReasonerNode(LifecycleNode):
                         "A new operator prompt resets the streak; otherwise it self-clears "
                         "when the model picks a different tool. (Repeats logged at debug.)",
                     )
+                    # ADR-0072 §2.3 — inject a Reflexion strategy hint into context
+                    # (once per streak) so the NEXT tick changes approach instead of
+                    # looping. Appending bumps `seq`, so the next heartbeat runs
+                    # rather than being suppressed as idle.
+                    if self._core is not None:
+                        tool = self._core._kind_streak[0]
+                        self._renderer.append_execution(
+                            ExecutionEventRecord(
+                                rskill_id="(ladder)",
+                                outcome="failed",
+                                summary=f"retry ladder exhausted for {tool!r}",
+                                reflection=reflect_on_retry_cap(tool, self._core._retry_cap),
+                                stamp_ns=self.get_clock().now().nanoseconds,
+                            )
+                        )
                 else:
                     self.get_logger().debug("tick suppressed: retry_cap (ongoing streak)")
                 return
@@ -1451,6 +1689,24 @@ class ReasonerNode(LifecycleNode):
         self._retry_cap_warned = False
         if result.error is not None:
             self.get_logger().warning(f"tick error: {result.error!s}")
+            # ADR-0072 §2.2/§2.3 — an invalid plan is the model's *own* mistake
+            # (malformed JSON args, a non-object payload, a field/rskill_id the
+            # palette rejects). Feed it back into the `## EXECUTION` section with
+            # a Reflexion hint so the NEXT tick emits a valid call instead of
+            # re-issuing the same broken one. (Provider/transport errors —
+            # timeout, 403 — are not the model's fault, so they only log.)
+            # Appending bumps `seq`, so the next heartbeat runs rather than being
+            # suppressed as idle.
+            if isinstance(result.error, ROSReasonerInvalidPlan):
+                self._renderer.append_execution(
+                    ExecutionEventRecord(
+                        rskill_id="(invalid-plan)",
+                        outcome="failed",
+                        summary=f"undecodable tool call: {result.error!s}",
+                        reflection=reflect_on_invalid_plan(str(result.error)),
+                        stamp_ns=self.get_clock().now().nanoseconds,
+                    )
+                )
             return
         if result.tool_call is None:
             return
@@ -1468,8 +1724,9 @@ class ReasonerNode(LifecycleNode):
         stub pending the F6 sensor-package service IDL.
         """
         # ADR-0039 §3 — any non-search dispatch ends the search episode, so the
-        # cascade bound counts only *consecutive* spatial queries.
-        if not isinstance(call, RecallObjectTool | ResolvePlaceTool):
+        # cascade bound counts only *consecutive* spatial queries (incl. the live
+        # locate_in_view — see _resets_search_episode).
+        if _resets_search_episode(call):
             self._spatial_search.reset()
             self._locate_escalated.clear()
         if isinstance(call, EmitPromptTool):
@@ -1492,6 +1749,15 @@ class ReasonerNode(LifecycleNode):
             return
         if isinstance(call, QueryTaskProgressTool):
             self._dispatch_query_task_progress(call, traceparent=traceparent)
+            return
+        if isinstance(call, MemoryWriteTool):
+            self._dispatch_memory_write(call, traceparent=traceparent)
+            return
+        if isinstance(call, MemorySearchTool):
+            self._dispatch_memory_search(call, traceparent=traceparent)
+            return
+        if isinstance(call, DecomposeMissionTool):
+            self._dispatch_decompose_mission(call)
             return
         if isinstance(call, ReloadGstPipelineTool):
             # F6 sensor-package service IDL (e.g.
@@ -1712,16 +1978,36 @@ class ReasonerNode(LifecycleNode):
             return
         assert self._prompt_pub is not None
         cam = resp.camera or call.camera or "default"
+        # A live locate counts as one spatial-search step (ADR-0039 §3): a miss
+        # consumes budget so a repeated "not visible" terminates in handoff
+        # instead of looping; a hit ends the search streak so the next find
+        # starts fresh.
+        frame_id = "detector"  # consumed by _on_prompt → feeds the next tick
         if resp.found:
+            self._spatial_search.reset()
+            self._locate_escalated.clear()
             text = (
                 f"locate_in_view: {call.query!r} IS visible in camera {cam!r} right now. "
                 f"detections={resp.metadata_json}"
             )
-        else:
+        elif self._spatial_search.record_attempt():
             text = f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now."
+        else:
+            # Budget exhausted → hand off. The reasoner's own frame_id makes
+            # _on_prompt filter it (no further tick): the cascade stops here.
+            frame_id = self.get_name()
+            text = (
+                f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now.\n"
+                f"active_search: query budget exhausted after {self._spatial_search.attempts} "
+                "consecutive lookups — handing off to a human."
+            )
+            self.get_logger().warning(
+                f"dispatch: locate_in_view {call.query!r} budget exhausted "
+                f"({self._spatial_search.attempts} lookups) — handing off",
+            )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "detector"  # consumed by _on_prompt → feeds the next tick
+        msg.header.frame_id = frame_id
         msg.text = text
         metadata: dict[str, Any] = {"source": "detector", "tool": call.tool}
         if traceparent is not None:
@@ -1910,6 +2196,380 @@ class ReasonerNode(LifecycleNode):
             f"dispatch: query_task_progress → re-prompt ok={resp.ok} ({len(text)} chars)",
         )
 
+    # ── ADR-0073 §2 — automatic reward-gated task verification ──────────────
+
+    def _maybe_verify_active_mission_task(
+        self, call: ExecuteRskillTool, *, traceparent: str | None
+    ) -> None:
+        """Verify the active mission task against the reward signal after a skill returns.
+
+        Only acts when a reward monitor is available (``task_progress_available``):
+        a VLA never self-terminates, so its runner "success" cannot confirm the
+        task. Without a reward monitor the task stays active and the LLM/playbook
+        drives — never an auto-complete on deadline alone (no fake success). Issues
+        a windowed ``query_task_progress`` for the active task; the gate runs in
+        :meth:`_on_mission_verify_response`.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None:
+            return
+        if not self._task_progress_available:
+            return
+        # Only verify the skill that was dispatched for this task.
+        if active.last_rskill_id is not None and active.last_rskill_id != call.rskill_id:
+            return
+        mission.mark_verifying()
+        try:
+            from openral_msgs.srv import QueryTaskProgress
+        except ImportError:
+            return
+        if self._query_task_progress_client is None:
+            self._query_task_progress_client = self.create_client(
+                QueryTaskProgress, "/openral/perception/query_task_progress"
+            )
+        client = self._query_task_progress_client
+        if not client.service_is_ready() and not client.wait_for_service(
+            timeout_sec=_LIFECYCLE_SERVER_PROBE_S,
+        ):
+            self.get_logger().warning(
+                "mission verify: query_task_progress not on graph; active task stays active",
+            )
+            return
+        req = QueryTaskProgress.Request()
+        req.window_s = _MISSION_VERIFY_WINDOW_S
+        req.task = active.text
+        future = client.call_async(req)
+        future.add_done_callback(
+            lambda fut: self._on_mission_verify_response(active.text, fut, traceparent=traceparent),
+        )
+        self.get_logger().info(
+            f"mission verify: querying reward for active task {active.text[:60]!r} "
+            f"(attempt {active.attempts})",
+        )
+
+    def _on_mission_verify_response(
+        self, task_text: str, future: Any, *, traceparent: str | None
+    ) -> None:
+        """Apply the reward gate (ADR-0073 §2): complete / abandon / retry.
+
+        Runs ``evaluate_task_verdict`` on the reward response and the active task's
+        attempt count, then advances the deterministic queue. ``complete`` →
+        advance to the next task; ``abandon`` (ladder exhausted) → mark abandoned,
+        advance, and on mission end emit an honest handoff; ``retry`` → keep the
+        task active. A forced tick wakes the reasoner to act on the new state.
+        """
+        try:
+            resp = future.result()
+        except Exception as exc:  # best-effort; a failed verify must not kill the loop
+            self.get_logger().warning(f"mission verify: query failed: {exc}")
+            return
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None or active.text != task_text:
+            return  # the mission advanced or changed under us; stale verdict
+        action, verdict = evaluate_task_verdict(
+            ok=bool(resp.ok),
+            succeeded=bool(resp.succeeded),
+            success_now=float(resp.success_now),
+            attempts=active.attempts,
+        )
+        if action == "retry":
+            self.get_logger().info(f"mission verify: {verdict} — retrying active task")
+            self._on_tick(force=True, tier="C")
+            return
+        if action == "abandon" and _should_offer_subdivision(
+            active, self._subdivide_offered, DEFAULT_MAX_SUBDIVIDE_DEPTH
+        ):
+            # #123 — before abandoning a blocked task, give the LLM ONE chance to
+            # decompose it into finer subtasks (depth-bounded; one offer per task
+            # id via `_subdivide_offered` so a task that declines to decompose
+            # still terminates in human-handoff rather than looping). Re-arm the
+            # task to `active` so the normal dispatch / decompose_mission cycle
+            # resumes, then nudge the reasoner with an explicit invite tick.
+            self._subdivide_offered.add(active.task_id)
+            mission.rearm_active()
+            if self._core is not None:
+                self._core.reset_kind_streak()
+            self.get_logger().info(
+                f"mission: task {active.task_id} blocked ({verdict}); offering subdivision "
+                f"(depth {active.depth} < {DEFAULT_MAX_SUBDIVIDE_DEPTH})",
+            )
+            self._emit_subdivision_invite(active, verdict, traceparent=traceparent)
+            self._on_tick(force=True, tier="C")
+            return
+        done = action == "complete"
+        nxt = self._renderer.advance_mission(done=done, verdict=verdict)
+        label = "done ✓" if done else "abandoned ✗"
+        if nxt is not None:
+            # A new active task is a fresh goal — clear the per-kind tick streak so
+            # the next task isn't suppressed by `retry_cap` for re-using the same
+            # tool kind (e.g. execute_rskill) the just-finished task ended on.
+            # Mirrors the reset on a new operator prompt (see _on_prompt).
+            if self._core is not None:
+                self._core.reset_kind_streak()
+            self.get_logger().info(
+                f"mission: task {active.task_id} {label} ({verdict}); "
+                f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
+            )
+        else:
+            self.get_logger().info(
+                f"mission: task {active.task_id} {label} ({verdict}); MISSION COMPLETE",
+            )
+            self._emit_mission_complete(mission, traceparent=traceparent)
+        self._on_tick(force=True, tier="C")
+
+    def _emit_mission_complete(self, mission: MissionState, *, traceparent: str | None) -> None:
+        """Emit an honest operator-facing mission summary (self-prompt, ADR-0073 §2).
+
+        Frame_id ``openral_reasoner`` so it reaches operator surfaces but the
+        reasoner's own subscriber filters it (no feedback loop). A new operator
+        goal supersedes the finished mission via :meth:`_on_prompt`.
+        """
+        if self._prompt_pub is None:
+            return
+        done = sum(1 for t in mission.tasks if t.status == "done")
+        abandoned = sum(1 for t in mission.tasks if t.status == "abandoned")
+        ledger = "; ".join(
+            f"{t.task_id} {t.status}" + (f" [{t.last_verdict}]" if t.last_verdict else "")
+            for t in mission.tasks
+        )
+        text = (
+            f"Mission finished: {done} completed, {abandoned} abandoned. {ledger}. "
+            "Awaiting the next goal."
+        )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_reasoner"
+        metadata: dict[str, Any] = {"source": "openral_reasoner", "mission": "complete"}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.text = text
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+        self.get_logger().info(f"mission: {text}")
+
+    def _dispatch_decompose_mission(self, call: DecomposeMissionTool) -> None:
+        """Apply an LLM mission decomposition to the typed task queue (#123).
+
+        Two modes by ``target_task_id`` (ADR-0073 amendment / ADR-0072
+        ``decompose-mission``):
+
+        * **subdivide** (id set) — flat-splice the named *active* blocked task in
+          place with finer children via :meth:`MissionState.subdivide_active`
+          (depth-bounded). Only the active task may be subdivided; a stale /
+          non-active id is logged and ignored.
+        * **populate** (id empty) — replace the whole queue with a better
+          decomposition of the operator goal, but only before any task has been
+          attempted (:meth:`MissionState.has_started`) so a refinement never
+          discards in-flight progress.
+
+        Edits the S2 ledger only — no actuation. A forced Tier-C tick wakes the
+        reasoner to act on the new active task.
+        """
+        mission = self._renderer.mission
+        if call.target_task_id:
+            if mission is None:
+                self.get_logger().warning(
+                    f"decompose_mission: target {call.target_task_id!r} but no active mission",
+                )
+                return
+            active = mission.active()
+            if active is None or active.task_id != call.target_task_id:
+                self.get_logger().warning(
+                    f"decompose_mission: target {call.target_task_id!r} is not the active task "
+                    f"(active={active.task_id if active else None!r}) — ignored",
+                )
+                return
+            child = mission.subdivide_active(call.subtasks)
+            if child is None:
+                # Depth bound reached (or empty) — fall through to the existing
+                # attempt-cap → abandon → human-handoff ladder; do not loop.
+                self.get_logger().info(
+                    f"decompose_mission: refused to subdivide {call.target_task_id!r} "
+                    f"(depth {active.depth} ≥ {DEFAULT_MAX_SUBDIVIDE_DEPTH}) — will hand off",
+                )
+                return
+            self._renderer.set_mission(mission)  # bump seq so the new active task wakes a tick
+            self.get_logger().info(
+                f"decompose_mission: subdivided {call.target_task_id!r} into "
+                f"{len(call.subtasks)} subtask(s) → active {child.task_id}={child.text[:60]!r}",
+            )
+        else:
+            if mission is not None and mission.has_started():
+                self.get_logger().warning(
+                    "decompose_mission: populate ignored — the mission has already started "
+                    "(use target_task_id to subdivide the active task instead)",
+                )
+                return
+            new_mission = MissionState(call.subtasks)
+            if new_mission.is_empty():
+                return
+            self._renderer.set_mission(new_mission)
+            self._subdivide_offered.clear()
+            self.get_logger().info(
+                f"decompose_mission: populated mission with {len(new_mission)} task(s) — "
+                f"active={new_mission.active().text[:60]!r}",
+            )
+        if self._core is not None:
+            self._core.reset_kind_streak()
+        self._on_tick(force=True, tier="C")
+
+    def _emit_subdivision_invite(
+        self,
+        task: TaskState,
+        verdict: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Self-prompt inviting the LLM to subdivide a blocked task (#123).
+
+        frame_id ``mission`` so the reasoner *consumes* it on the next tick (it is
+        a cascade source, unlike ``openral_reasoner`` operator summaries) without
+        rebuilding the deterministic mission queue.
+        """
+        if self._prompt_pub is None:
+            return
+        text = (
+            f"Task {task.task_id} ({task.text!r}) is blocked: {verdict}. It is too coarse "
+            "for one skill — call decompose_mission with target_task_id="
+            f"{task.task_id!r} and an ordered list of finer subtasks to break it down and "
+            "continue, or it will be handed off to the operator."
+        )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "mission"
+        metadata: dict[str, Any] = {"source": "mission", "task_id": task.task_id}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.text = text
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+
+    def _memory_now(self) -> str:
+        """An ISO-8601 timestamp from the ROS clock (sim-time-aware) for memory entries."""
+        secs = self.get_clock().now().nanoseconds / 1e9
+        return datetime.datetime.fromtimestamp(secs, tz=datetime.UTC).isoformat(timespec="seconds")
+
+    def _persist_memory(self) -> None:
+        """Write the live store back to ``MEMORY.md`` (advisory — a failure logs, never raises)."""
+        if self._memory_store is None or self._memory_md_path is None:
+            return
+        try:
+            self._memory_md_path.write_text(self._memory_store.to_markdown(), encoding="utf-8")
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to persist {self._memory_md_path!r}: {exc}")
+
+    def _archive_memory_entry(self, entry: MemoryEntry) -> None:
+        """Append one superseded/deleted entry to the JSONL recall log (best-effort)."""
+        self._memory_archive.append(entry)
+        if self._memory_md_path is None:
+            return
+        archive_path = self._memory_archive_path(self._memory_md_path)
+        record = {
+            "section": entry.section,
+            "content": entry.content,
+            "importance": entry.importance,
+            "timestamp": entry.timestamp,
+            "status": entry.status,
+        }
+        try:
+            with archive_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError as exc:
+            self.get_logger().warning(f"memory: failed to append archive {archive_path!r}: {exc}")
+
+    def _reprompt_memory(self, text: str, *, traceparent: str | None) -> None:
+        """Re-prompt with a memory result so the next tick sees it (frame_id ``memory``)."""
+        assert self._prompt_pub is not None
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "memory"  # consumed by _on_prompt → next tick
+        msg.text = text
+        metadata: dict[str, Any] = {"source": "memory"}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+
+    def _dispatch_memory_write(
+        self,
+        call: MemoryWriteTool,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Apply one explicit MEMORY.md edit, persist it, and confirm (ADR-0072 §3 / Phase 4c).
+
+        The reasoner's first **write-capable** tool: an ``add``/``update``/``supersede``/
+        ``delete`` op over a typed :class:`~openral_core.MemorySection` — never a
+        free-form rewrite (the writer half of the Statler reader/writer split). The
+        edit is applied to the live store, any entry that *left* the file (an
+        ``update``-replaced or ``delete``-removed prior) is appended to the archival
+        recall log, the file is persisted, the ``## MEMORY`` context block is
+        re-rendered (so the next tick reads the new fact), and a short confirmation is
+        re-prompted. Advisory only — a wrong memory yields a bad plan the C++ safety
+        kernel still vetoes (CLAUDE.md §1.1).
+        """
+        if self._memory_store is None:
+            self.get_logger().warning(
+                "dispatch: memory_write received but no MEMORY.md backend is wired",
+            )
+            return
+        archived = self._memory_store.apply(
+            op=call.op,
+            section=call.section,
+            content=call.content,
+            importance=call.importance,
+            target=call.target,
+            now=self._memory_now(),
+        )
+        if archived is not None:
+            self._archive_memory_entry(archived)
+        # ADR-0072 Phase 5 — consolidate: merge any exact-duplicate facts the write
+        # may have introduced, paging the removed copies to the archive (Mem0).
+        for dup in self._memory_store.consolidate():
+            self._archive_memory_entry(dup)
+        self._persist_memory()
+        self._renderer.set_memory_block(self._render_memory_block())
+        detail = f"{call.op} [{call.section}]"
+        body = call.target if call.op == "delete" else call.content
+        self.get_logger().info(f"dispatch: memory_write {detail} {body!r} → persisted")
+        self._reprompt_memory(
+            f"memory updated: {detail} — {body!r}. Continue the task.",
+            traceparent=traceparent,
+        )
+
+    def _dispatch_memory_search(
+        self,
+        call: MemorySearchTool,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Recall archived memory entries by keyword and re-prompt (ADR-0072 §3 / Phase 4c).
+
+        Read-only (the reader half): current memory is already in the ``## MEMORY``
+        context block every tick, so this searches only the **archive** — superseded /
+        deleted entries that left the live file — ranked by importance then recency
+        (MemGPT recall). No actuation, no file write.
+        """
+        hits = MemoryStore.search(
+            self._memory_archive,
+            query=call.query,
+            section=call.section,
+            limit=call.limit,
+        )
+        if hits:
+            lines = "\n".join(h.render_line() for h in hits)
+            text = f"memory_search {call.query!r} — {len(hits)} archived match(es):\n{lines}"
+        else:
+            text = f"memory_search {call.query!r} — no archived memory matches."
+        self.get_logger().info(f"dispatch: memory_search {call.query!r} → {len(hits)} hit(s)")
+        self._reprompt_memory(text, traceparent=traceparent)
+
     def _dispatch_execute_rskill(
         self,
         call: ExecuteRskillTool,
@@ -1952,6 +2612,14 @@ class ReasonerNode(LifecycleNode):
                 traceparent=traceparent,
             )
             return
+
+        # ADR-0073 §2 — count this dispatch as an attempt at the active mission
+        # task so the reward gate can bound retries (abandon + hand off after the
+        # cap). execute_rskill is the actuation tool; locate/query are separate
+        # tools, so a dispatch here is a manipulation attempt at the active task.
+        mission = self._renderer.mission
+        if mission is not None and mission.active() is not None:
+            mission.record_attempt(rskill_id=call.rskill_id, trace_id=traceparent)
 
         # ADR-0050 — free GPU lifecycle peers (the object detector) before the
         # policy loads, then reactivate when the skill finishes. Sequenced so
@@ -2241,27 +2909,63 @@ class ReasonerNode(LifecycleNode):
         # failures; succeeded passes through silently.
         result = wrapped.result
         status = int(wrapped.status)
+        now_ns = self.get_clock().now().nanoseconds
         if status == 4 and result.success:
             self.get_logger().info(
                 f"execute_rskill succeeded rskill_id={call.rskill_id!r} "
                 f"trace_id={result.trace_id!r}",
             )
+            # ADR-0072 §2.2 — surface SUCCESS to the LLM (Inner Monologue). The
+            # failure path already reaches the FAILURES buffer; success used to
+            # pass through silently, leaving the reasoner blind to "it worked".
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="ok",
+                    summary=f"trace={result.trace_id[:8] if result.trace_id else '-'}",
+                    reflection=None,
+                    stamp_ns=now_ns,
+                )
+            )
+            # ADR-0073 §2 — runner "success" for a VLA means "ran to its deadline
+            # without a controller fault", NOT "task accomplished". Verify the
+            # active mission task against the reward signal before advancing.
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
         self.get_logger().warning(
             f"execute_rskill failed rskill_id={call.rskill_id!r} status={status} "
             f"reason={result.failure_reason!r}",
+        )
+        outcome_state = "aborted" if status == 6 else "canceled" if status == 5 else "failed"
+        detail = result.failure_reason or f"GoalStatus={status}"
+        # ADR-0072 §2.2/§2.3 — execution feedback + a Reflexion strategy hint so
+        # the next tick advances the ladder instead of blindly retrying.
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id=call.rskill_id,
+                outcome="failed",
+                summary=detail,
+                reflection=reflect_on_failure(outcome_state, detail),
+                stamp_ns=now_ns,
+            )
         )
         self._publish_skill_failure(
             kind=_KIND_CONTROLLER,
             rskill_id=call.rskill_id,
             evidence=ControllerEvidence(
                 controller_name=call.rskill_id,
-                state="aborted" if status == 6 else "canceled" if status == 5 else "failed",
-                detail=result.failure_reason or f"GoalStatus={status}",
+                state=outcome_state,
+                detail=detail,
             ),
             traceparent=traceparent,
             trace_id=result.trace_id or None,
         )
+        # ADR-0073 §2 — an aborted (terminal) episode still ran the policy, so it
+        # is a real attempt at the active task; verify so a repeatedly-aborting
+        # task is bounded by the attempt cap (abandon → hand off) rather than
+        # looping forever. Canceled (status 5) is operator-driven, not an attempt.
+        if status == 6:
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
 
     def _on_execute_rskill_deadline(
         self,

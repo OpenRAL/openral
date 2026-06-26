@@ -320,6 +320,16 @@ class ToolPalette(BaseModel):
     ``/openral/perception/query_task_progress`` service; off by default. Distinct
     from ``scene_query_available``: ``query_scene`` returns free text, this
     returns normalized progress/success scalars + trends."""
+    memory_available: bool = False
+    """ADR-0072 §3 — when ``True`` the LLM additionally sees the self-maintained
+    semantic-memory tools: the write-capable ``memory_write``
+    (``add``/``update``/``supersede``/``delete`` over a ``MemorySection``) and the
+    read-only ``memory_search`` (archival recall). Set by the reasoner_node only
+    when a ``MEMORY.md`` is wired (``memory_md_path`` param); off by default so the
+    tools never appear without a dispatcher. The reasoner already *reads* current
+    memory every tick as the ``## MEMORY`` context block — these tools let it edit
+    that file explicitly and recall superseded/archived entries (reader/writer
+    split)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -373,6 +383,7 @@ def build_tool_palette(
     detector_available: bool = False,
     scene_query_available: bool = False,
     task_progress_available: bool = False,
+    memory_available: bool = False,
 ) -> ToolPalette:
     """Build a :class:`ToolPalette` from the installed-skill registry.
 
@@ -424,6 +435,9 @@ def build_tool_palette(
             read-only ``query_task_progress`` tool (ADR-0057); set by the reasoner
             when a reward monitor exposes
             ``/openral/perception/query_task_progress``.
+        memory_available: When ``True`` the palette advertises the ``memory_write``
+            + ``memory_search`` tools (ADR-0072 §3); set by the reasoner when a
+            ``MEMORY.md`` is wired via the ``memory_md_path`` param.
 
     Returns:
         A frozen :class:`ToolPalette`.
@@ -445,6 +459,14 @@ def build_tool_palette(
     on_demand_detectors: list[OnDemandDetectorEntry] = []
     for skill in installed_skills:
         if skill.role != "s1":
+            continue
+        # Never admit the unresolved scaffold template to the palette. The
+        # `rskills/*/rskill.yaml` glob picks up `rskills/template/rskill.yaml`
+        # (name `TEMPLATE_ORG/rskill-TEMPLATE_ID`, `role: s1`); without this a
+        # weak reasoner LLM picks it as a "valid" palette id (the decode guard
+        # can't reject an id that IS in the palette) and dispatches a
+        # non-existent skill. The publish gate uses the same predicate.
+        if skill.is_scaffold_placeholder:
             continue
         # ``detector`` rSkills are S1-rate perception producers (RT-DETR →
         # ObjectsMetadata, ADR-0035/0037), not ExecuteSkill-dispatchable
@@ -512,4 +534,5 @@ def build_tool_palette(
         detector_available=detector_available,
         scene_query_available=scene_query_available,
         task_progress_available=task_progress_available,
+        memory_available=memory_available,
     )

@@ -16,6 +16,7 @@ metadata:
   sensors_required: ['rgb:observation.images.camera1']
   state_dim: 29
   action_dim: 29
+  action_representation: joint_positions
   runtime: pytorch
   quantization: int4/pytorch
   min_vram_gb: {bf16: 18.0, int4: 7.0}

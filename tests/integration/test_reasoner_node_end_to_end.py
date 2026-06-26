@@ -435,6 +435,176 @@ def test_spatial_memory_path_param_preloads_query_backend() -> None:
     assert "fridge" in received[-1].text
 
 
+def _drive_memory_node(
+    *,
+    memory_md: Any,
+    responses: list[Any],
+    sub_name: str,
+) -> list[Any]:
+    """Boot a ReasonerNode with ``memory_md_path`` wired, run a tick, collect ``memory`` re-prompts.
+
+    Shared harness for the ADR-0072 §3 / Phase 4c dispatch tests: mirrors the
+    spatial-memory deployment wiring (param → configure → activate → publish a
+    prompt → spin) but watches for the ``memory`` frame_id re-prompt.
+    """
+    import rclpy
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    received: list[Any] = []
+    received_event = threading.Event()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=responses),
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+        )
+        reasoner.set_parameters(
+            [Parameter("memory_md_path", Parameter.Type.STRING, str(memory_md))]
+        )
+        reasoner.trigger_configure()
+        # The param wired a MEMORY.md → the write/search tools are offered to the LLM.
+        assert reasoner._memory_store is not None, "param did not load a MemoryStore"
+        assert reasoner._palette.memory_available is True
+        reasoner.trigger_activate()
+
+        sub_node = rclpy.create_node(sub_name)
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+
+        def cb(msg: PromptStamped) -> None:
+            if msg.header.frame_id == "memory":
+                received.append(msg)
+                received_event.set()
+
+        sub_node.create_subscription(PromptStamped, "/openral/prompt", cb, qos)
+
+        pub_node = rclpy.create_node(sub_name + "_pub")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(sub_node)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = sub_name + "_pub"
+        msg.text = "please update your memory"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not received_event.is_set():
+            executor.spin_once(timeout_sec=0.1)
+
+        executor.remove_node(reasoner)
+        executor.remove_node(sub_node)
+        sub_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+    return received
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_memory_write_persists_to_disk_and_reprompts(tmp_path: Any) -> None:
+    """ADR-0072 §3 / Phase 4c — memory_write applies, persists MEMORY.md, and re-prompts.
+
+    The ``memory_md_path`` param wires an (initially absent) MEMORY.md; a canned
+    ``MemoryWriteTool(add)`` is dispatched. We assert the new fact is written to
+    the file on disk (so it survives a restart) and a ``memory`` frame_id
+    confirmation is re-prompted so the next tick sees the update.
+    """
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool, MemoryWriteTool
+
+    memory_md = tmp_path / "MEMORY.md"
+    received = _drive_memory_node(
+        memory_md=memory_md,
+        responses=[
+            MemoryWriteTool(
+                op="add",
+                section="preferences",
+                content="Clothes go in the bedroom drawer.",
+                importance=0.9,
+                rationale="operator stated a durable preference",
+            ),
+            *[EmitPromptTool(target_topic="/openral/prompt", text="standing by") for _ in range(4)],
+        ],
+        sub_name="openral_test_memory_write",
+    )
+
+    assert received, "memory_write did not produce a re-prompt within 5 s"
+    assert "memory updated" in received[-1].text
+    metadata = json.loads(received[-1].metadata_json)
+    assert metadata["source"] == "memory"
+    # Persisted to disk — survives a restart (the whole point of self-maintained memory).
+    assert memory_md.exists(), "MEMORY.md was not persisted"
+    body = memory_md.read_text(encoding="utf-8")
+    assert "Clothes go in the bedroom drawer." in body
+    assert "## User Preferences" in body
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_memory_search_recalls_archived_entry_and_reprompts(tmp_path: Any) -> None:
+    """ADR-0072 §3 / Phase 4c — memory_search recalls an archived fact via re-prompt.
+
+    A pre-existing archive JSONL (a fact that left the live file) is loaded
+    alongside the MEMORY.md; a canned ``MemorySearchTool`` query recalls it and
+    the node re-prompts with the hit so the next tick can use it.
+    """
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool, MemorySearchTool
+
+    memory_md = tmp_path / "MEMORY.md"
+    memory_md.write_text("# MEMORY.md\n\n## Object-Location Log\n(none)\n", encoding="utf-8")
+    # An archived (superseded) object location — no longer in the live file.
+    archive = tmp_path / "MEMORY.md.archive.jsonl"
+    archive.write_text(
+        json.dumps(
+            {
+                "section": "object_locations",
+                "content": "mug on the kitchen table",
+                "importance": 0.9,
+                "timestamp": "2026-06-20T09:00:00+00:00",
+                "status": "stale",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    received = _drive_memory_node(
+        memory_md=memory_md,
+        responses=[
+            MemorySearchTool(query="mug", section="object_locations", rationale="recall last seen"),
+            *[EmitPromptTool(target_topic="/openral/prompt", text="standing by") for _ in range(4)],
+        ],
+        sub_name="openral_test_memory_search",
+    )
+
+    assert received, "memory_search did not produce a re-prompt within 5 s"
+    assert "mug on the kitchen table" in received[-1].text
+    assert json.loads(received[-1].metadata_json)["source"] == "memory"
+
+
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_active_search_cascade_is_bounded_and_hands_off() -> None:
     """ADR-0039 §3 — a repeatedly-missing query terminates in human-handoff.
@@ -1792,3 +1962,194 @@ def test_recall_object_approach_is_grid_refined_when_map_latched() -> None:
     assert "wine_bottle" in text
     assert "approach from (2.82, 0.38" not in text, f"blocked geometric pose leaked: {text}"
     assert "approach from" in text, f"no grid-refined approach rendered: {text}"
+
+
+def _write_nav2_map(d: Any, *, width: int = 20, height: int = 20) -> Any:
+    """Write a free-space nav2 map bundle (PGM P5 + map.yaml); return the yaml path."""
+    pgm = d / "map.pgm"
+    pgm.write_bytes(b"P5\n%d %d\n255\n" % (width, height) + bytes([254] * (width * height)))
+    yaml = d / "map.yaml"
+    yaml.write_text(
+        f"image: {pgm.name}\nresolution: 0.05\norigin: [0.0, 0.0, 0.0]\n"
+        "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.25\nmode: trinary\n",
+        encoding="utf-8",
+    )
+    return yaml
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
+    """ADR-0072 Decision 3b — the deploy bundle's saved map.yaml seeds the reasoner grid.
+
+    The REAL deploy path (not a faked /map publisher): a saved nav2 ``map.yaml`` is
+    loaded by a standalone ``nav2_map_server`` — exactly what ``sim_e2e.launch.py``
+    brings up when ``map_path`` is set — which latches ``/map``. We assert (a) the
+    saved map reaches ``/map`` (the costmap is populated from the bundle), (b) the
+    reasoner consumes it into its ADR-0044 occupancy grid, and (c) with the bundle's
+    scene graph also wired, ``recall_object`` still answers — the two bundle
+    modalities loaded together at deploy start.
+    """
+    import os
+    import shutil
+    import signal
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    if shutil.which("ros2") is None:
+        pytest.skip("ros2 CLI not on PATH — nav2 map_server unavailable")
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    pytest.importorskip("nav_msgs.msg")
+
+    from nav_msgs.msg import OccupancyGrid
+    from openral_core import EmitPromptTool, RecallObjectTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from openral_world_state import SpatialMemory
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture = repo_root / "tests" / "unit" / "fixtures" / "home_scene_graph.json"
+    assert fixture.exists(), f"scene-graph fixture missing: {fixture}"
+    autostart_tool = repo_root / "tools" / "lifecycle_autostart.py"
+    yaml = _write_nav2_map(tmp_path)
+
+    # Spawn the real nav2 map_server on the saved map.yaml (the launch's map_path leg).
+    # `start_new_session=True` puts it in its own process group so teardown can
+    # SIGTERM the whole group — `ros2 run` forks the executable as a child that a
+    # plain proc.terminate() would orphan, leaving a stray /map publisher that
+    # pollutes sibling tests.
+    map_server = subprocess.Popen(
+        [
+            "ros2",
+            "run",
+            "nav2_map_server",
+            "map_server",
+            "--ros-args",
+            "-r",
+            "__node:=openral_map_server",
+            "-p",
+            f"yaml_filename:={yaml}",
+            "-p",
+            "use_sim_time:=false",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    rclpy.init()
+    received: list[PromptStamped] = []
+    maps: list[OccupancyGrid] = []
+    received_event = threading.Event()
+    try:
+        time.sleep(2.0)
+        # Drive UNCONFIGURED -> ACTIVE with the same tool _autostart_lifecycle mirrors.
+        rc = subprocess.run(
+            [
+                sys.executable,
+                str(autostart_tool),
+                "--node",
+                "/openral_map_server",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "20.0",
+            ],
+            timeout=40,
+            check=False,
+        ).returncode
+        assert rc == 0, f"map_server did not reach active (rc={rc})"
+
+        client = FakeToolUseClient(
+            responses=[
+                RecallObjectTool(query="bottle of wine", rationale="operator asked for wine"),
+                *[
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
+                    for _ in range(4)
+                ],
+            ],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            spatial_memory=SpatialMemory.load(fixture),
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        map_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        sub_node = rclpy.create_node("openral_test_map_bundle_sub")
+        sub_node.create_subscription(OccupancyGrid, "/map", maps.append, map_qos)
+
+        def cb(msg: PromptStamped) -> None:
+            if msg.header.frame_id == "spatial_memory":
+                received.append(msg)
+                received_event.set()
+
+        sub_node.create_subscription(PromptStamped, "/openral/prompt", cb, qos)
+        pub_node = rclpy.create_node("openral_test_map_bundle_pub")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(sub_node)
+
+        # Let the latched map land + the reasoner consume it before the query.
+        settle = time.monotonic() + 2.0
+        while time.monotonic() < settle:
+            executor.spin_once(timeout_sec=0.1)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_test_map_bundle_pub"
+        msg.text = "bring me a cup of wine"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not received_event.is_set():
+            executor.spin_once(timeout_sec=0.1)
+
+        # (a) the saved map reached /map (costmap populated from the bundle).
+        assert maps, "saved map.yaml did not reach /map via nav2 map_server"
+        assert maps[-1].info.width == 20 and maps[-1].info.height == 20
+        # (b) the reasoner consumed it into its ADR-0044 occupancy grid.
+        assert reasoner._occupancy_grid is not None, "reasoner did not consume the seeded /map"
+        # (c) the bundle's scene graph still answers recall_object.
+        assert received, "recall_object did not re-prompt within 5 s"
+        assert "wine_bottle" in received[-1].text
+
+        executor.remove_node(reasoner)
+        executor.remove_node(sub_node)
+        sub_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+        # Kill the whole process group (the ros2-run wrapper + the map_server child).
+        pgid = os.getpgid(map_server.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            map_server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGKILL)

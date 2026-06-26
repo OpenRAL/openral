@@ -34,6 +34,14 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore, ReasonerTickResult
 from openral_reasoner.critic_watchdog import CriticWatchdog, CriticWatchdogGroup
+from openral_reasoner.memory import MemoryEntry, MemoryStore
+from openral_reasoner.mission import (
+    DEFAULT_MAX_ATTEMPTS,
+    MissionState,
+    TaskState,
+    evaluate_task_verdict,
+    split_mission,
+)
 from openral_reasoner.null_reasoner import NullReasoner
 from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.plan import Plan, ToolCall
@@ -66,11 +74,15 @@ __all__ = [
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
     "AnthropicToolUseClient",
+    "DEFAULT_MAX_ATTEMPTS",
     "ContextRenderer",
     "CriticWatchdog",
     "CriticWatchdogGroup",
     "FailureEventRecord",
     "LLMClient",
+    "MemoryEntry",
+    "MemoryStore",
+    "MissionState",
     "NullReasoner",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
@@ -85,11 +97,13 @@ __all__ = [
     "SpatialMemoryQuerier",
     "SpatialQueryOutcome",
     "SpatialQueryTool",
+    "TaskState",
     "ToolCall",
     "ToolPalette",
     "ToolUseClient",
     "build_tool_palette",
     "build_tool_use_client_from_env",
+    "evaluate_task_verdict",
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",
@@ -100,5 +114,6 @@ __all__ = [
     "resolve_reasoner_system_prompt",
     "run_spatial_query",
     "run_spatial_query_detailed",
+    "split_mission",
 ]
 __version__ = "0.1.0"

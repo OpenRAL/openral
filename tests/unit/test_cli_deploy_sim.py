@@ -43,6 +43,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OPENARM_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "openarm_tabletop.yaml"
 _PANDA_MOBILE_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "robocasa_pnp.yaml"
 _SO101_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "so101_box.yaml"
+_LIBERO_PNP_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "libero_pnp.yaml"
 
 
 def test_bh_deploy_sim_help_renders() -> None:
@@ -1500,8 +1501,48 @@ def test_orphan_needles_cover_tf_publishers_and_sidecar() -> None:
     assert _cmdline_is_openral_graph_process(static_tf)
     assert _cmdline_is_openral_graph_process(rsp)
     assert _cmdline_is_openral_graph_process(sidecar)
+    # Robometer reward sidecar + its forked torch-inductor compile_worker
+    # children. Both carry the openral-specific venv path in cmdline, so the
+    # single needle reaps the whole tree (regression for the lingering
+    # ~3.3 GiB sidecar + one worker per CPU). Argv signatures are the real
+    # ones observed live via ``/proc/<pid>/cmdline``.
+    robometer_server = (
+        "/home/u/.cache/openral/robometer-sidecar/.venv/bin/python "
+        "/home/u/workspace/openral/tools/_robometer_server.py "
+        "--weights OpenRAL/rskill-robometer-4b-nf4 --host 127.0.0.1 --port 5769"
+    )
+    compile_worker = (
+        "/home/u/.cache/openral/robometer-sidecar/.venv/bin/python "
+        "/home/u/.cache/openral/robometer-sidecar/.venv/lib/python3.12/site-packages/"
+        "torch/_inductor/compile_worker/__main__.py --kind=fork --workers=4 --parent=123"
+    )
+    assert _cmdline_is_openral_graph_process(robometer_server)
+    assert _cmdline_is_openral_graph_process(compile_worker)
+    # Perception / critic graph nodes (were leaking when graceful shutdown
+    # overran ``grace_s``).
+    reward_node = (
+        "python3 /ws/install/lib/openral_perception_ros/reward_monitor_node.py "
+        "--ros-args -r __node:=openral_reward_monitor"
+    )
+    detector_node = (
+        "python3 /ws/install/lib/openral_perception_ros/ros_image_detector_node.py "
+        "--ros-args -r __node:=openral_ros_image_detector_omdet_turbo_locator"
+    )
+    critic_node = (
+        "python3 /ws/install/lib/openral_reasoner_ros/critic_producer_node.py "
+        "--ros-args -r __node:=openral_critic_producer"
+    )
+    assert _cmdline_is_openral_graph_process(reward_node)
+    assert _cmdline_is_openral_graph_process(detector_node)
+    assert _cmdline_is_openral_graph_process(critic_node)
     # An unrelated user process must NOT match.
     assert not _cmdline_is_openral_graph_process("/usr/bin/python3 -m http.server 8000")
+    # An unrelated torch compile_worker (not under the openral sidecar venv)
+    # must NOT match — the needle is the openral cache path, not torch itself.
+    assert not _cmdline_is_openral_graph_process(
+        "/usr/bin/python /usr/lib/python3.12/site-packages/torch/_inductor/"
+        "compile_worker/__main__.py --kind=fork"
+    )
     # A non-openral static_transform_publisher (different executable path
     # prefix is still tf2_ros, so this WOULD match) — but an unrelated
     # editor / shell must not.
@@ -1670,3 +1711,134 @@ def test_deploy_sim_foxglove_custom_port_forwarded() -> None:
     )
     assert invocation.foxglove_port == 9999
     assert "foxglove_port:=9999" in " ".join(invocation.argv_template)
+
+
+# ── ADR-0072 Decision 3b — deploy memory bundle (--memory-dir) ─────────────────
+
+
+def _resolve_with_memory_dir(memory_dir: str) -> object:
+    return resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        memory_dir=memory_dir,
+    )
+
+
+def test_deploy_sim_memory_dir_forwards_all_present_bundle_artifacts(tmp_path: Path) -> None:
+    """ADR-0072 §3b — --memory-dir forwards a launch arg per present bundle artifact."""
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "scene_graph.json").write_text("{}", encoding="utf-8")
+    (bundle / "map.yaml").write_text("image: map.pgm\n", encoding="utf-8")
+    argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
+    assert f"memory_md_path:={bundle / 'MEMORY.md'}" in argv
+    assert f"spatial_memory_path:={bundle / 'scene_graph.json'}" in argv
+    assert f"map_path:={bundle / 'map.yaml'}" in argv
+
+
+def test_deploy_sim_memory_dir_omits_absent_artifacts(tmp_path: Path) -> None:
+    """A fresh bundle (only the dir) forwards memory_md_path but not scene_graph / map."""
+    bundle = tmp_path / "empty_bundle"
+    bundle.mkdir()
+    argv = _resolve_with_memory_dir(str(bundle)).argv_template  # type: ignore[attr-defined]
+    assert any(a.startswith("memory_md_path:=") for a in argv)
+    assert not any(a.startswith("spatial_memory_path:=") for a in argv)
+    assert not any(a.startswith("map_path:=") for a in argv)
+
+
+def test_deploy_sim_no_memory_dir_forwards_no_bundle_args() -> None:
+    """Without --memory-dir (and no scene memory_dir) no bundle args are forwarded."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    argv = invocation.argv_template
+    assert not any(a.startswith("memory_md_path:=") for a in argv)
+    assert not any(a.startswith("map_path:=") for a in argv)
+
+
+def test_deploy_sim_memory_dir_must_be_existing_directory(tmp_path: Path) -> None:
+    """A --memory-dir that is not an existing directory fails loud (not a silent skip)."""
+    with pytest.raises(ROSConfigError, match=r"not an existing directory"):
+        _resolve_with_memory_dir(str(tmp_path / "does_not_exist"))
+
+
+# ── Multi-task deploy (LIBERO spatial) ────────────────────────────────────
+
+
+def test_deploy_sim_libero_pnp_tasks_forwarded_as_initial_task_prompt() -> None:
+    """libero_pnp DeployScene.tasks → initial_task_prompt joined with ' | '."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    invocation = resolve_launch_invocation(
+        config=_LIBERO_PNP_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    # The libero_pnp.yaml carries two tasks; they must be joined with ' | '.
+    assert invocation.initial_task_prompt != ""
+    assert " | " in invocation.initial_task_prompt
+    # The initial_task_prompt is forwarded to the launch argv.
+    assert any("initial_task_prompt:=" in arg for arg in invocation.argv_template), (
+        f"initial_task_prompt not in argv_template: {invocation.argv_template}"
+    )
+
+
+def test_deploy_sim_cli_initial_task_overrides_yaml_tasks() -> None:
+    """--initial-task CLI flag wins over DeployScene.tasks from the YAML."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    override = "override task from CLI flag"
+    invocation = resolve_launch_invocation(
+        config=_LIBERO_PNP_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        initial_task_prompt=override,
+    )
+    assert invocation.initial_task_prompt == override
+    assert any(f"initial_task_prompt:={override}" in arg for arg in invocation.argv_template)
+
+
+def test_deploy_sim_no_tasks_no_initial_prompt() -> None:
+    """A DeployScene without tasks: produces empty initial_task_prompt (idle mode)."""
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.initial_task_prompt == ""
+    # No initial_task_prompt:= in argv when there are no tasks.
+    assert all("initial_task_prompt:=" not in arg for arg in invocation.argv_template)
+
+
+def test_deploy_sim_dry_run_libero_shows_startup_prompt() -> None:
+    """``openral deploy sim --config libero_pnp.yaml --dry-run`` prints the startup prompt."""
+    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["deploy", "sim", "--config", str(_LIBERO_PNP_CONFIG), "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    # The rich summary block must mention the startup prompt
+    assert "startup_prompt" in result.output
+    # And the argv must carry the initial_task_prompt argument
+    assert "initial_task_prompt:=" in result.output
+
+
+def test_deploy_sim_help_includes_initial_task_flag() -> None:
+    """``openral deploy sim --help`` documents the --initial-task flag."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["deploy", "sim", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "--initial-task" in result.output

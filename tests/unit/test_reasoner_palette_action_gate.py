@@ -141,6 +141,14 @@ def test_cartesian_not_executable_on_real_joint_only_robot() -> None:
     assert _action_executable(m, franka, "real") is False
 
 
+def test_franka_manifest_declares_vision_for_libero_cameras() -> None:
+    """Franka's LIBERO camera pair must surface as a vision-capable robot."""
+    franka = _franka()
+    assert franka.capabilities.has_vision is True
+    rgb_names = [sensor.name for sensor in franka.sensors if sensor.modality == "rgb"]
+    assert rgb_names == ["top", "wrist"]
+
+
 def test_cartesian_executable_on_sim() -> None:
     """A cartesian skill IS executable in sim (robosuite OSC default set)."""
     m = _cartesian_pi05()

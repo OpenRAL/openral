@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s2
   kind: reward
+  embodiment_tags: [any]
   actions: [monitor]
   objects: [task progress, task success]
   scenes: [tabletop, kitchen, indoor, manipulation]
@@ -41,6 +42,7 @@ An OpenRAL **task-progress / reward monitor** (`role: s2`, `kind: reward`). Robo
 - **Verbs:** monitor
 - **Objects:** task progress · task success
 - **Scenes:** tabletop · kitchen · indoor · manipulation
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

@@ -77,6 +77,46 @@ when the corresponding service is present.
 (fast, in-process) for simple "find X", `locateanything-3b` for complex referring
 expressions. `recall_object` *remembers*; `locate_in_view` *looks now*.
 
+### Memory & mission tools (ADR-0072 / ADR-0073)
+
+These edit the reasoner's own state — its `MEMORY.md` file and its task ledger —
+never the robot. They are advisory and hold no actuation authority.
+
+| Tool (`tool=`) | Effect | ADR |
+|---|---|---|
+| `MemoryWriteTool` (`memory_write`) | the reasoner's first **write-capable** variant — `add` / `update` / `supersede` / `delete` an entry in the self-maintained `MEMORY.md` | 0072 |
+| `MemorySearchTool` (`memory_search`) | read-only query over the archival memory log | 0072 |
+| `DecomposeMissionTool` (`decompose_mission`) | write the deterministic `MissionState` task queue — populate/replace it, or flat-splice a blocked task into finer subtasks (`subdivide_active`) | 0073 |
+
+---
+
+## Playbooks, memory & missions
+
+Three S2 capabilities layer on top of the tool surface:
+
+- **Playbooks (`kind: playbook`, ADR-0072).** At palette-seed time the reasoner
+  gathers installed, capability-matched playbook rSkills, reads their
+  `PLAYBOOK.md` bodies, and appends a `## PLAYBOOKS` section to the system prompt
+  — so the LLM follows the relevant authored decision procedure when its trigger
+  matches the goal. Playbooks are `role: s2` content, never in the ExecuteSkill
+  palette; every motion still crosses `execute_rskill` + the C++ safety kernel.
+  Six ship in-tree: `decompose-mission`, `verify-outcome`, `clarify-ambiguity`,
+  `preflight-reach`, `stage-for-manipulation`, `find-object`.
+- **Self-maintained `MEMORY.md` (ADR-0072).** A persistent semantic memory
+  (`MemoryStore` / `MemoryEntry`) the reasoner reads each tick and edits through
+  `memory_write`, with `consolidate()` (drop duplicates) and a
+  `to_context_block(cap=N)` render that bounds the always-on `## MEMORY` block on
+  a long-running robot. Loaded at deploy time via `openral deploy sim/run
+  --memory-dir` (alongside `scene_graph.json` and the 2D nav map).
+- **Sequential missions (ADR-0073).** `split_mission` parses a multi-task
+  operator goal (`"… , then …"`, or `DeployScene.tasks` joined with `" | "`) into
+  an ordered `MissionState` queue with at most one `active` (or `verifying`)
+  `TaskState`. The queue advances only when the active task passes the
+  reward/critic gate, rendered as a `## MISSION` ledger each tick.
+  `DecomposeMissionTool` + `MissionState.subdivide_active` flat-splice a blocked
+  task into finer subtasks on replan, bounded by `DEFAULT_MAX_SUBDIVIDE_DEPTH`
+  before human-handoff.
+
 ---
 
 ## Tool palette & gating
@@ -209,23 +249,15 @@ safety, world-state, and perception nodes.
 
 ## In development
 
-The following reasoner work is on feature branches and **not yet merged to
-`master`** — it will land incrementally:
+The reasoner core, playbooks, the self-maintained `MEMORY.md`, and the sequential
+mission task-queue have all landed on this integration branch (ADR-0072/0073).
+Still in flight:
 
-- **Context grounding & reflection** — a richer per-tick situation report with a
-  closed execution-feedback loop (ADR-0071 Phase 2).
-- **`MEMORY.md` semantic memory** — a self-maintained narrative memory the reasoner
-  reads each tick and edits through typed write tools, with consolidation under a
-  cap (ADR-0071 Phases 4a–4c, 5).
-- **`kind: playbook` rSkills** — human-authored Markdown decision procedures (SOPs)
-  the reasoner reads as *content* (never the actuation palette): `decompose-mission`,
-  `verify-outcome`, `clarify-ambiguity`, `preflight-reach`, `stage-for-manipulation`
-  (ADR-0072).
-- **Mission task-queue** — a typed `MissionState` queue
-  (`pending → active → verifying → done|abandoned`) with reward-gated advance
-  (ADR-0073).
-
-These are **not** described as shipped until they reach `master` (CLAUDE.md §1.2).
+- **Dashboard mission card** — surfacing the `MissionState` ledger + the reward
+  gate and attempts/cap ladder on the live `openral dashboard` (PR #122).
+- **`bt_executor_node`** — an optional BehaviorTree v4 executor consuming
+  `BehaviorTreeXml` plans alongside direct tool-call dispatch (ADR-0018 §4 / F4,
+  left as an explicit follow-up).
 
 ---
 
@@ -235,6 +267,6 @@ These are **not** described as shipped until they reach `master` (CLAUDE.md §1.
 - [ADR-0018](../adr/0018-ros2-reasoner-supervisor.md) — reasoner/supervisor graph + F4 dispatch.
 - [ADR-0025](../adr/0025-reasoner-managed-background-services.md) — reasoner-managed SLAM/Nav2 background services.
 - [ADR-0039](../adr/0039-llm-task-planning-active-search.md) — LLM task planning & active search.
-- [rSkills reference](rskills.md) — the `kind: detector` / `vlm` / `reward` / `ros_action` skills the reasoner queries and dispatches.
-</content>
-</invoke>
+- [ADR-0072](../adr/0072-reasoner-playbooks-and-self-maintained-memory.md) — playbooks + self-maintained MEMORY.md.
+- [ADR-0073](../adr/0073-reasoner-success-gating-and-task-queue.md) — success-gating + sequential mission task queue.
+- [rSkills reference](rskills.md) — the `kind: detector` / `vlm` / `reward` / `ros_action` / `playbook` skills the reasoner reads and dispatches.

@@ -17,6 +17,7 @@ metadata:
   sensors_required: ['rgb:observation.images.camera1', 'rgb:observation.images.camera2', 'rgb:observation.images.camera3']
   state_dim: 14
   action_dim: 14
+  action_representation: joint_positions
   runtime: pytorch
   quantization: bf16/pytorch
   chunk_size: 50

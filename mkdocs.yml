@@ -165,3 +165,5 @@ nav:
     - ADR-0058 Standardized description assets: adr/0058-standardized-description-assets.md
     - ADR-0059 Foxglove live-scene visualization: adr/0059-foxglove-live-scene-visualization.md
     - ADR-0065 cuMotion CUDA-accelerated MoveIt planning: adr/0065-cumotion-cuda-moveit-planning.md
+    - ADR-0072 Reasoner playbooks & self-maintained memory: adr/0072-reasoner-playbooks-and-self-maintained-memory.md
+    - ADR-0073 Reasoner success-gating & task queue: adr/0073-reasoner-success-gating-and-task-queue.md

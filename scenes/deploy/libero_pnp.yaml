@@ -1,8 +1,23 @@
-# LIBERO floor environment — deploy-sim digital twin (DeployScene; env-only).
-# Boots the OpenRAL stack (HAL + reasoner + safety kernel) without a predefined
-# task or success criterion; the reasoner picks the rSkill at runtime. Robot
-# auto-resolves via ``SCENES.fixed_robot("libero_spatial") == "franka_panda"``.
+# LIBERO spatial environment — deploy-sim digital twin (DeployScene; multi-task).
+#
+# Boots the full OpenRAL stack (HAL + reasoner + safety kernel) against the
+# LIBERO spatial MuJoCo scene. The ``tasks:`` block below encodes an ordered
+# multi-task goal that ``openral deploy sim`` pre-seeds into the reasoner's
+# prompt buffer at startup — no separate ``openral prompt`` invocation required.
+#
+# The reasoner decomposes the combined prompt into ordered subtasks, selects
+# the matching rSkills (smolvla-libero for VLA execution, omdet-turbo-locator
+# for object localisation, robometer-4b for reward evaluation), and drives the
+# run to a terminal outcome.  All subtask selections, rSkill choices,
+# localisation steps, VLA executions, reward evaluations, and the final result
+# are emitted as structured OTel spans on ``reasoner.tick`` (attribute
+# ``reasoner.tool``) and ``rskill.tick`` (attributes ``rskill.id``,
+# ``rskill.reward``) so failures can be diagnosed from the trace log.
+#
+# Robot auto-resolves via ``SCENES.fixed_robot("libero_spatial") == "franka_panda"``.
 # Run: openral deploy sim --config scenes/deploy/libero_pnp.yaml
+#      --enable-reward-monitor --enable-critic
+#      --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
 # Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
 
 scene:
@@ -10,3 +25,11 @@ scene:
   backend: mujoco
   observation_height: 256
   observation_width: 256
+
+# Multi-task goal: two canonical LIBERO-Spatial pick-and-place subtasks.
+# ``openral deploy sim`` joins these with `` | `` into a single operator prompt
+# delivered to the reasoner at activate time.  Each subtask maps to one
+# ``ExecuteRskillTool(rskill_id="OpenRAL/rskill-smolvla-libero", ...)`` call.
+tasks:
+  - "pick the black bowl from the stove and place it on the wooden cabinet"
+  - "pick the butter from the wooden cabinet and place it in the basket"

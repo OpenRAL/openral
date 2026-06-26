@@ -46,7 +46,7 @@ We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** pla
 - HAL adapters for [16 robot platforms](docs/reference/robots.md) — manipulators, bimanual arms, humanoids
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
-- [rSkill packages](docs/reference/rskills.md) spanning every kind — VLA policies (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7), open-vocabulary detectors (RT-DETR, OmDet-Turbo, LocateAnything), the Qwen3.5-4B scene VLM (`kind: vlm`), the Robometer-4B reward/progress monitor (`kind: reward`), and MoveIt / Nav2 classical-control skills (`kind: ros_action`)
+- [rSkill packages](docs/reference/rskills.md) spanning every kind — VLA policies (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7), open-vocabulary detectors (RT-DETR, OmDet-Turbo, LocateAnything), the Qwen3.5-4B scene VLM (`kind: vlm`), the Robometer-4B reward/progress monitor (`kind: reward`), MoveIt / Nav2 classical-control skills (`kind: ros_action`), and human-authored reasoner playbooks (`kind: playbook`)
 - [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [the benchmark scene catalogue](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, RoboTwin 2.0, gym-aloha, gym-pusht, Isaac Sim, RLBench/CoppeliaSim)
 - **Object detection & spatial lift** — promptable open-vocabulary detectors (OmDet-Turbo default, RT-DETR fallback) → `ObjectsMetadata`, lifted 2D→3D into world state; on-demand `locate_in_view` for novel targets
 - **Navigation & SLAM** — `openral_slam_bringup` + `openral_nav2_bringup` as reasoner-managed services: `slam_toolbox` for lidar robots, or **NVIDIA Isaac ROS cuVSLAM + nvblox** (fed by a **Depth Anything 3** monocular metric-depth provider) for lidar-less robots → `map` frame + Nav2 path planning
@@ -305,6 +305,7 @@ rSkills come in several **kinds**, all installed and run the same way:
 - **`kind: vlm`** — the Qwen3.5-4B scene VLM (Apache-2.0), drives the read-only `query_scene` tool for success/progress verification.
 - **`kind: reward`** — the Robometer-4B progress monitor (Apache-2.0), runs parallel to a VLA and drives `query_task_progress`.
 - **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-joints` / `-eef-pose` / `-look-at`) and Nav2 (`rskill-nav2-navigate-to-pose`).
+- **`kind: playbook`** — human-authored Markdown SOPs the S2 reasoner reads as content (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object); no weights, no actuation (ADR-0072).
 
 Most are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; the GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) loads upstream `nvidia/GR00T-N1.7-LIBERO` weights via an out-of-process sidecar (ADR-0046). The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code model (NF4, loaded in a dedicated `transformers<5` runtime) that solves the SimplerEnv WidowX carrot-on-plate ManiSkill3 task (ADR-0063, issue #55).
 
@@ -329,12 +330,13 @@ The **reasoner** is the slow, deliberative half of the dual-system architecture.
 
 - **Provider-agnostic** — pick any LLM via `OPENRAL_REASONER_LLM_PROVIDER` (Anthropic, OpenAI-compatible, OpenRouter, Ollama, vLLM, Gemini, xAI, DeepSeek). No cloud lock-in, no hidden default.
 - **Closed, capability-gated tool palette** — built from the installed rSkill registry and rebuilt on `/openral/skill_registry_changed`. The LLM cannot dispatch a skill that isn't installed, capability-matched, and licensed.
-- **Nine typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`) and five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`).
+- **Twelve typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`), five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`), the `memory_write` / `memory_search` MEMORY.md tools, and `decompose_mission`.
+- **Playbooks** — human-authored `kind: playbook` Markdown SOPs (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object) read into the system prompt as content the reasoner follows — never code it executes (ADR-0072).
+- **Self-maintained memory** — a `MEMORY.md` the reasoner reads each tick and edits through the typed `memory_write` tool (add/update/supersede/delete), with consolidation and retrieval-under-cap (ADR-0072).
+- **Sequential missions** — a multi-task operator goal is parsed into a deterministic `MissionState` queue, advanced only when the active task passes the reward gate, with `decompose_mission` subdividing a blocked task on replan before human-handoff (ADR-0073).
 - **Bounded replanning** — a per-kind retry cap prevents loops; the streak resets when context shifts.
 
-→ **Full reference:** [docs/reference/reasoner.md](docs/reference/reasoner.md) · ADR-0018
-
-> **In development** (tracked on feature branches, not yet on `master`): a self-maintained `MEMORY.md` semantic memory, human-authored `kind: playbook` decision procedures the reasoner reads as content, and a reward-gated sequential mission task-queue (ADR-0071/0072/0073).
+→ **Full reference:** [docs/reference/reasoner.md](docs/reference/reasoner.md) · ADR-0018/0072/0073
 
 ---
 

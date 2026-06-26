@@ -101,6 +101,13 @@ Mirrors `openral rskill new`; exists so power users can scaffold without install
 - `_parse_args(argv) -> argparse.Namespace` — argparse setup. (L35)
 - `main(argv=None) -> int` — Entry point; returns a process exit code. (L77)
 
+### `tools/generate_rskill_skillmd.py`
+_Generate the standard agent-skill `SKILL.md` discovery view for every in-tree rSkill from its `rskill.yaml`._
+The single canonical producer of the `SKILL.md` mirror (CLAUDE.md §1.3): `rskill.yaml` is authoritative; the generated `SKILL.md` is discovery-only and never hand-edited. `--check` fails on any stale/missing `SKILL.md`, so the same process applies to every kind — including `playbook` (ADR-0072), whose `_KIND_NOUN` entry renders identically to `vla`/`detector`/`vlm`/`reward`.
+
+- `render_skill_md(manifest_path: Path) -> str` (L162) — Render the `SKILL.md` text (YAML frontmatter + capability/verb summary + license/provenance) from one manifest; `_KIND_NOUN` maps each `kind` to its discovery noun.
+- `main(argv=None) -> int` (L261) — Entry point. No args = regenerate every `rskills/<id>/SKILL.md`; positional ids regenerate a subset; `--check` reports stale/missing without writing (exit 1 on drift).
+
 ### `tools/rldx_sidecar.py`
 _Boot helper for the RLDX-1 inference sidecar (companion to `openral_sim.policies.rldx`)._
 Materialises a Python 3.10 venv under `_DEFAULT_HOME` (`~/.cache/openral/rldx-sidecar`, override via `--home`), clones the upstream `RLWRLD/RLDX-1` repo, runs `uv sync` (rldx + transformers + flash-attn + …), optionally adds `bitsandbytes` for NF4, then writes a wrapper that monkey-patches `transformers.AutoModel.from_pretrained` to apply NF4 / int8 to the Qwen3-VL-8B backbone (the MSAT diffusion head is left at bf16) and `os.execvpe`s into `rldx.eval.run_rldx_server`. Required because the `rldx` package pins `requires-python = "~=3.10"` and ships a custom `architectures=["RLDX"]` class not in HF Transformers.

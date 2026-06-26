@@ -626,7 +626,7 @@ def _check_just() -> CheckResult:
 # OPENRAL_REASONER_LLM_API_KEY. Bare ``openai-compatible`` and ``ollama``
 # are the exceptions because a local Ollama / llama-server doesn't.
 _REASONER_PROVIDERS_REQUIRING_KEY: frozenset[str] = frozenset(
-    {"anthropic", "openrouter", "gemini", "xai", "deepseek"}
+    {"anthropic", "openrouter", "gemini", "xai", "deepseek", "huggingface"}
 )
 
 # Provider-default base URLs used when the user hasn't set
@@ -642,6 +642,7 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "xai": "https://api.x.ai/v1",
     "deepseek": "https://api.deepseek.com",
+    "huggingface": "https://router.huggingface.co/v1",
 }
 
 

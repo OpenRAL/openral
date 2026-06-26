@@ -10,7 +10,10 @@ permitted at process boundaries when named explicitly and under
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+import structlog
 from openral_core import (
     EmitPromptTool,
     ExecuteRskillTool,
@@ -41,6 +44,51 @@ def _renderer_with_prompt(text: str = "pick the cube") -> ContextRenderer:
     r = ContextRenderer()
     r.append_prompt(PromptRecord(text=text, metadata_json="", stamp_ns=0))
     return r
+
+
+class _CaptureProcessor:
+    """Minimal structlog processor that buffers events for assertion.
+
+    Drops every event (raises :exc:`structlog.DropEvent`) so test logs
+    don't pollute pytest output.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def __call__(self, logger: Any, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        del logger, method
+        name = str(event_dict.pop("event", ""))
+        self.events.append((name, dict(event_dict)))
+        raise structlog.DropEvent
+
+
+@pytest.fixture
+def log_cap() -> Any:
+    """Install a structlog capture processor and restore defaults after.
+
+    Mirrors the fixture pattern in ``test_diagnostics_phase_timer.py``
+    (CLAUDE.md §1.11).
+
+    The fixture also rebinds the ``openral_reasoner.core.log`` module
+    attribute after reconfiguring structlog so the already-imported
+    module-level logger proxy picks up the capture processor even when
+    ``cache_logger_on_first_use=True`` had been set by conftest (i.e.
+    after the logger was cached on first use).
+    """
+    import openral_reasoner.core as _core_mod
+
+    proc = _CaptureProcessor()
+    structlog.reset_defaults()
+    structlog.configure(processors=[proc])
+    # Rebind the module-level logger so the new processor applies.
+    old_log = _core_mod.log
+    _core_mod.log = structlog.get_logger(_core_mod.__name__)
+    try:
+        yield proc
+    finally:
+        _core_mod.log = old_log
+        structlog.reset_defaults()
 
 
 def test_tick_dispatches_execute_skill_from_canned_response() -> None:
@@ -154,6 +202,37 @@ def test_retry_cap_suppresses_after_n_identical_kinds() -> None:
         results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
     assert [r.tool_call is not None for r in results] == [True, True, True, False]
     assert results[-1].suppressed_reason == "retry_cap"
+
+
+def test_reset_kind_streak_lets_the_next_same_kind_tick_through() -> None:
+    """reset_kind_streak() clears the streak so the next same-kind tick is not
+    suppressed — the mechanism the reasoner_node uses on mission-task advancement
+    (ADR-0073) so a new task is not blocked by the retry_cap the just-finished
+    task ended on.
+    """
+    palette = _palette()
+    clock_value = 0.0
+
+    def clock() -> float:
+        nonlocal clock_value
+        clock_value += 1.0
+        return clock_value
+
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text=f"m{i}") for i in range(4)],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3, clock=clock)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(4):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        if i == 3:
+            core.reset_kind_streak()  # simulate advancing to a new mission task
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    # Without the reset the 4th identical kind is suppressed (see
+    # test_retry_cap_suppresses_after_n_identical_kinds); the reset lets it through.
+    assert [r.tool_call is not None for r in results] == [True, True, True, True]
+    assert results[-1].suppressed_reason == ""  # not suppressed
 
 
 def test_different_kind_resets_retry_streak() -> None:
@@ -334,3 +413,62 @@ def test_new_event_resets_heartbeat_idle_gate() -> None:
     r2 = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert r2.tool_call is not None
     assert r2.suppressed_reason == ""
+
+
+# ── Multi-task structured observability ───────────────────────────────────
+
+
+def test_tick_emits_reasoner_tick_selected_log(log_cap: _CaptureProcessor) -> None:
+    """tick() emits a ``reasoner.tick.selected`` structured log on every success.
+
+    This covers the observability requirement added with the multi-task prompt
+    path: every successful reasoner decision must emit a structured log event
+    with at minimum ``tick_idx``, ``tool``, and ``elapsed_s``.
+    """
+    palette = _palette("openral/rskill-pick-cube-so100")
+    client = FakeToolUseClient(
+        responses=[
+            ExecuteRskillTool(
+                rskill_id="openral/rskill-pick-cube-so100",
+                prompt="pick the black bowl",
+            ),
+        ],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    core.tick(
+        world_state=None,
+        renderer=_renderer_with_prompt("pick the black bowl"),
+        palette=palette,
+    )
+    selected = [ev for name, ev in log_cap.events if name == "reasoner.tick.selected"]
+    assert len(selected) == 1, (
+        f"expected exactly 1 reasoner.tick.selected event; got {log_cap.events}"
+    )
+    ev = selected[0]
+    assert "tick_idx" in ev
+    assert "tool" in ev
+    assert "elapsed_s" in ev
+    assert ev["tool"] == "execute_rskill"
+    assert ev.get("rskill_id") == "openral/rskill-pick-cube-so100"
+
+
+def test_tick_selected_log_includes_active_prompt(log_cap: _CaptureProcessor) -> None:
+    """``active_prompt`` field in reasoner.tick.selected carries the operator goal text."""
+    palette = _palette()  # empty — EmitPrompt is always available
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text="acknowledged")],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    prompt_text = "pick the black bowl and place it in the basket"
+    core.tick(
+        world_state=None,
+        renderer=_renderer_with_prompt(prompt_text),
+        palette=palette,
+    )
+    selected = [ev for name, ev in log_cap.events if name == "reasoner.tick.selected"]
+    assert len(selected) == 1
+    ev = selected[0]
+    # active_prompt may be truncated to 200 chars; must start with the same text
+    active = ev.get("active_prompt", "")
+    assert isinstance(active, str)
+    assert active.startswith(prompt_text[:30])

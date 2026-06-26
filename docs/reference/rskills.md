@@ -105,6 +105,21 @@ Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidec
 
 Like the Qwen scene VLM, the Robometer monitor runs in an **isolated sidecar venv**: its `RBM` class cannot be loaded by vanilla `transformers.AutoModel` (its HF `config.json` advertises `architectures: ["RFM"]` with no `auto_map`), so the sidecar `uv pip install`s the pinned upstream `robometer` package and **forces `transformers==4.57.1`** (the resolver pulls 5.x, which drops `input_ids` from the processor). The node-side ZMQ + msgpack client ships in the `robometer` dependency group (`uv sync --group robometer`). The sidecar is a **stateless scorer**; the rolling frame buffer (`RollingFrameBuffer`, fed by the same `sensor_msgs/Image` topic the VLA uses — GStreamer tee on real hardware, sim HAL publisher in `deploy-sim`) lives node-side. `weights_uri` accepts the SHA-pinned Apache-2.0 upstream (NF4-quantized on load), a published pre-quantized OpenRAL repo, or `local:///abs/dir`. The pre-quantized path (built by `tools/build_robometer_nf4_checkpoint.py`) loads the packed NF4 weights DIRECTLY on the `meta` device — no bf16 materialization, no requantize (~25 s process→ready vs ~110 s + a 19 GB CPU spike), bit-identical to the bf16+quantize path with determinism pinned (math SDP + `use_deterministic_algorithms` + `CUBLAS_WORKSPACE_CONFIG`). The forward's activation memory scales with frame count × resolution, so the client evenly subsamples the window to `max_frames` (8) to stay co-resident with the sim (and a small NF4 VLA) on 8 GB. In `deploy-sim`, `openral deploy sim --enable-reward-monitor` brings the monitor up parallel to the VLA and sets `task_progress_available:=true` so the reasoner is offered `query_task_progress` (validated live on openarm). The upstream `robometer` code is not an OpenRAL-trusted org — it is pinned by commit and runs only in the isolated venv.
 
+## Playbook rSkills (`kind: playbook`)
+
+`kind: playbook` rSkills (ADR-0072) are **symbolic, human-authored S2 decision procedures** — Markdown SOPs the reasoner *reads*, not neural policies it executes. A playbook ships a `PLAYBOOK.md` body plus a `PlaybookContract` (`trigger` natural-language retrieval key, `body_uri` path to the SOP, `composes_tools` advisory list of `ReasonerToolCall` variants the SOP uses, `done_predicate` acceptance test, `max_steps` hard tool-call bound). It carries **no weights, actuators, ROS server, or action/state contract** — the symbolic counterpart to a `vla` policy, `role: s2`, excluded from the actuation palette. At palette-seed time the reasoner gathers the installed, capability-matched playbooks and appends their bodies to the system prompt under `## PLAYBOOKS`, so the LLM follows the relevant procedure when its trigger matches the goal. Every motion still crosses `execute_rskill` + the C++ safety kernel.
+
+| rSkill | Procedure |
+|---|---|
+| [`decompose-mission`](../../rskills/decompose-mission/) | break a compound goal into ordered, individually-verifiable subtasks (drives the `decompose_mission` tool → `MissionState` queue, ADR-0073) |
+| [`verify-outcome`](../../rskills/verify-outcome/) | Inner-Monologue: after a skill, confirm it actually succeeded (`query_scene` / `query_task_progress`) before advancing |
+| [`clarify-ambiguity`](../../rskills/clarify-ambiguity/) | ask-don't-guess: resolve an ambiguous goal from memory/scene, else ask the operator; never guess on an irreversible action |
+| [`preflight-reach`](../../rskills/preflight-reach/) | check the target is within the embodiment's reachable workspace (vs the `## ROBOT` self-model) before a grasp; stage or hand off |
+| [`stage-for-manipulation`](../../rskills/stage-for-manipulation/) | move to the skill's declared pre-grasp pose (MoveIt approach, ADR-0051/0053) and verify before the manipulation policy runs |
+| [`find-object`](../../rskills/find-object/) | locate a target via `recall_object` (memory) → `locate_in_view` (live) → bounded active search before manipulation |
+
+The reasoner also maintains a self-written **`MEMORY.md`** (ADR-0072) — a persistent semantic memory it reads each tick and edits through the typed `memory_write` / `memory_search` tools, loaded at deploy time via `openral deploy sim/run --memory-dir`. See the [Reasoner reference](reasoner.md).
+
 ## Manifest format
 
 ```yaml

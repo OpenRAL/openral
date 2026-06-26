@@ -898,6 +898,12 @@ class RSkillAction(str, Enum):
       checkpoints (e.g. RoboCasa-365, DROID, MetaWorld-MT50). The palette
       surfaces a generalist skill for goals that don't match a specific
       verb.
+    - Perception / reasoning (non-actuating S2 kinds): ``DETECT`` (detector),
+      ``QUERY`` (scene VLM, ADR-0047), ``MONITOR`` (reward monitor, ADR-0057),
+      ``PLAN`` (playbook decision procedure, ADR-0072). These verbs are
+      registry/discovery metadata only — their skills are reached via
+      read-only reasoner tools or system-prompt injection, never an
+      ``ExecuteSkill`` dispatch.
     """
 
     PICK = "pick"
@@ -924,6 +930,7 @@ class RSkillAction(str, Enum):
     DETECT = "detect"
     QUERY = "query"
     MONITOR = "monitor"
+    PLAN = "plan"
 
 
 class ObservationSpec(BaseModel):
@@ -2698,11 +2705,21 @@ class RSkillLatencyBudget(BaseModel):
             the reference host (CLAUDE.md §7.4).
         warmup_ms: Maximum allowed warm-up time during ``activate()``.
         load_ms: Maximum allowed weight-load time during ``configure()``.
+        max_execution_s: Total wall-clock budget for a single ``execute_rskill``
+            goal (one task attempt). A VLA policy never self-terminates (only
+            wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy
+            dispatch with ``deadline_s=0`` (the LLM's "use the manifest default"
+            sentinel) would otherwise run forever. The skill_runner resolves
+            ``deadline_s<=0`` to this value (or a global default) and aborts the
+            goal when it lapses so the reasoner re-evaluates the outcome —
+            CLAUDE.md §3 "Deadline fallback mandatory". ``None`` = fall back to
+            the runner's global default.
     """
 
     per_chunk_ms: float = Field(gt=0)
     warmup_ms: float | None = Field(default=None, gt=0)
     load_ms: float | None = Field(default=None, gt=0)
+    max_execution_s: float | None = Field(default=None, gt=0)
 
 
 class SensorRequirement(BaseModel):
@@ -2826,6 +2843,14 @@ StateLayout: TypeAlias = Literal[
     # ``video.image`` camera, sticky-gripper postprocessing).
     "simpler_widowx",
     "simpler_google",
+    # LIBERO 8-D task-space proprio (ADR-0027). ``eef_pos(3) ‖
+    # eef_axisangle(3) ‖ gripper_qpos(2)`` in the world frame — what the
+    # lerobot/smolvla_libero, pi05-libero and xvla-libero checkpoints were
+    # trained on. The benchmark (``openral sim run``) supplies it directly;
+    # deploy assembles it from live TF (EE pose) + JointState (gripper) via the
+    # ``libero_eef8d`` assembler. Without it the runner would feed raw
+    # joint-space state to a task-space policy.
+    "libero_eef8d",
 ]
 """Closed set of per-checkpoint proprioception layouts. ADR-0014 + ADR-0027.
 
@@ -2839,7 +2864,7 @@ function that joins shape + bindings + live JointState + live TF.
 
 
 WRAPPED_TASK_SPACE_LAYOUTS: frozenset[StateLayout] = frozenset(
-    {"rc365", "human300_16d"},
+    {"rc365", "human300_16d", "libero_eef8d"},
 )
 """Layouts that are TASK-space composites (Cartesian poses + gripper widths),
 NOT one-scalar-per-joint. These layouts REQUIRE
@@ -2950,6 +2975,21 @@ class StateContract(BaseModel):
                         f"StateContract.layout={self.layout!r} requires "
                         f"bindings.{', bindings.'.join(missing)} — these "
                         f"layouts include EE and base poses.",
+                    )
+            elif self.layout == "libero_eef8d":
+                # Absolute world-frame EE pose + gripper — needs eef_frame and
+                # at least one gripper joint; base_frame is irrelevant (the
+                # franka is fixed-base, the pose is taken in the world frame).
+                if self.bindings.eef_frame is None:
+                    raise ValueError(
+                        "StateContract.layout='libero_eef8d' requires "
+                        "bindings.eef_frame — it reads the world-frame EE pose.",
+                    )
+                if not self.bindings.gripper_qpos_joints:
+                    raise ValueError(
+                        "StateContract.layout='libero_eef8d' requires "
+                        "bindings.gripper_qpos_joints (1 parallel-gripper joint "
+                        "or 2 per-finger joints) for the gripper slot.",
                     )
         elif self.bindings is not None:
             raise ValueError(
@@ -4163,6 +4203,7 @@ class EmbodimentExtra(BaseModel):
 EmbodimentTag: TypeAlias = Literal[
     "aloha",
     "aloha_agilex",
+    "any",
     "custom",
     "franka_panda",
     "g1",
@@ -4182,7 +4223,16 @@ EmbodimentTag: TypeAlias = Literal[
     "widowx",
 ]
 """Canonical embodiment tags — one per ``robots/<id>/robot.yaml`` shipped in tree,
-plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch.
+plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
+``"any"`` as the explicit **embodiment-agnostic wildcard**.
+
+``"any"`` is the *declared* way to say "this rSkill runs on every embodiment"
+(ADR-0072): perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
+decision procedures use ``embodiment_tags: ["any"]``. An empty ``embodiment_tags``
+is rejected by :meth:`RSkillManifest._check_embodiment_tags_present` — agnosticism
+must be declared, never derived from an empty list (CLAUDE.md §1.4). The rSkill↔robot
+gate (``openral_rskill.loader.rSkill.check_embodiment_tags``) treats ``"any"`` in a
+skill's tags as match-any; a robot never declares ``"any"``.
 
 ``"mobile_base"`` is a CLASS tag (not a specific robot): any robot with a planar
 base + ``body_twist`` actuator declares it so base-only rSkills (Nav2
@@ -4270,6 +4320,34 @@ _HF_DATASET_URI_PATTERN = (
     r"^hf:\/\/[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+(?:@[A-Za-z0-9._-]+)?$"
 )
 _HTTPS_URL_PATTERN = r"^https?:\/\/[^\s]+$"
+
+# Unresolved-scaffold sentinels. ``rskills/template/rskill.yaml`` ships
+# ``name: "TEMPLATE_ORG/rskill-TEMPLATE_ID"`` and ``hf://TEMPLATE_ORG/TEMPLATE_ID``
+# placeholders that ``openral rskill new`` (``_rskill_scaffolder``) rewrites. The
+# publish gate (``_rskill_doc_validator`` / ``rskill_publisher``) rejects manifests
+# that still carry them, and the reasoner palette refuses to offer them as
+# dispatchable skills (:meth:`RSkillManifest.is_scaffold_placeholder`). Canonical
+# here so every consumer shares one definition. These never appear in a real,
+# published manifest.
+RSKILL_TEMPLATE_SENTINELS: tuple[str, ...] = ("TEMPLATE_ORG", "TEMPLATE_ID")
+
+
+def contains_rskill_template_sentinel(text: str | None) -> bool:
+    """True when ``text`` carries an unresolved rSkill scaffold sentinel.
+
+    Example:
+        >>> contains_rskill_template_sentinel("TEMPLATE_ORG/rskill-TEMPLATE_ID")
+        True
+        >>> contains_rskill_template_sentinel("OpenRAL/rskill-smolvla-libero")
+        False
+        >>> contains_rskill_template_sentinel(None)
+        False
+    """
+    if not text:
+        return False
+    return any(s in text for s in RSKILL_TEMPLATE_SENTINELS)
+
+
 # Per-file URI pattern accepted by :class:`RSkillProcessors`. Requires a
 # file tail (``/path/to/file.ext``) so the implicit-snapshot shape
 # ``hf://owner/repo`` is rejected. The whole point of the processors
@@ -4347,7 +4425,7 @@ class RSkillProcessors(BaseModel):
 
 
 RSkillKind: TypeAlias = Literal[
-    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward"
+    "vla", "wam", "ros_action", "ros_service", "detector", "vlm", "reward", "playbook"
 ]
 """Discriminator selecting how an rSkill is instantiated at the loader.
 
@@ -4384,16 +4462,29 @@ RSkillKind: TypeAlias = Literal[
   ``ros_integration``, ``processors``, ``image_preprocessing``,
   ``n_action_steps``, and ``starting_pose`` are FORBIDDEN. ``model_family``
   is OPTIONAL metadata. ADR-0047.
+* ``"playbook"`` — a symbolic, human-authored **decision procedure** (a
+  Markdown standard-operating-procedure) the S2 Reasoner *reads*, not code it
+  executes. Carries no weights, no actuators, no ROS server, no Action
+  contract — it is the symbolic counterpart to a ``vla`` policy. Requires a
+  :class:`PlaybookContract` block and ``role: "s2"``; ``chunk_size`` MUST be
+  ``1`` (required field, no Action rows); ``actuators_required`` MUST be empty;
+  ``actions`` MUST include :attr:`RSkillAction.PLAN`. ``weights_uri``,
+  ``model_family``, ``min_vram_gb``, ``detector``, ``reward``,
+  ``ros_integration``, ``processors``, ``image_preprocessing``,
+  ``action_contract``, ``state_contract``, ``n_action_steps``, ``starting_pose``
+  are FORBIDDEN. Surfaced to the reasoner by injecting its ``PLAYBOOK.md`` body
+  into the system prompt (or via a retrieval tool at scale), never as an
+  ``ExecuteSkill`` policy. ADR-0072.
 """
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
 
-# Perception rSkills are embodiment-agnostic: they consume camera frames and
-# emit detections / scene text with no action contract, so a robot's embodiment
-# is not a meaningful match axis. They MAY declare an empty ``embodiment_tags``
-# (match-any) — see ``_check_embodiment_tags_present`` below — and the
-# rSkill↔robot gate exempts them (``openral_rskill.loader._EMBODIMENT_AGNOSTIC_KINDS``).
-_PERCEPTION_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
+# Embodiment-agnostic rSkills (perception kinds detector / vlm / reward, and
+# ``playbook`` decision procedures) do not target a specific embodiment. They
+# declare this **explicitly** with the wildcard ``embodiment_tags: ["any"]``
+# (ADR-0072) — never an empty list, which ``_check_embodiment_tags_present``
+# rejects. The rSkill↔robot gate (``openral_rskill.loader.rSkill.check_embodiment_tags``)
+# treats ``"any"`` in a skill's tags as match-any.
 
 
 class RosIntegration(BaseModel):
@@ -4631,6 +4722,12 @@ class DetectorContract(BaseModel):
     score_threshold: float = Field(ge=0.0, le=1.0, default=0.5)
     engine: DetectorEngine | None = None
     mode: DetectorMode = DetectorMode.CONTINUOUS
+    # VLM-sidecar detectors (LocateAnything-3B) resize each frame so its longest
+    # edge is at most this many pixels before grounding. Lower = fewer image
+    # tokens = lower activation VRAM peak (the lever for co-residency with a
+    # reward model on a small GPU); higher = sharper. ``None`` keeps the
+    # backend default (1024). Ignored by ONNX/zero-shot detectors.
+    max_side: int | None = Field(default=None, gt=0)
 
     @field_validator("input_size")
     @classmethod
@@ -4713,6 +4810,63 @@ class RewardContract(BaseModel):
         if hi <= lo:
             raise ValueError(f"RewardContract.progress_range must have max > min, got {v!r}.")
         return v
+
+
+class PlaybookContract(BaseModel):
+    """Manifest contract for ``kind: "playbook"`` rSkills (ADR-0072).
+
+    A **playbook** is a human-authored standard-operating-procedure — a
+    structured Markdown document describing *how the S2 Reasoner should approach
+    a class of task*: its trigger, the ordered decision steps it composes from
+    existing reasoner tools, the bound on those steps, and its verifiable
+    acceptance (``done``) predicate. It is **content the reasoner reads, never
+    code it executes**, and carries no weights, actuators, ROS server, or Action
+    contract — the symbolic counterpart to a ``vla`` policy.
+
+    Required when :attr:`RSkillManifest.kind` is ``"playbook"``; forbidden for
+    all other kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).
+    The ``body_uri`` Markdown body is what the reasoner injects into its system
+    prompt (or retrieves by ``trigger`` similarity at scale); the manifest
+    ``description`` + ``trigger`` drive selection. Advisory only — a playbook
+    changes what the LLM *decides*, never its actuation authority: every motion
+    it triggers is still an ``ExecuteRskill`` → Action chunk → C++ safety kernel
+    (CLAUDE.md §1.1).
+
+    Attributes:
+        trigger: Natural-language description of when this playbook applies.
+            Used as the retrieval key when more playbooks are installed than
+            fit the system prompt (the deferred ``load_playbook`` tool).
+        body_uri: Repo-relative path to the Markdown SOP (e.g. ``"./PLAYBOOK.md"``).
+        composes_tools: The ``ReasonerToolCall`` discriminators the SOP uses
+            (``execute_rskill``, ``recall_object``, ``locate_in_view``,
+            ``query_scene``, ``query_task_progress``, ``memory_write``,
+            ``memory_search`` …). Advisory — a manifest-level hint of the
+            playbook's tool surface; at least one entry is required.
+        done_predicate: Natural-language acceptance test the playbook verifies
+            before declaring success (e.g. ``"the target object is in the
+            gripper"``).
+        max_steps: Hard bound on the number of tool calls before the playbook
+            must terminate (no hidden default — CLAUDE.md §1.4). Must be > 0.
+
+    Example:
+        >>> p = PlaybookContract(
+        ...     trigger="the goal names a physical object whose location is not given",
+        ...     body_uri="./PLAYBOOK.md",
+        ...     composes_tools=["recall_object", "locate_in_view", "execute_rskill"],
+        ...     done_predicate="the target object is confirmed in view at a known pose",
+        ...     max_steps=12,
+        ... )
+        >>> p.max_steps
+        12
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    trigger: str = Field(min_length=1, max_length=500)
+    body_uri: str = Field(min_length=1)
+    composes_tools: list[str] = Field(min_length=1)
+    done_predicate: str = Field(min_length=1, max_length=500)
+    max_steps: int = Field(gt=0)
 
 
 class RSkillManifest(BaseModel):
@@ -4935,8 +5089,9 @@ class RSkillManifest(BaseModel):
     # Required when `kind == "vla"`, forbidden otherwise (enforced by
     # :meth:`_check_kind_consistency`).
     model_family: ModelFamily | None = None
-    # Non-perception kinds must declare >=1 tag; perception kinds (detector /
-    # vlm) MAY be empty (match-any) — enforced by `_check_embodiment_tags_present`.
+    # Every kind must declare >=1 tag (enforced by `_check_embodiment_tags_present`):
+    # actuating kinds name their embodiments; agnostic kinds (detector / vlm /
+    # reward / playbook) declare the explicit wildcard ["any"]. Empty is rejected.
     embodiment_tags: list[EmbodimentTag] = Field(default_factory=list)
     embodiment_extra: EmbodimentExtra | None = None
     capabilities_required: dict[str, bool | float | int | str] = Field(default_factory=dict)
@@ -5011,20 +5166,21 @@ class RSkillManifest(BaseModel):
 
     @model_validator(mode="after")
     def _check_embodiment_tags_present(self) -> RSkillManifest:
-        """Non-perception rSkills must declare at least one embodiment tag.
+        """Every rSkill must declare at least one embodiment tag (ADR-0072).
 
-        Perception kinds (``detector`` / ``vlm``, see :data:`_PERCEPTION_KINDS`)
-        are embodiment-agnostic — camera-in → detections/text-out, no action
-        contract — so they MAY ship an empty ``embodiment_tags`` (match-any; the
-        rSkill↔robot gate exempts them). Every other kind (``vla`` / ``wam`` /
-        ``ros_action`` / ``ros_service``) still actuates a specific embodiment
-        and must target one, preserving the prior ``min_length=1`` guarantee.
+        Empty ``embodiment_tags`` is rejected for **all** kinds: agnosticism is a
+        contract to declare, not to derive from an empty list (CLAUDE.md §1.4).
+        An rSkill that genuinely runs on every embodiment — perception kinds
+        (``detector`` / ``vlm`` / ``reward``) and ``playbook`` decision
+        procedures — declares the explicit wildcard ``embodiment_tags: ["any"]``;
+        actuating kinds (``vla`` / ``ros_action`` / ``ros_service`` / ``wam``)
+        name the specific embodiments they target.
         """
-        if self.kind not in _PERCEPTION_KINDS and not self.embodiment_tags:
+        if not self.embodiment_tags:
             raise ValueError(
-                f"RSkillManifest({self.name!r}): kind={self.kind!r} requires at "
-                "least one embodiment_tag. Only perception kinds "
-                f"{sorted(_PERCEPTION_KINDS)} may be embodiment-agnostic (empty tags)."
+                f"RSkillManifest({self.name!r}): embodiment_tags must be non-empty. "
+                'Declare the specific embodiment(s) this skill targets, or ["any"] '
+                "for an embodiment-agnostic skill (perception / playbook kinds)."
             )
         return self
 
@@ -5083,6 +5239,22 @@ class RSkillManifest(BaseModel):
         """
         return self.license in _LICENSES_ALLOWING_COMMERCIAL
 
+    @property
+    def is_scaffold_placeholder(self) -> bool:
+        """True when this is an unresolved ``rskills/template/`` scaffold.
+
+        Checks the identity fields (:attr:`name`, :attr:`weights_uri`,
+        :attr:`source_repo`) for the :data:`RSKILL_TEMPLATE_SENTINELS`. The
+        scaffold parses as a valid manifest (so tests can load it) but is not a
+        real, loadable skill: the reasoner palette must not offer it as
+        dispatchable, and the publish gate rejects it. One predicate so callers
+        don't re-derive the sentinel check.
+        """
+        return any(
+            contains_rskill_template_sentinel(field)
+            for field in (self.name, self.weights_uri, self.source_repo)
+        )
+
     # ── Preprocessing block ───────────────────────────────────────────────
     # Knobs the trained checkpoint needs to interpret IO. Grouped here so
     # manifest readers see them together. ``processors`` is the explicit
@@ -5137,6 +5309,13 @@ class RSkillManifest(BaseModel):
     # advisory-only (never gates motors).
     reward: RewardContract | None = None
 
+    # Playbook decision-procedure contract (ADR-0072). REQUIRED when
+    # ``kind == "playbook"``; FORBIDDEN otherwise. Carries the SOP body pointer,
+    # the trigger/done predicate, and the tool-call step bound. A playbook is a
+    # symbolic, authored decision procedure the S2 Reasoner reads — it carries no
+    # weights and never actuates (its proposed motions still cross the kernel).
+    playbook: PlaybookContract | None = None
+
     # ADR-0026 — optional JSON-Schema (OpenAPI / JSON-Schema 7 shape)
     # describing the per-skill ``goal_params_json`` payload the LLM may
     # attach to an ``ExecuteRskillTool`` dispatch. The reasoner's
@@ -5174,7 +5353,7 @@ class RSkillManifest(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0912, PLR0915  # reason: each branch is a separate kind — splitting would obscure the per-kind contract table
+    def _check_kind_consistency(self) -> RSkillManifest:  # noqa: PLR0911, PLR0912, PLR0915  # reason: each branch is a separate kind (one early return each) — splitting would obscure the per-kind contract table
         """Enforce the per-:attr:`kind` field shape for VLA vs ROS-wrapper vs detector.
 
         Rules:
@@ -5212,6 +5391,15 @@ class RSkillManifest(BaseModel):
           because the WAM dispatch path is not implemented in this PR
           (tracked separately).
         """
+        # A ``playbook`` block belongs only to kind='playbook'. One guard here
+        # forbids it for every other kind (ADR-0072), so the per-kind branches
+        # below stay focused on their own required/forbidden fields.
+        if self.kind != "playbook" and self.playbook is not None:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids a "
+                "`playbook` block (it is for kind='playbook' decision procedures only)."
+            )
+
         if self.kind == "vla":
             if self.model_family is None:
                 raise ValueError(
@@ -5398,6 +5586,64 @@ class RSkillManifest(BaseModel):
                     f"RSkillManifest({self.name!r}): kind='reward' requires "
                     f"`actuators_required` to be empty (got {len(self.actuators_required)} "
                     "entries). A reward monitor actuates nothing."
+                )
+            return self
+
+        if self.kind == "playbook":
+            if self.playbook is None:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires a "
+                    "`playbook` block (trigger, body_uri, done_predicate, max_steps)."
+                )
+            if self.role != "s2":
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires role='s2' "
+                    f"(got {self.role!r}); a playbook is an S2 decision procedure."
+                )
+            if RSkillAction.PLAN not in self.actions:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires the "
+                    f"'plan' action verb in `actions` (got "
+                    f"{[a.value for a in self.actions]!r})."
+                )
+            if self.chunk_size != 1:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires "
+                    f"chunk_size=1, got {self.chunk_size}. A playbook emits no "
+                    "Action rows."
+                )
+            forbidden_playbook = {
+                "model_family": self.model_family,
+                "weights_uri": self.weights_uri,
+                "min_vram_gb": self.min_vram_gb,
+                "detector": self.detector,
+                "reward": self.reward,
+                "ros_integration": self.ros_integration,
+                "processors": self.processors,
+                "image_preprocessing": self.image_preprocessing,
+                "action_contract": self.action_contract,
+                "state_contract": self.state_contract,
+                "n_action_steps": self.n_action_steps,
+                "starting_pose": self.starting_pose,
+                "envelope": self.envelope,
+            }
+            set_playbook_forbidden = sorted(
+                name for name, value in forbidden_playbook.items() if value is not None
+            )
+            if set_playbook_forbidden:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' forbids "
+                    f"these fields: {set_playbook_forbidden!r}. A playbook is a "
+                    "symbolic decision procedure — it has no weights, no actuators, "
+                    "no ROS wrapper, no detector/reward block, and no VLA inference "
+                    "lifecycle."
+                )
+            if self.actuators_required:
+                raise ValueError(
+                    f"RSkillManifest({self.name!r}): kind='playbook' requires "
+                    f"`actuators_required` to be empty (got "
+                    f"{len(self.actuators_required)} entries). A playbook actuates "
+                    "nothing."
                 )
             return self
 
@@ -6052,6 +6298,20 @@ class DeployScene(BaseModel):
     deploy sim`` threads it to the manifest-driven HAL node, which composes the
     MJCF and builds a bare twin off the result. ``None`` = no scene composition
     (a bare-arm twin; cameras come from the robot's own sensor placements).
+
+    ``tasks`` encodes the ordered list of natural-language subtasks that
+    ``openral deploy sim`` delivers to the reasoner as an initial operator
+    prompt at startup — no separate ``openral prompt`` invocation required.
+    When non-empty, the CLI joins them with `` | `` as a multi-task prompt
+    that the reasoner decomposes into ordered :class:`~openral_core.ExecuteRskillTool`
+    calls at its first tick. When empty (the default) the reasoner idles until
+    an operator prompt arrives via ``openral prompt`` or the dashboard.
+
+    Example::
+
+        tasks:
+          - "pick the black bowl from the table and place it on the plate"
+          - "push the red mug to the back of the counter"
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -6060,6 +6320,26 @@ class DeployScene(BaseModel):
     robot_id: str | None = None
     base_pose: Pose6D | None = None
     composition: SceneComposition | None = None
+    memory_dir: str | None = None
+    """ADR-0072 Decision 3b — path to a per-robot deploy memory bundle directory
+    holding any of ``MEMORY.md`` (self-maintained semantic memory), ``scene_graph.json``
+    (3D world-state graph → ``recall_object``), and ``map.yaml`` (2D occupancy grid →
+    nav2 ``map_server``). ``openral deploy sim`` derives the three launch paths from it
+    by convention (each artifact loaded by its correct consumer). ``--memory-dir`` on
+    the CLI overrides this. ``None`` = no bundle (the reasoner starts with empty
+    memory). Advisory only — never a safety-kernel input (§1.1)."""
+
+    tasks: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered natural-language subtasks delivered to the reasoner as an "
+            "initial operator prompt at ``openral deploy sim`` startup. Each entry "
+            "is one atomic goal; the CLI joins them with ' | ' as a single "
+            "multi-task prompt the reasoner decomposes into :class:`ExecuteRskillTool` "
+            "calls. Empty (default) = no startup prompt; the reasoner idles until an "
+            "operator sends a prompt via ``openral prompt`` or the dashboard."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -7360,6 +7640,123 @@ class QueryTaskProgressTool(_ReasonerToolBase):
     task: str = ""
 
 
+MemorySection: TypeAlias = Literal[
+    "home_map", "preferences", "lessons", "object_locations", "open_tasks"
+]
+"""The fixed sections of the self-maintained ``MEMORY.md`` core (ADR-0072 §3).
+
+* ``home_map`` — stable places / region-connectivity (EDIT in place).
+* ``preferences`` — distilled user-preference *rules* (TidyBot; EDIT in place).
+* ``lessons`` — distilled human corrections / hard-won lessons (DROC; APPEND).
+* ``object_locations`` — timestamped object→place log (SUPERSEDE on re-observation).
+* ``open_tasks`` — recurring commitments / open items (EDIT; remove on completion).
+"""
+
+
+class MemoryWriteTool(_ReasonerToolBase):
+    """Tool variant (**write**) — edit the robot's self-maintained ``MEMORY.md`` (ADR-0072 §3).
+
+    The reasoner's **first write-capable tool**. It edits the persistent,
+    human-readable *semantic* memory (preferences, corrections, lessons, durable
+    home facts, object locations, open tasks) through an **explicit operation** —
+    never a free-form rewrite (Mem0 ``ADD/UPDATE/DELETE`` + Zep temporal
+    supersession). It writes ONLY to the advisory memory file and **holds no
+    authority over actuation** (ADR-0018 §4): a wrong memory yields a bad plan the
+    C++ kernel still vetoes (CLAUDE.md §1.1). The dispatch that applies the edit is
+    wired in a later phase — this is the typed contract.
+
+    Attributes:
+        tool: Discriminator (always ``"memory_write"``).
+        op: The edit operation — ``add`` / ``update`` / ``supersede`` / ``delete``.
+        section: Which :data:`MemorySection` to edit.
+        content: The fact, as a distilled NL rule/line. Required for every op
+            except ``delete`` (validated).
+        importance: LLM-assigned salience in ``[0, 1]`` (Generative Agents), used
+            by recency-importance-relevance retrieval when the section is capped.
+        target: The existing entry this op acts on. Required for
+            ``update`` / ``supersede`` / ``delete``; omitted for ``add`` (validated).
+    """
+
+    tool: Literal["memory_write"] = "memory_write"
+    op: Literal["add", "update", "supersede", "delete"]
+    section: MemorySection
+    content: str = ""
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    target: str | None = None
+
+    @model_validator(mode="after")
+    def _check_op_fields(self) -> MemoryWriteTool:
+        """``content`` required unless deleting; ``target`` required unless adding."""
+        if self.op != "delete" and not self.content:
+            raise ValueError(f"MemoryWriteTool: op={self.op!r} requires non-empty `content`.")
+        if self.op in ("update", "supersede", "delete") and not self.target:
+            raise ValueError(f"MemoryWriteTool: op={self.op!r} requires a `target` entry.")
+        return self
+
+
+class MemorySearchTool(_ReasonerToolBase):
+    """Tool variant (**read-only**) — search the archival memory log (ADR-0072 §3).
+
+    Pages in entries evicted from the bounded ``MEMORY.md`` core into the archival
+    JSONL (MemGPT recall), so the LLM can recall an older fact — e.g. a ``stale``
+    object location used as a search prior — without loading the whole history.
+    Read-only; no actuation (ADR-0018 §4).
+
+    Attributes:
+        tool: Discriminator (always ``"memory_search"``).
+        query: Free-text query over archived memory.
+        section: Optional :data:`MemorySection` filter.
+        limit: Maximum number of results to return.
+    """
+
+    tool: Literal["memory_search"] = "memory_search"
+    query: str = Field(min_length=1)
+    section: MemorySection | None = None
+    limit: int = Field(default=5, ge=1, le=100)
+
+
+class DecomposeMissionTool(_ReasonerToolBase):
+    """Tool variant — write the reasoner's typed task queue (ADR-0073 amendment / #123).
+
+    The typed path for the ``decompose-mission`` playbook (ADR-0072): the LLM
+    emits an ordered list of finer subtasks and the node applies it to the
+    deterministic :class:`MissionState`, replacing the free-form-JSON gap with
+    structured output (CLAUDE.md §3). Two modes, selected by ``target_task_id``:
+
+    * **populate** (``target_task_id`` empty) — build a fresh mission queue from
+      ``subtasks``, refining the deterministic ``split_mission`` floor when the
+      operator goal needs a better decomposition than the regex split.
+    * **subdivide** (``target_task_id`` set) — *flat-splice* the named blocked
+      task in place with ``subtasks`` (``t2 → t2.1, t2.2``), bounded by
+      :data:`~openral_reasoner.mission.DEFAULT_MAX_SUBDIVIDE_DEPTH`; past the
+      bound the node hands off instead.
+
+    Like every :data:`ReasonerToolCall` variant it **holds no authority over
+    actuation** (ADR-0018 §4) — it only edits the S2 task ledger; a bad
+    decomposition yields a worse plan the safety kernel still vetoes.
+
+    Attributes:
+        tool: Discriminator (always ``"decompose_mission"``).
+        subtasks: Ordered, non-empty subtask instructions (blanks are dropped;
+            at least one must survive). Each becomes a :class:`TaskState`.
+        target_task_id: ``TaskState.task_id`` of the blocked task to subdivide
+            (e.g. ``"t2"``); empty string populates/replaces the whole queue.
+    """
+
+    tool: Literal["decompose_mission"] = "decompose_mission"
+    subtasks: list[str] = Field(min_length=1)
+    target_task_id: str = ""
+
+    @field_validator("subtasks")
+    @classmethod
+    def _drop_blank_subtasks(cls, value: list[str]) -> list[str]:
+        """Trim each subtask and drop blanks; require at least one to survive."""
+        cleaned = [s.strip() for s in value if s.strip()]
+        if not cleaned:
+            raise ValueError("decompose_mission requires at least one non-empty subtask")
+        return cleaned
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
@@ -7370,6 +7767,9 @@ ReasonerToolCall: TypeAlias = (
     | LocateInViewTool
     | QuerySceneTool
     | QueryTaskProgressTool
+    | MemoryWriteTool
+    | MemorySearchTool
+    | DecomposeMissionTool
 )
 """Discriminated union over the reasoner tool variants (ADR-0018 §4; ADR-0039).
 
@@ -7386,10 +7786,14 @@ Producers (LLM clients) serialise via ``call.model_dump_json()``.
 The first four variants are the actuation/effect palette ADR-0018 §4 commits
 to. ADR-0039 adds two **read-only query** variants — :class:`RecallObjectTool`
 and :class:`ResolvePlaceTool` — that only *read* the ADR-0038 spatial memory
-(no actuation authority). Extending the palette requires (a) a new variant
-here, (b) the corresponding ROS-side dispatch in
-``openral_reasoner_ros.reasoner_node``, (c) a CLAUDE.md §6.2 / §7.6 amendment if
-the new tool shifts the reasoner's authority surface. The two query variants'
-dispatch + result-return path is ADR-0039 Phase 2; until then they are a typed
-contract not yet exposed in the live provider palette.
+(no actuation authority). ADR-0073's amendment (#123) adds
+:class:`DecomposeMissionTool` — the typed path for the ``decompose-mission``
+playbook to write/refine the deterministic :class:`MissionState` task queue
+(populate or flat-splice a blocked task); it edits only the S2 ledger, never
+actuation. Extending the palette requires (a) a new variant here, (b) the
+corresponding ROS-side dispatch in ``openral_reasoner_ros.reasoner_node``, (c) a
+CLAUDE.md §6.2 / §7.6 amendment if the new tool shifts the reasoner's authority
+surface. The two query variants' dispatch + result-return path is ADR-0039
+Phase 2; until then they are a typed contract not yet exposed in the live
+provider palette.
 """

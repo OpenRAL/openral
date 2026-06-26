@@ -22,7 +22,7 @@ metadata:
   quantization: bf16/pytorch
   chunk_size: 16
   n_action_steps: 25
-  latency_budget: {per_chunk_ms: 150.0}
+  latency_budget: {per_chunk_ms: 150.0, max_execution_s: 60.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
   weights_uri: hf://lerobot/smolvla_libero

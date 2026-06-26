@@ -394,6 +394,17 @@ class LaunchInvocation:
     foxglove_port: int
     """ADR-0059 — Foxglove WebSocket port. Forwarded as ``foxglove_port:=…``.
     Default 8765 (the ``foxglove_bridge`` upstream default)."""
+    initial_task_prompt: str
+    """Multi-task deploy — the startup operator prompt delivered to the reasoner.
+
+    Resolved from :attr:`DeployScene.tasks` (joined with ``' | '``) when the
+    scene config carries a ``tasks:`` block, or from an explicit
+    ``--initial-task`` CLI flag. Empty string means no startup prompt: the
+    reasoner idles until a manual ``openral prompt`` or dashboard prompt
+    arrives. Forwarded as ``initial_task_prompt:=<text>`` to the launch file
+    when non-empty; the ``prompt_router_node`` then publishes it onto
+    ``/openral/prompt`` at ``on_activate`` time with ``cli``-level priority
+    (100) so the reasoner's first tick sees the full multi-task goal."""
     argv_template: list[str]
     """``argv_template`` carries ``HAL_PARAMS_FILE_PLACEHOLDER`` where
     the temp HAL-params YAML path goes. The dispatcher substitutes it
@@ -569,6 +580,36 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
+    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir (ADR-0072 §3b).
+
+    The bundle is a directory holding any of ``MEMORY.md`` (semantic memory),
+    ``scene_graph.json`` (3D world-state graph), and ``map.yaml`` (2D occupancy grid).
+    Each artifact is forwarded to its own consumer's launch arg. The dir must exist
+    (the robot writes ``MEMORY.md`` into it); ``scene_graph.json`` / ``map.yaml`` are
+    forwarded only when present, so a fresh bundle (empty dir) just starts the reasoner
+    with empty memory and no preloaded scene/map.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    d = Path(memory_dir).expanduser()
+    if not d.is_dir():
+        raise ROSConfigError(
+            f"--memory-dir {memory_dir!r} is not an existing directory. Create the bundle "
+            "dir first (the robot writes MEMORY.md into it; place scene_graph.json / map.yaml "
+            "there to preload the scene graph + occupancy grid)."
+        )
+    # memory_md_path may not exist yet — the reasoner creates it on the first memory_write.
+    args = [f"memory_md_path:={d / 'MEMORY.md'}"]
+    scene_graph = d / "scene_graph.json"
+    if scene_graph.is_file():
+        args.append(f"spatial_memory_path:={scene_graph}")
+    map_yaml = d / "map.yaml"
+    if map_yaml.is_file():
+        args.append(f"map_path:={map_yaml}")
+    return args
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -595,9 +636,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_critic: bool = False,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
+    memory_dir: str | None = None,
     enable_dashboard: bool = True,
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
+    initial_task_prompt: str | None = None,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -612,7 +655,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
     """
-    from openral_core import RobotDescription  # reason: defer schema import
+    from openral_core import (  # reason: defer schema import
+        DeployScene,
+        RobotDescription,
+        load_scene_strict,
+    )
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
@@ -624,6 +671,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "robot_id is undefined: pass ``--robot <id>`` or (for ``deploy sim``) "
             "set ``robot_id:`` in the DeployScene YAML / use a fixed-robot scene."
         )
+
+    # Resolve the initial_task_prompt from:
+    # 1. The caller-supplied `initial_task_prompt` arg (explicit CLI override wins).
+    # 2. The DeployScene.tasks list in the config YAML (auto-read when non-empty).
+    # 3. Nothing (empty = reasoner idles until a manual ``openral prompt``).
+    _resolved_initial_prompt: str = initial_task_prompt or ""
+    if not _resolved_initial_prompt and config is not None and hal_mode == "sim":
+        try:
+            _deploy_scene = load_scene_strict(str(config), DeployScene)
+            if _deploy_scene.tasks:
+                _resolved_initial_prompt = " | ".join(_deploy_scene.tasks)
+        except Exception:  # reason: defensive — config may not load as DeployScene (wrong tier)
+            pass
+
     # ADR-0034 — a --robot override that differs from the scene's declared robot
     # composes a different arm than the scene was authored for. The scene's cameras
     # + asset mounts (e.g. tabletop_push's wrist_camera_mount_body="gripper") are
@@ -906,8 +967,18 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # rejects an empty ``name:=`` value; the launch file defaults both to "").
     if reward_monitor_manifest:
         argv_template.append(f"reward_monitor_manifest:={reward_monitor_manifest}")
-    if reward_monitor_task:
-        argv_template.append(f"reward_monitor_task:={reward_monitor_task}")
+    # The reward monitor's always-on critic_score path scores against its
+    # `task` param; an empty task makes `_publish_critic_score` silently skip
+    # every tick (it never scores, never spawns the robometer sidecar). Default
+    # it to the first startup subtask so a deploy with `tasks:`/`--initial-task`
+    # gets a background progress signal out of the box (an explicit
+    # `--reward-monitor-task` still wins; the reasoner's `query_task_progress`
+    # polls already carry the live subtask when it dispatches with a deadline).
+    effective_reward_task = reward_monitor_task
+    if not effective_reward_task and _resolved_initial_prompt:
+        effective_reward_task = _resolved_initial_prompt.split(" | ")[0].strip()
+    if effective_reward_task:
+        argv_template.append(f"reward_monitor_task:={effective_reward_task}")
     # ADR-0056 — only forward the locator list when non-empty (ros2 launch rejects
     # an empty ``name:=`` value; the launch file defaults it to "").
     if resolved_object_detector_locators:
@@ -929,6 +1000,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
         if dataset_license:
             argv_template.append(f"dataset_license:={dataset_license}")
+
+    # ADR-0072 Decision 3b — the deploy memory bundle. ``--memory-dir`` (CLI) wins;
+    # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
+    # launch paths by convention and forward them (each to its consumer's arg).
+    effective_memory_dir = memory_dir
+    if effective_memory_dir is None and config is not None:
+        from openral_core import DeployScene
+
+        effective_memory_dir = DeployScene.from_yaml(str(config)).memory_dir
+    if effective_memory_dir:
+        argv_template.extend(_memory_bundle_launch_args(effective_memory_dir))
+
+    # Multi-task deploy — forward the startup prompt only when non-empty.
+    # The launch file defaults ``initial_task_prompt`` to "" (no prompt),
+    # so omitting it keeps the idle behaviour for deploy scenes without tasks.
+    if _resolved_initial_prompt:
+        argv_template.append(f"initial_task_prompt:={_resolved_initial_prompt}")
 
     return LaunchInvocation(
         robot_id=robot_id,
@@ -952,6 +1040,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         approach_skill_id=approach_skill,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
+        initial_task_prompt=_resolved_initial_prompt,
         argv_template=argv_template,
     )
 
@@ -1143,6 +1232,21 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str, ...] = (
     # GR00T/RLDX weights resident and starves the GPU (~6.5 GiB) of the
     # next run. The cache dir is openral-specific, so this is unambiguous.
     "/.cache/openral/rldx-sidecar/",
+    # Robometer reward sidecar (ADR-0057). Same out-of-process pattern as
+    # rldx: ``reward_monitor_node`` spawns it in its own session, so killpg on
+    # the launch group never reaches it, and it forks one torch-inductor
+    # ``compile_worker`` per CPU. The venv path appears in the server's AND
+    # every compile_worker's cmdline, so this single needle reaps the whole
+    # sidecar tree (~3.3 GiB GPU) if the graceful ``close()`` doesn't run.
+    "/.cache/openral/robometer-sidecar/",
+    # Perception / critic graph nodes spawned by ``sim_e2e.launch.py``. These
+    # were absent from the sweep, so under a heavy graph whose graceful
+    # shutdown doesn't finish within ``grace_s`` they orphaned (the reward
+    # monitor holds the sidecar; the detector holds its model). Scoped to the
+    # in-tree node entry points so we never touch an unrelated process.
+    "openral_perception_ros/reward_monitor_node.py",
+    "openral_perception_ros/ros_image_detector_node.py",
+    "openral_reasoner_ros/critic_producer_node.py",
 )
 
 
@@ -1860,6 +1964,18 @@ def deploy_sim_command(
             "detector is."
         ),
     ),
+    memory_dir: str | None = typer.Option(
+        None,
+        "--memory-dir",
+        help=(
+            "ADR-0072 — path to a deploy memory bundle directory. The reasoner "
+            "loads MEMORY.md (semantic memory + memory_write/search tools) from it; "
+            "if the dir also holds scene_graph.json it preloads the 3D world-state "
+            "graph (recall_object), and if it holds map.yaml a nav2 map_server seeds "
+            "the 2D occupancy grid. The dir must exist (the robot writes MEMORY.md "
+            "into it). Overrides the DeployScene's own memory_dir."
+        ),
+    ),
     dashboard: bool = typer.Option(
         True,
         "--dashboard/--no-dashboard",
@@ -1901,6 +2017,20 @@ def deploy_sim_command(
             "ADR-0059 — Foxglove WebSocket port (ws://127.0.0.1:<port>). "
             "Default 8765 (the foxglove_bridge upstream default). "
             "Ignored unless ``--foxglove`` is set."
+        ),
+    ),
+    initial_task: str | None = typer.Option(
+        None,
+        "--initial-task",
+        help=(
+            "Multi-task deploy — override the startup operator prompt delivered to "
+            "the reasoner at graph activate time. When set, this string is passed as "
+            "``initial_task_prompt`` to the launch (overriding any ``tasks:`` list in "
+            "the DeployScene YAML). Use ``' | '`` to delimit ordered subtasks, e.g. "
+            "``--initial-task 'pick the bowl | place it on the plate'``. When omitted, "
+            "the ``tasks:`` field in the DeployScene YAML is used automatically (joined "
+            "with ' | '). Empty config and no flag = reasoner idles until a manual "
+            "``openral prompt``."
         ),
     ),
     dry_run: bool = typer.Option(
@@ -1946,9 +2076,11 @@ def deploy_sim_command(
             enable_critic=enable_critic,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
+            memory_dir=memory_dir,
             enable_dashboard=dashboard,
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
+            initial_task_prompt=initial_task,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
@@ -2022,6 +2154,15 @@ def deploy_sim_command(
         )
     )
     _console.print("  envelope:      synthesised at launch time from robot.yaml (no envelope file)")
+    _console.print(
+        "  startup_prompt: "
+        + (
+            f"[green]{invocation.initial_task_prompt!r}[/green] "
+            "(from DeployScene.tasks; delivered to reasoner at activate)"
+            if invocation.initial_task_prompt
+            else "[dim](none — reasoner idles until openral prompt or dashboard)[/dim]"
+        )
+    )
 
     if dry_run:
         printed = [
