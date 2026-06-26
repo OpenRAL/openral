@@ -295,14 +295,6 @@
       "default": null,
       "title": "Memory Dir"
     },
-    "tasks": {
-      "description": "Ordered natural-language subtasks delivered to the reasoner as an initial operator prompt at ``openral deploy sim`` startup. Each entry is one atomic goal; the CLI joins them with ' | ' as a single multi-task prompt the reasoner decomposes into :class:`ExecuteRskillTool` calls. Empty (default) = no startup prompt; the reasoner idles until an operator sends a prompt via ``openral prompt`` or the dashboard.",
-      "items": {
-        "type": "string"
-      },
-      "title": "Tasks",
-      "type": "array"
-    },
     "task": {
       "$ref": "#/$defs/TaskSpec"
     },
