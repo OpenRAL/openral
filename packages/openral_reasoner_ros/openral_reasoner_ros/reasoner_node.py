@@ -85,6 +85,15 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
+from openral_reasoner.completion import (
+    COMPLETION_QUESTION as _COMPLETION_QUESTION,
+)
+from openral_reasoner.completion import (
+    image_msg_to_jpeg as _image_msg_to_jpeg,
+)
+from openral_reasoner.completion import (
+    parse_yes_no as _parse_yes_no,
+)
 from openral_reasoner.context import (
     ContextRenderer,
     ExecutionEventRecord,
@@ -208,6 +217,17 @@ _QOS_MAP = QoSProfile(
     depth=1,
     reliability=QoSReliabilityPolicy.RELIABLE,
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+)
+
+# ADR-0074 §5 — BEST_EFFORT sensor QoS for the completion-camera frame cache.
+# One-frame keep-last: the adjudicator always sees the most recent frame; older
+# frames are dropped rather than queued. VOLATILE means no history replay (the
+# verification window is the present moment, not a historical one).
+_QOS_COMPLETION_CAMERA = QoSProfile(
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.VOLATILE,
 )
 
 # Closed sets from ADR-0018 §3 / capability review §3.
@@ -600,6 +620,20 @@ class ReasonerNode(LifecycleNode):
         # Cached client for the query_task_progress service; created lazily.
         self._query_task_progress_client: Any = None
 
+        # ADR-0074 §5 — completion-camera topic for VLM adjudication.
+        # When set to a non-empty string, on_configure subscribes sensor_msgs/Image
+        # on this topic (BEST_EFFORT, VOLATILE, depth=1) and caches the latest frame
+        # as JPEG bytes in `_latest_completion_frame` for `_adjudicate_completion`.
+        # Empty string disables the subscription (no hidden camera subscription).
+        self.declare_parameter("completion_camera_topic", "/openral/cameras/top/image")
+
+        # ADR-0074 §5 — tool-use client handle (mirrors the one held by ReasonerCore)
+        # so the completion gate can call describe_image without reaching into the core.
+        # Set in on_configure; cleared in on_cleanup.
+        self._tool_use_client: ToolUseClient | None = None
+        # Latest completion frame as JPEG bytes; None until the first camera message.
+        self._latest_completion_frame: bytes | None = None
+
         # Populated by on_configure.
         self._renderer: ContextRenderer = ContextRenderer()
         self._world_state_msg: Any = None
@@ -670,6 +704,10 @@ class ReasonerNode(LifecycleNode):
             self.get_logger().error(f"on_configure: {exc}")
             return TransitionCallbackReturn.FAILURE
 
+        # ADR-0074 §5 — hold the client on the node so the VLM adjudication gate
+        # can call describe_image without reaching into ReasonerCore internals.
+        self._tool_use_client = client
+
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
         # robot-context system prompt (option B) reflects the capabilities
         # loaded from ``robot_yaml``. Nothing between here and then dispatches
@@ -705,6 +743,33 @@ class ReasonerNode(LifecycleNode):
             self._on_prompt,
             _QOS_PROMPT,
         )
+
+        # ADR-0074 §5 — completion-camera subscription (BEST_EFFORT sensor QoS).
+        # sensor_msgs/Image ships with every ROS 2 install but is gated like
+        # nav_msgs above so a stripped environment degrades to "no frame cache"
+        # instead of failing configure. An empty topic param disables the sub.
+        completion_camera_topic = (
+            self.get_parameter("completion_camera_topic").get_parameter_value().string_value
+        )
+        if completion_camera_topic:
+            try:
+                from sensor_msgs.msg import (
+                    Image as _IDLImage,  # reason: ROS IDL import gated like the others above
+                )
+            except ImportError:
+                self.get_logger().warning(
+                    "sensor_msgs is unavailable; completion-camera adjudication disabled"
+                )
+            else:
+                self.create_subscription(
+                    _IDLImage,
+                    completion_camera_topic,
+                    self._on_completion_camera,
+                    _QOS_COMPLETION_CAMERA,
+                )
+                self.get_logger().info(
+                    f"on_configure: completion-camera subscribed on {completion_camera_topic!r}"
+                )
 
         # ADR-0044 Phase 4 — latched occupancy grid for approach refinement.
         # nav_msgs ships with every ROS 2 base install, but gate like the
@@ -841,6 +906,9 @@ class ReasonerNode(LifecycleNode):
         self._core = None
         self._occupancy_grid = None
         self._renderer = ContextRenderer()
+        # ADR-0074 §5 — clear the VLM client handle and frame cache on cleanup.
+        self._tool_use_client = None
+        self._latest_completion_frame = None
         for timer in list(self._pending_skill_deadlines.values()):
             with contextlib.suppress(Exception):
                 timer.cancel()
@@ -884,6 +952,98 @@ class ReasonerNode(LifecycleNode):
                 f"occupancy grid online ({msg.info.width}x{msg.info.height} @ "
                 f"{msg.info.resolution:.3f} m) — recall_object approaches are now grid-refined"
             )
+
+    def _on_completion_camera(self, msg: Any) -> None:
+        """Cache the latest camera frame as JPEG bytes for VLM adjudication (ADR-0074 §5).
+
+        Converts ``sensor_msgs/Image`` to JPEG using numpy + PIL (no cv_bridge).
+        Supports ``"rgb8"`` and ``"bgr8"`` encodings. On any decode failure the
+        cache is left unchanged so the next successful frame recovers silently —
+        a decode error must not raise into the rclpy executor.
+        """
+        try:
+            jpeg = _image_msg_to_jpeg(
+                data=bytes(msg.data),
+                height=int(msg.height),
+                width=int(msg.width),
+                encoding=str(msg.encoding),
+            )
+        except Exception as exc:  # reason: never raise in a topic callback
+            self.get_logger().debug(f"completion-camera: decode failed, cache unchanged: {exc}")
+            return
+        self._latest_completion_frame = jpeg
+
+    def _adjudicate_completion(self, task_text: str) -> bool | None:
+        """Ask the VLM whether ``task_text`` is complete in the latest camera frame.
+
+        Returns ``True`` (complete), ``False`` (not complete), or ``None``
+        (could not adjudicate — no frame cached or no multimodal client).
+        ``None`` degrades to the ladder (ADR-0074 §6 no-VLM path). A provider
+        or transport error is logged and returns ``None`` — never a false ``True``.
+
+        Args:
+            task_text: The active task description shown to the VLM.
+        """
+        if self._latest_completion_frame is None:
+            self.get_logger().debug(
+                "adjudicate_completion: no frame cached — cannot adjudicate; treating as no"
+            )
+            return None
+        if self._tool_use_client is None:
+            self.get_logger().debug(
+                "adjudicate_completion: no VLM client — cannot adjudicate; treating as no"
+            )
+            return None
+        question = _COMPLETION_QUESTION.format(task=task_text)
+        try:
+            answer = self._tool_use_client.describe_image(
+                image_jpeg=self._latest_completion_frame,
+                question=question,
+            )
+        except Exception as exc:  # reason: provider errors must not block the loop
+            self.get_logger().warning(
+                f"adjudicate_completion: describe_image raised — treating as no: {exc}"
+            )
+            return None
+        result = _parse_yes_no(answer)
+        self.get_logger().debug(
+            f"adjudicate_completion: answer={answer!r} → {'yes' if result else 'no'}"
+        )
+        return result
+
+    def _complete_active_and_advance(
+        self,
+        active: TaskState,
+        verdict: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Mark the active task done and advance the mission queue (DRY helper).
+
+        Shared by the native ``"complete"`` verdict branch and the
+        VLM-confirmed ``"vlm_check"`` branch of
+        :meth:`_on_mission_verify_response`. Calls
+        ``advance_mission(done=True)``, resets the per-kind tick streak when
+        a next task is activated, emits the mission-complete summary when the
+        queue drains, and forces a Tier-C tick.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        nxt = self._renderer.advance_mission(done=True, verdict=verdict)
+        if nxt is not None:
+            if self._core is not None:
+                self._core.reset_kind_streak()
+            self.get_logger().info(
+                f"mission: task {active.task_id} done ✓ ({verdict}); "
+                f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
+            )
+        else:
+            self.get_logger().info(
+                f"mission: task {active.task_id} done ✓ ({verdict}); MISSION COMPLETE",
+            )
+            self._emit_mission_complete(mission, traceparent=traceparent)
+        self._on_tick(force=True, tier="C")
 
     def _on_failure(self, source: str, msg: Any) -> None:
         """Append a failure event; preempt per the ADR-0018 trigger taxonomy.
@@ -2261,7 +2421,7 @@ class ReasonerNode(LifecycleNode):
             f"(attempt {active.attempts})",
         )
 
-    def _on_mission_verify_response(
+    def _on_mission_verify_response(  # noqa: PLR0911, PLR0912  # reason: one return per verdict branch — a flat dispatch table is clearer than collapsing the branches
         self, task_text: str, future: Any, *, traceparent: str | None
     ) -> None:
         """Apply the reward gate (ADR-0073 §2): complete / abandon / retry.
@@ -2292,12 +2452,36 @@ class ReasonerNode(LifecycleNode):
             check_floor=_DEFAULT_CHECK_FLOOR,
             attempts=active.attempts,
         )
-        if action in ("retry", "vlm_check"):
-            # TODO(ADR-0074 gate task 4): vlm_check should call describe_image for
-            # adjudication before falling back to retry; wiring lands in the next gate
-            # task (needs frame acquisition).
+        if action == "vlm_check":
+            # ADR-0074 §5 — ambiguous reward band: ask the VLM whether the task is
+            # visually complete. True → advance as if "complete"; False/None → degrade
+            # to the ladder (same code path as action == "retry"). Never false-complete:
+            # None (no frame / no client) is treated as "not done".
+            verdict_vlm = self._adjudicate_completion(active.text)
+            if verdict_vlm is True:
+                self.get_logger().info(
+                    f"mission verify: VLM confirmed complete (success={resp.success_now:.2f})"
+                )
+                self._complete_active_and_advance(active, verdict, traceparent=traceparent)
+                return
+            if verdict_vlm is False:
+                self.get_logger().info(
+                    f"mission verify: VLM says not complete ({verdict}) — falling to ladder"
+                )
+            else:
+                self.get_logger().info(
+                    f"mission verify: could not adjudicate ({verdict}) — falling to ladder"
+                )
+            # Degrade to ladder: treat as retry for this attempt.
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             self._on_tick(force=True, tier="C")
+            return
+        if action == "retry":
+            self.get_logger().info(f"mission verify: {verdict} — retrying active task")
+            self._on_tick(force=True, tier="C")
+            return
+        if action == "complete":
+            self._complete_active_and_advance(active, verdict, traceparent=traceparent)
             return
         if action == "abandon" and _should_offer_subdivision(
             active, self._subdivide_offered, DEFAULT_MAX_SUBDIVIDE_DEPTH
@@ -2319,9 +2503,8 @@ class ReasonerNode(LifecycleNode):
             self._emit_subdivision_invite(active, verdict, traceparent=traceparent)
             self._on_tick(force=True, tier="C")
             return
-        done = action == "complete"
-        nxt = self._renderer.advance_mission(done=done, verdict=verdict)
-        label = "done ✓" if done else "abandoned ✗"
+        # action == "abandon" (no subdivision offer): advance with done=False.
+        nxt = self._renderer.advance_mission(done=False, verdict=verdict)
         if nxt is not None:
             # A new active task is a fresh goal — clear the per-kind tick streak so
             # the next task isn't suppressed by `retry_cap` for re-using the same
@@ -2330,12 +2513,12 @@ class ReasonerNode(LifecycleNode):
             if self._core is not None:
                 self._core.reset_kind_streak()
             self.get_logger().info(
-                f"mission: task {active.task_id} {label} ({verdict}); "
+                f"mission: task {active.task_id} abandoned ✗ ({verdict}); "
                 f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
             )
         else:
             self.get_logger().info(
-                f"mission: task {active.task_id} {label} ({verdict}); MISSION COMPLETE",
+                f"mission: task {active.task_id} abandoned ✗ ({verdict}); MISSION COMPLETE",
             )
             self._emit_mission_complete(mission, traceparent=traceparent)
         self._on_tick(force=True, tier="C")
