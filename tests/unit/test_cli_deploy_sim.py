@@ -1807,8 +1807,15 @@ def test_deploy_sim_dry_run_libero_shows_startup_prompt() -> None:
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["deploy", "sim", "--config", str(_LIBERO_PNP_CONFIG),
-         "--initial-task", "pick the bowl and place it on the plate", "--dry-run"],
+        [
+            "deploy",
+            "sim",
+            "--config",
+            str(_LIBERO_PNP_CONFIG),
+            "--initial-task",
+            "pick the bowl and place it on the plate",
+            "--dry-run",
+        ],
     )
     assert result.exit_code == 0, result.output
     # The rich summary block must mention the startup prompt
