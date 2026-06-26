@@ -220,8 +220,9 @@ class _SmolVLAAdapter:
         for k, v in list(batch.items()):
             if not hasattr(v, "device") or getattr(v, "device", None) is None:
                 continue
-            if str(v.device) != self.device and not str(v.device).startswith(device_kind):
-                v = v.to(self.device)
+            tensor = v
+            if str(tensor.device) != self.device and not str(tensor.device).startswith(device_kind):
+                tensor = tensor.to(self.device)
             # Cast image inputs to the bf16 backbone dtype (float32 image × bf16
             # vision weight raises "mat1 and mat2 must have the same dtype").
             # state / everything else stays float32 to match the float32 action
@@ -231,12 +232,12 @@ class _SmolVLAAdapter:
             if (
                 self._image_dtype is not None
                 and "image" in k
-                and hasattr(v, "is_floating_point")
-                and v.is_floating_point()
-                and v.dtype != self._image_dtype
+                and hasattr(tensor, "is_floating_point")
+                and tensor.is_floating_point()
+                and tensor.dtype != self._image_dtype
             ):
-                v = v.to(self._image_dtype)
-            batch[k] = v
+                tensor = tensor.to(self._image_dtype)
+            batch[k] = tensor
 
         action_tensor = run_inference(self._policy, batch)
         action_tensor = self._postprocessor(action_tensor)
@@ -300,6 +301,75 @@ class _SmolVLAAdapter:
             batch["observation.state"] = torch.from_numpy(state_np).unsqueeze(0).to(self.device)
 
         return batch
+
+
+def _resolve_smolvla_processors(
+    manifest: Any, repo_id: str, policy: Any, make_pre_post_processors: Any
+) -> tuple[Any, Any]:
+    """Build the lerobot pre/post processors for a SmolVLA policy.
+
+    Per-file download from ``manifest.processors`` (never a whole-repo
+    snapshot). ``materialize_processor_dir`` symlinks the two URI targets
+    under the filenames ``make_pre_post_processors`` reads from a pretrained_path.
+
+    Community finetunes routinely upload only ``config.json`` +
+    ``model.safetensors`` (no ``policy_*processor.json``). On a 404 from
+    ``materialize_processor_dir``, fall back to building processors from the
+    training dataset's normalization stats — ``manifest.dataset_uri`` points at
+    the LeRobotDataset (v3 ``meta/stats.json`` or v2.1
+    ``meta/episodes_stats.jsonl``). The resulting processors are functionally
+    identical to what the trainer would have saved.
+    """
+    pretrained_path: str | None = None
+    dataset_stats: dict[str, dict[str, Any]] | None = None
+    _missing_reason: BaseException | None = None
+    with _smolvla_phase("processor_dir", repo=repo_id):
+        try:
+            pretrained_path = materialize_processor_dir(manifest)
+        except _PROCESSOR_MISSING_EXC as exc:
+            _missing_reason = exc
+        except ROSConfigError as exc:
+            if not _is_processor_missing(exc):
+                raise
+            _missing_reason = exc
+
+        if _missing_reason is not None:
+            _log.warning(
+                "smolvla_processor_files_missing_falling_back_to_dataset_stats",
+                repo_id=repo_id,
+                dataset_uri=manifest.dataset_uri,
+                exc=str(_missing_reason),
+            )
+            if not manifest.dataset_uri:
+                raise ROSConfigError(
+                    f"SmolVLA adapter: {repo_id} ships no policy_preprocessor.json "
+                    "/ policy_postprocessor.json and the manifest has no "
+                    "`dataset_uri` to recompute the normalization stats from. "
+                    "Either upload the processor pair to the model repo or set "
+                    "`dataset_uri: hf://<owner>/<dataset>` on the manifest so "
+                    "the adapter can rebuild them locally."
+                ) from _missing_reason
+            dataset_stats = _load_lerobot_dataset_stats(manifest.dataset_uri)
+    with _smolvla_phase("make_processors"):
+        if pretrained_path is not None:
+            # Pretrained-path branch: `call_make_processors_cached_first`
+            # peeks at the preprocessor JSON for a TokenizerProcessorStep
+            # and flips HF_HUB_OFFLINE for the duration of the inner call
+            # so lerobot's unconditional `AutoTokenizer.from_pretrained`
+            # doesn't fire 5 HEAD round-trips against a warm tokenizer
+            # cache on every reload.
+            return call_make_processors_cached_first(
+                make_pre_post_processors,
+                policy.config,
+                pretrained_path=pretrained_path,
+            )
+        # Stats-fallback branch: no preprocessor JSON on disk → no
+        # tokenizer step to warm-cache. Drop straight into the lerobot
+        # factory so it builds the pipeline from scratch.
+        return make_pre_post_processors(
+            policy.config,
+            dataset_stats=dataset_stats,
+        )
 
 
 @POLICIES.register("smolvla")
@@ -379,68 +449,9 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     apply_chunk_replay(policy, spec.extra, manifest=manifest)
     maybe_compile_chunk_forward(policy, spec.extra, device, torch)
 
-    # Per-file download from manifest.processors (no snapshot_download).
-    # `materialize_processor_dir` symlinks the two URI targets under the
-    # filenames `make_pre_post_processors` reads from a pretrained_path.
-    #
-    # Community finetunes routinely upload only `config.json` +
-    # `model.safetensors` (no `policy_*processor.json`). On a 404 from
-    # `materialize_processor_dir`, fall back to building processors from
-    # the training dataset's normalization stats — manifest.dataset_uri
-    # points at the LeRobotDataset (v3 `meta/stats.json` or v2.1
-    # `meta/episodes_stats.jsonl`). The resulting processors are
-    # functionally identical to what the trainer would have saved.
-    pretrained_path: str | None = None
-    dataset_stats: dict[str, dict[str, Any]] | None = None
-    _missing_reason: BaseException | None = None
-    with _smolvla_phase("processor_dir", repo=repo_id):
-        try:
-            pretrained_path = materialize_processor_dir(manifest)
-        except _PROCESSOR_MISSING_EXC as exc:
-            _missing_reason = exc
-        except ROSConfigError as exc:
-            if not _is_processor_missing(exc):
-                raise
-            _missing_reason = exc
-
-        if _missing_reason is not None:
-            _log.warning(
-                "smolvla_processor_files_missing_falling_back_to_dataset_stats",
-                repo_id=repo_id,
-                dataset_uri=manifest.dataset_uri,
-                exc=str(_missing_reason),
-            )
-            if not manifest.dataset_uri:
-                raise ROSConfigError(
-                    f"SmolVLA adapter: {repo_id} ships no policy_preprocessor.json "
-                    "/ policy_postprocessor.json and the manifest has no "
-                    "`dataset_uri` to recompute the normalization stats from. "
-                    "Either upload the processor pair to the model repo or set "
-                    "`dataset_uri: hf://<owner>/<dataset>` on the manifest so "
-                    "the adapter can rebuild them locally."
-                ) from _missing_reason
-            dataset_stats = _load_lerobot_dataset_stats(manifest.dataset_uri)
-    with _smolvla_phase("make_processors"):
-        if pretrained_path is not None:
-            # Pretrained-path branch: `call_make_processors_cached_first`
-            # peeks at the preprocessor JSON for a TokenizerProcessorStep
-            # and flips HF_HUB_OFFLINE for the duration of the inner call
-            # so lerobot's unconditional `AutoTokenizer.from_pretrained`
-            # doesn't fire 5 HEAD round-trips against a warm tokenizer
-            # cache on every reload.
-            preprocessor, postprocessor = call_make_processors_cached_first(
-                make_pre_post_processors,
-                policy.config,
-                pretrained_path=pretrained_path,
-            )
-        else:
-            # Stats-fallback branch: no preprocessor JSON on disk → no
-            # tokenizer step to warm-cache. Drop straight into the lerobot
-            # factory so it builds the pipeline from scratch.
-            preprocessor, postprocessor = make_pre_post_processors(
-                policy.config,
-                dataset_stats=dataset_stats,
-            )
+    preprocessor, postprocessor = _resolve_smolvla_processors(
+        manifest, repo_id, policy, make_pre_post_processors
+    )
 
     # Manifest-first resolution (no auto-derive). LIBERO checkpoints whose
     # manifests don't declare `aliases: {camera1: image, camera2: image2}`

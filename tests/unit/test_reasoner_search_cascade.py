@@ -20,7 +20,7 @@ import pytest
 pytest.importorskip("rclpy")
 pytest.importorskip("openral_msgs")
 
-from openral_core import (  # noqa: E402
+from openral_core import (
     EmitPromptTool,
     ExecuteRskillTool,
     LocateInViewTool,
@@ -28,8 +28,8 @@ from openral_core import (  # noqa: E402
     RecallObjectTool,
     ResolvePlaceTool,
 )
-from openral_reasoner.active_search import SearchBudget, SearchProgress  # noqa: E402
-from openral_reasoner_ros.reasoner_node import _resets_search_episode  # noqa: E402
+from openral_reasoner.active_search import SearchBudget, SearchProgress
+from openral_reasoner_ros.reasoner_node import _resets_search_episode
 
 
 def test_search_actions_do_not_reset_the_cascade() -> None:

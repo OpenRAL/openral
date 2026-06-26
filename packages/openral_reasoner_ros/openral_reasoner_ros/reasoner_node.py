@@ -1593,6 +1593,53 @@ class ReasonerNode(LifecycleNode):
 
     # ── tick + dispatch ─────────────────────────────────────────────────────
 
+    def _handle_suppressed_tick(self, result: Any) -> None:
+        """Log a suppressed tick and reflect on an exhausted retry streak.
+
+        `min_interval` fires every fractional second and would spam at INFO;
+        `heartbeat_idle` is the steady-state on a quiet system (one suppression
+        per heartbeat period); both stay at DEBUG. Everything else is rare and
+        operationally important — `retry_cap` in particular used to be silent
+        and left operators wondering why their prompt did nothing.
+        """
+        if result.suppressed_reason in ("min_interval", "heartbeat_idle"):
+            self.get_logger().debug(f"tick suppressed: {result.suppressed_reason}")
+        elif result.suppressed_reason == "retry_cap":
+            # Warn once per streak, not every heartbeat — otherwise this
+            # floods the log while the model keeps re-picking the same tool.
+            if not self._retry_cap_warned:
+                self._retry_cap_warned = True
+                cap = self._core._retry_cap if self._core is not None else "N"
+                self.get_logger().warning(
+                    f"tick suppressed: retry_cap — same tool kind {cap}+ ticks in a row. "
+                    "A new operator prompt resets the streak; otherwise it self-clears "
+                    "when the model picks a different tool. (Repeats logged at debug.)",
+                )
+                # ADR-0072 §2.3 — inject a Reflexion strategy hint into context
+                # (once per streak) so the NEXT tick changes approach instead of
+                # looping. Appending bumps `seq`, so the next heartbeat runs
+                # rather than being suppressed as idle.
+                if self._core is not None:
+                    tool = self._core._kind_streak[0]
+                    self._renderer.append_execution(
+                        ExecutionEventRecord(
+                            rskill_id="(ladder)",
+                            outcome="failed",
+                            summary=f"retry ladder exhausted for {tool!r}",
+                            reflection=reflect_on_retry_cap(tool, self._core._retry_cap),
+                            stamp_ns=self.get_clock().now().nanoseconds,
+                        )
+                    )
+            else:
+                self.get_logger().debug("tick suppressed: retry_cap (ongoing streak)")
+            # An ongoing retry_cap streak keeps the one-shot latch set.
+            return
+        else:
+            self.get_logger().info(f"tick suppressed: {result.suppressed_reason}")
+        # Any suppression other than an ongoing retry_cap streak clears the
+        # one-shot latch so the next streak warns again.
+        self._retry_cap_warned = False
+
     def _on_tick(self, *, force: bool = False, tier: str = "heartbeat") -> None:
         """Run one orchestrator pass and dispatch the selected tool call.
 
@@ -1640,49 +1687,7 @@ class ReasonerNode(LifecycleNode):
             tier=tier,
         )
         if result.suppressed_reason:
-            # `min_interval` fires every fractional second and would
-            # spam at INFO; `heartbeat_idle` is the steady-state on a
-            # quiet system (one suppression per heartbeat period); both
-            # stay at DEBUG. Everything else is rare and operationally
-            # important — `retry_cap` in particular used to be silent
-            # and left operators wondering why their prompt did
-            # nothing.
-            if result.suppressed_reason in ("min_interval", "heartbeat_idle"):
-                self.get_logger().debug(f"tick suppressed: {result.suppressed_reason}")
-            elif result.suppressed_reason == "retry_cap":
-                # Warn once per streak, not every heartbeat — otherwise this
-                # floods the log while the model keeps re-picking the same tool.
-                if not self._retry_cap_warned:
-                    self._retry_cap_warned = True
-                    cap = self._core._retry_cap if self._core is not None else "N"
-                    self.get_logger().warning(
-                        f"tick suppressed: retry_cap — same tool kind {cap}+ ticks in a row. "
-                        "A new operator prompt resets the streak; otherwise it self-clears "
-                        "when the model picks a different tool. (Repeats logged at debug.)",
-                    )
-                    # ADR-0072 §2.3 — inject a Reflexion strategy hint into context
-                    # (once per streak) so the NEXT tick changes approach instead of
-                    # looping. Appending bumps `seq`, so the next heartbeat runs
-                    # rather than being suppressed as idle.
-                    if self._core is not None:
-                        tool = self._core._kind_streak[0]
-                        self._renderer.append_execution(
-                            ExecutionEventRecord(
-                                rskill_id="(ladder)",
-                                outcome="failed",
-                                summary=f"retry ladder exhausted for {tool!r}",
-                                reflection=reflect_on_retry_cap(tool, self._core._retry_cap),
-                                stamp_ns=self.get_clock().now().nanoseconds,
-                            )
-                        )
-                else:
-                    self.get_logger().debug("tick suppressed: retry_cap (ongoing streak)")
-                return
-            else:
-                self.get_logger().info(f"tick suppressed: {result.suppressed_reason}")
-            # Any suppression other than an ongoing retry_cap streak clears the
-            # one-shot latch so the next streak warns again.
-            self._retry_cap_warned = False
+            self._handle_suppressed_tick(result)
             return
         # A tick that was not suppressed (dispatch, error, or no-op) breaks any
         # retry_cap streak — clear the latch so a future streak warns again.

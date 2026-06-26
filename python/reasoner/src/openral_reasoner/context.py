@@ -28,8 +28,9 @@ from openral_core import (
     RobotDescription,
     WorldState,
 )
-from openral_reasoner.mission import MissionState, TaskState
 from pydantic import TypeAdapter
+
+from openral_reasoner.mission import MissionState, TaskState
 
 __all__ = [
     "DEFAULT_BUFFER_SIZE",

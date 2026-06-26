@@ -38,18 +38,27 @@ def test_auto_map_modules_collects_from_all_configs(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "config.json",
-        {"auto_map": {"AutoConfig": "configuration_molmoact2.MolmoAct2Config",
-                      "AutoModelForCausalLM": "modeling_molmoact2.MolmoAct2ForConditionalGeneration"}},
+        {
+            "auto_map": {
+                "AutoConfig": "configuration_molmoact2.MolmoAct2Config",
+                "AutoModelForCausalLM": "modeling_molmoact2.MolmoAct2ForConditionalGeneration",
+            }
+        },
     )
     _write(
         tmp_path,
         "processor_config.json",
-        {"auto_map": {
-            "AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
-            "AutoImageProcessor": ["image_processing_molmoact2.Slow", "image_processing_molmoact2.Fast"],
-            "AutoVideoProcessor": "video_processing_molmoact2.MolmoAct2VideoProcessor",
-            "AutoFeatureExtractor": None,
-        }},
+        {
+            "auto_map": {
+                "AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
+                "AutoImageProcessor": [
+                    "image_processing_molmoact2.Slow",
+                    "image_processing_molmoact2.Fast",
+                ],
+                "AutoVideoProcessor": "video_processing_molmoact2.MolmoAct2VideoProcessor",
+                "AutoFeatureExtractor": None,
+            }
+        },
     )
     assert quantize_rskill._auto_map_modules(tmp_path) == {
         "configuration_molmoact2.py",
@@ -66,13 +75,15 @@ def test_verify_raises_on_missing_auto_map_module(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "processor_config.json",
-        {"auto_map": {
-            "AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
-            "AutoVideoProcessor": "video_processing_molmoact2.MolmoAct2VideoProcessor",
-        }},
+        {
+            "auto_map": {
+                "AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
+                "AutoVideoProcessor": "video_processing_molmoact2.MolmoAct2VideoProcessor",
+            }
+        },
     )
     (tmp_path / "processing_molmoact2.py").write_text("# present")
-    with pytest.raises(RuntimeError, match="video_processing_molmoact2.py"):
+    with pytest.raises(RuntimeError, match=r"video_processing_molmoact2\.py"):
         quantize_rskill._verify_auto_map_complete(tmp_path)
 
 
@@ -80,8 +91,12 @@ def test_verify_passes_when_all_modules_present(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "processor_config.json",
-        {"auto_map": {"AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
-                      "AutoVideoProcessor": "video_processing_molmoact2.X"}},
+        {
+            "auto_map": {
+                "AutoProcessor": "processing_molmoact2.MolmoAct2Processor",
+                "AutoVideoProcessor": "video_processing_molmoact2.X",
+            }
+        },
     )
     for stem in ("processing_molmoact2", "video_processing_molmoact2"):
         (tmp_path / f"{stem}.py").write_text("# present")

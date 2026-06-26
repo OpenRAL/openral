@@ -55,7 +55,7 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> 
         def __init__(self, **_kwargs: object) -> None:
             self.chat = SimpleNamespace(completions=SimpleNamespace(create=_create))
 
-    import openai  # noqa: PLC0415  # reason: network-boundary double
+    import openai  # reason: network-boundary double
 
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
 

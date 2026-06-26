@@ -58,7 +58,9 @@ def _build(max_steps: int):
         max_steps=max_steps,
     )
     env_cfg = SimEnvironment(
-        scene=scene, task=task, vla=VLASpec(id="zero", weights_uri="local://none"),
+        scene=scene,
+        task=task,
+        vla=VLASpec(id="zero", weights_uri="local://none"),
         robot_id="franka_panda",
     )
     return _build_libero_scene(env_cfg)

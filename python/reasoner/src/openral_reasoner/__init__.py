@@ -70,11 +70,11 @@ from openral_reasoner.tool_use import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_SYSTEM_PROMPT",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
     "AnthropicToolUseClient",
-    "DEFAULT_MAX_ATTEMPTS",
     "ContextRenderer",
     "CriticWatchdog",
     "CriticWatchdogGroup",

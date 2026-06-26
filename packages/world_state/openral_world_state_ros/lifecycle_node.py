@@ -217,7 +217,12 @@ if _ROS2_AVAILABLE:
             self._tick_count = 0
             # ADR-0018 F8 — heartbeat.
             self._heartbeat: object | None = None
-            # ADR-0035 — object lift state.
+            self._init_lift_state()
+
+            self.get_logger().info("WorldState node initialised.")
+
+        def _init_lift_state(self) -> None:
+            """Zero the ADR-0035 object-lift runtime state (set up on_configure)."""
             self._lift_enabled = False
             self._tf_buffer: object | None = None
             self._tf_listener: object | None = None
@@ -237,8 +242,6 @@ if _ROS2_AVAILABLE:
             self._seen_sensor_ids: set[str] = set()
             self._map_frame = "map"
             self._voxel_staleness_ns = 0
-
-            self.get_logger().info("WorldState node initialised.")
 
         @log_lifecycle_errors
         def on_configure(self, state: object) -> TransitionCallbackReturn:
@@ -536,8 +539,6 @@ if _ROS2_AVAILABLE:
             shape mirror :meth:`DeployRunner._tick_impl`'s sensor read
             so a single dashboard consumer handles both topologies.
             """
-            import time
-
             from openral_core.schemas import FrameEncoding, SensorFrame
             from openral_observability import producer as ral_producer
             from openral_observability import semconv
