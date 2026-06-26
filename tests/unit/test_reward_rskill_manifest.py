@@ -54,23 +54,31 @@ def _ordered_range(draw: st.DrawFn) -> tuple[float, float]:
     return (lo, lo + span)
 
 
-_reward_contract_st = st.builds(
-    RewardContract,
-    progress_range=_ordered_range(),
-    success_threshold=_prob,
-    preference=st.booleans(),
-    frame_window_s=_pos,
-    target_fps=_pos,
-    num_bins=_pos_int,
-    instruction_required=st.booleans(),
-)
+@st.composite
+def _reward_contract_st(draw: st.DrawFn) -> RewardContract:
+    # check_floor ≤ success_threshold is a model invariant (ADR-0074), so draw
+    # the threshold first and the floor within [0, threshold].
+    success_threshold = draw(_prob)
+    check_floor = draw(
+        st.floats(allow_nan=False, allow_infinity=False, min_value=0.0, max_value=success_threshold)
+    )
+    return RewardContract(
+        progress_range=draw(_ordered_range()),
+        success_threshold=success_threshold,
+        check_floor=check_floor,
+        preference=draw(st.booleans()),
+        frame_window_s=draw(_pos),
+        target_fps=draw(_pos),
+        num_bins=draw(_pos_int),
+        instruction_required=draw(st.booleans()),
+    )
 
 
 # ─── RewardContract fuzz ──────────────────────────────────────────────────────
 
 
 @_FUZZ_SETTINGS
-@given(_reward_contract_st)
+@given(_reward_contract_st())
 def test_fuzz_reward_contract(instance: RewardContract) -> None:
     """RewardContract round-trips through JSON and validates against its schema."""
     import json
