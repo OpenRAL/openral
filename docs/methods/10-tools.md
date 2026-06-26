@@ -14,9 +14,9 @@ _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.facto
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L134)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L146)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L199)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L138)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L150)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L203)
 
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a pytest test); 1 episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table. See `just sim-audit`. Two modes: default (full rollout for sim/benchmark, Tier-2 launch + SIGINT for deploy) and `--check-compatibility` (cheap in-process scene+rSkill+HAL gate, no subprocess / no GPU)._

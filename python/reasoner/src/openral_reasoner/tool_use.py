@@ -32,6 +32,7 @@ exclusively in tests.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Mapping
@@ -452,6 +453,29 @@ class ToolUseClient(Protocol):
                 a rskill_id outside the palette.
             ROSPlanningError: For any other provider-side failure
                 (timeout, transport error, malformed response).
+        """
+
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask the model a free-text question about a single camera frame.
+
+        Encodes ``image_jpeg`` as base64 and sends ONE chat/messages
+        request with the image + ``question`` as user content; returns
+        the model's text answer (stripped). No tool-use, no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame (e.g.
+                "Is the cup placed on the coaster?").
+
+        Returns:
+            The model's text answer, stripped of leading/trailing
+            whitespace.  For reasoning models that surface their answer
+            in a ``reasoning`` field with an empty ``content``, the
+            ``reasoning`` text is returned instead.
+
+        Raises:
+            ROSConfigError: When the SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
         """
 
 
@@ -1159,6 +1183,65 @@ class AnthropicToolUseClient:
             "Anthropic response did not contain a tool_use block",
         )
 
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask the Anthropic model a free-text question about a camera frame.
+
+        Sends one ``messages.create`` request with a base64-encoded image
+        content block and the question; returns the text answer.  No tool-use,
+        no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame.
+
+        Returns:
+            Model's text answer, stripped.  Falls back to the ``reasoning``
+            field when ``content`` is empty (thinking-mode models).
+
+        Raises:
+            ROSConfigError: When the ``anthropic`` SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+        try:
+            import anthropic  # noqa: PLC0415  # reason: optional cloud dep
+        except ImportError as exc:
+            raise ROSConfigError(
+                "AnthropicToolUseClient requires the `anthropic` SDK; "
+                "install with `uv add anthropic --package openral-reasoner`.",
+            ) from exc
+        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        b64 = base64.b64encode(image_jpeg).decode()
+        try:
+            response = client.messages.create(
+                model=self.model_id,
+                max_tokens=self._max_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": b64,
+                                },
+                            },
+                            {"type": "text", "text": question},
+                        ],
+                    }
+                ],
+            )
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"Anthropic describe_image failed: {exc!s}") from exc
+        # Extract text; fall back to reasoning field for thinking/reasoning models.
+        text: str = ""
+        if response.content:
+            text = getattr(response.content[0], "text", "") or ""
+        if not text:
+            text = getattr(response, "reasoning", "") or ""
+        return text.strip()
+
 
 class OpenAICompatibleToolUseClient:
     """OpenAI-compatible SDK-backed :class:`ToolUseClient`.
@@ -1283,3 +1366,61 @@ class OpenAICompatibleToolUseClient:
             arguments=arguments,
             palette=palette,
         )
+
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask an OpenAI-compatible model a free-text question about a frame.
+
+        Sends one ``chat.completions.create`` request with the question as a
+        text block and the image as an ``image_url`` data-URI block; returns
+        the text answer.  No tool-use, no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame.
+
+        Returns:
+            Model's text answer, stripped.  Falls back to the ``reasoning``
+            field when ``message.content`` is empty (observed with reasoning
+            models such as ``z-ai/glm-5.2`` on OpenRouter).
+
+        Raises:
+            ROSConfigError: When the ``openai`` SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+        try:
+            from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
+        except ImportError as exc:
+            raise ROSConfigError(
+                "OpenAICompatibleToolUseClient requires the `openai` SDK; "
+                "install with `uv add openai --package openral-reasoner`.",
+            ) from exc
+        client = OpenAI(
+            api_key=self._api_key or "local",
+            base_url=self._base_url,
+            timeout=self._timeout_s,
+        )
+        b64 = base64.b64encode(image_jpeg).decode()
+        messages: list[dict[str, object]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    },
+                ],
+            }
+        ]
+        try:
+            response = client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,  # type: ignore[arg-type]  # reason: provider SDK boundary — image_url content blocks use heterogeneous TypedDicts that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
+            )
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc
+        message = response.choices[0].message
+        text: str = message.content or ""
+        if not text:
+            text = getattr(message, "reasoning", "") or ""
+        return text.strip()

@@ -45,10 +45,12 @@ __all__ = [
     "evaluate_task_verdict",
 ]
 
-VerdictAction = Literal["complete", "abandon", "retry"]
+VerdictAction = Literal["complete", "abandon", "retry", "vlm_check"]
 """What the reward gate decides for the active task after a skill returns
-(ADR-0073 §2): ``complete`` (verified), ``abandon`` (ladder exhausted), or
-``retry`` (try again — keep the task active)."""
+(ADR-0073 §2 / ADR-0074 Decision 5): ``complete`` (auto-pass, score ≥
+success_threshold), ``vlm_check`` (ambiguous band — caller must adjudicate via
+``describe_image``), ``abandon`` (ladder exhausted), or ``retry`` (try again —
+keep the task active)."""
 
 DEFAULT_MAX_ATTEMPTS: int = 3
 """Default per-task attempt cap before the reward gate abandons + hands off."""
@@ -67,33 +69,58 @@ subdivide forever."""
 def evaluate_task_verdict(
     *,
     ok: bool,
-    succeeded: bool,
     success_now: float,
+    success_threshold: float,
+    check_floor: float,
     attempts: int,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> tuple[VerdictAction, str]:
-    """Pure reward-gate decision for the active task (ADR-0073 §2).
+    """Pure reward-gate decision for the active task (ADR-0073 §2 / ADR-0074 Decision 5).
 
-    Decides whether a just-returned skill verified the active task. Inputs mirror
-    the reward monitor's ``QueryTaskProgress`` response (``ok``, ``succeeded`` =
-    ``success_now >= success_threshold`` over the window, ``success_now``) plus the
-    task's attempt count. The window already smooths per-frame noise, so
-    ``succeeded`` is the dwell-equivalent gate; no fake success is ever returned
-    when the reward is unavailable (the caller handles ``ok=False`` upstream).
+    Three-tier verdict over the raw critic score when the reward is available
+    (``ok=True``):
+
+    1. ``success_now >= success_threshold`` → ``"complete"`` — high-confidence
+       auto-pass; no VLM call needed.
+    2. ``check_floor <= success_now < success_threshold`` → ``"vlm_check"`` — the
+       ambiguous band; the **caller** must adjudicate by calling ``describe_image``
+       (ADR-0074). This function only signals the need — it never performs the call.
+    3. ``success_now < check_floor`` → falls to the existing attempts ladder:
+       ``"abandon"`` once ``attempts >= max_attempts``, else ``"retry"``.
+
+    ``ok=False`` (reward unavailable / stale): no tier evaluation; goes directly to
+    the attempts ladder so reward errors never produce a spurious completion.
+
+    The caller is assumed to pass ``check_floor <= success_threshold``; the
+    ``RewardContract`` validator guarantees this upstream — no re-validation here.
 
     Returns ``(action, verdict_text)`` where ``verdict_text`` is the short
     human-readable note recorded on the task.
 
     Example:
-        >>> evaluate_task_verdict(ok=True, succeeded=True, success_now=0.91, attempts=1)
+        >>> evaluate_task_verdict(
+        ...     ok=True, success_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
+        ... )
         ('complete', 'success=0.91')
-        >>> evaluate_task_verdict(ok=True, succeeded=False, success_now=0.40, attempts=1)[0]
+        >>> evaluate_task_verdict(
+        ...     ok=True, success_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
+        ... )[0]
+        'vlm_check'
+        >>> evaluate_task_verdict(
+        ...     ok=True, success_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=1
+        ... )[0]
         'retry'
-        >>> evaluate_task_verdict(ok=True, succeeded=False, success_now=0.40, attempts=3)[0]
+        >>> evaluate_task_verdict(
+        ...     ok=True, success_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=3
+        ... )[0]
         'abandon'
     """
-    if ok and succeeded:
-        return "complete", f"success={success_now:.2f}"
+    if ok:
+        if success_now >= success_threshold:
+            return "complete", f"success={success_now:.2f}"
+        if success_now >= check_floor:
+            return "vlm_check", f"ambiguous={success_now:.2f}; VLM adjudicates"
+    # ok=False or success_now < check_floor: attempts ladder
     if attempts >= max_attempts:
         return "abandon", f"unverified after {attempts} attempt(s) (success={success_now:.2f})"
     return "retry", f"not verified (success={success_now:.2f}), attempt {attempts}/{max_attempts}"

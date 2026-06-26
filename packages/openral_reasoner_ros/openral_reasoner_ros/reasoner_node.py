@@ -76,6 +76,7 @@ from openral_core import (
     RecallObjectTool,
     ReloadGstPipelineTool,
     ResolvePlaceTool,
+    RewardContract,
     RobotCapabilities,
     RobotDescription,
     RSkillManifest,
@@ -85,6 +86,24 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
+from openral_reasoner.completion import (
+    COMPLETION_QUESTION as _COMPLETION_QUESTION,
+)
+from openral_reasoner.completion import (
+    image_msg_to_jpeg as _image_msg_to_jpeg,
+)
+from openral_reasoner.completion import (
+    is_reward_wake as _is_reward_wake,
+)
+from openral_reasoner.completion import (
+    parse_yes_no as _parse_yes_no,
+)
+from openral_reasoner.completion import (
+    resolve_band_edges as _resolve_band_edges,
+)
+from openral_reasoner.completion import (
+    resolve_patience_s as _resolve_patience_s,
+)
 from openral_reasoner.context import (
     ContextRenderer,
     ExecutionEventRecord,
@@ -210,6 +229,17 @@ _QOS_MAP = QoSProfile(
     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
 )
 
+# ADR-0074 §5 — BEST_EFFORT sensor QoS for the completion-camera frame cache.
+# One-frame keep-last: the adjudicator always sees the most recent frame; older
+# frames are dropped rather than queued. VOLATILE means no history replay (the
+# verification window is the present moment, not a historical one).
+_QOS_COMPLETION_CAMERA = QoSProfile(
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
+    durability=QoSDurabilityPolicy.VOLATILE,
+)
+
 # Closed sets from ADR-0018 §3 / capability review §3.
 # `rskill` was renamed from `skill` on 2026-05-25 (ADR-0018 amendment §5)
 # for consistency with the carried `rskill_id` field.
@@ -226,9 +256,19 @@ _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
 )
 
 # ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
-# Matches the reward_monitor's default rolling window so `succeeded` reflects the
-# end-of-attempt state, not a single frame.
+# Matches the reward_monitor's default rolling window so the windowed score
+# reflects the end-of-attempt state, not a single frame.
 _MISSION_VERIFY_WINDOW_S: float = 8.0
+
+# ADR-0074 Decision 5 — three-tier verdict band edges + the patience ceiling.
+# These are the SYSTEM FALLBACK in the authority stack (system < reward-model
+# calibrated default < LLM per-task override): used only when no reward manifest
+# is wired (``reward_manifest_path`` unset). When a reward model is active the
+# node reads the live ``RewardContract`` (``_reward_contract``) instead — see
+# ``_band_edges`` / ``_effective_patience_s``. The values mirror the robometer
+# rskill.yaml reward block so a fallback matches today's deploy default.
+_DEFAULT_SUCCESS_THRESHOLD: float = 0.8
+_DEFAULT_CHECK_FLOOR: float = 0.5
 
 # FailureTrigger constants — IDL-mirror per openral_observability.failure_bus
 # (kept inline rather than importing the helper so the reasoner_node can
@@ -594,6 +634,47 @@ class ReasonerNode(LifecycleNode):
         # Cached client for the query_task_progress service; created lazily.
         self._query_task_progress_client: Any = None
 
+        # ADR-0074 §1/§3 — the active reward model's manifest (same path the
+        # reward_monitor_node loads). When set, the node reads its
+        # ``RewardContract`` calibration (band edges + default patience) and uses
+        # it in place of the module-level system fallbacks. A bad path degrades
+        # to the fallbacks (logged) rather than failing node construction.
+        self._reward_contract: RewardContract | None = None
+        self.declare_parameter("reward_manifest_path", "")
+        reward_manifest_path = (
+            self.get_parameter("reward_manifest_path").get_parameter_value().string_value
+        )
+        if reward_manifest_path:
+            try:
+                self._reward_contract = RSkillManifest.from_yaml(reward_manifest_path).reward
+            except Exception as exc:  # reason: bad manifest must not block startup
+                self.get_logger().warning(
+                    f"reward_manifest_path={reward_manifest_path!r} failed to load "
+                    f"({type(exc).__name__}: {exc}); using system-default band edges + patience",
+                )
+            else:
+                if self._reward_contract is not None:
+                    self.get_logger().info(
+                        "reward calibration: success_threshold="
+                        f"{self._reward_contract.success_threshold:.2f} "
+                        f"check_floor={self._reward_contract.check_floor:.2f} "
+                        f"default_patience_s={self._reward_contract.default_patience_s:.0f}",
+                    )
+
+        # ADR-0074 §5 — completion-camera topic for VLM adjudication.
+        # When set to a non-empty string, on_configure subscribes sensor_msgs/Image
+        # on this topic (BEST_EFFORT, VOLATILE, depth=1) and caches the latest frame
+        # as JPEG bytes in `_latest_completion_frame` for `_adjudicate_completion`.
+        # Empty string disables the subscription (no hidden camera subscription).
+        self.declare_parameter("completion_camera_topic", "/openral/cameras/top/image")
+
+        # ADR-0074 §5 — tool-use client handle (mirrors the one held by ReasonerCore)
+        # so the completion gate can call describe_image without reaching into the core.
+        # Set in on_configure; cleared in on_cleanup.
+        self._tool_use_client: ToolUseClient | None = None
+        # Latest completion frame as JPEG bytes; None until the first camera message.
+        self._latest_completion_frame: bytes | None = None
+
         # Populated by on_configure.
         self._renderer: ContextRenderer = ContextRenderer()
         self._world_state_msg: Any = None
@@ -634,6 +715,15 @@ class ReasonerNode(LifecycleNode):
         # the result callback can cancel the deadline timer when the
         # action server returns before deadline_s elapses.
         self._pending_skill_deadlines: dict[bytes, Any] = {}
+        # ADR-0074 §2 — the in-flight execute_rskill goal so a reward-watcher
+        # wake can cancel it (stop the VLA now, verify on the reward signal,
+        # not at the deadline clock). Tuple of (goal_handle, call, traceparent);
+        # set on goal-accept, cleared on the terminal result. ``cancel_reason``
+        # is ``"reward"`` while a reward-driven cancel is in flight so the
+        # canceled result re-enters the verify gate (vs an operator/estop
+        # cancel, which stays a no-op).
+        self._active_rskill_goal: tuple[Any, ExecuteRskillTool, str | None] | None = None
+        self._rskill_cancel_reason: str | None = None
         self._dispatched_calls: list[Any] = []  # for tests/observability
 
     # ── lifecycle transitions ───────────────────────────────────────────────
@@ -663,6 +753,10 @@ class ReasonerNode(LifecycleNode):
         except ROSConfigError as exc:
             self.get_logger().error(f"on_configure: {exc}")
             return TransitionCallbackReturn.FAILURE
+
+        # ADR-0074 §5 — hold the client on the node so the VLM adjudication gate
+        # can call describe_image without reaching into ReasonerCore internals.
+        self._tool_use_client = client
 
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
         # robot-context system prompt (option B) reflects the capabilities
@@ -699,6 +793,33 @@ class ReasonerNode(LifecycleNode):
             self._on_prompt,
             _QOS_PROMPT,
         )
+
+        # ADR-0074 §5 — completion-camera subscription (BEST_EFFORT sensor QoS).
+        # sensor_msgs/Image ships with every ROS 2 install but is gated like
+        # nav_msgs above so a stripped environment degrades to "no frame cache"
+        # instead of failing configure. An empty topic param disables the sub.
+        completion_camera_topic = (
+            self.get_parameter("completion_camera_topic").get_parameter_value().string_value
+        )
+        if completion_camera_topic:
+            try:
+                from sensor_msgs.msg import (
+                    Image as _IDLImage,  # reason: ROS IDL import gated like the others above
+                )
+            except ImportError:
+                self.get_logger().warning(
+                    "sensor_msgs is unavailable; completion-camera adjudication disabled"
+                )
+            else:
+                self.create_subscription(
+                    _IDLImage,
+                    completion_camera_topic,
+                    self._on_completion_camera,
+                    _QOS_COMPLETION_CAMERA,
+                )
+                self.get_logger().info(
+                    f"on_configure: completion-camera subscribed on {completion_camera_topic!r}"
+                )
 
         # ADR-0044 Phase 4 — latched occupancy grid for approach refinement.
         # nav_msgs ships with every ROS 2 base install, but gate like the
@@ -835,6 +956,9 @@ class ReasonerNode(LifecycleNode):
         self._core = None
         self._occupancy_grid = None
         self._renderer = ContextRenderer()
+        # ADR-0074 §5 — clear the VLM client handle and frame cache on cleanup.
+        self._tool_use_client = None
+        self._latest_completion_frame = None
         for timer in list(self._pending_skill_deadlines.values()):
             with contextlib.suppress(Exception):
                 timer.cancel()
@@ -879,6 +1003,98 @@ class ReasonerNode(LifecycleNode):
                 f"{msg.info.resolution:.3f} m) — recall_object approaches are now grid-refined"
             )
 
+    def _on_completion_camera(self, msg: Any) -> None:
+        """Cache the latest camera frame as JPEG bytes for VLM adjudication (ADR-0074 §5).
+
+        Converts ``sensor_msgs/Image`` to JPEG using numpy + PIL (no cv_bridge).
+        Supports ``"rgb8"`` and ``"bgr8"`` encodings. On any decode failure the
+        cache is left unchanged so the next successful frame recovers silently —
+        a decode error must not raise into the rclpy executor.
+        """
+        try:
+            jpeg = _image_msg_to_jpeg(
+                data=bytes(msg.data),
+                height=int(msg.height),
+                width=int(msg.width),
+                encoding=str(msg.encoding),
+            )
+        except Exception as exc:  # reason: never raise in a topic callback
+            self.get_logger().debug(f"completion-camera: decode failed, cache unchanged: {exc}")
+            return
+        self._latest_completion_frame = jpeg
+
+    def _adjudicate_completion(self, task_text: str) -> bool | None:
+        """Ask the VLM whether ``task_text`` is complete in the latest camera frame.
+
+        Returns ``True`` (complete), ``False`` (not complete), or ``None``
+        (could not adjudicate — no frame cached or no multimodal client).
+        ``None`` degrades to the ladder (ADR-0074 §6 no-VLM path). A provider
+        or transport error is logged and returns ``None`` — never a false ``True``.
+
+        Args:
+            task_text: The active task description shown to the VLM.
+        """
+        if self._latest_completion_frame is None:
+            self.get_logger().debug(
+                "adjudicate_completion: no frame cached — cannot adjudicate; treating as no"
+            )
+            return None
+        if self._tool_use_client is None:
+            self.get_logger().debug(
+                "adjudicate_completion: no VLM client — cannot adjudicate; treating as no"
+            )
+            return None
+        question = _COMPLETION_QUESTION.format(task=task_text)
+        try:
+            answer = self._tool_use_client.describe_image(
+                image_jpeg=self._latest_completion_frame,
+                question=question,
+            )
+        except Exception as exc:  # reason: provider errors must not block the loop
+            self.get_logger().warning(
+                f"adjudicate_completion: describe_image raised — treating as no: {exc}"
+            )
+            return None
+        result = _parse_yes_no(answer)
+        self.get_logger().debug(
+            f"adjudicate_completion: answer={answer!r} → {'yes' if result else 'no'}"
+        )
+        return result
+
+    def _complete_active_and_advance(
+        self,
+        active: TaskState,
+        verdict: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Mark the active task done and advance the mission queue (DRY helper).
+
+        Shared by the native ``"complete"`` verdict branch and the
+        VLM-confirmed ``"vlm_check"`` branch of
+        :meth:`_on_mission_verify_response`. Calls
+        ``advance_mission(done=True)``, resets the per-kind tick streak when
+        a next task is activated, emits the mission-complete summary when the
+        queue drains, and forces a Tier-C tick.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        nxt = self._renderer.advance_mission(done=True, verdict=verdict)
+        if nxt is not None:
+            if self._core is not None:
+                self._core.reset_kind_streak()
+            self.get_logger().info(
+                f"mission: task {active.task_id} done ✓ ({verdict}); "
+                f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
+            )
+        else:
+            self.get_logger().info(
+                f"mission: task {active.task_id} done ✓ ({verdict}); MISSION COMPLETE",
+            )
+            self._emit_mission_complete(mission, traceparent=traceparent)
+        self._on_tick(force=True, tier="C")
+
     def _on_failure(self, source: str, msg: Any) -> None:
         """Append a failure event; preempt per the ADR-0018 trigger taxonomy.
 
@@ -903,9 +1119,76 @@ class ReasonerNode(LifecycleNode):
             stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
         )
         self._renderer.append_failure(record)
+        # ADR-0074 §2 — a reward-watcher wake (critic FAIL) while a VLA is in
+        # flight is the *primary* stop: cancel the attempt now so the verify
+        # gate runs on the reward signal rather than burning the rest of the
+        # deadline clock. The canceled result re-enters
+        # ``_maybe_verify_active_mission_task`` (the three-tier / VLM gate),
+        # which forces the next full-palette tick. When no goal is in flight
+        # (e.g. between tasks) the wake falls through to the ordinary preempt.
+        if (
+            _is_reward_wake(source=source, severity=record.severity, severity_fail=_SEVERITY_FAIL)
+            and self._active_rskill_goal is not None
+            and self._rskill_cancel_reason != "reward"
+        ):
+            self._cancel_inflight_rskill_for_reward()
+            return
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
+
+    def _band_edges(self) -> tuple[float, float]:
+        """Three-tier verdict band edges from the active reward calibration (ADR-0074 §1/§5).
+
+        Thin adapter over :func:`openral_reasoner.completion.resolve_band_edges`
+        — the live ``RewardContract`` when wired, else the system fallback.
+        """
+        c = self._reward_contract
+        return _resolve_band_edges(
+            contract_threshold=c.success_threshold if c is not None else None,
+            contract_floor=c.check_floor if c is not None else None,
+            fallback_threshold=_DEFAULT_SUCCESS_THRESHOLD,
+            fallback_floor=_DEFAULT_CHECK_FLOOR,
+        )
+
+    def _effective_patience_s(self, call: ExecuteRskillTool) -> float:
+        """Patience ceiling for a dispatch (ADR-0074 §2/§3).
+
+        Thin adapter over :func:`openral_reasoner.completion.resolve_patience_s`
+        (LLM ``patience_s`` override > reward-model ``default_patience_s`` >
+        legacy ``deadline_s``). The result is sent as the goal's ``deadline_s``
+        (the runner's backstop) and arms the reasoner-side timer; the
+        reward-watcher is the usual stop.
+        """
+        c = self._reward_contract
+        return _resolve_patience_s(
+            override=call.patience_s,
+            contract_default=c.default_patience_s if c is not None else None,
+            legacy_deadline_s=call.deadline_s,
+        )
+
+    def _cancel_inflight_rskill_for_reward(self) -> None:
+        """Cancel the in-flight execute_rskill goal on a reward-watcher wake (ADR-0074 §2).
+
+        Sets ``_rskill_cancel_reason = "reward"`` so the canceled result runs
+        the verify gate (a reward-ended attempt), then requests the cancel. A
+        failed cancel request is non-fatal — the deadline timer is still the
+        backstop and the result callback fires regardless, with the reason
+        already latched.
+        """
+        assert self._active_rskill_goal is not None
+        goal_handle, call, _traceparent = self._active_rskill_goal
+        self._rskill_cancel_reason = "reward"
+        self.get_logger().info(
+            f"reward wake: cancelling in-flight execute_rskill {call.rskill_id!r} "
+            "to verify on the reward signal (ADR-0074 §2)",
+        )
+        try:
+            goal_handle.cancel_goal_async()
+        except Exception as exc:  # reason: cancel is best-effort; deadline backstops it
+            self.get_logger().error(
+                f"reward-cancel cancel_goal_async failed: {type(exc).__name__}: {exc}",
+            )
 
     def _on_perception(self, kind: str, msg: Any) -> None:
         """Append a perception event; no preemption — perception is informational."""
@@ -2255,7 +2538,7 @@ class ReasonerNode(LifecycleNode):
             f"(attempt {active.attempts})",
         )
 
-    def _on_mission_verify_response(
+    def _on_mission_verify_response(  # noqa: PLR0911, PLR0912  # reason: one return per verdict branch — a flat dispatch table is clearer than collapsing the branches
         self, task_text: str, future: Any, *, traceparent: str | None
     ) -> None:
         """Apply the reward gate (ADR-0073 §2): complete / abandon / retry.
@@ -2277,15 +2560,46 @@ class ReasonerNode(LifecycleNode):
         active = mission.active()
         if active is None or active.text != task_text:
             return  # the mission advanced or changed under us; stale verdict
+        # ADR-0074 §1/§5 — band edges from the active reward model's calibration
+        # (or the system fallback when none is wired).
+        success_threshold, check_floor = self._band_edges()
         action, verdict = evaluate_task_verdict(
             ok=bool(resp.ok),
-            succeeded=bool(resp.succeeded),
             success_now=float(resp.success_now),
+            success_threshold=success_threshold,
+            check_floor=check_floor,
             attempts=active.attempts,
         )
+        if action == "vlm_check":
+            # ADR-0074 §5 — ambiguous reward band: ask the VLM whether the task is
+            # visually complete. True → advance as if "complete"; False/None → degrade
+            # to the ladder (same code path as action == "retry"). Never false-complete:
+            # None (no frame / no client) is treated as "not done".
+            verdict_vlm = self._adjudicate_completion(active.text)
+            if verdict_vlm is True:
+                self.get_logger().info(
+                    f"mission verify: VLM confirmed complete (success={resp.success_now:.2f})"
+                )
+                self._complete_active_and_advance(active, verdict, traceparent=traceparent)
+                return
+            if verdict_vlm is False:
+                self.get_logger().info(
+                    f"mission verify: VLM says not complete ({verdict}) — falling to ladder"
+                )
+            else:
+                self.get_logger().info(
+                    f"mission verify: could not adjudicate ({verdict}) — falling to ladder"
+                )
+            # Degrade to ladder: treat as retry for this attempt.
+            self.get_logger().info(f"mission verify: {verdict} — retrying active task")
+            self._on_tick(force=True, tier="C")
+            return
         if action == "retry":
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             self._on_tick(force=True, tier="C")
+            return
+        if action == "complete":
+            self._complete_active_and_advance(active, verdict, traceparent=traceparent)
             return
         if action == "abandon" and _should_offer_subdivision(
             active, self._subdivide_offered, DEFAULT_MAX_SUBDIVIDE_DEPTH
@@ -2307,9 +2621,8 @@ class ReasonerNode(LifecycleNode):
             self._emit_subdivision_invite(active, verdict, traceparent=traceparent)
             self._on_tick(force=True, tier="C")
             return
-        done = action == "complete"
-        nxt = self._renderer.advance_mission(done=done, verdict=verdict)
-        label = "done ✓" if done else "abandoned ✗"
+        # action == "abandon" (no subdivision offer): advance with done=False.
+        nxt = self._renderer.advance_mission(done=False, verdict=verdict)
         if nxt is not None:
             # A new active task is a fresh goal — clear the per-kind tick streak so
             # the next task isn't suppressed by `retry_cap` for re-using the same
@@ -2318,12 +2631,12 @@ class ReasonerNode(LifecycleNode):
             if self._core is not None:
                 self._core.reset_kind_streak()
             self.get_logger().info(
-                f"mission: task {active.task_id} {label} ({verdict}); "
+                f"mission: task {active.task_id} abandoned ✗ ({verdict}); "
                 f"advancing → {nxt.task_id}={nxt.text[:60]!r}",
             )
         else:
             self.get_logger().info(
-                f"mission: task {active.task_id} {label} ({verdict}); MISSION COMPLETE",
+                f"mission: task {active.task_id} abandoned ✗ ({verdict}); MISSION COMPLETE",
             )
             self._emit_mission_complete(mission, traceparent=traceparent)
         self._on_tick(force=True, tier="C")
@@ -2654,7 +2967,11 @@ class ReasonerNode(LifecycleNode):
         # any. Wrapped-ROS adapters merge ``goal_params_json`` over
         # their manifest's ``default_goal_json`` at configure-time.
         goal.goal_params_json = call.goal_params_json
-        goal.deadline_s = float(call.deadline_s)
+        # ADR-0074 §2/§3 — the goal's ``deadline_s`` slot now carries the resolved
+        # patience ceiling (LLM override > reward-model default > legacy deadline_s);
+        # it is the runner's backstop, not the usual stop (the reward-watcher is).
+        patience_s = self._effective_patience_s(call)
+        goal.deadline_s = patience_s
         sent_at = time.monotonic()
         send_future = self._execute_rskill_client.send_goal_async(
             goal,
@@ -2665,7 +2982,7 @@ class ReasonerNode(LifecycleNode):
         )
         self.get_logger().info(
             f"dispatch: execute_rskill rskill_id={call.rskill_id!r} prompt={call.prompt!r} "
-            f"deadline_s={call.deadline_s}",
+            f"patience_s={patience_s:.0f} (backstop; reward-watcher is the usual stop)",
         )
 
     def _free_vram_peers_then_send(
@@ -2861,9 +3178,18 @@ class ReasonerNode(LifecycleNode):
             self._reactivate_vram_peers()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
-        if call.deadline_s > 0:
+        # ADR-0074 §2 — remember the in-flight goal so a reward-watcher wake can
+        # cancel it. Cleared on the terminal result. A new dispatch overwrites a
+        # stale handle (the runner serves one goal at a time).
+        self._active_rskill_goal = (goal_handle, call, traceparent)
+        self._rskill_cancel_reason = None
+        # ADR-0074 §2/§3 — arm the reasoner-side backstop at the resolved patience
+        # (matches the goal's deadline_s sent to the runner). 0 → the runner owns
+        # the ceiling (manifest latency budget); no reasoner-side timer.
+        patience_s = self._effective_patience_s(call)
+        if patience_s > 0:
             self._pending_skill_deadlines[goal_id] = self.create_timer(
-                float(call.deadline_s),
+                patience_s,
                 lambda: self._on_execute_rskill_deadline(
                     call=call,
                     sent_at=sent_at,
@@ -2888,6 +3214,12 @@ class ReasonerNode(LifecycleNode):
         # policy's VRAM is released; restore the GPU peers (detector) we froze
         # for it. Runs before any early return below so it always fires.
         self._reactivate_vram_peers()
+        # ADR-0074 §2 — the goal is terminal: drop the in-flight handle and read
+        # (then clear) the cancel reason so a reward-driven cancel verifies below
+        # while an operator/estop cancel stays a no-op.
+        self._active_rskill_goal = None
+        cancel_reason = self._rskill_cancel_reason
+        self._rskill_cancel_reason = None
         timer = self._pending_skill_deadlines.pop(goal_id, None)
         if timer is not None:
             timer.cancel()
@@ -2937,6 +3269,17 @@ class ReasonerNode(LifecycleNode):
             # active mission task against the reward signal before advancing.
             self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
+        # ADR-0074 §2 — a reward-driven cancel (status 5, reason "reward") is an
+        # intentional stop, not a controller fault: the reward-watcher decided
+        # the attempt was over (success/plateau/patience). Verify on the reward
+        # signal — the three-tier / VLM gate completes or advances the ladder —
+        # and skip the KIND_CONTROLLER failure path (no fault to report).
+        if status == 5 and cancel_reason == "reward":
+            self.get_logger().info(
+                f"execute_rskill reward-cancelled rskill_id={call.rskill_id!r} — verifying",
+            )
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            return
         self.get_logger().warning(
             f"execute_rskill failed rskill_id={call.rskill_id!r} status={status} "
             f"reason={result.failure_reason!r}",
@@ -2980,15 +3323,21 @@ class ReasonerNode(LifecycleNode):
         goal_handle: Any,
         traceparent: str | None,
     ) -> None:
-        """Deadline timer callback: cancel goal + emit ``KIND_TIMEOUT``."""
+        """Patience-ceiling backstop (ADR-0074 §2): cancel goal + emit ``KIND_TIMEOUT``.
+
+        Fires only when the reward-watcher did not stop the attempt first — the
+        resolved patience ceiling elapsed. ``deadline_s`` in the log/evidence is
+        that resolved patience (LLM override > reward default > legacy).
+        """
         goal_id = bytes(goal_handle.goal_id.uuid)
         timer = self._pending_skill_deadlines.pop(goal_id, None)
         if timer is not None:
             timer.cancel()
         elapsed = time.monotonic() - sent_at
+        patience_s = self._effective_patience_s(call)
         self.get_logger().warning(
-            f"execute_rskill deadline_s={call.deadline_s} elapsed_s={elapsed:.3f} — "
-            f"emitting KIND_TIMEOUT FailureTrigger and cancelling goal",
+            f"execute_rskill patience ceiling patience_s={patience_s:.0f} "
+            f"elapsed_s={elapsed:.3f} — emitting KIND_TIMEOUT FailureTrigger and cancelling goal",
         )
         try:
             goal_handle.cancel_goal_async()
@@ -3001,7 +3350,7 @@ class ReasonerNode(LifecycleNode):
             rskill_id=call.rskill_id,
             evidence=TimeoutEvidence(
                 operation=f"skill.{call.rskill_id}",
-                deadline_s=float(call.deadline_s),
+                deadline_s=patience_s,
                 elapsed_s=elapsed,
             ),
             traceparent=traceparent,

@@ -41,8 +41,10 @@ def test_rejects_negative_min_delta() -> None:
 
 def test_no_fire_while_above_threshold() -> None:
     wd = _watchdog(threshold=0.5, stall_patience=2)
-    # Steady, flat, but above threshold → never a stall.
-    for _ in range(10):
+    # First above-threshold observation fires success (one-shot, ADR-0074).
+    assert isinstance(wd.observe(0.7), CriticEvidence)
+    # Subsequent flat above-threshold samples → success-latched, no spam.
+    for _ in range(9):
         assert wd.observe(0.7) is None
 
 
@@ -79,13 +81,13 @@ def test_latches_after_firing() -> None:
 def test_recovery_above_threshold_unlatches_and_allows_refire() -> None:
     wd = _watchdog(threshold=0.8, stall_patience=2)
     assert wd.observe(0.3) is None
-    assert isinstance(wd.observe(0.3), CriticEvidence)  # fire
-    assert wd.observe(0.3) is None  # latched
-    # Recovery above threshold clears the latch and the counter.
-    assert wd.observe(0.95) is None
-    # A fresh stall must be able to fire again.
-    assert wd.observe(0.3) is None
-    assert isinstance(wd.observe(0.3), CriticEvidence)  # fires again
+    assert isinstance(wd.observe(0.3), CriticEvidence)  # stall fire
+    assert wd.observe(0.3) is None  # stall-latched
+    # Recovery above threshold: fires success (ADR-0074) AND clears the stall latch.
+    assert isinstance(wd.observe(0.95), CriticEvidence)  # success fire
+    # Sub-threshold dip clears the success latch; a fresh stall must be able to fire.
+    assert wd.observe(0.3) is None  # stall 1
+    assert isinstance(wd.observe(0.3), CriticEvidence)  # stall fires again
 
 
 def test_improvement_resets_stall_counter() -> None:
@@ -146,14 +148,17 @@ def test_group_rejects_bad_params() -> None:
 
 def test_group_watches_critics_independently() -> None:
     g = CriticWatchdogGroup(stall_patience=2)
-    # robometer stalls below its bar; sarm holds above its own bar.
+    # robometer stalls below its bar; sarm is above its own bar on first sample.
     assert g.observe(critic_id="robometer", score=0.3, threshold=0.8) is None
-    assert g.observe(critic_id="sarm", score=0.95, threshold=0.9) is None
+    # sarm's first above-threshold sample fires success (ADR-0074).
+    sarm_ev = g.observe(critic_id="sarm", score=0.95, threshold=0.9)
+    assert isinstance(sarm_ev, CriticEvidence)
+    assert sarm_ev.critic_id == "sarm"
     fired = g.observe(critic_id="robometer", score=0.3, threshold=0.8)
     assert isinstance(fired, CriticEvidence)
     assert fired.critic_id == "robometer"
     assert fired.threshold == pytest.approx(0.8)
-    # sarm, fed only healthy scores, never fires.
+    # sarm, success-latched — subsequent healthy scores return None.
     assert g.observe(critic_id="sarm", score=0.95, threshold=0.9) is None
 
 
@@ -167,16 +172,16 @@ def test_group_creates_watchdogs_lazily() -> None:
 
 def test_group_binds_threshold_on_first_sample() -> None:
     g = CriticWatchdogGroup(stall_patience=1)
-    # First sample binds threshold=0.8; a later sample's 0.2 threshold is ignored.
+    # First sample binds threshold=0.8; score 0.5 < 0.8 → stall (patience=1) fires.
     first = g.observe(critic_id="robometer", score=0.5, threshold=0.8)
     assert isinstance(first, CriticEvidence)
     assert first.threshold == pytest.approx(0.8)
-    # 0.5 would be a *recovery* under threshold=0.2, but the bound 0.8 stands,
-    # so it stays a stall and (after unlatch via reset) still uses 0.8.
+    # After reset the watchdog is recreated with the new threshold from the call.
     g.reset("robometer")
     again = g.observe(critic_id="robometer", score=0.5, threshold=0.2)
-    # reset rebinds → now threshold 0.2 applies and 0.5 is a recovery, no fire.
-    assert again is None
+    # reset rebinds → threshold 0.2 applies; 0.5 >= 0.2 → success fire (ADR-0074).
+    assert isinstance(again, CriticEvidence)
+    assert again.threshold == pytest.approx(0.2)
 
 
 def test_group_reset_single_critic_rebinds() -> None:
