@@ -2609,10 +2609,22 @@ class ReasonerNode(LifecycleNode):
                 self.get_logger().info(
                     f"mission verify: could not adjudicate ({verdict}) — falling to ladder"
                 )
-            # Degrade to ladder: treat as retry for this attempt.
-            self.get_logger().info(f"mission verify: {verdict} — retrying active task")
-            self._on_tick(force=True, tier="C")
-            return
+            # Degrade to the attempts ladder. A reward stuck in the ambiguous band
+            # that the VLM cannot confirm complete must still be *bounded*: re-run
+            # the verdict with ok=False to skip tiers 1/2 and apply the attempts
+            # ladder (abandon once attempts >= max), then fall through to the
+            # retry / abandon handlers below. Without this an ambiguous-band task
+            # retries forever — never abandons, never hands off (CLAUDE.md §3
+            # bounded ladder). ``attempts`` is monotonic thanks to the subdivide
+            # guard, so this terminates.
+            action, verdict = evaluate_task_verdict(
+                ok=False,
+                success_now=float(resp.success_now),
+                success_threshold=success_threshold,
+                check_floor=check_floor,
+                attempts=active.attempts,
+            )
+            # fall through — no return; the action == "retry" / "abandon" blocks below apply
         if action == "retry":
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             self._on_tick(force=True, tier="C")

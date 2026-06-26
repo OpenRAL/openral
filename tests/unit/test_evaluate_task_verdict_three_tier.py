@@ -148,3 +148,26 @@ def test_ok_false_retry_until_exhausted_then_abandon() -> None:
         )[0]
         == "abandon"
     )
+
+
+# ── vlm_check degrade contract (the node bounds an unconfirmed ambiguous task) ─
+# Tier 2 returns vlm_check regardless of attempts; the *node* adjudicates and, when
+# the VLM cannot confirm completion, re-runs the verdict with ok=False to apply the
+# attempts ladder. Without that, an ambiguous-band reward retries forever. These
+# guard the exact composition the node uses so the bound can't silently regress.
+
+
+def test_vlm_declined_in_band_degrades_to_retry_while_attempts_remain() -> None:
+    # Ambiguous score the VLM can't confirm, attempts not yet exhausted → retry.
+    action, _ = evaluate_task_verdict(
+        ok=False, success_now=0.5, success_threshold=0.8, check_floor=0.5, attempts=1
+    )
+    assert action == "retry"
+
+
+def test_vlm_declined_in_band_abandons_once_attempts_exhausted() -> None:
+    # Same ambiguous score, attempts exhausted → abandon (not an infinite loop).
+    action, _ = evaluate_task_verdict(
+        ok=False, success_now=0.5, success_threshold=0.8, check_floor=0.5, attempts=3
+    )
+    assert action == "abandon"
