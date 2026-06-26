@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Tier-C critic producer node (ADR-0064 / observability audit P1 R3).
+"""Tier-C critic producer node (ADR-0064 / ADR-0074 / observability audit P1 R3).
 
 Subscribes the generic ``/openral/critic/score`` topic (``openral_msgs/CriticScore``)
 that reward models publish — the Robometer reward rSkill today (ADR-0057), a
 future SARM, success classifiers — routes each self-describing
 ``(critic_id, score, threshold)`` sample through a
-:class:`~openral_reasoner.CriticWatchdogGroup`, and on a stall publishes a Tier-C
-``FailureTrigger`` (``KIND_CRITIC`` / ``SEVERITY_FAIL``, the emitted
-``CriticEvidence``, ``trace_id`` propagated) on ``/openral/failure/critic`` via
-:class:`~openral_observability.failure_bus.FailureBusPublisher`. The
+:class:`~openral_reasoner.CriticWatchdogGroup`, and on a **stall or success**
+publishes a Tier-C ``FailureTrigger`` (``KIND_CRITIC`` / ``SEVERITY_FAIL``, the
+emitted ``CriticEvidence``, ``trace_id`` propagated) on ``/openral/failure/critic``
+via :class:`~openral_observability.failure_bus.FailureBusPublisher`. The
 ``reasoner_node`` maps that FAIL event onto a forced Tier-C tick
 (``ReasonerCore.tick(force=True, tier="C")``).
+
+A **stall** fires when ``stall_patience`` consecutive sub-threshold,
+non-improving observations accumulate. A **success** fires the first time
+``score >= threshold`` per streak (ADR-0074 reward-watcher), so the reasoner is
+woken the moment an attempt is likely done — not only after a subsequent stall.
 
 The producer keys one watchdog per ``critic_id``, so several reward models share
 the single ``/openral/failure/critic`` source and each fires independently — no
@@ -53,7 +58,7 @@ from rclpy.qos import (
 
 
 class CriticProducerNode(Node):
-    """Watch ``/openral/critic/score`` and emit a Tier-C FailureTrigger on a stall."""
+    """Watch ``/openral/critic/score`` and emit a Tier-C FailureTrigger on a stall or success."""
 
     def __init__(self) -> None:
         """Read params, build the watchdog group + failure-bus publisher, subscribe."""
@@ -84,11 +89,12 @@ class CriticProducerNode(Node):
         self._sub = self.create_subscription(CriticScore, topic, self._on_score, score_qos)
         self.get_logger().info(
             f"critic_producer: watching {topic!r} -> {self._bus.topic} "
-            f"(stall_patience={patience}, min_delta={min_delta})"
+            f"(stall_patience={patience}, min_delta={min_delta}); "
+            f"fires on stall OR success (score >= threshold)"
         )
 
     def _on_score(self, msg: Any) -> None:
-        """Route one CriticScore through the group; publish on a stall."""
+        """Route one CriticScore through the group; publish on a stall or success."""
         evidence = self._group.observe(
             critic_id=msg.critic_id,
             score=float(msg.score),
@@ -104,8 +110,9 @@ class CriticProducerNode(Node):
             evidence=evidence,
             trace_id=msg.trace_id or None,
         )
+        trigger = "success" if evidence.score >= evidence.threshold else "stall"
         self.get_logger().warning(
-            f"critic stall: critic_id={evidence.critic_id!r} "
+            f"critic {trigger}: critic_id={evidence.critic_id!r} "
             f"score={evidence.score:.3f} threshold={evidence.threshold:.3f} "
             f"-> {self._bus.topic} (published={published})"
         )

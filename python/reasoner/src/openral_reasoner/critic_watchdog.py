@@ -1,4 +1,4 @@
-"""Tier-C critic progress-stall watchdog for ``/openral/failure/critic`` (R3).
+"""Tier-C critic progress-stall / success watchdog for ``/openral/failure/critic`` (R3).
 
 The OpenRAL failure bus reserves ``/openral/failure/critic`` for **Tier-C**
 triggers (ADR-0018 §F3 + the 2026-05-25 amendment failure-tier taxonomy:
@@ -9,9 +9,10 @@ goal — emitted no structured signal and the S2 reasoner could not react.
 
 This module ships the **decision core**: :class:`CriticWatchdog`, a pure,
 import-safe state machine (no ``rclpy``) that consumes a stream of per-frame
-progress/critic scores and decides *when* a stall has occurred. It emits the
-real :class:`openral_core.CriticEvidence` (it does **not** invent a schema) so
-a thin ROS node can publish it on the bus unchanged.
+progress/critic scores and decides *when* to wake the reasoner — either because
+progress has **stalled** or because the attempt is **likely done** (success). It
+emits the real :class:`openral_core.CriticEvidence` (it does **not** invent a
+schema) so a thin ROS node can publish it on the bus unchanged.
 
 The score source is intentionally **abstract**: any reward model that emits a
 higher-is-better scalar drives the same watchdog — the Robometer reward rSkill
@@ -28,17 +29,31 @@ Stall semantics (deterministic, fully covered by ``tests/test_critic_watchdog.py
   reset or recovery) and a consecutive-**stall** counter.
 - An observation counts as **progress** iff ``score > best + min_delta`` — it
   strictly beats the running best by more than ``min_delta``. Progress updates
-  ``best``, zeroes the stall counter, and clears the fired latch.
-- An observation with ``score >= threshold`` is a **recovery**: it zeroes the
-  counter and clears the latch (and updates ``best`` when it is also a new
-  best). The task is making/holding acceptable progress, so no stall is owed.
+  ``best``, zeroes the stall counter, and clears the stall latch.
+- An observation with ``score >= threshold`` is a **success/recovery**: it
+  zeroes the stall counter, clears the stall latch (and updates ``best`` when
+  it is also a new best), and fires a one-shot :class:`CriticEvidence` the
+  *first* time per streak (see success semantics below).
 - Otherwise (``score < threshold`` and not progress) the observation is a
   **stall** and increments the counter.
 - When the counter reaches ``stall_patience`` consecutive stalls **and** the
-  watchdog is not already latched, :meth:`observe` returns one
+  watchdog is not already stall-latched, :meth:`observe` returns one
   :class:`CriticEvidence` and **latches** — subsequent stalled observations
-  return ``None`` to avoid spamming the bus. The latch clears only on progress
+  return ``None`` to avoid spamming the bus. The stall latch clears on progress
   or recovery (above threshold), or on :meth:`reset`.
+
+Success semantics (ADR-0074 — reward-watcher wakes the reasoner promptly):
+
+- When ``score >= threshold`` and the **success latch** is not set, :meth:`observe`
+  returns one :class:`CriticEvidence` and sets the success latch.
+- Subsequent samples at or above threshold return ``None`` (one-shot per streak).
+- The success latch clears whenever the score drops back below ``threshold`` (any
+  sub-threshold observation, whether progress or stall) so a new crossing fires
+  again. :meth:`reset` also clears it.
+- If a sample would trigger both a stall fire and a success fire (``score``
+  exactly equals ``threshold`` after exactly ``stall_patience`` stalls), the
+  success path takes precedence because ``is_recovery = score >= threshold`` is
+  checked first.
 
 Intended wiring: a critic producer node subscribes to the generic
 ``/openral/critic/score`` topic (``openral_msgs/CriticScore`` — any reward model
@@ -65,10 +80,15 @@ Example:
     True
     >>> wd.observe(0.4) is None  # stall 2
     True
-    >>> evidence = wd.observe(0.4)  # stall 3 → fire
+    >>> evidence = wd.observe(0.4)  # stall 3 → stall fire
     >>> evidence.kind, evidence.critic_id, evidence.score, evidence.threshold
     ('critic', 'OpenRAL/rskill-robometer-4b', 0.4, 0.8)
-    >>> wd.observe(0.4) is None  # latched — no repeat fire
+    >>> wd.observe(0.4) is None  # stall-latched — no repeat fire
+    True
+    >>> success_ev = wd.observe(0.9)  # crosses threshold → success fire, clears stall latch
+    >>> success_ev.score
+    0.9
+    >>> wd.observe(0.9) is None  # success-latched
     True
 """
 
@@ -78,19 +98,22 @@ from openral_core import CriticEvidence
 
 
 class CriticWatchdog:
-    """Progress-stall decision core for the Tier-C ``critic`` failure source.
+    """Progress-stall / success decision core for the Tier-C ``critic`` failure source.
 
     Pure logic and import-safe (no ``rclpy``): feed one score per frame via
-    :meth:`observe`; it returns a :class:`~openral_core.CriticEvidence` exactly
-    once when a stall trips, then latches until progress recovers. See the
-    module docstring for the precise, deterministic stall semantics and the
-    intended ROS wiring.
+    :meth:`observe`; it returns a :class:`~openral_core.CriticEvidence` once
+    when a stall trips OR once when the score crosses the success threshold —
+    whichever comes first — then latches until the condition clears. See the
+    module docstring for the precise, deterministic stall and success semantics
+    and the intended ROS wiring.
 
     Attributes:
         critic_id: Identifier of the upstream critic (e.g. the Robometer reward
             rSkill id) stamped onto every emitted :class:`CriticEvidence`.
-        threshold: Pass threshold; observations at or above it are recoveries.
-        stall_patience: Consecutive stalled observations required to fire.
+        threshold: Pass threshold; observations at or above it are successes /
+            recoveries; observations below it may eventually stall.
+        stall_patience: Consecutive stalled observations required to fire a
+            stall event.
         min_delta: Minimum strict improvement over the running best for an
             observation to count as progress.
     """
@@ -102,6 +125,7 @@ class CriticWatchdog:
         "_min_delta",
         "_stall_count",
         "_stall_patience",
+        "_success_latched",
         "_threshold",
     )
 
@@ -139,6 +163,7 @@ class CriticWatchdog:
         self._best: float | None = None
         self._stall_count: int = 0
         self._latched: bool = False
+        self._success_latched: bool = False
 
     @property
     def critic_id(self) -> str:
@@ -163,23 +188,54 @@ class CriticWatchdog:
     def observe(self, score: float) -> CriticEvidence | None:
         """Feed one progress/critic score and decide whether to fire.
 
+        Fires a :class:`~openral_core.CriticEvidence` in two mutually exclusive
+        cases (success takes precedence when both would trigger on the same
+        sample):
+
+        * **Success** — ``score >= threshold`` and the success latch is not set:
+          fires once, sets the success latch (cleared when score next drops
+          below threshold or on :meth:`reset`).
+        * **Stall** — ``stall_patience`` consecutive sub-threshold,
+          non-improving observations while the stall latch is not set: fires
+          once, sets the stall latch (cleared on progress, recovery, or
+          :meth:`reset`).
+
         Args:
             score: One frame's progress/critic score (e.g. a Robometer
                 progress estimate ∈ [0, 1]) in the critic's native range.
 
         Returns:
             A :class:`~openral_core.CriticEvidence` carrying this
-            :attr:`critic_id`, ``score`` and :attr:`threshold` exactly once,
-            when ``stall_patience`` consecutive stalled observations accumulate
-            while not already latched; otherwise ``None``. See the module
-            docstring for the full stall semantics.
+            :attr:`critic_id`, ``score`` and :attr:`threshold` on a stall or
+            success fire; ``None`` otherwise. See the module docstring for the
+            full semantics.
         """
         # Progress requires a prior best to beat; the very first observation
         # establishes the baseline and is never itself "progress".
         is_progress = self._best is not None and score > self._best + self._min_delta
         is_recovery = score >= self._threshold
 
-        if is_progress or is_recovery:
+        if is_recovery:
+            # Success / recovery path — score has crossed the pass threshold.
+            if self._best is None or score > self._best:
+                self._best = score
+            self._stall_count = 0
+            self._latched = False  # clear stall latch
+            if not self._success_latched:
+                self._success_latched = True
+                return CriticEvidence(
+                    critic_id=self._critic_id,
+                    score=score,
+                    threshold=self._threshold,
+                )
+            return None
+
+        # Below threshold from here on — clear the success latch so the next
+        # crossing fires again (a dip signals a new attempt / episode).
+        self._success_latched = False
+
+        if is_progress:
+            # Improving but still below threshold — good trajectory, not done.
             if self._best is None or score > self._best:
                 self._best = score
             self._stall_count = 0
@@ -203,12 +259,14 @@ class CriticWatchdog:
         """Clear all state when the reasoner context shifts / a new task starts.
 
         Mirrors :meth:`ReasonerCore.reset_kind_streak`'s rationale. Forgets the
-        running best, zeroes the stall counter, and clears the fired latch, so
-        the next stall starts a fresh patience countdown.
+        running best, zeroes the stall counter, and clears both the stall latch
+        and the success latch, so the next stall and the next success crossing
+        both start fresh.
         """
         self._best = None
         self._stall_count = 0
         self._latched = False
+        self._success_latched = False
 
 
 class CriticWatchdogGroup:
