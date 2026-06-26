@@ -226,9 +226,15 @@ _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
 )
 
 # ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
-# Matches the reward_monitor's default rolling window so `succeeded` reflects the
-# end-of-attempt state, not a single frame.
+# Matches the reward_monitor's default rolling window so the windowed score
+# reflects the end-of-attempt state, not a single frame.
 _MISSION_VERIFY_WINDOW_S: float = 8.0
+
+# ADR-0074 Decision 5 — three-tier verdict defaults.
+# These mirror the robometer rskill.yaml reward block calibrated values.
+# TODO(ADR-0074 gate task 4): read from the active RewardContract instead.
+_DEFAULT_SUCCESS_THRESHOLD: float = 0.8
+_DEFAULT_CHECK_FLOOR: float = 0.5
 
 # FailureTrigger constants — IDL-mirror per openral_observability.failure_bus
 # (kept inline rather than importing the helper so the reasoner_node can
@@ -2279,11 +2285,17 @@ class ReasonerNode(LifecycleNode):
             return  # the mission advanced or changed under us; stale verdict
         action, verdict = evaluate_task_verdict(
             ok=bool(resp.ok),
-            succeeded=bool(resp.succeeded),
             success_now=float(resp.success_now),
+            # TODO(ADR-0074 gate task 4): read success_threshold / check_floor from
+            # the active RewardContract instead of these module-level defaults.
+            success_threshold=_DEFAULT_SUCCESS_THRESHOLD,
+            check_floor=_DEFAULT_CHECK_FLOOR,
             attempts=active.attempts,
         )
-        if action == "retry":
+        if action in ("retry", "vlm_check"):
+            # TODO(ADR-0074 gate task 4): vlm_check should call describe_image for
+            # adjudication before falling back to retry; wiring lands in the next gate
+            # task (needs frame acquisition).
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             self._on_tick(force=True, tier="C")
             return
