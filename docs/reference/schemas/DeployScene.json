@@ -145,7 +145,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Environment-only scene for ``openral deploy run``.\n\nCarries the physics world and optional robot mount. No task, no eval\nconfig \u2014 this is a playground for the full OpenRAL stack.\n\n``composition`` (ADR-0066) lets a deploy scene declare the MJCF composer that\nbuilds its environment (e.g. the openarm tabletop arena: table + cubes +\ndrawer + overview camera) instead of the robot manifest carrying it: the\nrobot manifest describes the robot, the scene describes the scene. ``openral\ndeploy sim`` threads it to the manifest-driven HAL node, which composes the\nMJCF and builds a bare twin off the result. ``None`` = no scene composition\n(a bare-arm twin; cameras come from the robot's own sensor placements).\n\n``tasks`` encodes the ordered list of natural-language subtasks that\n``openral deploy sim`` delivers to the reasoner as an initial operator\nprompt at startup \u2014 no separate ``openral prompt`` invocation required.\nWhen non-empty, the CLI joins them with `` | `` as a multi-task prompt\nthat the reasoner decomposes into ordered :class:`~openral_core.ExecuteRskillTool`\ncalls at its first tick. When empty (the default) the reasoner idles until\nan operator prompt arrives via ``openral prompt`` or the dashboard.\n\nExample::\n\n    tasks:\n      - \"pick the black bowl from the table and place it on the plate\"\n      - \"push the red mug to the back of the counter\"",
+  "description": "Environment-only scene for ``openral deploy run``.\n\nCarries the physics world and optional robot mount. No task, no eval\nconfig \u2014 this is a playground for the full OpenRAL stack.\n\n``composition`` (ADR-0066) lets a deploy scene declare the MJCF composer that\nbuilds its environment (e.g. the openarm tabletop arena: table + cubes +\ndrawer + overview camera) instead of the robot manifest carrying it: the\nrobot manifest describes the robot, the scene describes the scene. ``openral\ndeploy sim`` threads it to the manifest-driven HAL node, which composes the\nMJCF and builds a bare twin off the result. ``None`` = no scene composition\n(a bare-arm twin; cameras come from the robot's own sensor placements).",
   "properties": {
     "scene": {
       "$ref": "#/$defs/SceneSpec"
@@ -195,14 +195,6 @@
       ],
       "default": null,
       "title": "Memory Dir"
-    },
-    "tasks": {
-      "description": "Ordered natural-language subtasks delivered to the reasoner as an initial operator prompt at ``openral deploy sim`` startup. Each entry is one atomic goal; the CLI joins them with ' | ' as a single multi-task prompt the reasoner decomposes into :class:`ExecuteRskillTool` calls. Empty (default) = no startup prompt; the reasoner idles until an operator sends a prompt via ``openral prompt`` or the dashboard.",
-      "items": {
-        "type": "string"
-      },
-      "title": "Tasks",
-      "type": "array"
     }
   },
   "required": [

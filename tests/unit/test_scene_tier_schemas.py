@@ -55,60 +55,18 @@ def test_deploy_scene_minimal():
     assert d.robot_id is None
     assert d.base_pose is None
     assert d.composition is None
-    # tasks defaults to empty list (no startup prompt)
-    assert d.tasks == []
 
 
-def test_deploy_scene_tasks_field_accepts_list():
-    """DeployScene.tasks encodes a multi-task prompt list (backward-compatible addition)."""
+def test_deploy_scene_rejects_tasks_field():
+    """ADR-0073 amendment — deploy goals come from the operator prompt, not the scene."""
+    import pytest
     from openral_core import DeployScene
+    from pydantic import ValidationError
 
-    d = DeployScene.model_validate(
-        {
-            "scene": {"id": "libero_spatial", "backend": "mujoco"},
-            "tasks": [
-                "pick the black bowl and place it on the plate",
-                "push the moka pot to the back of the counter",
-            ],
-        }
-    )
-    assert len(d.tasks) == 2
-    assert d.tasks[0].startswith("pick the black")
-    assert d.tasks[1].startswith("push the moka")
-
-
-def test_deploy_scene_tasks_empty_default():
-    """DeployScene.tasks defaults to [] when omitted (backward-compatible)."""
-    from openral_core import DeployScene
-
-    d = DeployScene.model_validate({"scene": {"id": "libero_spatial", "backend": "mujoco"}})
-    assert d.tasks == []
-
-
-def test_deploy_scene_tasks_json_roundtrip():
-    """DeployScene.tasks survives a JSON round-trip (CLI wire format)."""
-    from openral_core import DeployScene
-
-    tasks = ["pick the butter and place it in the basket"]
-    d = DeployScene.model_validate(
-        {"scene": {"id": "libero_spatial", "backend": "mujoco"}, "tasks": tasks}
-    )
-    restored = DeployScene.model_validate_json(d.model_dump_json())
-    assert restored.tasks == tasks
-
-
-def test_libero_pnp_deploy_scene_loads_with_tasks():
-    """The real libero_pnp DeployScene YAML carries a tasks: block and loads cleanly."""
-    from openral_core import DeployScene
-
-    scene = DeployScene.from_yaml("scenes/deploy/libero_pnp.yaml")
-    assert scene.scene.id == "libero_spatial"
-    # The YAML carries two LIBERO spatial tasks
-    assert len(scene.tasks) == 2
-    # Both tasks are non-empty strings describing pick-and-place goals
-    for task in scene.tasks:
-        assert isinstance(task, str)
-        assert len(task) > 10
+    base = {"scene": {"id": "libero_spatial", "backend": "mujoco"}}
+    DeployScene.model_validate(base)  # valid without tasks
+    with pytest.raises(ValidationError):
+        DeployScene.model_validate({**base, "tasks": ["pick the milk"]})
 
 
 def test_deploy_scene_composition_round_trips():
