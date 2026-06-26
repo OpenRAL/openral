@@ -4686,6 +4686,19 @@
             "mode": {
               "$ref": "#/$defs/DetectorMode",
               "default": "continuous"
+            },
+            "max_side": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Max Side"
             }
           },
           "required": [
