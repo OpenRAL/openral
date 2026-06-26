@@ -15,7 +15,7 @@ from openral_reasoner import (
     evaluate_task_verdict,
     split_mission,
 )
-
+from openral_reasoner.mission import DEFAULT_MAX_SUBDIVIDE_DEPTH
 
 # ── split_mission ────────────────────────────────────────────────────────────
 
@@ -30,7 +30,8 @@ from openral_reasoner import (
         ),
         # The natural-language "…, then …" an operator types (the live test prompt).
         (
-            "stack all the bowls and place them in the drawer, then put the plate on the heating box",
+            "stack all the bowls and place them in the drawer, "
+            "then put the plate on the heating box",
             [
                 "stack all the bowls and place them in the drawer",
                 "put the plate on the heating box",
@@ -177,9 +178,7 @@ def test_taskstate_defaults() -> None:
 
 
 def test_verdict_complete_on_success() -> None:
-    action, verdict = evaluate_task_verdict(
-        ok=True, succeeded=True, success_now=0.91, attempts=1
-    )
+    action, verdict = evaluate_task_verdict(ok=True, succeeded=True, success_now=0.91, attempts=1)
     assert action == "complete"
     assert verdict == "success=0.91"
 
@@ -203,14 +202,118 @@ def test_verdict_abandon_when_attempts_exhausted() -> None:
 def test_verdict_never_completes_without_succeeded_flag() -> None:
     # Even with a high raw score, completion requires the reward monitor's own
     # succeeded flag (success_now >= its threshold). No fake success.
-    action, _ = evaluate_task_verdict(
-        ok=True, succeeded=False, success_now=0.79, attempts=1
-    )
+    action, _ = evaluate_task_verdict(ok=True, succeeded=False, success_now=0.79, attempts=1)
     assert action == "retry"
 
 
 def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
     # ok=False (stale/errored reward) is treated as "not verified": retry until
     # the attempt cap, then abandon — never an accidental complete.
-    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=1)[0] == "retry"
-    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=3)[0] == "abandon"
+    assert (
+        evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=1)[0] == "retry"
+    )
+    assert (
+        evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=3)[0]
+        == "abandon"
+    )
+
+
+# ── subdivide_active (ADR-0073 amendment / #123 — flat-splice subdivision) ────
+
+
+def test_subdivide_active_splices_children_in_place() -> None:
+    m = MissionState.from_prompt("tidy the kitchen | wipe the table")
+    child = m.subdivide_active(["clear the counter", "load the dishwasher"])
+    assert child is not None
+    # The blocked parent (t1) is *replaced* by its children, the pending tail (t2)
+    # keeps its order — the queue stays flat (Option 1).
+    assert [t.task_id for t in m.tasks] == ["t1.1", "t1.2", "t2"]
+    # First child is active at depth+1; its siblings/tail stay pending.
+    assert (child.task_id, child.text, child.depth, child.status) == (
+        "t1.1",
+        "clear the counter",
+        1,
+        "active",
+    )
+    assert [t.status for t in m.tasks] == ["active", "pending", "pending"]
+
+
+def test_subdivide_then_advance_walks_children_then_tail() -> None:
+    m = MissionState.from_prompt("task one | task two")
+    m.subdivide_active(["one-a", "one-b"])
+    assert m.active().task_id == "t1.1"
+    assert m.complete_active("ok").task_id == "t1.2"  # next child
+    assert m.complete_active("ok").task_id == "t2"  # then the original tail
+    assert m.complete_active("ok") is None
+    assert m.is_complete()
+
+
+def test_subdivide_respects_depth_bound_then_refuses() -> None:
+    m = MissionState.from_prompt("root task")
+    # depth 0 → 1 → 2 allowed; at DEFAULT_MAX_SUBDIVIDE_DEPTH (2) it is refused.
+    assert m.subdivide_active(["a", "b"]).depth == 1
+    assert m.subdivide_active(["c", "d"]).depth == DEFAULT_MAX_SUBDIVIDE_DEPTH
+    assert m.subdivide_active(["e"]) is None  # would be depth 3 — refused → caller hands off
+    # The refused call must not mutate the queue (the depth-1 sibling t1.2 trails).
+    assert [t.task_id for t in m.tasks] == ["t1.1.1", "t1.1.2", "t1.2"]
+
+
+def test_subdivide_custom_max_depth() -> None:
+    m = MissionState.from_prompt("root")
+    assert m.subdivide_active(["a"], max_depth=1).depth == 1
+    assert m.subdivide_active(["b"], max_depth=1) is None  # depth 1 >= 1
+
+
+def test_subdivide_empty_subtasks_is_noop() -> None:
+    m = MissionState.from_prompt("only task")
+    assert m.subdivide_active([]) is None
+    assert m.subdivide_active(["  ", ""]) is None  # whitespace trims to empty
+    assert [t.task_id for t in m.tasks] == ["t1"]
+    assert m.active().task_id == "t1"
+
+
+def test_subdivide_with_no_active_task_is_noop() -> None:
+    m = MissionState.from_prompt("one task")
+    m.complete_active("done")  # mission finished, nothing active
+    assert m.subdivide_active(["a", "b"]) is None
+
+
+def test_subdivide_render_indents_children() -> None:
+    m = MissionState.from_prompt("parent goal | later goal")
+    m.subdivide_active(["first step", "second step"])
+    rendered = m.render()
+    # Children (depth 1) are indented; the pending tail (t1.2 + t2) count shows.
+    assert "  ▶ t1.1: first step" in rendered
+    assert "2 pending task(s)" in rendered
+
+
+def test_subdivide_preserves_completed_prefix() -> None:
+    m = MissionState.from_prompt("a | b | c")
+    m.complete_active("ok")  # t1 done, t2 active
+    m.subdivide_active(["b-1", "b-2"])
+    # t1 (done) stays at the front; t2 is replaced by its children; t3 trails.
+    assert [t.task_id for t in m.tasks] == ["t1", "t2.1", "t2.2", "t3"]
+    assert m.tasks[0].status == "done"
+
+
+def test_has_started_tracks_progress() -> None:
+    m = MissionState.from_prompt("a | b")
+    assert not m.has_started()  # fresh — a populate replace is safe here
+    m.record_attempt(rskill_id="x")
+    assert m.has_started()  # the active task was attempted
+
+
+def test_has_started_true_after_a_terminal_task() -> None:
+    m = MissionState.from_prompt("a | b")
+    m.complete_active("ok")  # t1 done, t2 active untouched
+    assert m.has_started()  # a wholesale replace would now drop t1's progress
+
+
+def test_rearm_active_moves_verifying_back_to_active() -> None:
+    m = MissionState.from_prompt("pick the milk")
+    m.mark_verifying()
+    assert m.active().status == "verifying"
+    rearmed = m.rearm_active()
+    assert rearmed is m.active() and rearmed.status == "active"
+    # idempotent on an already-active task.
+    assert m.rearm_active().status == "active"
