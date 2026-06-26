@@ -33,7 +33,6 @@ transitions and the :class:`~openral_reasoner.context.ContextRenderer` renders t
 from __future__ import annotations
 
 import dataclasses
-import re
 from typing import Literal
 
 __all__ = [
@@ -44,7 +43,6 @@ __all__ = [
     "TaskStatus",
     "VerdictAction",
     "evaluate_task_verdict",
-    "split_mission",
 ]
 
 VerdictAction = Literal["complete", "abandon", "retry"]
@@ -109,33 +107,6 @@ re-queued."""
 _ACTIVE_STATES: frozenset[TaskStatus] = frozenset({"active", "verifying"})
 _TERMINAL_STATES: frozenset[TaskStatus] = frozenset({"done", "abandoned"})
 
-# Deterministic subtask separators:
-#   `` | `` — what ``openral deploy sim`` joins ``DeployScene.tasks`` with.
-#   ``, then`` / `` then `` — the natural-language form an operator types.
-# Intentionally narrow: we do NOT split on bare ``and`` (a single action often
-# reads "pick X and place it"); only explicit sequencing markers separate tasks.
-_SEPARATORS = re.compile(r"\s*\|\s*|\s*,?\s+then\s+", flags=re.IGNORECASE)
-
-
-def split_mission(text: str) -> list[str]:
-    """Split an operator goal into ordered subtask strings.
-
-    Splits on `` | `` and ``, then`` / `` then `` (case-insensitive), trims each
-    fragment, and drops empties. A single-task goal returns a one-element list; an
-    empty or whitespace-only string returns ``[]``.
-
-    Example:
-        >>> split_mission("stack the bowls in the drawer, then put the plate on the box")
-        ['stack the bowls in the drawer', 'put the plate on the box']
-        >>> split_mission("pick the bowl | place the butter")
-        ['pick the bowl', 'place the butter']
-        >>> split_mission("just one task")
-        ['just one task']
-        >>> split_mission("   ")
-        []
-    """
-    return [part for raw in _SEPARATORS.split(text) if (part := raw.strip())]
-
 
 @dataclasses.dataclass(slots=True)
 class TaskState:
@@ -178,7 +149,7 @@ class MissionState:
     goal and wake the reasoner.
 
     Example:
-        >>> m = MissionState.from_prompt("pick the bowl | place the butter")
+        >>> m = MissionState(["pick the bowl", "place the butter"])
         >>> m.active().text
         'pick the bowl'
         >>> nxt = m.complete_active("success=0.9")
@@ -200,8 +171,14 @@ class MissionState:
 
     @classmethod
     def from_prompt(cls, text: str) -> MissionState:
-        """Build a mission by :func:`split_mission`-ing an operator goal string."""
-        return cls(split_mission(text))
+        """Seed a mission from an operator goal as a SINGLE task.
+
+        ADR-0073 amendment — the regex ``split_mission`` floor is removed: the
+        operator goal is one task and the LLM owns decomposition via
+        ``decompose_mission``. A blank goal yields an empty mission.
+        """
+        goal = text.strip()
+        return cls([goal] if goal else [])
 
     # ── readers ──────────────────────────────────────────────────────────────
 
@@ -240,7 +217,7 @@ class MissionState:
         before the mission has started.
 
         Example:
-            >>> m = MissionState.from_prompt("a | b")
+            >>> m = MissionState.from_prompt("put the bowl on the plate")
             >>> m.has_started()
             False
             >>> m.record_attempt(rskill_id="x")
@@ -332,7 +309,7 @@ class MissionState:
         refused / impossible.
 
         Example:
-            >>> m = MissionState.from_prompt("tidy the kitchen | wipe the table")
+            >>> m = MissionState(["tidy the kitchen", "wipe the table"])
             >>> child = m.subdivide_active(["clear the counter", "load the dishwasher"])
             >>> child.task_id, child.text, child.depth
             ('t1.1', 'clear the counter', 1)
@@ -384,7 +361,7 @@ class MissionState:
         no rclpy, no Pydantic.
 
         Example:
-            >>> m = MissionState.from_prompt("pick the bowl | place the butter")
+            >>> m = MissionState(["pick the bowl", "place the butter"])
             >>> s = m.to_summary()
             >>> s["max_attempts"], len(s["tasks"]), s["tasks"][0]["status"]
             (3, 2, 'active')

@@ -40,7 +40,6 @@ from openral_reasoner.mission import (
     MissionState,
     TaskState,
     evaluate_task_verdict,
-    split_mission,
 )
 from openral_reasoner.null_reasoner import NullReasoner
 from openral_reasoner.palette import ToolPalette, build_tool_palette
@@ -114,6 +113,5 @@ __all__ = [
     "resolve_reasoner_system_prompt",
     "run_spatial_query",
     "run_spatial_query_detailed",
-    "split_mission",
 ]
 __version__ = "0.1.0"

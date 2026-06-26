@@ -8,61 +8,33 @@ the LLM as one opaque string and forgotten on the pull-once prompt drain.
 
 from __future__ import annotations
 
-import pytest
 from openral_reasoner import (
     MissionState,
     TaskState,
     evaluate_task_verdict,
-    split_mission,
 )
 from openral_reasoner.mission import DEFAULT_MAX_SUBDIVIDE_DEPTH
 
-# ── split_mission ────────────────────────────────────────────────────────────
+# ── MissionState.from_prompt — single-task seeding (ADR-0073 amendment) ──────
 
 
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        # The deploy CLI joins DeployScene.tasks with " | ".
-        (
-            "pick the black bowl from the stove | pick the butter from the cabinet",
-            ["pick the black bowl from the stove", "pick the butter from the cabinet"],
-        ),
-        # The natural-language "…, then …" an operator types (the live test prompt).
-        (
-            "stack all the bowls and place them in the drawer, "
-            "then put the plate on the heating box",
-            [
-                "stack all the bowls and place them in the drawer",
-                "put the plate on the heating box",
-            ],
-        ),
-        # " then " without a comma also separates.
-        ("open the drawer then close it", ["open the drawer", "close it"]),
-        # A single task is a one-element list.
-        ("just pick the cup", ["just pick the cup"]),
-        # Empty / whitespace yields no tasks.
-        ("", []),
-        ("   ", []),
-        # We do NOT split on a bare "and" — one action keeps its "and".
-        ("pick the bowl and place it", ["pick the bowl and place it"]),
-        # Mixed separators + stray whitespace are normalised.
-        ("  a  |  b , then c ", ["a", "b", "c"]),
-    ],
-)
-def test_split_mission(text: str, expected: list[str]) -> None:
-    assert split_mission(text) == expected
+def test_from_prompt_seeds_a_single_task_verbatim() -> None:
+    """The operator goal becomes ONE task; the LLM (not a regex) decomposes it."""
+    m = MissionState.from_prompt("pick the milk, then the ketchup | and the soup")
+    assert len(m) == 1
+    assert m.tasks[0].text == "pick the milk, then the ketchup | and the soup"
+    assert m.tasks[0].status == "active"
 
 
-def test_split_mission_is_case_insensitive_on_then() -> None:
-    assert split_mission("do A Then do B") == ["do A", "do B"]
+def test_from_prompt_empty_is_empty_mission() -> None:
+    assert MissionState.from_prompt("   ").is_empty()
 
 
 # ── MissionState construction + activation ───────────────────────────────────
 
 
 def test_first_task_is_active_rest_pending() -> None:
-    m = MissionState.from_prompt("a | b | c")
+    m = MissionState(["a", "b", "c"])
     statuses = [(t.task_id, t.status) for t in m.tasks]
     assert statuses == [("t1", "active"), ("t2", "pending"), ("t3", "pending")]
     assert m.active().text == "a"
@@ -82,7 +54,7 @@ def test_empty_mission() -> None:
 
 
 def test_complete_active_advances_to_next() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     nxt = m.complete_active("success=0.91")
     assert nxt is not None and nxt.task_id == "t2" and nxt.status == "active"
     # t1 is terminal with its verdict recorded.
@@ -101,7 +73,7 @@ def test_completing_last_task_finishes_mission() -> None:
 
 
 def test_abandon_active_advances_and_is_terminal() -> None:
-    m = MissionState.from_prompt("hard task | easy task")
+    m = MissionState(["hard task", "easy task"])
     nxt = m.abandon_active("ladder exhausted: stalled@0.73")
     assert nxt is not None and nxt.task_id == "t2"
     t1 = m.tasks[0]
@@ -111,7 +83,7 @@ def test_abandon_active_advances_and_is_terminal() -> None:
 
 
 def test_mission_complete_when_all_terminal_mixed() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     m.abandon_active("unverifiable")  # t1 abandoned, t2 active
     assert m.complete_active("success=0.9") is None  # t2 done, none left
     assert m.is_complete()
@@ -122,7 +94,7 @@ def test_mission_complete_when_all_terminal_mixed() -> None:
 
 
 def test_record_attempt_increments_and_tracks_ids() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     m.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero", trace_id="abc123")
     m.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
     t1 = m.active()
@@ -132,7 +104,7 @@ def test_record_attempt_increments_and_tracks_ids() -> None:
 
 
 def test_mark_verifying_keeps_task_active_for_active_lookup() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     m.mark_verifying()
     assert m.tasks[0].status == "verifying"
     # `active()` still returns it while verifying (gating is in progress).
@@ -154,7 +126,7 @@ def test_record_attempt_and_complete_on_finished_mission_are_noops() -> None:
 
 
 def test_render_shows_active_done_and_pending() -> None:
-    m = MissionState.from_prompt("a | b | c")
+    m = MissionState(["a", "b", "c"])
     m.complete_active("success=0.9")  # t1 done, t2 active, t3 pending
     m.record_attempt(rskill_id="r")
     out = m.render()
@@ -222,7 +194,7 @@ def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
 
 
 def test_subdivide_active_splices_children_in_place() -> None:
-    m = MissionState.from_prompt("tidy the kitchen | wipe the table")
+    m = MissionState(["tidy the kitchen", "wipe the table"])
     child = m.subdivide_active(["clear the counter", "load the dishwasher"])
     assert child is not None
     # The blocked parent (t1) is *replaced* by its children, the pending tail (t2)
@@ -239,7 +211,7 @@ def test_subdivide_active_splices_children_in_place() -> None:
 
 
 def test_subdivide_then_advance_walks_children_then_tail() -> None:
-    m = MissionState.from_prompt("task one | task two")
+    m = MissionState(["task one", "task two"])
     m.subdivide_active(["one-a", "one-b"])
     assert m.active().task_id == "t1.1"
     assert m.complete_active("ok").task_id == "t1.2"  # next child
@@ -279,7 +251,7 @@ def test_subdivide_with_no_active_task_is_noop() -> None:
 
 
 def test_subdivide_render_indents_children() -> None:
-    m = MissionState.from_prompt("parent goal | later goal")
+    m = MissionState(["parent goal", "later goal"])
     m.subdivide_active(["first step", "second step"])
     rendered = m.render()
     # Children (depth 1) are indented; the pending tail (t1.2 + t2) count shows.
@@ -288,7 +260,7 @@ def test_subdivide_render_indents_children() -> None:
 
 
 def test_subdivide_preserves_completed_prefix() -> None:
-    m = MissionState.from_prompt("a | b | c")
+    m = MissionState(["a", "b", "c"])
     m.complete_active("ok")  # t1 done, t2 active
     m.subdivide_active(["b-1", "b-2"])
     # t1 (done) stays at the front; t2 is replaced by its children; t3 trails.
@@ -297,14 +269,14 @@ def test_subdivide_preserves_completed_prefix() -> None:
 
 
 def test_has_started_tracks_progress() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     assert not m.has_started()  # fresh — a populate replace is safe here
     m.record_attempt(rskill_id="x")
     assert m.has_started()  # the active task was attempted
 
 
 def test_has_started_true_after_a_terminal_task() -> None:
-    m = MissionState.from_prompt("a | b")
+    m = MissionState(["a", "b"])
     m.complete_active("ok")  # t1 done, t2 active untouched
     assert m.has_started()  # a wholesale replace would now drop t1's progress
 
