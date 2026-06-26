@@ -378,7 +378,7 @@ def test_empty_mission_omits_section() -> None:
 def test_set_mission_renders_active_task_and_bumps_seq() -> None:
     r = ContextRenderer()
     seq_before = r.seq
-    r.set_mission(MissionState.from_prompt("pick the bowl | place the butter"))
+    r.set_mission(MissionState(["pick the bowl", "place the butter"]))
     # A new goal is an event — it must wake an idle heartbeat.
     assert r.seq == seq_before + 1
     out = r.render(world_state=None)
@@ -389,7 +389,7 @@ def test_set_mission_renders_active_task_and_bumps_seq() -> None:
 
 def test_advance_mission_completes_and_activates_next_and_bumps_seq() -> None:
     r = ContextRenderer()
-    r.set_mission(MissionState.from_prompt("pick the bowl | place the butter"))
+    r.set_mission(MissionState(["pick the bowl", "place the butter"]))
     seq_before = r.seq
     nxt = r.advance_mission(done=True, verdict="success=0.92")
     # Advancing the queue is an event — the new active task wakes the reasoner.
@@ -402,7 +402,7 @@ def test_advance_mission_completes_and_activates_next_and_bumps_seq() -> None:
 
 def test_advance_mission_abandons_on_done_false() -> None:
     r = ContextRenderer()
-    r.set_mission(MissionState.from_prompt("hard task | easy task"))
+    r.set_mission(MissionState(["hard task", "easy task"]))
     r.advance_mission(done=False, verdict="ladder exhausted: stalled@0.73")
     out = r.render(world_state=None)
     assert "✗ t1: hard task" in out
@@ -418,7 +418,7 @@ def test_advance_mission_with_no_mission_is_noop() -> None:
 
 def test_mission_property_exposes_state_for_in_place_bookkeeping() -> None:
     r = ContextRenderer()
-    r.set_mission(MissionState.from_prompt("a | b"))
+    r.set_mission(MissionState(["a", "b"]))
     # The node records attempts in place (non-waking bookkeeping).
     r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
     assert r.mission.active().attempts == 1
