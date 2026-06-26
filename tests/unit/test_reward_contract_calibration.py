@@ -102,12 +102,14 @@ def test_robometer_manifest_carries_calibrated_reward_contract() -> None:
 
     assert manifest.reward is not None
     rc = manifest.reward
-    assert rc.check_floor == 0.4
+    # Recalibrated by ADR-0074 Decision 5 (genuine-success bar above robometer's
+    # ~0.55–0.78 not-done wander band; check_floor at the lower edge).
+    assert rc.check_floor == 0.5
     assert rc.plateau_window_s == 3.0
     assert rc.plateau_tolerance == 0.06
     assert rc.default_patience_s == 30.0
     # Existing fields unchanged
-    assert rc.success_threshold == 0.5
+    assert rc.success_threshold == 0.8
     assert rc.frame_window_s == 8.0
     assert rc.target_fps == 3.0
 
