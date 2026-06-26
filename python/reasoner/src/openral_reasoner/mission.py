@@ -373,7 +373,36 @@ class MissionState:
             nxt.status = "active"
         return nxt
 
-    # ── rendering ────────────────────────────────────────────────────────────
+    # ── serialization / rendering ──────────────────────────────────────────────
+
+    def to_summary(self) -> dict[str, object]:
+        """JSON-able snapshot of the queue for telemetry / the dashboard card.
+
+        Stamped on the ``reasoner.tick`` span as ``reasoner.mission_json`` so the
+        live dashboard can render the mission checklist (status, attempts, last
+        verdict) instead of only the single ``## MISSION`` text ledger. Pure data;
+        no rclpy, no Pydantic.
+
+        Example:
+            >>> m = MissionState.from_prompt("pick the bowl | place the butter")
+            >>> s = m.to_summary()
+            >>> s["max_attempts"], len(s["tasks"]), s["tasks"][0]["status"]
+            (3, 2, 'active')
+        """
+        return {
+            "max_attempts": DEFAULT_MAX_ATTEMPTS,
+            "tasks": [
+                {
+                    "id": t.task_id,
+                    "text": t.text,
+                    "status": t.status,
+                    "attempts": t.attempts,
+                    "verdict": t.last_verdict,
+                    "rskill_id": t.last_rskill_id,
+                }
+                for t in self._tasks
+            ],
+        }
 
     def render(self) -> str:
         """Compact ``## MISSION`` ledger: done tasks, the active task, pending count.

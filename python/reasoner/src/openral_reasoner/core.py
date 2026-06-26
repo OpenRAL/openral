@@ -18,6 +18,7 @@ Per ADR-0018 §4 the reasoner:
 from __future__ import annotations
 
 import dataclasses
+import json
 import time
 from collections.abc import Callable
 
@@ -29,6 +30,7 @@ from openral_core.exceptions import (
 )
 from openral_observability import reasoner_span, semconv
 from openral_observability.propagation import current_traceparent
+from opentelemetry.trace import Span
 
 from openral_reasoner.context import ContextRenderer
 from openral_reasoner.palette import ToolPalette
@@ -37,6 +39,17 @@ from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT, ToolUseClient
 __all__ = ["ReasonerCore", "ReasonerTickResult"]
 
 log = structlog.get_logger(__name__)
+
+
+def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
+    """Stamp the active mission queue on the tick span (ADR-0073).
+
+    Serialized as ``reasoner.mission_json`` so the live dashboard renders the
+    task checklist. No-op when no mission is set (a bare operator goal).
+    """
+    mission = renderer.mission
+    if mission is not None and not mission.is_empty():
+        span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -220,6 +233,11 @@ class ReasonerCore:
             force=force,
         ) as span:
             span.set_attribute(semconv.REASONER_TIER, tier)
+            # ADR-0073 — stamp the active mission queue on every tick span so
+            # the dashboard can render the task checklist. Set before the gate
+            # short-circuits below so suppressed (retry_cap / error) ticks still
+            # carry current mission state. The mission is unchanged within a tick.
+            _stamp_mission(span, renderer)
             # palette-empty short-circuit — the LLM call would just
             # timeout / pick a phantom rskill_id; surface the
             # configuration error explicitly.

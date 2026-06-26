@@ -243,6 +243,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.rskill_id` | When tool=`execute_skill` | Skill id the LLM chose. |
 | `reasoner.suppressed_reason` | Suppressed ticks | One of `palette_empty` / `retry_cap` / `heartbeat_idle`. The `min_interval` and `heartbeat_idle` short-circuits fire BEFORE the span opens (so dashboards don't show noise). |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
+| `reasoner.mission_json` | When a mission is active (ADR-0073) | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 
 The active W3C `traceparent` captured inside this span is threaded
