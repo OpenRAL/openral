@@ -13,6 +13,8 @@ This document maps *why* that happens against the current code, then defines a
 possible avenue to fix it. It is descriptive + proposal only; no behavior changes
 land here.
 
+> **Superseded (2026-06-26):** the `DeployScene.tasks` → `" | "`-join → `split_mission` flow described below was removed by the ADR-0073 amendment; deploy goals now come from the operator prompt and the LLM decomposes via `decompose_mission`.
+
 ---
 
 ## 1. Observed behavior

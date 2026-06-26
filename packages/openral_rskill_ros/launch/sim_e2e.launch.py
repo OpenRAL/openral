@@ -418,11 +418,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ROS time toggle to drift from the authority.
     clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
     use_sim_time = clock_origin == "simulation"
-    # Multi-task deploy (DeployScene.tasks). When non-empty, the CLI joins the
-    # scene's task list into a single operator prompt and passes it here; the
-    # prompt_router_node publishes it onto /openral/prompt at on_activate so
-    # the reasoner's first tick sees the operator's goal without a manual
-    # ``openral prompt`` call. Empty string = no startup prompt (idle mode).
+    # Startup operator prompt set by --initial-task or /openral/prompt. When
+    # non-empty, prompt_router_node publishes it onto /openral/prompt at
+    # on_activate so the reasoner's first tick sees the operator's goal without
+    # a manual ``openral prompt`` call. Empty string = no startup prompt (idle).
     initial_task_prompt = LaunchConfiguration("initial_task_prompt").perform(context)
 
     # Synthesise the kernel envelope from the manifest. ``skill=None``
@@ -1818,14 +1817,13 @@ def generate_launch_description() -> LaunchDescription:
             "initial_task_prompt",
             default_value="",
             description=(
-                "Multi-task deploy — pre-seeded operator prompt delivered to the "
-                "reasoner at startup. ``openral deploy sim`` fills this from the "
-                "``DeployScene.tasks`` list (joined with ' | '); the "
-                "prompt_router_node publishes it onto /openral/prompt at "
-                "on_activate time with cli-level priority (100) so the reasoner's "
-                "first tick already sees the operator's goal. Empty (default) = "
-                "no startup prompt; the reasoner idles until a manual "
-                "``openral prompt`` or dashboard prompt arrives."
+                "Single operator goal published to /openral/prompt at startup "
+                "(cli-level priority 100). Set by ``--initial-task`` on the CLI; "
+                "the prompt_router_node forwards it to the reasoner at on_activate "
+                "time so the first tick sees the operator's goal without a manual "
+                "``openral prompt`` call. Empty (default) = no startup prompt; "
+                "the reasoner idles until a manual ``openral prompt`` or dashboard "
+                "prompt arrives."
             ),
         ),
     ]

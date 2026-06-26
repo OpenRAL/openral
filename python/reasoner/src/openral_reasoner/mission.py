@@ -1,10 +1,10 @@
 """ADR-0073 — typed mission state for sequential multi-task deploy goals.
 
-An operator goal may carry several ordered subtasks: the deploy CLI joins
-``DeployScene.tasks`` with ``" | "``, and an operator may type ``"… , then …"``.
-Today that whole string is handed to the LLM as one opaque prompt and **drained
-pull-once** (``ContextRenderer.drain_prompts``), so after the first tick the
-reasoner forgets the goal and never advances to the second subtask.
+An operator goal may carry several ordered subtasks supplied via ``--initial-task``
+(or a live ``/openral/prompt``). Prior to the ADR-0073 amendment the deploy CLI
+joined ``DeployScene.tasks`` with ``" | "`` into a single opaque prompt that was
+**drained pull-once** (``ContextRenderer.drain_prompts``), so the reasoner forgot
+the goal after the first tick and never advanced to subsequent subtasks (removed).
 
 This module is the deterministic fix (ADR-0073 §1): the goal is parsed into an
 ordered list of :class:`TaskState`, of which at most one is ``active`` (or

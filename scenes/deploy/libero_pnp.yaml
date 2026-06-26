@@ -1,4 +1,4 @@
-# LIBERO spatial environment — deploy-sim digital twin (DeployScene; multi-task).
+# LIBERO spatial environment — deploy-sim digital twin (DeployScene; operator-goal driven).
 #
 # Boots the full OpenRAL stack (HAL + reasoner + safety kernel) against the
 # LIBERO spatial MuJoCo scene. The operator supplies the goal at runtime via

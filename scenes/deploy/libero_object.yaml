@@ -1,4 +1,4 @@
-# LIBERO object environment — deploy-sim digital twin (DeployScene; multi-task).
+# LIBERO object environment — deploy-sim digital twin (DeployScene; operator-goal driven).
 #
 # Boots the full OpenRAL stack (HAL + reasoner + safety kernel + reward monitor
 # + object-locator) against the LIBERO *object* MuJoCo scene: a table holding
@@ -27,7 +27,7 @@
 # bottom-up MuJoCo render shows upright (display-only; the VLA already flips its
 # own copy via the manifest's image_preprocessing.flip_180). The scene runs the
 # episode continuously (ADR-0036) — a task success no longer resets the arena, so
-# the multi-task mission persists across tasks and the MuJoCo viewer stays in sync.
+# the reasoner-decomposed mission persists across its subtasks and the MuJoCo viewer stays in sync.
 
 scene:
   id: libero_object

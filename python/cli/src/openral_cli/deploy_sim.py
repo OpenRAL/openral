@@ -2007,11 +2007,12 @@ def deploy_sim_command(
         None,
         "--initial-task",
         help=(
-            "Startup operator goal delivered to the reasoner at graph activate time. "
-            "Passed as ``initial_task_prompt`` to the launch. Use ``' | '`` to delimit "
-            "ordered subtasks, e.g. ``--initial-task 'pick the bowl | place it on the "
-            "plate'``. When omitted, no startup prompt is set and the reasoner idles "
-            "until a manual ``openral prompt`` or dashboard prompt arrives."
+            "Single natural-language goal the reasoner decomposes into ordered subtasks "
+            "via ``decompose_mission``, e.g. ``--initial-task 'pick the bowl and place "
+            "it on the plate, then push the mug back'``. Passed as "
+            "``initial_task_prompt`` to the launch. When omitted, no startup prompt is "
+            "set and the reasoner idles until a manual ``openral prompt`` or dashboard "
+            "prompt arrives."
         ),
     ),
     dry_run: bool = typer.Option(
