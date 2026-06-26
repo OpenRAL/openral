@@ -527,9 +527,19 @@
       for (const t of tasks) {
         const li = document.createElement("li");
         li.className = "mission-task st-" + t.status;
+        // Depth comes free from the dot-path task id (t1 → 0, t1.2 → 1, t1.2.1 → 2):
+        // a #123 subdivision splices children in place, so indent them to show the
+        // hierarchy the flat list would otherwise hide.
+        const depth = t.id ? t.id.split(".").length - 1 : 0;
+        if (depth > 0) li.style.paddingLeft = (depth * 14) + "px";
         const mk = document.createElement("span"); mk.className = "mk";
         mk.textContent = MISSION_MARK[t.status] || "·";
-        const tx = document.createElement("span"); tx.className = "tx"; tx.textContent = t.text;
+        const tx = document.createElement("span"); tx.className = "tx";
+        if (depth > 0) {
+          const id = document.createElement("span"); id.className = "tid";
+          id.textContent = t.id; tx.appendChild(id);
+        }
+        tx.appendChild(document.createTextNode(t.text));
         const mt = document.createElement("span"); mt.className = "mt";
         const succ = t.verdict && t.verdict.match(/success=([0-9.]+)/);
         if (succ) {

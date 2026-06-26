@@ -814,6 +814,8 @@
   }
   .mission-task .mk { text-align: center; font-weight: 700; opacity: .85; }
   .mission-task .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* subdivided-child id badge (#123): marks a task spliced in from a parent (t1.2) */
+  .mission-task .tx .tid { color: var(--fg-mute); font-size: 10px; margin-right: 6px; font-variant-numeric: tabular-nums; }
   .mission-task .mt { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; }
   /* status accents — monochrome palette's semantic colours */
   .mission-task.st-done       { border-left-color: var(--ok);   }

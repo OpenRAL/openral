@@ -77,8 +77,12 @@ draining (no `Connection refused` retries on the way down).
   rendered from `reasoner.mission_json` as an ordered checklist: each
   subtask shows its status (done ✓ / active ▶ / verifying ? / abandoned ✗
   / pending), a reward success bar (the gate that advances the queue),
-  and the attempts/cap ladder. The latest tick (tool / model / error) is
-  a footer line beneath it. Empty until the `reasoner_node` is ACTIVE.
+  and the attempts/cap ladder. Subdivided children from a replan
+  (`#123`: a blocked task `t2` spliced into `t2.1`, `t2.2`, …) are
+  indented under their parent with a dim id badge — depth is read from the
+  dot-path task id, so the flat queue still reads as a hierarchy. The
+  latest tick (tool / model / error) is a footer line beneath it. Empty
+  until the `reasoner_node` is ACTIVE.
 - **Live signal · running skill** — one card for the active `rSkill`: skill id
   (headline), role, action-applied, tick idx, and a `step Xms · forward Yms`
   latency line. `step` is the full `rskill.execute` call; `forward` is the model
