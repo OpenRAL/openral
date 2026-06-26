@@ -431,7 +431,7 @@ def test_reasoner_tick_populates_reasoner_topic_with_mission() -> None:
 
     from openral_reasoner.mission import MissionState
 
-    mission = MissionState.from_prompt("pick the bowl | place the butter")
+    mission = MissionState(["pick the bowl", "place the butter"])
     mission.record_attempt(rskill_id="smolvla-libero")
     mission.complete_active("success=0.91")  # t1 done, t2 now active
 
