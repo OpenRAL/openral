@@ -82,8 +82,12 @@ def test_tier2_vlm_check_ignores_attempt_count() -> None:
 def test_tier3_retry_below_floor() -> None:
     """score=0.40 < check_floor → retry when attempts remain."""
     action, verdict = evaluate_task_verdict(
-        ok=True, success_now=0.40, success_threshold=0.8,
-        check_floor=0.5, attempts=1, max_attempts=3,
+        ok=True,
+        success_now=0.40,
+        success_threshold=0.8,
+        check_floor=0.5,
+        attempts=1,
+        max_attempts=3,
     )
     assert action == "retry"
     assert "attempt 1/3" in verdict
@@ -92,8 +96,12 @@ def test_tier3_retry_below_floor() -> None:
 def test_tier3_abandon_below_floor_exhausted() -> None:
     """score=0.40 < check_floor → abandon when attempts exhausted."""
     action, verdict = evaluate_task_verdict(
-        ok=True, success_now=0.40, success_threshold=0.8,
-        check_floor=0.5, attempts=3, max_attempts=3,
+        ok=True,
+        success_now=0.40,
+        success_threshold=0.8,
+        check_floor=0.5,
+        attempts=3,
+        max_attempts=3,
     )
     assert action == "abandon"
     assert "after 3 attempt(s)" in verdict

@@ -50,6 +50,7 @@ def _make_jpeg_bytes() -> bytes:
 # Fake Anthropic SDK (network-boundary double, §1.11)
 # ---------------------------------------------------------------------------
 
+
 def _install_fake_anthropic(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -84,6 +85,7 @@ def _install_fake_anthropic(
 # ---------------------------------------------------------------------------
 # Fake OpenAI SDK (network-boundary double, §1.11)
 # ---------------------------------------------------------------------------
+
 
 def _install_fake_openai(
     monkeypatch: pytest.MonkeyPatch,
@@ -207,9 +209,7 @@ def test_openai_describe_image_sends_image_url_and_question(
     assert isinstance(content, list)
 
     # image_url block
-    image_blocks = [
-        b for b in content if isinstance(b, dict) and b.get("type") == "image_url"
-    ]
+    image_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "image_url"]
     assert len(image_blocks) == 1, f"Expected one image_url block, got: {content}"
     expected_b64 = base64.b64encode(jpeg).decode()
     assert image_blocks[0]["image_url"]["url"] == f"data:image/jpeg;base64,{expected_b64}"

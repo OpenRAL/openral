@@ -41,11 +41,19 @@ def resolve_band_edges(
         ``(success_threshold, check_floor)``.
 
     Example:
-        >>> resolve_band_edges(contract_threshold=0.9, contract_floor=0.6,
-        ...                     fallback_threshold=0.8, fallback_floor=0.5)
+        >>> resolve_band_edges(
+        ...     contract_threshold=0.9,
+        ...     contract_floor=0.6,
+        ...     fallback_threshold=0.8,
+        ...     fallback_floor=0.5,
+        ... )
         (0.9, 0.6)
-        >>> resolve_band_edges(contract_threshold=None, contract_floor=None,
-        ...                     fallback_threshold=0.8, fallback_floor=0.5)
+        >>> resolve_band_edges(
+        ...     contract_threshold=None,
+        ...     contract_floor=None,
+        ...     fallback_threshold=0.8,
+        ...     fallback_floor=0.5,
+        ... )
         (0.8, 0.5)
     """
     if contract_threshold is not None and contract_floor is not None:
@@ -117,12 +125,12 @@ def is_reward_wake(*, source: str, severity: int, severity_fail: int) -> bool:
     """
     return source == "critic" and severity >= severity_fail
 
+
 # ADR-0074 §5 — VLM adjudication prompt for the ambiguous reward band.
 # Kept short and binary so the provider returns a parseable answer;
 # {task!r} is a repr-quoted task string so embedded quotes are escaped.
 COMPLETION_QUESTION: str = (
-    "Has the robot finished this task: {task!r}?"
-    " Look at the scene and answer only 'yes' or 'no'."
+    "Has the robot finished this task: {task!r}? Look at the scene and answer only 'yes' or 'no'."
 )
 
 _NEGATIONS: tuple[str, ...] = (

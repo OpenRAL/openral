@@ -160,8 +160,12 @@ def test_verdict_complete_on_success() -> None:
 def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
     # success_now=0.40 < check_floor=0.5 → straight to the attempts ladder → retry
     action, verdict = evaluate_task_verdict(
-        ok=True, success_now=0.40, success_threshold=0.8,
-        check_floor=0.5, attempts=1, max_attempts=3,
+        ok=True,
+        success_now=0.40,
+        success_threshold=0.8,
+        check_floor=0.5,
+        attempts=1,
+        max_attempts=3,
     )
     assert action == "retry"
     assert "attempt 1/3" in verdict
@@ -170,8 +174,12 @@ def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
 def test_verdict_abandon_when_attempts_exhausted() -> None:
     # success_now=0.40 < check_floor → ladder; attempts exhausted → abandon
     action, verdict = evaluate_task_verdict(
-        ok=True, success_now=0.40, success_threshold=0.8,
-        check_floor=0.5, attempts=3, max_attempts=3,
+        ok=True,
+        success_now=0.40,
+        success_threshold=0.8,
+        check_floor=0.5,
+        attempts=3,
+        max_attempts=3,
     )
     assert action == "abandon"
     assert "after 3 attempt(s)" in verdict
