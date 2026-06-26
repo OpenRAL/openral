@@ -1772,29 +1772,9 @@ def test_deploy_sim_memory_dir_must_be_existing_directory(tmp_path: Path) -> Non
 # ── Multi-task deploy (LIBERO spatial) ────────────────────────────────────
 
 
-def test_deploy_sim_libero_pnp_tasks_forwarded_as_initial_task_prompt() -> None:
-    """libero_pnp DeployScene.tasks → initial_task_prompt joined with ' | '."""
-    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
-    invocation = resolve_launch_invocation(
-        config=_LIBERO_PNP_CONFIG,
-        robot_override=None,
-        dashboard_port=4318,
-        reset_to_pose_service=None,
-        hal_param_overrides=None,
-    )
-    # The libero_pnp.yaml carries two tasks; they must be joined with ' | '.
-    assert invocation.initial_task_prompt != ""
-    assert " | " in invocation.initial_task_prompt
-    # The initial_task_prompt is forwarded to the launch argv.
-    assert any("initial_task_prompt:=" in arg for arg in invocation.argv_template), (
-        f"initial_task_prompt not in argv_template: {invocation.argv_template}"
-    )
-
-
-def test_deploy_sim_cli_initial_task_overrides_yaml_tasks() -> None:
-    """--initial-task CLI flag wins over DeployScene.tasks from the YAML."""
-    assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
-    override = "override task from CLI flag"
+def test_deploy_sim_initial_task_forwarded_as_prompt() -> None:
+    """--initial-task is the only source of the deploy startup prompt."""
+    override = "put the groceries in the basket"
     invocation = resolve_launch_invocation(
         config=_LIBERO_PNP_CONFIG,
         robot_override=None,
@@ -1822,12 +1802,13 @@ def test_deploy_sim_no_tasks_no_initial_prompt() -> None:
 
 
 def test_deploy_sim_dry_run_libero_shows_startup_prompt() -> None:
-    """``openral deploy sim --config libero_pnp.yaml --dry-run`` prints the startup prompt."""
+    """deploy sim --initial-task … --dry-run shows startup_prompt in output + argv."""
     assert _LIBERO_PNP_CONFIG.is_file(), f"missing fixture: {_LIBERO_PNP_CONFIG}"
     runner = CliRunner()
     result = runner.invoke(
         app,
-        ["deploy", "sim", "--config", str(_LIBERO_PNP_CONFIG), "--dry-run"],
+        ["deploy", "sim", "--config", str(_LIBERO_PNP_CONFIG),
+         "--initial-task", "pick the bowl and place it on the plate", "--dry-run"],
     )
     assert result.exit_code == 0, result.output
     # The rich summary block must mention the startup prompt
