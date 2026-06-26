@@ -4781,6 +4781,17 @@ class RewardContract(BaseModel):
             default ``100``.
         instruction_required: Whether a natural-language task instruction must
             accompany the frames (Robometer requires one). Default ``True``.
+        check_floor: Below this progress value the attempt is clearly not done
+            → no VLM adjudication, straight to the replanning ladder. Must be
+            ≤ ``success_threshold``; default ``0.4`` (calibrated for robometer's
+            loose/general eval distribution that wanders ~0.55-0.78).
+        plateau_window_s: Trailing window (seconds) over which
+            ``progress_trend ≈ 0`` indicates the policy has stopped getting
+            closer to the goal. Default ``3.0``.
+        plateau_tolerance: ε band absorbing critic noise when deciding whether
+            the trend is flat. Default ``0.05``.
+        default_patience_s: Baseline execution ceiling (seconds) used as a
+            backstop before the Reasoner escalates. Default ``30.0``.
 
     Example:
         >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)
@@ -4788,8 +4799,8 @@ class RewardContract(BaseModel):
         (0.0, 1.0)
         >>> c.success_threshold
         0.5
-        >>> c.num_bins
-        100
+        >>> c.check_floor
+        0.4
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -4801,6 +4812,10 @@ class RewardContract(BaseModel):
     target_fps: float = Field(gt=0.0)
     num_bins: int = Field(gt=0, default=100)
     instruction_required: bool = True
+    check_floor: float = Field(ge=0.0, le=1.0, default=0.4)
+    plateau_window_s: float = Field(gt=0.0, default=3.0)
+    plateau_tolerance: float = Field(ge=0.0, default=0.05)
+    default_patience_s: float = Field(gt=0.0, default=30.0)
 
     @field_validator("progress_range")
     @classmethod
@@ -4810,6 +4825,16 @@ class RewardContract(BaseModel):
         if hi <= lo:
             raise ValueError(f"RewardContract.progress_range must have max > min, got {v!r}.")
         return v
+
+    @model_validator(mode="after")
+    def _check_floor_le_threshold(self) -> RewardContract:
+        """``check_floor`` must be ≤ ``success_threshold``."""
+        if self.check_floor > self.success_threshold:
+            raise ValueError(
+                f"RewardContract.check_floor ({self.check_floor}) must be ≤ "
+                f"success_threshold ({self.success_threshold})."
+            )
+        return self
 
 
 class PlaybookContract(BaseModel):
@@ -7389,6 +7414,12 @@ class ExecuteRskillTool(_ReasonerToolBase):
         deadline_s: Hard deadline in seconds for the action server to
             complete the goal. ``0`` means "use the skill manifest's
             default latency budget".
+        patience_s: Task-adaptive execution ceiling override (short for a
+            quick grab, long for a precise insertion). ``None`` → use the
+            reward model's ``default_patience_s``.
+        progress_tolerance: Override the reward model's ``plateau_tolerance``
+            when a task misbehaves (e.g. a noisy critic). ``None`` → use the
+            model default.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -7396,6 +7427,8 @@ class ExecuteRskillTool(_ReasonerToolBase):
     prompt: str = ""
     goal_params_json: str = ""
     deadline_s: float = Field(default=0.0, ge=0.0)
+    patience_s: float | None = Field(default=None, gt=0.0)
+    progress_tolerance: float | None = Field(default=None, ge=0.0)
 
 
 class ReloadGstPipelineTool(_ReasonerToolBase):

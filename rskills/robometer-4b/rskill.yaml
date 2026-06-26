@@ -68,6 +68,10 @@ reward:
   target_fps: 3.0
   num_bins: 100
   instruction_required: true
+  check_floor: 0.4
+  plateau_window_s: 3.0
+  plateau_tolerance: 0.06
+  default_patience_s: 30.0
 
 description: >
   Robometer-4B (Qwen3-VL-4B robotic reward foundation model, arXiv 2603.02115)

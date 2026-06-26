@@ -677,7 +677,7 @@
     },
     "RewardContract": {
       "additionalProperties": false,
-      "description": "Manifest contract for ``kind: \"reward\"`` rSkills (ADR-0057).\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    frame_window_s: Length of the rolling frame buffer in seconds. The\n        sidecar evicts frames older than this relative to the newest.\n        Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.num_bins\n    100",
+      "description": "Manifest contract for ``kind: \"reward\"`` rSkills (ADR-0057).\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    frame_window_s: Length of the rolling frame buffer in seconds. The\n        sidecar evicts frames older than this relative to the newest.\n        Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n    check_floor: Below this progress value the attempt is clearly not done\n        \u2192 no VLM adjudication, straight to the replanning ladder. Must be\n        \u2264 ``success_threshold``; default ``0.4`` (calibrated for robometer's\n        loose/general eval distribution that wanders ~0.55-0.78).\n    plateau_window_s: Trailing window (seconds) over which\n        ``progress_trend \u2248 0`` indicates the policy has stopped getting\n        closer to the goal. Default ``3.0``.\n    plateau_tolerance: \u03b5 band absorbing critic noise when deciding whether\n        the trend is flat. Default ``0.05``.\n    default_patience_s: Baseline execution ceiling (seconds) used as a\n        backstop before the Reasoner escalates. Default ``30.0``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.check_floor\n    0.4",
       "properties": {
         "progress_range": {
           "default": [
@@ -729,6 +729,31 @@
           "default": true,
           "title": "Instruction Required",
           "type": "boolean"
+        },
+        "check_floor": {
+          "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Check Floor",
+          "type": "number"
+        },
+        "plateau_window_s": {
+          "default": 3.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Plateau Window S",
+          "type": "number"
+        },
+        "plateau_tolerance": {
+          "default": 0.05,
+          "minimum": 0.0,
+          "title": "Plateau Tolerance",
+          "type": "number"
+        },
+        "default_patience_s": {
+          "default": 30.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Default Patience S",
+          "type": "number"
         }
       },
       "required": [
