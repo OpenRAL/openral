@@ -8,13 +8,14 @@
 # object suite places every item in the scene at once — the operator goal names
 # *which* objects to move, so the reasoner must locate each one before picking.
 #
-# The ``tasks:`` block is joined with `` | `` into a single operator prompt at
-# activate time; the reasoner's MissionState (ADR-0073) splits it back into an
-# ordered queue, locates each named object via the omdet-turbo-locator, executes
-# smolvla-libero per subtask, reward-gates each attempt against robometer-4b,
-# and advances one task at a time until the queue is drained. Every subtask
-# selection, localisation, VLA execution, and reward verdict is an OTel span on
-# ``reasoner.tick`` / ``rskill.tick`` so the run is diagnosable from the trace.
+# The operator supplies one goal at runtime (``--initial-task`` / ``/openral/prompt``);
+# the reasoner decomposes that single goal into an ordered queue via
+# ``decompose_mission`` (ADR-0073), locates each named object via the
+# omdet-turbo-locator, executes smolvla-libero per subtask, reward-gates each
+# attempt against robometer-4b, and advances one task at a time until the queue is
+# drained. Every subtask selection, localisation, VLA execution, and reward verdict
+# is an OTel span on ``reasoner.tick`` / ``rskill.tick`` so the run is diagnosable
+# from the trace.
 #
 # Robot auto-resolves via ``SCENES.fixed_robot("libero_object") == "franka_panda"``.
 # Run: OPENRAL_DASHBOARD_FLIP_180=1 openral deploy sim --config scenes/deploy/libero_object.yaml
@@ -36,11 +37,7 @@ scene:
   observation_height: 256
   observation_width: 256
 
-# Multi-task goal: three grocery items, each located then picked into the basket.
-# ``openral deploy sim`` joins these with `` | `` into one operator prompt; the
-# reasoner decomposes it into an ordered, individually reward-gated task queue.
-# Override at launch with ``--initial-task "<natural-language goal>"``.
-tasks:
-  - "pick up the milk and place it in the basket"
-  - "pick up the ketchup and place it in the basket"
-  - "pick up the alphabet soup and place it in the basket"
+# Deploy goal is supplied by the operator at runtime, e.g.:
+#   openral deploy sim --config scenes/deploy/libero_object.yaml \
+#     --initial-task "pick up the milk, the ketchup, and the alphabet soup and put each in the basket"
+# The reasoner decomposes that single goal into ordered subtasks via decompose_mission (ADR-0073).
