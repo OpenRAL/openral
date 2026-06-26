@@ -76,6 +76,7 @@ from openral_core import (
     RecallObjectTool,
     ReloadGstPipelineTool,
     ResolvePlaceTool,
+    RewardContract,
     RobotCapabilities,
     RobotDescription,
     RSkillManifest,
@@ -96,6 +97,12 @@ from openral_reasoner.completion import (
 )
 from openral_reasoner.completion import (
     parse_yes_no as _parse_yes_no,
+)
+from openral_reasoner.completion import (
+    resolve_band_edges as _resolve_band_edges,
+)
+from openral_reasoner.completion import (
+    resolve_patience_s as _resolve_patience_s,
 )
 from openral_reasoner.context import (
     ContextRenderer,
@@ -253,9 +260,13 @@ _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
 # reflects the end-of-attempt state, not a single frame.
 _MISSION_VERIFY_WINDOW_S: float = 8.0
 
-# ADR-0074 Decision 5 — three-tier verdict defaults.
-# These mirror the robometer rskill.yaml reward block calibrated values.
-# TODO(ADR-0074 gate task 4): read from the active RewardContract instead.
+# ADR-0074 Decision 5 — three-tier verdict band edges + the patience ceiling.
+# These are the SYSTEM FALLBACK in the authority stack (system < reward-model
+# calibrated default < LLM per-task override): used only when no reward manifest
+# is wired (``reward_manifest_path`` unset). When a reward model is active the
+# node reads the live ``RewardContract`` (``_reward_contract``) instead — see
+# ``_band_edges`` / ``_effective_patience_s``. The values mirror the robometer
+# rskill.yaml reward block so a fallback matches today's deploy default.
 _DEFAULT_SUCCESS_THRESHOLD: float = 0.8
 _DEFAULT_CHECK_FLOOR: float = 0.5
 
@@ -622,6 +633,33 @@ class ReasonerNode(LifecycleNode):
         )
         # Cached client for the query_task_progress service; created lazily.
         self._query_task_progress_client: Any = None
+
+        # ADR-0074 §1/§3 — the active reward model's manifest (same path the
+        # reward_monitor_node loads). When set, the node reads its
+        # ``RewardContract`` calibration (band edges + default patience) and uses
+        # it in place of the module-level system fallbacks. A bad path degrades
+        # to the fallbacks (logged) rather than failing node construction.
+        self._reward_contract: RewardContract | None = None
+        self.declare_parameter("reward_manifest_path", "")
+        reward_manifest_path = (
+            self.get_parameter("reward_manifest_path").get_parameter_value().string_value
+        )
+        if reward_manifest_path:
+            try:
+                self._reward_contract = RSkillManifest.from_yaml(reward_manifest_path).reward
+            except Exception as exc:  # reason: bad manifest must not block startup
+                self.get_logger().warning(
+                    f"reward_manifest_path={reward_manifest_path!r} failed to load "
+                    f"({type(exc).__name__}: {exc}); using system-default band edges + patience",
+                )
+            else:
+                if self._reward_contract is not None:
+                    self.get_logger().info(
+                        "reward calibration: success_threshold="
+                        f"{self._reward_contract.success_threshold:.2f} "
+                        f"check_floor={self._reward_contract.check_floor:.2f} "
+                        f"default_patience_s={self._reward_contract.default_patience_s:.0f}",
+                    )
 
         # ADR-0074 §5 — completion-camera topic for VLM adjudication.
         # When set to a non-empty string, on_configure subscribes sensor_msgs/Image
@@ -1098,6 +1136,36 @@ class ReasonerNode(LifecycleNode):
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
+
+    def _band_edges(self) -> tuple[float, float]:
+        """Three-tier verdict band edges from the active reward calibration (ADR-0074 §1/§5).
+
+        Thin adapter over :func:`openral_reasoner.completion.resolve_band_edges`
+        — the live ``RewardContract`` when wired, else the system fallback.
+        """
+        c = self._reward_contract
+        return _resolve_band_edges(
+            contract_threshold=c.success_threshold if c is not None else None,
+            contract_floor=c.check_floor if c is not None else None,
+            fallback_threshold=_DEFAULT_SUCCESS_THRESHOLD,
+            fallback_floor=_DEFAULT_CHECK_FLOOR,
+        )
+
+    def _effective_patience_s(self, call: ExecuteRskillTool) -> float:
+        """Patience ceiling for a dispatch (ADR-0074 §2/§3).
+
+        Thin adapter over :func:`openral_reasoner.completion.resolve_patience_s`
+        (LLM ``patience_s`` override > reward-model ``default_patience_s`` >
+        legacy ``deadline_s``). The result is sent as the goal's ``deadline_s``
+        (the runner's backstop) and arms the reasoner-side timer; the
+        reward-watcher is the usual stop.
+        """
+        c = self._reward_contract
+        return _resolve_patience_s(
+            override=call.patience_s,
+            contract_default=c.default_patience_s if c is not None else None,
+            legacy_deadline_s=call.deadline_s,
+        )
 
     def _cancel_inflight_rskill_for_reward(self) -> None:
         """Cancel the in-flight execute_rskill goal on a reward-watcher wake (ADR-0074 §2).
@@ -2492,13 +2560,14 @@ class ReasonerNode(LifecycleNode):
         active = mission.active()
         if active is None or active.text != task_text:
             return  # the mission advanced or changed under us; stale verdict
+        # ADR-0074 §1/§5 — band edges from the active reward model's calibration
+        # (or the system fallback when none is wired).
+        success_threshold, check_floor = self._band_edges()
         action, verdict = evaluate_task_verdict(
             ok=bool(resp.ok),
             success_now=float(resp.success_now),
-            # TODO(ADR-0074 gate task 4): read success_threshold / check_floor from
-            # the active RewardContract instead of these module-level defaults.
-            success_threshold=_DEFAULT_SUCCESS_THRESHOLD,
-            check_floor=_DEFAULT_CHECK_FLOOR,
+            success_threshold=success_threshold,
+            check_floor=check_floor,
             attempts=active.attempts,
         )
         if action == "vlm_check":
@@ -2898,7 +2967,11 @@ class ReasonerNode(LifecycleNode):
         # any. Wrapped-ROS adapters merge ``goal_params_json`` over
         # their manifest's ``default_goal_json`` at configure-time.
         goal.goal_params_json = call.goal_params_json
-        goal.deadline_s = float(call.deadline_s)
+        # ADR-0074 §2/§3 — the goal's ``deadline_s`` slot now carries the resolved
+        # patience ceiling (LLM override > reward-model default > legacy deadline_s);
+        # it is the runner's backstop, not the usual stop (the reward-watcher is).
+        patience_s = self._effective_patience_s(call)
+        goal.deadline_s = patience_s
         sent_at = time.monotonic()
         send_future = self._execute_rskill_client.send_goal_async(
             goal,
@@ -2909,7 +2982,7 @@ class ReasonerNode(LifecycleNode):
         )
         self.get_logger().info(
             f"dispatch: execute_rskill rskill_id={call.rskill_id!r} prompt={call.prompt!r} "
-            f"deadline_s={call.deadline_s}",
+            f"patience_s={patience_s:.0f} (backstop; reward-watcher is the usual stop)",
         )
 
     def _free_vram_peers_then_send(
@@ -3110,9 +3183,13 @@ class ReasonerNode(LifecycleNode):
         # stale handle (the runner serves one goal at a time).
         self._active_rskill_goal = (goal_handle, call, traceparent)
         self._rskill_cancel_reason = None
-        if call.deadline_s > 0:
+        # ADR-0074 §2/§3 — arm the reasoner-side backstop at the resolved patience
+        # (matches the goal's deadline_s sent to the runner). 0 → the runner owns
+        # the ceiling (manifest latency budget); no reasoner-side timer.
+        patience_s = self._effective_patience_s(call)
+        if patience_s > 0:
             self._pending_skill_deadlines[goal_id] = self.create_timer(
-                float(call.deadline_s),
+                patience_s,
                 lambda: self._on_execute_rskill_deadline(
                     call=call,
                     sent_at=sent_at,
@@ -3246,15 +3323,21 @@ class ReasonerNode(LifecycleNode):
         goal_handle: Any,
         traceparent: str | None,
     ) -> None:
-        """Deadline timer callback: cancel goal + emit ``KIND_TIMEOUT``."""
+        """Patience-ceiling backstop (ADR-0074 §2): cancel goal + emit ``KIND_TIMEOUT``.
+
+        Fires only when the reward-watcher did not stop the attempt first — the
+        resolved patience ceiling elapsed. ``deadline_s`` in the log/evidence is
+        that resolved patience (LLM override > reward default > legacy).
+        """
         goal_id = bytes(goal_handle.goal_id.uuid)
         timer = self._pending_skill_deadlines.pop(goal_id, None)
         if timer is not None:
             timer.cancel()
         elapsed = time.monotonic() - sent_at
+        patience_s = self._effective_patience_s(call)
         self.get_logger().warning(
-            f"execute_rskill deadline_s={call.deadline_s} elapsed_s={elapsed:.3f} — "
-            f"emitting KIND_TIMEOUT FailureTrigger and cancelling goal",
+            f"execute_rskill patience ceiling patience_s={patience_s:.0f} "
+            f"elapsed_s={elapsed:.3f} — emitting KIND_TIMEOUT FailureTrigger and cancelling goal",
         )
         try:
             goal_handle.cancel_goal_async()
@@ -3267,7 +3350,7 @@ class ReasonerNode(LifecycleNode):
             rskill_id=call.rskill_id,
             evidence=TimeoutEvidence(
                 operation=f"skill.{call.rskill_id}",
-                deadline_s=float(call.deadline_s),
+                deadline_s=patience_s,
                 elapsed_s=elapsed,
             ),
             traceparent=traceparent,

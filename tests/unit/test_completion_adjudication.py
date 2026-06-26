@@ -25,6 +25,8 @@ from openral_reasoner.completion import (
     image_msg_to_jpeg,
     is_reward_wake,
     parse_yes_no,
+    resolve_band_edges,
+    resolve_patience_s,
 )
 
 # Optional ROS import — guarded so pure tests always run.
@@ -175,6 +177,42 @@ def test_is_reward_wake_non_critic_source_is_never_a_wake() -> None:
     """hal/sensor/rskill/safety/wam failures are ordinary, never reward wakes."""
     for src in ("safety", "hal", "sensor", "rskill", "wam"):
         assert is_reward_wake(source=src, severity=2, severity_fail=2) is False
+
+
+# ── 2c. resolve_band_edges / resolve_patience_s (ADR-0074 §1/§2/§3) ──────────
+
+
+def test_resolve_band_edges_prefers_contract() -> None:
+    """The reward model's calibration wins over the system fallback."""
+    assert resolve_band_edges(
+        contract_threshold=0.9, contract_floor=0.6, fallback_threshold=0.8, fallback_floor=0.5
+    ) == (0.9, 0.6)
+
+
+def test_resolve_band_edges_falls_back_when_no_contract() -> None:
+    """No contract → system fallback edges."""
+    assert resolve_band_edges(
+        contract_threshold=None, contract_floor=None, fallback_threshold=0.8, fallback_floor=0.5
+    ) == (0.8, 0.5)
+
+
+def test_resolve_band_edges_half_contract_falls_back() -> None:
+    """A half-populated contract never mixes sources — it falls back wholesale."""
+    assert resolve_band_edges(
+        contract_threshold=0.9, contract_floor=None, fallback_threshold=0.8, fallback_floor=0.5
+    ) == (0.8, 0.5)
+
+
+def test_resolve_patience_authority_stack() -> None:
+    """LLM override > reward-model default > legacy deadline_s."""
+    # LLM override wins.
+    assert resolve_patience_s(override=12.0, contract_default=30.0, legacy_deadline_s=5.0) == 12.0
+    # No override → reward model's calibrated default.
+    assert resolve_patience_s(override=None, contract_default=30.0, legacy_deadline_s=5.0) == 30.0
+    # No override, no contract → the LLM's legacy deadline_s.
+    assert resolve_patience_s(override=None, contract_default=None, legacy_deadline_s=5.0) == 5.0
+    # No override, no contract, deadline 0 → 0 (runner resolves its own ceiling).
+    assert resolve_patience_s(override=None, contract_default=None, legacy_deadline_s=0.0) == 0.0
 
 
 # ── 3. _adjudicate_completion thin-harness tests (no full node) ─────────────

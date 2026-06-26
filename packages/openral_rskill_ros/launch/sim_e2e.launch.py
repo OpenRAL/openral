@@ -652,6 +652,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ADR-0057 — offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
+    # ADR-0074 §1/§3 — give the reasoner the SAME reward-model manifest the
+    # monitor loads (incl. the robometer default when the arg is empty — mirrors
+    # the monitor's resolution below) so it reads the active RewardContract
+    # calibration (three-tier band edges + default patience) instead of the
+    # module-level system defaults.
+    if enable_reward_monitor:
+        reasoner_params["reward_manifest_path"] = reward_monitor_manifest or str(
+            pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
+        )
     # ADR-0056 — the default on-demand locator the reasoner routes to when a
     # locate_in_view call leaves ``detector`` empty (the first locator brought up).
     if locator_specs:

@@ -13,7 +13,80 @@ __all__ = [
     "image_msg_to_jpeg",
     "is_reward_wake",
     "parse_yes_no",
+    "resolve_band_edges",
+    "resolve_patience_s",
 ]
+
+
+def resolve_band_edges(
+    *,
+    contract_threshold: float | None,
+    contract_floor: float | None,
+    fallback_threshold: float,
+    fallback_floor: float,
+) -> tuple[float, float]:
+    """Resolve the three-tier verdict band edges (ADR-0074 §1/§5).
+
+    The active reward model's calibration wins when present; otherwise the
+    system fallback. Both contract values must be present to use the contract
+    (a half-populated contract falls back, never mixes sources).
+
+    Args:
+        contract_threshold: The reward model's ``success_threshold`` (or None).
+        contract_floor: The reward model's ``check_floor`` (or None).
+        fallback_threshold: System-default success threshold.
+        fallback_floor: System-default check floor.
+
+    Returns:
+        ``(success_threshold, check_floor)``.
+
+    Example:
+        >>> resolve_band_edges(contract_threshold=0.9, contract_floor=0.6,
+        ...                     fallback_threshold=0.8, fallback_floor=0.5)
+        (0.9, 0.6)
+        >>> resolve_band_edges(contract_threshold=None, contract_floor=None,
+        ...                     fallback_threshold=0.8, fallback_floor=0.5)
+        (0.8, 0.5)
+    """
+    if contract_threshold is not None and contract_floor is not None:
+        return (contract_threshold, contract_floor)
+    return (fallback_threshold, fallback_floor)
+
+
+def resolve_patience_s(
+    *,
+    override: float | None,
+    contract_default: float | None,
+    legacy_deadline_s: float,
+) -> float:
+    """Resolve the patience ceiling for a dispatch (ADR-0074 §2/§3).
+
+    Authority stack — system fallback < reward-model default < LLM override:
+    the LLM's per-task ``patience_s`` override wins; else the reward model's
+    calibrated ``default_patience_s``; else the LLM's legacy ``deadline_s`` time
+    budget (``0.0`` → the runner resolves its own ceiling from the manifest).
+
+    Args:
+        override: The LLM's ``ExecuteRskillTool.patience_s`` (or None).
+        contract_default: The reward model's ``default_patience_s`` (or None).
+        legacy_deadline_s: The LLM's legacy ``ExecuteRskillTool.deadline_s``.
+
+    Returns:
+        The effective patience in seconds.
+
+    Example:
+        >>> resolve_patience_s(override=12.0, contract_default=30.0, legacy_deadline_s=5.0)
+        12.0
+        >>> resolve_patience_s(override=None, contract_default=30.0, legacy_deadline_s=5.0)
+        30.0
+        >>> resolve_patience_s(override=None, contract_default=None, legacy_deadline_s=5.0)
+        5.0
+    """
+    if override is not None:
+        return float(override)
+    if contract_default is not None:
+        return float(contract_default)
+    return float(legacy_deadline_s)
 
 
 def is_reward_wake(*, source: str, severity: int, severity_fail: int) -> bool:
