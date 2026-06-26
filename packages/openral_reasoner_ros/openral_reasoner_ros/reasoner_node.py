@@ -953,12 +953,12 @@ class ReasonerNode(LifecycleNode):
                 stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
             ),
         )
-        # ADR-0073 §1 — a genuine operator goal (re)builds the deterministic
-        # mission queue: split into ordered subtasks so the reasoner sequences
-        # and the goal survives the pull-once prompt drain. Cascade re-prompts
+        # ADR-0073 §1 — a genuine operator goal (re)builds the mission queue:
+        # the operator goal seeds one task so the reasoner sequences and the
+        # goal survives the pull-once prompt drain. Cascade re-prompts
         # (advisory query responses, spatial-memory) are NOT new goals and must
-        # not reset the mission. `split_mission` is the deterministic floor; the
-        # `decompose-mission` playbook can later repopulate the same queue.
+        # not reset the mission. The operator goal seeds one task; the
+        # `decompose-mission` playbook decomposes/repopulates the queue.
         if source not in _CASCADE_PROMPT_SOURCES:
             mission = MissionState.from_prompt(msg.text)
             if not mission.is_empty():

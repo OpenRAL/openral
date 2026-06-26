@@ -100,7 +100,7 @@ not a replacement for them. The division of labour:
 
 | Concern | Strategy (LLM, ADR-0072 playbook) | Lifecycle (deterministic, this ADR) |
 |---|---|---|
-| Split a compound goal | `decompose-mission` | `MissionState.tasks` populated; `split_mission` fallback |
+| Split a compound goal | `decompose-mission` | `MissionState.from_prompt` seeds one task; LLM decomposes via `decompose_mission` |
 | Verify an outcome | `verify-outcome` (`query_scene` + `query_task_progress`) | auto reward gate → `complete_active` / `abandon_active` |
 | Check reachability | `preflight-reach` (cuMotion + SLAM/detector) | pre-dispatch gate → stage or `abandon_active`, no wasted run |
 
@@ -142,14 +142,16 @@ This mirrors the useful part of coding-agent harnesses (explicit todo ledger,
 one active item, visible status) without importing their file/checkpoint
 machinery: the robot needs a mission ledger, not a second project manager.
 
-**Population — deterministic split, with the playbook as the upgrade.** The queue
-is filled deterministically by `split_mission` (on `" | "` and `", then"`), which
-handles the deploy-CLI join and simple operator phrasing. For a genuinely compound
-goal the `decompose-mission` playbook (ADR-0072) is the richer path: the LLM
-produces an ordered subtask list, which **populates the same `MissionState.tasks`**
-rather than living only in the prompt. Either way the queue is the durable record;
-the split is the floor, the playbook the ceiling. This keeps decomposition
-*strategy* in the playbook and decomposition *persistence* in the lifecycle.
+**Population — single-task seed, with the playbook as the upgrade.** Originally
+the queue was filled deterministically by `split_mission` (a regex splitter on
+`" | "` and `", then"`, removed in the 2026-06-26 amendment below). The operator
+goal now seeds `MissionState` as **exactly one task** via `MissionState.from_prompt`
+— a blank goal yields an empty mission (no silent idle). The `decompose-mission`
+playbook (ADR-0072) is the LLM-owned decomposition path: the LLM produces an
+ordered subtask list that **populates the same `MissionState.tasks`** via
+`DecomposeMissionTool`. Either way the queue is the durable record; the single-task
+seed is the floor, the playbook the ceiling. This keeps decomposition *strategy* in
+the playbook and decomposition *persistence* in the lifecycle.
 
 ### 2. Reward-gated completion (deterministic gate; the LLM still drives the skill)
 
@@ -326,14 +328,15 @@ the observed run. Piece 3 is hardening and may land in a follow-up.
 ## Amendment 2026-06-26 — hierarchical task subdivision on replan (#123)
 
 The base ADR built a **flat** `MissionState` populated *deterministically* by
-`split_mission()`. Two gaps remained, tracked by
+`split_mission()` (a regex splitter, originally the only non-LLM writer of the
+queue — removed in the 2026-06-26 amendment below). Two gaps remained, tracked by
 [#123](https://github.com/OpenRAL/openral/issues/123) and the `decompose-mission`
 playbook (ADR-0072, table entry #2):
 
 1. **LLM-driven population (part A).** The `decompose-mission` playbook was
    injected as system-prompt *prose* but had no **typed** path to write the
    queue — the LLM could neither populate nor refine `MissionState`. The flat
-   `split_mission` regex was the only writer.
+   `split_mission` regex was the only writer (removed in the 2026-06-26 amendment).
 2. **Re-plan the tail on a blocked item (part B).** On `abandon` (ladder
    exhausted) the reasoner only handed off; there was no way to decompose the
    remaining work into finer subtasks and continue.
@@ -370,8 +373,7 @@ output, never free-form JSON) with a single variant carrying an ordered
 `subtasks: list[str]` plus an optional `target_task_id`:
 
 - `target_task_id` empty → **populate**: the node builds a fresh `MissionState`
-  from `subtasks` via `set_mission`, refining/replacing the `split_mission`
-  floor (which remains the deterministic fallback when the LLM never calls it).
+  from `subtasks` via `set_mission`, refining the single-task seed.
 - `target_task_id` set → **subdivide**: the node applies
   `subdivide_active(subtasks)` against the matching active task.
 
@@ -392,3 +394,20 @@ bad decomposition yields a worse plan the C++ safety kernel still vetoes.
   unit tests (no GPU); `DecomposeMissionTool` round-trips through the union; the
   node dispatch + blocked-task subdivision path is covered alongside the existing
   mission-advance reasoner-node tests.
+
+## Amendment 2026-06-26 — deploy = operator prompt; LLM owns decomposition
+
+Two corrections so `deploy sim` is a faithful hardware proxy:
+
+1. **`DeployScene.tasks` removed.** The base deploy scene is env-only by design
+   (`SimScene(DeployScene)` is where a predefined `task` belongs). A prior commit
+   added `tasks: list[str]` to forward a `|`-joined startup prompt — conflating
+   deploy with benchmark. Deploy now takes its goal solely from the operator
+   (`--initial-task` / `/openral/prompt`); the simulator's predefined tasks are
+   `sim run`'s concern. No operator goal → the reasoner idles.
+
+2. **`split_mission` removed.** The operator goal seeds `MissionState` as exactly
+   one task; the LLM owns all decomposition via `decompose_mission`. The regex
+   `|` / `, then` splitter was a hidden heuristic (CLAUDE.md §1.4) that pre-empted
+   the model. The one-task seed is the only non-LLM behavior (degraded-but-never
+   -empty — no silent idle, the failure #123 fixed).

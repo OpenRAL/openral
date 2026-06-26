@@ -108,11 +108,11 @@ Three S2 capabilities layer on top of the tool surface:
   `to_context_block(cap=N)` render that bounds the always-on `## MEMORY` block on
   a long-running robot. Loaded at deploy time via `openral deploy sim/run
   --memory-dir` (alongside `scene_graph.json` and the 2D nav map).
-- **Sequential missions (ADR-0073).** `split_mission` parses a multi-task
-  operator goal (`"… , then …"`, or `DeployScene.tasks` joined with `" | "`) into
-  an ordered `MissionState` queue with at most one `active` (or `verifying`)
-  `TaskState`. The queue advances only when the active task passes the
-  reward/critic gate, rendered as a `## MISSION` ledger each tick.
+- **Sequential missions (ADR-0073).** The operator goal seeds a single-task
+  `MissionState`; the LLM decomposes it into the ordered queue via
+  `decompose_mission` with at most one `active` (or `verifying`) `TaskState`.
+  The queue advances only when the active task passes the reward/critic gate,
+  rendered as a `## MISSION` ledger each tick.
   `DecomposeMissionTool` + `MissionState.subdivide_active` flat-splice a blocked
   task into finer subtasks on replan, bounded by `DEFAULT_MAX_SUBDIVIDE_DEPTH`
   before human-handoff.

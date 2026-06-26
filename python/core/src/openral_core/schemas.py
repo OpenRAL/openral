@@ -7698,8 +7698,8 @@ class DecomposeMissionTool(_ReasonerToolBase):
     structured output (CLAUDE.md §3). Two modes, selected by ``target_task_id``:
 
     * **populate** (``target_task_id`` empty) — build a fresh mission queue from
-      ``subtasks``, refining the deterministic ``split_mission`` floor when the
-      operator goal needs a better decomposition than the regex split.
+      ``subtasks``, refining the single-task seed when the operator goal needs a
+      finer decomposition than a single prompt.
     * **subdivide** (``target_task_id`` set) — *flat-splice* the named blocked
       task in place with ``subtasks`` (``t2 → t2.1, t2.2``), bounded by
       :data:`~openral_reasoner.mission.DEFAULT_MAX_SUBDIVIDE_DEPTH`; past the

@@ -211,8 +211,8 @@ class MissionState:
         """True once any task has terminated or the active task has been attempted.
 
         Used to keep a ``decompose_mission`` *populate* (whole-queue replace, #123)
-        safe: the LLM may refine the deterministic ``split_mission`` floor on the
-        first tick (nothing started yet), but a wholesale replace mid-mission would
+        safe: the LLM may refine the single-task seed on the first tick (nothing
+        started yet), but a wholesale replace mid-mission would
         discard `done`/`abandoned` progress — so the node only honours populate
         before the mission has started.
 
