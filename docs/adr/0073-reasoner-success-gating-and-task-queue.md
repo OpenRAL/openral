@@ -322,3 +322,73 @@ the observed run. Piece 3 is hardening and may land in a follow-up.
   attempted after task 1 reaches a verified or abandoned terminal state, trace
   spans carry mission/reward attributes, and a sub-threshold task is retried then
   handed off rather than silently completed.
+
+## Amendment 2026-06-26 — hierarchical task subdivision on replan (#123)
+
+The base ADR built a **flat** `MissionState` populated *deterministically* by
+`split_mission()`. Two gaps remained, tracked by
+[#123](https://github.com/OpenRAL/openral/issues/123) and the `decompose-mission`
+playbook (ADR-0072, table entry #2):
+
+1. **LLM-driven population (part A).** The `decompose-mission` playbook was
+   injected as system-prompt *prose* but had no **typed** path to write the
+   queue — the LLM could neither populate nor refine `MissionState`. The flat
+   `split_mission` regex was the only writer.
+2. **Re-plan the tail on a blocked item (part B).** On `abandon` (ladder
+   exhausted) the reasoner only handed off; there was no way to decompose the
+   remaining work into finer subtasks and continue.
+
+### Decision 1 — data model: **flat splice** (Option 1), not a nested tree
+
+Subdivision *replaces* the blocked `TaskState` in place with N finer **flat**
+tasks (`t2 → t2.1, t2.2, …`); `MissionState` stays a flat ordered list.
+`MissionState.subdivide_active(subtasks, *, max_depth)` does the splice: the
+parent is removed, its children take its slot (first `active`, rest `pending`),
+and any already-pending tail keeps its order. Rejected the nested-tree option
+(add `children`/`parent` to `TaskState`): it buys a visible parent-with-subtasks
+hierarchy at the cost of a schema change, `to_summary()` nesting, and a nested
+dashboard renderer — none of which the orchestration needs. The flat list is
+*sequenced* the same way it always was, the dashboard's Mission card (PR #122)
+rebuilds `<ol>` from the flat `mission.tasks` each tick so it renders
+subdivision with **zero UI change**, and lineage is preserved cheaply by the
+dotted `task_id` (`t2.1.3` carries its ancestry) plus the depth-indented
+`render()` ledger.
+
+### Decision 2 — bounded depth → human-handoff (part C)
+
+`TaskState.depth` records the re-decomposition level (operator-goal tasks are
+`0`; a child is `parent.depth + 1`). `subdivide_active` refuses (returns `None`)
+once the active task is already at `DEFAULT_MAX_SUBDIVIDE_DEPTH` (2), so the
+caller falls back to `abandon_active` + the existing human-handoff. This mirrors
+the per-task `DEFAULT_MAX_ATTEMPTS` ladder: a perpetually-blocked task cannot
+subdivide forever; it terminates.
+
+### Decision 3 — one typed tool, `DecomposeMissionTool` (part A + B trigger)
+
+Extends the `ReasonerToolCall` discriminated union (CLAUDE.md §3 — structured
+output, never free-form JSON) with a single variant carrying an ordered
+`subtasks: list[str]` plus an optional `target_task_id`:
+
+- `target_task_id` empty → **populate**: the node builds a fresh `MissionState`
+  from `subtasks` via `set_mission`, refining/replacing the `split_mission`
+  floor (which remains the deterministic fallback when the LLM never calls it).
+- `target_task_id` set → **subdivide**: the node applies
+  `subdivide_active(subtasks)` against the matching active task.
+
+The node surfaces the blocked-task moment by keeping the task active for one
+decomposition tick before the final abandon, so the LLM has a typed opportunity
+to subdivide; if it declines (or depth is exhausted) the existing abandon →
+handoff path runs unchanged. The tool **holds no authority over actuation**
+(like every `ReasonerToolCall` variant) — it only edits the S2 task ledger; a
+bad decomposition yields a worse plan the C++ safety kernel still vetoes.
+
+### Consequences
+
+- **Dashboard:** unchanged for the flat splice (PR #122 already rebuilds from the
+  flat list). No nested rendering shipped.
+- **Safety:** unchanged — S2 bookkeeping only; the depth + attempts caps bound the
+  cost of a bad decomposition to extra retries / an earlier hand-off.
+- **Tests:** `subdivide_active` splice/advance/depth-termination are pure-logic
+  unit tests (no GPU); `DecomposeMissionTool` round-trips through the union; the
+  node dispatch + blocked-task subdivision path is covered alongside the existing
+  mission-advance reasoner-node tests.

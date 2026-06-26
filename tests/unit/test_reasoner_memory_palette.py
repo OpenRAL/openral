@@ -12,7 +12,7 @@ Run with:
 
 from __future__ import annotations
 
-from openral_core import MemorySearchTool, MemoryWriteTool
+from openral_core import DecomposeMissionTool, MemorySearchTool, MemoryWriteTool
 from openral_reasoner import ToolPalette
 from openral_reasoner.tool_use import _decode_tool_payload, _tool_palette_to_anthropic_tools
 
@@ -55,3 +55,20 @@ def test_decode_routes_memory_write_and_search() -> None:
     assert isinstance(search, MemorySearchTool)
     assert search.query == "where is the mug"
     assert search.limit == 3
+
+
+def test_decompose_mission_always_in_palette() -> None:
+    """decompose_mission is a core capability — offered even on a bare palette (#123)."""
+    names = {t["name"] for t in _tool_palette_to_anthropic_tools(ToolPalette())}
+    assert "decompose_mission" in names
+
+
+def test_decode_routes_decompose_mission() -> None:
+    call = _decode_tool_payload(
+        tool_name="decompose_mission",
+        arguments={"subtasks": ["open the drawer", "place the cup"], "target_task_id": "t2"},
+        palette=ToolPalette(),
+    )
+    assert isinstance(call, DecomposeMissionTool)
+    assert call.subtasks == ["open the drawer", "place the cup"]
+    assert call.target_task_id == "t2"

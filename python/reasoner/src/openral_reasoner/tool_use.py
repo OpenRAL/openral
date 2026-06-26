@@ -162,6 +162,21 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "If progress stalled or regressed, change tactic — tweak the goal "
     "params, substitute a different skill, or re-plan the approach — "
     "rather than re-issuing the same call against unchanged context. "
+    # ── Break a stuck task into finer steps (decompose_mission, #123) ──
+    "The MISSION section shows the ordered task queue (one task active at a "
+    "time); it advances only when the active task is verified. When a task is "
+    "too coarse for one skill, or query_task_progress shows it stalling and a "
+    "skill swap / param tweak is not helping, use decompose_mission to break it "
+    "into finer subtasks instead of burning attempts until it is abandoned: "
+    "call it with target_task_id set to the active task's id (e.g. 't2') and "
+    "subtasks = the ordered finer steps — the active task is flat-spliced in "
+    "place by its children and you continue on the first. Subdivision is "
+    "depth-bounded; a task already broken down twice is handed to the operator "
+    "rather than split again. You may also call decompose_mission with an EMPTY "
+    "target_task_id once at the very start to replace a coarse operator goal "
+    "with a better ordered decomposition (only before any task has been "
+    "attempted). decompose_mission only edits the task ledger — it never moves "
+    "the robot. "
     # ── Poll the reward monitor to judge a running skill (ADR-0057) ────
     "When the read-only query_task_progress tool is in the palette, a "
     "reward monitor is running IN PARALLEL with the executing skill (e.g. a "
@@ -474,17 +489,27 @@ VLLM_BASE_URL: str = "http://localhost:8000/v1"
 GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 XAI_BASE_URL: str = "https://api.x.ai/v1"
 DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+# Hugging Face's OpenAI-compatible inference router (serverless / provider-routed
+# models, e.g. ``Qwen/Qwen3-8B``). Auth via an HF access token.
+HUGGINGFACE_BASE_URL: str = "https://router.huggingface.co/v1"
 
 # Auth-required named presets that wrap :class:`OpenAICompatibleToolUseClient`
 # with a pre-filled base URL. ``openrouter`` is the original member;
-# ``gemini`` / ``xai`` / ``deepseek`` mirror it for the direct vendor
-# endpoints. Keyed by PROVIDER value → default base URL.
+# ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` mirror it for the direct
+# vendor endpoints. Keyed by PROVIDER value → default base URL.
 _OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
     "openrouter": OPENROUTER_BASE_URL,
     "gemini": GEMINI_BASE_URL,
     "xai": XAI_BASE_URL,
     "deepseek": DEEPSEEK_BASE_URL,
+    "huggingface": HUGGINGFACE_BASE_URL,
 }
+
+# Providers whose endpoint rejects ``tool_choice="required"`` and only honours
+# ``"auto"``/``"none"`` (the HF router returns 400 INVALID_TOOL_CHOICE on
+# ``required``). The client falls back to ``"auto"`` for these and retries once
+# with an explicit nudge if the model answers in prose instead of a tool call.
+_AUTO_TOOL_CHOICE_PROVIDERS: frozenset[str] = frozenset({"huggingface"})
 
 # Local self-hosted OpenAI-compatible presets. Same wrapper as the cloud
 # presets above, but these point at a loopback daemon and do NOT require
@@ -515,23 +540,25 @@ def build_tool_use_client_from_env() -> ToolUseClient:
 
     * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
       ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``vllm`` /
-      ``gemini`` / ``xai`` / ``deepseek``. Required.
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``. Required.
     * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
       Required.
     * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
       ``anthropic`` and the auth-required cloud presets (``openrouter`` /
-      ``gemini`` / ``xai`` / ``deepseek``); ignored by local
-      ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that don't
-      enforce it.
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``); ignored by
+      local ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that
+      don't enforce it.
     * ``OPENRAL_REASONER_LLM_BASE_URL`` — for ``openai-compatible`` and
       every preset. For ``openai-compatible`` it defaults to the OpenAI
       cloud; for the local presets it defaults to
       :data:`OLLAMA_BASE_URL` (``http://localhost:11434/v1``) /
       :data:`VLLM_BASE_URL` (``http://localhost:8000/v1``); for
-      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` it defaults to
-      that vendor's OpenAI-compatible endpoint
-      (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
-      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`).
+      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` /
+      ``huggingface`` it defaults to that vendor's OpenAI-compatible
+      endpoint (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
+      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`,
+      :data:`HUGGINGFACE_BASE_URL`). ``huggingface`` uses
+      ``tool_choice="auto"`` (its router rejects ``"required"``).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -551,8 +578,8 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
             "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
-            "'vllm' / 'gemini' / 'xai' / 'deepseek' to enable the reasoner. The open-core "
-            "path has no default — tests use FakeToolUseClient."
+            "'vllm' / 'gemini' / 'xai' / 'deepseek' / 'huggingface' to enable the reasoner. "
+            "The open-core path has no default — tests use FakeToolUseClient."
         )
         raise ROSConfigError(msg)
     model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
@@ -566,7 +593,10 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     # the cloud providers stay tight on the 10 s default. An explicit env
     # wins for either side.
     timeout_env = os.environ.get("OPENRAL_REASONER_LLM_TIMEOUT_S", "").strip()
-    default_timeout_s = 60.0 if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS else 10.0
+    # The HF router can cold-start a serverless model on the first call, so it
+    # gets the same generous default as the local self-hosted presets.
+    slow_first_call = provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS or provider == "huggingface"
+    default_timeout_s = 60.0 if slow_first_call else 10.0
     timeout_s = float(timeout_env) if timeout_env else default_timeout_s
     if provider == "anthropic":
         if api_key is None:
@@ -599,6 +629,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            tool_choice="auto" if provider in _AUTO_TOOL_CHOICE_PROVIDERS else "required",
         )
     if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS:
         # ollama / vllm — local self-hosted OpenAI-compatible servers whose
@@ -932,6 +963,30 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "input_schema": MemorySearchTool.model_json_schema(),
             },
         )
+
+    # ADR-0073 amendment (#123) — the typed path for the decompose-mission
+    # playbook to write the ## MISSION task queue. Always available: it is a core
+    # reasoner capability with no resident-resource dependency (unlike the
+    # reward/scene/memory tools above). Edits the S2 ledger only — no actuation.
+    from openral_core import DecomposeMissionTool  # noqa: PLC0415
+
+    tools.append(
+        {
+            "name": "decompose_mission",
+            "description": (
+                "Write the reasoner's task queue (the ## MISSION ledger). Two modes by "
+                "'target_task_id': set it to the ACTIVE task's id (e.g. 't2') to break a "
+                "too-coarse or STALLED task into finer ordered 'subtasks' — the task is "
+                "flat-spliced in place by its children and you continue on the first child. "
+                "Leave 'target_task_id' empty to replace the WHOLE queue with a better "
+                "decomposition of the operator goal (only before any task has been attempted). "
+                "Subdivision is depth-bounded (a task split twice is handed off, not split "
+                "again). Use this instead of burning execute_rskill attempts on a task one "
+                "skill cannot finish. No actuation — it only edits the task ledger."
+            ),
+            "input_schema": DecomposeMissionTool.model_json_schema(),
+        },
+    )
     return tools
 
 
@@ -1124,6 +1179,11 @@ class OpenAICompatibleToolUseClient:
         base_url: Endpoint base URL. Defaults to
             ``https://api.openai.com/v1`` when ``None``.
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to 10 s.
+        tool_choice: OpenAI ``tool_choice`` mode. ``"required"`` (the default)
+            forces exactly one tool call per tick — the reasoner's contract.
+            Some endpoints (the HF router) reject ``"required"`` and only honour
+            ``"auto"``; pass ``"auto"`` for those and the client retries once
+            with an explicit nudge if the model replies in prose instead.
     """
 
     def __init__(
@@ -1133,12 +1193,14 @@ class OpenAICompatibleToolUseClient:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_s: float = 10.0,
+        tool_choice: str = "required",
     ) -> None:
         """Stash configuration; no SDK import until :meth:`select_tool`."""
         self.model_id = model_id
         self._api_key = api_key
         self._base_url = base_url
         self._timeout_s = timeout_s
+        self._tool_choice = tool_choice
 
     def select_tool(
         self,
@@ -1164,28 +1226,60 @@ class OpenAICompatibleToolUseClient:
             {"type": "function", "function": {**spec, "parameters": spec.pop("input_schema")}}
             for spec in _tool_palette_to_anthropic_tools(palette)
         ]
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": context_text},
+        ]
         try:
             response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages are heterogeneous TypedDicts (ChatCompletionMessageParam, ChatCompletionToolParam) that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
                 model=self.model_id,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": context_text},
-                ],
+                messages=messages,
                 tools=tools,
-                tool_choice="required",
+                tool_choice=self._tool_choice,
             )
+            choices = list(response.choices)
+            no_tool_call = not choices or not choices[0].message.tool_calls
+            if no_tool_call and self._tool_choice != "required":
+                # ``tool_choice="auto"`` endpoints (HF router) may answer in prose;
+                # nudge once before giving up so the tick is not wasted.
+                messages.append(
+                    {"role": "user", "content": "You must respond with exactly one tool call now."},
+                )
+                response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary (see above)
+                    model=self.model_id,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=self._tool_choice,
+                )
+                choices = list(response.choices)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
-        choices = list(response.choices)
         if not choices or not choices[0].message.tool_calls:
             raise ROSReasonerInvalidPlan(
                 "OpenAI-compatible response did not contain a tool_calls block",
             )
         call = choices[0].message.tool_calls[0]
-        import json  # noqa: PLC0415
-
+        raw_arguments = call.function.arguments or "{}"
+        # A weak / cheap model can emit tool-call ``arguments`` that aren't a
+        # single clean JSON object (trailing tokens, two concatenated objects,
+        # a bare list). Surface it as ROSReasonerInvalidPlan — core.tick catches
+        # ROSPlanningError and the reasoner_node feeds the hint back into the
+        # next prompt's ``## EXECUTION`` section — instead of letting a raw
+        # JSONDecodeError (or a downstream dict() TypeError) crash the node.
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned malformed JSON arguments "
+                f"({exc!s}); emit a single valid JSON object: {raw_arguments!r}",
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned JSON arguments of type "
+                f"{type(arguments).__name__}; emit a single JSON object: {raw_arguments!r}",
+            )
         return _decode_tool_payload(
             tool_name=call.function.name,
-            arguments=json.loads(call.function.arguments or "{}"),
+            arguments=arguments,
             palette=palette,
         )

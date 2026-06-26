@@ -40,6 +40,7 @@ __all__ = [
     "PerceptionEventRecord",
     "PromptRecord",
     "reflect_on_failure",
+    "reflect_on_invalid_plan",
     "reflect_on_retry_cap",
     "render_playbooks_block",
     "render_robot_self_model",
@@ -166,6 +167,30 @@ def reflect_on_failure(outcome_state: str, detail: str) -> str:
     return (
         "the skill failed — don't repeat the same call; try a different skill "
         "or replan the subgoal."
+    )
+
+
+def reflect_on_invalid_plan(detail: str) -> str:
+    """Strategy hint when the model's own tool call was malformed (ADR-0072 §2.3).
+
+    The previous tick produced a tool call the reasoner could not decode —
+    malformed JSON arguments, a non-object payload, a wrong/missing field, or an
+    rskill_id outside the palette. Feed it straight back so the *next* tick fixes
+    the call instead of re-emitting the same broken one. Deterministic — no LLM
+    call.
+
+    Args:
+        detail: The decode/validation error text (carried verbatim so the model
+            sees exactly what was wrong).
+
+    Example:
+        >>> "valid tool call" in reflect_on_invalid_plan("malformed JSON arguments")
+        True
+    """
+    return (
+        "your previous tool call could not be decoded — emit one valid tool call with a "
+        "single well-formed JSON arguments object, using only fields and rskill_ids the "
+        f"palette allows. Decode error: {detail}"
     )
 
 

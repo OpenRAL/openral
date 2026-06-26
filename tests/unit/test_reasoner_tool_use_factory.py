@@ -14,6 +14,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_reasoner.tool_use import (
     DEEPSEEK_BASE_URL,
     GEMINI_BASE_URL,
+    HUGGINGFACE_BASE_URL,
     OLLAMA_BASE_URL,
     OPENROUTER_BASE_URL,
     VLLM_BASE_URL,
@@ -53,6 +54,7 @@ def test_provider_unset_raises_with_message() -> None:
     assert "gemini" in msg
     assert "xai" in msg
     assert "deepseek" in msg
+    assert "huggingface" in msg
 
 
 def test_provider_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,7 +240,7 @@ def test_named_preset_explicit_base_url_wins(
     assert client._base_url == "https://llm-proxy.internal/v1"
 
 
-@pytest.mark.parametrize("provider", ["gemini", "xai", "deepseek"])
+@pytest.mark.parametrize("provider", ["gemini", "xai", "deepseek", "huggingface"])
 def test_named_preset_without_key_raises(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     """The named presets all enforce auth, like openrouter."""
     monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
@@ -247,3 +249,36 @@ def test_named_preset_without_key_raises(monkeypatch: pytest.MonkeyPatch, provid
         build_tool_use_client_from_env()
     assert "OPENRAL_REASONER_LLM_API_KEY" in str(excinfo.value)
     assert provider in str(excinfo.value)
+
+
+# ── huggingface preset (HF router; tool_choice=auto) ───────────────────────────
+
+
+def test_huggingface_default_base_url_and_auto_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`huggingface` pins the HF router base URL and uses tool_choice=auto.
+
+    The HF router rejects tool_choice=required (400 INVALID_TOOL_CHOICE), so the
+    preset must select "auto" — unlike the other cloud presets which force "required".
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "huggingface")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "Qwen/Qwen3-8B")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "hf-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "Qwen/Qwen3-8B"
+    assert client._base_url == HUGGINGFACE_BASE_URL == "https://router.huggingface.co/v1"
+    assert client._tool_choice == "auto"
+
+
+def test_other_cloud_presets_force_required_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """openrouter (and the other vendor presets) keep tool_choice=required."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek/deepseek-chat-v3:free")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-or-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "required"

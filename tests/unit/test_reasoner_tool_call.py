@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from openral_core import (
+    DecomposeMissionTool,
     EmitPromptTool,
     ExecuteRskillTool,
     LifecycleTransitionTool,
@@ -127,6 +128,31 @@ def test_execute_skill_rejects_negative_deadline() -> None:
     """deadline_s is ge=0; zero means use the manifest default."""
     with pytest.raises(ValidationError):
         ExecuteRskillTool(rskill_id="x", deadline_s=-1.0)
+
+
+def test_decompose_mission_round_trip_populate_and_subdivide() -> None:
+    """DecomposeMissionTool decodes via the union in both modes (#123)."""
+    populate = ADAPTER.validate_json(
+        '{"tool": "decompose_mission", "subtasks": ["clear table", "wipe surface"]}'
+    )
+    assert isinstance(populate, DecomposeMissionTool)
+    assert populate.subtasks == ["clear table", "wipe surface"]
+    assert populate.target_task_id == ""  # empty → populate the whole queue
+    subdivide = ADAPTER.validate_json(
+        DecomposeMissionTool(subtasks=["a", "b"], target_task_id="t2").model_dump_json()
+    )
+    assert isinstance(subdivide, DecomposeMissionTool)
+    assert subdivide.target_task_id == "t2"
+
+
+def test_decompose_mission_trims_and_drops_blank_subtasks() -> None:
+    """Blank/whitespace subtasks are dropped; at least one must survive."""
+    call = DecomposeMissionTool(subtasks=["  pick  ", "", "   ", "place "])
+    assert call.subtasks == ["pick", "place"]
+    with pytest.raises(ValidationError):
+        DecomposeMissionTool(subtasks=["  ", ""])  # nothing survives
+    with pytest.raises(ValidationError):
+        DecomposeMissionTool(subtasks=[])  # min_length=1
 
 
 def test_unknown_tool_kind_is_rejected() -> None:

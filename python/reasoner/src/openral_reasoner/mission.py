@@ -12,7 +12,17 @@ ordered list of :class:`TaskState`, of which at most one is ``active`` (or
 task is verified complete (§2), so a multi-task goal is *sequenced* by
 bookkeeping rather than by hoping the LLM remembers it. Splitting is intentionally
 simple and deterministic; richer decomposition (the ``decompose-mission``
-playbook, ADR-0072) can layer on top later without changing this contract.
+playbook, ADR-0072) layers on top via :meth:`MissionState.subdivide_active`.
+
+The ADR-0073 amendment (#123) adds **hierarchical subdivision on replan**: when
+the active task is blocked (reward gate ``abandon``, ladder exhausted) the
+reasoner may decompose it into finer subtasks instead of only handing off. The
+data model stays **flat** — :meth:`MissionState.subdivide_active` *splices* the
+blocked task in place with its children (``t2 → t2.1, t2.2``), so the ``##
+MISSION`` ledger and the dashboard (which rebuild from the flat task list each
+tick) need no change. :attr:`TaskState.depth` bounds re-decomposition
+(:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`) so a perpetually-blocked task terminates in
+``human-handoff`` rather than subdividing forever.
 
 The state is reasoner-internal (no rclpy, no Pydantic boundary) so it lives here
 as plain dataclasses and is fully unit-testable; the ROS node drives the
@@ -28,6 +38,7 @@ from typing import Literal
 
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
+    "DEFAULT_MAX_SUBDIVIDE_DEPTH",
     "MissionState",
     "TaskState",
     "TaskStatus",
@@ -43,6 +54,16 @@ VerdictAction = Literal["complete", "abandon", "retry"]
 
 DEFAULT_MAX_ATTEMPTS: int = 3
 """Default per-task attempt cap before the reward gate abandons + hands off."""
+
+DEFAULT_MAX_SUBDIVIDE_DEPTH: int = 2
+"""Max re-decomposition depth (ADR-0073 amendment / #123).
+
+A task at the queue root has ``depth == 0``; its children from one
+:meth:`MissionState.subdivide_active` are ``depth == 1``; their children
+``depth == 2``. Once a blocked task is already at this depth, subdivision is
+refused (``subdivide_active`` returns ``None``) and the caller falls back to
+``human-handoff`` — bounding the ladder so a perpetually-blocked task cannot
+subdivide forever."""
 
 
 def evaluate_task_verdict(
@@ -130,6 +151,10 @@ class TaskState:
         last_trace_id: Trace id of the most recent attempt, or ``None``.
         last_verdict: Short human-readable verdict of the last verification
             (e.g. ``"success=0.91"``, ``"stalled@0.73"``, ``"unverified"``).
+        depth: Re-decomposition depth (ADR-0073 amendment / #123). A task split
+            from the operator goal is ``0``; a child spliced in by
+            :meth:`MissionState.subdivide_active` is ``parent.depth + 1``. Bounds
+            the subdivision ladder against :data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`.
     """
 
     task_id: str
@@ -139,6 +164,7 @@ class TaskState:
     last_rskill_id: str | None = None
     last_trace_id: str | None = None
     last_verdict: str | None = None
+    depth: int = 0
 
 
 class MissionState:
@@ -185,7 +211,7 @@ class MissionState:
         return tuple(self._tasks)
 
     def __len__(self) -> int:
-        """Number of tasks in the mission queue."""
+        """Number of tasks in the queue (terminal, active, and pending)."""
         return len(self._tasks)
 
     def active(self) -> TaskState | None:
@@ -203,6 +229,28 @@ class MissionState:
         a different condition the caller handles explicitly.
         """
         return bool(self._tasks) and all(t.status in _TERMINAL_STATES for t in self._tasks)
+
+    def has_started(self) -> bool:
+        """True once any task has terminated or the active task has been attempted.
+
+        Used to keep a ``decompose_mission`` *populate* (whole-queue replace, #123)
+        safe: the LLM may refine the deterministic ``split_mission`` floor on the
+        first tick (nothing started yet), but a wholesale replace mid-mission would
+        discard `done`/`abandoned` progress — so the node only honours populate
+        before the mission has started.
+
+        Example:
+            >>> m = MissionState.from_prompt("a | b")
+            >>> m.has_started()
+            False
+            >>> m.record_attempt(rskill_id="x")
+            >>> m.has_started()
+            True
+        """
+        return any(
+            t.status in _TERMINAL_STATES or (t.status in _ACTIVE_STATES and t.attempts > 0)
+            for t in self._tasks
+        )
 
     # ── mutators (each returns the new active task, or None when finished) ────
 
@@ -235,6 +283,84 @@ class MissionState:
         Returns the newly-active task, or ``None`` when the mission is finished.
         """
         return self._terminate_active("abandoned", reason)
+
+    def rearm_active(self) -> TaskState | None:
+        """Move the active task ``verifying → active`` to re-offer a fresh decision.
+
+        The reward gate moves the active task to ``verifying`` while it queries the
+        monitor (:meth:`mark_verifying`). When the node offers subdivision on a
+        blocked task (#123) instead of abandoning it, it calls this so the normal
+        dispatch / ``subdivide_active`` cycle resumes from ``active``. No-op
+        (returns the current active task or ``None``) when nothing is ``verifying``.
+
+        Example:
+            >>> m = MissionState.from_prompt("pick the milk")
+            >>> m.mark_verifying()
+            >>> m.active().status
+            'verifying'
+            >>> m.rearm_active().status
+            'active'
+        """
+        task = self.active()
+        if task is not None and task.status == "verifying":
+            task.status = "active"
+        return task
+
+    def subdivide_active(
+        self,
+        subtasks: list[str],
+        *,
+        max_depth: int = DEFAULT_MAX_SUBDIVIDE_DEPTH,
+    ) -> TaskState | None:
+        """Splice the active task in place with finer child subtasks (#123).
+
+        Hierarchical subdivision on replan (ADR-0073 amendment): when the active
+        task is blocked, replace it in the queue with ``subtasks`` — flat child
+        tasks ``t<n>.1, t<n>.2, …`` at ``depth + 1`` — and activate the first
+        child. The data model stays flat (Option 1 "flat splice"): the parent is
+        *removed*, its children take its slot, and any already-pending tail keeps
+        its order, so the ledger and dashboard need no change.
+
+        Bounded by ``max_depth`` (:data:`DEFAULT_MAX_SUBDIVIDE_DEPTH`): if the
+        active task is already at that depth, subdivision is **refused** and this
+        returns ``None`` so the caller hands off instead of subdividing forever.
+        Also a no-op (returns ``None``) when there is no active task or
+        ``subtasks`` is empty after trimming — the caller must treat ``None`` as
+        "could not subdivide" and fall back to :meth:`abandon_active`.
+
+        Returns the newly-active first child, or ``None`` when subdivision was
+        refused / impossible.
+
+        Example:
+            >>> m = MissionState.from_prompt("tidy the kitchen | wipe the table")
+            >>> child = m.subdivide_active(["clear the counter", "load the dishwasher"])
+            >>> child.task_id, child.text, child.depth
+            ('t1.1', 'clear the counter', 1)
+            >>> [t.task_id for t in m.tasks]
+            ['t1.1', 't1.2', 't2']
+            >>> m.subdivide_active(["rinse", "stack"]).task_id  # depth 1 → 2: allowed
+            't1.1.1'
+            >>> m.subdivide_active(["x"]) is None  # depth 2 >= DEFAULT_MAX_SUBDIVIDE_DEPTH
+            True
+        """
+        task = self.active()
+        if task is None or task.depth >= max_depth:
+            return None
+        children = [t for raw in subtasks if (t := raw.strip())]
+        if not children:
+            return None
+        index = self._tasks.index(task)
+        spliced = [
+            TaskState(
+                task_id=f"{task.task_id}.{i + 1}",
+                text=text,
+                status="active" if i == 0 else "pending",
+                depth=task.depth + 1,
+            )
+            for i, text in enumerate(children)
+        ]
+        self._tasks[index : index + 1] = spliced
+        return spliced[0]
 
     def _terminate_active(self, status: TaskStatus, verdict: str) -> TaskState | None:
         task = self.active()
@@ -301,7 +427,10 @@ class MissionState:
             }[task.status]
             verdict = f" [{task.last_verdict}]" if task.last_verdict else ""
             attempts = f" attempts={task.attempts}" if task.attempts else ""
-            lines.append(f"{marker} {task.task_id}: {task.text}{attempts}{verdict}")
+            # Indent subdivided children (depth>0, #123) so the flat ledger still
+            # reads as a hierarchy for the LLM; the dashboard ignores leading space.
+            indent = "  " * task.depth
+            lines.append(f"{indent}{marker} {task.task_id}: {task.text}{attempts}{verdict}")
         if pending:
             lines.append(f"… {pending} pending task(s)")
         return "\n".join(lines)

@@ -7715,6 +7715,48 @@ class MemorySearchTool(_ReasonerToolBase):
     limit: int = Field(default=5, ge=1, le=100)
 
 
+class DecomposeMissionTool(_ReasonerToolBase):
+    """Tool variant — write the reasoner's typed task queue (ADR-0073 amendment / #123).
+
+    The typed path for the ``decompose-mission`` playbook (ADR-0072): the LLM
+    emits an ordered list of finer subtasks and the node applies it to the
+    deterministic :class:`MissionState`, replacing the free-form-JSON gap with
+    structured output (CLAUDE.md §3). Two modes, selected by ``target_task_id``:
+
+    * **populate** (``target_task_id`` empty) — build a fresh mission queue from
+      ``subtasks``, refining the deterministic ``split_mission`` floor when the
+      operator goal needs a better decomposition than the regex split.
+    * **subdivide** (``target_task_id`` set) — *flat-splice* the named blocked
+      task in place with ``subtasks`` (``t2 → t2.1, t2.2``), bounded by
+      :data:`~openral_reasoner.mission.DEFAULT_MAX_SUBDIVIDE_DEPTH`; past the
+      bound the node hands off instead.
+
+    Like every :data:`ReasonerToolCall` variant it **holds no authority over
+    actuation** (ADR-0018 §4) — it only edits the S2 task ledger; a bad
+    decomposition yields a worse plan the safety kernel still vetoes.
+
+    Attributes:
+        tool: Discriminator (always ``"decompose_mission"``).
+        subtasks: Ordered, non-empty subtask instructions (blanks are dropped;
+            at least one must survive). Each becomes a :class:`TaskState`.
+        target_task_id: ``TaskState.task_id`` of the blocked task to subdivide
+            (e.g. ``"t2"``); empty string populates/replaces the whole queue.
+    """
+
+    tool: Literal["decompose_mission"] = "decompose_mission"
+    subtasks: list[str] = Field(min_length=1)
+    target_task_id: str = ""
+
+    @field_validator("subtasks")
+    @classmethod
+    def _drop_blank_subtasks(cls, value: list[str]) -> list[str]:
+        """Trim each subtask and drop blanks; require at least one to survive."""
+        cleaned = [s.strip() for s in value if s.strip()]
+        if not cleaned:
+            raise ValueError("decompose_mission requires at least one non-empty subtask")
+        return cleaned
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
@@ -7727,6 +7769,7 @@ ReasonerToolCall: TypeAlias = (
     | QueryTaskProgressTool
     | MemoryWriteTool
     | MemorySearchTool
+    | DecomposeMissionTool
 )
 """Discriminated union over the reasoner tool variants (ADR-0018 §4; ADR-0039).
 
@@ -7743,10 +7786,14 @@ Producers (LLM clients) serialise via ``call.model_dump_json()``.
 The first four variants are the actuation/effect palette ADR-0018 §4 commits
 to. ADR-0039 adds two **read-only query** variants — :class:`RecallObjectTool`
 and :class:`ResolvePlaceTool` — that only *read* the ADR-0038 spatial memory
-(no actuation authority). Extending the palette requires (a) a new variant
-here, (b) the corresponding ROS-side dispatch in
-``openral_reasoner_ros.reasoner_node``, (c) a CLAUDE.md §6.2 / §7.6 amendment if
-the new tool shifts the reasoner's authority surface. The two query variants'
-dispatch + result-return path is ADR-0039 Phase 2; until then they are a typed
-contract not yet exposed in the live provider palette.
+(no actuation authority). ADR-0073's amendment (#123) adds
+:class:`DecomposeMissionTool` — the typed path for the ``decompose-mission``
+playbook to write/refine the deterministic :class:`MissionState` task queue
+(populate or flat-splice a blocked task); it edits only the S2 ledger, never
+actuation. Extending the palette requires (a) a new variant here, (b) the
+corresponding ROS-side dispatch in ``openral_reasoner_ros.reasoner_node``, (c) a
+CLAUDE.md §6.2 / §7.6 amendment if the new tool shifts the reasoner's authority
+surface. The two query variants' dispatch + result-return path is ADR-0039
+Phase 2; until then they are a typed contract not yet exposed in the live
+provider palette.
 """
