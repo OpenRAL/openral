@@ -437,6 +437,25 @@ def _should_offer_subdivision(
     return active.depth < max_depth and active.task_id not in offered
 
 
+def _may_subdivide_active(active: TaskState, offered: set[str]) -> bool:
+    """True when the LLM may subdivide the active task without resetting its ladder.
+
+    Guards against the reward-gate ladder being reset to zero by re-decomposition.
+    :meth:`MissionState.subdivide_active` splices the active task out and replaces
+    it with fresh ``attempts == 0`` children. For a not-yet-attempted task that is
+    harmless. But for a task that has already been dispatched (``attempts > 0``),
+    an *unsolicited* subdivide discards its attempt count, so the verify ladder
+    keeps evaluating ``attempts == 0`` and never reaches ``max_attempts`` →
+    never abandons → never advances or hands off (the eager-LLM deploy loop).
+
+    So an attempted task may only be subdivided when it was explicitly **offered**
+    subdivision after exhausting its retry ladder (the #123 post-abandon invite,
+    tracked in ``offered``). That keeps ``attempts`` monotonic per task: it
+    accumulates → abandons → one offered subdivision → human-handoff.
+    """
+    return active.attempts == 0 or active.task_id in offered
+
+
 class ReasonerNode(LifecycleNode):
     """ROS 2 lifecycle wrapper around :class:`ReasonerCore` (ADR-0018 F4).
 
@@ -2701,6 +2720,17 @@ class ReasonerNode(LifecycleNode):
                 self.get_logger().warning(
                     f"decompose_mission: target {call.target_task_id!r} is not the active task "
                     f"(active={active.task_id if active else None!r}) — ignored",
+                )
+                return
+            if not _may_subdivide_active(active, self._subdivide_offered):
+                # The task has in-flight attempts and was not offered subdivision:
+                # splicing fresh attempts=0 children would reset the reward-gate
+                # ladder and let it retry forever. Refuse, so attempts accumulate
+                # toward abandon → one offered subdivision → human-handoff.
+                self.get_logger().warning(
+                    f"decompose_mission: refused to subdivide {call.target_task_id!r} — "
+                    f"already attempted {active.attempts}× and not offered subdivision; "
+                    "letting the retry ladder run instead of resetting it",
                 )
                 return
             child = mission.subdivide_active(call.subtasks)
