@@ -30,7 +30,8 @@ from openral_reasoner.mission import DEFAULT_MAX_SUBDIVIDE_DEPTH
         ),
         # The natural-language "…, then …" an operator types (the live test prompt).
         (
-            "stack all the bowls and place them in the drawer, then put the plate on the heating box",
+            "stack all the bowls and place them in the drawer, "
+            "then put the plate on the heating box",
             [
                 "stack all the bowls and place them in the drawer",
                 "put the plate on the heating box",
