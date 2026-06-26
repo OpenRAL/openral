@@ -118,7 +118,12 @@ def test_required_modes_cartesian_representation() -> None:
 
 def test_required_modes_bare_dim_joint() -> None:
     """A bare-dim action_contract (legacy, no representation/slots) → joint_position."""
-    m = _act_aloha()
+    # act-aloha now declares `representation: joint_positions` on disk, so strip it
+    # back to a legacy bare-dim contract to exercise the dim-only fallback path.
+    base = _act_aloha()
+    assert base.action_contract is not None
+    bare_contract = base.action_contract.model_copy(update={"representation": None, "slots": None})
+    m = base.model_copy(update={"action_contract": bare_contract})
     assert m.action_contract is not None
     assert m.action_contract.representation is None
     assert m.action_contract.slots is None
