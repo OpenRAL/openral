@@ -804,6 +804,13 @@ class TelemetryStore:
         the full history; this is the "headline latest" surface so the
         operator can see what the LLM just picked).
         """
+        mission_raw = attrs.get("reasoner.mission_json")
+        mission: Any = None
+        if isinstance(mission_raw, str):
+            try:
+                mission = json.loads(mission_raw)
+            except json.JSONDecodeError:
+                mission = None
         self._topics["reasoner"].update(
             {
                 "ts_unix": ts_unix,
@@ -815,6 +822,7 @@ class TelemetryStore:
                 "force": attrs.get("reasoner.force"),
                 "suppressed_reason": attrs.get("reasoner.suppressed_reason"),
                 "error_kind": attrs.get("reasoner.error_kind"),
+                "mission": mission,
             }
         )
 

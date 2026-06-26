@@ -488,3 +488,111 @@ def test_on_image_emits_sensors_read_latest_span(
     assert attrs.get("openral.sensors.height") == 24
     assert attrs.get("openral.sensors.channels") == 3
     assert attrs.get("openral.sensors.age_ms") is not None
+
+
+def test_dashboard_flip_180_never_touches_the_policy_frame(
+    captured_spans: InMemorySpanExporter,
+) -> None:
+    """OPENRAL_DASHBOARD_FLIP_180 flips the dashboard thumbnail, NOT the policy frame.
+
+    Regression: the flip was once applied to ``SensorFrame.data`` itself, which
+    the rSkill runner reads (``_decode_image_frames``) to build the VLA's
+    observation. Combined with the adapter's own ``image_preprocessing.flip_180``
+    that double-flipped the policy input upside-down and collapsed the rollout
+    (the robot stopped picking). The flip must stay display-only: the aggregated
+    frame fed to the policy is byte-identical to the raw publisher frame, while
+    the dashboard thumbnail is the 180°-rotated copy.
+    """
+    import numpy as np
+    import rclpy
+    from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import Image as RosImage
+
+    # The flag is read in the node's __init__ — set it before construction.
+    prev = os.environ.get("OPENRAL_DASHBOARD_FLIP_180")
+    os.environ["OPENRAL_DASHBOARD_FLIP_180"] = "1"
+    rclpy.init()
+    node = _WorldStateLifecycleNode()
+    node.set_parameters(
+        [
+            rclpy.parameter.Parameter("camera_names", value=["top"]),
+            rclpy.parameter.Parameter("publish_rate_hz_fast", value=30.0),
+            rclpy.parameter.Parameter("publish_rate_hz_slow", value=5.0),
+        ]
+    )
+    executor = rclpy.executors.SingleThreadedExecutor()
+    executor.add_node(node)
+    helper = rclpy.create_node("test_world_state_flip_helper")
+    executor.add_node(helper)
+    image_qos = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        depth=1,
+    )
+    pub = helper.create_publisher(RosImage, "/openral/cameras/top/image", image_qos)
+
+    # Vertically asymmetric frame so a 180° flip is detectable: dark top half,
+    # bright bottom half. The 128-step gap survives the thumbnail's JPEG encode.
+    h, w = 24, 32
+    raw = np.zeros((h, w, 3), dtype=np.uint8)
+    raw[: h // 2] = 30
+    raw[h // 2 :] = 220
+    raw_bytes = raw.tobytes()
+
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        msg = RosImage()
+        msg.header.stamp = helper.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_camera_top"
+        msg.height = h
+        msg.width = w
+        msg.encoding = "rgb8"
+        msg.step = w * 3
+        msg.data = raw_bytes
+        pub.publish(msg)
+        _spin_for(executor, 0.3)
+
+        # (1) Policy path: the aggregated frame MUST be the raw bytes, unflipped.
+        frames = node._aggregator.snapshot().image_frames or {}  # type: ignore[union-attr]
+        assert "top" in frames, "world_state never stored the camera frame"
+        assert bytes(frames["top"].data or b"") == raw_bytes, (
+            "OPENRAL_DASHBOARD_FLIP_180 mutated the policy-bound frame — it must "
+            "flip the dashboard thumbnail only, never SensorFrame.data."
+        )
+    finally:
+        try:
+            node.trigger_deactivate()
+            node.trigger_cleanup()
+        except Exception:
+            pass
+        executor.remove_node(helper)
+        helper.destroy_node()
+        node.destroy_node()
+        rclpy.shutdown()
+        if prev is None:
+            os.environ.pop("OPENRAL_DASHBOARD_FLIP_180", None)
+        else:
+            os.environ["OPENRAL_DASHBOARD_FLIP_180"] = prev
+
+    # (2) Display path: the emitted thumbnail is the 180°-rotated copy — its top
+    # half is now the bright one (raw had the dark top). Decode + compare halves.
+    import base64
+    import io
+
+    from PIL import Image as PILImage
+
+    spans = [s for s in captured_spans.get_finished_spans() if s.name == "sensors.read_latest"]
+    assert spans, "no sensors.read_latest span emitted"
+    b64 = dict(spans[0].attributes or {}).get("openral.sensors.thumbnail_jpeg_b64")
+    assert b64, "span carried no thumbnail"
+    thumb = np.asarray(PILImage.open(io.BytesIO(base64.b64decode(str(b64)))).convert("RGB"))
+    th = thumb.shape[0]
+    top_mean = float(thumb[: th // 2].mean())
+    bottom_mean = float(thumb[th // 2 :].mean())
+    assert top_mean > bottom_mean, (
+        "dashboard thumbnail was not flipped: top-half brightness "
+        f"{top_mean:.1f} should exceed bottom-half {bottom_mean:.1f} after the 180° flip."
+    )

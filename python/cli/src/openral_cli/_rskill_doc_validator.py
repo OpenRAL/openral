@@ -48,7 +48,7 @@ import re
 from pathlib import Path
 from typing import Final, Literal
 
-from openral_core.schemas import RSkillManifest
+from openral_core.schemas import RSKILL_TEMPLATE_SENTINELS, RSkillManifest
 from pydantic import BaseModel, Field
 
 __all__ = [
@@ -103,8 +103,9 @@ diffusion-pusht, …) pass without rewrites.
 """
 
 PLACEHOLDER_SENTINELS: Final[tuple[str, ...]] = (
-    "TEMPLATE_ORG",
-    "TEMPLATE_ID",
+    # Canonical unresolved-scaffold sentinels (shared with the reasoner palette
+    # gate via RSkillManifest.is_scaffold_placeholder), plus README-only markers.
+    *RSKILL_TEMPLATE_SENTINELS,
     "TODO:",
     "<TODO>",
     "FIXME:",
@@ -472,7 +473,7 @@ def _validate_manifest_content(manifest: RSkillManifest) -> list[DocValidationIs
                 )
             )
 
-    for sentinel in ("TEMPLATE_ORG", "TEMPLATE_ID"):
+    for sentinel in RSKILL_TEMPLATE_SENTINELS:
         if sentinel in manifest.name:
             issues.append(
                 DocValidationIssue(

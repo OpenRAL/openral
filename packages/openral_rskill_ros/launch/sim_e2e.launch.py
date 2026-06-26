@@ -1494,12 +1494,17 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "reasoner_provider",
-            default_value="ollama",
+            # Fall back to the documented OPENRAL_REASONER_LLM_PROVIDER env so a
+            # caller (e.g. `openral deploy sim`) that exports the reasoner LLM
+            # config gets it honoured. The launch pins provider/model on the node
+            # via additional_env, which would otherwise override the inherited
+            # env with these defaults and silently ignore it. ``ollama`` if unset.
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_PROVIDER") or "ollama",
             description="OPENRAL_REASONER_LLM_PROVIDER for the reasoner node.",
         ),
         DeclareLaunchArgument(
             "reasoner_model",
-            default_value="gemma4:31b-cloud",
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_MODEL") or "gemma4:31b-cloud",
             description="OPENRAL_REASONER_LLM_MODEL for the reasoner node.",
         ),
         DeclareLaunchArgument(

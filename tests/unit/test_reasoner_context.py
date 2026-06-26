@@ -11,6 +11,7 @@ from openral_core import JointState, Pose6D, TimeoutEvidence, WorldState
 from openral_reasoner import (
     ContextRenderer,
     FailureEventRecord,
+    MissionState,
     PerceptionEventRecord,
     PromptRecord,
 )
@@ -358,3 +359,76 @@ def test_seq_is_not_reset_by_drain_prompts() -> None:
     seq_before = r.seq
     r.drain_prompts()
     assert r.seq == seq_before
+
+
+# ── ADR-0073 §1 — mission (## MISSION) rendering ─────────────────────────────
+
+
+def test_no_mission_omits_section() -> None:
+    r = ContextRenderer()
+    assert "## MISSION" not in r.render(world_state=None)
+
+
+def test_empty_mission_omits_section() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("   "))  # no tasks
+    assert "## MISSION" not in r.render(world_state=None)
+
+
+def test_set_mission_renders_active_task_and_bumps_seq() -> None:
+    r = ContextRenderer()
+    seq_before = r.seq
+    r.set_mission(MissionState.from_prompt("pick the bowl | place the butter"))
+    # A new goal is an event — it must wake an idle heartbeat.
+    assert r.seq == seq_before + 1
+    out = r.render(world_state=None)
+    assert "## MISSION" in out
+    assert "▶ t1: pick the bowl" in out
+    assert "1 pending task(s)" in out  # t2 still pending
+
+
+def test_advance_mission_completes_and_activates_next_and_bumps_seq() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("pick the bowl | place the butter"))
+    seq_before = r.seq
+    nxt = r.advance_mission(done=True, verdict="success=0.92")
+    # Advancing the queue is an event — the new active task wakes the reasoner.
+    assert r.seq == seq_before + 1
+    assert nxt is not None and nxt.text == "place the butter"
+    out = r.render(world_state=None)
+    assert "✓ t1: pick the bowl [success=0.92]" in out
+    assert "▶ t2: place the butter" in out
+
+
+def test_advance_mission_abandons_on_done_false() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("hard task | easy task"))
+    r.advance_mission(done=False, verdict="ladder exhausted: stalled@0.73")
+    out = r.render(world_state=None)
+    assert "✗ t1: hard task" in out
+    assert "▶ t2: easy task" in out
+
+
+def test_advance_mission_with_no_mission_is_noop() -> None:
+    r = ContextRenderer()
+    seq_before = r.seq
+    assert r.advance_mission(done=True, verdict="x") is None
+    assert r.seq == seq_before  # no mission → no bump
+
+
+def test_mission_property_exposes_state_for_in_place_bookkeeping() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("a | b"))
+    # The node records attempts in place (non-waking bookkeeping).
+    r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
+    assert r.mission.active().attempts == 1
+    assert "attempts=1" in r.render(world_state=None)
+
+
+def test_mission_finishes_when_last_task_completed() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("only task"))
+    assert r.advance_mission(done=True, verdict="success=0.95") is None
+    assert r.mission.is_complete()
+    out = r.render(world_state=None)
+    assert "✓ t1: only task" in out

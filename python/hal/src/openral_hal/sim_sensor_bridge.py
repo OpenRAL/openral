@@ -252,6 +252,16 @@ class SimSensorBridge:
         # ADR-0035 cross-frame lift — RGB cameras whose optical-frame TF failed
         # to resolve (no MJCF camera); warned once, then skipped.
         self._camera_tf_disabled: set[str] = set()
+        # OPENRAL_DASHBOARD_FLIP_180 — flip ONLY the dashboard thumbnail 180° so
+        # bottom-up MuJoCo (LIBERO) renders show upright. The published Image (and
+        # thus the policy observation) stays raw; the world_state node applies the
+        # same display-only flip to its thumbnail, so both `sensors.read_latest`
+        # emitters agree and the dashboard card never flickers between orientations.
+        import os  # reason: env-gated display feature
+
+        self._dashboard_flip_180 = os.environ.get(
+            "OPENRAL_DASHBOARD_FLIP_180", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
         # Offscreen "cinecam" recorder (website-video capture): when
         # OPENRAL_CINECAM_DIR is set, render the pulled-back free-camera view
         # (same pose as the onscreen viewer) to numbered JPGs each tick. Robust
@@ -435,7 +445,13 @@ class SimSensorBridge:
             if now_ns - last < _THUMB_INTERVAL_NS:
                 continue
             self._last_thumb_ns[name] = now_ns
-            thumb = encode_rgb_thumbnail(arr) if c == _RGB_CHANNELS else None
+            # Display-only 180° flip for the dashboard thumbnail (the published
+            # Image above stays raw for the policy/world_state path). Keeps this
+            # emitter's thumbnail in the same orientation as world_state's.
+            thumb_arr = (
+                arr[::-1, ::-1] if (self._dashboard_flip_180 and c == _RGB_CHANNELS) else arr
+            )
+            thumb = encode_rgb_thumbnail(thumb_arr) if c == _RGB_CHANNELS else None
             with tracer.start_as_current_span("sensors.read_latest") as span:
                 span.set_attribute("openral.sensors.source", name)
                 record_sensor_frame_attrs(
