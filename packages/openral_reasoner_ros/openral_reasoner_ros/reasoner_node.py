@@ -92,6 +92,9 @@ from openral_reasoner.completion import (
     image_msg_to_jpeg as _image_msg_to_jpeg,
 )
 from openral_reasoner.completion import (
+    is_reward_wake as _is_reward_wake,
+)
+from openral_reasoner.completion import (
     parse_yes_no as _parse_yes_no,
 )
 from openral_reasoner.context import (
@@ -674,6 +677,15 @@ class ReasonerNode(LifecycleNode):
         # the result callback can cancel the deadline timer when the
         # action server returns before deadline_s elapses.
         self._pending_skill_deadlines: dict[bytes, Any] = {}
+        # ADR-0074 §2 — the in-flight execute_rskill goal so a reward-watcher
+        # wake can cancel it (stop the VLA now, verify on the reward signal,
+        # not at the deadline clock). Tuple of (goal_handle, call, traceparent);
+        # set on goal-accept, cleared on the terminal result. ``cancel_reason``
+        # is ``"reward"`` while a reward-driven cancel is in flight so the
+        # canceled result re-enters the verify gate (vs an operator/estop
+        # cancel, which stays a no-op).
+        self._active_rskill_goal: tuple[Any, ExecuteRskillTool, str | None] | None = None
+        self._rskill_cancel_reason: str | None = None
         self._dispatched_calls: list[Any] = []  # for tests/observability
 
     # ── lifecycle transitions ───────────────────────────────────────────────
@@ -1069,9 +1081,46 @@ class ReasonerNode(LifecycleNode):
             stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
         )
         self._renderer.append_failure(record)
+        # ADR-0074 §2 — a reward-watcher wake (critic FAIL) while a VLA is in
+        # flight is the *primary* stop: cancel the attempt now so the verify
+        # gate runs on the reward signal rather than burning the rest of the
+        # deadline clock. The canceled result re-enters
+        # ``_maybe_verify_active_mission_task`` (the three-tier / VLM gate),
+        # which forces the next full-palette tick. When no goal is in flight
+        # (e.g. between tasks) the wake falls through to the ordinary preempt.
+        if (
+            _is_reward_wake(source=source, severity=record.severity, severity_fail=_SEVERITY_FAIL)
+            and self._active_rskill_goal is not None
+            and self._rskill_cancel_reason != "reward"
+        ):
+            self._cancel_inflight_rskill_for_reward()
+            return
         preempt_threshold = _SEVERITY_WARN if source == "safety" else _SEVERITY_FAIL
         if record.severity >= preempt_threshold:
             self._on_tick(force=True, tier=_FAILURE_TIER_FOR_SOURCE.get(source, "B"))
+
+    def _cancel_inflight_rskill_for_reward(self) -> None:
+        """Cancel the in-flight execute_rskill goal on a reward-watcher wake (ADR-0074 §2).
+
+        Sets ``_rskill_cancel_reason = "reward"`` so the canceled result runs
+        the verify gate (a reward-ended attempt), then requests the cancel. A
+        failed cancel request is non-fatal — the deadline timer is still the
+        backstop and the result callback fires regardless, with the reason
+        already latched.
+        """
+        assert self._active_rskill_goal is not None
+        goal_handle, call, _traceparent = self._active_rskill_goal
+        self._rskill_cancel_reason = "reward"
+        self.get_logger().info(
+            f"reward wake: cancelling in-flight execute_rskill {call.rskill_id!r} "
+            "to verify on the reward signal (ADR-0074 §2)",
+        )
+        try:
+            goal_handle.cancel_goal_async()
+        except Exception as exc:  # reason: cancel is best-effort; deadline backstops it
+            self.get_logger().error(
+                f"reward-cancel cancel_goal_async failed: {type(exc).__name__}: {exc}",
+            )
 
     def _on_perception(self, kind: str, msg: Any) -> None:
         """Append a perception event; no preemption — perception is informational."""
@@ -3056,6 +3105,11 @@ class ReasonerNode(LifecycleNode):
             self._reactivate_vram_peers()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
+        # ADR-0074 §2 — remember the in-flight goal so a reward-watcher wake can
+        # cancel it. Cleared on the terminal result. A new dispatch overwrites a
+        # stale handle (the runner serves one goal at a time).
+        self._active_rskill_goal = (goal_handle, call, traceparent)
+        self._rskill_cancel_reason = None
         if call.deadline_s > 0:
             self._pending_skill_deadlines[goal_id] = self.create_timer(
                 float(call.deadline_s),
@@ -3083,6 +3137,12 @@ class ReasonerNode(LifecycleNode):
         # policy's VRAM is released; restore the GPU peers (detector) we froze
         # for it. Runs before any early return below so it always fires.
         self._reactivate_vram_peers()
+        # ADR-0074 §2 — the goal is terminal: drop the in-flight handle and read
+        # (then clear) the cancel reason so a reward-driven cancel verifies below
+        # while an operator/estop cancel stays a no-op.
+        self._active_rskill_goal = None
+        cancel_reason = self._rskill_cancel_reason
+        self._rskill_cancel_reason = None
         timer = self._pending_skill_deadlines.pop(goal_id, None)
         if timer is not None:
             timer.cancel()
@@ -3130,6 +3190,17 @@ class ReasonerNode(LifecycleNode):
             # ADR-0073 §2 — runner "success" for a VLA means "ran to its deadline
             # without a controller fault", NOT "task accomplished". Verify the
             # active mission task against the reward signal before advancing.
+            self._maybe_verify_active_mission_task(call, traceparent=traceparent)
+            return
+        # ADR-0074 §2 — a reward-driven cancel (status 5, reason "reward") is an
+        # intentional stop, not a controller fault: the reward-watcher decided
+        # the attempt was over (success/plateau/patience). Verify on the reward
+        # signal — the three-tier / VLM gate completes or advances the ladder —
+        # and skip the KIND_CONTROLLER failure path (no fault to report).
+        if status == 5 and cancel_reason == "reward":
+            self.get_logger().info(
+                f"execute_rskill reward-cancelled rskill_id={call.rskill_id!r} — verifying",
+            )
             self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
         self.get_logger().warning(

@@ -23,6 +23,7 @@ import pytest
 from openral_reasoner.completion import (
     COMPLETION_QUESTION,
     image_msg_to_jpeg,
+    is_reward_wake,
     parse_yes_no,
 )
 
@@ -154,6 +155,26 @@ def test_completion_question_contains_task_placeholder() -> None:
     assert "pick the cup" in q
     # The question must prompt for yes/no
     assert "yes" in q.lower() or "no" in q.lower()
+
+
+# ── 2b. is_reward_wake (the cancel-in-flight predicate, ADR-0074 §2) ─────────
+
+
+def test_is_reward_wake_critic_fail_is_a_wake() -> None:
+    """A critic-source trigger at >= SEVERITY_FAIL is a reward wake."""
+    assert is_reward_wake(source="critic", severity=2, severity_fail=2) is True
+    assert is_reward_wake(source="critic", severity=3, severity_fail=2) is True
+
+
+def test_is_reward_wake_below_fail_is_not_a_wake() -> None:
+    """A critic trigger below SEVERITY_FAIL (e.g. WARN) is not a wake."""
+    assert is_reward_wake(source="critic", severity=1, severity_fail=2) is False
+
+
+def test_is_reward_wake_non_critic_source_is_never_a_wake() -> None:
+    """hal/sensor/rskill/safety/wam failures are ordinary, never reward wakes."""
+    for src in ("safety", "hal", "sensor", "rskill", "wam"):
+        assert is_reward_wake(source=src, severity=2, severity_fail=2) is False
 
 
 # ── 3. _adjudicate_completion thin-harness tests (no full node) ─────────────

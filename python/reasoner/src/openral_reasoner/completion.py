@@ -11,8 +11,38 @@ import io
 __all__ = [
     "COMPLETION_QUESTION",
     "image_msg_to_jpeg",
+    "is_reward_wake",
     "parse_yes_no",
 ]
+
+
+def is_reward_wake(*, source: str, severity: int, severity_fail: int) -> bool:
+    """Whether a ``FailureTrigger`` is a reward-watcher wake (ADR-0074 §2).
+
+    The reward-watcher rides the ADR-0064 critic path: a ``critic``-source
+    trigger at ``SEVERITY_FAIL`` is the "attempt is over" signal (success,
+    plateau, or patience) that should preempt — and, while a VLA is in
+    flight, stop it *now* rather than at the ``deadline_s`` clock.  A
+    non-critic source (hal/sensor/rskill/safety/wam) is an ordinary
+    failure, never a reward wake.
+
+    Args:
+        source: The failure-bus source name (the topic leaf).
+        severity: The trigger's severity.
+        severity_fail: The ``SEVERITY_FAIL`` constant to compare against.
+
+    Returns:
+        ``True`` iff ``source == "critic"`` and ``severity >= severity_fail``.
+
+    Example:
+        >>> is_reward_wake(source="critic", severity=2, severity_fail=2)
+        True
+        >>> is_reward_wake(source="critic", severity=1, severity_fail=2)
+        False
+        >>> is_reward_wake(source="sensor", severity=2, severity_fail=2)
+        False
+    """
+    return source == "critic" and severity >= severity_fail
 
 # ADR-0074 §5 — VLM adjudication prompt for the ambiguous reward band.
 # Kept short and binary so the provider returns a parseable answer;

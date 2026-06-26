@@ -50,6 +50,7 @@ At a wake, the node reads the critic score:
 With no multimodal LLM and no scene VLM, tier-1 (auto-pass) still completes; the **ambiguous middle** can't be adjudicated → those attempts run to the patience ceiling and escalate to human-handoff. Honest: no oracle + no VLM ⇒ never claim an uncertain success.
 
 ## Consequences
+- **Reward-cancel is the primary stop (§2, implemented).** A reward-watcher wake (`critic` FAIL) while a VLA is in flight cancels the `execute_rskill` action goal — the reasoner stores the accepted goal handle (`_active_rskill_goal`) and `_on_failure` routes a reward wake to `_cancel_inflight_rskill_for_reward()` (`is_reward_wake` predicate). The runner already honors `goal_handle.is_cancel_requested` and returns `canceled`; the reasoner distinguishes a reward-driven cancel (`_rskill_cancel_reason="reward"`) from an operator/estop cancel and re-enters the three-tier verify gate (`_maybe_verify_active_mission_task`) on the former, skipping the controller-failure path (an intentional stop is not a fault). `deadline_s` stays armed as the backstop. _Remaining (gate task 2/3): demote `deadline_s` to a model-calibrated `patience_s` and read the band edges from the active `RewardContract` rather than the module-level `_DEFAULT_*` constants._
 - `deadline_s` is demoted to the patience ceiling; completion is reward-shape + VLM, never a clock or a lone threshold.
 - Scales to SARMs with zero re-architecting — each ships its own calibration.
 - The `describe_image` multimodal primitive (landed) is the tier-2 mechanism.
