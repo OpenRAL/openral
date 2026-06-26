@@ -1182,10 +1182,27 @@ class OpenAICompatibleToolUseClient:
                 "OpenAI-compatible response did not contain a tool_calls block",
             )
         call = choices[0].message.tool_calls[0]
-        import json  # noqa: PLC0415
-
+        raw_arguments = call.function.arguments or "{}"
+        # A weak / cheap model can emit tool-call ``arguments`` that aren't a
+        # single clean JSON object (trailing tokens, two concatenated objects,
+        # a bare list). Surface it as ROSReasonerInvalidPlan — core.tick catches
+        # ROSPlanningError and the reasoner_node feeds the hint back into the
+        # next prompt's ``## EXECUTION`` section — instead of letting a raw
+        # JSONDecodeError (or a downstream dict() TypeError) crash the node.
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned malformed JSON arguments "
+                f"({exc!s}); emit a single valid JSON object: {raw_arguments!r}",
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned JSON arguments of type "
+                f"{type(arguments).__name__}; emit a single JSON object: {raw_arguments!r}",
+            )
         return _decode_tool_payload(
             tool_name=call.function.name,
-            arguments=json.loads(call.function.arguments or "{}"),
+            arguments=arguments,
             palette=palette,
         )

@@ -81,7 +81,7 @@ from openral_core import (
     TimeoutEvidence,
     control_modes_for_representation,
 )
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
 from openral_reasoner.context import (
@@ -91,6 +91,7 @@ from openral_reasoner.context import (
     PerceptionEventRecord,
     PromptRecord,
     reflect_on_failure,
+    reflect_on_invalid_plan,
     reflect_on_retry_cap,
     render_playbooks_block,
     render_robot_self_model,
@@ -1661,6 +1662,24 @@ class ReasonerNode(LifecycleNode):
         self._retry_cap_warned = False
         if result.error is not None:
             self.get_logger().warning(f"tick error: {result.error!s}")
+            # ADR-0072 §2.2/§2.3 — an invalid plan is the model's *own* mistake
+            # (malformed JSON args, a non-object payload, a field/rskill_id the
+            # palette rejects). Feed it back into the `## EXECUTION` section with
+            # a Reflexion hint so the NEXT tick emits a valid call instead of
+            # re-issuing the same broken one. (Provider/transport errors —
+            # timeout, 403 — are not the model's fault, so they only log.)
+            # Appending bumps `seq`, so the next heartbeat runs rather than being
+            # suppressed as idle.
+            if isinstance(result.error, ROSReasonerInvalidPlan):
+                self._renderer.append_execution(
+                    ExecutionEventRecord(
+                        rskill_id="(invalid-plan)",
+                        outcome="failed",
+                        summary=f"undecodable tool call: {result.error!s}",
+                        reflection=reflect_on_invalid_plan(str(result.error)),
+                        stamp_ns=self.get_clock().now().nanoseconds,
+                    )
+                )
             return
         if result.tool_call is None:
             return
