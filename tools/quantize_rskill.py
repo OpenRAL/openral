@@ -534,6 +534,55 @@ def _copy_source_config(source_repo: str, out_dir: Path, *, loader: str) -> None
             shutil.copy(src, out_dir / src.name)
 
 
+def _auto_map_modules(out_dir: Path) -> set[str]:
+    """Collect every ``trust_remote_code`` module file referenced by an ``auto_map``.
+
+    The ``auto_map`` in ``config.json`` / ``processor_config.json`` /
+    ``tokenizer_config.json`` points at ``"<module>.<ClassName>"`` (or a list /
+    ``[slow, fast]`` tuple of them). Each ``<module>`` is a top-level ``*.py`` that
+    MUST ship in the repo, or ``from_pretrained`` fails to import at load time.
+    Returns the set of expected ``"<module>.py"`` filenames.
+    """
+    modules: set[str] = set()
+    for cfg_name in ("config.json", "processor_config.json", "tokenizer_config.json"):
+        cfg_path = out_dir / cfg_name
+        if not cfg_path.is_file():
+            continue
+        try:
+            auto_map = json.loads(cfg_path.read_text()).get("auto_map", {})
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(auto_map, dict):
+            continue
+        for target in auto_map.values():
+            # A value is "module.ClassName" or a list/tuple of them (e.g. a
+            # [slow, fast] processor pair); a ``None`` slot is skipped.
+            for entry in target if isinstance(target, (list, tuple)) else [target]:
+                if isinstance(entry, str) and "." in entry:
+                    modules.add(entry.rsplit(".", 1)[0].split(".")[-1] + ".py")
+    return modules
+
+
+def _verify_auto_map_complete(out_dir: Path) -> None:
+    """Fail loudly if an ``auto_map`` module is missing from the quantized bundle.
+
+    Caught here at quantization time rather than at load time in a production
+    deploy: shipping a ``trust_remote_code`` rSkill without one of its
+    ``auto_map`` modules makes ``from_pretrained`` raise
+    ``"<repo> does not appear to have a file named <module>.py"`` — the exact bug
+    that shipped ``rskill-molmoact2-libero-nf4`` without
+    ``image_processing_molmoact2.py`` / ``video_processing_molmoact2.py``.
+    """
+    missing = sorted(m for m in _auto_map_modules(out_dir) if not (out_dir / m).is_file())
+    if missing:
+        raise RuntimeError(
+            f"quantized bundle is missing trust_remote_code module(s) referenced by "
+            f"auto_map: {missing}. These must ship or `from_pretrained` fails at load "
+            f"time. _copy_source_config should have pulled every *.py from the source "
+            f"(was the source loaded with --loader transformers?)."
+        )
+
+
 def _upload(out_dir: Path, target_repo: str, *, token: str, scheme: str) -> None:
     """Create the target repo (idempotent) and upload the contents of ``out_dir``."""
     api = HfApi(token=token)
@@ -713,6 +762,10 @@ def main() -> int:
         # Gated to the transformers loader inside the function (lerobot configs
         # reject the field — see _stamp_quantization_config).
         _stamp_quantization_config(out_dir, scheme=args.scheme, loader=args.loader)
+        # Fail before publishing a repo whose auto_map references a
+        # trust_remote_code module that did not make it into the bundle (the
+        # molmoact2-libero-nf4 image/video_processing.py regression).
+        _verify_auto_map_complete(out_dir)
         if args.skip_upload:
             print(f"[quantize] --skip-upload; bundle left at {out_dir}", flush=True)
             return 0

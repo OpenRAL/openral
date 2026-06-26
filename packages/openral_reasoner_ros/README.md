@@ -64,8 +64,8 @@ a `ToolUseClient` selection plus a pre-filled `OPENRAL_REASONER_LLM_BASE_URL`
 (except `anthropic` / bare `openai-compatible`) so you don't hand-configure
 it. An explicit `OPENRAL_REASONER_LLM_BASE_URL` always overrides the preset
 (proxy / staging gateway / non-default port). The cloud presets
-(`openrouter` / `gemini` / `xai` / `deepseek`) and the local presets
-(`ollama` / `vllm`) are all thin shortcuts over the same
+(`openrouter` / `gemini` / `xai` / `deepseek` / `huggingface`) and the local
+presets (`ollama` / `vllm`) are all thin shortcuts over the same
 `OpenAICompatibleToolUseClient`, pointed at each target's OpenAI-compatible
 endpoint; the local ones also drop the API-key requirement and get a longer
 default timeout to absorb a cold first call.
@@ -80,6 +80,13 @@ default timeout to absorb a cold first call.
 | `gemini` | `OpenAICompatibleToolUseClient` | `https://generativelanguage.googleapis.com/v1beta/openai/` | required |
 | `xai` | `OpenAICompatibleToolUseClient` | `https://api.x.ai/v1` | required |
 | `deepseek` | `OpenAICompatibleToolUseClient` | `https://api.deepseek.com` | required |
+| `huggingface` | `OpenAICompatibleToolUseClient` | `https://router.huggingface.co/v1` | required³ |
+
+³ `huggingface` targets the HF inference **router** (e.g. `OPENRAL_REASONER_LLM_MODEL=Qwen/Qwen3-8B`)
+with an HF access token. The router only honours `tool_choice="auto"` (it rejects
+the `"required"` the other presets force), so this preset selects `"auto"` and the
+client retries once with an explicit nudge if the model answers in prose; it also
+gets the longer cold-start timeout.
 
 ¹ `openai-compatible` ignores the key for local endpoints (vLLM /
 llama-server) that don't enforce auth; set it when targeting cloud OpenAI.
@@ -236,6 +243,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.rskill_id` | When tool=`execute_skill` | Skill id the LLM chose. |
 | `reasoner.suppressed_reason` | Suppressed ticks | One of `palette_empty` / `retry_cap` / `heartbeat_idle`. The `min_interval` and `heartbeat_idle` short-circuits fire BEFORE the span opens (so dashboards don't show noise). |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
+| `reasoner.mission_json` | When a mission is active (ADR-0073) | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 
 The active W3C `traceparent` captured inside this span is threaded
