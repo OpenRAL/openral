@@ -162,6 +162,21 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "If progress stalled or regressed, change tactic — tweak the goal "
     "params, substitute a different skill, or re-plan the approach — "
     "rather than re-issuing the same call against unchanged context. "
+    # ── Break a stuck task into finer steps (decompose_mission, #123) ──
+    "The MISSION section shows the ordered task queue (one task active at a "
+    "time); it advances only when the active task is verified. When a task is "
+    "too coarse for one skill, or query_task_progress shows it stalling and a "
+    "skill swap / param tweak is not helping, use decompose_mission to break it "
+    "into finer subtasks instead of burning attempts until it is abandoned: "
+    "call it with target_task_id set to the active task's id (e.g. 't2') and "
+    "subtasks = the ordered finer steps — the active task is flat-spliced in "
+    "place by its children and you continue on the first. Subdivision is "
+    "depth-bounded; a task already broken down twice is handed to the operator "
+    "rather than split again. You may also call decompose_mission with an EMPTY "
+    "target_task_id once at the very start to replace a coarse operator goal "
+    "with a better ordered decomposition (only before any task has been "
+    "attempted). decompose_mission only edits the task ledger — it never moves "
+    "the robot. "
     # ── Poll the reward monitor to judge a running skill (ADR-0057) ────
     "When the read-only query_task_progress tool is in the palette, a "
     "reward monitor is running IN PARALLEL with the executing skill (e.g. a "
@@ -932,6 +947,30 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "input_schema": MemorySearchTool.model_json_schema(),
             },
         )
+
+    # ADR-0073 amendment (#123) — the typed path for the decompose-mission
+    # playbook to write the ## MISSION task queue. Always available: it is a core
+    # reasoner capability with no resident-resource dependency (unlike the
+    # reward/scene/memory tools above). Edits the S2 ledger only — no actuation.
+    from openral_core import DecomposeMissionTool  # noqa: PLC0415
+
+    tools.append(
+        {
+            "name": "decompose_mission",
+            "description": (
+                "Write the reasoner's task queue (the ## MISSION ledger). Two modes by "
+                "'target_task_id': set it to the ACTIVE task's id (e.g. 't2') to break a "
+                "too-coarse or STALLED task into finer ordered 'subtasks' — the task is "
+                "flat-spliced in place by its children and you continue on the first child. "
+                "Leave 'target_task_id' empty to replace the WHOLE queue with a better "
+                "decomposition of the operator goal (only before any task has been attempted). "
+                "Subdivision is depth-bounded (a task split twice is handed off, not split "
+                "again). Use this instead of burning execute_rskill attempts on a task one "
+                "skill cannot finish. No actuation — it only edits the task ledger."
+            ),
+            "input_schema": DecomposeMissionTool.model_json_schema(),
+        },
+    )
     return tools
 
 

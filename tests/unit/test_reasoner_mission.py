@@ -17,7 +17,6 @@ from openral_reasoner import (
 )
 from openral_reasoner.mission import DEFAULT_MAX_SUBDIVIDE_DEPTH
 
-
 # ── split_mission ────────────────────────────────────────────────────────────
 
 
@@ -178,9 +177,7 @@ def test_taskstate_defaults() -> None:
 
 
 def test_verdict_complete_on_success() -> None:
-    action, verdict = evaluate_task_verdict(
-        ok=True, succeeded=True, success_now=0.91, attempts=1
-    )
+    action, verdict = evaluate_task_verdict(ok=True, succeeded=True, success_now=0.91, attempts=1)
     assert action == "complete"
     assert verdict == "success=0.91"
 
@@ -204,17 +201,20 @@ def test_verdict_abandon_when_attempts_exhausted() -> None:
 def test_verdict_never_completes_without_succeeded_flag() -> None:
     # Even with a high raw score, completion requires the reward monitor's own
     # succeeded flag (success_now >= its threshold). No fake success.
-    action, _ = evaluate_task_verdict(
-        ok=True, succeeded=False, success_now=0.79, attempts=1
-    )
+    action, _ = evaluate_task_verdict(ok=True, succeeded=False, success_now=0.79, attempts=1)
     assert action == "retry"
 
 
 def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
     # ok=False (stale/errored reward) is treated as "not verified": retry until
     # the attempt cap, then abandon — never an accidental complete.
-    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=1)[0] == "retry"
-    assert evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=3)[0] == "abandon"
+    assert (
+        evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=1)[0] == "retry"
+    )
+    assert (
+        evaluate_task_verdict(ok=False, succeeded=False, success_now=0.0, attempts=3)[0]
+        == "abandon"
+    )
 
 
 # ── subdivide_active (ADR-0073 amendment / #123 — flat-splice subdivision) ────
@@ -293,3 +293,26 @@ def test_subdivide_preserves_completed_prefix() -> None:
     # t1 (done) stays at the front; t2 is replaced by its children; t3 trails.
     assert [t.task_id for t in m.tasks] == ["t1", "t2.1", "t2.2", "t3"]
     assert m.tasks[0].status == "done"
+
+
+def test_has_started_tracks_progress() -> None:
+    m = MissionState.from_prompt("a | b")
+    assert not m.has_started()  # fresh — a populate replace is safe here
+    m.record_attempt(rskill_id="x")
+    assert m.has_started()  # the active task was attempted
+
+
+def test_has_started_true_after_a_terminal_task() -> None:
+    m = MissionState.from_prompt("a | b")
+    m.complete_active("ok")  # t1 done, t2 active untouched
+    assert m.has_started()  # a wholesale replace would now drop t1's progress
+
+
+def test_rearm_active_moves_verifying_back_to_active() -> None:
+    m = MissionState.from_prompt("pick the milk")
+    m.mark_verifying()
+    assert m.active().status == "verifying"
+    rearmed = m.rearm_active()
+    assert rearmed is m.active() and rearmed.status == "active"
+    # idempotent on an already-active task.
+    assert m.rearm_active().status == "active"

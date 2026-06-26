@@ -64,6 +64,7 @@ from openral_core import (
     SIM_EXECUTABLE_CONTROL_MODES,
     ControllerEvidence,
     ControlMode,
+    DecomposeMissionTool,
     EmitPromptTool,
     ExecuteRskillTool,
     LifecycleTransitionTool,
@@ -97,7 +98,12 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import ReasonerCore
 from openral_reasoner.memory import MemoryEntry, MemoryStore
-from openral_reasoner.mission import MissionState, evaluate_task_verdict
+from openral_reasoner.mission import (
+    DEFAULT_MAX_SUBDIVIDE_DEPTH,
+    MissionState,
+    TaskState,
+    evaluate_task_verdict,
+)
 from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
@@ -215,7 +221,7 @@ _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change"
 # — only a genuine operator/cli/dashboard prompt does. Self-emits (frame_id ==
 # the node name) are already dropped earlier in `_on_prompt`.
 _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
-    {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory"}
+    {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
 )
 
 # ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
@@ -374,6 +380,22 @@ def _resets_search_episode(call: Any) -> bool:
     return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool)
 
 
+def _should_offer_subdivision(
+    active: TaskState,
+    offered: set[str],
+    max_depth: int,
+) -> bool:
+    """True when a blocked task may be offered subdivision before abandonment (#123).
+
+    Bounded two ways so a task that refuses to decompose still terminates in
+    human-handoff rather than looping: **once per task id** (the ``offered`` set —
+    a second abandon of the same task falls through to the normal abandon/advance
+    ladder) and only while the task is **below** the re-decomposition depth bound
+    (a task already split to ``max_depth`` is handed off, not split again).
+    """
+    return active.depth < max_depth and active.task_id not in offered
+
+
 class ReasonerNode(LifecycleNode):
     """ROS 2 lifecycle wrapper around :class:`ReasonerCore` (ADR-0018 F4).
 
@@ -461,6 +483,10 @@ class ReasonerNode(LifecycleNode):
         # repeated miss doesn't re-fire the detector every tick). Reset whenever
         # the active-search bound resets (new operator goal / non-search action).
         self._locate_escalated: set[str] = set()
+        # #123 — task ids already offered one subdivision before being abandoned.
+        # One offer per task so a task that declines to decompose still terminates
+        # in human-handoff; cleared when a new operator goal rebuilds the mission.
+        self._subdivide_offered: set[str] = set()
 
         # ROS parameters: when both are set, on_configure walks
         # `rskill_search_paths` for `*/rskill.yaml`, loads the
@@ -936,6 +962,7 @@ class ReasonerNode(LifecycleNode):
             mission = MissionState.from_prompt(msg.text)
             if not mission.is_empty():
                 self._renderer.set_mission(mission)
+                self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
                 self.get_logger().info(
                     f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
                 )
@@ -1710,6 +1737,9 @@ class ReasonerNode(LifecycleNode):
         if isinstance(call, MemorySearchTool):
             self._dispatch_memory_search(call, traceparent=traceparent)
             return
+        if isinstance(call, DecomposeMissionTool):
+            self._dispatch_decompose_mission(call)
+            return
         if isinstance(call, ReloadGstPipelineTool):
             # F6 sensor-package service IDL (e.g.
             # openral_sensor_msgs/srv/ReloadGstPipeline) is not yet on
@@ -2233,6 +2263,26 @@ class ReasonerNode(LifecycleNode):
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             self._on_tick(force=True, tier="C")
             return
+        if action == "abandon" and _should_offer_subdivision(
+            active, self._subdivide_offered, DEFAULT_MAX_SUBDIVIDE_DEPTH
+        ):
+            # #123 — before abandoning a blocked task, give the LLM ONE chance to
+            # decompose it into finer subtasks (depth-bounded; one offer per task
+            # id via `_subdivide_offered` so a task that declines to decompose
+            # still terminates in human-handoff rather than looping). Re-arm the
+            # task to `active` so the normal dispatch / decompose_mission cycle
+            # resumes, then nudge the reasoner with an explicit invite tick.
+            self._subdivide_offered.add(active.task_id)
+            mission.rearm_active()
+            if self._core is not None:
+                self._core.reset_kind_streak()
+            self.get_logger().info(
+                f"mission: task {active.task_id} blocked ({verdict}); offering subdivision "
+                f"(depth {active.depth} < {DEFAULT_MAX_SUBDIVIDE_DEPTH})",
+            )
+            self._emit_subdivision_invite(active, verdict, traceparent=traceparent)
+            self._on_tick(force=True, tier="C")
+            return
         done = action == "complete"
         nxt = self._renderer.advance_mission(done=done, verdict=verdict)
         label = "done ✓" if done else "abandoned ✗"
@@ -2283,6 +2333,103 @@ class ReasonerNode(LifecycleNode):
         msg.metadata_json = json.dumps(metadata, sort_keys=True)
         self._prompt_pub.publish(msg)
         self.get_logger().info(f"mission: {text}")
+
+    def _dispatch_decompose_mission(self, call: DecomposeMissionTool) -> None:
+        """Apply an LLM mission decomposition to the typed task queue (#123).
+
+        Two modes by ``target_task_id`` (ADR-0073 amendment / ADR-0072
+        ``decompose-mission``):
+
+        * **subdivide** (id set) — flat-splice the named *active* blocked task in
+          place with finer children via :meth:`MissionState.subdivide_active`
+          (depth-bounded). Only the active task may be subdivided; a stale /
+          non-active id is logged and ignored.
+        * **populate** (id empty) — replace the whole queue with a better
+          decomposition of the operator goal, but only before any task has been
+          attempted (:meth:`MissionState.has_started`) so a refinement never
+          discards in-flight progress.
+
+        Edits the S2 ledger only — no actuation. A forced Tier-C tick wakes the
+        reasoner to act on the new active task.
+        """
+        mission = self._renderer.mission
+        if call.target_task_id:
+            if mission is None:
+                self.get_logger().warning(
+                    f"decompose_mission: target {call.target_task_id!r} but no active mission",
+                )
+                return
+            active = mission.active()
+            if active is None or active.task_id != call.target_task_id:
+                self.get_logger().warning(
+                    f"decompose_mission: target {call.target_task_id!r} is not the active task "
+                    f"(active={active.task_id if active else None!r}) — ignored",
+                )
+                return
+            child = mission.subdivide_active(call.subtasks)
+            if child is None:
+                # Depth bound reached (or empty) — fall through to the existing
+                # attempt-cap → abandon → human-handoff ladder; do not loop.
+                self.get_logger().info(
+                    f"decompose_mission: refused to subdivide {call.target_task_id!r} "
+                    f"(depth {active.depth} ≥ {DEFAULT_MAX_SUBDIVIDE_DEPTH}) — will hand off",
+                )
+                return
+            self._renderer.set_mission(mission)  # bump seq so the new active task wakes a tick
+            self.get_logger().info(
+                f"decompose_mission: subdivided {call.target_task_id!r} into "
+                f"{len(call.subtasks)} subtask(s) → active {child.task_id}={child.text[:60]!r}",
+            )
+        else:
+            if mission is not None and mission.has_started():
+                self.get_logger().warning(
+                    "decompose_mission: populate ignored — the mission has already started "
+                    "(use target_task_id to subdivide the active task instead)",
+                )
+                return
+            new_mission = MissionState(call.subtasks)
+            if new_mission.is_empty():
+                return
+            self._renderer.set_mission(new_mission)
+            self._subdivide_offered.clear()
+            self.get_logger().info(
+                f"decompose_mission: populated mission with {len(new_mission)} task(s) — "
+                f"active={new_mission.active().text[:60]!r}",
+            )
+        if self._core is not None:
+            self._core.reset_kind_streak()
+        self._on_tick(force=True, tier="C")
+
+    def _emit_subdivision_invite(
+        self,
+        task: TaskState,
+        verdict: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Self-prompt inviting the LLM to subdivide a blocked task (#123).
+
+        frame_id ``mission`` so the reasoner *consumes* it on the next tick (it is
+        a cascade source, unlike ``openral_reasoner`` operator summaries) without
+        rebuilding the deterministic mission queue.
+        """
+        if self._prompt_pub is None:
+            return
+        text = (
+            f"Task {task.task_id} ({task.text!r}) is blocked: {verdict}. It is too coarse "
+            "for one skill — call decompose_mission with target_task_id="
+            f"{task.task_id!r} and an ordered list of finer subtasks to break it down and "
+            "continue, or it will be handed off to the operator."
+        )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "mission"
+        metadata: dict[str, Any] = {"source": "mission", "task_id": task.task_id}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.text = text
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
 
     def _memory_now(self) -> str:
         """An ISO-8601 timestamp from the ROS clock (sim-time-aware) for memory entries."""

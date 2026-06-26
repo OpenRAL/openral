@@ -100,6 +100,7 @@ def evaluate_task_verdict(
         return "abandon", f"unverified after {attempts} attempt(s) (success={success_now:.2f})"
     return "retry", f"not verified (success={success_now:.2f}), attempt {attempts}/{max_attempts}"
 
+
 TaskStatus = Literal["pending", "active", "verifying", "done", "abandoned"]
 """Lifecycle of a single subtask. ``pending → active → verifying → done |
 abandoned``. ``abandoned`` and ``done`` are terminal — a task is never silently
@@ -228,6 +229,28 @@ class MissionState:
         """
         return bool(self._tasks) and all(t.status in _TERMINAL_STATES for t in self._tasks)
 
+    def has_started(self) -> bool:
+        """True once any task has terminated or the active task has been attempted.
+
+        Used to keep a ``decompose_mission`` *populate* (whole-queue replace, #123)
+        safe: the LLM may refine the deterministic ``split_mission`` floor on the
+        first tick (nothing started yet), but a wholesale replace mid-mission would
+        discard `done`/`abandoned` progress — so the node only honours populate
+        before the mission has started.
+
+        Example:
+            >>> m = MissionState.from_prompt("a | b")
+            >>> m.has_started()
+            False
+            >>> m.record_attempt(rskill_id="x")
+            >>> m.has_started()
+            True
+        """
+        return any(
+            t.status in _TERMINAL_STATES or (t.status in _ACTIVE_STATES and t.attempts > 0)
+            for t in self._tasks
+        )
+
     # ── mutators (each returns the new active task, or None when finished) ────
 
     def record_attempt(self, *, rskill_id: str | None, trace_id: str | None = None) -> None:
@@ -259,6 +282,28 @@ class MissionState:
         Returns the newly-active task, or ``None`` when the mission is finished.
         """
         return self._terminate_active("abandoned", reason)
+
+    def rearm_active(self) -> TaskState | None:
+        """Move the active task ``verifying → active`` to re-offer a fresh decision.
+
+        The reward gate moves the active task to ``verifying`` while it queries the
+        monitor (:meth:`mark_verifying`). When the node offers subdivision on a
+        blocked task (#123) instead of abandoning it, it calls this so the normal
+        dispatch / ``subdivide_active`` cycle resumes from ``active``. No-op
+        (returns the current active task or ``None``) when nothing is ``verifying``.
+
+        Example:
+            >>> m = MissionState.from_prompt("pick the milk")
+            >>> m.mark_verifying()
+            >>> m.active().status
+            'verifying'
+            >>> m.rearm_active().status
+            'active'
+        """
+        task = self.active()
+        if task is not None and task.status == "verifying":
+            task.status = "active"
+        return task
 
     def subdivide_active(
         self,
