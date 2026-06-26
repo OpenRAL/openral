@@ -14,7 +14,7 @@
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
 
 </div>
 
@@ -36,20 +36,25 @@ OpenRAL is a typed, layered runtime that sits between a robot's motor API and a 
 
 - **Typed runtime** — eight well-defined layers (HAL → Sensors → World State → rSkill → Reasoning → WAM → Safety → Observability) with Pydantic v2 contracts at every boundary.
 - **rSkill packaging format** — HuggingFace Hub artifacts containing weights, a `rskill.yaml` manifest, quantisation hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-libero`.
-- **Planning kernel** — a slow LLM-based reasoner (S2) emitting typed `ReasonerToolCall` tool-calls (`ExecuteSkill`, `LifecycleTransition`, `EmitPrompt`, …), and a fast visuomotor policy (S1, 30–200 Hz) executing dispatched skills. Replanning is bounded and explicit.
-- **Safety kernel (planned)** — a certifiable C++ separate process, deny-by-default. Python proposes actions; C++ will dispose them. `ROSSafetyViolation` is never silently caught.
+- **Planning kernel** — a slow, provider-agnostic LLM reasoner (S2) emitting typed `ReasonerToolCall` tool-calls (`ExecuteRskillTool`, `LifecycleTransition`, `EmitPrompt`, plus read-only `locate_in_view` / `query_scene` / `query_task_progress` / `recall_object` query tools), and a fast visuomotor policy (S1, 30–200 Hz) executing dispatched skills. Replanning is bounded and explicit. See the **[Reasoner reference](docs/reference/reasoner.md)**.
+- **Safety kernel** — a C++ separate process, deny-by-default. An allocation-free validator enforces joint position / velocity / torque limits, a global torque cap, Cartesian workspace and end-effector-speed limits, NaN/Inf rejection, and self / world / voxel-grid collision — backed by independent deadman and hardware-E-stop watchdog processes. Python proposes actions; C++ disposes them; `ROSSafetyViolation` is never silently caught. Formal certification is the remaining work.
 
-We compose ROS 2, tf2, MoveIt 2, Nav2, and `ros2_control` — we don't reinvent them.
+We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** planning), Nav2, NVIDIA Isaac ROS (**cuVSLAM + nvblox** vision SLAM), and `ros2_control` — we don't reinvent them.
 
 **Shipped today** (all workspace packages at `0.1.0`):
 - `openral_core` schemas + the `openral` CLI (bare `openral` drops into a REPL)
 - HAL adapters for [16 robot platforms](docs/reference/robots.md) — manipulators, bimanual arms, humanoids
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
-- [32 rSkill packages](docs/reference/rskills.md) — SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7 policies, RT-DETR and LocateAnything detectors, and the Qwen3.5-4B scene VLM
-- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [the benchmark scene catalogue](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, Isaac Sim, RLBench/CoppeliaSim)
-- ADR-0018 reasoner/safety ROS graph + deadman/E-stop forwarders
-- OpenTelemetry instrumentation with OTLP export and live `openral dashboard`
+- [rSkill packages](docs/reference/rskills.md) spanning every kind — VLA policies (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7), open-vocabulary detectors (RT-DETR, OmDet-Turbo, LocateAnything), the Qwen3.5-4B scene VLM (`kind: vlm`), the Robometer-4B reward/progress monitor (`kind: reward`), and MoveIt / Nav2 classical-control skills (`kind: ros_action`)
+- [`openral sim run`](docs/reference/sim-environments.md) — YAML-driven rollouts across [the benchmark scene catalogue](docs/reference/sim-environments.md) (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, RoboTwin 2.0, gym-aloha, gym-pusht, Isaac Sim, RLBench/CoppeliaSim)
+- **Object detection & spatial lift** — promptable open-vocabulary detectors (OmDet-Turbo default, RT-DETR fallback) → `ObjectsMetadata`, lifted 2D→3D into world state; on-demand `locate_in_view` for novel targets
+- **Navigation & SLAM** — `openral_slam_bringup` + `openral_nav2_bringup` as reasoner-managed services: `slam_toolbox` for lidar robots, or **NVIDIA Isaac ROS cuVSLAM + nvblox** (fed by a **Depth Anything 3** monocular metric-depth provider) for lidar-less robots → `map` frame + Nav2 path planning
+- **GPU-accelerated MoveIt planning** — `cuMotion` CUDA pipeline behind a capability gate, OMPL fallback (ADR-0065)
+- **TensorRT runtime** — `TensorRTRuntime` + engine cache, plus a GStreamer/NVMM zero-copy detector path for accelerated on-device inference
+- C++ **safety kernel** — deny-by-default allocation-free validator (envelope + self/world/voxel collision) + independent deadman & hardware-E-stop watchdogs
+- ADR-0018 [reasoner](docs/reference/reasoner.md)/safety ROS graph with provider-agnostic LLM tool dispatch
+- OpenTelemetry instrumentation with OTLP export, live `openral dashboard`, and a read-only **Foxglove** live-scene surface
 
 Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: [docs/architecture/repo-state-map.html](docs/architecture/repo-state-map.html).
 
@@ -63,14 +68,19 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | HAL adapters | Uniform `HAL` Protocol — `connect / read_state / write_command / disconnect`; per-robot lifecycle nodes | `python/hal/`, `packages/openral_hal_*/` |
 | Sensor catalog | Typed `SensorSpec` / `SensorBundle` for cameras, depth, IMU, F/T, tactile, lidar | `python/sensors/` |
 | World state | 30 Hz tf2-aware snapshot with staleness latching; carries lifted `detected_objects`; consumed by S1 and S2 | `python/world_state/`, `packages/world_state/` |
-| Object detection | `kind: detector` rSkills (RT-DETR ONNX today; LocateAnything NF4 artifact packaged) → `ObjectsMetadata`, lifted 2D→3D into world state | `packages/openral_perception_ros/`, ADR-0035/0037 |
+| Object detection | Promptable open-vocabulary `kind: detector` rSkills (OmDet-Turbo default, RT-DETR fallback, LocateAnything-3B) → `ObjectsMetadata`, lifted 2D→3D into world state; on-demand `locate_in_view` for novel targets | `packages/openral_perception_ros/`, ADR-0035/0037/0051/0056 |
 | Scene understanding (S2) | `kind: vlm` rSkill (Qwen3.5-4B NF4) → the reasoner's read-only `query_scene` tool for task-progress / success verification ("did the grasp succeed?") | `packages/openral_perception_ros/` (`scene_vlm_node`), ADR-0047 |
-| rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX adapters, async action chunks | `python/rskill/`, `rskills/` |
-| Inference runner | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy` | `python/runner/`, `python/sim/` |
+| Task-progress monitor (S2) | `kind: reward` rSkill (Robometer-4B NF4) runs parallel to the VLA → read-only `query_task_progress` tool emitting per-frame progress + success scalars to gate replanning | `packages/openral_perception_ros/` (`reward_monitor_node`), ADR-0057 |
+| Reasoner (S2) | Event-driven, provider-agnostic LLM planner emitting typed `ReasonerToolCall` tool-calls; closed, capability-gated tool palette; bounded replanning | `python/reasoner/`, `packages/openral_reasoner_ros/`, [docs](docs/reference/reasoner.md) |
+| Navigation & SLAM | Reasoner-managed `slam_toolbox` (lidar) or Isaac ROS cuVSLAM + nvblox + Depth-Anything-3 mono-depth (lidar-less) → `map` frame; Nav2 path planning | `packages/openral_slam_bringup/`, `packages/openral_nav2_bringup/`, ADR-0025/0064 |
+| GPU-accelerated planning | `cuMotion` CUDA-accelerated MoveIt pipeline behind `RobotCapabilities.supports_cumotion()`, OMPL fallback | `packages/openral_safety/` (`cumotion_config.py`), ADR-0065 |
+| Safety kernel | C++ deny-by-default validator — joint position/velocity/torque + global cap, Cartesian workspace + EE-speed, NaN/Inf, self/world/voxel collision; deadman + hardware E-stop watchdogs | `cpp/openral_safety_kernel/`, `packages/openral_safety/`, ADR-0020/0030/0040 |
+| rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX / **TensorRT** adapters (engine cache), async action chunks | `python/rskill/`, `rskills/` |
+| Inference runtimes | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy`; `TensorRTRuntime` + GStreamer/NVMM zero-copy detector path for accelerated on-device inference | `python/runner/`, `python/rskill/`, `python/sim/` |
 | Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
-| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
-| Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard` | `python/observability/` |
-| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
+| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
+| Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface | `python/observability/`, ADR-0059 |
+| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; manifests at `schema_version: "0.2"` (ADR-0069) | `python/core/`, `tools/schema_export.py` |
 | ROS 2 IDL | `openral_msgs` (.msg, .action) — normative across the runtime | `packages/msgs/` |
 
@@ -278,7 +288,7 @@ The sensor catalog ships typed adapters wrapping vendor SDKs into `SensorSpec` /
 
 ## Sim environments
 
-12 benchmark scenes span LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, gym-aloha, gym-pusht, and Isaac Sim. Each YAML is a complete `SimEnvironment` — one command to run.
+Benchmark scenes span LIBERO, MetaWorld (MT10/MT50), ManiSkill3, SimplerEnv, RoboCasa, RoboTwin 2.0 (dual-arm SAPIEN), gym-aloha, gym-pusht, Isaac Sim, and RLBench/CoppeliaSim. Each YAML is a complete `SimEnvironment` — one command to run.
 
 → **Full config index:** [docs/reference/sim-environments.md](docs/reference/sim-environments.md)
 
@@ -288,7 +298,15 @@ The sensor catalog ships typed adapters wrapping vendor SDKs into `SensorSpec` /
 
 rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducible `eval/` — installed and run with the `openral rskill` CLI.
 
-Policy rSkills (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, RLDX-1, OpenVLA-OFT), 3 perception detector rSkills (RT-DETR and LocateAnything), and the Qwen3.5-4B scene VLM (`kind: vlm`, drives the read-only `query_scene` tool) are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; Qwen3.5-4B is Apache-2.0. The GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) ships in-tree and loads upstream `nvidia/GR00T-N1.7-LIBERO` weights via an out-of-process sidecar (ADR-0046). The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code model (NF4, loaded in a dedicated `transformers<5` runtime) that solves the SimplerEnv WidowX carrot-on-plate ManiSkill3 task (ADR-0063, issue #55).
+rSkills come in several **kinds**, all installed and run the same way:
+
+- **`kind: vla`** — visuomotor policies (S1): SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7.
+- **`kind: detector`** — open-vocabulary object detectors: RT-DETR (COCO ONNX), **OmDet-Turbo** (Apache-2.0 open-vocab, default), and LocateAnything-3B (NF4 VLM). Continuous detectors stream into world state; on-demand ones answer the reasoner's `locate_in_view`.
+- **`kind: vlm`** — the Qwen3.5-4B scene VLM (Apache-2.0), drives the read-only `query_scene` tool for success/progress verification.
+- **`kind: reward`** — the Robometer-4B progress monitor (Apache-2.0), runs parallel to a VLA and drives `query_task_progress`.
+- **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-joints` / `-eef-pose` / `-look-at`) and Nav2 (`rskill-nav2-navigate-to-pose`).
+
+Most are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; the GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) loads upstream `nvidia/GR00T-N1.7-LIBERO` weights via an out-of-process sidecar (ADR-0046). The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code model (NF4, loaded in a dedicated `transformers<5` runtime) that solves the SimplerEnv WidowX carrot-on-plate ManiSkill3 task (ADR-0063, issue #55).
 
 → **Full table + license notes:** [docs/reference/rskills.md](docs/reference/rskills.md)
 
@@ -302,6 +320,35 @@ openral rskill check    # which installed rSkills run on this host?
 ## Supported VLAs
 
 See [CLAUDE.md §3](CLAUDE.md) for the full model-by-model license matrix and adapter status. Compatibility matrix (observed obs/action dims, normalisation): [docs/reference/vla_compatibility.md](docs/reference/vla_compatibility.md).
+
+---
+
+## Reasoning (S2)
+
+The **reasoner** is the slow, deliberative half of the dual-system architecture. It is an event-driven LLM supervisor (0.2 Hz heartbeat, preempted by failures and operator prompts) that reads a structured situation report — world state, recent failures, perception events, pending prompts — and emits **exactly one typed `ReasonerToolCall` per tick**. It holds no actuation authority: every motion still crosses the S1 skill runner and the C++ safety kernel.
+
+- **Provider-agnostic** — pick any LLM via `OPENRAL_REASONER_LLM_PROVIDER` (Anthropic, OpenAI-compatible, OpenRouter, Ollama, vLLM, Gemini, xAI, DeepSeek). No cloud lock-in, no hidden default.
+- **Closed, capability-gated tool palette** — built from the installed rSkill registry and rebuilt on `/openral/skill_registry_changed`. The LLM cannot dispatch a skill that isn't installed, capability-matched, and licensed.
+- **Nine typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`) and five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`).
+- **Bounded replanning** — a per-kind retry cap prevents loops; the streak resets when context shifts.
+
+→ **Full reference:** [docs/reference/reasoner.md](docs/reference/reasoner.md) · ADR-0018
+
+> **In development** (tracked on feature branches, not yet on `master`): a self-maintained `MEMORY.md` semantic memory, human-authored `kind: playbook` decision procedures the reasoner reads as content, and a reward-gated sequential mission task-queue (ADR-0071/0072/0073).
+
+---
+
+## Safety
+
+OpenRAL's safety posture is **"Python proposes, C++ disposes."** A candidate action chunk passes through a Python supervisor (per-mode envelope bounds) and then the C++ **safety kernel** — a separate, deny-by-default process with an allocation-free hot path. The kernel enforces, today:
+
+- **Envelope limits** — joint position, joint velocity, joint torque (plus a global torque cap), Cartesian workspace AABB, end-effector linear/angular speed.
+- **Sanity** — NaN/Inf rejection, action-dimension and n-DoF validation, fail-closed on an unconfigured envelope.
+- **Geometric collision** — self-collision, world-obstacle collision, and voxel/occupancy-grid collision, including predictive checks over the action horizon (velocity integration and Cartesian-delta IK).
+- **Freshness gates** — stale measured state / world model / voxel grid drops the chunk (fail-closed).
+- **Defense in depth** — independent **deadman** (safe-action staleness) and **hardware E-stop** watchdog processes that survive a kernel crash; an E-stop latches and requires an explicit, cooldown-gated reset.
+
+`ROSSafetyViolation` is never silently caught. Acceleration/jerk limits and formal certification are the remaining work. See the [hazard log](docs/reference/hazard-log.md) and ADR-0020/0030/0040.
 
 ---
 

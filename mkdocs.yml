@@ -93,6 +93,7 @@ nav:
     - Sensor catalog & roadmap: reference/sensors_landscape.md
     - Robot descriptions: reference/robots.md
     - rSkills: reference/rskills.md
+    - Reasoner (S2): reference/reasoner.md
     - Sim environments: reference/sim-environments.md
     - Safety hazard log: reference/hazard-log.md
   - Contributing:
