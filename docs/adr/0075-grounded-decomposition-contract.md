@@ -16,11 +16,11 @@
   - [ADR-0074](0074-vlm-adjudicated-completion-and-reward-driven-progress.md) — the
     completion-gate ladder. Grounded subtasks give the verifier a concrete object
     to check ("is the milk in the basket?") instead of an unverifiable set.
-  - [ADR-0022](0022-reasoner-tool-palette-per-skill.md) — the per-skill tool
+  - [ADR-0022](0022-rskill-action-vocabulary.md) — the per-skill tool
     palette (`RSkillToolEntry`: description + actions + objects + scenes). This ADR
     does **not** change how a skill is *selected*; it changes how the *task* the
     skill is dispatched on is grounded.
-  - [ADR-0026](0026-per-skill-goal-params-schema.md) — `goal_params_schema`, the
+  - [ADR-0026](0026-rskill-structured-goal-parameters.md) — `goal_params_schema`, the
     per-skill structured-params surface. Distinct from this ADR (see Alternatives):
     that schema describes a skill's *inputs*; this ADR describes the *task's
     object reference*.

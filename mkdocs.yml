@@ -165,5 +165,21 @@ nav:
     - ADR-0058 Standardized description assets: adr/0058-standardized-description-assets.md
     - ADR-0059 Foxglove live-scene visualization: adr/0059-foxglove-live-scene-visualization.md
     - ADR-0065 cuMotion CUDA-accelerated MoveIt planning: adr/0065-cumotion-cuda-moveit-planning.md
+    - ADR-0057 reward-model rSkills (parallel monitors): adr/0057-robometer-reward-rskill.md
+    - ADR-0060 Benchmark task-data compatibility gate: adr/0060-benchmark-task-data-compatibility-gate.md
+    - ADR-0061 RoboTwin 2.0 dual-arm benchmark backend: adr/0061-robotwin-dual-arm-benchmark-backend.md
+    - ADR-0062 RLBench benchmark backend + 3D Diffuser Actor: adr/0062-rlbench-benchmark-backend.md
+    - ADR-0063 OpenVLA / OpenVLA-OFT policy family: adr/0063-openvla-oft-policy-family.md
+    - ADR-0064 Critic score topic & Tier-C producer: adr/0064-critic-score-topic-and-tier-c-producer.md
+    - ADR-0064 Dashboard guarded write-controls: adr/0064-dashboard-write-controls.md
+    - ADR-0064 Vision SLAM for lidar-less robots: adr/0064-vision-slam-lidarless-cuvslam-nvblox-monodepth.md
+    - ADR-0065 Generic sim camera rig: adr/0065-generic-sim-camera-rig.md
+    - ADR-0066 DeployScene owns its composition: adr/0066-deploy-scene-owns-composition.md
+    - ADR-0068 Robot sensor catalog provenance: adr/0068-robot-sensor-catalog-provenance.md
+    - ADR-0069 Compute deployment targets: adr/0069-compute-deployment-targets.md
+    - ADR-0070 Canonical camera slot names: adr/0070-canonical-camera-slot-names.md
+    - ADR-0071 TaskSpace action-space contract: adr/0071-task-space-contract.md
     - ADR-0072 Reasoner playbooks & self-maintained memory: adr/0072-reasoner-playbooks-and-self-maintained-memory.md
     - ADR-0073 Reasoner success-gating & task queue: adr/0073-reasoner-success-gating-and-task-queue.md
+    - ADR-0074 VLM-adjudicated completion & reward-driven progress: adr/0074-vlm-adjudicated-completion-and-reward-driven-progress.md
+    - ADR-0075 Grounded task decomposition: adr/0075-grounded-decomposition-contract.md
