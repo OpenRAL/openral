@@ -437,23 +437,19 @@ def _should_offer_subdivision(
     return active.depth < max_depth and active.task_id not in offered
 
 
-def _may_subdivide_active(active: TaskState, offered: set[str]) -> bool:
-    """True when the LLM may subdivide the active task without resetting its ladder.
+def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
+    """Fall back to the active mission task's text when the LLM omits the prompt.
 
-    Guards against the reward-gate ladder being reset to zero by re-decomposition.
-    :meth:`MissionState.subdivide_active` splices the active task out and replaces
-    it with fresh ``attempts == 0`` children. For a not-yet-attempted task that is
-    harmless. But for a task that has already been dispatched (``attempts > 0``),
-    an *unsolicited* subdivide discards its attempt count, so the verify ladder
-    keeps evaluating ``attempts == 0`` and never reaches ``max_attempts`` →
-    never abandons → never advances or hands off (the eager-LLM deploy loop).
-
-    So an attempted task may only be subdivided when it was explicitly **offered**
-    subdivision after exhausting its retry ladder (the #123 post-abandon invite,
-    tracked in ``offered``). That keeps ``attempts`` monotonic per task: it
-    accumulates → abandons → one offered subdivision → human-handoff.
+    A VLA conditions on this string (SmolVLA writes it into ``observation["task"]``),
+    so an empty ``ExecuteRskillTool.prompt`` (the field defaults to ``""`` with no
+    ``min_length``) gives the policy no instruction — it cannot know which object to
+    manipulate. The active mission task *is* the instruction, so use it whenever the
+    LLM leaves the prompt empty/whitespace; otherwise pass the LLM prompt through.
+    Returns ``""`` when neither is available (the runner/manifest default applies).
     """
-    return active.attempts == 0 or active.task_id in offered
+    if call_prompt.strip():
+        return call_prompt
+    return active_text or ""
 
 
 class ReasonerNode(LifecycleNode):
@@ -2734,17 +2730,6 @@ class ReasonerNode(LifecycleNode):
                     f"(active={active.task_id if active else None!r}) — ignored",
                 )
                 return
-            if not _may_subdivide_active(active, self._subdivide_offered):
-                # The task has in-flight attempts and was not offered subdivision:
-                # splicing fresh attempts=0 children would reset the reward-gate
-                # ladder and let it retry forever. Refuse, so attempts accumulate
-                # toward abandon → one offered subdivision → human-handoff.
-                self.get_logger().warning(
-                    f"decompose_mission: refused to subdivide {call.target_task_id!r} — "
-                    f"already attempted {active.attempts}× and not offered subdivision; "
-                    "letting the retry ladder run instead of resetting it",
-                )
-                return
             child = mission.subdivide_active(call.subtasks)
             if child is None:
                 # Depth bound reached (or empty) — fall through to the existing
@@ -3000,7 +2985,13 @@ class ReasonerNode(LifecycleNode):
         goal = IDLExecuteRskill.Goal()
         goal.rskill_id = call.rskill_id
         goal.revision = ""
-        goal.prompt = call.prompt
+        # An empty LLM prompt leaves the VLA with no task-conditioning; fall back
+        # to the active mission task's text (the actual instruction).
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        goal.prompt = _resolve_execute_prompt(
+            call.prompt, active.text if active is not None else None
+        )
         # The reasoner does not yet construct a SkillPrompt payload —
         # F4 stays on the text path; the structured-prompt route is
         # wired in a later ADR-0018 follow-up.
@@ -3023,7 +3014,7 @@ class ReasonerNode(LifecycleNode):
             lambda fut: self._on_execute_rskill_goal_response(call, sent_at, fut, traceparent),
         )
         self.get_logger().info(
-            f"dispatch: execute_rskill rskill_id={call.rskill_id!r} prompt={call.prompt!r} "
+            f"dispatch: execute_rskill rskill_id={call.rskill_id!r} prompt={goal.prompt!r} "
             f"patience_s={patience_s:.0f} (backstop; reward-watcher is the usual stop)",
         )
 
