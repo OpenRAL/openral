@@ -6,9 +6,18 @@
 > installed. The `rskill.yaml` `playbook.body_uri` points here. ADR-0072.
 
 ## Trigger
-The goal is a compound, multi-step instruction — multiple verbs, a "then"/"after"
-sequence, or several sub-goals (e.g. "stack the bowls and put them in the drawer,
-then put the plate on the cookie box").
+Either of:
+- **Compound goal** — a multi-step instruction: multiple verbs, a "then"/"after"
+  sequence, or several sub-goals (e.g. "stack the bowls and put them in the drawer,
+  then put the plate on the cookie box").
+- **Collective / quantified target** — the goal names a *set* rather than one
+  specific object: a quantifier (all / every / each / both / everything) or a bare
+  generic plural ("put **the objects** in the basket", "clear **the items** off
+  the table"). A skill acts on exactly ONE specific object, so a collective target
+  is never directly actionable — it must be enumerated from the live `scene_objects`
+  perception list and split into one subtask per concrete object BEFORE any
+  `execute_rskill`. Each subtask names a single specific object (verb + that object
+  + destination), never "the first batch of objects" or "the remaining items".
 
 ## Preconditions
 - A self-maintained memory backend is available (`memory_write` / `memory_search`

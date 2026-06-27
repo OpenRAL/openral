@@ -52,6 +52,7 @@ import contextlib
 import datetime
 import json
 import pathlib
+import re
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -450,6 +451,34 @@ def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
     if call_prompt.strip():
         return call_prompt
     return active_text or ""
+
+
+# A task target is "collective" when it names a quantified/plural set rather than
+# one specific object — a quantifier (all/every/each/both/everything) or a bare
+# generic plural (objects/items/things). A skill acts on exactly ONE grounded
+# object, so a collective task is not a single actionable unit: it must be
+# enumerated (the live detector already lists every object in the LLM's
+# ``scene_objects`` context) and decomposed into one concrete subtask per object
+# BEFORE any execute_rskill. Deliberately narrow — quantifiers + generic plurals
+# only — so a specific goal ("pick up the alphabet soup") never trips it.
+_COLLECTIVE_TARGET = re.compile(
+    r"\b(?:all|every|each|both|everything)\b|\b(?:objects|items|things)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_collective_target(text: str) -> bool:
+    """True when ``text`` names a collective/quantified set, not one specific object.
+
+    Examples:
+        >>> _is_collective_target("put all the objects in the basket")
+        True
+        >>> _is_collective_target("clean everything off the table")
+        True
+        >>> _is_collective_target("pick up the alphabet soup and put it in the basket")
+        False
+    """
+    return bool(_COLLECTIVE_TARGET.search(text))
 
 
 class ReasonerNode(LifecycleNode):
@@ -2795,6 +2824,46 @@ class ReasonerNode(LifecycleNode):
         msg.metadata_json = json.dumps(metadata, sort_keys=True)
         self._prompt_pub.publish(msg)
 
+    def _emit_enumeration_invite(
+        self,
+        task: TaskState,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Self-prompt forcing a collective task to be enumerated + decomposed.
+
+        Emitted by the execute gate (:meth:`_dispatch_execute_rskill`) when the
+        active task targets a collective/quantified set ("put ALL the objects in
+        the basket"). A skill acts on one specific object, so the LLM must look at
+        the live ``scene_objects`` list (already in its context every tick) and
+        split the task into one concrete subtask per object before any actuation.
+        frame_id ``mission`` so the reasoner consumes it next tick (cascade source)
+        without rebuilding the deterministic queue — same channel as
+        :meth:`_emit_subdivision_invite`.
+        """
+        if self._prompt_pub is None:
+            return
+        text = (
+            f"REFUSED to run a skill on task {task.task_id} ({task.text!r}): it targets a "
+            "COLLECTIVE/quantified set ('all', 'every', 'the objects', …), not a single "
+            "object. A skill acts on exactly ONE specific object. Look at the "
+            "`scene_objects` line in your context — the live detector lists every object "
+            "it sees with a position — and call decompose_mission(target_task_id="
+            f"{task.task_id!r}, subtasks=[…]) to split this into one concrete subtask per "
+            "specific object, e.g. 'pick up the milk and put it in the basket', 'pick up "
+            "the ketchup and put it in the basket'. Do NOT call execute_rskill until the "
+            "active task names a single specific object."
+        )
+        msg = IDLPromptStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "mission"
+        metadata: dict[str, Any] = {"source": "mission", "task_id": task.task_id}
+        if traceparent is not None:
+            metadata["traceparent"] = traceparent
+        msg.text = text
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
+        self._prompt_pub.publish(msg)
+
     def _memory_now(self) -> str:
         """An ISO-8601 timestamp from the ROS clock (sim-time-aware) for memory entries."""
         secs = self.get_clock().now().nanoseconds / 1e9
@@ -2932,6 +3001,23 @@ class ReasonerNode(LifecycleNode):
         :meth:`_on_execute_rskill_deadline` when ``call.deadline_s`` is
         positive, producing a ``KIND_TIMEOUT`` event.
         """
+        # Grounding gate: a skill acts on ONE specific object, so refuse to
+        # actuate while the active mission task targets a collective/quantified
+        # set ("put ALL the objects in the basket"). Self-prompt the LLM to
+        # enumerate (scene_objects is in its context) and decompose into one
+        # subtask per object; once it does, the active task names a single
+        # object and this gate passes. No attempt is recorded — a refused
+        # actuation is not a try at the task.
+        mission = self._renderer.mission
+        active = mission.active() if mission is not None else None
+        if active is not None and _is_collective_target(active.text):
+            self.get_logger().info(
+                f"execute gate: refusing execute_rskill on collective task "
+                f"{active.task_id} ({active.text[:60]!r}) — inviting per-object decomposition",
+            )
+            self._emit_enumeration_invite(active, traceparent=traceparent)
+            self._on_tick(force=True, tier="C")
+            return
         assert self._execute_rskill_client is not None
         # Non-blocking single probe: ActionClient.wait_for_server
         # spins the executor; passing a short timeout keeps the tick
