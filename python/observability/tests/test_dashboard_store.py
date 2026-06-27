@@ -274,6 +274,7 @@ def test_metric_threshold_attribute_is_promoted_and_stripped() -> None:
                                         {
                                             "rskill.id": "smolvla",
                                             "openral.metric.threshold_ms": 100.0,
+                                            "openral.metric.threshold_dir": "lower",
                                         }
                                     ),
                                 )
@@ -288,7 +289,15 @@ def test_metric_threshold_attribute_is_promoted_and_stripped() -> None:
     snap = store.snapshot()
     series = next(m for m in snap["metrics"] if m["name"] == "openral.tick.duration")
     assert series["threshold"] == 100.0
-    assert series["labels"] == {"rskill.id": "smolvla"}  # threshold key stripped
+    assert series["threshold_dir"] == "lower"
+    assert series["labels"] == {"rskill.id": "smolvla"}  # threshold keys stripped
+
+    # Threshold present but no direction attribute ⇒ defaults to "upper".
+    rm.scope_metrics[0].metrics[0].histogram.data_points[0].attributes.pop()  # drop dir
+    store2 = TelemetryStore()
+    store2.ingest_metrics([rm])
+    series2 = next(m for m in store2.snapshot()["metrics"] if m["name"] == "openral.tick.duration")
+    assert series2["threshold_dir"] == "upper"
 
 
 def test_sum_metric_tracks_cumulative() -> None:

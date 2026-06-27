@@ -649,16 +649,32 @@
       const cnt = chip.querySelector(".cnt");
       if (cnt) cnt.textContent = counts[b];
     }
-    const shown = all.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
-    if (all.length === 0) {
-      el.innerHTML = '<div class="empty-state">No events yet.</div>';
-      return;
-    }
-    if (shown.length === 0) {
-      el.innerHTML = '<div class="empty-state">No events match the active filters.</div>';
-      return;
-    }
+    let shown = all.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
+    // Time focus (issue #3): scope to a window around a clicked sparkline point.
+    const focused = _focusTime != null;
+    if (focused) shown = shown.filter((ev) => ev.ts_unix != null && Math.abs(ev.ts_unix - _focusTime) <= _FOCUS_HALF_S);
+    const emptyState = (msg) => {
+      const d = document.createElement("div"); d.className = "empty-state"; d.textContent = msg; return d;
+    };
     el.innerHTML = "";
+    if (focused) {
+      const banner = document.createElement("div");
+      banner.className = "event-focus";
+      const lbl = document.createElement("span");
+      lbl.textContent = "near " + fmtTime(_focusTime) + " (±" + _FOCUS_HALF_S + "s)";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "clear"; x.textContent = "✕";
+      x.addEventListener("click", clearTimeFocus);
+      banner.append(lbl, x);
+      el.appendChild(banner);
+    }
+    if (all.length === 0) { el.appendChild(emptyState("No events yet.")); return; }
+    if (shown.length === 0) {
+      el.appendChild(emptyState(focused
+        ? "No events within ±" + _FOCUS_HALF_S + "s of " + fmtTime(_focusTime) + "."
+        : "No events match the active filters."));
+      return;
+    }
     for (const ev of shown.slice(0, 60)) {
       const sev = String(ev.severity || "info").toLowerCase();
       const row = document.createElement("div");
@@ -722,11 +738,6 @@
     return v.toFixed(3);
   }
 
-  function fmtClock(unixSec) {
-    const d = new Date(unixSec * 1000);
-    const p = (n) => String(n).padStart(2, "0");
-    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
-  }
 
   // sparkline maps x to ABSOLUTE time using the shared window `win` (global
   // tMin/tMax across all visible metrics) so every graph rides the same clock —
@@ -734,9 +745,12 @@
   // up across rows. Y stays per-graph (each metric autoscales to its own
   // min/max). `threshold` (a contractual budget/deadline in the metric's unit,
   // from the producer) draws a dashed line and reddens the trace when the latest
-  // sample breaches it. `events` overlays severity-coloured markers at notable
-  // event times. The effective y-domain + samples are stashed for the hover dot.
-  function sparkline(svgEl, samples, win, threshold, events) {
+  // sample breaches it — `thrDir` "lower" flips the breach test (value below the
+  // line is bad, e.g. a rate floor) from the "upper" default. `events` overlays
+  // severity-coloured markers at notable event times; `focusTime` draws the
+  // click-to-correlate line. The effective y-domain + samples are stashed for the
+  // hover dot.
+  function sparkline(svgEl, samples, win, threshold, thrDir, events, focusTime) {
     if (!samples || samples.length < 2) return;
     const w = 240, h = 26;
     const values = samples.map((s) => s[1]);
@@ -758,20 +772,27 @@
       evMarks = events.filter((ev) => ev.ts >= tMin && ev.ts <= tMax).map((ev) => {
         const x = xOf(ev.ts).toFixed(1);
         return `<line class="spark-event sev-${ev.sev}" x1="${x}" y1="0" x2="${x}" y2="${h}">` +
-          `<title>${ev.sev}: ${ev.kind} @ ${fmtClock(ev.ts)}</title></line>`;
+          `<title>${ev.sev}: ${ev.kind} @ ${fmtTime(ev.ts)}</title></line>`;
       }).join("");
     }
+    let focus = "";
+    if (focusTime != null && focusTime >= tMin && focusTime <= tMax) {
+      const x = xOf(focusTime).toFixed(1);
+      focus = `<line class="spark-focus" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`;
+    }
+    const dir = thrDir === "lower" ? "lower" : "upper";
     let thr = "", breach = false;
     if (threshold != null) {
       const y = yOf(threshold).toFixed(1);
       thr = `<line class="spark-threshold" x1="0" y1="${y}" x2="${w}" y2="${y}"/>`;
-      breach = values[values.length - 1] > threshold;
+      const last = values[values.length - 1];
+      breach = dir === "lower" ? last < threshold : last > threshold;
     }
     svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svgEl.setAttribute("preserveAspectRatio", "none");
-    svgEl.innerHTML = grid + evMarks + thr +
+    svgEl.innerHTML = grid + evMarks + focus + thr +
       `<polyline class="${breach ? "breach" : ""}" points="${pts}"/>`;
-    svgEl._spark = { samples, tMin, tMax, lo, hi, h, threshold };
+    svgEl._spark = { samples, tMin, tMax, lo, hi, h, threshold, dir };
   }
 
   // Single body-level tooltip + delegated hover, wired once. Hovering any
@@ -815,10 +836,12 @@
       }
       _sparkTip.replaceChildren();
       const b = document.createElement("b"); b.textContent = fmtNum(best[1]);
-      const ts = document.createElement("span"); ts.textContent = fmtClock(best[0]);
+      const ts = document.createElement("span"); ts.textContent = fmtTime(best[0]);
       _sparkTip.append(b, ts);
-      if (d.threshold != null && best[1] > d.threshold) {
-        const w2 = document.createElement("em"); w2.className = "over"; w2.textContent = "over budget";
+      const over = d.threshold != null && (d.dir === "lower" ? best[1] < d.threshold : best[1] > d.threshold);
+      if (over) {
+        const w2 = document.createElement("em"); w2.className = "over";
+        w2.textContent = d.dir === "lower" ? "under floor" : "over budget";
         _sparkTip.append(w2);
       }
       if (wrap.dataset.label) { const i = document.createElement("i"); i.textContent = wrap.dataset.label; _sparkTip.append(i); }
@@ -827,6 +850,37 @@
       _sparkTip.style.top = (e.clientY + 12) + "px";
     });
     el.addEventListener("mouseleave", hideSparkTip);
+    // Click a point → focus the whole column on that moment: a vertical line
+    // across every graph + the event log filtered to a window around it.
+    el.addEventListener("click", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d) return;
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const t = d.tMin + fx * (d.tMax - d.tMin);
+      let best = d.samples[0], bd = Infinity;
+      for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
+      setTimeFocus(best[0]);
+    });
+  }
+
+  // Cross-panel time focus (issue #3). Clicking a sparkline point scopes the
+  // event log to ±_FOCUS_HALF_S around it and draws a focus line across graphs.
+  const _FOCUS_HALF_S = 4;
+  let _focusTime = null;
+  function setTimeFocus(t) {
+    _focusTime = t;
+    renderMetrics(_lastMetrics, true);  // force past the freeze gate (user action)
+    renderEvents(_lastEvents);
+    const sec = $("events");
+    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  function clearTimeFocus() {
+    _focusTime = null;
+    renderMetrics(_lastMetrics, true);
+    renderEvents(_lastEvents);
   }
 
   // Notable events (warn/error/fatal) within the metrics time window, mapped to
@@ -857,7 +911,7 @@
     for (const f of GRID_FRACS) {
       const t = win.tMin + f * (win.tMax - win.tMin);
       const s = document.createElement("span");
-      s.textContent = fmtClock(t);
+      s.textContent = fmtTime(t);
       ticks.appendChild(s);
     }
     row.appendChild(lead);
@@ -926,7 +980,7 @@
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("spark");
     const threshold = typeof m.threshold === "number" ? m.threshold : null;
-    sparkline(svg, m.samples, win, threshold, events);
+    sparkline(svg, m.samples, win, threshold, m.threshold_dir, events, _focusTime);
     sparkWrap.appendChild(svg);
     if (svg._spark) {
       // Per-graph Y axis: max top, min bottom (the rendered domain, which is
@@ -987,11 +1041,12 @@
   }
 
   let _metricsFrozen = false;
-  function renderMetrics(metrics) {
+  function renderMetrics(metrics, force) {
     // Freeze: keep the current DOM (and cached metrics) so the operator can hover
     // and inspect a moment instead of chasing a scrolling ring. Re-renders resume
-    // on unfreeze.
-    if (_metricsFrozen && _lastMetrics.length) return;
+    // on unfreeze. `force` lets user actions (e.g. setting a time focus) redraw
+    // the frozen snapshot in place.
+    if (_metricsFrozen && !force && _lastMetrics.length) return;
     _lastMetrics = metrics || [];
     const el = $("metrics");
     // Per-namespace counts for the chip badges (over the full, unfiltered set).

@@ -590,6 +590,10 @@
   }
   .metric-row .spark .spark-event.sev-error { stroke: var(--err); opacity: 0.7; }
   .metric-row .spark .spark-event.sev-warn { stroke: var(--warn); }
+  /* Click-to-correlate focus line, drawn across every graph at one instant. */
+  .metric-row .spark .spark-focus {
+    stroke: var(--brand); stroke-width: 1.5; opacity: 0.9; vector-effect: non-scaling-stroke;
+  }
   /* White-ringed, black-filled hover marker. HTML overlay (kept circular — an
      SVG circle would be stretched by the preserveAspectRatio="none" viewBox). */
   .metric-row .spark-dot {
@@ -664,6 +668,18 @@
   }
   .event-log::-webkit-scrollbar { width: 7px; }
   .event-log::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 4px; }
+  /* Time-focus banner: shows the window a clicked sparkline point scoped to. */
+  .event-log .event-focus {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 2px 8px 6px; padding: 4px 10px; border-radius: 6px;
+    font-family: var(--mono); font-size: 10px; color: var(--brand);
+    background: rgba(255,255,255,0.04); border: 1px solid var(--hair-strong);
+  }
+  .event-log .event-focus .clear {
+    background: none; border: none; color: var(--fg-mute); cursor: pointer;
+    font-size: 12px; line-height: 1; padding: 0 2px;
+  }
+  .event-log .event-focus .clear:hover { color: var(--fg); }
   .event {
     display: grid; grid-template-columns: 82px max-content 1fr max-content;
     gap: 14px; padding: 5px 18px; border-bottom: 1px solid var(--hair-soft);

@@ -91,10 +91,13 @@ draining (no `Connection refused` retries on the way down).
   threshold (`openral.metric.threshold_ms` — the runner latency budget
   on `tick.duration`, the world-state staleness deadline on
   `world_state.staleness_ms`) draw a dashed budget/deadline line and
-  redden the trace once the latest sample breaches it; warn/error
-  events appear as severity-coloured vertical markers aligned across
-  all graphs. The **freeze** toggle pauses live updates so you can
-  inspect a moment.
+  redden the trace once the latest sample breaches it (`*_dir` set to
+  `lower` flips the test for floor-style metrics where dropping below is
+  the fault). Warn/error events appear as severity-coloured vertical
+  markers aligned across all graphs. **Click any point** to focus the
+  whole column on that instant — a line is drawn across every graph and
+  the event log scopes to a window around it (clear with the ✕). The
+  **freeze** toggle pauses live updates so you can inspect a moment.
 - **Event log** — chronological feed of the last 60 events (spans,
   span events, and real log lines bridged from structlog over OTLP);
   ESTOP / safety violation rows render in red. Filter chips toggle the

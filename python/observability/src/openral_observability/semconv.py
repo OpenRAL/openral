@@ -261,6 +261,14 @@ LABEL_REASON: Final[str] = "reason"
 # the metric's sparkline. Constant per series, so it does not add cardinality.
 METRIC_THRESHOLD_MS: Final[str] = "openral.metric.threshold_ms"
 
+# Direction of a threshold breach: ``"upper"`` (default — breach when the value
+# rises ABOVE the threshold, e.g. a latency budget or staleness deadline) or
+# ``"lower"`` (breach when it falls BELOW, e.g. a control-rate floor or a
+# success-score minimum). Absent ⇒ ``"upper"``. Constant per series.
+METRIC_THRESHOLD_DIR: Final[str] = "openral.metric.threshold_dir"
+THRESHOLD_DIR_UPPER: Final[str] = "upper"
+THRESHOLD_DIR_LOWER: Final[str] = "lower"
+
 # ── Run-mode enum (closed set for openral.run.mode) ────────────────────────
 
 RUN_MODE_SIM: Final[str] = "sim"
@@ -344,6 +352,7 @@ __all__ = [
     "METRIC_SYSTEM_GPU_UTIL_PCT",
     "METRIC_SYSTEM_RAM_TOTAL_MB",
     "METRIC_SYSTEM_RAM_USED_MB",
+    "METRIC_THRESHOLD_DIR",
     "METRIC_THRESHOLD_MS",
     "METRIC_TICK_BUDGET_VIOLATIONS",
     "METRIC_TICK_DEADLINE_MISSES",
@@ -415,6 +424,8 @@ __all__ = [
     "SPAN_WORLD_STATE_SNAPSHOT",
     "SYSTEM_GPU_INDEX",
     "SYSTEM_GPU_NAME",
+    "THRESHOLD_DIR_LOWER",
+    "THRESHOLD_DIR_UPPER",
     "TICK_DEADLINE_MS",
     "TICK_IDX",
     "TICK_RATE_HZ",
