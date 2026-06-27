@@ -709,20 +709,121 @@
     return frag;
   }
 
-  function sparkline(svgEl, samples) {
+  // Shared vertical-gridline fractions — identical for every sparkline so the
+  // dotted lines (and the single bottom time axis) line up across all graphs.
+  const GRID_FRACS = [0, 0.25, 0.5, 0.75, 1];
+
+  function fmtNum(v) {
+    if (v == null || !isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a !== 0 && (a < 0.01 || a >= 1e5)) return v.toExponential(1);
+    if (a >= 100) return v.toFixed(0);
+    if (a >= 1) return v.toFixed(1);
+    return v.toFixed(3);
+  }
+
+  function fmtClock(unixSec) {
+    const d = new Date(unixSec * 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+
+  // sparkline maps x to ABSOLUTE time using the shared window `win` (global
+  // tMin/tMax across all visible metrics) so every graph rides the same clock —
+  // that's what makes the dotted gridlines and the single bottom time axis line
+  // up across rows. Y stays per-graph (each metric autoscales to its own
+  // min/max). The raw samples + window are stashed on the element for the hover
+  // readout; the cursor line is moved on hover (see ensureSparkHover).
+  function sparkline(svgEl, samples, win) {
     if (!samples || samples.length < 2) return;
     const w = 240, h = 26;
     const values = samples.map((s) => s[1]);
     const min = Math.min(...values), max = Math.max(...values);
     const span = (max - min) || 1;
-    const pts = samples.map((s, i) => {
-      const x = (i / (samples.length - 1)) * w;
-      const y = h - 2 - ((s[1] - min) / span) * (h - 4);
-      return x.toFixed(1) + "," + y.toFixed(1);
-    }).join(" ");
+    const tMin = win ? win.tMin : samples[0][0];
+    const tMax = win ? win.tMax : samples[samples.length - 1][0];
+    const tSpan = (tMax - tMin) || 1;
+    const xOf = (t) => ((t - tMin) / tSpan) * w;
+    const yOf = (v) => h - 2 - ((v - min) / span) * (h - 4);
+    const pts = samples.map((s) => xOf(s[0]).toFixed(1) + "," + yOf(s[1]).toFixed(1)).join(" ");
+    const grid = GRID_FRACS.map((f) => {
+      const x = (f * w).toFixed(1);
+      return `<line class="spark-grid" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`;
+    }).join("");
     svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svgEl.setAttribute("preserveAspectRatio", "none");
-    svgEl.innerHTML = `<polyline points="${pts}"/>`;
+    svgEl.innerHTML = grid + `<polyline points="${pts}"/>` +
+      `<line class="spark-cursor" x1="0" y1="0" x2="0" y2="${h}" style="display:none"/>`;
+    svgEl._spark = { samples, tMin, tMax, min, max, w };
+  }
+
+  // Single body-level tooltip + delegated hover, wired once. Hovering any
+  // sparkline reads the nearest sample (by time) and shows its exact value +
+  // clock time, and snaps a vertical cursor line to that point.
+  let _sparkTip = null, _sparkHoverReady = false;
+  function hideSparkTip() {
+    if (_sparkTip) _sparkTip.style.display = "none";
+    const el = $("metrics");
+    if (el) for (const c of el.querySelectorAll(".spark-cursor")) c.style.display = "none";
+  }
+  function ensureSparkHover() {
+    if (_sparkHoverReady) return;
+    const el = $("metrics");
+    if (!el) return;
+    _sparkHoverReady = true;
+    _sparkTip = document.createElement("div");
+    _sparkTip.className = "spark-tip";
+    _sparkTip.style.display = "none";
+    document.body.appendChild(_sparkTip);
+    el.addEventListener("mousemove", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d) { hideSparkTip(); return; }
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const t = d.tMin + fx * (d.tMax - d.tMin);
+      let best = d.samples[0], bd = Infinity;
+      for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
+      const cur = svg.querySelector(".spark-cursor");
+      for (const c of el.querySelectorAll(".spark-cursor")) if (c !== cur) c.style.display = "none";
+      if (cur) {
+        const x = ((best[0] - d.tMin) / ((d.tMax - d.tMin) || 1)) * 240;
+        cur.setAttribute("x1", x); cur.setAttribute("x2", x);
+        cur.style.display = "";
+      }
+      _sparkTip.replaceChildren();
+      const b = document.createElement("b"); b.textContent = fmtNum(best[1]);
+      const ts = document.createElement("span"); ts.textContent = fmtClock(best[0]);
+      _sparkTip.append(b, ts);
+      if (wrap.dataset.label) { const i = document.createElement("i"); i.textContent = wrap.dataset.label; _sparkTip.append(i); }
+      _sparkTip.style.display = "block";
+      _sparkTip.style.left = (e.clientX + 12) + "px";
+      _sparkTip.style.top = (e.clientY + 12) + "px";
+    });
+    el.addEventListener("mouseleave", hideSparkTip);
+  }
+
+  // One shared time axis at the bottom of the metrics list — clock labels at the
+  // same fractions as the dotted gridlines, so the whole column reads as one
+  // time domain instead of per-row mystery graphs.
+  function metricAxisRow(win) {
+    const row = document.createElement("div");
+    row.className = "metric-axis";
+    const lead = document.createElement("span");
+    lead.className = "axis-lead";
+    lead.textContent = "time →";
+    const ticks = document.createElement("div");
+    ticks.className = "axis-ticks";
+    for (const f of GRID_FRACS) {
+      const t = win.tMin + f * (win.tMax - win.tMin);
+      const s = document.createElement("span");
+      s.textContent = fmtClock(t);
+      ticks.appendChild(s);
+    }
+    row.appendChild(lead);
+    row.appendChild(ticks);
+    return row;
   }
 
   // Metrics grouping + group filter (issue 2/13). Filter buttons select ALL or
@@ -759,7 +860,7 @@
     return " {" + entries.map(([k, v]) => `${k}=${v}`).join(", ") + "}";
   }
 
-  function metricRow(m) {
+  function metricRow(m, win) {
     const row = document.createElement("div"); row.className = "metric-row";
     const name = document.createElement("span"); name.className = "name";
     name.appendChild(nameMarkup(m.name));
@@ -782,10 +883,21 @@
     } else {
       latest.textContent = m.latest != null ? Number(m.latest).toFixed(2) : "—";
     }
+    const sparkWrap = document.createElement("div"); sparkWrap.className = "spark-wrap";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("spark");
-    sparkline(svg, m.samples);
-    row.appendChild(name); row.appendChild(unit); row.appendChild(p50); row.appendChild(p95); row.appendChild(latest); row.appendChild(svg);
+    sparkline(svg, m.samples, win);
+    sparkWrap.appendChild(svg);
+    if (svg._spark) {
+      // Per-graph Y axis: max top, min bottom. HTML overlay rather than SVG
+      // <text> because the sparkline viewBox uses preserveAspectRatio="none",
+      // which would stretch any embedded text horizontally.
+      const ymax = document.createElement("span"); ymax.className = "yax ymax"; ymax.textContent = fmtNum(svg._spark.max);
+      const ymin = document.createElement("span"); ymin.className = "yax ymin"; ymin.textContent = fmtNum(svg._spark.min);
+      sparkWrap.appendChild(ymax); sparkWrap.appendChild(ymin);
+      sparkWrap.dataset.label = m.name + labelSuffix(m.labels) + (m.unit ? " (" + m.unit + ")" : "");
+    }
+    row.appendChild(name); row.appendChild(unit); row.appendChild(p50); row.appendChild(p95); row.appendChild(latest); row.appendChild(sparkWrap);
     return row;
   }
 
@@ -854,6 +966,15 @@
       return;
     }
     el.innerHTML = "";
+    ensureSparkHover();
+    // Global time window across every shown metric — all share one wall clock
+    // (samples are (unix_seconds, value)), so the gridlines/axis are comparable.
+    let tMin = Infinity, tMax = -Infinity;
+    for (const m of shown) {
+      if (!m.samples) continue;
+      for (const s of m.samples) { if (s[0] < tMin) tMin = s[0]; if (s[0] > tMax) tMax = s[0]; }
+    }
+    const win = (isFinite(tMin) && isFinite(tMax) && tMax > tMin) ? { tMin, tMax } : null;
     const sorted = shown.slice().sort(
       (a, b) => metricNamespace(a.name).localeCompare(metricNamespace(b.name)) || a.name.localeCompare(b.name)
     );
@@ -868,8 +989,9 @@
         hd.textContent = ns + " · " + counts[ns];
         el.appendChild(hd);
       }
-      el.appendChild(metricRow(m));
+      el.appendChild(metricRow(m, win));
     }
+    if (win) el.appendChild(metricAxisRow(win));
   }
 
   // Jaeger UI url is operator-configured via the OPENRAL_JAEGER_UI_URL
