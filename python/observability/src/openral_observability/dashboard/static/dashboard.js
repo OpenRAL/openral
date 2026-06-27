@@ -694,7 +694,10 @@
   function nameMarkup(n) {
     const stripped = stripMetricPrefix(n);
     const idx = stripped.lastIndexOf(".");
-    if (idx < 0) return stripped;
+    // No remaining dot (e.g. a fully-stripped "openral.system." leaf): return a
+    // text node, never a bare string — callers appendChild() the result and a
+    // string throws, which previously aborted the whole metrics render.
+    if (idx < 0) return document.createTextNode(stripped);
     const ns = stripped.slice(0, idx + 1);
     const leaf = stripped.slice(idx + 1);
     const nsSpan = document.createElement("span");
