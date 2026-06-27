@@ -66,9 +66,15 @@ def test_decompose_mission_always_in_palette() -> None:
 def test_decode_routes_decompose_mission() -> None:
     call = _decode_tool_payload(
         tool_name="decompose_mission",
-        arguments={"subtasks": ["open the drawer", "place the cup"], "target_task_id": "t2"},
+        arguments={
+            "subtasks": [
+                {"object_ref": "drawer", "text": "open the drawer"},
+                {"object_ref": "cup", "text": "place the cup on the shelf"},
+            ],
+            "target_task_id": "t2",
+        },
         palette=ToolPalette(),
     )
     assert isinstance(call, DecomposeMissionTool)
-    assert call.subtasks == ["open the drawer", "place the cup"]
+    assert call.rendered_subtasks() == ["open the drawer", "place the cup on the shelf"]
     assert call.target_task_id == "t2"
