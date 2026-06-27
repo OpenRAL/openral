@@ -18,7 +18,7 @@
 
 > Investigation: [`docs/investigations/foxglove-dashboard-port-feasibility.md`](../investigations/foxglove-dashboard-port-feasibility.md)
 > (panel-by-panel feasibility, the Bucket-1/2/3 effort split, the two-data-plane
-> analysis). Prototype + protocol-level verification: [`packages/openral_foxglove_bringup/`](../../packages/openral_foxglove_bringup/)
+> analysis). Prototype + protocol-level verification: [`packages/openral_foxglove_bringup/`](https://github.com/OpenRAL/openral/tree/master/packages/openral_foxglove_bringup/)
 > (`README.md`, `VERIFICATION.md`). This ADR records the decision to graduate
 > that spike into a supported, gated component and integrate it into the deploy
 > path; the investigation carries the working detail.

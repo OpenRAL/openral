@@ -37,28 +37,28 @@ The same `SKILL.md` is mirrored to each `OpenRAL/rskill-*` Hub repo.
 
 ## VLA policy rSkills
 
-All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exercised end-to-end by a config in [`scenes/`](../../scenes/).
+All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exercised end-to-end by a config in [`scenes/`](https://github.com/OpenRAL/openral/tree/master/scenes/).
 
 | rSkill | Backbone / family | Targets | License |
 |---|---|---|---|
-| [`smolvla-libero`](../../rskills/smolvla-libero/) | SmolVLA fine-tuned | `franka_panda` | Apache-2.0 |
-| [`smolvla-metaworld`](../../rskills/smolvla-metaworld/) | SmolVLA fine-tuned | `sawyer` | Apache-2.0 |
-| [`smolvla-maniskill-franka`](../../rskills/smolvla-maniskill-franka/) | SmolVLA × ManiSkill3 `PickCube-v1` | `franka_panda` | Apache-2.0 |
-| [`xvla-libero`](../../rskills/xvla-libero/) | xVLA (Florence-2) | `franka_panda` | Apache-2.0 |
-| [`act-libero`](../../rskills/act-libero/) | ACT | `franka_panda` | Apache-2.0 |
-| [`molmoact2-libero-nf4`](../../rskills/molmoact2-libero-nf4/) | MolmoAct2 NF4 (Molmo2-ER VLM + flow-matching, ~5.5 B) | `franka_panda` | Apache-2.0 |
-| [`pi05-libero-nf4`](../../rskills/pi05-libero-nf4/) | π0.5 NF4 | `franka_panda` | Permissive research (weights non-Apache) |
-| [`pi05-robocasa365-human300-nf4`](../../rskills/pi05-robocasa365-human300-nf4/) | π0.5 NF4 (RoboCasa365 + 300 human eps fine-tune) | `panda_mobile` | Apache-2.0 (weights: research) |
-| [`act-aloha`](../../rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
-| [`act-aloha-insertion`](../../rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
-| [`diffusion-pusht`](../../rskills/diffusion-pusht/) | Diffusion Policy | `pusht_2d` | Apache-2.0 |
-| [`3d-diffuser-actor-rlbench`](../../rskills/3d-diffuser-actor-rlbench/) | 3D Diffuser Actor keyframe policy for RLBench PerAct tasks | `franka_panda` | MIT — CoppeliaSim/PyRep sidecar runtime (ADR-0062) |
-| [`rldx1-ft-libero-nf4`](../../rskills/rldx1-ft-libero-nf4/) | RLWRLD RLDX-1 (Qwen3-VL-8B + MSAT, ~6.9 B) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
-| [`rldx1-ft-gr1-nf4`](../../rskills/rldx1-ft-gr1-nf4/) | RLDX-1 (GR1 bimanual) | `gr1` | RLWRLD non-commercial — sidecar runtime |
-| [`rldx1-ft-rc365-nf4`](../../rskills/rldx1-ft-rc365-nf4/) | RLDX-1 (RoboCasa365 fine-tune) | `panda_mobile` | RLWRLD non-commercial — sidecar runtime |
-| [`rldx1-ft-simpler-widowx-nf4`](../../rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
-| [`openvla-oft-simpler-widowx-nf4`](../../rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
-| [`gr00t-n17-libero`](../../rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — out-of-process sidecar (ADR-0046) |
+| [`smolvla-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-libero/) | SmolVLA fine-tuned | `franka_panda` | Apache-2.0 |
+| [`smolvla-metaworld`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-metaworld/) | SmolVLA fine-tuned | `sawyer` | Apache-2.0 |
+| [`smolvla-maniskill-franka`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-maniskill-franka/) | SmolVLA × ManiSkill3 `PickCube-v1` | `franka_panda` | Apache-2.0 |
+| [`xvla-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/xvla-libero/) | xVLA (Florence-2) | `franka_panda` | Apache-2.0 |
+| [`act-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/act-libero/) | ACT | `franka_panda` | Apache-2.0 |
+| [`molmoact2-libero-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/molmoact2-libero-nf4/) | MolmoAct2 NF4 (Molmo2-ER VLM + flow-matching, ~5.5 B) | `franka_panda` | Apache-2.0 |
+| [`pi05-libero-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-libero-nf4/) | π0.5 NF4 | `franka_panda` | Permissive research (weights non-Apache) |
+| [`pi05-robocasa365-human300-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-robocasa365-human300-nf4/) | π0.5 NF4 (RoboCasa365 + 300 human eps fine-tune) | `panda_mobile` | Apache-2.0 (weights: research) |
+| [`act-aloha`](https://github.com/OpenRAL/openral/tree/master/rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
+| [`act-aloha-insertion`](https://github.com/OpenRAL/openral/tree/master/rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
+| [`diffusion-pusht`](https://github.com/OpenRAL/openral/tree/master/rskills/diffusion-pusht/) | Diffusion Policy | `pusht_2d` | Apache-2.0 |
+| [`3d-diffuser-actor-rlbench`](https://github.com/OpenRAL/openral/tree/master/rskills/3d-diffuser-actor-rlbench/) | 3D Diffuser Actor keyframe policy for RLBench PerAct tasks | `franka_panda` | MIT — CoppeliaSim/PyRep sidecar runtime (ADR-0062) |
+| [`rldx1-ft-libero-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-libero-nf4/) | RLWRLD RLDX-1 (Qwen3-VL-8B + MSAT, ~6.9 B) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
+| [`rldx1-ft-gr1-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-gr1-nf4/) | RLDX-1 (GR1 bimanual) | `gr1` | RLWRLD non-commercial — sidecar runtime |
+| [`rldx1-ft-rc365-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-rc365-nf4/) | RLDX-1 (RoboCasa365 fine-tune) | `panda_mobile` | RLWRLD non-commercial — sidecar runtime |
+| [`rldx1-ft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
+| [`openvla-oft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
+| [`gr00t-n17-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — out-of-process sidecar (ADR-0046) |
 
 ## Perception rSkills (`kind: detector`)
 
@@ -66,11 +66,11 @@ Object-detection rSkills emit `ObjectsMetadata` (2-D detections lifted to 3-D in
 
 | rSkill | Backbone | Notes |
 |---|---|---|
-| [`rtdetr-coco-r18`](../../rskills/rtdetr-coco-r18/) | RT-DETR R18 (COCO) | lightweight ONNX export |
-| [`rtdetr-v2-r50vd`](../../rskills/rtdetr-v2-r50vd/) | RT-DETR v2 R50vd | higher-accuracy variant |
-| [`locateanything-3b-nf4`](../../rskills/locateanything-3b-nf4/) | NVIDIA LocateAnything-3B NF4 | open-vocabulary grounding; runs via the `VLM_SIDECAR` detector tier (out-of-process sidecar); dynamic reasoner-driven query via the read-only `locate_in_view` tool (ADR-0043) |
-| [`omdet-turbo-indoor`](../../rskills/omdet-turbo-indoor/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** open-vocabulary detector run **in-process** over a fixed ~266-class curated indoor vocabulary; `engine: zeroshot_hf` → `DetectorTier.ZEROSHOT_HF`; `mode: continuous` background producer, far more than the 80 COCO classes (ADR-0037 2026-06-12 amendment) |
-| [`omdet-turbo-locator`](../../rskills/omdet-turbo-locator/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** on-demand sibling — same weights/engine, `mode: on_demand`; the reasoner prompts it via `locate_in_view`. Lightweight, real-time, in-process alternative to the 3B LocateAnything VLM (ADR-0051) |
+| [`rtdetr-coco-r18`](https://github.com/OpenRAL/openral/tree/master/rskills/rtdetr-coco-r18/) | RT-DETR R18 (COCO) | lightweight ONNX export |
+| [`rtdetr-v2-r50vd`](https://github.com/OpenRAL/openral/tree/master/rskills/rtdetr-v2-r50vd/) | RT-DETR v2 R50vd | higher-accuracy variant |
+| [`locateanything-3b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/locateanything-3b-nf4/) | NVIDIA LocateAnything-3B NF4 | open-vocabulary grounding; runs via the `VLM_SIDECAR` detector tier (out-of-process sidecar); dynamic reasoner-driven query via the read-only `locate_in_view` tool (ADR-0043) |
+| [`omdet-turbo-indoor`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-indoor/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** open-vocabulary detector run **in-process** over a fixed ~266-class curated indoor vocabulary; `engine: zeroshot_hf` → `DetectorTier.ZEROSHOT_HF`; `mode: continuous` background producer, far more than the 80 COCO classes (ADR-0037 2026-06-12 amendment) |
+| [`omdet-turbo-locator`](https://github.com/OpenRAL/openral/tree/master/rskills/omdet-turbo-locator/) | OmDet-Turbo Swin-tiny (`omlab/omdet-turbo-swin-tiny-hf`) | **Apache-2.0** on-demand sibling — same weights/engine, `mode: on_demand`; the reasoner prompts it via `locate_in_view`. Lightweight, real-time, in-process alternative to the 3B LocateAnything VLM (ADR-0051) |
 
 The RT-DETR rSkills are Apache-2.0 and runnable on any camera-equipped embodiment. They are consumed by `openral_perception_ros` (`RosImageObjectDetectorNode`) in the `openral deploy sim` / `deploy run` graph. LocateAnything is NVIDIA non-commercial and ships as an NF4 PyTorch/custom-code artifact. Because its custom code needs `transformers==4.57.1` (incompatible with the runtime's `transformers>=5`), it runs **out-of-process** in an isolated venv (`tools/locateanything_sidecar.py`) and is driven by the `LocateAnythingDetector` backend over ZMQ — the `DetectorTier.VLM_SIDECAR` path selected for `runtime: pytorch` detector manifests (ADR-0037 2026-06-09 amendment). The detector-node side of that ZMQ link needs the `pyzmq` + `msgpack` client, shipped in the `locateanything` dependency group (`uv sync --group locateanything`); without it the `deploy sim --object-detector-manifest` leg fails per-request with `No module named 'zmq'`. The backend parses its `<ref>`/`<box>` text into `ObjectsMetadata` and exposes `set_query()` for the open-vocabulary query (static default = manifest `labels`; dynamic override via the `/openral/perception/detector_query` topic for the continuous leg, and the read-only `locate_in_view` reasoner tool + service for a one-shot on-demand check, ADR-0043).
 
@@ -91,7 +91,7 @@ This cleanly separates open-vocabulary from prompting: the `locate_in_view` tool
 
 | rSkill | Backbone | Notes |
 |---|---|---|
-| [`qwen35-4b-nf4`](../../rskills/qwen35-4b-nf4/) | Qwen3.5-4B NF4 (natively-multimodal, hybrid linear attention) | Apache-2.0; pre-quantized NF4 checkpoint (~3.3 GB, fits 8 GB); runs out-of-process via `tools/qwen_vlm_sidecar.py` + the `QwenSceneVlm` backend over ZMQ; served by `openral_perception_ros.scene_vlm_node` on `/openral/perception/query_scene`; drives the reasoner's read-only `query_scene` tool (ADR-0047) |
+| [`qwen35-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/qwen35-4b-nf4/) | Qwen3.5-4B NF4 (natively-multimodal, hybrid linear attention) | Apache-2.0; pre-quantized NF4 checkpoint (~3.3 GB, fits 8 GB); runs out-of-process via `tools/qwen_vlm_sidecar.py` + the `QwenSceneVlm` backend over ZMQ; served by `openral_perception_ros.scene_vlm_node` on `/openral/perception/query_scene`; drives the reasoner's read-only `query_scene` tool (ADR-0047) |
 
 Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers==5.3.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`uv sync --group qwen-vlm`). The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
 
@@ -101,7 +101,7 @@ Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidec
 
 | rSkill | Backbone | Notes |
 |---|---|---|
-| [`robometer-4b`](../../rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer-4b-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runs out-of-process via `tools/robometer_sidecar.py` + the `RobometerReward` backend over ZMQ; served by `openral_perception_ros.reward_monitor_node` on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool (ADR-0057) |
+| [`robometer-4b`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer-4b-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runs out-of-process via `tools/robometer_sidecar.py` + the `RobometerReward` backend over ZMQ; served by `openral_perception_ros.reward_monitor_node` on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool (ADR-0057) |
 
 Like the Qwen scene VLM, the Robometer monitor runs in an **isolated sidecar venv**: its `RBM` class cannot be loaded by vanilla `transformers.AutoModel` (its HF `config.json` advertises `architectures: ["RFM"]` with no `auto_map`), so the sidecar `uv pip install`s the pinned upstream `robometer` package and **forces `transformers==4.57.1`** (the resolver pulls 5.x, which drops `input_ids` from the processor). The node-side ZMQ + msgpack client ships in the `robometer` dependency group (`uv sync --group robometer`). The sidecar is a **stateless scorer**; the rolling frame buffer (`RollingFrameBuffer`, fed by the same `sensor_msgs/Image` topic the VLA uses — GStreamer tee on real hardware, sim HAL publisher in `deploy-sim`) lives node-side. `weights_uri` accepts the SHA-pinned Apache-2.0 upstream (NF4-quantized on load), a published pre-quantized OpenRAL repo, or `local:///abs/dir`. The pre-quantized path (built by `tools/build_robometer_nf4_checkpoint.py`) loads the packed NF4 weights DIRECTLY on the `meta` device — no bf16 materialization, no requantize (~25 s process→ready vs ~110 s + a 19 GB CPU spike), bit-identical to the bf16+quantize path with determinism pinned (math SDP + `use_deterministic_algorithms` + `CUBLAS_WORKSPACE_CONFIG`). The forward's activation memory scales with frame count × resolution, so the client evenly subsamples the window to `max_frames` (8) to stay co-resident with the sim (and a small NF4 VLA) on 8 GB. In `deploy-sim`, `openral deploy sim --enable-reward-monitor` brings the monitor up parallel to the VLA and sets `task_progress_available:=true` so the reasoner is offered `query_task_progress` (validated live on openarm). The upstream `robometer` code is not an OpenRAL-trusted org — it is pinned by commit and runs only in the isolated venv.
 
@@ -111,12 +111,12 @@ Like the Qwen scene VLM, the Robometer monitor runs in an **isolated sidecar ven
 
 | rSkill | Procedure |
 |---|---|
-| [`decompose-mission`](../../rskills/decompose-mission/) | break a compound goal into ordered, individually-verifiable subtasks (drives the `decompose_mission` tool → `MissionState` queue, ADR-0073) |
-| [`verify-outcome`](../../rskills/verify-outcome/) | Inner-Monologue: after a skill, confirm it actually succeeded (`query_scene` / `query_task_progress`) before advancing |
-| [`clarify-ambiguity`](../../rskills/clarify-ambiguity/) | ask-don't-guess: resolve an ambiguous goal from memory/scene, else ask the operator; never guess on an irreversible action |
-| [`preflight-reach`](../../rskills/preflight-reach/) | check the target is within the embodiment's reachable workspace (vs the `## ROBOT` self-model) before a grasp; stage or hand off |
-| [`stage-for-manipulation`](../../rskills/stage-for-manipulation/) | move to the skill's declared pre-grasp pose (MoveIt approach, ADR-0051/0053) and verify before the manipulation policy runs |
-| [`find-object`](../../rskills/find-object/) | locate a target via `recall_object` (memory) → `locate_in_view` (live) → bounded active search before manipulation |
+| [`decompose-mission`](https://github.com/OpenRAL/openral/tree/master/rskills/decompose-mission/) | break a compound goal into ordered, individually-verifiable subtasks (drives the `decompose_mission` tool → `MissionState` queue, ADR-0073) |
+| [`verify-outcome`](https://github.com/OpenRAL/openral/tree/master/rskills/verify-outcome/) | Inner-Monologue: after a skill, confirm it actually succeeded (`query_scene` / `query_task_progress`) before advancing |
+| [`clarify-ambiguity`](https://github.com/OpenRAL/openral/tree/master/rskills/clarify-ambiguity/) | ask-don't-guess: resolve an ambiguous goal from memory/scene, else ask the operator; never guess on an irreversible action |
+| [`preflight-reach`](https://github.com/OpenRAL/openral/tree/master/rskills/preflight-reach/) | check the target is within the embodiment's reachable workspace (vs the `## ROBOT` self-model) before a grasp; stage or hand off |
+| [`stage-for-manipulation`](https://github.com/OpenRAL/openral/tree/master/rskills/stage-for-manipulation/) | move to the skill's declared pre-grasp pose (MoveIt approach, ADR-0051/0053) and verify before the manipulation policy runs |
+| [`find-object`](https://github.com/OpenRAL/openral/tree/master/rskills/find-object/) | locate a target via `recall_object` (memory) → `locate_in_view` (live) → bounded active search before manipulation |
 
 The reasoner also maintains a self-written **`MEMORY.md`** (ADR-0072) — a persistent semantic memory it reads each tick and edits through the typed `memory_write` / `memory_search` tools, loaded at deploy time via `openral deploy sim/run --memory-dir`. See the [Reasoner reference](reasoner.md).
 
