@@ -166,14 +166,33 @@ _PLANAR_TWIST_EPS = 1e-6
 # ActionPacker is the per-composition translation between an OpenRAL
 # `Action` chunk and the env's flat action vector. We model it as a
 # plain callable for testability; the default factory below handles
-# the BASIC-composite layout.
-ActionPacker = Callable[[Action, RobotDescription, int], "np.ndarray[Any, np.dtype[np.float32]]"]
+# the BASIC-composite layout. The trailing ``prev`` arg (previous
+# env-frame command, or None) is optional so a packer can carry an
+# untouched slot — e.g. the gripper while the arm steps — across the
+# two typed Actions one policy step splits into on a non-composite env.
+ActionPacker = Callable[..., "np.ndarray[Any, np.dtype[np.float32]]"]
+
+
+def _seed_from_prev(
+    prev: np.ndarray[Any, np.dtype[np.float32]] | None, env_action_dim: int
+) -> np.ndarray[Any, np.dtype[np.float32]]:
+    """A working env-vector seeded from the previous command, or zeros.
+
+    Returns a fresh ``(env_action_dim,)`` zero vector when ``prev`` is missing
+    or the wrong width (episode boundary / dim change); otherwise a copy of
+    ``prev`` so untouched slots (e.g. the gripper while the arm steps) hold
+    their last commanded value.
+    """
+    if prev is not None and prev.shape[0] == env_action_dim:
+        return prev.copy()
+    return np.zeros(env_action_dim, dtype=np.float32)
 
 
 def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported control mode; flat dispatch reads clearer than nested helpers
     action: Action,
     description: RobotDescription,
     env_action_dim: int,
+    prev: np.ndarray[Any, np.dtype[np.float32]] | None = None,
 ) -> np.ndarray[Any, np.dtype[np.float32]]:
     """Default packer: translate an OpenRAL Action into the env action vector.
 
@@ -206,6 +225,18 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
             of the env vector when arm joints are present.
         env_action_dim: The env's declared action_dim (typically 11
             for the robosuite BASIC composite + gripper).
+        prev: The env-frame action vector from the previous ``send_action``
+            within the same policy tick, or ``None``. A single policy step
+            on a non-composite env (e.g. LIBERO OSC_POSE) arrives as TWO
+            typed Actions — CARTESIAN_DELTA (arm) then GRIPPER_POSITION
+            (finger) — and each one drives a separate ``env.step``. Seeding the arm pack
+            from ``prev`` carries the last commanded gripper through the arm
+            step (instead of zeroing it to a half-open neutral), so the
+            policy's gripper command holds while the arm moves — mirroring
+            the ``_pack_with_composite_split`` merge. Without it the arm
+            steps with gripper=0 and the gripper steps with arm=0, so the
+            arm only advances every other env step with a flickering gripper
+            and never coordinates a grasp.
 
     Returns:
         ``(env_action_dim,)`` float32 — the env-frame action vector.
@@ -262,16 +293,28 @@ def pack_action_for_env(  # noqa: PLR0912  # reason: one branch per supported co
                 f"pack_action_for_env: env_action_dim={env_action_dim} "
                 f"can't hold {arm_base + cartesian_dim} base+arm slots."
             )
+        # Seed from the previous commanded vector so the last gripper (and
+        # any base) command holds while the arm steps; only the arm's OSC
+        # slots are rewritten. The OSC delta is per-step, so the arm slots
+        # are zeroed first (a stale prev delta must not accumulate).
+        out = _seed_from_prev(prev, env_action_dim)
+        out[arm_base : arm_base + cartesian_dim] = 0.0
         for i, v in enumerate(delta):
             out[arm_base + i] = float(v)
         return out
     if action.control_mode is ControlMode.GRIPPER_POSITION:
         if not action.gripper:
             raise ROSConfigError("pack_action_for_env: empty Action.gripper")
-        # Robocasa env action vector parks the gripper at the LAST
-        # slot. Leave the arm and base slots untouched (zero); the
-        # SimAttachedHAL's per-mode cache merges this with the
-        # previous arm / base commands before env.step.
+        # Gripper parks at the LAST slot. Seed from prev (holding any base
+        # command), zero everything between the base prefix and the gripper
+        # slot so the arm HOLDS on the gripper step (no double-applied delta),
+        # then set the gripper. Width-agnostic: holds whatever arm DOF the env
+        # has (6-D OSC franka/widowx today, any future width) rather than a
+        # fixed 6. Pairs with the CARTESIAN_DELTA branch so one policy step =
+        # [arm,grip] then [hold,grip] — the arm advances once, the gripper is
+        # always commanded.
+        out = _seed_from_prev(prev, env_action_dim)
+        out[base_dim : env_action_dim - 1] = 0.0
         out[-1] = float(action.gripper[0])
         return out
     if action.control_mode is ControlMode.BODY_TWIST:
@@ -687,11 +730,20 @@ class SimAttachedHAL:
         # so the env stepped with garbage. Prefer the composite's own
         # split when available — mirrors the upstream
         # ``RoboCasaGymEnv.step + unmap_action`` flow.
-        env_action = (
-            self._pack_with_composite_split(action)
-            if self._has_composite_split()
-            else self._action_packer(action, self.description, self._env_action_dim)
-        )
+        if self._has_composite_split():
+            # The composite packer maintains ``_last_env_action`` internally.
+            env_action = self._pack_with_composite_split(action)
+        else:
+            # Non-composite env (e.g. LIBERO OSC_POSE): the legacy packer is
+            # stateless, so thread the previous command through ``prev`` and
+            # latch the result here. This carries the gripper across the arm
+            # step the way the composite path does — without it the arm and
+            # gripper zero each other out across the two typed Actions a
+            # single policy step splits into (ADR-0036).
+            env_action = self._action_packer(
+                action, self.description, self._env_action_dim, self._last_env_action
+            )
+            self._last_env_action = env_action.copy()
         # One stdout line per first chunk + every 50th — gives us the
         # smoke trail we needed to diagnose the prior "arm doesn't move"
         # silent failure without spamming the hot path. The previous
