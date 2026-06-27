@@ -255,6 +255,12 @@ LABEL_SIGNAL_KIND: Final[str] = "signal_kind"
 LABEL_COMPONENT: Final[str] = "component"
 LABEL_REASON: Final[str] = "reason"
 
+# Generic per-data-point threshold (ms): the contractual budget/deadline that
+# governs this metric (e.g. a runner latency budget, a world-state staleness
+# deadline). The dashboard promotes it to a threshold line + breach coloring on
+# the metric's sparkline. Constant per series, so it does not add cardinality.
+METRIC_THRESHOLD_MS: Final[str] = "openral.metric.threshold_ms"
+
 # ── Run-mode enum (closed set for openral.run.mode) ────────────────────────
 
 RUN_MODE_SIM: Final[str] = "sim"
@@ -338,6 +344,7 @@ __all__ = [
     "METRIC_SYSTEM_GPU_UTIL_PCT",
     "METRIC_SYSTEM_RAM_TOTAL_MB",
     "METRIC_SYSTEM_RAM_USED_MB",
+    "METRIC_THRESHOLD_MS",
     "METRIC_TICK_BUDGET_VIOLATIONS",
     "METRIC_TICK_DEADLINE_MISSES",
     "METRIC_TICK_DURATION",

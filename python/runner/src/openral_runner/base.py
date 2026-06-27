@@ -261,12 +261,18 @@ class InferenceRunnerBase(ABC):
         # Record tick latency + per-stage timings on the histogram outside
         # the span so a slow exporter never blocks the hot path. Labels
         # follow the closed-set whitelist in design §9.
-        tick_attrs = {semconv.LABEL_RSKILL_ID: self._runner_name}
+        base_attrs = {semconv.LABEL_RSKILL_ID: self._runner_name}
+        # The configured latency budget rides along as a per-data-point threshold
+        # so the dashboard can draw a budget line + breach coloring on the
+        # tick.duration sparkline. Constant per runner, so no extra cardinality.
+        tick_attrs: dict[str, str | float] = dict(base_attrs)
+        if self._latency_budget_ms is not None:
+            tick_attrs[semconv.METRIC_THRESHOLD_MS] = self._latency_budget_ms
         ral_metrics.record_histogram_ms(ral_metrics.get_tick_duration(), result.tick_ms, tick_attrs)
         ral_metrics.record_histogram_ms(
             ral_metrics.get_inference_duration(),
             result.inference_ms,
-            tick_attrs,
+            base_attrs,
         )
         if result.safety_violations:
             # ``safety_violations`` is a list of human-readable strings on

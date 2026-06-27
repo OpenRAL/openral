@@ -732,39 +732,58 @@
   // tMin/tMax across all visible metrics) so every graph rides the same clock —
   // that's what makes the dotted gridlines and the single bottom time axis line
   // up across rows. Y stays per-graph (each metric autoscales to its own
-  // min/max). The raw samples + window are stashed on the element for the hover
-  // readout; the cursor line is moved on hover (see ensureSparkHover).
-  function sparkline(svgEl, samples, win) {
+  // min/max). `threshold` (a contractual budget/deadline in the metric's unit,
+  // from the producer) draws a dashed line and reddens the trace when the latest
+  // sample breaches it. `events` overlays severity-coloured markers at notable
+  // event times. The effective y-domain + samples are stashed for the hover dot.
+  function sparkline(svgEl, samples, win, threshold, events) {
     if (!samples || samples.length < 2) return;
     const w = 240, h = 26;
     const values = samples.map((s) => s[1]);
-    const min = Math.min(...values), max = Math.max(...values);
-    const span = (max - min) || 1;
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (threshold != null) { lo = Math.min(lo, threshold); hi = Math.max(hi, threshold); }
+    const span = (hi - lo) || 1;
     const tMin = win ? win.tMin : samples[0][0];
     const tMax = win ? win.tMax : samples[samples.length - 1][0];
     const tSpan = (tMax - tMin) || 1;
     const xOf = (t) => ((t - tMin) / tSpan) * w;
-    const yOf = (v) => h - 2 - ((v - min) / span) * (h - 4);
+    const yOf = (v) => h - 2 - ((v - lo) / span) * (h - 4);
     const pts = samples.map((s) => xOf(s[0]).toFixed(1) + "," + yOf(s[1]).toFixed(1)).join(" ");
     const grid = GRID_FRACS.map((f) => {
       const x = (f * w).toFixed(1);
       return `<line class="spark-grid" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`;
     }).join("");
+    let evMarks = "";
+    if (events && events.length) {
+      evMarks = events.filter((ev) => ev.ts >= tMin && ev.ts <= tMax).map((ev) => {
+        const x = xOf(ev.ts).toFixed(1);
+        return `<line class="spark-event sev-${ev.sev}" x1="${x}" y1="0" x2="${x}" y2="${h}">` +
+          `<title>${ev.sev}: ${ev.kind} @ ${fmtClock(ev.ts)}</title></line>`;
+      }).join("");
+    }
+    let thr = "", breach = false;
+    if (threshold != null) {
+      const y = yOf(threshold).toFixed(1);
+      thr = `<line class="spark-threshold" x1="0" y1="${y}" x2="${w}" y2="${y}"/>`;
+      breach = values[values.length - 1] > threshold;
+    }
     svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svgEl.setAttribute("preserveAspectRatio", "none");
-    svgEl.innerHTML = grid + `<polyline points="${pts}"/>` +
-      `<line class="spark-cursor" x1="0" y1="0" x2="0" y2="${h}" style="display:none"/>`;
-    svgEl._spark = { samples, tMin, tMax, min, max, w };
+    svgEl.innerHTML = grid + evMarks + thr +
+      `<polyline class="${breach ? "breach" : ""}" points="${pts}"/>`;
+    svgEl._spark = { samples, tMin, tMax, lo, hi, h, threshold };
   }
 
   // Single body-level tooltip + delegated hover, wired once. Hovering any
   // sparkline reads the nearest sample (by time) and shows its exact value +
-  // clock time, and snaps a vertical cursor line to that point.
+  // clock time, and snaps a white-ringed dot (an HTML overlay, kept circular —
+  // an SVG circle would be stretched to an ellipse by the non-uniform viewBox)
+  // to that point.
   let _sparkTip = null, _sparkHoverReady = false;
   function hideSparkTip() {
     if (_sparkTip) _sparkTip.style.display = "none";
     const el = $("metrics");
-    if (el) for (const c of el.querySelectorAll(".spark-cursor")) c.style.display = "none";
+    if (el) for (const d of el.querySelectorAll(".spark-dot")) d.style.display = "none";
   }
   function ensureSparkHover() {
     if (_sparkHoverReady) return;
@@ -785,23 +804,43 @@
       const t = d.tMin + fx * (d.tMax - d.tMin);
       let best = d.samples[0], bd = Infinity;
       for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
-      const cur = svg.querySelector(".spark-cursor");
-      for (const c of el.querySelectorAll(".spark-cursor")) if (c !== cur) c.style.display = "none";
-      if (cur) {
-        const x = ((best[0] - d.tMin) / ((d.tMax - d.tMin) || 1)) * 240;
-        cur.setAttribute("x1", x); cur.setAttribute("x2", x);
-        cur.style.display = "";
+      const dot = wrap.querySelector(".spark-dot");
+      for (const o of el.querySelectorAll(".spark-dot")) if (o !== dot) o.style.display = "none";
+      if (dot) {
+        const xfrac = (best[0] - d.tMin) / ((d.tMax - d.tMin) || 1);
+        const yuser = d.h - 2 - ((best[1] - d.lo) / ((d.hi - d.lo) || 1)) * (d.h - 4);
+        dot.style.left = (xfrac * 100) + "%";
+        dot.style.top = (yuser / d.h * 100) + "%";
+        dot.style.display = "";
       }
       _sparkTip.replaceChildren();
       const b = document.createElement("b"); b.textContent = fmtNum(best[1]);
       const ts = document.createElement("span"); ts.textContent = fmtClock(best[0]);
       _sparkTip.append(b, ts);
+      if (d.threshold != null && best[1] > d.threshold) {
+        const w2 = document.createElement("em"); w2.className = "over"; w2.textContent = "over budget";
+        _sparkTip.append(w2);
+      }
       if (wrap.dataset.label) { const i = document.createElement("i"); i.textContent = wrap.dataset.label; _sparkTip.append(i); }
       _sparkTip.style.display = "block";
       _sparkTip.style.left = (e.clientX + 12) + "px";
       _sparkTip.style.top = (e.clientY + 12) + "px";
     });
     el.addEventListener("mouseleave", hideSparkTip);
+  }
+
+  // Notable events (warn/error/fatal) within the metrics time window, mapped to
+  // the marker shape sparkline() draws. Reads the cache renderEvents() fills.
+  function notableEvents() {
+    const out = [];
+    for (const ev of _lastEvents || []) {
+      const sev = String(ev.severity || "info").toLowerCase();
+      const bucket = sev === "error" || sev === "fatal" ? "error" : sev === "warn" ? "warn" : null;
+      if (!bucket) continue;
+      if (ev.ts_unix == null) continue;
+      out.push({ ts: ev.ts_unix, sev: bucket, kind: ev.kind || ev.title || "event" });
+    }
+    return out;
   }
 
   // One shared time axis at the bottom of the metrics list — clock labels at the
@@ -860,7 +899,7 @@
     return " {" + entries.map(([k, v]) => `${k}=${v}`).join(", ") + "}";
   }
 
-  function metricRow(m, win) {
+  function metricRow(m, win, events) {
     const row = document.createElement("div"); row.className = "metric-row";
     const name = document.createElement("span"); name.className = "name";
     name.appendChild(nameMarkup(m.name));
@@ -886,15 +925,20 @@
     const sparkWrap = document.createElement("div"); sparkWrap.className = "spark-wrap";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("spark");
-    sparkline(svg, m.samples, win);
+    const threshold = typeof m.threshold === "number" ? m.threshold : null;
+    sparkline(svg, m.samples, win, threshold, events);
     sparkWrap.appendChild(svg);
     if (svg._spark) {
-      // Per-graph Y axis: max top, min bottom. HTML overlay rather than SVG
-      // <text> because the sparkline viewBox uses preserveAspectRatio="none",
-      // which would stretch any embedded text horizontally.
-      const ymax = document.createElement("span"); ymax.className = "yax ymax"; ymax.textContent = fmtNum(svg._spark.max);
-      const ymin = document.createElement("span"); ymin.className = "yax ymin"; ymin.textContent = fmtNum(svg._spark.min);
+      // Per-graph Y axis: max top, min bottom (the rendered domain, which is
+      // widened to include the threshold line when present). HTML overlay rather
+      // than SVG <text> because the sparkline viewBox uses
+      // preserveAspectRatio="none", which would stretch embedded text.
+      const ymax = document.createElement("span"); ymax.className = "yax ymax"; ymax.textContent = fmtNum(svg._spark.hi);
+      const ymin = document.createElement("span"); ymin.className = "yax ymin"; ymin.textContent = fmtNum(svg._spark.lo);
       sparkWrap.appendChild(ymax); sparkWrap.appendChild(ymin);
+      // White-ringed hover dot (positioned by the delegated mousemove handler).
+      const dot = document.createElement("span"); dot.className = "spark-dot"; dot.style.display = "none";
+      sparkWrap.appendChild(dot);
       sparkWrap.dataset.label = m.name + labelSuffix(m.labels) + (m.unit ? " (" + m.unit + ")" : "");
     }
     row.appendChild(name); row.appendChild(unit); row.appendChild(p50); row.appendChild(p95); row.appendChild(latest); row.appendChild(sparkWrap);
@@ -942,7 +986,12 @@
     }
   }
 
+  let _metricsFrozen = false;
   function renderMetrics(metrics) {
+    // Freeze: keep the current DOM (and cached metrics) so the operator can hover
+    // and inspect a moment instead of chasing a scrolling ring. Re-renders resume
+    // on unfreeze.
+    if (_metricsFrozen && _lastMetrics.length) return;
     _lastMetrics = metrics || [];
     const el = $("metrics");
     // Per-namespace counts for the chip badges (over the full, unfiltered set).
@@ -975,6 +1024,7 @@
       for (const s of m.samples) { if (s[0] < tMin) tMin = s[0]; if (s[0] > tMax) tMax = s[0]; }
     }
     const win = (isFinite(tMin) && isFinite(tMax) && tMax > tMin) ? { tMin, tMax } : null;
+    const events = win ? notableEvents() : [];
     const sorted = shown.slice().sort(
       (a, b) => metricNamespace(a.name).localeCompare(metricNamespace(b.name)) || a.name.localeCompare(b.name)
     );
@@ -989,10 +1039,22 @@
         hd.textContent = ns + " · " + counts[ns];
         el.appendChild(hd);
       }
-      el.appendChild(metricRow(m, win));
+      el.appendChild(metricRow(m, win, events));
     }
     if (win) el.appendChild(metricAxisRow(win));
   }
+
+  // Freeze toggle (wired once). Pauses live re-rendering of the metrics list.
+  (function wireMetricFreeze() {
+    const btn = $("metric-freeze");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      _metricsFrozen = !_metricsFrozen;
+      btn.classList.toggle("active", _metricsFrozen);
+      btn.textContent = _metricsFrozen ? "▶ resume" : "❚❚ freeze";
+      if (!_metricsFrozen) renderMetrics(_lastMetrics);
+    });
+  })();
 
   // Jaeger UI url is operator-configured via the OPENRAL_JAEGER_UI_URL
   // env var on the dashboard process, surfaced through /api/config.

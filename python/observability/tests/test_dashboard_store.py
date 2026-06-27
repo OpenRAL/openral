@@ -251,6 +251,46 @@ def test_histogram_metric_records_samples_and_percentiles() -> None:
     assert series["p95"] >= 10.0
 
 
+def test_metric_threshold_attribute_is_promoted_and_stripped() -> None:
+    """A ``openral.metric.threshold_ms`` data-point attribute becomes the series
+    ``threshold`` and never leaks into the label set (so it cannot fragment the
+    series or show as a label suffix)."""
+    store = TelemetryStore()
+    rm = ResourceMetrics(
+        resource=_resource({"service.name": "ral"}),
+        scope_metrics=[
+            ScopeMetrics(
+                metrics=[
+                    Metric(
+                        name="openral.tick.duration",
+                        unit="ms",
+                        histogram=HistogramProto(
+                            aggregation_temporality=AggregationTemporality.AGGREGATION_TEMPORALITY_CUMULATIVE,
+                            data_points=[
+                                HistogramDataPoint(
+                                    count=1,
+                                    sum=80.0,
+                                    attributes=_attrs(
+                                        {
+                                            "rskill.id": "smolvla",
+                                            "openral.metric.threshold_ms": 100.0,
+                                        }
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                ]
+            )
+        ],
+    )
+    store.ingest_metrics([rm])
+    snap = store.snapshot()
+    series = next(m for m in snap["metrics"] if m["name"] == "openral.tick.duration")
+    assert series["threshold"] == 100.0
+    assert series["labels"] == {"rskill.id": "smolvla"}  # threshold key stripped
+
+
 def test_sum_metric_tracks_cumulative() -> None:
     store = TelemetryStore()
     rm = ResourceMetrics(

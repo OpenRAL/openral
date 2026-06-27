@@ -83,7 +83,18 @@ draining (no `Connection refused` retries on the way down).
   the wire, with p50/p95 (for histograms) and a sparkline of the
   last ~600 samples. Empty until a workload starts emitting; PR #108
   adds `openral.tick.duration`, `openral.inference.duration`,
-  `openral.hal.*.duration`, etc.
+  `openral.hal.*.duration`, etc. Hover any sparkline for the exact
+  value + clock time of the nearest sample (a white-ringed marker
+  snaps to the point); each graph carries its own min/max Y labels and
+  shares one bottom time axis with dotted gridlines so every row reads
+  on the same clock. Metrics whose producer emits a contractual
+  threshold (`openral.metric.threshold_ms` — the runner latency budget
+  on `tick.duration`, the world-state staleness deadline on
+  `world_state.staleness_ms`) draw a dashed budget/deadline line and
+  redden the trace once the latest sample breaches it; warn/error
+  events appear as severity-coloured vertical markers aligned across
+  all graphs. The **freeze** toggle pauses live updates so you can
+  inspect a moment.
 - **Event log** — chronological feed of the last 60 events (spans,
   span events, and real log lines bridged from structlog over OTLP);
   ESTOP / safety violation rows render in red. Filter chips toggle the
