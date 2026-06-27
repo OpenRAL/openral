@@ -12,6 +12,7 @@ from openral_core import (
     DecomposeMissionTool,
     EmitPromptTool,
     ExecuteRskillTool,
+    GroundedSubtask,
     LifecycleTransitionTool,
     MemorySearchTool,
     MemoryWriteTool,
@@ -131,28 +132,54 @@ def test_execute_skill_rejects_negative_deadline() -> None:
 
 
 def test_decompose_mission_round_trip_populate_and_subdivide() -> None:
-    """DecomposeMissionTool decodes via the union in both modes (#123)."""
+    """DecomposeMissionTool decodes via the union in both modes (#123; ADR-0075)."""
     populate = ADAPTER.validate_json(
-        '{"tool": "decompose_mission", "subtasks": ["clear table", "wipe surface"]}'
+        '{"tool": "decompose_mission", "subtasks": ['
+        '{"object_ref": "milk", "text": "pick up the milk and bag it"}, '
+        '{"object_ref": "ketchup", "text": "pick up the ketchup and bag it"}]}'
     )
     assert isinstance(populate, DecomposeMissionTool)
-    assert populate.subtasks == ["clear table", "wipe surface"]
+    assert populate.rendered_subtasks() == [
+        "pick up the milk and bag it",
+        "pick up the ketchup and bag it",
+    ]
     assert populate.target_task_id == ""  # empty → populate the whole queue
     subdivide = ADAPTER.validate_json(
-        DecomposeMissionTool(subtasks=["a", "b"], target_task_id="t2").model_dump_json()
+        DecomposeMissionTool(
+            subtasks=[GroundedSubtask(object_ref="milk", text="grab the milk")],
+            target_task_id="t2",
+        ).model_dump_json()
     )
     assert isinstance(subdivide, DecomposeMissionTool)
     assert subdivide.target_task_id == "t2"
 
 
-def test_decompose_mission_trims_and_drops_blank_subtasks() -> None:
-    """Blank/whitespace subtasks are dropped; at least one must survive."""
-    call = DecomposeMissionTool(subtasks=["  pick  ", "", "   ", "place "])
-    assert call.subtasks == ["pick", "place"]
+def test_decompose_mission_requires_at_least_one_subtask() -> None:
+    """An empty subtask list is rejected (min_length=1)."""
     with pytest.raises(ValidationError):
-        DecomposeMissionTool(subtasks=["  ", ""])  # nothing survives
+        DecomposeMissionTool(subtasks=[])
+
+
+def test_grounded_subtask_rejects_collective_and_ungrounded() -> None:
+    """ADR-0075: object_ref/text may not be collective, and text must name object_ref."""
+    ok = GroundedSubtask(object_ref="alphabet soup", text="pick up the alphabet soup")
+    assert ok.render() == "pick up the alphabet soup"
+    # collective object_ref — the headline "first batch of objects" failure mode
     with pytest.raises(ValidationError):
-        DecomposeMissionTool(subtasks=[])  # min_length=1
+        GroundedSubtask(object_ref="all the objects", text="grab all the objects")
+    with pytest.raises(ValidationError):
+        GroundedSubtask(
+            object_ref="the first batch of objects", text="grab the first batch of objects"
+        )
+    # collective text even with a specific object_ref
+    with pytest.raises(ValidationError):
+        GroundedSubtask(object_ref="milk", text="grab all the items including the milk")
+    # text must name its object_ref so the grounding is explicit
+    with pytest.raises(ValidationError):
+        GroundedSubtask(object_ref="ketchup", text="pick up the milk")
+    # blanks rejected (min_length=1)
+    with pytest.raises(ValidationError):
+        GroundedSubtask(object_ref="", text="pick something up")
 
 
 def test_unknown_tool_kind_is_rejected() -> None:

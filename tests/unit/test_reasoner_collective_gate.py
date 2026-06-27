@@ -1,21 +1,19 @@
-"""Unit slice for the execute grounding gate's collective-target detector.
+"""Unit slice for the collective-target detector (ADR-0075).
 
 A skill acts on exactly ONE specific object, so the reasoner refuses to actuate
 while the active task targets a collective/quantified set ("put ALL the objects
 in the basket") and self-prompts the LLM to enumerate (scene_objects is already
-in its context) + decompose into one subtask per object. This pins the pure
-detector that drives that gate; the full block→invite→decompose flow is exercised
-by the deploy-sim run. Pure helper, tested like ``_should_offer_subdivision``.
+in its context) + decompose into one subtask per object. ``is_collective_target``
+is the single source of truth (``openral_core``) shared by the ``GroundedSubtask``
+schema validator and the reasoner node's runtime execute gate. Pure helper — no
+ROS — so this pins it directly; the full block→invite→decompose flow is exercised
+by the deploy-sim run.
 """
 
 from __future__ import annotations
 
 import pytest
-
-pytest.importorskip("rclpy")
-pytest.importorskip("openral_msgs")
-
-from openral_reasoner_ros.reasoner_node import _is_collective_target
+from openral_core import is_collective_target as _is_collective_target
 
 
 @pytest.mark.parametrize(

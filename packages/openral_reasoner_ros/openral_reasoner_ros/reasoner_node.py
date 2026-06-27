@@ -52,7 +52,6 @@ import contextlib
 import datetime
 import json
 import pathlib
-import re
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -83,6 +82,7 @@ from openral_core import (
     RSkillManifest,
     TimeoutEvidence,
     control_modes_for_representation,
+    is_collective_target,
 )
 from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
@@ -453,32 +453,11 @@ def _resolve_execute_prompt(call_prompt: str, active_text: str | None) -> str:
     return active_text or ""
 
 
-# A task target is "collective" when it names a quantified/plural set rather than
-# one specific object — a quantifier (all/every/each/both/everything) or a bare
-# generic plural (objects/items/things). A skill acts on exactly ONE grounded
-# object, so a collective task is not a single actionable unit: it must be
-# enumerated (the live detector already lists every object in the LLM's
-# ``scene_objects`` context) and decomposed into one concrete subtask per object
-# BEFORE any execute_rskill. Deliberately narrow — quantifiers + generic plurals
-# only — so a specific goal ("pick up the alphabet soup") never trips it.
-_COLLECTIVE_TARGET = re.compile(
-    r"\b(?:all|every|each|both|everything)\b|\b(?:objects|items|things)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_collective_target(text: str) -> bool:
-    """True when ``text`` names a collective/quantified set, not one specific object.
-
-    Examples:
-        >>> _is_collective_target("put all the objects in the basket")
-        True
-        >>> _is_collective_target("clean everything off the table")
-        True
-        >>> _is_collective_target("pick up the alphabet soup and put it in the basket")
-        False
-    """
-    return bool(_COLLECTIVE_TARGET.search(text))
+# The "collective target" predicate (ADR-0075) is the single source of truth in
+# ``openral_core`` (`is_collective_target`) — shared by the `GroundedSubtask`
+# schema validator and this node's runtime execute gate so a skill never acts on
+# a quantified/plural set ("all the objects"); it must be enumerated from the live
+# ``scene_objects`` context and decomposed into one grounded subtask per object.
 
 
 class ReasonerNode(LifecycleNode):
@@ -2759,7 +2738,7 @@ class ReasonerNode(LifecycleNode):
                     f"(active={active.task_id if active else None!r}) — ignored",
                 )
                 return
-            child = mission.subdivide_active(call.subtasks)
+            child = mission.subdivide_active(call.rendered_subtasks())
             if child is None:
                 # Depth bound reached (or empty) — fall through to the existing
                 # attempt-cap → abandon → human-handoff ladder; do not loop.
@@ -2780,7 +2759,7 @@ class ReasonerNode(LifecycleNode):
                     "(use target_task_id to subdivide the active task instead)",
                 )
                 return
-            new_mission = MissionState(call.subtasks)
+            new_mission = MissionState(call.rendered_subtasks())
             if new_mission.is_empty():
                 return
             self._renderer.set_mission(new_mission)
@@ -2849,10 +2828,13 @@ class ReasonerNode(LifecycleNode):
             "object. A skill acts on exactly ONE specific object. Look at the "
             "`scene_objects` line in your context — the live detector lists every object "
             "it sees with a position — and call decompose_mission(target_task_id="
-            f"{task.task_id!r}, subtasks=[…]) to split this into one concrete subtask per "
-            "specific object, e.g. 'pick up the milk and put it in the basket', 'pick up "
-            "the ketchup and put it in the basket'. Do NOT call execute_rskill until the "
-            "active task names a single specific object."
+            f"{task.task_id!r}, subtasks=[…]) to split this into one grounded subtask per "
+            "specific object. Each subtask is {object_ref: <ONE specific object>, text: "
+            "<instruction naming that object>}, e.g. {object_ref: 'milk', text: 'pick up "
+            "the milk and put it in the basket'}, {object_ref: 'ketchup', text: 'pick up "
+            "the ketchup and put it in the basket'}. object_ref must be ONE concrete "
+            "object (never 'all'/'objects'/'the first batch'). Do NOT call execute_rskill "
+            "until the active task names a single specific object."
         )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -3010,7 +2992,7 @@ class ReasonerNode(LifecycleNode):
         # actuation is not a try at the task.
         mission = self._renderer.mission
         active = mission.active() if mission is not None else None
-        if active is not None and _is_collective_target(active.text):
+        if active is not None and is_collective_target(active.text):
             self.get_logger().info(
                 f"execute gate: refusing execute_rskill on collective task "
                 f"{active.task_id} ({active.text[:60]!r}) — inviting per-object decomposition",

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+import re
 from enum import Enum
 from typing import Any, Literal, TypeAlias
 
@@ -7722,8 +7723,99 @@ class MemorySearchTool(_ReasonerToolBase):
     limit: int = Field(default=5, ge=1, le=100)
 
 
+# ADR-0075 — the smallest actionable unit is a verb applied to exactly ONE
+# specific object. A *collective* / *quantified* target ("all the objects", "the
+# items") names a SET the agent has not yet bound to perception, so it is never
+# directly actionable: it must be enumerated from the live scene and split into
+# one grounded subtask per concrete object first. Deliberately narrow —
+# quantifiers + bare generic plurals only — so a specific goal ("pick up the
+# alphabet soup") never trips it. Shared source of truth for both the
+# :class:`GroundedSubtask` schema validator (below) and the reasoner node's
+# runtime execute gate (``openral_reasoner_ros.reasoner_node``).
+_COLLECTIVE_TARGET_RE: re.Pattern[str] = re.compile(
+    r"\b(?:all|every|each|both|everything)\b|\b(?:objects|items|things)\b",
+    re.IGNORECASE,
+)
+
+
+def is_collective_target(text: str) -> bool:
+    """True when ``text`` targets a *set* rather than one specific object (ADR-0075).
+
+    A quantifier (``all``/``every``/``each``/``both``/``everything``) or a bare
+    generic plural (``objects``/``items``/``things``). Narrow by design: a
+    specific goal never trips it.
+
+    Example:
+        >>> is_collective_target("put all the objects in the basket")
+        True
+        >>> is_collective_target("pick up the alphabet soup and put it in the basket")
+        False
+    """
+    return _COLLECTIVE_TARGET_RE.search(text) is not None
+
+
+class GroundedSubtask(BaseModel):
+    """One subtask bound to exactly ONE specific object (ADR-0075).
+
+    Makes the "smallest actionable unit" invariant a *type*: ``object_ref`` is
+    the single concrete object (or place) this subtask acts on, and ``text`` is
+    the instruction handed to the skill (the VLA prompt). The validator forbids a
+    collective/quantified ``object_ref`` or ``text`` and requires ``text`` to name
+    its ``object_ref`` — so an ungrounded "pick up the first batch of objects" is
+    not a representable value and the provider's structured-output path re-prompts
+    (the same mechanism that rejects a malformed :data:`ReasonerToolCall`).
+
+    Attributes:
+        object_ref: The single concrete object/place this subtask acts on
+            (``"milk"``, ``"the fridge"``). Never a quantifier or generic plural.
+        text: The instruction the skill receives, naming ``object_ref``
+            (``"pick up the milk and put it in the basket"``).
+
+    Example:
+        >>> GroundedSubtask(object_ref="milk", text="pick up the milk and bag it").render()
+        'pick up the milk and bag it'
+        >>> is_collective_target(
+        ...     GroundedSubtask(object_ref="milk", text="grab the milk").object_ref
+        ... )
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    object_ref: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_grounded(self) -> GroundedSubtask:
+        """Enforce the one-specific-object grounding invariant (ADR-0075)."""
+        obj = self.object_ref.strip()
+        text = self.text.strip()
+        if not obj:
+            raise ValueError("object_ref must name one concrete object")
+        if not text:
+            raise ValueError("subtask text must not be blank")
+        if is_collective_target(obj):
+            raise ValueError(
+                f"object_ref {obj!r} is collective/quantified — name ONE specific object "
+                "(enumerate the scene and emit one subtask per object instead)"
+            )
+        if is_collective_target(text):
+            raise ValueError(
+                f"subtask text {text!r} is collective — one specific object per subtask"
+            )
+        if obj.lower() not in text.lower():
+            raise ValueError(
+                f"subtask text {text!r} must name its object_ref {obj!r} (explicit grounding)"
+            )
+        return self
+
+    def render(self) -> str:
+        """The instruction string handed to :class:`MissionState` / the skill."""
+        return self.text.strip()
+
+
 class DecomposeMissionTool(_ReasonerToolBase):
-    """Tool variant — write the reasoner's typed task queue (ADR-0073 amendment / #123).
+    """Tool variant — write the reasoner's typed task queue (ADR-0073 amendment / #123; ADR-0075).
 
     The typed path for the ``decompose-mission`` playbook (ADR-0072): the LLM
     emits an ordered list of finer subtasks and the node applies it to the
@@ -7738,30 +7830,30 @@ class DecomposeMissionTool(_ReasonerToolBase):
       :data:`~openral_reasoner.mission.DEFAULT_MAX_SUBDIVIDE_DEPTH`; past the
       bound the node hands off instead.
 
+    ADR-0075: each subtask is a :class:`GroundedSubtask` (one specific object),
+    not a free string — so a collective "first batch of objects" cannot be
+    emitted. The node renders them to :class:`MissionState` task text via
+    :meth:`rendered_subtasks`.
+
     Like every :data:`ReasonerToolCall` variant it **holds no authority over
     actuation** (ADR-0018 §4) — it only edits the S2 task ledger; a bad
     decomposition yields a worse plan the safety kernel still vetoes.
 
     Attributes:
         tool: Discriminator (always ``"decompose_mission"``).
-        subtasks: Ordered, non-empty subtask instructions (blanks are dropped;
-            at least one must survive). Each becomes a :class:`TaskState`.
+        subtasks: Ordered, non-empty list of :class:`GroundedSubtask` — each acts
+            on exactly one specific object and becomes a :class:`TaskState`.
         target_task_id: ``TaskState.task_id`` of the blocked task to subdivide
             (e.g. ``"t2"``); empty string populates/replaces the whole queue.
     """
 
     tool: Literal["decompose_mission"] = "decompose_mission"
-    subtasks: list[str] = Field(min_length=1)
+    subtasks: list[GroundedSubtask] = Field(min_length=1)
     target_task_id: str = ""
 
-    @field_validator("subtasks")
-    @classmethod
-    def _drop_blank_subtasks(cls, value: list[str]) -> list[str]:
-        """Trim each subtask and drop blanks; require at least one to survive."""
-        cleaned = [s.strip() for s in value if s.strip()]
-        if not cleaned:
-            raise ValueError("decompose_mission requires at least one non-empty subtask")
-        return cleaned
+    def rendered_subtasks(self) -> list[str]:
+        """The ordered subtask instruction strings for :class:`MissionState`."""
+        return [s.render() for s in self.subtasks]
 
 
 ReasonerToolCall: TypeAlias = (

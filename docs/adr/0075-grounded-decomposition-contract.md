@@ -1,6 +1,6 @@
 # ADR-0075 — Grounded task decomposition: the smallest actionable unit is a verb + a specific perceived object
 
-- **Status:** Proposed 2026-06-27.
+- **Status:** Accepted 2026-06-27 (implemented — schema + shared predicate + node + tests).
 - **Date:** 2026-06-27
 - **ADR number:** `0075`. The integer is not load-bearing — cross-refs use
   filenames.
@@ -77,54 +77,68 @@ it can ignore.
 ## Decision
 
 Make `decompose_mission` subtasks **grounded by construction**: each subtask
-carries an `object_ref` that must bind to an entity currently in the reasoner's
-perception (`scene_objects`) — or be explicitly marked as a non-manipulation step
-(navigation / open / inspect) whose target is itself a named concrete place or
-object, never a quantifier or bare plural.
+carries an `object_ref` naming exactly one concrete object or place — for a
+manipulation step an entity the reasoner can point to in perception
+(`scene_objects`), for a navigation / open / inspect step a named concrete place
+or object — never a quantifier or bare generic plural.
 
-### Schema (Layer 4, `openral_core`)
+### Schema (Layer 4, `openral_core`) — as implemented
 
 Replace the free-text `subtasks: list[str]` on `DecomposeMissionTool` with a
-structured, validated shape (backward-incompatible → `schema_version` bump +
-migrator, CLAUDE.md §1.6):
+structured, validated `GroundedSubtask`:
 
 ```python
 class GroundedSubtask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    verb: SubtaskVerb              # enum: pick_place | navigate | open | inspect | …
-    object_ref: str               # a concrete object/place name; NEVER a quantifier
-    dest_ref: str | None = None   # placement destination, when the verb needs one
-    # rendered to the VLA prompt as "<verb> the <object_ref> [into the <dest_ref>]"
+    object_ref: str = Field(min_length=1)  # the ONE concrete object/place this acts on
+    text: str = Field(min_length=1)        # the instruction handed to the skill (VLA prompt)
+
+    @model_validator(mode="after")
+    def _check_grounded(self) -> "GroundedSubtask":
+        # object_ref and text may not be collective (is_collective_target), and
+        # text must NAME object_ref so the grounding is explicit.
+        ...
+    def render(self) -> str: return self.text.strip()
 
 class DecomposeMissionTool(_ReasonerToolBase):
     tool: Literal["decompose_mission"] = "decompose_mission"
     subtasks: list[GroundedSubtask] = Field(min_length=1)
     target_task_id: str = ""
+    def rendered_subtasks(self) -> list[str]: ...  # [s.render() for s in subtasks]
 ```
 
-Two layers of grounding enforcement, cheapest first:
+**No `verb` enum, no `dest_ref`** (the drafted shape). A verb enum couples the
+schema to the open-ended `RSkillAction` vocabulary and forces grammar templating
+for marginal gain; the destination lives naturally in `text`. The enforcement
+that matters is `object_ref`: the LLM must commit to **one** concrete object per
+subtask, so covering a set requires N subtasks each with a distinct `object_ref`.
 
-1. **Structural (always on).** A field-validator rejects an `object_ref` /
-   `dest_ref` that is a quantifier or bare generic plural (the same
-   `all|every|each|both|everything|objects|items|things` vocabulary the runtime
-   gate uses, factored into one shared predicate). The provider's structured-output
-   path re-prompts on a `ValidationError` — the *same* mechanism that already
-   re-prompts a malformed `ReasonerToolCall`. This alone defeats "first batch of
-   objects": it is no longer a representable value.
+**No on-disk migrator / `schema_version` bump.** `DecomposeMissionTool` is an LLM
+*wire* contract (ephemeral structured output consumed live), never persisted to
+disk — so the §1.6 on-disk migration path does not apply. The provider
+regenerates the tool's `input_schema` from `model_json_schema()`, which now
+nests `GroundedSubtask` (required `object_ref` + `text`); the change is to the
+live tool surface only.
 
-2. **Perceptual (when scene is known).** When the node applies the tool
-   (`_dispatch_decompose_mission`) and a live `scene_objects` set is available, an
-   `object_ref` that resolves to **zero** known entities is surfaced back to the
-   LLM as "no such object in view — re-enumerate" rather than silently queued.
-   (Soft: navigation/exploration legitimately targets not-yet-seen objects, so
-   this warns + re-prompts; it does not hard-reject, matching the existing
-   seen-but-not-lifted exception in `DEFAULT_SYSTEM_PROMPT`.)
+Grounding enforcement, structural (always on): the `@model_validator` rejects an
+`object_ref` or `text` that is a quantifier / bare generic plural — via
+`is_collective_target`, the **single shared predicate** in `openral_core` that the
+runtime execute gate also uses — and requires `text` to name `object_ref`. The
+provider's structured-output path re-prompts on the `ValidationError`, the *same*
+mechanism that re-prompts a malformed `ReasonerToolCall`. This alone defeats
+"first batch of objects": it is no longer a representable value.
 
 `object_ref` is deliberately a **name**, not a detector instance id: detector ids
 churn frame-to-frame and across embodiments, whereas a name ("the milk") is
 stable, human-legible on the dashboard/trace, and is exactly what the VLA prompt
-needs. The enum over *currently-seen* names is supplied to the LLM through the
-enumeration-invite prompt, not baked into the tool schema (the scene is dynamic).
+needs. The set of currently-seen names is supplied to the LLM through the
+enumeration-invite prompt + the `scene_objects` context, not baked into the tool
+schema (the scene is dynamic).
+
+A **perceptual** check (reject an `object_ref` resolving to zero scene entities)
+is a natural follow-up but is deferred: the structural check already makes the
+headline failure un-representable, and a soft perceptual re-prompt needs the node
+to thread live `scene_objects` into `_dispatch_decompose_mission`.
 
 ### What stays the same
 
@@ -146,10 +160,13 @@ enumeration-invite prompt, not baked into the tool schema (the scene is dynamic)
   prompts/scenes/robots because grounding is defined against *perception*, not a
   scene-specific word list. Gives the ADR-0074 verifier a concrete done-predicate
   per subtask for free. Dashboard/trace gets legible per-object tasks.
-- **Negative / cost.** Backward-incompatible schema change → `schema_version` bump
-  + migrator + fixture test. Every reasoner-tool fuzz/round-trip test that builds
-  a `DecomposeMissionTool` updates to the structured shape. The verb enum must be
-  curated and kept in step with the rSkill action vocabulary (`RSkillAction`).
+- **Negative / cost.** The LLM-wire tool surface changes (provider regenerates
+  the `input_schema`), so the `decompose_mission` round-trip test moves to the
+  structured shape. A weak model now occasionally *fails validation* (collective
+  `object_ref` / `text` not naming its `object_ref`) and gets re-prompted instead
+  of silently storing a bad subtask — strictly better, but it converts some bad
+  outputs into a re-prompt round-trip latency. No on-disk migrator (the tool is
+  not persisted; see Schema).
 - **Neutral.** No layer boundary moves; this is entirely within Layer 4
   (Reasoning) + the Layer-4 schema in `openral_core`.
 
@@ -180,14 +197,20 @@ enumeration-invite prompt, not baked into the tool schema (the scene is dynamic)
 
 ## Rollout
 
-1. **Shipped now (this branch, prose layer):** the §"smallest actionable unit"
-   block in `DEFAULT_SYSTEM_PROMPT`, the `decompose-mission` playbook trigger for
-   collective targets, and the runtime grounding gate + its unit slice. Verified
-   by driving the reasoner directly on the captured `libero_object` decision
-   (collective prompt + `scene_objects` = milk/ketchup/soup) — see the reasoner
-   grounding test.
-2. **This ADR (next PR):** `GroundedSubtask` schema + structural validator +
-   perceptual re-prompt + migrator + fuzz/round-trip test updates + `docs/methods`
-   + repo-state-map `SCHEMAS`.
+1. **Prose + runtime-gate layer (commit 80f362d):** the §"smallest actionable
+   unit" block in `DEFAULT_SYSTEM_PROMPT`, the `decompose-mission` playbook trigger
+   for collective targets, and the runtime grounding gate. A live 10-case x 3-run
+   grounding matrix on glm-5.2 (`.goals/.../eval_reasoner_grounding.py`) passed
+   8/10; the cracks (stochastic non-decompose, ambiguous singulars) motivated this
+   ADR.
+2. **This ADR (implemented):** the shared `is_collective_target` predicate +
+   `GroundedSubtask` schema + structural validator + `DecomposeMissionTool.subtasks`
+   retyped + node `rendered_subtasks()` + the enumeration-invite/system-prompt copy
+   for the structured shape + `docs/methods` + repo-state-map `SCHEMAS`. Verified
+   offline: unit tests pin the rejection of a collective `object_ref` (the
+   "first batch of objects" failure is now a `ValidationError`), and the
+   provider-facing tool schema requires nested `object_ref` + `text`. A live LLM
+   re-run of the matrix against the new schema is the remaining confirmation
+   (pending OpenRouter credit).
 3. **Future ADR:** affordance/precondition-effect contracts → grounded
-   long-horizon planner.
+   long-horizon planner; plus the soft perceptual `object_ref` resolution check.
