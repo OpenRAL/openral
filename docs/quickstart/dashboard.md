@@ -96,8 +96,11 @@ draining (no `Connection refused` retries on the way down).
   the fault). Warn/error events appear as severity-coloured vertical
   markers aligned across all graphs. **Click any point** to focus the
   whole column on that instant — a line is drawn across every graph and
-  the event log scopes to a window around it (clear with the ✕). The
-  **freeze** toggle pauses live updates so you can inspect a moment.
+  the event log scopes to a window around it (clear with the ✕).
+  **Scroll** over a graph to zoom the shared time window in/out (centred
+  on the cursor, bounded by the retained buffer; "reset zoom" restores
+  the full view), and Y rescales to whatever is visible. The **freeze**
+  toggle pauses live updates so you can inspect a moment.
 - **Event log** — chronological feed of the last 60 events (spans,
   span events, and real log lines bridged from structlog over OTLP);
   ESTOP / safety violation rows render in red. Filter chips toggle the

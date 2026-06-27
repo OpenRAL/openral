@@ -753,12 +753,15 @@
   function sparkline(svgEl, samples, win, threshold, thrDir, events, focusTime) {
     if (!samples || samples.length < 2) return;
     const w = 240, h = 26;
-    const values = samples.map((s) => s[1]);
+    const tMin = win ? win.tMin : samples[0][0];
+    const tMax = win ? win.tMax : samples[samples.length - 1][0];
+    // Y autoscales to the samples *visible* in the window (so a spike outside a
+    // zoomed range doesn't squash the detail you zoomed in to see).
+    const visible = samples.filter((s) => s[0] >= tMin && s[0] <= tMax);
+    const values = (visible.length ? visible : samples).map((s) => s[1]);
     let lo = Math.min(...values), hi = Math.max(...values);
     if (threshold != null) { lo = Math.min(lo, threshold); hi = Math.max(hi, threshold); }
     const span = (hi - lo) || 1;
-    const tMin = win ? win.tMin : samples[0][0];
-    const tMax = win ? win.tMax : samples[samples.length - 1][0];
     const tSpan = (tMax - tMin) || 1;
     const xOf = (t) => ((t - tMin) / tSpan) * w;
     const yOf = (v) => h - 2 - ((v - lo) / span) * (h - 4);
@@ -864,6 +867,40 @@
       for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
       setTimeFocus(best[0]);
     });
+    // Scroll-to-zoom (#5): wheel over a sparkline shrinks/grows the shared time
+    // window centred on the cursor's instant. Bounded by the retained data
+    // range; scrolling fully out resets to the live view.
+    el.addEventListener("wheel", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d || _dataMin == null) return;
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const tc = d.tMin + fx * (d.tMax - d.tMin);  // cursor instant
+      const factor = e.deltaY < 0 ? 0.8 : 1.25;     // up = in, down = out
+      let lo = tc - (tc - d.tMin) * factor;
+      let hi = tc + (d.tMax - tc) * factor;
+      lo = Math.max(lo, _dataMin); hi = Math.min(hi, _dataMax);
+      if (hi - lo >= (_dataMax - _dataMin) - 1e-6) _zoom = null;      // fully out
+      else if (hi - lo >= _ZOOM_MIN_SPAN_S) _zoom = { tMin: lo, tMax: hi };
+      else return;  // already at min span — ignore
+      renderMetrics(_lastMetrics, true);
+    }, { passive: false });
+  }
+
+  // Scroll-to-zoom state (#5). `_zoom` overrides the shared window; `_dataMin/Max`
+  // are the live data bounds set by renderMetrics each tick.
+  let _zoom = null, _dataMin = null, _dataMax = null;
+  const _ZOOM_MIN_SPAN_S = 1;
+  function resetZoom() {
+    _zoom = null;
+    renderMetrics(_lastMetrics, true);
+  }
+  function updateZoomResetButton() {
+    const btn = $("metric-zoom-reset");
+    if (btn) btn.style.display = _zoom ? "" : "none";
   }
 
   // Cross-panel time focus (issue #3). Clicking a sparkline point scopes the
@@ -1078,7 +1115,17 @@
       if (!m.samples) continue;
       for (const s of m.samples) { if (s[0] < tMin) tMin = s[0]; if (s[0] > tMax) tMax = s[0]; }
     }
-    const win = (isFinite(tMin) && isFinite(tMax) && tMax > tMin) ? { tMin, tMax } : null;
+    const haveData = isFinite(tMin) && isFinite(tMax) && tMax > tMin;
+    _dataMin = haveData ? tMin : null;
+    _dataMax = haveData ? tMax : null;
+    // Scroll-to-zoom (#5): _zoom overrides the shared window with a sub-range,
+    // clamped to the live data bounds; if it no longer fits, drop back to full.
+    if (_zoom && haveData) {
+      const lo = Math.max(_zoom.tMin, tMin), hi = Math.min(_zoom.tMax, tMax);
+      _zoom = hi - lo > _ZOOM_MIN_SPAN_S ? { tMin: lo, tMax: hi } : null;
+    }
+    const win = !haveData ? null : (_zoom || { tMin, tMax });
+    updateZoomResetButton();
     const events = win ? notableEvents() : [];
     const sorted = shown.slice().sort(
       (a, b) => metricNamespace(a.name).localeCompare(metricNamespace(b.name)) || a.name.localeCompare(b.name)
@@ -1109,6 +1156,11 @@
       btn.textContent = _metricsFrozen ? "▶ resume" : "❚❚ freeze";
       if (!_metricsFrozen) renderMetrics(_lastMetrics);
     });
+  })();
+
+  (function wireZoomReset() {
+    const btn = $("metric-zoom-reset");
+    if (btn) btn.addEventListener("click", resetZoom);
   })();
 
   // Jaeger UI url is operator-configured via the OPENRAL_JAEGER_UI_URL
