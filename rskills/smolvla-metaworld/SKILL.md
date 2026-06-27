@@ -16,6 +16,7 @@ metadata:
   sensors_required: ['rgb:observation.images.camera1']
   state_dim: 4
   action_dim: 4
+  action_representation: delta_ee_3d_plus_gripper
   runtime: pytorch
   quantization: bf16/pytorch
   chunk_size: 16

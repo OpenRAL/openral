@@ -39,26 +39,37 @@ import msgpack
 import torch
 import zmq
 from PIL import Image
-from transformers import AutoModel, AutoProcessor, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer, BitsAndBytesConfig
 
 
 def _load(model_id: str) -> tuple[object, object, object]:
-    """Load tokenizer, processor, and the NF4-quantized model on the GPU."""
-    bnb = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    """Load tokenizer, processor, and the NF4-quantized model on the GPU.
+
+    The OpenRAL mirror ships a *prequantized* bnb-NF4 model: config.json already
+    carries the ``quantization_config`` block, so ``from_pretrained`` reads it and
+    drops the packed weights straight into ``bnb.nn.Linear4bit`` modules. Passing
+    a fresh ``BitsAndBytesConfig`` here would tell transformers to quantize again
+    over already-packed weights and the Linear state_dict no longer lines up
+    ("Error(s) in loading state_dict for Linear"). So we only supply a config when
+    the source is *not* self-describing (e.g. pointed at the upstream bf16 repo).
+    """
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    prequantized = getattr(config, "quantization_config", None) is not None
+    load_kwargs: dict[str, object] = {
+        "dtype": torch.bfloat16,
+        "trust_remote_code": True,
+        "device_map": {"": 0},
+    }
+    if not prequantized:
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        model_id,
-        quantization_config=bnb,
-        dtype=torch.bfloat16,
-        trust_remote_code=True,
-        device_map={"": 0},
-    ).eval()
+    model = AutoModel.from_pretrained(model_id, **load_kwargs).eval()
     return tokenizer, processor, model
 
 

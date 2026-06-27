@@ -17,6 +17,7 @@ metadata:
   sensors_required: ['rgb:observation.images.top']
   state_dim: 14
   action_dim: 14
+  action_representation: joint_positions
   runtime: pytorch
   quantization: fp32/pytorch
   chunk_size: 100

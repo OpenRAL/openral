@@ -7,7 +7,7 @@ kind: "reward"
 
 # Embodiment-agnostic: a reward monitor scores any rollout video + task
 # instruction and is exempt from the rSkill<->robot embodiment gate.
-embodiment_tags: []
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard (ADR-0072)
 
 # Consumes the same RGB camera stream the co-active VLA uses. No actuators.
 sensors_required:
@@ -62,12 +62,19 @@ source_repo: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa
 # per-frame normalized progress in [0,1] + per-frame success probability.
 reward:
   progress_range: [0.0, 1.0]
-  success_threshold: 0.5
+  # Calibrated to ADR-0074 Decision 5: robometer wanders 0.55–0.78 when NOT done
+  # (measured in ADR-0057 eval). 0.8 is the genuine-success bar (auto-pass tier);
+  # 0.5 is the floor below which the attempt is clearly incomplete (no VLM call).
+  success_threshold: 0.8
   preference: false
   frame_window_s: 8.0
   target_fps: 3.0
   num_bins: 100
   instruction_required: true
+  check_floor: 0.5
+  plateau_window_s: 3.0
+  plateau_tolerance: 0.06
+  default_patience_s: 30.0
 
 description: >
   Robometer-4B (Qwen3-VL-4B robotic reward foundation model, arXiv 2603.02115)

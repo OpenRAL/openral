@@ -73,12 +73,33 @@ draining (no `Connection refused` retries on the way down).
 
 - **Top bar** — service name, run mode (`sim` / `hardware` /
   `benchmark` once PR #108 lands), short run id, connection status.
-- **Live signals (3 cards)** — `rSkill.execute`, `Inference`,
-  `Safety`. Each card shows the latest call's primary attribute
-  (skill id / engine / check name), latency in ms, age, and the most
-  relevant attributes. Card border turns red on `Status.ERROR`.
-- **Counters** — running totals of `safety_violation`,
-  `estop_requested`, `deadline_missed`, `sensor_stale` span events.
+- **Reasoner · mission** — the reasoner's active task queue (ADR-0073),
+  rendered from `reasoner.mission_json` as an ordered checklist: each
+  subtask shows its status (done ✓ / active ▶ / verifying ? / abandoned ✗
+  / pending), a reward success bar (the gate that advances the queue),
+  and the attempts/cap ladder. Subdivided children from a replan
+  (`#123`: a blocked task `t2` spliced into `t2.1`, `t2.2`, …) are
+  indented under their parent with a dim id badge — depth is read from the
+  dot-path task id, so the flat queue still reads as a hierarchy. The
+  latest tick (tool / model / error) is a footer line beneath it. Empty
+  until the `reasoner_node` is ACTIVE.
+- **Live signal · running skill** — one card for the active `rSkill`: skill id
+  (headline), role, action-applied, tick idx, and a `step Xms · forward Yms`
+  latency line. `step` is the full `rskill.execute` call; `forward` is the model
+  forward pass inside it (`rskill.chunk_inference`) — the gap between them is the
+  pre/post-processing cost. The former separate `Inference` card was folded in
+  here (its engine is already in Identity, its only unique datum was the
+  forward-pass latency); the redundant one-line `Safety` live-signal card was
+  removed (Safety has its own zone above). Card border turns red on
+  `Status.ERROR`.
+- **Safety** — running counters of `safety_violation`, `estop_requested`,
+  `deadline_missed`, `sensor_stale` span events, alongside the **Safety
+  check ledger** (per-check pass/fail from `safety.check` spans).
+- **Embodiment** — robot joints, **World state** (now also carrying the
+  durable scene-object spatial-memory table, merged from the former
+  standalone `World · scene objects` card), and system health. The
+  separate `Commands · next action` card was removed; the commanded joint
+  values still render as the second trace on the joints card.
 - **Metrics** — every histogram, counter, and gauge that comes over
   the wire, with p50/p95 (for histograms) and a sparkline of the
   last ~600 samples. Empty until a workload starts emitting; PR #108

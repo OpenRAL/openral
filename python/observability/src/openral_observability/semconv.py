@@ -181,6 +181,10 @@ REASONER_RSKILL_ID: Final[str] = "reasoner.rskill_id"
 REASONER_SUPPRESSED_REASON: Final[str] = "reasoner.suppressed_reason"
 REASONER_ERROR_KIND: Final[str] = "reasoner.error_kind"
 REASONER_FORCE: Final[str] = "reasoner.force"
+# ADR-0073 — the active MissionState queue, serialized as JSON
+# (``MissionState.to_summary``) so the live dashboard renders the task
+# checklist (status / attempts / verdict) rather than only the text ledger.
+REASONER_MISSION_JSON: Final[str] = "reasoner.mission_json"
 # ADR-0018 2026-05-25 amendment — trigger taxonomy. Records which
 # tier drove the LLM call: "A" (safety), "B" (replan), "C" (critic),
 # "D" (operator / perception), or "heartbeat" (deadlock-insurance
@@ -361,6 +365,7 @@ __all__ = [
     "METRIC_WORLD_STATE_STALENESS_MS",
     "REASONER_ERROR_KIND",
     "REASONER_FORCE",
+    "REASONER_MISSION_JSON",
     "REASONER_MODEL",
     "REASONER_RSKILL_ID",
     "REASONER_SUPPRESSED_REASON",

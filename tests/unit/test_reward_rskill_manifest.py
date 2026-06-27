@@ -54,23 +54,31 @@ def _ordered_range(draw: st.DrawFn) -> tuple[float, float]:
     return (lo, lo + span)
 
 
-_reward_contract_st = st.builds(
-    RewardContract,
-    progress_range=_ordered_range(),
-    success_threshold=_prob,
-    preference=st.booleans(),
-    frame_window_s=_pos,
-    target_fps=_pos,
-    num_bins=_pos_int,
-    instruction_required=st.booleans(),
-)
+@st.composite
+def _reward_contract_st(draw: st.DrawFn) -> RewardContract:
+    # check_floor ≤ success_threshold is a model invariant (ADR-0074), so draw
+    # the threshold first and the floor within [0, threshold].
+    success_threshold = draw(_prob)
+    check_floor = draw(
+        st.floats(allow_nan=False, allow_infinity=False, min_value=0.0, max_value=success_threshold)
+    )
+    return RewardContract(
+        progress_range=draw(_ordered_range()),
+        success_threshold=success_threshold,
+        check_floor=check_floor,
+        preference=draw(st.booleans()),
+        frame_window_s=draw(_pos),
+        target_fps=draw(_pos),
+        num_bins=draw(_pos_int),
+        instruction_required=draw(st.booleans()),
+    )
 
 
 # ─── RewardContract fuzz ──────────────────────────────────────────────────────
 
 
 @_FUZZ_SETTINGS
-@given(_reward_contract_st)
+@given(_reward_contract_st())
 def test_fuzz_reward_contract(instance: RewardContract) -> None:
     """RewardContract round-trips through JSON and validates against its schema."""
     import json
@@ -105,7 +113,7 @@ def test_robometer_fixture_validates() -> None:
     assert manifest.reward.target_fps > 0.0
     assert manifest.weights_uri is not None, "reward requires weights_uri"
     assert manifest.actuators_required == [], "reward must have no actuators"
-    assert manifest.embodiment_tags == [], "reward is embodiment-agnostic"
+    assert manifest.embodiment_tags == ["any"], "reward is embodiment-agnostic (wildcard)"
     assert RSkillAction.MONITOR in manifest.actions
     # A reward monitor has no VLA identity / perception-producer fields
     assert manifest.model_family is None
@@ -124,7 +132,7 @@ _VALID_REWARD: dict = {
     "license": "apache-2.0",
     "role": "s2",
     "kind": "reward",
-    "embodiment_tags": [],
+    "embodiment_tags": ["any"],
     "sensors_required": [{"modality": "rgb", "min_width": 224, "min_height": 224}],
     "actuators_required": [],
     "runtime": "pytorch",

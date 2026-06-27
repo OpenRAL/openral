@@ -83,12 +83,12 @@ _ALLOW_NONCOMMERCIAL_ENV = "OPENRAL_ALLOW_NONCOMMERCIAL"
 _REQUIRE_SIGNED_ENV = "OPENRAL_REQUIRE_SIGNED_SKILLS"
 """Set to ``"1"`` to acknowledge non-commercial research use of restricted weights."""
 
-# Perception rSkills (``kind: "detector"`` / ``"vlm"``, ADR-0037/0047) are
-# embodiment-agnostic: they consume camera frames and emit detections / scene
-# text with no action contract, so a robot's embodiment is not a meaningful
-# match axis. The rSkill↔robot embodiment gate exempts these kinds entirely —
-# they run on any robot/scene and need not enumerate embodiment tags.
-_EMBODIMENT_AGNOSTIC_KINDS: frozenset[str] = frozenset({"detector", "vlm", "reward"})
+# The explicit embodiment-agnostic wildcard (ADR-0072). An rSkill that runs on
+# every embodiment — perception kinds (detector / vlm / reward) and ``playbook``
+# decision procedures — declares ``embodiment_tags: ["any"]``; the rSkill↔robot
+# embodiment gate treats this as match-any. Agnosticism is *declared*, never
+# derived from an empty tag list (which the manifest validator now rejects).
+_EMBODIMENT_ANY_TAG: str = "any"
 
 
 # ── Registry entry schema ──────────────────────────────────────────────────────
@@ -395,23 +395,21 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     ) -> None:
         """Verify the manifest's embodiment tags intersect the robot's.
 
-        Exempt for perception rSkills (``kind`` in
-        :data:`_EMBODIMENT_AGNOSTIC_KINDS` — ``detector`` / ``vlm``): they are
-        camera-in → detections/text-out producers with no action contract, so
-        embodiment is not a meaningful axis; they run on any robot regardless of
-        tags. Also skipped when a non-perception manifest declares no embodiment
-        tags. Used by :meth:`check_capabilities` and by the per-section presenter
-        in :func:`openral_detect.check_single_rskill`.
+        Embodiment-agnostic rSkills declare the explicit wildcard
+        ``embodiment_tags: ["any"]`` (ADR-0072) — perception kinds (detector /
+        vlm / reward) and ``playbook`` decision procedures — and run on any
+        robot. Agnosticism is declared, not derived: the manifest validator
+        rejects an empty tag list, so emptiness never silently means match-any.
+        Used by :meth:`check_capabilities` and by the per-section presenter in
+        :func:`openral_detect.check_single_rskill`.
 
         Raises:
             ROSCapabilityMismatch: If the tag sets are disjoint.
         """
-        if manifest.kind in _EMBODIMENT_AGNOSTIC_KINDS:
-            return
-        if not manifest.embodiment_tags:
+        skill_tags = set(manifest.embodiment_tags)
+        if _EMBODIMENT_ANY_TAG in skill_tags:
             return
         robot_tags = set(robot_capabilities.embodiment_tags)
-        skill_tags = set(manifest.embodiment_tags)
         if not skill_tags.intersection(robot_tags):
             raise ROSCapabilityMismatch(
                 f"rSkill '{manifest.name}' requires embodiment tag(s) "

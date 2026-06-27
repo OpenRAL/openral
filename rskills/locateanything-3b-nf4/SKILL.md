@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s1
   kind: detector
+  embodiment_tags: [any]
   actions: [detect]
   objects: [open-vocabulary object, text, gui element, point target]
   scenes: [tabletop, kitchen, indoor, document, gui, driving]
@@ -42,6 +43,7 @@ An OpenRAL **object detector** (`role: s1`, `kind: detector`). NVIDIA LocateAnyt
 - **Verbs:** detect
 - **Objects:** open-vocabulary object · text · gui element · point target
 - **Scenes:** tabletop · kitchen · indoor · document · gui · driving
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

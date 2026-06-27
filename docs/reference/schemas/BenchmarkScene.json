@@ -283,6 +283,18 @@
       ],
       "default": null
     },
+    "memory_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Memory Dir"
+    },
     "task": {
       "$ref": "#/$defs/TaskSpec"
     },

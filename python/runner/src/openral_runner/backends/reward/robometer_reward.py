@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Mapping
@@ -211,7 +212,16 @@ class RobometerReward:
             self._weights_source,
         ]
         print(f"[robometer] spawning sidecar: {' '.join(cmd)}", flush=True)
-        self._child = subprocess.Popen(cmd)
+        env = os.environ.copy()
+        # torch-inductor defaults its compile pool to one worker per CPU
+        # (e.g. 22 on a 22-core host) — wasteful for a 4B scorer with a handful
+        # of compiled regions, and slow to spawn/reap. Cap it unless the
+        # operator pinned a value.
+        env.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "4")
+        # Own session (start_new_session) so close() can signal the whole
+        # process GROUP: the server forks inductor compile_worker children, and
+        # a bare terminate()/kill() on the parent alone orphans them.
+        self._child = subprocess.Popen(cmd, env=env, start_new_session=True)
         deadline = time.monotonic() + boot_timeout_s
         while time.monotonic() < deadline:
             if self._child.poll() is not None:
@@ -298,18 +308,34 @@ class RobometerReward:
         }
 
     def close(self) -> None:
-        """Close the socket and terminate the sidecar if we spawned it."""
+        """Close the socket and terminate the sidecar tree if we spawned it.
+
+        Signals the sidecar's whole process GROUP (it runs in its own session),
+        so the server's forked torch-inductor ``compile_worker`` children die
+        with it instead of orphaning and pinning CPU/GPU until the next run.
+        """
         if self._sock is not None:
             self._sock.close(linger=0)
             self._sock = None
         if self._child is not None and self._child.poll() is None:
+            # The child is its own session leader, so its PGID == its PID.
+            pgid: int | None = None
+            with contextlib.suppress(ProcessLookupError, OSError):
+                pgid = os.getpgid(self._child.pid)
             with contextlib.suppress(Exception):
                 self._rpc({"op": "shutdown"}, recv_timeout_ms=2000)
             try:
-                self._child.terminate()
                 self._child.wait(timeout=10)
-            except Exception:  # best-effort teardown; escalate to kill
-                self._child.kill()
+            except Exception:  # graceful RPC shutdown didn't drain in time
+                # SIGKILL the whole group so the forked compile_worker children
+                # die with the server. (On a clean exit the server's atexit pool
+                # shutdown already reaped them; the CLI orphan-sweep is the
+                # final backstop for either path.)
+                if pgid is not None:
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        os.killpg(pgid, signal.SIGKILL)
+                with contextlib.suppress(Exception):
+                    self._child.wait(timeout=5)
             self._child = None
 
 

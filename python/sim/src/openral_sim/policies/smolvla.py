@@ -185,6 +185,13 @@ class _SmolVLAAdapter:
     _torch: Any
     _flip_images_180: bool = False
     _state_dim: int | None = None
+    # Dtype of the VLM backbone (the model's majority dtype — bf16 for the
+    # smolvla-libero checkpoint lerobot now loads dtype-preserving). The image
+    # tensors we build are float32 and feed the bf16 vision tower, so step()
+    # casts *only the image inputs* to this. ``observation.state`` is left
+    # float32 to match the model's float32 action expert (and the sampler's
+    # internal float32 noise/time). ``None`` (a fully-float32 load) → no cast.
+    _image_dtype: Any = None
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
     # Camera renames + image-batch-key template come from the rSkill
     # manifest's ``image_preprocessing`` block (or ``vla.extra``). The
@@ -211,10 +218,26 @@ class _SmolVLAAdapter:
         # Belt-and-suspenders device move (preprocessor sometimes returns CPU tensors).
         device_kind = self.device.split(":", 1)[0]
         for k, v in list(batch.items()):
-            if hasattr(v, "device") and getattr(v, "device", None) is not None:
-                v_dev = str(v.device)
-                if v_dev != self.device and not v_dev.startswith(device_kind):
-                    batch[k] = v.to(self.device)
+            if not hasattr(v, "device") or getattr(v, "device", None) is None:
+                continue
+            tensor = v
+            if str(tensor.device) != self.device and not str(tensor.device).startswith(device_kind):
+                tensor = tensor.to(self.device)
+            # Cast image inputs to the bf16 backbone dtype (float32 image × bf16
+            # vision weight raises "mat1 and mat2 must have the same dtype").
+            # state / everything else stays float32 to match the float32 action
+            # expert and the sampler's internal float32 tensors — the load is
+            # forced under a float32 default dtype below so the expert is always
+            # float32, immune to a leaked process-global bf16 default.
+            if (
+                self._image_dtype is not None
+                and "image" in k
+                and hasattr(tensor, "is_floating_point")
+                and tensor.is_floating_point()
+                and tensor.dtype != self._image_dtype
+            ):
+                tensor = tensor.to(self._image_dtype)
+            batch[k] = tensor
 
         action_tensor = run_inference(self._policy, batch)
         action_tensor = self._postprocessor(action_tensor)
@@ -280,63 +303,23 @@ class _SmolVLAAdapter:
         return batch
 
 
-@POLICIES.register("smolvla")
-def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
-    """Load a SmolVLA-compatible lerobot policy from HF Hub."""
-    spec = env_cfg.vla
-    device = resolve_device(spec)
+def _resolve_smolvla_processors(
+    manifest: Any, repo_id: str, policy: Any, make_pre_post_processors: Any
+) -> tuple[Any, Any]:
+    """Build the lerobot pre/post processors for a SmolVLA policy.
 
-    # Heavy first-import cost (torch + transformers + lerobot pulls in
-    # safetensors / huggingface_hub / accelerate) is paid once per
-    # process but invisible to the operator otherwise. Wrap it so the
-    # 10–30 s first-call cost shows up in the timeline. Shared
-    # torch+factory import lives in ``_policy_loading``; the SmolVLA
-    # ``Policy`` class is pulled here so the choice doesn't leak into
-    # adapters that don't need it.
-    with _smolvla_phase("imports"):
-        torch, make_pre_post_processors = lazy_import_lerobot("SmolVLA")
-        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    Per-file download from ``manifest.processors`` (never a whole-repo
+    snapshot). ``materialize_processor_dir`` symlinks the two URI targets
+    under the filenames ``make_pre_post_processors`` reads from a pretrained_path.
 
-    repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="SmolVLA")
-    manifest = load_manifest_for_spec(spec)
-    if manifest is None:
-        raise ROSConfigError(
-            "SmolVLA adapter requires a bare rSkill reference as weights_uri so the "
-            "loader can fetch the manifest's `processors` block (per-file URIs for "
-            "the lerobot PolicyProcessorPipeline). Explicit-scheme URIs (hf://, "
-            "local://, etc.) are not accepted by the sim layer."
-        )
-
-    # ``SmolVLAPolicy.from_pretrained`` allocates the full graph on CPU,
-    # downloads + mmaps the safetensors, and (on a cold HF connection)
-    # HEAD-validates every cached file. Split the device transfer into
-    # its own phase so a slow ``.to(device)`` is distinguishable from a
-    # slow ``from_pretrained``.
-    with _smolvla_phase("from_pretrained", repo=repo_id):
-        policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
-    with _smolvla_phase("to_device", device=device):
-        policy = policy.to(device)
-    policy.eval()
-
-    # `n_action_steps` precedence (apply_chunk_replay):
-    # vla.extra > manifest.n_action_steps > chunk_size. SmolVLA on LIBERO
-    # ships chunk_size=50 and the manifest pins n_action_steps=25
-    # (closed-loop replan every half-chunk -- paper-faithful for the
-    # validated 3/3 success run on libero_10/4).
-    apply_chunk_replay(policy, spec.extra, manifest=manifest)
-    maybe_compile_chunk_forward(policy, spec.extra, device, torch)
-
-    # Per-file download from manifest.processors (no snapshot_download).
-    # `materialize_processor_dir` symlinks the two URI targets under the
-    # filenames `make_pre_post_processors` reads from a pretrained_path.
-    #
-    # Community finetunes routinely upload only `config.json` +
-    # `model.safetensors` (no `policy_*processor.json`). On a 404 from
-    # `materialize_processor_dir`, fall back to building processors from
-    # the training dataset's normalization stats — manifest.dataset_uri
-    # points at the LeRobotDataset (v3 `meta/stats.json` or v2.1
-    # `meta/episodes_stats.jsonl`). The resulting processors are
-    # functionally identical to what the trainer would have saved.
+    Community finetunes routinely upload only ``config.json`` +
+    ``model.safetensors`` (no ``policy_*processor.json``). On a 404 from
+    ``materialize_processor_dir``, fall back to building processors from the
+    training dataset's normalization stats — ``manifest.dataset_uri`` points at
+    the LeRobotDataset (v3 ``meta/stats.json`` or v2.1
+    ``meta/episodes_stats.jsonl``). The resulting processors are functionally
+    identical to what the trainer would have saved.
+    """
     pretrained_path: str | None = None
     dataset_stats: dict[str, dict[str, Any]] | None = None
     _missing_reason: BaseException | None = None
@@ -375,19 +358,100 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
             # so lerobot's unconditional `AutoTokenizer.from_pretrained`
             # doesn't fire 5 HEAD round-trips against a warm tokenizer
             # cache on every reload.
-            preprocessor, postprocessor = call_make_processors_cached_first(
+            return call_make_processors_cached_first(
                 make_pre_post_processors,
                 policy.config,
                 pretrained_path=pretrained_path,
             )
-        else:
-            # Stats-fallback branch: no preprocessor JSON on disk → no
-            # tokenizer step to warm-cache. Drop straight into the lerobot
-            # factory so it builds the pipeline from scratch.
-            preprocessor, postprocessor = make_pre_post_processors(
-                policy.config,
-                dataset_stats=dataset_stats,
-            )
+        # Stats-fallback branch: no preprocessor JSON on disk → no
+        # tokenizer step to warm-cache. Drop straight into the lerobot
+        # factory so it builds the pipeline from scratch.
+        return make_pre_post_processors(
+            policy.config,
+            dataset_stats=dataset_stats,
+        )
+
+
+@POLICIES.register("smolvla")
+def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
+    """Load a SmolVLA-compatible lerobot policy from HF Hub."""
+    spec = env_cfg.vla
+    device = resolve_device(spec)
+
+    # Heavy first-import cost (torch + transformers + lerobot pulls in
+    # safetensors / huggingface_hub / accelerate) is paid once per
+    # process but invisible to the operator otherwise. Wrap it so the
+    # 10–30 s first-call cost shows up in the timeline. Shared
+    # torch+factory import lives in ``_policy_loading``; the SmolVLA
+    # ``Policy`` class is pulled here so the choice doesn't leak into
+    # adapters that don't need it.
+    with _smolvla_phase("imports"):
+        torch, make_pre_post_processors = lazy_import_lerobot("SmolVLA")
+        from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+
+    repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="SmolVLA")
+    manifest = load_manifest_for_spec(spec)
+    if manifest is None:
+        raise ROSConfigError(
+            "SmolVLA adapter requires a bare rSkill reference as weights_uri so the "
+            "loader can fetch the manifest's `processors` block (per-file URIs for "
+            "the lerobot PolicyProcessorPipeline). Explicit-scheme URIs (hf://, "
+            "local://, etc.) are not accepted by the sim layer."
+        )
+
+    # ``SmolVLAPolicy.from_pretrained`` allocates the full graph on CPU,
+    # downloads + mmaps the safetensors, and (on a cold HF connection)
+    # HEAD-validates every cached file. Split the device transfer into
+    # its own phase so a slow ``.to(device)`` is distinguishable from a
+    # slow ``from_pretrained``.
+    # Force a float32 *default* dtype across the load. ``from_pretrained``
+    # materialises the model skeleton under the process-global default dtype,
+    # then loads the stored weights into it: the bf16 VLM backbone is restored
+    # from its bf16 safetensors, but the float32 action expert is only float32
+    # if the skeleton was built float32. SmolVLA's flow-matching sampler
+    # allocates its noise/time tensors as hard-coded float32 (``sample_noise``),
+    # so a bf16 expert raises "mat1 and mat2 must have the same dtype" in
+    # embed_suffix. Another in-process policy (molmoact2 / pi05) or any
+    # transformers load can leave the global default at bf16; restore float32
+    # for the duration of the load so SmolVLA is immune to that leak. Deploy-sim
+    # shares one process across skills; ``openral sim run`` does not — which is
+    # why this only ever bit the deploy path.
+    prev_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    try:
+        with _smolvla_phase("from_pretrained", repo=repo_id):
+            policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+        with _smolvla_phase("to_device", device=device):
+            policy = policy.to(device)
+    finally:
+        torch.set_default_dtype(prev_default_dtype)
+    policy.eval()
+    # lerobot's from_pretrained now loads SmolVLA *mixed* — a bf16 VLM backbone
+    # but a float32 action expert (the flow-matching sampler allocates float32
+    # noise/time internally and needs the expert in float32). Keep that native
+    # layout: don't unify (fp32-unify ~doubles memory and OOMs the reward
+    # sidecar on 8 GB; bf16-unify breaks the sampler). step() instead casts only
+    # the image inputs to the backbone dtype. The backbone is the model's
+    # majority dtype by param count (the VLM dwarfs the small action expert).
+    from collections import Counter
+
+    dtypes = Counter(p.dtype for p in policy.parameters())
+    image_dtype = dtypes.most_common(1)[0][0] if dtypes else None
+    # No cast needed on a fully-float32 load (the float32 images already match).
+    if image_dtype == torch.float32:
+        image_dtype = None
+
+    # `n_action_steps` precedence (apply_chunk_replay):
+    # vla.extra > manifest.n_action_steps > chunk_size. SmolVLA on LIBERO
+    # ships chunk_size=50 and the manifest pins n_action_steps=25
+    # (closed-loop replan every half-chunk -- paper-faithful for the
+    # validated 3/3 success run on libero_10/4).
+    apply_chunk_replay(policy, spec.extra, manifest=manifest)
+    maybe_compile_chunk_forward(policy, spec.extra, device, torch)
+
+    preprocessor, postprocessor = _resolve_smolvla_processors(
+        manifest, repo_id, policy, make_pre_post_processors
+    )
 
     # Manifest-first resolution (no auto-derive). LIBERO checkpoints whose
     # manifests don't declare `aliases: {camera1: image, camera2: image2}`
@@ -408,6 +472,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _torch=torch,
         _flip_images_180=ip.flip_180,
         _state_dim=state_dim,
+        _image_dtype=image_dtype,
         _camera_keys=cam_keys,
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,

@@ -285,6 +285,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     spatial_memory_ingest = LaunchConfiguration("spatial_memory_ingest").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # ADR-0072 Decision 3 / 3b — the deploy memory bundle. `memory_md_path` loads the
+    # self-maintained MEMORY.md (+ enables the memory_write / memory_search tools);
+    # `map_path` seeds a static 2D occupancy grid into nav2 map_server. Both are the
+    # bundle's text/grid modalities alongside spatial_memory_path's scene graph.
+    memory_md_path = LaunchConfiguration("memory_md_path").perform(context)
+    map_path = LaunchConfiguration("map_path").perform(context)
     # ADR-0036 — deploy-path selector for the reasoner's action-mode
     # palette gate. ``openral deploy sim`` shells this launch with
     # ``hal_mode:=sim`` (digital-twin path: the scene's robosuite OSC
@@ -412,6 +418,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ROS time toggle to drift from the authority.
     clock_origin = _resolve_clock_origin(LaunchConfiguration("clock_origin").perform(context))
     use_sim_time = clock_origin == "simulation"
+    # Startup operator prompt set by --initial-task or /openral/prompt. When
+    # non-empty, prompt_router_node publishes it onto /openral/prompt at
+    # on_activate so the reasoner's first tick sees the operator's goal without
+    # a manual ``openral prompt`` call. Empty string = no startup prompt (idle).
+    initial_task_prompt = LaunchConfiguration("initial_task_prompt").perform(context)
 
     # Synthesise the kernel envelope from the manifest. ``skill=None``
     # because ``openral deploy sim`` does not preselect an rSkill — the
@@ -627,6 +638,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # spatial-memory query backend when a path is provided.
     if spatial_memory_path:
         reasoner_params["spatial_memory_path"] = spatial_memory_path
+    # ADR-0072 §3 — load the self-maintained MEMORY.md (read path) and enable the
+    # memory_write / memory_search tools when a bundle path is provided.
+    if memory_md_path:
+        reasoner_params["memory_md_path"] = memory_md_path
     # ADR-0038 — accumulate the durable scene graph live from the ADR-0035
     # producer's WorldState.detected_objects (auto-creates an empty backend when
     # no path is preloaded).
@@ -637,6 +652,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ADR-0057 — offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
+    # ADR-0074 §1/§3 — give the reasoner the SAME reward-model manifest the
+    # monitor loads (incl. the robometer default when the arg is empty — mirrors
+    # the monitor's resolution below) so it reads the active RewardContract
+    # calibration (three-tier band edges + default patience) instead of the
+    # module-level system defaults.
+    if enable_reward_monitor:
+        reasoner_params["reward_manifest_path"] = reward_monitor_manifest or str(
+            pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
+        )
     # ADR-0056 — the default on-demand locator the reasoner routes to when a
     # locate_in_view call leaves ``detector`` empty (the first locator brought up).
     if locator_specs:
@@ -655,6 +679,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         executable="prompt_router_node.py",
         name="openral_prompt_router",
         namespace="",
+        parameters=[{"startup_prompt": initial_task_prompt}],
         additional_env=otel_env,
         output="screen",
     )
@@ -1124,17 +1149,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # extrinsics, so the world-state lifter can project the world voxel map
         # into it). The detection's ``sensor_id`` MUST be that camera — not a
         # depth sensor — so the lifter resolves the right intrinsics/extrinsics.
-        # Generic over robots; falls back to the historical ``agentview_left``.
+        # Generic over robots; prefer an optical-frame RGB camera but fall back
+        # to the robot's first RGB camera so the detector still gets frames.
+        # (Post-ADR-0069 camera rename, franka_panda publishes ``top``/``wrist``,
+        # neither optical-framed; the old hardcoded ``agentview_left`` fallback
+        # was a dead topic — the detector cached no frame and every
+        # ``locate_in_view`` returned found=False, looping the reasoner.)
         det_camera = "agentview_left"
         try:
             with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
                 _robot_doc = yaml.safe_load(_rh) or {}
-            for _s in _robot_doc.get("sensors", []):
-                if _s.get("modality") == "rgb" and str(_s.get("frame_id", "")).endswith(
-                    "_optical_frame"
-                ):
-                    det_camera = str(_s["name"])
-                    break
+            _rgb_sensors = [
+                _s
+                for _s in _robot_doc.get("sensors", [])
+                if _s.get("modality") == "rgb" and _s.get("name")
+            ]
+            if _rgb_sensors:
+                det_camera = str(_rgb_sensors[0]["name"])
+                for _s in _rgb_sensors:
+                    if str(_s.get("frame_id", "")).endswith("_optical_frame"):
+                        det_camera = str(_s["name"])
+                        break
         except (OSError, yaml.YAMLError):
             pass
         det_image_topic = f"/openral/cameras/{det_camera}/image"
@@ -1314,6 +1349,33 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         extra_nodes.append(critic_producer)
 
+    # ADR-0072 Decision 3b — deploy memory bundle: seed the saved 2D occupancy grid.
+    # When ``map_path`` points at a nav2 ``map.yaml`` AND live SLAM isn't already
+    # owning ``/map``, bring up a standalone nav2 ``map_server`` that latches ``/map``
+    # (TRANSIENT_LOCAL) from the first tick, so the nav costmap + the reasoner's
+    # ADR-0044 approach-refinement grid have the saved prior immediately. With SLAM on,
+    # slam_toolbox / cuVSLAM owns ``/map`` and we skip the seed to avoid two publishers.
+    # The grid stays advisory (ADR-0072 §1.1): the C++ kernel keeps its own ephemeral
+    # ADR-0030 collision grid; this map never feeds it.
+    if map_path and not enable_slam:
+        map_server = LifecycleNode(
+            package="nav2_map_server",
+            executable="map_server",
+            name="openral_map_server",
+            namespace="",
+            parameters=[
+                {
+                    "yaml_filename": map_path,
+                    "topic_name": "map",
+                    "frame_id": "map",
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            output="screen",
+        )
+        extra_nodes.append(map_server)
+        autostart += _autostart_lifecycle(map_server, "openral_map_server")
+
     nodes: list = [
         safety_kernel,
         runtime,
@@ -1440,12 +1502,17 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "reasoner_provider",
-            default_value="ollama",
+            # Fall back to the documented OPENRAL_REASONER_LLM_PROVIDER env so a
+            # caller (e.g. `openral deploy sim`) that exports the reasoner LLM
+            # config gets it honoured. The launch pins provider/model on the node
+            # via additional_env, which would otherwise override the inherited
+            # env with these defaults and silently ignore it. ``ollama`` if unset.
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_PROVIDER") or "ollama",
             description="OPENRAL_REASONER_LLM_PROVIDER for the reasoner node.",
         ),
         DeclareLaunchArgument(
             "reasoner_model",
-            default_value="gemma4:31b-cloud",
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_MODEL") or "gemma4:31b-cloud",
             description="OPENRAL_REASONER_LLM_MODEL for the reasoner node.",
         ),
         DeclareLaunchArgument(
@@ -1468,6 +1535,28 @@ def generate_launch_description() -> LaunchDescription:
                 "WorldState.detected_objects (auto-creating an empty backend "
                 "if no spatial_memory_path was preloaded), so recall_object "
                 "recalls what the robot has actually seen. Default false."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "memory_md_path",
+            default_value="",
+            description=(
+                "ADR-0072 §3 — absolute path to the self-maintained MEMORY.md "
+                "(the deploy memory bundle's narrative/semantic modality). When "
+                "set, the reasoner loads it as the ## MEMORY context block and "
+                "offers the memory_write / memory_search tools. Empty = disabled."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "map_path",
+            default_value="",
+            description=(
+                "ADR-0072 Decision 3b — absolute path to a saved nav2 map.yaml "
+                "(the bundle's 2D occupancy-grid modality). When set and SLAM is "
+                "off, a standalone nav2 map_server latches /map from the saved "
+                "map so the costmap + ADR-0044 approach grid have the prior at "
+                "boot. With SLAM on it is ignored (SLAM owns /map). Empty = "
+                "disabled."
             ),
         ),
         DeclareLaunchArgument(
@@ -1731,6 +1820,19 @@ def generate_launch_description() -> LaunchDescription:
                 "ADR-0059 — Foxglove WebSocket port "
                 "(ws://127.0.0.1:<foxglove_port>). Default 8765. "
                 "Ignored unless enable_foxglove is true."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "initial_task_prompt",
+            default_value="",
+            description=(
+                "Single operator goal published to /openral/prompt at startup "
+                "(cli-level priority 100). Set by ``--initial-task`` on the CLI; "
+                "the prompt_router_node forwards it to the reasoner at on_activate "
+                "time so the first tick sees the operator's goal without a manual "
+                "``openral prompt`` call. Empty (default) = no startup prompt; "
+                "the reasoner idles until a manual ``openral prompt`` or dashboard "
+                "prompt arrives."
             ),
         ),
     ]

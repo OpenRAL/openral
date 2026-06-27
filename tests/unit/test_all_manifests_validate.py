@@ -104,6 +104,7 @@ _DEPLOY_STEMS: list[str] = [
     "isaac_franka_bowl",
     "isaac_franka_urdf",
     "isaac_panda_mobile_urdf",
+    "libero_object",
     "libero_pnp",
     "openarm_tabletop",
     "robocasa_baguette",
