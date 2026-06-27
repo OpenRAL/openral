@@ -649,16 +649,32 @@
       const cnt = chip.querySelector(".cnt");
       if (cnt) cnt.textContent = counts[b];
     }
-    const shown = all.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
-    if (all.length === 0) {
-      el.innerHTML = '<div class="empty-state">No events yet.</div>';
-      return;
-    }
-    if (shown.length === 0) {
-      el.innerHTML = '<div class="empty-state">No events match the active filters.</div>';
-      return;
-    }
+    let shown = all.filter((ev) => eventSevFilter[sevBucket(String(ev.severity || "info").toLowerCase())]);
+    // Time focus (issue #3): scope to a window around a clicked sparkline point.
+    const focused = _focusTime != null;
+    if (focused) shown = shown.filter((ev) => ev.ts_unix != null && Math.abs(ev.ts_unix - _focusTime) <= _FOCUS_HALF_S);
+    const emptyState = (msg) => {
+      const d = document.createElement("div"); d.className = "empty-state"; d.textContent = msg; return d;
+    };
     el.innerHTML = "";
+    if (focused) {
+      const banner = document.createElement("div");
+      banner.className = "event-focus";
+      const lbl = document.createElement("span");
+      lbl.textContent = "near " + fmtTime(_focusTime) + " (±" + _FOCUS_HALF_S + "s)";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "clear"; x.textContent = "✕";
+      x.addEventListener("click", clearTimeFocus);
+      banner.append(lbl, x);
+      el.appendChild(banner);
+    }
+    if (all.length === 0) { el.appendChild(emptyState("No events yet.")); return; }
+    if (shown.length === 0) {
+      el.appendChild(emptyState(focused
+        ? "No events within ±" + _FOCUS_HALF_S + "s of " + fmtTime(_focusTime) + "."
+        : "No events match the active filters."));
+      return;
+    }
     for (const ev of shown.slice(0, 60)) {
       const sev = String(ev.severity || "info").toLowerCase();
       const row = document.createElement("div");
@@ -694,7 +710,10 @@
   function nameMarkup(n) {
     const stripped = stripMetricPrefix(n);
     const idx = stripped.lastIndexOf(".");
-    if (idx < 0) return stripped;
+    // No remaining dot (e.g. a fully-stripped "openral.system." leaf): return a
+    // text node, never a bare string — callers appendChild() the result and a
+    // string throws, which previously aborted the whole metrics render.
+    if (idx < 0) return document.createTextNode(stripped);
     const ns = stripped.slice(0, idx + 1);
     const leaf = stripped.slice(idx + 1);
     const nsSpan = document.createElement("span");
@@ -706,20 +725,235 @@
     return frag;
   }
 
-  function sparkline(svgEl, samples) {
+  // Shared vertical-gridline fractions — identical for every sparkline so the
+  // dotted lines (and the single bottom time axis) line up across all graphs.
+  const GRID_FRACS = [0, 0.25, 0.5, 0.75, 1];
+
+  function fmtNum(v) {
+    if (v == null || !isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a !== 0 && (a < 0.01 || a >= 1e5)) return v.toExponential(1);
+    if (a >= 100) return v.toFixed(0);
+    if (a >= 1) return v.toFixed(1);
+    return v.toFixed(3);
+  }
+
+
+  // sparkline maps x to ABSOLUTE time using the shared window `win` (global
+  // tMin/tMax across all visible metrics) so every graph rides the same clock —
+  // that's what makes the dotted gridlines and the single bottom time axis line
+  // up across rows. Y stays per-graph (each metric autoscales to its own
+  // min/max). `threshold` (a contractual budget/deadline in the metric's unit,
+  // from the producer) draws a dashed line and reddens the trace when the latest
+  // sample breaches it — `thrDir` "lower" flips the breach test (value below the
+  // line is bad, e.g. a rate floor) from the "upper" default. `events` overlays
+  // severity-coloured markers at notable event times; `focusTime` draws the
+  // click-to-correlate line. The effective y-domain + samples are stashed for the
+  // hover dot.
+  function sparkline(svgEl, samples, win, threshold, thrDir, events, focusTime) {
     if (!samples || samples.length < 2) return;
     const w = 240, h = 26;
-    const values = samples.map((s) => s[1]);
-    const min = Math.min(...values), max = Math.max(...values);
-    const span = (max - min) || 1;
-    const pts = samples.map((s, i) => {
-      const x = (i / (samples.length - 1)) * w;
-      const y = h - 2 - ((s[1] - min) / span) * (h - 4);
-      return x.toFixed(1) + "," + y.toFixed(1);
-    }).join(" ");
+    const tMin = win ? win.tMin : samples[0][0];
+    const tMax = win ? win.tMax : samples[samples.length - 1][0];
+    // Y autoscales to the samples *visible* in the window (so a spike outside a
+    // zoomed range doesn't squash the detail you zoomed in to see).
+    const visible = samples.filter((s) => s[0] >= tMin && s[0] <= tMax);
+    const values = (visible.length ? visible : samples).map((s) => s[1]);
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (threshold != null) { lo = Math.min(lo, threshold); hi = Math.max(hi, threshold); }
+    const span = (hi - lo) || 1;
+    const tSpan = (tMax - tMin) || 1;
+    const xOf = (t) => ((t - tMin) / tSpan) * w;
+    const yOf = (v) => h - 2 - ((v - lo) / span) * (h - 4);
+    const pts = samples.map((s) => xOf(s[0]).toFixed(1) + "," + yOf(s[1]).toFixed(1)).join(" ");
+    const grid = GRID_FRACS.map((f) => {
+      const x = (f * w).toFixed(1);
+      return `<line class="spark-grid" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`;
+    }).join("");
+    let evMarks = "";
+    if (events && events.length) {
+      evMarks = events.filter((ev) => ev.ts >= tMin && ev.ts <= tMax).map((ev) => {
+        const x = xOf(ev.ts).toFixed(1);
+        return `<line class="spark-event sev-${ev.sev}" x1="${x}" y1="0" x2="${x}" y2="${h}">` +
+          `<title>${ev.sev}: ${ev.kind} @ ${fmtTime(ev.ts)}</title></line>`;
+      }).join("");
+    }
+    let focus = "";
+    if (focusTime != null && focusTime >= tMin && focusTime <= tMax) {
+      const x = xOf(focusTime).toFixed(1);
+      focus = `<line class="spark-focus" x1="${x}" y1="0" x2="${x}" y2="${h}"/>`;
+    }
+    const dir = thrDir === "lower" ? "lower" : "upper";
+    let thr = "", breach = false;
+    if (threshold != null) {
+      const y = yOf(threshold).toFixed(1);
+      thr = `<line class="spark-threshold" x1="0" y1="${y}" x2="${w}" y2="${y}"/>`;
+      const last = values[values.length - 1];
+      breach = dir === "lower" ? last < threshold : last > threshold;
+    }
     svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svgEl.setAttribute("preserveAspectRatio", "none");
-    svgEl.innerHTML = `<polyline points="${pts}"/>`;
+    svgEl.innerHTML = grid + evMarks + focus + thr +
+      `<polyline class="${breach ? "breach" : ""}" points="${pts}"/>`;
+    svgEl._spark = { samples, tMin, tMax, lo, hi, h, threshold, dir };
+  }
+
+  // Single body-level tooltip + delegated hover, wired once. Hovering any
+  // sparkline reads the nearest sample (by time) and shows its exact value +
+  // clock time, and snaps a white-ringed dot (an HTML overlay, kept circular —
+  // an SVG circle would be stretched to an ellipse by the non-uniform viewBox)
+  // to that point.
+  let _sparkTip = null, _sparkHoverReady = false;
+  function hideSparkTip() {
+    if (_sparkTip) _sparkTip.style.display = "none";
+    const el = $("metrics");
+    if (el) for (const d of el.querySelectorAll(".spark-dot")) d.style.display = "none";
+  }
+  function ensureSparkHover() {
+    if (_sparkHoverReady) return;
+    const el = $("metrics");
+    if (!el) return;
+    _sparkHoverReady = true;
+    _sparkTip = document.createElement("div");
+    _sparkTip.className = "spark-tip";
+    _sparkTip.style.display = "none";
+    document.body.appendChild(_sparkTip);
+    el.addEventListener("mousemove", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d) { hideSparkTip(); return; }
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const t = d.tMin + fx * (d.tMax - d.tMin);
+      let best = d.samples[0], bd = Infinity;
+      for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
+      const dot = wrap.querySelector(".spark-dot");
+      for (const o of el.querySelectorAll(".spark-dot")) if (o !== dot) o.style.display = "none";
+      if (dot) {
+        const xfrac = (best[0] - d.tMin) / ((d.tMax - d.tMin) || 1);
+        const yuser = d.h - 2 - ((best[1] - d.lo) / ((d.hi - d.lo) || 1)) * (d.h - 4);
+        dot.style.left = (xfrac * 100) + "%";
+        dot.style.top = (yuser / d.h * 100) + "%";
+        dot.style.display = "";
+      }
+      _sparkTip.replaceChildren();
+      const b = document.createElement("b"); b.textContent = fmtNum(best[1]);
+      const ts = document.createElement("span"); ts.textContent = fmtTime(best[0]);
+      _sparkTip.append(b, ts);
+      const over = d.threshold != null && (d.dir === "lower" ? best[1] < d.threshold : best[1] > d.threshold);
+      if (over) {
+        const w2 = document.createElement("em"); w2.className = "over";
+        w2.textContent = d.dir === "lower" ? "under floor" : "over budget";
+        _sparkTip.append(w2);
+      }
+      if (wrap.dataset.label) { const i = document.createElement("i"); i.textContent = wrap.dataset.label; _sparkTip.append(i); }
+      _sparkTip.style.display = "block";
+      _sparkTip.style.left = (e.clientX + 12) + "px";
+      _sparkTip.style.top = (e.clientY + 12) + "px";
+    });
+    el.addEventListener("mouseleave", hideSparkTip);
+    // Click a point → focus the whole column on that moment: a vertical line
+    // across every graph + the event log filtered to a window around it.
+    el.addEventListener("click", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d) return;
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const t = d.tMin + fx * (d.tMax - d.tMin);
+      let best = d.samples[0], bd = Infinity;
+      for (const s of d.samples) { const dt = Math.abs(s[0] - t); if (dt < bd) { bd = dt; best = s; } }
+      setTimeFocus(best[0]);
+    });
+    // Scroll-to-zoom (#5): wheel over a sparkline shrinks/grows the shared time
+    // window centred on the cursor's instant. Bounded by the retained data
+    // range; scrolling fully out resets to the live view.
+    el.addEventListener("wheel", (e) => {
+      const wrap = e.target.closest(".spark-wrap");
+      const svg = wrap && wrap.querySelector("svg.spark");
+      const d = svg && svg._spark;
+      if (!d || _dataMin == null) return;
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const tc = d.tMin + fx * (d.tMax - d.tMin);  // cursor instant
+      const factor = e.deltaY < 0 ? 0.8 : 1.25;     // up = in, down = out
+      let lo = tc - (tc - d.tMin) * factor;
+      let hi = tc + (d.tMax - tc) * factor;
+      lo = Math.max(lo, _dataMin); hi = Math.min(hi, _dataMax);
+      if (hi - lo >= (_dataMax - _dataMin) - 1e-6) _zoom = null;      // fully out
+      else if (hi - lo >= _ZOOM_MIN_SPAN_S) _zoom = { tMin: lo, tMax: hi };
+      else return;  // already at min span — ignore
+      renderMetrics(_lastMetrics, true);
+    }, { passive: false });
+  }
+
+  // Scroll-to-zoom state (#5). `_zoom` overrides the shared window; `_dataMin/Max`
+  // are the live data bounds set by renderMetrics each tick.
+  let _zoom = null, _dataMin = null, _dataMax = null;
+  const _ZOOM_MIN_SPAN_S = 1;
+  function resetZoom() {
+    _zoom = null;
+    renderMetrics(_lastMetrics, true);
+  }
+  function updateZoomResetButton() {
+    const btn = $("metric-zoom-reset");
+    if (btn) btn.style.display = _zoom ? "" : "none";
+  }
+
+  // Cross-panel time focus (issue #3). Clicking a sparkline point scopes the
+  // event log to ±_FOCUS_HALF_S around it and draws a focus line across graphs.
+  const _FOCUS_HALF_S = 4;
+  let _focusTime = null;
+  function setTimeFocus(t) {
+    _focusTime = t;
+    renderMetrics(_lastMetrics, true);  // force past the freeze gate (user action)
+    renderEvents(_lastEvents);
+    const sec = $("events");
+    if (sec) sec.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  function clearTimeFocus() {
+    _focusTime = null;
+    renderMetrics(_lastMetrics, true);
+    renderEvents(_lastEvents);
+  }
+
+  // Notable events (warn/error/fatal) within the metrics time window, mapped to
+  // the marker shape sparkline() draws. Reads the cache renderEvents() fills.
+  function notableEvents() {
+    const out = [];
+    for (const ev of _lastEvents || []) {
+      const sev = String(ev.severity || "info").toLowerCase();
+      const bucket = sev === "error" || sev === "fatal" ? "error" : sev === "warn" ? "warn" : null;
+      if (!bucket) continue;
+      if (ev.ts_unix == null) continue;
+      out.push({ ts: ev.ts_unix, sev: bucket, kind: ev.kind || ev.title || "event" });
+    }
+    return out;
+  }
+
+  // One shared time axis at the bottom of the metrics list — clock labels at the
+  // same fractions as the dotted gridlines, so the whole column reads as one
+  // time domain instead of per-row mystery graphs.
+  function metricAxisRow(win) {
+    const row = document.createElement("div");
+    row.className = "metric-axis";
+    const lead = document.createElement("span");
+    lead.className = "axis-lead";
+    lead.textContent = "time →";
+    const ticks = document.createElement("div");
+    ticks.className = "axis-ticks";
+    for (const f of GRID_FRACS) {
+      const t = win.tMin + f * (win.tMax - win.tMin);
+      const s = document.createElement("span");
+      s.textContent = fmtTime(t);
+      ticks.appendChild(s);
+    }
+    row.appendChild(lead);
+    row.appendChild(ticks);
+    return row;
   }
 
   // Metrics grouping + group filter (issue 2/13). Filter buttons select ALL or
@@ -756,7 +990,7 @@
     return " {" + entries.map(([k, v]) => `${k}=${v}`).join(", ") + "}";
   }
 
-  function metricRow(m) {
+  function metricRow(m, win, events) {
     const row = document.createElement("div"); row.className = "metric-row";
     const name = document.createElement("span"); name.className = "name";
     name.appendChild(nameMarkup(m.name));
@@ -779,10 +1013,26 @@
     } else {
       latest.textContent = m.latest != null ? Number(m.latest).toFixed(2) : "—";
     }
+    const sparkWrap = document.createElement("div"); sparkWrap.className = "spark-wrap";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.classList.add("spark");
-    sparkline(svg, m.samples);
-    row.appendChild(name); row.appendChild(unit); row.appendChild(p50); row.appendChild(p95); row.appendChild(latest); row.appendChild(svg);
+    const threshold = typeof m.threshold === "number" ? m.threshold : null;
+    sparkline(svg, m.samples, win, threshold, m.threshold_dir, events, _focusTime);
+    sparkWrap.appendChild(svg);
+    if (svg._spark) {
+      // Per-graph Y axis: max top, min bottom (the rendered domain, which is
+      // widened to include the threshold line when present). HTML overlay rather
+      // than SVG <text> because the sparkline viewBox uses
+      // preserveAspectRatio="none", which would stretch embedded text.
+      const ymax = document.createElement("span"); ymax.className = "yax ymax"; ymax.textContent = fmtNum(svg._spark.hi);
+      const ymin = document.createElement("span"); ymin.className = "yax ymin"; ymin.textContent = fmtNum(svg._spark.lo);
+      sparkWrap.appendChild(ymax); sparkWrap.appendChild(ymin);
+      // White-ringed hover dot (positioned by the delegated mousemove handler).
+      const dot = document.createElement("span"); dot.className = "spark-dot"; dot.style.display = "none";
+      sparkWrap.appendChild(dot);
+      sparkWrap.dataset.label = m.name + labelSuffix(m.labels) + (m.unit ? " (" + m.unit + ")" : "");
+    }
+    row.appendChild(name); row.appendChild(unit); row.appendChild(p50); row.appendChild(p95); row.appendChild(latest); row.appendChild(sparkWrap);
     return row;
   }
 
@@ -827,7 +1077,13 @@
     }
   }
 
-  function renderMetrics(metrics) {
+  let _metricsFrozen = false;
+  function renderMetrics(metrics, force) {
+    // Freeze: keep the current DOM (and cached metrics) so the operator can hover
+    // and inspect a moment instead of chasing a scrolling ring. Re-renders resume
+    // on unfreeze. `force` lets user actions (e.g. setting a time focus) redraw
+    // the frozen snapshot in place.
+    if (_metricsFrozen && !force && _lastMetrics.length) return;
     _lastMetrics = metrics || [];
     const el = $("metrics");
     // Per-namespace counts for the chip badges (over the full, unfiltered set).
@@ -851,6 +1107,26 @@
       return;
     }
     el.innerHTML = "";
+    ensureSparkHover();
+    // Global time window across every shown metric — all share one wall clock
+    // (samples are (unix_seconds, value)), so the gridlines/axis are comparable.
+    let tMin = Infinity, tMax = -Infinity;
+    for (const m of shown) {
+      if (!m.samples) continue;
+      for (const s of m.samples) { if (s[0] < tMin) tMin = s[0]; if (s[0] > tMax) tMax = s[0]; }
+    }
+    const haveData = isFinite(tMin) && isFinite(tMax) && tMax > tMin;
+    _dataMin = haveData ? tMin : null;
+    _dataMax = haveData ? tMax : null;
+    // Scroll-to-zoom (#5): _zoom overrides the shared window with a sub-range,
+    // clamped to the live data bounds; if it no longer fits, drop back to full.
+    if (_zoom && haveData) {
+      const lo = Math.max(_zoom.tMin, tMin), hi = Math.min(_zoom.tMax, tMax);
+      _zoom = hi - lo > _ZOOM_MIN_SPAN_S ? { tMin: lo, tMax: hi } : null;
+    }
+    const win = !haveData ? null : (_zoom || { tMin, tMax });
+    updateZoomResetButton();
+    const events = win ? notableEvents() : [];
     const sorted = shown.slice().sort(
       (a, b) => metricNamespace(a.name).localeCompare(metricNamespace(b.name)) || a.name.localeCompare(b.name)
     );
@@ -865,9 +1141,27 @@
         hd.textContent = ns + " · " + counts[ns];
         el.appendChild(hd);
       }
-      el.appendChild(metricRow(m));
+      el.appendChild(metricRow(m, win, events));
     }
+    if (win) el.appendChild(metricAxisRow(win));
   }
+
+  // Freeze toggle (wired once). Pauses live re-rendering of the metrics list.
+  (function wireMetricFreeze() {
+    const btn = $("metric-freeze");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      _metricsFrozen = !_metricsFrozen;
+      btn.classList.toggle("active", _metricsFrozen);
+      btn.textContent = _metricsFrozen ? "▶ resume" : "❚❚ freeze";
+      if (!_metricsFrozen) renderMetrics(_lastMetrics);
+    });
+  })();
+
+  (function wireZoomReset() {
+    const btn = $("metric-zoom-reset");
+    if (btn) btn.addEventListener("click", resetZoom);
+  })();
 
   // Jaeger UI url is operator-configured via the OPENRAL_JAEGER_UI_URL
   // env var on the dashboard process, surfaced through /api/config.

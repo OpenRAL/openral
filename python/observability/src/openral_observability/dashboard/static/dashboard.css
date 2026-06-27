@@ -567,10 +567,86 @@
   .metric-row .pct .lbl { color: var(--fg-faint); font-size: 9px; margin-right: 3px; }
   .metric-row .latest { color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
   .metric-row .latest .n { color: var(--fg-mute); }
-  .metric-row .spark { height: 26px; width: 100%; display: block; }
+  .metric-row .spark-wrap { position: relative; height: 26px; width: 100%; }
+  .metric-row .spark { position: absolute; inset: 0; height: 100%; width: 100%; display: block; }
   .metric-row .spark polyline {
     fill: none; stroke: var(--brand); stroke-width: 1;
     stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke;
+  }
+  .metric-row .spark .spark-grid {
+    stroke: rgba(255,255,255,0.08); stroke-width: 1; stroke-dasharray: 2 3;
+    vector-effect: non-scaling-stroke;
+  }
+  /* Latest sample breached its budget/deadline → redden the whole trace. */
+  .metric-row .spark polyline.breach { stroke: var(--err); }
+  /* Contractual budget/deadline line (in the metric's unit). */
+  .metric-row .spark .spark-threshold {
+    stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3;
+    opacity: 0.75; vector-effect: non-scaling-stroke;
+  }
+  /* Safety/event markers at notable event times — aligned across every graph. */
+  .metric-row .spark .spark-event {
+    stroke-width: 1; opacity: 0.5; vector-effect: non-scaling-stroke;
+  }
+  .metric-row .spark .spark-event.sev-error { stroke: var(--err); opacity: 0.7; }
+  .metric-row .spark .spark-event.sev-warn { stroke: var(--warn); }
+  /* Click-to-correlate focus line, drawn across every graph at one instant. */
+  .metric-row .spark .spark-focus {
+    stroke: var(--brand); stroke-width: 1.5; opacity: 0.9; vector-effect: non-scaling-stroke;
+  }
+  /* White-ringed, black-filled hover marker. HTML overlay (kept circular — an
+     SVG circle would be stretched by the preserveAspectRatio="none" viewBox). */
+  .metric-row .spark-dot {
+    position: absolute; width: 7px; height: 7px; border-radius: 50%;
+    background: #000; border: 1.5px solid #fff; box-sizing: border-box;
+    transform: translate(-50%, -50%); pointer-events: none; z-index: 3;
+    box-shadow: 0 0 3px rgba(0,0,0,0.6);
+  }
+  /* Per-graph Y axis labels (max top, min bottom), HTML overlay so they aren't
+     stretched by the sparkline's preserveAspectRatio="none" viewBox. */
+  .metric-row .yax {
+    position: absolute; left: 2px; font-size: 8px; line-height: 1;
+    color: var(--fg-faint); font-variant-numeric: tabular-nums;
+    pointer-events: none; background: rgba(0,0,0,0.18); padding: 0 1px; border-radius: 2px;
+  }
+  .metric-row .yax.ymax { top: 0; }
+  .metric-row .yax.ymin { bottom: 0; }
+
+  /* Shared bottom time axis — aligns its tick labels with the spark column. */
+  .metric-axis {
+    display: grid; grid-template-columns: 260px 60px 78px 78px 64px 1fr;
+    gap: 16px; padding: 4px 18px 8px;
+    font-family: var(--mono); font-size: 9px; color: var(--fg-faint);
+  }
+  .metric-axis .axis-lead { grid-column: 1 / 6; text-align: right; }
+  .metric-axis .axis-ticks {
+    display: flex; justify-content: space-between;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Hover readout shared by every sparkline. */
+  .spark-tip {
+    position: fixed; z-index: 50; pointer-events: none;
+    background: var(--bg-2, #111); border: 1px solid var(--hair-strong);
+    border-radius: 6px; padding: 4px 7px; font-family: var(--mono); font-size: 10px;
+    color: var(--fg); box-shadow: 0 8px 20px -10px #000; white-space: nowrap;
+  }
+  .spark-tip b { color: var(--brand); font-weight: 600; margin-right: 6px; }
+  .spark-tip span { color: var(--fg-dim); }
+  .spark-tip em.over { color: var(--err); font-style: normal; margin-left: 6px; }
+  .spark-tip i { display: block; margin-top: 2px; color: var(--fg-mute); font-style: normal; }
+
+  /* Freeze toggle in the metrics filter bar (right-aligned). */
+  #metric-freeze.freeze-chip {
+    margin-left: auto; font-family: var(--mono); font-size: 10px; cursor: pointer;
+    color: var(--fg-mute); background: transparent;
+    border: 1px solid var(--hair-strong); border-radius: 999px; padding: 2px 10px;
+  }
+  #metric-zoom-reset.freeze-chip { margin-left: 6px; color: var(--brand); border-color: rgba(255,255,255,0.14); }
+  .freeze-chip:hover { color: var(--fg); border-color: var(--fg-mute); }
+  #metric-freeze.freeze-chip:hover { color: var(--fg); border-color: var(--fg-mute); }
+  #metric-freeze.freeze-chip.active {
+    color: var(--warn); border-color: rgba(217,178,124,0.45); background: rgba(217,178,124,0.08);
   }
 
   /* console/terminal panel bodies — framed-window treatment */
@@ -594,6 +670,18 @@
   }
   .event-log::-webkit-scrollbar { width: 7px; }
   .event-log::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 4px; }
+  /* Time-focus banner: shows the window a clicked sparkline point scoped to. */
+  .event-log .event-focus {
+    display: flex; align-items: center; justify-content: space-between;
+    margin: 2px 8px 6px; padding: 4px 10px; border-radius: 6px;
+    font-family: var(--mono); font-size: 10px; color: var(--brand);
+    background: rgba(255,255,255,0.04); border: 1px solid var(--hair-strong);
+  }
+  .event-log .event-focus .clear {
+    background: none; border: none; color: var(--fg-mute); cursor: pointer;
+    font-size: 12px; line-height: 1; padding: 0 2px;
+  }
+  .event-log .event-focus .clear:hover { color: var(--fg); }
   .event {
     display: grid; grid-template-columns: 82px max-content 1fr max-content;
     gap: 14px; padding: 5px 18px; border-bottom: 1px solid var(--hair-soft);

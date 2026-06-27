@@ -524,11 +524,18 @@ class WorldStateAggregator:
         # components contribute to ``components_stale`` but not to the
         # histogram (they have no age to record).
         staleness_hist = ral_metrics.get_world_state_staleness_ms()
+        # The staleness deadline rides along as a per-data-point threshold so the
+        # dashboard draws a deadline line + breach coloring on each component's
+        # staleness sparkline. Constant per aggregator, so no extra cardinality.
+        staleness_deadline_ms = self._staleness_limit_ns / 1e6
         for component, age_ms in ages_ms.items():
             ral_metrics.record_histogram_ms(
                 staleness_hist,
                 age_ms,
-                attributes={semconv.LABEL_COMPONENT: component},
+                attributes={
+                    semconv.LABEL_COMPONENT: component,
+                    semconv.METRIC_THRESHOLD_MS: staleness_deadline_ms,
+                },
             )
 
         # Up-down counter mirrors the current stale-set size.
