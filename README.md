@@ -4,7 +4,7 @@
 
 # OpenRAL
 
-**An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
+**An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, perception AI and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
 
 [![CI](https://img.shields.io/badge/CI%2FCD-passing-4CAF50?logo=github&logoColor=white)](https://github.com/OpenRAL/openral/actions)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
