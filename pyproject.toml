@@ -117,7 +117,7 @@ requires-dist = []
 
 [dependency-groups]
 dev = [
-    "pytest>=8,<9", # reason: test runner. Pin <9: pytest 9.0.3 has a collection regression where multiple modules with module-level pytest.importorskip / pytest.skip(allow_module_level=True) emit "ERROR: found no collectors" and conflate every SKIPPED entry under the first module — silently hides skip reasons in tests/sim/ (breaks tests/unit/test_sim_collection.py).
+    "pytest>=8,<10", # reason: test runner. Pin <9: pytest 9.0.3 has a collection regression where multiple modules with module-level pytest.importorskip / pytest.skip(allow_module_level=True) emit "ERROR: found no collectors" and conflate every SKIPPED entry under the first module — silently hides skip reasons in tests/sim/ (breaks tests/unit/test_sim_collection.py).
     "pytest-asyncio>=0.23", # reason: async test support
     "pytest-cov>=5", # reason: coverage reports
     "hypothesis>=6.100", # reason: schema fuzz testing
@@ -130,7 +130,7 @@ dev = [
     "jsonschema>=4.23",
     "lark>=1.3.1",
     "catkin-pkg>=1.0", # reason: ament_cmake_core invokes the build-time interpreter (the workspace venv when `just ros2-build` is run) with `catkin_pkg.*` during configure. Provided by apt's python3-catkin-pkg on the *system* Python, but the venv interpreter can't see it — install into the venv so colcon resolves it through the same Python that runs the lifecycle nodes.
-    "empy<4", # reason: ament_cmake_core's template substitutions import the `em` module (provided by empy 3.x, NOT 4.x — 4.x renamed the module to `empy` and dropped `em`). Same rationale as `catkin-pkg`: needed by the configure step under the workspace venv.
+    "empy<5", # reason: ament_cmake_core's template substitutions import the `em` module (provided by empy 3.x, NOT 4.x — 4.x renamed the module to `empy` and dropped `em`). Same rationale as `catkin-pkg`: needed by the configure step under the workspace venv.
     "onnxscript>=0.1.0", # reason: required by torch.onnx new exporter (torch>=2.1), tested in test_runtime.py
     "onnxruntime>=1.17", # reason: ONNXRuntime backend tested in tests/unit/test_runtime.py::TestONNXRuntime
     "types-pyyaml>=6", # reason: type stubs for PyYAML (consumed by openral_core.schemas under mypy --strict)
@@ -153,13 +153,13 @@ sim = [
     "gymnasium[mujoco]>=1.3.0",
     "mujoco>=3.8.0",
     "num2words>=0.5.14",
-    "pymunk<7",
+    "pymunk<8",
     "robot-descriptions>=1.12.0",  # reason: SO-100 MJCF from DeepMind mujoco_menagerie for offscreen render
-    "transformers==5.3.0",
+    "transformers==5.12.1",
 ]
 libero = [
     "lerobot[libero]",  # reason: pulls hf-libero (linux-only) + LIBERO bddl task files + robosuite
-    "transformers==5.3.0",  # reason: lerobot 0.5.1 hard-pins transformers==5.3.0 via its `transformers-dep` extra (smolvla / pi / xvla / libero all alias it). Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version and the pin survives even if a future lerobot loosens its own bound.
+    "transformers==5.12.1",  # reason: lerobot 0.5.1 hard-pins transformers==5.12.1 via its `transformers-dep` extra (smolvla / pi / xvla / libero all alias it). Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version and the pin survives even if a future lerobot loosens its own bound.
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
     "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 — 3.4 B PaliGemma backbone needs ≤8 GiB VRAM in nf4
 ]
@@ -171,7 +171,7 @@ metaworld = [
     "lerobot",  # reason: provides lerobot.envs.metaworld used by the MetaWorld scene adapter
     "gymnasium[mujoco]>=1.3.0",  # reason: gym backend MetaWorldEnv is built on
     "mujoco>=3.8.0",  # reason: physics engine for MetaWorld scenes
-    "transformers==5.3.0",  # reason: SmolVLA backbone (pinned to match the sim group)
+    "transformers==5.12.1",  # reason: SmolVLA backbone (pinned to match the sim group)
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
 ]
@@ -183,7 +183,7 @@ maniskill3 = [
     "mani-skill>=3.0.0b9",
     "gymnasium>=1.0.0",  # reason: gym backend ManiSkill envs are built on
     "lerobot",  # reason: every non-RLDX policy adapter (smolvla / pi05 / xvla / act / diffusion) imports lerobot.policies.* at load time. Pulled bare (no `[libero]`) to keep robosuite unconstrained — `mani-skill` carries SAPIEN, not robosuite, so there is no robosuite version pin to clash with. Once an MS3-specific rSkill ships in-tree this becomes load-bearing; today it future-proofs the group + matches the metaworld group's convention.
-    "transformers==5.3.0",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
+    "transformers==5.12.1",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 (matches metaworld group convention)
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization (matches metaworld group)
 ]
@@ -251,7 +251,7 @@ robocasa = [
     #   1. PyPI 1.5.2 was cut with a `setup.py` that hard-pins
     #      `mink==0.0.5` as a *core* dependency. mink 0.0.5 declares
     #      `numpy<2.0`, which is incompatible with the workspace-wide
-    #      `numpy>=2.0.0,<2.3.0` pulled by `lerobot>=0.5.1`. uv refuses
+    #      `numpy>=2.0.0,<2.6.0` pulled by `lerobot>=0.5.1`. uv refuses
     #      to lock that combination.
     #   2. The master-branch `setup.py` (commit 232ce7d, "synchronize
     #      rendering context for envs") moved mink to `extras_require`,
@@ -281,7 +281,7 @@ robocasa = [
     # pi05-vision-nf4 scene (and any future transformers-backed adapter on a
     # robosuite>=1.5 task).
     "lerobot",  # reason: policy adapters (smolvla / pi05 / xvla / act / diffusion) import lerobot.policies.* at load time. Pulled bare (no `[libero]`) — robosuite>=1.5 above is the RoboCasa pin and conflicts with libero's robosuite==1.4.
-    "transformers==5.3.0",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
+    "transformers==5.12.1",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 init_empty_weights fast meta-init path.
     "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 / openarm-vision-nf4 — the pi05 adapter raises ROSConfigError without bnb on `quantization.dtype: nf4` manifests.
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization.
@@ -401,13 +401,13 @@ omdet = [
     # backend (openral_runner.backends.gstreamer.omdet_turbo_detector) lazily
     # imports torch + transformers; this group provides them. Required by the
     # `deploy sim --object-detector-manifest <…omdet-turbo-indoor…>` leg.
-    "transformers==5.3.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
+    "transformers==5.12.1",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
     "torch>=2.2",           # reason: OmDet-Turbo forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts / deploy sim.
     "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for the processor.
     "timm>=1.0",            # reason: OmDet-Turbo's Swin backbone loads via TimmBackbone under transformers 5.3; also used to rebuild the backbone at the processor's 640² input (the pretrained checkpoint is pinned to 224² — see _fit_timm_backbone_to_processor).
 ]
 tensorrt = [
-    "tensorrt>=10.0,<11",      # reason: ONNX->TRT build-on-load for rSkill runtime_tensorrt; engines are arch/version-specific so rSkills ship ONNX and build here. Match the CUDA-suffixed wheel (tensorrt-cu13 / -cu12) to the host toolkit if the meta-wheel mis-resolves.
+    "tensorrt>=10.0,<12",      # reason: ONNX->TRT build-on-load for rSkill runtime_tensorrt; engines are arch/version-specific so rSkills ship ONNX and build here. Match the CUDA-suffixed wheel (tensorrt-cu13 / -cu12) to the host toolkit if the meta-wheel mis-resolves.
     "cuda-python>=12.0",       # reason: device malloc/memcpy/stream for TensorRTRuntime.infer via the cuda.bindings API (new-style import: `from cuda.bindings import runtime as cudart`).
     "torch>=2.1",              # reason: ONNX fixture export in test_runtime_tensorrt.py — keeps `uv sync --group tensorrt` a self-contained test env (torch.onnx.export authors the tiny model the ONNX->TRT build/infer tests parse).
 ]
@@ -418,7 +418,7 @@ onnx-export = [
 lowering = [
     "yourdfpy>=0.0.56",   # reason: URDF parse + FK for the offline collision-lowering tool (ADR-0030)
     "trimesh>=4.0.0",     # reason: load URDF collision meshes to fit conservative bounding capsules
-    "numpy>=2.0.0,<2.3.0",  # reason: PCA capsule fitting + pose sampling; pin matches workspace-wide numpy constraint from lerobot>=0.5.1
+    "numpy>=2.0.0,<2.6.0",  # reason: PCA capsule fitting + pose sampling; pin matches workspace-wide numpy constraint from lerobot>=0.5.1
     "xacrodoc>=0.3.0",    # reason: process xacro-only URDFs (UR / Flexiv) for onboarding via robot_descriptions:<module>
     "mujoco>=3.8.0",      # reason: lower FK + ACM from MJCF-native robots (openarm) whose mesh collision the URDF path can't read
 ]
