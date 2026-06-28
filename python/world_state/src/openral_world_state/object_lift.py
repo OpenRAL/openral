@@ -289,7 +289,11 @@ class VoxelFrustumLifter:
                         float(mx[1]),
                         float(mx[2]),
                     ),
-                    track_id=None,
+                    # ADR-0076: carry the detection-time id through the lift so a
+                    # physical object keeps one id across 2D (in_view) and 3D
+                    # (scene_objects). >= 0 → propagate; -1 (untracked) → None,
+                    # leaving ObjectMemory to mint as before.
+                    track_id=det.det_id if det.det_id >= 0 else None,
                 ),
             )
         return out

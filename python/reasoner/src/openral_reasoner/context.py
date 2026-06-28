@@ -24,6 +24,7 @@ from collections import deque
 
 from openral_core import (
     FailureEvidence,
+    ObjectsMetadata,
     PerceptionEventMetadata,
     RobotDescription,
     WorldState,
@@ -359,6 +360,11 @@ class ContextRenderer:
         # `set_mission`, advanced via `advance_mission`; rendered as `## MISSION`.
         # None (or an empty mission) omits the section.
         self._mission: MissionState | None = None
+        # ADR-0076 — latest continuous-detector enumeration (camera-space 2D
+        # detections with stable det_ids). Set via `set_in_view`; rendered as the
+        # `in_view[<camera>]` line in WORLD_STATE. None omits it. Depth-free, so it
+        # populates even when the 3D lift / `scene_objects` cannot.
+        self._in_view: ObjectsMetadata | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -405,6 +411,19 @@ class ContextRenderer:
         advances.
         """
         self._mission = mission
+        self._seq += 1
+
+    def set_in_view(self, objects: ObjectsMetadata | None) -> None:
+        """Set (or clear) the camera-space ``in_view`` enumeration (ADR-0076).
+
+        The latest continuous-detector :class:`ObjectsMetadata` — 2D detections
+        with stable ``det_id``s — rendered as the ``in_view[<camera>]`` line in
+        WORLD_STATE. A new perception snapshot is an **event**, so this bumps
+        :attr:`seq` to wake an otherwise-idle heartbeat. Depth-free: it grounds
+        a goal noun onto a concrete object even when the 3D ``scene_objects`` line
+        is empty (RGB-only / no lift).
+        """
+        self._in_view = objects
         self._seq += 1
 
     @property
@@ -543,7 +562,10 @@ class ContextRenderer:
     def _render_world_state(self, world_state: WorldState | None) -> str:
         """Render the WorldState block — deterministic key order, no pixels."""
         if world_state is None:
-            return "(no snapshot yet)"
+            # ADR-0076: the camera-space in_view enumeration is depth-free and may
+            # arrive before the first WorldState snapshot — surface it regardless.
+            in_view = self._render_in_view()
+            return f"(no snapshot yet)\n{in_view}" if in_view else "(no snapshot yet)"
         lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
         if world_state.joint_state is not None:
             js = world_state.joint_state
@@ -584,7 +606,29 @@ class ContextRenderer:
                 for label, xyz in sorted(first_seen.items())
             )
             lines.append(f"scene_objects[{frame}]: {items}")
+        in_view = self._render_in_view()
+        if in_view:
+            lines.append(in_view)
         return "\n".join(lines)
+
+    def _render_in_view(self) -> str:
+        """Render the camera-space ``in_view`` enumeration (ADR-0076), or ``""``.
+
+        ``in_view[<camera>]: #<det_id> <label> @px(<cx>,<cy>), …`` — one entry per
+        live 2D detection, ``@px`` the pixel centre in the detector's frame
+        (image space, **not** a 3D pose). Ordered by ``det_id`` for a stable
+        context. Distinct from the 3D ``scene_objects[<map>]:@(x,y,z)`` line so the
+        two coordinate spaces never blur; it populates without the 3D lift.
+        """
+        md = self._in_view
+        if md is None or not md.detections:
+            return ""
+        items = ", ".join(
+            f"#{d.det_id} {d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
+            f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
+            for d in sorted(md.detections, key=lambda d: d.det_id)
+        )
+        return f"in_view[{md.sensor_id}]: {items}"
 
     def _render_failures(self) -> str:
         """Render the failure buffer; one line per event, oldest first."""

@@ -71,6 +71,7 @@ from openral_core import (
     LocateInViewTool,
     MemorySearchTool,
     MemoryWriteTool,
+    ObjectsMetadata,
     QuerySceneTool,
     QueryTaskProgressTool,
     RecallObjectTool,
@@ -137,6 +138,7 @@ from openral_reasoner.tool_use import (
     build_tool_use_client_from_env,
     resolve_reasoner_system_prompt,
 )
+from pydantic import ValidationError
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 from rclpy.qos import (
@@ -1214,7 +1216,13 @@ class ReasonerNode(LifecycleNode):
             )
 
     def _on_perception(self, kind: str, msg: Any) -> None:
-        """Append a perception event; no preemption — perception is informational."""
+        """Append a perception event; no preemption — perception is informational.
+
+        ADR-0076: an ``objects`` event also refreshes the reasoner's camera-space
+        ``in_view`` enumeration (the continuous detector's 2D detections with stable
+        det_ids), so the LLM can ground a goal noun / decompose a collective task
+        even when the 3D lift (``scene_objects``) cannot run (RGB-only / no depth).
+        """
         self._renderer.append_perception(
             PerceptionEventRecord(
                 kind=kind,
@@ -1223,6 +1231,11 @@ class ReasonerNode(LifecycleNode):
                 stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
             ),
         )
+        if kind == "objects":
+            try:
+                self._renderer.set_in_view(ObjectsMetadata.model_validate_json(msg.metadata_json))
+            except ValidationError as exc:
+                self.get_logger().debug(f"in_view: dropping malformed objects metadata: {exc!s}")
 
     def _on_prompt(self, msg: Any) -> None:
         """Append an operator prompt; preempt the tick to handle it quickly.
@@ -2826,8 +2839,9 @@ class ReasonerNode(LifecycleNode):
             f"REFUSED to run a skill on task {task.task_id} ({task.text!r}): it targets a "
             "COLLECTIVE/quantified set ('all', 'every', 'the objects', …), not a single "
             "object. A skill acts on exactly ONE specific object. Look at the "
-            "`scene_objects` line in your context — the live detector lists every object "
-            "it sees with a position — and call decompose_mission(target_task_id="
+            "`in_view` line in your context (every object the detector sees, with a "
+            "stable id and camera-space pixel centre; `scene_objects` adds 3D positions "
+            "when depth is available) — and call decompose_mission(target_task_id="
             f"{task.task_id!r}, subtasks=[…]) to split this into one grounded subtask per "
             "specific object. Each subtask is {object_ref: <ONE specific object>, text: "
             "<instruction naming that object>}, e.g. {object_ref: 'milk', text: 'pick up "

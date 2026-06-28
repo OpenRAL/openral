@@ -3,6 +3,7 @@
 Public surface is everything imported here. Private modules use leading underscore.
 """
 
+from openral_core.detection_tracker import DetectionTracker2D, aabb_iou_2d
 from openral_core.exceptions import (
     ROSBTValidationError,
     ROSCapabilityMismatch,
@@ -231,6 +232,7 @@ __all__ = [
     "DecomposeMissionTool",
     "DeployScene",
     "DetectedObject",
+    "DetectionTracker2D",
     "DetectorContract",
     "DetectorEngine",
     "DetectorMode",
@@ -375,6 +377,7 @@ __all__ = [
     "WorkspaceEvidence",
     "WorldCollisionPrimitive",
     "WorldState",
+    "aabb_iou_2d",
     "canonical_slots_for_representation",
     "contains_rskill_template_sentinel",
     "control_modes_for_representation",

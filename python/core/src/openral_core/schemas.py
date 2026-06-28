@@ -7221,6 +7221,13 @@ class ObjectDetection2D(BaseModel):
         confidence: Detection confidence in ``[0, 1]``.
         bbox_xyxy: Axis-aligned bounding box in pixels
             ``(x_min, y_min, x_max, y_max)``; image origin top-left.
+        det_id: Stable per-detector, per-camera identity (ADR-0076), assigned by
+            a 2D-IoU tracker at detection time so an object can be referred to and
+            de-duplicated even when the 3D lift cannot run (RGB-only / no depth).
+            ``-1`` means untracked (legacy detectors / single-shot). Propagated
+            into :attr:`DetectedObject.track_id` by the lift so a physical object
+            carries one id whether it appears in the camera-space ``in_view`` line
+            (no depth) or the 3D ``scene_objects`` line (depth).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -7228,6 +7235,7 @@ class ObjectDetection2D(BaseModel):
     label: str
     confidence: float = Field(ge=0.0, le=1.0)
     bbox_xyxy: tuple[int, int, int, int]
+    det_id: int = -1
 
 
 class MotionMetadata(_PerceptionEventBase):

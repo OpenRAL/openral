@@ -7,7 +7,14 @@ contract for the prompt buffer.
 
 from __future__ import annotations
 
-from openral_core import JointState, Pose6D, TimeoutEvidence, WorldState
+from openral_core import (
+    JointState,
+    ObjectDetection2D,
+    ObjectsMetadata,
+    Pose6D,
+    TimeoutEvidence,
+    WorldState,
+)
 from openral_reasoner import (
     ContextRenderer,
     FailureEventRecord,
@@ -432,3 +439,48 @@ def test_mission_finishes_when_last_task_completed() -> None:
     assert r.mission.is_complete()
     out = r.render(world_state=None)
     assert "✓ t1: only task" in out
+
+
+def _in_view() -> ObjectsMetadata:
+    """A camera-space ObjectsMetadata with stable det_ids (ADR-0076)."""
+    return ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-indoor",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(
+                label="milk", confidence=0.9, bbox_xyxy=(402, 211, 432, 261), det_id=0
+            ),
+            ObjectDetection2D(
+                label="ketchup", confidence=0.8, bbox_xyxy=(370, 230, 406, 272), det_id=1
+            ),
+        ],
+    )
+
+
+def test_in_view_line_rendered_in_world_state() -> None:
+    """ADR-0076 — set_in_view surfaces a camera-space `in_view[<cam>]` line with ids+px."""
+    r = ContextRenderer()
+    r.set_in_view(_in_view())
+    out = r.render(world_state=_world_state())
+    assert "in_view[top]: #0 milk @px(417,236), #1 ketchup @px(388,251)" in out
+
+
+def test_in_view_renders_before_first_world_state_snapshot() -> None:
+    """The enumeration is depth-free and may arrive before any WorldState."""
+    r = ContextRenderer()
+    r.set_in_view(_in_view())
+    out = r.render(world_state=None)
+    assert "(no snapshot yet)" in out
+    assert "in_view[top]: #0 milk" in out
+
+
+def test_set_in_view_bumps_seq_and_clears() -> None:
+    """A new detection snapshot is an event (wakes a heartbeat); None clears the line."""
+    r = ContextRenderer()
+    seq0 = r.seq
+    r.set_in_view(_in_view())
+    assert r.seq > seq0
+    r.set_in_view(None)
+    assert "in_view" not in r.render(world_state=_world_state())
