@@ -115,6 +115,7 @@ from openral_reasoner.context import (
     reflect_on_failure,
     reflect_on_invalid_plan,
     reflect_on_retry_cap,
+    reflect_on_reward_plateau,
     render_playbooks_block,
     render_robot_self_model,
 )
@@ -2644,6 +2645,27 @@ class ReasonerNode(LifecycleNode):
             # fall through — no return; the action == "retry" / "abandon" blocks below apply
         if action == "retry":
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
+            # ADR-0074 — surface the reward-plateau FAILURE to the LLM. The reward
+            # verify path otherwise records nothing on a retry, so the LLM only sees
+            # "task still active" and blindly re-issues the identical instruction (a
+            # direct replanning probe confirmed: no signal → repeat; the timeout hint
+            # → subdivide; a reward-plateau hint → replan with a different approach).
+            # Append a failed execution outcome with a reward-plateau-specific
+            # Reflexion hint so the next (forced) tick replans tactic instead of
+            # repeating. last_rskill_id is set by MissionState.record_attempt.
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=active.last_rskill_id or "",
+                    outcome="failed",
+                    summary=(
+                        f"reward says NOT done: success={float(resp.success_now):.2f} below the "
+                        f"success bar (attempt {active.attempts}); the policy executed without a "
+                        "fault but did not accomplish the task"
+                    ),
+                    reflection=reflect_on_reward_plateau(float(resp.success_now)),
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                )
+            )
             self._on_tick(force=True, tier="C")
             return
         if action == "complete":

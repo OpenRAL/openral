@@ -172,6 +172,35 @@ def reflect_on_failure(outcome_state: str, detail: str) -> str:
     )
 
 
+def reflect_on_reward_plateau(success_now: float) -> str:
+    """One-line strategy hint for a reward-plateau failure (ADR-0074).
+
+    Distinct from :func:`reflect_on_failure`: there the *controller* faulted
+    (timeout / abort) so "shorten the horizon or substitute a skill" is right.
+    Here the skill executed **without a fault** — it just didn't accomplish the
+    task (the reward signal says the object was not picked / placed). The wrong
+    move is to subdivide the same action or re-issue the identical instruction
+    (a direct LLM probe showed both: the timeout hint → subdivide; no signal →
+    blind repeat). The right move is to change *tactic*.
+
+    Args:
+        success_now: The reward model's success probability for the attempt
+            (below the contract's ``check_floor`` — a genuine failure).
+
+    Example:
+        >>> "different approach" in reflect_on_reward_plateau(0.48)
+        True
+    """
+    return (
+        f"the policy executed but the reward says the task was NOT completed "
+        f"(success={success_now:.2f}) — this exact approach is not working. Do NOT "
+        "re-issue the same instruction or subdivide it into the same action: "
+        "re-dispatch with a DIFFERENT approach (a different grasp / angle / "
+        "strategy). If several different approaches keep failing, this object is "
+        "abandoned and the mission moves on to the next one."
+    )
+
+
 def reflect_on_invalid_plan(detail: str) -> str:
     """Strategy hint when the model's own tool call was malformed (ADR-0072 §2.3).
 

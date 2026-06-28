@@ -18,6 +18,7 @@ from openral_reasoner.context import (
     ExecutionEventRecord,
     reflect_on_failure,
     reflect_on_retry_cap,
+    reflect_on_reward_plateau,
 )
 
 
@@ -28,6 +29,20 @@ def test_reflect_on_failure_branches() -> None:
     assert "timed out" in reflect_on_failure("error", "inference TIMEOUT")
     # Generic failure → "don't repeat the same call".
     assert "different skill" in reflect_on_failure("failed", "grasp slipped")
+
+
+def test_reflect_on_reward_plateau_says_change_approach_not_shorten() -> None:
+    """ADR-0074 — a reward-plateau (policy ran, reward says not done) must nudge a
+    DIFFERENT approach, not a shorter-horizon subdivide (the timeout hint) or a
+    blind repeat. A direct replanning probe showed those two wrong signals produce
+    repeat/subdivide; this one produces a genuine replan."""
+    hint = reflect_on_reward_plateau(0.48)
+    assert "0.48" in hint  # carries the evidence
+    assert "different approach" in hint.lower()
+    assert "do not" in hint.lower() and "same instruction" in hint.lower()
+    # must NOT recommend the wrong moves for a clean-execution reward failure
+    assert "shorter-horizon" not in hint.lower()
+    assert "subdivide" not in hint.lower() or "not " in hint.lower()
 
 
 def test_reflect_on_retry_cap_names_tool_and_cap() -> None:
