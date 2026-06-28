@@ -771,7 +771,35 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             output="log",
         )
     )
-    autostart += _autostart_lifecycle(reasoner, "openral_reasoner")
+    # The reasoner uses the robust script-based autostart (tools/lifecycle_autostart.py),
+    # not _autostart_lifecycle's launch_ros event handlers — same Jazzy race documented
+    # for HAL/slam_toolbox above. Under a heavy graph (reward monitor + critic loading
+    # concurrently with the reasoner's configure) the OnStateTransition(configuring →
+    # inactive) handler can miss the reasoner's transition_event, silently dropping the
+    # ACTIVATE so the reasoner sits in INACTIVE forever (launch_ros logs "Abandoning wait
+    # for /openral_reasoner/change_state"; the whole deploy then never reaches the tick
+    # loop). The script polls the node's state and drives CONFIGURE→ACTIVATE with a
+    # generous timeout, immune to the race. The reasoner is never runtime-deactivated
+    # (ADR-0050 evicts the detectors, not the reasoner), so a one-shot drive to active is
+    # behaviour-preserving — exactly as for the HAL block below.
+    _reasoner_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
+    autostart.append(
+        ExecuteProcess(
+            cmd=[
+                sys.executable,
+                _reasoner_autostart_path,
+                "--node",
+                "/openral_reasoner",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "60.0",
+                "--transition-timeout-s",
+                "300.0",
+            ],
+            output="log",
+        )
+    )
     autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
     # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather
     # than ``_autostart_lifecycle`` because launch_ros's
