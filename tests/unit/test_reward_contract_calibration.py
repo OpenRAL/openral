@@ -102,9 +102,12 @@ def test_robometer_manifest_carries_calibrated_reward_contract() -> None:
 
     assert manifest.reward is not None
     rc = manifest.reward
-    # Recalibrated by ADR-0074 Decision 5 (genuine-success bar above robometer's
-    # ~0.55–0.78 not-done wander band; check_floor at the lower edge).
-    assert rc.check_floor == 0.5
+    # check_floor gates the SUCCESS probability for the vlm_check tier (ADR-0074
+    # evaluate_task_verdict). Lowered 0.5 → 0.4 (the schema default): a
+    # struggling-but-maybe-done VLA plateaus at success ~0.46–0.49, just below
+    # 0.5, so it fell straight to the ladder and the VLM was never consulted on
+    # the plateau. 0.4 puts that plateau in the ambiguous band → VLM adjudicates.
+    assert rc.check_floor == 0.4
     assert rc.plateau_window_s == 3.0
     assert rc.plateau_tolerance == 0.06
     assert rc.default_patience_s == 30.0
