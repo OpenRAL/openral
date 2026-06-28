@@ -62,23 +62,16 @@ source_repo: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa
 # per-frame normalized progress in [0,1] + per-frame success probability.
 reward:
   progress_range: [0.0, 1.0]
-  # ADR-0074 three-tier verdict (evaluate_task_verdict) gates on the SUCCESS
-  # probability, not progress: success >= 0.8 auto-pass; check_floor <= success
-  # < 0.8 -> VLM adjudicates (describe_image); success < check_floor -> ladder.
-  # 0.8 is the genuine-success bar. check_floor was 0.5, tuned against robometer's
-  # PROGRESS scale (0.55-0.78 when not done) — but the gate runs on SUCCESS, which
-  # plateaus lower: a struggling-but-maybe-done VLA (e.g. smolvla-libero) sits at
-  # success ~0.46-0.49, JUST below 0.5, so it fell straight to the ladder and the
-  # VLM was never consulted. Lowered to 0.4 (the schema default) so that plateau
-  # lands in the ambiguous band and the VLM checks completion — at the cost of a
-  # VLM call on borderline-failing attempts (the VLM says "no" -> ladder anyway).
+  # Calibrated to ADR-0074 Decision 5: robometer wanders 0.55–0.78 when NOT done
+  # (measured in ADR-0057 eval). 0.8 is the genuine-success bar (auto-pass tier);
+  # 0.5 is the floor below which the attempt is clearly incomplete (no VLM call).
   success_threshold: 0.8
   preference: false
   frame_window_s: 8.0
   target_fps: 3.0
   num_bins: 100
   instruction_required: true
-  check_floor: 0.4
+  check_floor: 0.5
   plateau_window_s: 3.0
   plateau_tolerance: 0.06
   default_patience_s: 30.0
