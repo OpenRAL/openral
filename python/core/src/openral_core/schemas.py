@@ -5770,9 +5770,7 @@ def assert_vla_reward_fits(
     """
     vla_gb = vla.active_min_vram_gb()
     reward_gb = reward.active_min_vram_gb()
-    missing = [
-        m.name for m, gb in ((vla, vla_gb), (reward, reward_gb)) if gb is None
-    ]
+    missing = [m.name for m, gb in ((vla, vla_gb), (reward, reward_gb)) if gb is None]
     if missing:
         raise ROSConfigError(
             f"cannot verify VLA+reward VRAM co-residency: {missing!r} do not declare "

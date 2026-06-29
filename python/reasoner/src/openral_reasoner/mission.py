@@ -193,8 +193,12 @@ def evaluate_task_verdict(
 
     Example:
         >>> evaluate_task_verdict(
-        ...     ok=True, progress_now=0.91, success_now=0.62,
-        ...     success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True,
+        ...     progress_now=0.91,
+        ...     success_now=0.62,
+        ...     success_threshold=0.8,
+        ...     check_floor=0.5,
+        ...     attempts=1,
         ... )
         ('complete', 'progress=0.91 (success=0.62)')
         >>> evaluate_task_verdict(

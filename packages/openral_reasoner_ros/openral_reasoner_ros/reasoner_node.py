@@ -2447,8 +2447,7 @@ class ReasonerNode(LifecycleNode):
             self._core.reset_kind_streak()
         if nxt is not None:
             self.get_logger().info(
-                f"mission: locate-budget abandon ✗ → advancing to "
-                f"{nxt.task_id}={nxt.text[:60]!r}",
+                f"mission: locate-budget abandon ✗ → advancing to {nxt.task_id}={nxt.text[:60]!r}",
             )
         else:
             self._emit_mission_complete(mission, traceparent=traceparent)

@@ -219,9 +219,7 @@ def test_skill_failure_event_counts_and_carries_state() -> None:
     store.ingest_spans(_wrap_spans([span]))
     snap = store.snapshot()
     assert snap["counters"]["openral.event.skill_failure"] == 1
-    failure = next(
-        ev for ev in snap["events"] if ev["kind"] == "openral.event.skill_failure"
-    )
+    failure = next(ev for ev in snap["events"] if ev["kind"] == "openral.event.skill_failure")
     assert failure["severity"] == "error"
     assert failure["attrs"]["openral.event.skill_failure.state"] == "vram_insufficient"
 

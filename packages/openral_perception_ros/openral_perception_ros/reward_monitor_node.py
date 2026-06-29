@@ -139,9 +139,7 @@ def main(args: Any = None) -> None:
             # Default off = score the default task continuously (legacy; the on-demand
             # query_task_progress service is unaffected either way).
             self.declare_parameter("gate_scoring_on_execution", False)
-            self._gate_scoring = (
-                gp("gate_scoring_on_execution").get_parameter_value().bool_value
-            )
+            self._gate_scoring = gp("gate_scoring_on_execution").get_parameter_value().bool_value
             self._vla_active = not self._gate_scoring  # ungated → always "active"
             self._active_task = ""  # the VLA's current instruction (gated mode)
             if self._gate_scoring:

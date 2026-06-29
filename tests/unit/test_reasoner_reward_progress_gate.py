@@ -57,8 +57,12 @@ def test_set_reward_state_is_an_event_bumps_seq() -> None:
     seq0 = r.seq
     r.set_reward_state(
         RewardStateRecord(
-            progress=0.5, success=0.5, progress_trend=0.0, success_trend=0.0,
-            task="t", stamp_ns=0,
+            progress=0.5,
+            success=0.5,
+            progress_trend=0.0,
+            success_trend=0.0,
+            task="t",
+            stamp_ns=0,
         )
     )
     assert r.seq > seq0
@@ -68,8 +72,12 @@ def test_set_reward_state_none_clears_section() -> None:
     r = ContextRenderer()
     r.set_reward_state(
         RewardStateRecord(
-            progress=0.5, success=0.5, progress_trend=0.0, success_trend=0.0,
-            task="t", stamp_ns=0,
+            progress=0.5,
+            success=0.5,
+            progress_trend=0.0,
+            success_trend=0.0,
+            task="t",
+            stamp_ns=0,
         )
     )
     r.set_reward_state(None)

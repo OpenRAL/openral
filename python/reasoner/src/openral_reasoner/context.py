@@ -527,10 +527,19 @@ class ContextRenderer:
         Example:
             >>> from openral_core import ObjectDetection2D, ObjectsMetadata
             >>> r = ContextRenderer()
-            >>> r.note_located(ObjectsMetadata(sensor_id="top", model_id="omdet",
-            ...     frame_width=256, frame_height=256, detections=[
-            ...     ObjectDetection2D(label="basket", confidence=0.6,
-            ...                       bbox_xyxy=(10, 20, 30, 40))]))
+            >>> r.note_located(
+            ...     ObjectsMetadata(
+            ...         sensor_id="top",
+            ...         model_id="omdet",
+            ...         frame_width=256,
+            ...         frame_height=256,
+            ...         detections=[
+            ...             ObjectDetection2D(
+            ...                 label="basket", confidence=0.6, bbox_xyxy=(10, 20, 30, 40)
+            ...             )
+            ...         ],
+            ...     )
+            ... )
             >>> "located[top]: basket" in r.render(world_state=None)
             True
         """
@@ -557,9 +566,16 @@ class ContextRenderer:
 
         Example:
             >>> r = ContextRenderer()
-            >>> r.set_reward_state(RewardStateRecord(progress=0.81, success=0.45,
-            ...     progress_trend=0.04, success_trend=0.01, task="pick the bowl",
-            ...     stamp_ns=0))
+            >>> r.set_reward_state(
+            ...     RewardStateRecord(
+            ...         progress=0.81,
+            ...         success=0.45,
+            ...         progress_trend=0.04,
+            ...         success_trend=0.01,
+            ...         task="pick the bowl",
+            ...         stamp_ns=0,
+            ...     )
+            ... )
             >>> "progress=0.81 (closeness" in r.render(world_state=None)
             True
             >>> "success=0.45 (done-confidence" in r.render(world_state=None)

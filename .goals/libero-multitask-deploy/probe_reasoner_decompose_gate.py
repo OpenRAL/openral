@@ -250,9 +250,7 @@ def main() -> int:
     want = []
     for raw in args.cases.split(","):
         tok = raw.strip()
-        match = next(
-            (c for c in CASES if c == tok or c.startswith(tok + " ") or c[0] == tok), None
-        )
+        match = next((c for c in CASES if c == tok or c.startswith(tok + " ") or c[0] == tok), None)
         if match:
             want.append(match)
     if not want:
