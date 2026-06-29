@@ -63,6 +63,10 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     from openral_msgs.msg import FailureTrigger, PromptStamped
     from openral_reasoner import ToolPalette
     from openral_reasoner_ros import ReasonerNode
+    from opentelemetry import trace as ot_trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
     from rclpy.action import ActionServer
     from rclpy.action.server import GoalResponse
     from rclpy.qos import (
@@ -79,6 +83,14 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
 
     executed: list[float] = []  # execute-callback timestamps — must stay empty
     failures: list[Any] = []  # captured FailureTrigger messages
+
+    # Capture the OTLP span path the live dashboard consumes: the refusal must
+    # also emit an ``openral.event.skill_failure`` span event (ADR-0074/0077) so
+    # the dashboard's "skill failures" counter tallies it and shows the state.
+    span_exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+    ot_trace.set_tracer_provider(provider)
 
     rclpy.init()
     try:
@@ -210,3 +222,19 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         f"the VLA goal reached the action server {len(executed)} time(s) despite the "
         "VRAM refusal — the guard must skip the dispatch entirely."
     )
+    # The refusal is also mirrored onto the OTLP span path for the dashboard.
+    skill_failure_events = [
+        ev
+        for span in span_exporter.get_finished_spans()
+        for ev in span.events
+        if ev.name == "openral.event.skill_failure"
+    ]
+    assert skill_failure_events, (
+        "no openral.event.skill_failure span event emitted; the dashboard's skill-"
+        "failures counter would never see the ADR-0077 refusal."
+    )
+    assert any(
+        ev.attributes is not None
+        and ev.attributes.get("openral.event.skill_failure.state") == "vram_insufficient"
+        for ev in skill_failure_events
+    ), "skill_failure event fired but carried no vram_insufficient state for the dashboard."

@@ -1025,6 +1025,10 @@ _COUNTED_EVENTS = frozenset(
         "openral.event.deadline_missed",
         "openral.event.sensor_stale",
         "openral.event.action_dropped",
+        # ADR-0074/0077 — Reasoner-published skill failures (vram_insufficient,
+        # reward_plateau, unavailable, timeout, aborted). Tallied so the
+        # dashboard's "skill failures" counter makes a failing run obvious.
+        "openral.event.skill_failure",
     }
 )
 
@@ -1033,6 +1037,7 @@ _ERROR_EVENTS = frozenset(
         "openral.event.estop_requested",
         "openral.event.safety_violation",
         "openral.event.error_latched",
+        "openral.event.skill_failure",
     }
 )
 

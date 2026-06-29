@@ -824,17 +824,40 @@
   .mission-task.st-verifying   { border-left-color: var(--warn); background: var(--accent-line); }
   .mission-task.st-active .mk,
   .mission-task.st-verifying .mk { color: var(--warn); }
-  .mission-task.st-abandoned   { border-left-color: var(--err); opacity: .72; }
-  .mission-task.st-abandoned .mk { color: var(--err); }
-  .mission-task.st-abandoned .tx { text-decoration: line-through; }
+  /* abandoned = a FAILED task: the operator must NOT miss it, so it reads loud
+     (red wash + thick edge + bold mark) rather than dimmed into the background. */
+  .mission-task.st-abandoned {
+    border-left: 3px solid var(--err);
+    background: rgba(217,138,142,0.16);
+  }
+  .mission-task.st-abandoned .mk { color: var(--err); opacity: 1; }
+  .mission-task.st-abandoned .tx { text-decoration: line-through; color: var(--err); }
   .mission-task.st-pending     { opacity: .5; }
-  /* reward success bar (success vs threshold gate, ADR-0073 §2) */
+  /* per-task verdict (reward band / reason): the WHY behind done/abandoned */
+  .mission-task .verdict {
+    color: var(--text-dim); font-size: 10.5px; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+  }
+  .mission-task.st-abandoned .verdict { color: var(--err); }
+  /* reward success bar (success vs threshold gate, ADR-0073 §2 / ADR-0074). The
+     fill colour reflects the reasoner's three-tier verdict band over the score:
+     ok (≥ success threshold) green, ambiguous (VLM-adjudicated) amber, fail
+     (below check floor / unverified) red. */
   .mission-task .mbar {
     display: inline-block; width: 46px; height: 6px;
     border-radius: 3px; background: var(--accent-soft); overflow: hidden;
   }
   .mission-task .mbar > i { display: block; height: 100%; background: var(--ok); }
+  .mission-task .mbar.band-ambiguous > i { background: var(--warn); }
+  .mission-task .mbar.band-fail > i { background: var(--err); }
   .mission-task .att { font-variant-numeric: tabular-nums; }
+  /* mission-complete-with-failures banner: a run that finished but abandoned
+     ≥1 task is a FAILED mission — call it out at the top of the card. */
+  .mission-failed {
+    margin: 2px 0 8px; padding: 5px 10px; border-radius: 6px;
+    background: rgba(217,138,142,0.16); border-left: 3px solid var(--err);
+    color: var(--err); font-size: 11.5px; font-weight: 600; letter-spacing: .02em;
+  }
   /* demoted last-tick footer */
   .reasoner-tick-foot {
     margin-top: 10px; padding-top: 8px;

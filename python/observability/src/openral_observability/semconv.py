@@ -185,6 +185,11 @@ REASONER_FORCE: Final[str] = "reasoner.force"
 # (``MissionState.to_summary``) so the live dashboard renders the task
 # checklist (status / attempts / verdict) rather than only the text ledger.
 REASONER_MISSION_JSON: Final[str] = "reasoner.mission_json"
+# ADR-0074/0077 — the concrete state of a skill failure carried on the
+# ``EVENT_SKILL_FAILURE`` span event (e.g. ``"vram_insufficient"``,
+# ``"reward_plateau"``, ``"unavailable"``, ``"timeout"``, ``"aborted"``).
+# Nested under the ``openral.event.`` namespace alongside the event it annotates.
+SKILL_FAILURE_STATE: Final[str] = "openral.event.skill_failure.state"
 # ADR-0018 2026-05-25 amendment — trigger taxonomy. Records which
 # tier drove the LLM call: "A" (safety), "B" (replan), "C" (critic),
 # "D" (operator / perception), or "heartbeat" (deadlock-insurance
@@ -204,6 +209,13 @@ EVENT_ERROR_LATCHED: Final[str] = "openral.event.error_latched"
 EVENT_SAFETY_VIOLATION: Final[str] = "openral.event.safety_violation"
 EVENT_ACTION_DROPPED: Final[str] = "openral.event.action_dropped"
 EVENT_DEADLINE_MISSED: Final[str] = "openral.event.deadline_missed"
+# ADR-0074/0077 — a Reasoner-published skill failure. The single
+# ``reasoner_node._publish_skill_failure`` chokepoint mirrors every
+# ``/openral/failure/rskill`` FailureTrigger onto the OTLP span path so the
+# dashboard can tally + surface them, including the ADR-0077
+# ``vram_insufficient`` refusal and the ADR-0074 reward-plateau abort. The
+# concrete failure state rides on the ``SKILL_FAILURE_STATE`` attribute.
+EVENT_SKILL_FAILURE: Final[str] = "openral.event.skill_failure"
 EVENT_CHUNK_PREFETCH_HIT: Final[str] = "openral.event.chunk_prefetch_hit"
 EVENT_CHUNK_PREFETCH_MISS: Final[str] = "openral.event.chunk_prefetch_miss"
 # ADR-0019: emitted by RolloutRecorder.episode_end() so a Jaeger query
@@ -284,6 +296,7 @@ __all__ = [
     "EVENT_ESTOP_REQUESTED",
     "EVENT_SAFETY_VIOLATION",
     "EVENT_SENSOR_STALE",
+    "EVENT_SKILL_FAILURE",
     "EVENT_STALENESS_LATCHED",
     "HAL_ACTION_APPLIED",
     "HAL_ACTION_DIM",
@@ -395,6 +408,7 @@ __all__ = [
     "SENSORS_SOURCE",
     "SENSORS_THUMBNAIL_JPEG_B64",
     "SENSORS_WIDTH",
+    "SKILL_FAILURE_STATE",
     "SPAN_CLI_COMMAND",
     "SPAN_HAL_READ_STATE",
     "SPAN_HAL_SEND_ACTION",

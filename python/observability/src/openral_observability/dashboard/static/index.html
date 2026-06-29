@@ -70,6 +70,7 @@
         waiting for reasoner.tick (the reasoner_node must be ACTIVE)
       </div>
       <div id="reasoner-detail" style="display:none">
+        <div class="mission-failed" id="reasoner-mission-failed" style="display:none"></div>
         <div class="mission-head" id="reasoner-mission-head"></div>
         <ol class="mission-list" id="reasoner-mission"></ol>
         <div class="reasoner-tick-foot" id="reasoner-tick-foot">
@@ -115,6 +116,13 @@
           <div class="sub">openral.event.sensor_stale</div>
         </div>
         <div class="val" id="cnt-sensor">0</div>
+      </div>
+      <div class="counter danger zero" id="counter-skill-failure">
+        <div>
+          <div class="label">skill failures</div>
+          <div class="sub" id="skill-failure-sub">openral.event.skill_failure</div>
+        </div>
+        <div class="val" id="cnt-skill-failure">0</div>
       </div>
     </div>
     <!-- Safety check ledger (per-check pass/fail) -->

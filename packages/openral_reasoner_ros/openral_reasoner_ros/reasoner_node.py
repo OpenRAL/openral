@@ -286,6 +286,15 @@ _KIND_CONTROLLER: int = 5
 _SEVERITY_WARN: int = 1
 _SEVERITY_FAIL: int = 2
 
+# Fallback failure-state names for the dashboard EVENT_SKILL_FAILURE event when
+# the evidence carries no ``state`` field (e.g. KIND_TIMEOUT's TimeoutEvidence).
+# ControllerEvidence already names its state (``vram_insufficient`` /
+# ``unavailable`` / ``aborted``), so this only covers the kinds without one.
+_SKILL_FAILURE_KIND_NAMES: dict[int, str] = {
+    _KIND_TIMEOUT: "timeout",
+    _KIND_CONTROLLER: "controller",
+}
+
 # Brief, non-blocking probe used before sending an ExecuteSkill goal — if
 # the F1 server isn't on the graph yet we emit a KIND_CONTROLLER
 # FailureTrigger instead of blocking the executor thread.
@@ -3705,6 +3714,39 @@ class ReasonerNode(LifecycleNode):
         msg.rskill_id = rskill_id
         msg.trace_id = trace_id or traceparent or ""
         self._failure_pub.publish(msg)
+        # Mirror the failure onto the OTLP span path so the dashboard tallies it
+        # on the "skill failures" counter + surfaces the state (ADR-0074/0077).
+        # The ROS FailureTrigger bus is invisible to the dashboard (it ingests
+        # OTLP, not ROS topics); this event is the only thing that reaches it.
+        self._emit_skill_failure_event(kind=kind, rskill_id=rskill_id, evidence=evidence)
+
+    def _emit_skill_failure_event(self, *, kind: int, rskill_id: str, evidence: Any) -> None:
+        """Stamp an ``EVENT_SKILL_FAILURE`` span event for the live dashboard.
+
+        Adds the event to the active ``reasoner.tick`` span when one is recording
+        (the synchronous dispatch-gate paths — vram_insufficient, server
+        unavailable); otherwise opens a transient ``reasoner.skill_failure`` span
+        so the async action-callback paths (abort / timeout) are tallied too. The
+        concrete state (``evidence.state`` when present, else a kind-derived name)
+        rides on ``SKILL_FAILURE_STATE`` so the operator sees *why* a skill failed.
+        """
+        from openral_observability import semconv
+        from opentelemetry import trace
+
+        state = getattr(evidence, "state", None) or _SKILL_FAILURE_KIND_NAMES.get(
+            int(kind), "failed"
+        )
+        attrs: dict[str, str] = {
+            semconv.SKILL_FAILURE_STATE: str(state),
+            semconv.REASONER_RSKILL_ID: rskill_id,
+        }
+        span = trace.get_current_span()
+        if span.is_recording():
+            span.add_event(semconv.EVENT_SKILL_FAILURE, attributes=attrs)
+            return
+        tracer = trace.get_tracer("openral.reasoner")
+        with tracer.start_as_current_span("reasoner.skill_failure") as transient:
+            transient.add_event(semconv.EVENT_SKILL_FAILURE, attributes=attrs)
 
     # ── public helpers for tests ────────────────────────────────────────────
 
