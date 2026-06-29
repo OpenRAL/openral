@@ -571,6 +571,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         **otel_env,
         "OPENRAL_REASONER_LLM_PROVIDER": reasoner_provider,
         "OPENRAL_REASONER_LLM_MODEL": reasoner_model,
+        # Reasoning models (the default openai/gpt-5.5) reserve their full output
+        # window, which a metered gateway (OpenRouter) reserves up front and
+        # rejects on a low-balance key (HTTP 402). Default a cap so the GPT-5.5
+        # default works out of the box; an explicit env value still wins. Harmless
+        # for the anthropic provider (which ignores it) and for local models (a
+        # single tool call never approaches 16k).
+        "OPENRAL_REASONER_LLM_MAX_TOKENS": (
+            os.environ.get("OPENRAL_REASONER_LLM_MAX_TOKENS") or "16384"
+        ),
     }
 
     dashboard = ExecuteProcess(
@@ -1549,12 +1558,17 @@ def generate_launch_description() -> LaunchDescription:
             # config gets it honoured. The launch pins provider/model on the node
             # via additional_env, which would otherwise override the inherited
             # env with these defaults and silently ignore it. ``ollama`` if unset.
-            default_value=os.environ.get("OPENRAL_REASONER_LLM_PROVIDER") or "ollama",
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_PROVIDER") or "openrouter",
             description="OPENRAL_REASONER_LLM_PROVIDER for the reasoner node.",
         ),
         DeclareLaunchArgument(
             "reasoner_model",
-            default_value=os.environ.get("OPENRAL_REASONER_LLM_MODEL") or "gemma4:31b-cloud",
+            # Default to openai/gpt-5.5 (via openrouter): in live deploy testing it
+            # was the most reliable at decomposing a collective operator goal into
+            # grounded subtasks (glm-5.2 over-located and never decomposed). Needs
+            # OPENRAL_REASONER_LLM_API_KEY in the environment; an explicit env model
+            # still wins. See packages/openral_reasoner_ros/README.md.
+            default_value=os.environ.get("OPENRAL_REASONER_LLM_MODEL") or "openai/gpt-5.5",
             description="OPENRAL_REASONER_LLM_MODEL for the reasoner node.",
         ),
         DeclareLaunchArgument(

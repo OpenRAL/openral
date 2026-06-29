@@ -3959,9 +3959,15 @@ class ReasonerNode(LifecycleNode):
         from openral_observability import semconv
         from opentelemetry import trace
 
-        state = getattr(evidence, "state", None) or _SKILL_FAILURE_KIND_NAMES.get(
-            int(kind), "failed"
-        )
+        state = getattr(evidence, "state", None)
+        if not state:
+            state = _SKILL_FAILURE_KIND_NAMES.get(int(kind), "failed")
+            # KIND_TIMEOUT carries TimeoutEvidence (no ``state`` field) — fold the
+            # elapsed patience ceiling into the reason so the dashboard shows WHY
+            # the skill was cut, not just the bare "timeout".
+            deadline_s = getattr(evidence, "deadline_s", None)
+            if deadline_s is not None:
+                state = f"{state} after {float(deadline_s):.0f}s patience ceiling"
         attrs: dict[str, str] = {
             semconv.SKILL_FAILURE_STATE: str(state),
             semconv.REASONER_RSKILL_ID: rskill_id,

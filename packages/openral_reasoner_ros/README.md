@@ -177,6 +177,19 @@ picks exactly one of four typed tool calls per tick from a small
 palette. This is a constrained tool-use task — a small instruction-
 tuned model with reliable function-calling is plenty. Three baselines:
 
+> **Deploy-sim default — `openai/gpt-5.5` (via `openrouter`).** The *library*
+> (`build_tool_use_client_from_env`) has no default and refuses to guess (open-core,
+> no cloud lock-in). The `openral deploy sim` **launch** does pick one when the env
+> is unset: `provider=openrouter`, `model=openai/gpt-5.5`, with
+> `OPENRAL_REASONER_LLM_MAX_TOKENS` defaulted to `16384`. In live deploy testing
+> GPT-5.5 was the most reliable at decomposing a *collective* operator goal ("put
+> all the objects on the table into the basket") into grounded per-object subtasks —
+> glm-5.2 over-located and never called `decompose_mission`; Opus 4.8 worked but
+> needed nudges. Simple single-object goals run fine on the cheaper baselines below.
+> The default needs `OPENRAL_REASONER_LLM_API_KEY` in the environment; without it
+> the node fails loudly at activate (no silent fallback). Any explicit
+> `OPENRAL_REASONER_LLM_{PROVIDER,MODEL}` still wins.
+
 ### Paid baseline — Anthropic Haiku 4.5
 
 Cheap (~$1/$5 per Mtok), ~0.74 s TTFT, native tool use, matches Sonnet-4
