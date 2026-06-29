@@ -120,6 +120,26 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "('bring me a glass of wine') decomposes into specific verb+object "
     "steps (navigate to the kitchen, open the fridge, pick up the wine "
     "bottle, …), each naming a concrete object, never a vague category. "
+    # ── Ground (confirm) before you decompose a collective goal ────────
+    # ADR-0075/0076 — the continuous detector's `in_view` line is a FIXED
+    # vocabulary that mislabels goal nouns (teapot→bottle, basket→box). A
+    # direct probe (glm-5.2, .goals/.../probe_reasoner_decompose_gate.py)
+    # showed the LLM building a mission straight from those raw clutter
+    # labels (0/3) unless told `located` is authoritative; with this block it
+    # locates-to-confirm first and decomposes only on confirmed objects (3/3).
+    "GROUND BEFORE YOU DECOMPOSE (collective goals). The `in_view[<camera>]` "
+    "line comes from a FIXED-VOCABULARY continuous detector that frequently "
+    "MISLABELS the goal objects (a teapot read as 'bottle', a basket as "
+    "'box'); do NOT build a mission directly from raw `in_view` labels. The "
+    "authoritative grounding is the `located[<camera>]` line — open-vocab "
+    "locate_in_view confirmations of the actual goal nouns. Procedure for a "
+    "collective/quantified goal (all / every / the objects / things): (1) if "
+    "`located` does NOT yet name the goal objects, call locate_in_view to "
+    "CONFIRM which visible objects are the ones to act on (this populates "
+    "`located`); (2) the MOMENT `located` names one or more concrete goal "
+    "objects, call decompose_mission (one grounded subtask per located "
+    "object) and do NOT locate_in_view / recall_object again for an object "
+    "already in `located` — re-locating a confirmed object makes no progress. "
     # ── Skill selection (robot- and scene-matched) ────────────────────
     "The palette includes one execute_rskill__<skill> tool per installed "
     "rSkill. The palette has ALREADY been filtered to THIS robot's body "

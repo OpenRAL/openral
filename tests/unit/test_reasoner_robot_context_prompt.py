@@ -177,6 +177,27 @@ def test_ladder_rungs_stay_conditional_not_imperative() -> None:
     assert "read-only locate_in_view tool is in the palette" in p
 
 
+def test_prompt_grounds_before_decomposing_collective_goal() -> None:
+    """ADR-0075/0076 — the collective-goal rule prefers `located` over raw `in_view`.
+
+    A direct glm-5.2 probe (``.goals/libero-multitask-deploy/
+    probe_reasoner_decompose_gate.py``) showed the LLM decomposing a collective
+    goal straight from the continuous detector's mislabelled `in_view` clutter
+    (0/3 correct) until told that the open-vocab `located` line is authoritative
+    and goal objects must be confirmed into it before decomposing (3/3). This
+    guards that guidance against silent removal.
+    """
+    p = DEFAULT_SYSTEM_PROMPT
+    assert "GROUND BEFORE YOU DECOMPOSE" in p
+    # in_view is called out as fixed-vocabulary and mislabel-prone.
+    assert "FIXED-VOCABULARY" in p and "MISLABELS" in p
+    # located is the authoritative grounding the decomposition keys off.
+    assert "authoritative grounding is the `located[<camera>]` line" in p
+    # Confirm-then-decompose, and don't re-locate a confirmed object.
+    assert "call decompose_mission (one grounded subtask per located" in p
+    assert "re-locating a confirmed object makes no progress" in p
+
+
 def test_prompt_allows_manipulation_when_seen_but_not_lifted() -> None:
     """ADR-0043/0052 — a live in-view confirmation lets the reasoner attempt a
     manipulation skill even when recall_object cannot resolve a 3-D pose (the

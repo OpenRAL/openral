@@ -123,6 +123,24 @@ and dispatches instead of re-locating. Verified live — glm-5.2 went from loopi
 `decompose_mission` (6 grounded subtasks) → `execute_rskill` (VLA) → mission ladder
 advancing on plateau.
 
+Having the `located` line is necessary but not sufficient: a direct, sim-free
+glm-5.2 probe (`.goals/libero-multitask-deploy/probe_reasoner_decompose_gate.py`,
+mirroring `probe_reasoner_grounding`/`_replan`) drove the single decompose tick over
+five post-locate context states and found glm did **not** loop — it was *eager to
+decompose*, and would build a mission straight from the **raw `in_view` clutter**
+(0/3 correct on the "only the continuous detector's mislabelled `in_view`,
+`located` empty" states) because `DEFAULT_SYSTEM_PROMPT` told it to "enumerate from
+`in_view`" without ranking the two lines. The fix is a prompt rule
+(`DEFAULT_SYSTEM_PROMPT`, "GROUND BEFORE YOU DECOMPOSE"): `in_view` is fixed-vocab
+and mislabels, so the open-vocab `located` line is **authoritative** — for a
+collective goal, `locate_in_view` to confirm the goal objects into `located` first,
+then decompose only on confirmed objects (and stop re-locating a confirmed object).
+With the rule the same probe goes 3/3 on every state — decompose when `located` names
+the objects, locate-to-confirm otherwise — with no regression on the
+already-correct states. Residual: a true perception gap (the open-vocab detector
+never confirms a goal noun) still loops `locate_in_view`; bounding that with a
+per-task locate budget is a separate follow-up, not an LLM-prompt fix.
+
 ### What stays the same
 
 - The 3D lift still requires depth/voxels — this ADR does **not** invent a
