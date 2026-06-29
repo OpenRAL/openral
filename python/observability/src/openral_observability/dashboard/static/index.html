@@ -281,6 +281,8 @@
     <div class="filter-bar" id="metric-filters">
       <span class="flbl">group</span>
       <!-- chips rendered dynamically by namespace (system / world_state / sdk / …) -->
+      <button class="freeze-chip" id="metric-freeze" type="button" title="Freeze the live update so you can inspect a moment">❚❚ freeze</button>
+      <button class="freeze-chip" id="metric-zoom-reset" type="button" title="Reset the time zoom to the full retained window" style="display:none">⊟ reset zoom</button>
     </div>
     <div class="panel" id="metrics">
       <div class="empty-state">No metrics ingested yet. Point a workload at this port with <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>.</div>

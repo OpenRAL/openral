@@ -97,6 +97,32 @@ def _attrs_to_dict(attrs: list[KeyValue]) -> dict[str, Any]:
     return {kv.key: _attr_value(kv.value) for kv in attrs}
 
 
+# Generic contractual threshold carried as metric data-point attributes
+# (``semconv.METRIC_THRESHOLD_MS`` + optional ``METRIC_THRESHOLD_DIR``). Popped
+# off the label set before keying the series so they never fragment the series or
+# show up as a label suffix.
+_METRIC_THRESHOLD_KEY = "openral.metric.threshold_ms"
+_METRIC_THRESHOLD_DIR_KEY = "openral.metric.threshold_dir"
+
+
+def _pop_threshold(labels: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Remove and return ``(threshold_ms, direction)`` from a label dict.
+
+    ``direction`` is ``"lower"`` only when explicitly set; any other value (or
+    absence) yields ``None``, which the dashboard treats as the ``"upper"``
+    default (breach when the value rises above the threshold).
+    """
+    raw = labels.pop(_METRIC_THRESHOLD_KEY, None)
+    direction = labels.pop(_METRIC_THRESHOLD_DIR_KEY, None)
+    if raw is None:
+        return None, None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None, None
+    return value, ("lower" if direction == "lower" else "upper")
+
+
 _MIN_POLYGON_FLOATS = 6  # 3 points x 2 coordinates -- fewer than this is not a polygon
 
 
@@ -249,6 +275,8 @@ class _MetricSeries:
     )
     cumulative: float = 0.0  # last observed cumulative value for sums
     labels: dict[str, Any] = field(default_factory=dict)
+    threshold: float | None = None  # contractual budget/deadline (ms), if known
+    threshold_dir: str | None = None  # "upper" | "lower"; absent ⇒ upper
 
     def to_json(self) -> dict[str, Any]:
         values = [v for _, v in self.samples]
@@ -261,6 +289,10 @@ class _MetricSeries:
             "cumulative": self.cumulative,
             "samples": list(self.samples),
         }
+        if self.threshold is not None:
+            out["threshold"] = self.threshold
+            if self.threshold_dir is not None:
+                out["threshold_dir"] = self.threshold_dir
         if self.kind == "histogram" and values:
             sorted_vals = sorted(values)
             out["p50"] = statistics.median(sorted_vals)
@@ -838,14 +870,22 @@ class TelemetryStore:
         if which == "histogram":
             for hp in metric.histogram.data_points:
                 labels = _attrs_to_dict(list(hp.attributes))
+                threshold, tdir = _pop_threshold(labels)
                 series = self._series(name, "histogram", unit, labels)
+                if threshold is not None:
+                    series.threshold = threshold
+                    series.threshold_dir = tdir
                 avg = (hp.sum / hp.count) if hp.count else 0.0
                 series.samples.append((ts_unix, avg))
                 self._mirror_system_metric(name, labels, avg, ts_unix)
         elif which == "sum":
             for sp in metric.sum.data_points:
                 labels = _attrs_to_dict(list(sp.attributes))
+                threshold, tdir = _pop_threshold(labels)
                 series = self._series(name, "sum", unit, labels)
+                if threshold is not None:
+                    series.threshold = threshold
+                    series.threshold_dir = tdir
                 value = sp.as_double if sp.HasField("as_double") else float(sp.as_int)
                 series.cumulative = value
                 series.samples.append((ts_unix, value))
@@ -853,7 +893,11 @@ class TelemetryStore:
         elif which == "gauge":
             for gp in metric.gauge.data_points:
                 labels = _attrs_to_dict(list(gp.attributes))
+                threshold, tdir = _pop_threshold(labels)
                 series = self._series(name, "gauge", unit, labels)
+                if threshold is not None:
+                    series.threshold = threshold
+                    series.threshold_dir = tdir
                 value = gp.as_double if gp.HasField("as_double") else float(gp.as_int)
                 series.samples.append((ts_unix, value))
                 self._mirror_system_metric(name, labels, value, ts_unix)
