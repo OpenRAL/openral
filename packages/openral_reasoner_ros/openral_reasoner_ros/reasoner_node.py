@@ -114,6 +114,7 @@ from openral_reasoner.context import (
     FailureEventRecord,
     PerceptionEventRecord,
     PromptRecord,
+    RewardStateRecord,
     reflect_on_failure,
     reflect_on_invalid_plan,
     reflect_on_retry_cap,
@@ -126,6 +127,7 @@ from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
     MissionState,
+    TaskLocateBudget,
     TaskState,
     evaluate_task_verdict,
 )
@@ -261,10 +263,15 @@ _CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
     {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
 )
 
-# ADR-0073 §2 — reward window (s) for the automatic post-skill task verification.
-# Matches the reward_monitor's default rolling window so the windowed score
-# reflects the end-of-attempt state, not a single frame.
-_MISSION_VERIFY_WINDOW_S: float = 8.0
+# ADR-0073 §2 / ADR-0074 amendment — reward window (s) for the automatic
+# post-skill task verification. Robometer scores a trajectory from its START, so
+# the verify must request the WHOLE attempt (start→now), not a trailing slice: an
+# 8 s tail missed the completion arc and under-scored progress to ~0.70
+# (vlm_check/ladder) on real successes whose full-attempt progress was ~0.85. The
+# request uses the active reward model's ``frame_window_s`` (the buffer retention
+# = the attempt horizon) when a contract is wired; this constant is the fallback
+# when none is. Sized to span the default 30 s patience ceiling + margin.
+_MISSION_VERIFY_WINDOW_S: float = 40.0
 
 # ADR-0074 Decision 5 — three-tier verdict band edges + the patience ceiling.
 # These are the SYSTEM FALLBACK in the authority stack (system < reward-model
@@ -593,6 +600,15 @@ class ReasonerNode(LifecycleNode):
         # One offer per task so a task that declines to decompose still terminates
         # in human-handoff; cleared when a new operator goal rebuilds the mission.
         self._subdivide_offered: set[str] = set()
+        # ADR-0074 amendment — PER-TASK locate budget. The ``_spatial_search``
+        # bound only counts locate MISSES and resets on a HIT, so a live
+        # locate-loop where ``locate_in_view`` keeps HITTING (found=True) but the
+        # reasoner never dispatches an ``execute_rskill`` never terminates. This
+        # counts locate cycles spent on the *active mission task* (regardless of
+        # hit/miss); once exhausted the active subtask is abandoned via the
+        # mission ladder with a displayed reason so the next pick proceeds. Reset
+        # on task advance and on a successful execute dispatch.
+        self._task_locate_budget = TaskLocateBudget()
 
         # ROS parameters: when both are set, on_configure walks
         # `rskill_search_paths` for `*/rskill.yaml`, loads the
@@ -1356,6 +1372,7 @@ class ReasonerNode(LifecycleNode):
             if not mission.is_empty():
                 self._renderer.set_mission(mission)
                 self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
+                self._reset_task_locate_budget()  # ADR-0074 — fresh goal, fresh budget
                 self.get_logger().info(
                     f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
                 )
@@ -2308,6 +2325,71 @@ class ReasonerNode(LifecycleNode):
                 f"dispatch: {call.tool} → re-prompt ({len(result_text)} chars)",
             )
 
+    def _reset_task_locate_budget(self) -> None:
+        """Reset the per-task locate budget (ADR-0074 amendment).
+
+        Called when the active task makes real progress (an ``execute_rskill``
+        dispatch) so locate cycles only count toward abandonment while the task
+        has produced no skill dispatch.
+        """
+        self._task_locate_budget.reset()
+
+    def _charge_task_locate_budget(
+        self, call: LocateInViewTool, *, traceparent: str | None
+    ) -> bool:
+        """Charge a locate cycle against the active task; abandon it if exhausted.
+
+        Returns ``True`` when the active subtask was abandoned on the budget — the
+        caller must then NOT dispatch the locate. Without an active mission task
+        there is no per-task budget (a standalone ``locate_in_view`` is unbounded
+        here; the :class:`SearchProgress` miss budget still applies in the
+        response handler), so this is a no-op returning ``False``.
+
+        On exhaustion: append the displayed reason to ``## EXECUTION`` (so the
+        *why* is explicit), abandon the active task via the mission ladder (the
+        reason becomes its ``✗`` ledger verdict), reset the budget + per-kind
+        streak, and force a tick so the next pick proceeds on the new active task.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return False
+        active = mission.active()
+        if active is None:
+            return False
+        if not self._task_locate_budget.charge(active.task_id):
+            return False
+        reason = self._task_locate_budget.reason(call.query)
+        self.get_logger().warning(
+            f"mission: task {active.task_id} abandoned on locate budget — {reason}",
+        )
+        # Surface the reason in ## EXECUTION (the ledger carries it as the task's
+        # ✗ verdict; this makes the *why* explicit for the next reasoner pick).
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id="",
+                outcome="failed",
+                summary=reason,
+                reflection=(
+                    "repeated locate attempts confirmed nothing actionable — do NOT keep "
+                    "locating this object; move on to the next mission object."
+                ),
+                stamp_ns=self.get_clock().now().nanoseconds,
+            )
+        )
+        nxt = self._renderer.advance_mission(done=False, verdict=reason)
+        self._reset_task_locate_budget()
+        if self._core is not None:
+            self._core.reset_kind_streak()
+        if nxt is not None:
+            self.get_logger().info(
+                f"mission: locate-budget abandon ✗ → advancing to "
+                f"{nxt.task_id}={nxt.text[:60]!r}",
+            )
+        else:
+            self._emit_mission_complete(mission, traceparent=traceparent)
+        self._on_tick(force=True, tier="C")
+        return True
+
     def _dispatch_locate_in_view(
         self,
         call: LocateInViewTool,
@@ -2323,7 +2405,16 @@ class ReasonerNode(LifecycleNode):
         executor; the rendered answer is republished as a ``PromptStamped`` with
         frame_id ``"detector"`` (consumed by ``_on_prompt``, feeding the next tick —
         the prompt cascade). Read-only: no actuation, no ``FailureTrigger``.
+
+        ADR-0074 amendment — before dispatching, charge this cycle against the
+        per-task locate budget (:class:`TaskLocateBudget`). If the active mission
+        task has now spent its locate budget without an ``execute_rskill``
+        dispatch, the subtask is abandoned (with a displayed reason) instead of
+        locating again — the live locate-loop persists otherwise because
+        ``locate_in_view`` keeps HITTING and never consumes the miss budget.
         """
+        if self._charge_task_locate_budget(call, traceparent=traceparent):
+            return  # active subtask abandoned on the locate budget; do not locate
         try:
             from openral_msgs.srv import LocateInView
         except ImportError:
@@ -2588,6 +2679,19 @@ class ReasonerNode(LifecycleNode):
                 f"success={resp.success_now:.2f} (trend {resp.success_trend:+.3f}/frame) — "
                 f"{verdict}."
             )
+            # ADR-0074 amendment — surface BOTH heads in the persistent `## REWARD`
+            # context section (the re-prompt above is a one-shot; this keeps the
+            # latest assessment visible to every subsequent tick, labelled).
+            self._renderer.set_reward_state(
+                RewardStateRecord(
+                    progress=float(resp.progress_now),
+                    success=float(resp.success_now),
+                    progress_trend=float(resp.progress_trend),
+                    success_trend=float(resp.success_trend),
+                    task=call.task,
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                )
+            )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "reward_monitor"  # consumed by _on_prompt → next tick
@@ -2644,7 +2748,14 @@ class ReasonerNode(LifecycleNode):
             )
             return
         req = QueryTaskProgress.Request()
-        req.window_s = _MISSION_VERIFY_WINDOW_S
+        # ADR-0074 amendment — score the whole attempt (start→now), not a trailing
+        # slice. Request the reward model's full buffer span (``frame_window_s``)
+        # when a contract is wired; the monitor clamps to its retained horizon.
+        req.window_s = (
+            self._reward_contract.frame_window_s
+            if self._reward_contract is not None
+            else _MISSION_VERIFY_WINDOW_S
+        )
         req.task = active.text
         future = client.call_async(req)
         future.add_done_callback(
@@ -2680,9 +2791,31 @@ class ReasonerNode(LifecycleNode):
         # ADR-0074 §1/§5 — band edges from the active reward model's calibration
         # (or the system fallback when none is wired).
         success_threshold, check_floor = self._band_edges()
+        # ADR-0074 amendment — gate the band on the PROGRESS head (task closeness,
+        # reaches ~0.80–0.86 on a real success and separates well); the bars
+        # (0.8/0.5) were calibrated against progress, not the compressed success
+        # head (~0.56–0.79 even on a genuine success). ``success_now`` is threaded
+        # as a secondary corroborating signal surfaced in the verdict + the
+        # vlm_check tier (it never overrides the progress band).
+        progress_now = float(resp.progress_now)
+        success_now = float(resp.success_now)
+        if resp.ok:
+            # ADR-0074 amendment — keep both heads visible in `## REWARD` for the
+            # next tick's persist-vs-replan decision (the verify gate is internal).
+            self._renderer.set_reward_state(
+                RewardStateRecord(
+                    progress=progress_now,
+                    success=success_now,
+                    progress_trend=float(resp.progress_trend),
+                    success_trend=float(resp.success_trend),
+                    task=active.text,
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                )
+            )
         action, verdict = evaluate_task_verdict(
             ok=bool(resp.ok),
-            success_now=float(resp.success_now),
+            progress_now=progress_now,
+            success_now=success_now,
             success_threshold=success_threshold,
             check_floor=check_floor,
             attempts=active.attempts,
@@ -2691,11 +2824,14 @@ class ReasonerNode(LifecycleNode):
             # ADR-0074 §5 — ambiguous reward band: ask the VLM whether the task is
             # visually complete. True → advance as if "complete"; False/None → degrade
             # to the ladder (same code path as action == "retry"). Never false-complete:
-            # None (no frame / no client) is treated as "not done".
+            # None (no frame / no client) is treated as "not done". The VLM is the
+            # primary adjudicator here; the success head (``success_now``) is the
+            # secondary corroborating cue already folded into ``verdict``.
             verdict_vlm = self._adjudicate_completion(active.text)
             if verdict_vlm is True:
                 self.get_logger().info(
-                    f"mission verify: VLM confirmed complete (success={resp.success_now:.2f})"
+                    "mission verify: VLM confirmed complete "
+                    f"(progress={progress_now:.2f}, success={success_now:.2f})"
                 )
                 self._complete_active_and_advance(active, verdict, traceparent=traceparent)
                 return
@@ -2717,7 +2853,8 @@ class ReasonerNode(LifecycleNode):
             # guard, so this terminates.
             action, verdict = evaluate_task_verdict(
                 ok=False,
-                success_now=float(resp.success_now),
+                progress_now=progress_now,
+                success_now=success_now,
                 success_threshold=success_threshold,
                 check_floor=check_floor,
                 attempts=active.attempts,
@@ -2738,11 +2875,11 @@ class ReasonerNode(LifecycleNode):
                     rskill_id=active.last_rskill_id or "",
                     outcome="failed",
                     summary=(
-                        f"reward says NOT done: success={float(resp.success_now):.2f} below the "
-                        f"success bar (attempt {active.attempts}); the policy executed without a "
-                        "fault but did not accomplish the task"
+                        f"reward says NOT done: progress={progress_now:.2f} below the "
+                        f"progress bar (success={success_now:.2f}, attempt {active.attempts}); "
+                        "the policy executed without a fault but did not accomplish the task"
                     ),
-                    reflection=reflect_on_reward_plateau(float(resp.success_now)),
+                    reflection=reflect_on_reward_plateau(progress_now),
                     stamp_ns=self.get_clock().now().nanoseconds,
                 )
             )
@@ -3230,6 +3367,10 @@ class ReasonerNode(LifecycleNode):
         mission = self._renderer.mission
         if mission is not None and mission.active() is not None:
             mission.record_attempt(rskill_id=call.rskill_id, trace_id=traceparent)
+            # ADR-0074 amendment — an execute dispatch is real progress on the
+            # active task, so the per-task locate budget resets (locate cycles only
+            # count toward abandonment while no skill has been dispatched).
+            self._reset_task_locate_budget()
 
         # ADR-0050 — free GPU lifecycle peers (the object detector) before the
         # policy loads, then reactivate when the skill finishes. Sequenced so

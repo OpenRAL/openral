@@ -150,18 +150,19 @@ def test_taskstate_defaults() -> None:
 
 
 def test_verdict_complete_on_success() -> None:
+    # ADR-0074 amendment — the band gates on the PROGRESS head.
     action, verdict = evaluate_task_verdict(
-        ok=True, success_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
     )
     assert action == "complete"
-    assert verdict == "success=0.91"
+    assert verdict == "progress=0.91"
 
 
 def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
-    # success_now=0.40 < check_floor=0.5 → straight to the attempts ladder → retry
+    # progress_now=0.40 < check_floor=0.5 → straight to the attempts ladder → retry
     action, verdict = evaluate_task_verdict(
         ok=True,
-        success_now=0.40,
+        progress_now=0.40,
         success_threshold=0.8,
         check_floor=0.5,
         attempts=1,
@@ -172,10 +173,10 @@ def test_verdict_retry_when_below_threshold_and_attempts_remain() -> None:
 
 
 def test_verdict_abandon_when_attempts_exhausted() -> None:
-    # success_now=0.40 < check_floor → ladder; attempts exhausted → abandon
+    # progress_now=0.40 < check_floor → ladder; attempts exhausted → abandon
     action, verdict = evaluate_task_verdict(
         ok=True,
-        success_now=0.40,
+        progress_now=0.40,
         success_threshold=0.8,
         check_floor=0.5,
         attempts=3,
@@ -186,9 +187,9 @@ def test_verdict_abandon_when_attempts_exhausted() -> None:
 
 
 def test_verdict_ambiguous_band_returns_vlm_check() -> None:
-    # success_now=0.79 sits in the [check_floor, success_threshold) band — vlm_check, not complete.
+    # progress_now=0.79 sits in the [check_floor, success_threshold) band — vlm_check.
     action, _ = evaluate_task_verdict(
-        ok=True, success_now=0.79, success_threshold=0.8, check_floor=0.5, attempts=1
+        ok=True, progress_now=0.79, success_threshold=0.8, check_floor=0.5, attempts=1
     )
     assert action == "vlm_check"
 
@@ -198,13 +199,13 @@ def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
     # the attempt cap, then abandon — never an accidental complete or vlm_check.
     assert (
         evaluate_task_verdict(
-            ok=False, success_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=1
+            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=1
         )[0]
         == "retry"
     )
     assert (
         evaluate_task_verdict(
-            ok=False, success_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=3
+            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=3
         )[0]
         == "abandon"
     )

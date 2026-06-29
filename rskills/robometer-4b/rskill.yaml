@@ -62,12 +62,21 @@ source_repo: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa
 # per-frame normalized progress in [0,1] + per-frame success probability.
 reward:
   progress_range: [0.0, 1.0]
-  # Calibrated to ADR-0074 Decision 5: robometer wanders 0.55–0.78 when NOT done
-  # (measured in ADR-0057 eval). 0.8 is the genuine-success bar (auto-pass tier);
-  # 0.5 is the floor below which the attempt is clearly incomplete (no VLM call).
+  # Calibrated to ADR-0074 Decision 5 (amendment): the bars gate the PROGRESS head
+  # (task closeness). Measured on cached LIBERO rollouts, full-attempt progress
+  # reaches ~0.80–0.86 on a genuine physical success and ~0.74 on a failure, so
+  # 0.8 is the auto-pass bar and 0.5 the clearly-incomplete floor. The success
+  # head is compressed (~0.56–0.79 even on a real success) and is used only as a
+  # secondary corroborating cue, never as the completion bar.
   success_threshold: 0.8
   preference: false
-  frame_window_s: 8.0
+  # Robometer (ADR-0057) scores a trajectory from its START; the attempt horizon
+  # is the patience ceiling (default_patience_s=30 s). An 8 s trailing slice
+  # systematically MISSED the completion arc and under-scored progress to ~0.70
+  # (vlm_check/ladder) on real successes whose full-attempt progress was ~0.85.
+  # Sized to retain the whole attempt + margin so the mission-verify query (which
+  # requests the full buffer span) scores start→now, not a trailing tail.
+  frame_window_s: 40.0
   target_fps: 3.0
   num_bins: 100
   instruction_required: true

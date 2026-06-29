@@ -110,7 +110,10 @@ def test_robometer_manifest_carries_calibrated_reward_contract() -> None:
     assert rc.default_patience_s == 30.0
     # Existing fields unchanged
     assert rc.success_threshold == 0.8
-    assert rc.frame_window_s == 8.0
+    # ADR-0074 amendment — frame_window_s raised 8.0 → 40.0 so robometer scores
+    # the whole attempt (start→now), not an 8 s trailing slice that missed the
+    # completion arc and under-scored progress into the ladder band.
+    assert rc.frame_window_s == 40.0
     assert rc.target_fps == 3.0
 
 

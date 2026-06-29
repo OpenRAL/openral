@@ -38,7 +38,9 @@ from typing import Literal
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_MAX_SUBDIVIDE_DEPTH",
+    "DEFAULT_MAX_TASK_LOCATE_ATTEMPTS",
     "MissionState",
+    "TaskLocateBudget",
     "TaskState",
     "TaskStatus",
     "VerdictAction",
@@ -66,26 +68,117 @@ refused (``subdivide_active`` returns ``None``) and the caller falls back to
 subdivide forever."""
 
 
+DEFAULT_MAX_TASK_LOCATE_ATTEMPTS: int = 3
+"""Default per-task ``locate_in_view`` cycle budget (ADR-0074 amendment).
+
+Max locate cycles the reasoner may spend on a single active mission (sub)task
+*without* reaching an ``execute_rskill`` dispatch before the subtask is
+abandoned. Distinct from the :class:`~openral_reasoner.active_search.SearchProgress`
+miss budget: that resets on a locate HIT, so a live locate-loop where
+``locate_in_view`` keeps hitting (``found=True``) but never dispatches a skill
+never terminates. This budget counts every locate cycle regardless of hit/miss."""
+
+
+@dataclasses.dataclass(slots=True)
+class TaskLocateBudget:
+    """Per-task ``locate_in_view`` cycle budget (ADR-0074 amendment).
+
+    The S2 locate-loop persists in deploy because ``locate_in_view`` repeatedly
+    HITS (``found=True``) — the existing :class:`SearchProgress` bound only counts
+    *misses* and resets on a hit, so a task whose object is visible but never
+    actioned re-locates forever. This budget counts locate cycles spent on the
+    *active mission task* (hit or miss); once exhausted the caller abandons the
+    subtask via the mission ladder so the next pick proceeds.
+
+    :meth:`charge` is called once per locate dispatch with the active task id; it
+    auto-resets the counter when the task changes (advancing the queue starts a
+    fresh budget) and returns ``True`` once the cycle count exceeds
+    ``max_attempts``. :meth:`reset` is called on real progress (an
+    ``execute_rskill`` dispatch) so locate cycles only count while the task has
+    produced no skill dispatch.
+
+    Example:
+        >>> b = TaskLocateBudget(max_attempts=3)
+        >>> [b.charge("t1") for _ in range(4)]
+        [False, False, False, True]
+        >>> b.reason("teapot")
+        "could not confirm 'teapot' in view after 3 locate attempts without a skill dispatch"
+        >>> b.charge("t2")  # a new task starts a fresh budget
+        False
+    """
+
+    max_attempts: int = DEFAULT_MAX_TASK_LOCATE_ATTEMPTS
+    _task_id: str | None = None
+    _count: int = 0
+
+    @property
+    def count(self) -> int:
+        """Locate cycles charged against the current task so far."""
+        return self._count
+
+    def reset(self) -> None:
+        """Clear the budget (new task / real progress)."""
+        self._task_id = None
+        self._count = 0
+
+    def charge(self, task_id: str) -> bool:
+        """Charge one locate cycle for ``task_id``; return ``True`` once exhausted.
+
+        Resets the counter when ``task_id`` differs from the task the budget is
+        currently tracking, so each active task gets its own fresh budget.
+        """
+        if self._task_id != task_id:
+            self._task_id = task_id
+            self._count = 0
+        self._count += 1
+        return self._count > self.max_attempts
+
+    def reason(self, query: str) -> str:
+        """Human/LLM-readable abandonment reason for the exhausted budget.
+
+        Surfaced as the abandoned task's ledger verdict so the next reasoner pick
+        knows *why* the object was dropped.
+        """
+        return (
+            f"could not confirm {query!r} in view after {self._count - 1} "
+            "locate attempts without a skill dispatch"
+        )
+
+
 def evaluate_task_verdict(
     *,
     ok: bool,
-    success_now: float,
+    progress_now: float,
     success_threshold: float,
     check_floor: float,
     attempts: int,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    success_now: float | None = None,
 ) -> tuple[VerdictAction, str]:
     """Pure reward-gate decision for the active task (ADR-0073 §2 / ADR-0074 Decision 5).
 
-    Three-tier verdict over the raw critic score when the reward is available
+    **Gate on the PROGRESS head, not the success head (ADR-0074 amendment).**
+    Robometer-4B emits two heads: ``progress`` (task *closeness*, which reaches
+    ~0.80-0.86 on a genuine physical success and separates success from failure
+    cleanly) and ``success`` (a done-probability that is empirically *compressed*
+    — only ~0.56-0.79 even on a real success, so a 0.8 auto-pass bar over it is
+    effectively dead). The ``success_threshold`` / ``check_floor`` bars (0.8 /
+    0.5) were calibrated against the *progress* head (ADR-0074's own narrative
+    cites progress≈0.78 on a physical success), so the band logic gates on
+    ``progress_now``. ``success_now`` is kept as a **secondary corroborating
+    signal** surfaced in the verdict text (and available to the caller's
+    ``vlm_check`` adjudication) — it never overrides the progress band.
+
+    Three-tier verdict over the progress head when the reward is available
     (``ok=True``):
 
-    1. ``success_now >= success_threshold`` → ``"complete"`` — high-confidence
+    1. ``progress_now >= success_threshold`` → ``"complete"`` — high-confidence
        auto-pass; no VLM call needed.
-    2. ``check_floor <= success_now < success_threshold`` → ``"vlm_check"`` — the
+    2. ``check_floor <= progress_now < success_threshold`` → ``"vlm_check"`` — the
        ambiguous band; the **caller** must adjudicate by calling ``describe_image``
-       (ADR-0074). This function only signals the need — it never performs the call.
-    3. ``success_now < check_floor`` → falls to the existing attempts ladder:
+       (ADR-0074), optionally weighing ``success_now`` as corroboration. This
+       function only signals the need — it never performs the call.
+    3. ``progress_now < check_floor`` → falls to the existing attempts ladder:
        ``"abandon"`` once ``attempts >= max_attempts``, else ``"retry"``.
 
     ``ok=False`` (reward unavailable / stale): no tier evaluation; goes directly to
@@ -95,35 +188,44 @@ def evaluate_task_verdict(
     ``RewardContract`` validator guarantees this upstream — no re-validation here.
 
     Returns ``(action, verdict_text)`` where ``verdict_text`` is the short
-    human-readable note recorded on the task.
+    human-readable note recorded on the task (progress is primary; success is
+    appended as corroboration when supplied).
 
     Example:
         >>> evaluate_task_verdict(
-        ...     ok=True, success_now=0.91, success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True, progress_now=0.91, success_now=0.62,
+        ...     success_threshold=0.8, check_floor=0.5, attempts=1
         ... )
-        ('complete', 'success=0.91')
+        ('complete', 'progress=0.91 (success=0.62)')
         >>> evaluate_task_verdict(
-        ...     ok=True, success_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True, progress_now=0.65, success_threshold=0.8, check_floor=0.5, attempts=1
         ... )[0]
         'vlm_check'
         >>> evaluate_task_verdict(
-        ...     ok=True, success_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=1
+        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=1
         ... )[0]
         'retry'
         >>> evaluate_task_verdict(
-        ...     ok=True, success_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=3
+        ...     ok=True, progress_now=0.40, success_threshold=0.8, check_floor=0.5, attempts=3
         ... )[0]
         'abandon'
     """
+    corro = f" (success={success_now:.2f})" if success_now is not None else ""
     if ok:
-        if success_now >= success_threshold:
-            return "complete", f"success={success_now:.2f}"
-        if success_now >= check_floor:
-            return "vlm_check", f"ambiguous={success_now:.2f}; VLM adjudicates"
-    # ok=False or success_now < check_floor: attempts ladder
+        if progress_now >= success_threshold:
+            return "complete", f"progress={progress_now:.2f}{corro}"
+        if progress_now >= check_floor:
+            return "vlm_check", f"ambiguous progress={progress_now:.2f}{corro}; VLM adjudicates"
+    # ok=False or progress_now < check_floor: attempts ladder
     if attempts >= max_attempts:
-        return "abandon", f"unverified after {attempts} attempt(s) (success={success_now:.2f})"
-    return "retry", f"not verified (success={success_now:.2f}), attempt {attempts}/{max_attempts}"
+        return (
+            "abandon",
+            f"unverified after {attempts} attempt(s) (progress={progress_now:.2f}{corro})",
+        )
+    return (
+        "retry",
+        f"not verified (progress={progress_now:.2f}{corro}), attempt {attempts}/{max_attempts}",
+    )
 
 
 TaskStatus = Literal["pending", "active", "verifying", "done", "abandoned"]

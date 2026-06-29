@@ -164,7 +164,7 @@ The model emits no action chunks and has no proprioception contract.
 | `weights_uri` | `hf://OpenRAL/rskill-robometer-4b-nf4` (pre-quantized NF4, meta-loadable; built from the SHA-pinned upstream `source_repo`) |
 | `min_vram_gb.bf16` | 9.0 GB |
 | `min_vram_gb.int4` | 3.6 GB |
-| `reward.frame_window_s` / `target_fps` | 8.0 s / 3.0 fps |
+| `reward.frame_window_s` / `target_fps` | 40.0 s / 3.0 fps (ADR-0074 amendment — scores the whole attempt start→now, not an 8 s trailing slice) |
 | `reward.progress_range` / `success_threshold` | `[0,1]` / 0.5 |
 | `latency_budget.per_chunk_ms` | 3000 ms |
 | `actions` | `monitor` |

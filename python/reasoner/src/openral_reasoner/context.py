@@ -42,6 +42,7 @@ __all__ = [
     "FailureEventRecord",
     "PerceptionEventRecord",
     "PromptRecord",
+    "RewardStateRecord",
     "reflect_on_failure",
     "reflect_on_invalid_plan",
     "reflect_on_retry_cap",
@@ -136,6 +137,41 @@ class ExecutionEventRecord:
     stamp_ns: int
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class RewardStateRecord:
+    """Latest reward-model assessment surfaced to the LLM (ADR-0074 amendment).
+
+    Robometer-4B emits **two distinct heads** with different meanings, and the
+    LLM must use each for the right decision:
+
+    * :attr:`progress` — task *closeness* (0=untouched, 1=done). This is the
+        head the verdict gates on (it reaches ~0.80-0.86 on a genuine success);
+        the LLM should weigh it for *persist-vs-replan*.
+    * :attr:`success` — done-*confidence* (a separate probability that is
+        empirically compressed, ~0.56-0.79 even on a real success); the LLM
+        should weigh it for *done-ness*, not as the primary completion bar.
+
+    Rendered as the ``## REWARD`` section so both heads are labelled and never
+    blurred. Set by the node from each ``query_task_progress`` / mission-verify
+    response; ``None`` omits the section.
+
+    Attributes:
+        progress: Latest progress (closeness) score in [0, 1].
+        success: Latest success (done-confidence) score in [0, 1].
+        progress_trend: Per-frame progress slope (+rising / -falling).
+        success_trend: Per-frame success slope.
+        task: The task text the assessment was scored against.
+        stamp_ns: Arrival timestamp in nanoseconds.
+    """
+
+    progress: float
+    success: float
+    progress_trend: float
+    success_trend: float
+    task: str
+    stamp_ns: int
+
+
 def reflect_on_failure(outcome_state: str, detail: str) -> str:
     """One-line strategy hint from a terminal skill outcome (ADR-0072 §2.3).
 
@@ -173,7 +209,7 @@ def reflect_on_failure(outcome_state: str, detail: str) -> str:
     )
 
 
-def reflect_on_reward_plateau(success_now: float) -> str:
+def reflect_on_reward_plateau(progress_now: float) -> str:
     """One-line strategy hint for a reward-plateau failure (ADR-0074).
 
     Distinct from :func:`reflect_on_failure`: there the *controller* faulted
@@ -185,8 +221,9 @@ def reflect_on_reward_plateau(success_now: float) -> str:
     blind repeat). The right move is to change *tactic*.
 
     Args:
-        success_now: The reward model's success probability for the attempt
-            (below the contract's ``check_floor`` — a genuine failure).
+        progress_now: The reward model's **progress** (closeness) score for the
+            attempt — the gated head (ADR-0074 amendment), below the contract's
+            ``check_floor`` (a genuine failure).
 
     Example:
         >>> "different approach" in reflect_on_reward_plateau(0.48)
@@ -194,7 +231,7 @@ def reflect_on_reward_plateau(success_now: float) -> str:
     """
     return (
         f"the policy executed but the reward says the task was NOT completed "
-        f"(success={success_now:.2f}) — this exact approach is not working. Do NOT "
+        f"(progress={progress_now:.2f}) — this exact approach is not working. Do NOT "
         "re-issue the same instruction or subdivide it into the same action: "
         "re-dispatch with a DIFFERENT approach (a different grasp / angle / "
         "strategy). If several different approaches keep failing, this object is "
@@ -404,6 +441,11 @@ class ContextRenderer:
         # of re-locating it every tick. Fed via `note_located`.
         self._located: dict[str, ObjectDetection2D] = {}
         self._located_sensor: str | None = None
+        # ADR-0074 amendment — latest reward-model assessment (both heads). Set
+        # via `set_reward_state`; rendered as the `## REWARD` section. None omits
+        # it. Kept as a single latest snapshot (not a buffer): the reward is a
+        # current-state readout, not an event stream.
+        self._reward_state: RewardStateRecord | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -503,6 +545,27 @@ class ContextRenderer:
             self._located[key] = det
         while len(self._located) > self._LOCATED_CAP:
             self._located.pop(next(iter(self._located)))  # evict oldest
+        self._seq += 1
+
+    def set_reward_state(self, reward: RewardStateRecord | None) -> None:
+        """Set (or clear) the latest reward assessment rendered as ``## REWARD``.
+
+        ADR-0074 amendment — surfaces **both** reward heads (progress closeness +
+        success done-confidence), distinctly labelled, so the LLM uses progress
+        for persist-vs-replan and success for done-ness. A fresh assessment is an
+        **event**, so this bumps :attr:`seq` to wake an otherwise-idle heartbeat.
+
+        Example:
+            >>> r = ContextRenderer()
+            >>> r.set_reward_state(RewardStateRecord(progress=0.81, success=0.45,
+            ...     progress_trend=0.04, success_trend=0.01, task="pick the bowl",
+            ...     stamp_ns=0))
+            >>> "progress=0.81 (closeness" in r.render(world_state=None)
+            True
+            >>> "success=0.45 (done-confidence" in r.render(world_state=None)
+            True
+        """
+        self._reward_state = reward
         self._seq += 1
 
     @property
@@ -609,8 +672,9 @@ class ContextRenderer:
 
         Returns:
             A multi-section text block: optional ``## ROBOT`` self-model,
-            ``## MEMORY``, and ``## MISSION`` (the active task queue, when a
-            non-empty mission is set) followed by ``## WORLD_STATE``,
+            ``## MEMORY``, ``## MISSION`` (the active task queue, when a
+            non-empty mission is set), and ``## REWARD`` (the latest two-head
+            reward assessment, when set) followed by ``## WORLD_STATE``,
             ``## EXECUTION``, ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``.
         """
         sections: list[str] = []
@@ -620,6 +684,8 @@ class ContextRenderer:
             sections += [self._memory_block, ""]
         if self._mission is not None and not self._mission.is_empty():
             sections += ["## MISSION", self._mission.render(), ""]
+        if self._reward_state is not None:
+            sections += ["## REWARD", self._render_reward(), ""]
         sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
@@ -637,6 +703,23 @@ class ContextRenderer:
             self._render_prompts(),
         ]
         return "\n".join(sections).rstrip() + "\n"
+
+    def _render_reward(self) -> str:
+        """Render the two-head reward assessment (ADR-0074 amendment).
+
+        Both heads carry distinct meanings, so they are labelled in line: progress
+        is *closeness* (the gated head, drives persist-vs-replan), success is
+        *done-confidence* (compressed; secondary). Trends are per-frame slopes so a
+        rising progress (``+``) says "persist", a flat/falling one says "replan".
+        """
+        r = self._reward_state
+        assert r is not None  # render() guards `is not None` before calling
+        return (
+            f"reward[{r.task}]: progress={r.progress:.2f} (closeness, "
+            f"trend {r.progress_trend:+.3f}/frame), "
+            f"success={r.success:.2f} (done-confidence, trend {r.success_trend:+.3f}/frame). "
+            "Gate on progress for persist-vs-replan; success is a secondary done-ness cue."
+        )
 
     def _render_world_state(self, world_state: WorldState | None) -> str:
         """Render the WorldState block — deterministic key order, no pixels."""
