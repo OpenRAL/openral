@@ -738,11 +738,16 @@ class ReasonerNode(LifecycleNode):
         if self._reward_manifest is not None and self._gpu_total_vram_gb > 0.0:
             self.get_logger().info(
                 f"ADR-0077: VLA+reward VRAM fit check ARMED — reward="
-                f"{self._reward_manifest.name!r} ({self._reward_manifest.active_min_vram_gb()} GB), "
+                f"{self._reward_manifest.name!r} "
+                f"({self._reward_manifest.active_min_vram_gb()} GB), "
                 f"gpu_total={self._gpu_total_vram_gb:.2f} GB",
             )
         else:
-            why = "no reward model active" if self._reward_manifest is None else "GPU total unreadable"
+            why = (
+                "no reward model active"
+                if self._reward_manifest is None
+                else "GPU total unreadable"
+            )
             self.get_logger().info(f"ADR-0077: VLA+reward VRAM fit check SKIPPED ({why})")
 
         # ADR-0074 §5 — completion-camera topic for VLM adjudication.
