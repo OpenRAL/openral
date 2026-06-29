@@ -68,7 +68,7 @@ def main(args: Any = None) -> None:
     class RewardMonitorNode(Node):  # type: ignore[misc]
         """Subscribe camera Image(s), buffer frames, serve query_task_progress."""
 
-        def __init__(self) -> None:
+        def __init__(self) -> None:  # noqa: PLR0915  # reason: node ctor wires cameras + sidecar + critic + scoring-gate in one place
             super().__init__("openral_reward_monitor")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("primary_camera", "default")
@@ -126,6 +126,37 @@ def main(args: Any = None) -> None:
                 self.get_logger().warning(
                     "openral_msgs/srv/QueryTaskProgress not built; "
                     "query_task_progress service disabled"
+                )
+
+            # 2026-06-29 — gate continuous scoring to VLA-execution windows AND score
+            # the instruction the policy is actually running. A VLA's reward only
+            # means something while it acts, and only against the task it is doing —
+            # scoring the collective mission goal ("put ALL objects…") while the VLA
+            # picks one object can never read as progress (and wastes the GPU on an
+            # idle scene). When `gate_scoring_on_execution` is set, the node scores
+            # only while `/openral/reward/active_task` (std_msgs/String, the exact
+            # prompt the reasoner sent the VLA) is non-empty, and scores THAT task.
+            # Default off = score the default task continuously (legacy; the on-demand
+            # query_task_progress service is unaffected either way).
+            self.declare_parameter("gate_scoring_on_execution", False)
+            self._gate_scoring = (
+                gp("gate_scoring_on_execution").get_parameter_value().bool_value
+            )
+            self._vla_active = not self._gate_scoring  # ungated → always "active"
+            self._active_task = ""  # the VLA's current instruction (gated mode)
+            if self._gate_scoring:
+                from std_msgs.msg import String as _String
+
+                self.create_subscription(
+                    _String,
+                    "/openral/reward/active_task",
+                    self._on_reward_active_task,
+                    QoSProfile(
+                        history=QoSHistoryPolicy.KEEP_LAST,
+                        depth=1,
+                        reliability=QoSReliabilityPolicy.RELIABLE,
+                        durability=QoSDurabilityPolicy.VOLATILE,
+                    ),
                 )
 
             # ADR-0064 — optional CriticScore publishing leg (Tier-C source).
@@ -262,6 +293,19 @@ def main(args: Any = None) -> None:
             )
             return response
 
+        def _on_reward_active_task(self, msg: Any) -> None:
+            """Gate + retarget scoring on the reasoner's active VLA instruction (2026-06-29).
+
+            ``/openral/reward/active_task`` (std_msgs/String) carries the exact prompt
+            the VLA is running while an ``execute_rskill`` goal is in flight, and empty
+            on result. The continuous critic leg scores only while non-empty, and
+            scores THAT instruction (not the collective default). Only subscribed when
+            ``gate_scoring_on_execution``.
+            """
+            task = (msg.data or "").strip()
+            self._active_task = task
+            self._vla_active = bool(task)
+
         def _publish_critic_score(self) -> None:
             """Timer (ADR-0064): score the buffer, publish a generic CriticScore.
 
@@ -271,7 +315,11 @@ def main(args: Any = None) -> None:
             """
             if self._critic_pub is None:
                 return
-            task = self._default_task
+            if not self._vla_active:
+                return  # gated: no VLA executing → don't score an idle scene
+            # Score the instruction the VLA is actually running (gated mode), not the
+            # collective default — a single-object pick must be judged as that pick.
+            task = self._active_task or self._default_task
             buf = self._buffers[self._primary_id]
             now_ns = self.get_clock().now().nanoseconds
             if not task or buf.is_stale(now_ns) or len(buf) == 0:

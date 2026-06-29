@@ -190,6 +190,16 @@ try:  # pragma: no cover — gated by sourced ROS install
 except ImportError:  # pragma: no cover
     IDLEmpty = None  # type: ignore[assignment, misc]
 
+# std_msgs/String — the reward monitor's active-task signal (2026-06-29). The
+# reasoner publishes the EXACT instruction the VLA is running (the active subtask)
+# so the reward model scores the same question the policy is acting on, not the
+# collective mission goal; empty = no VLA acting (gates continuous scoring off).
+# Gated like IDLEmpty above.
+try:  # pragma: no cover — gated by sourced ROS install
+    from std_msgs.msg import String as IDLString
+except ImportError:  # pragma: no cover
+    IDLString = None  # type: ignore[assignment, misc]
+
 
 __all__ = ["ReasonerNode"]
 
@@ -609,6 +619,14 @@ class ReasonerNode(LifecycleNode):
         # mission ladder with a displayed reason so the next pick proceeds. Reset
         # on task advance and on a successful execute dispatch.
         self._task_locate_budget = TaskLocateBudget()
+        # ADR-0074 amendment 2026-06-29 — locate-budget × ground-before-decompose:
+        # on a COLLECTIVE goal, locating to confirm objects IS the legitimate path to
+        # `decompose_mission` (which is not a skill dispatch), so a budget-hit there
+        # must NOT abandon the mission — it nudges decompose and resets the budget.
+        # Bounded by this per-task nudge cap so a goal that genuinely can't be
+        # grounded still terminates (abandon) instead of looping nudge↔locate.
+        self._collective_decompose_nudges: dict[str, int] = {}
+        self._max_collective_decompose_nudges = 2
 
         # ROS parameters: when both are set, on_configure walks
         # `rskill_search_paths` for `*/rskill.yaml`, loads the
@@ -984,6 +1002,29 @@ class ReasonerNode(LifecycleNode):
             IDLFailureTrigger,
             "/openral/failure/rskill",
             _QOS_FAILURE,
+        )
+
+        # 2026-06-29 — reward monitor's active-task signal. Published with the exact
+        # instruction the VLA is running on each execute_rskill dispatch, and empty
+        # on its result. The reward leg only scores while non-empty (the user's
+        # "reward only runs when the VLA runs") AND scores against THAT instruction,
+        # not the collective mission goal (so a single-object pick is judged as the
+        # single-object task the policy is actually doing). RELIABLE +
+        # TRANSIENT_LOCAL so a late-joining monitor sees the latest state. None when
+        # std_msgs is unavailable (degrades to no gate / monitor's default task).
+        self._reward_active_pub = (
+            self.create_publisher(
+                IDLString,
+                "/openral/reward/active_task",
+                QoSProfile(
+                    history=QoSHistoryPolicy.KEEP_LAST,
+                    depth=1,
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                ),
+            )
+            if IDLString is not None
+            else None
         )
 
         # ExecuteRskill action client (F1 rskill_runner_node server). The
@@ -1373,6 +1414,7 @@ class ReasonerNode(LifecycleNode):
                 self._renderer.set_mission(mission)
                 self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
                 self._reset_task_locate_budget()  # ADR-0074 — fresh goal, fresh budget
+                self._collective_decompose_nudges.clear()  # fresh goal, fresh nudge cap
                 self.get_logger().info(
                     f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
                 )
@@ -2358,6 +2400,29 @@ class ReasonerNode(LifecycleNode):
             return False
         if not self._task_locate_budget.charge(active.task_id):
             return False
+        # ADR-0074 amendment — a COLLECTIVE goal locating to confirm objects is on
+        # the path to `decompose_mission`, not stuck. On a budget-hit, nudge it to
+        # decompose NOW (objects are confirmed in `located` by this point) and reset
+        # the budget, rather than abandoning the whole mission mid-grounding. Bounded
+        # by `_max_collective_decompose_nudges`: if it still won't decompose after
+        # the cap, fall through to abandon (genuinely ungroundable).
+        if is_collective_target(active.text):
+            nudges = self._collective_decompose_nudges.get(active.task_id, 0)
+            if nudges < self._max_collective_decompose_nudges:
+                self._collective_decompose_nudges[active.task_id] = nudges + 1
+                self.get_logger().info(
+                    f"mission: locate budget hit on collective task {active.task_id} — "
+                    f"nudging decompose ({nudges + 1}/{self._max_collective_decompose_nudges}) "
+                    "instead of abandoning; resetting locate budget",
+                )
+                self._reset_task_locate_budget()
+                self._emit_enumeration_invite(active, traceparent=traceparent)
+                self._on_tick(force=True, tier="C")
+                return True  # skip this locate; the next tick should decompose
+            self.get_logger().warning(
+                f"mission: collective task {active.task_id} could not be decomposed after "
+                f"{nudges} nudge(s) — abandoning",
+            )
         reason = self._task_locate_budget.reason(call.query)
         self.get_logger().warning(
             f"mission: task {active.task_id} abandoned on locate budget — {reason}",
@@ -3381,6 +3446,21 @@ class ReasonerNode(LifecycleNode):
         else:
             self._send_execute_rskill_goal(call, traceparent)
 
+    def _set_reward_task(self, task: str) -> None:
+        """Publish the instruction the reward monitor should score (2026-06-29).
+
+        ``/openral/reward/active_task`` carries the EXACT prompt the VLA is running
+        (the active subtask) on dispatch, and empty on result. The reward leg only
+        scores while non-empty AND scores that instruction — so a single-object pick
+        is judged as the task the policy is actually doing, not the collective goal.
+        No-op when std_msgs is unavailable.
+        """
+        if self._reward_active_pub is None:
+            return
+        msg = IDLString()
+        msg.data = task
+        self._reward_active_pub.publish(msg)
+
     def _send_execute_rskill_goal(
         self,
         call: ExecuteRskillTool,
@@ -3398,6 +3478,9 @@ class ReasonerNode(LifecycleNode):
         goal.prompt = _resolve_execute_prompt(
             call.prompt, active.text if active is not None else None
         )
+        # 2026-06-29 — open the reward-scoring window with the SAME instruction the
+        # VLA gets, so the reward model scores the task the policy is actually doing.
+        self._set_reward_task(goal.prompt)
         # The reasoner does not yet construct a SkillPrompt payload —
         # F4 stays on the text path; the structured-prompt route is
         # wired in a later ADR-0018 follow-up.
@@ -3653,6 +3736,8 @@ class ReasonerNode(LifecycleNode):
         # policy's VRAM is released; restore the GPU peers (detector) we froze
         # for it. Runs before any early return below so it always fires.
         self._reactivate_vram_peers()
+        # 2026-06-29 — close the reward-scoring window: no VLA is acting now.
+        self._set_reward_task("")
         # ADR-0074 §2 — the goal is terminal: drop the in-flight handle and read
         # (then clear) the cancel reason so a reward-driven cancel verifies below
         # while an operator/estop cancel stays a no-op.

@@ -1348,6 +1348,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # ADR-0064 — when the critic producer is also up, feed it real
                     # Robometer progress as a CriticScore stream (else stay query-only).
                     "enable_critic_score": enable_critic,
+                    # 2026-06-29 — only score while a VLA is executing (the reasoner
+                    # publishes /openral/reward/active around each execute_rskill), so
+                    # the GPU sidecar doesn't grind on an idle scene and the Tier-C
+                    # watchdog isn't fed idle noise.
+                    "gate_scoring_on_execution": True,
                     "use_sim_time": use_sim_time,
                 }
             ],
