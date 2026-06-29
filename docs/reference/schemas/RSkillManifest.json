@@ -1652,6 +1652,18 @@
       ],
       "default": null
     },
+    "reward_rskill_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reward Rskill Name"
+    },
     "playbook": {
       "anyOf": [
         {

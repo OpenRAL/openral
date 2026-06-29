@@ -20,6 +20,7 @@ metadata:
   action_representation: delta_ee_6d_plus_gripper
   runtime: pytorch
   quantization: bf16/pytorch
+  min_vram_gb: {bf16: 1.2}
   chunk_size: 16
   n_action_steps: 25
   latency_budget: {per_chunk_ms: 150.0, max_execution_s: 60.0}
