@@ -147,7 +147,24 @@ preselect it), so the guard lives where the pairing is known:
    warns when the VLA's `reward_rskill_name` disagrees with the loaded reward
    model. Skipped when no reward model is active (reward off is a deliberate
    choice) or the GPU total is unreadable.
-4. Remaining (follow-up): a deploy-launch preflight for the explicitly-chosen-VLA
-   case (`benchmark` / `sim run --vla`), and resolving the reward model *from* the
-   VLA's `reward_rskill_name` at launch (today the reward monitor is launched with
-   its own manifest and the reasoner validates consistency).
+4. Deploy reward resolution + pre-launch VRAM preflight — **done** (`deploy sim` /
+   `deploy run` only; `benchmark` / `sim run` are out of scope — they pair no reward
+   model and gain no reward/VRAM preflight). The reward model is now resolved *from*
+   the VLA's `reward_rskill_name` at launch rather than chosen by an independent
+   flag: because `deploy sim` does not preselect a single VLA, `resolve_launch_invocation`
+   reads the pairing across the capability-matched VLA palette
+   (`_resolve_reward_monitor_manifest`) — an explicit `--reward-monitor-manifest`
+   wins; otherwise the palette VLAs' agreed `reward_rskill_name` resolves to that
+   `kind:reward` rSkill's in-tree manifest path, defaulting to `robometer-4b` when
+   none is named or they disagree (warned). The resolved path is forwarded as
+   `reward_monitor_manifest:=…` and rides on `LaunchInvocation.reward_monitor_manifest`.
+   A pre-LAUNCH feasibility gate (`_preflight_reward_vram_fit`, run by
+   `deploy_sim_command` and `run_launch_invocation` before bringing up ROS) runs
+   `assert_vla_reward_fits` for every capability-matched VLA against the resolved
+   reward model + the GPU total (`_detect_gpu_total_vram_gb`, the torch-free
+   nvidia-smi probe). Mirroring the existing palette-deps preflight, it is advisory
+   per-VLA (the reasoner's runtime `_refuse_unfittable_vla` still drops a
+   non-fitting VLA) and hard-exits before launch only when **no** matched VLA can
+   co-reside with the reward model — the deploy could otherwise actuate nothing.
+   Skipped when no reward model is active (reward off is a deliberate choice) or the
+   GPU total is unreadable. Covered by `tests/unit/test_deploy_reward_pairing.py`.
