@@ -138,5 +138,16 @@ preselect it), so the guard lives where the pairing is known:
 1. `reward_rskill_name` field + validator guard + `active_min_vram_gb` +
    `assert_vla_reward_fits` (Layer 0) — this PR.
 2. `smolvla-libero` declares `min_vram_gb` + `reward_rskill_name` — this PR.
-3. Deploy/runner enforcement (palette drop + load-time guard + reward resolution
-   from the field) — wired and live-tested next.
+3. Reasoner pre-dispatch enforcement — **done**. `reasoner_node` keeps the full
+   reward manifest, reads the GPU total (`gpu_total_vram_gb` param, else a
+   torch-free `nvidia-smi` probe), and `_refuse_unfittable_vla` runs
+   `assert_vla_reward_fits` before every `execute_rskill` for a VLA: on a miss it
+   publishes a `FailureTrigger` (controller / `vram_insufficient`) and skips the
+   dispatch (no attempt recorded) instead of OOMing or running blind; it also
+   warns when the VLA's `reward_rskill_name` disagrees with the loaded reward
+   model. Skipped when no reward model is active (reward off is a deliberate
+   choice) or the GPU total is unreadable.
+4. Remaining (follow-up): a deploy-launch preflight for the explicitly-chosen-VLA
+   case (`benchmark` / `sim run --vla`), and resolving the reward model *from* the
+   VLA's `reward_rskill_name` at launch (today the reward monitor is launched with
+   its own manifest and the reasoner validates consistency).

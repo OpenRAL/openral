@@ -52,6 +52,7 @@ import contextlib
 import datetime
 import json
 import pathlib
+import subprocess
 import sys
 import time
 from typing import TYPE_CHECKING, Any
@@ -82,10 +83,11 @@ from openral_core import (
     RobotDescription,
     RSkillManifest,
     TimeoutEvidence,
+    assert_vla_reward_fits,
     control_modes_for_representation,
     is_collective_target,
 )
-from openral_core.exceptions import ROSConfigError, ROSReasonerInvalidPlan
+from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
 from openral_reasoner.completion import (
@@ -338,6 +340,34 @@ from openral_core import WRAPPED_TASK_SPACE_LAYOUTS as _WRAPPED_TASK_SPACE_LAYOU
 # directions). Importing it here (rather than re-declaring it) is what
 # stops the gate and the packers from drifting: a mode the gate admits but
 # no packer executes would boot-pass and then E-stop mid-run.
+
+
+def _detect_gpu_total_vram_gb() -> float:
+    """Total VRAM (GB) of GPU 0 via ``nvidia-smi``, or ``0.0`` when unavailable.
+
+    Deliberately torch-free (the reasoner_node stays cheap to import — torch is
+    only pulled lazily for the skill loader). Used by the ADR-0077 pre-dispatch
+    pair check when the ``gpu_total_vram_gb`` param is unset. Any failure (no
+    nvidia-smi, no GPU, parse error) returns ``0.0`` → the caller skips the check
+    rather than blocking dispatch on a host where the budget can't be read.
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    first = out.stdout.strip().splitlines()
+    if not first:
+        return 0.0
+    try:
+        return float(first[0].strip()) / 1024.0  # MiB → GiB
+    except ValueError:
+        return 0.0
 
 
 def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]:
@@ -666,13 +696,29 @@ class ReasonerNode(LifecycleNode):
         # it in place of the module-level system fallbacks. A bad path degrades
         # to the fallbacks (logged) rather than failing node construction.
         self._reward_contract: RewardContract | None = None
+        # ADR-0077 — the full reward manifest (not just its contract) so the
+        # pre-dispatch VLA+reward VRAM check has the reward model's `min_vram_gb`.
+        self._reward_manifest: RSkillManifest | None = None
+        # ADR-0077 — VLA manifests keyed by rskill_id, loaded lazily on first
+        # dispatch (the palette path discards them); used for the pair fit check.
+        self._manifests_by_id: dict[str, RSkillManifest] = {}
+        # ADR-0077 — total GPU VRAM (GB) for the pair fit check. The deploy may
+        # pin it via the `gpu_total_vram_gb` param; else probe nvidia-smi once.
+        # 0.0 = unknown → the check is skipped (cannot verify what we can't read).
+        self.declare_parameter("gpu_total_vram_gb", 0.0)
+        self._gpu_total_vram_gb = float(
+            self.get_parameter("gpu_total_vram_gb").get_parameter_value().double_value
+        )
+        if self._gpu_total_vram_gb <= 0.0:
+            self._gpu_total_vram_gb = _detect_gpu_total_vram_gb()
         self.declare_parameter("reward_manifest_path", "")
         reward_manifest_path = (
             self.get_parameter("reward_manifest_path").get_parameter_value().string_value
         )
         if reward_manifest_path:
             try:
-                self._reward_contract = RSkillManifest.from_yaml(reward_manifest_path).reward
+                self._reward_manifest = RSkillManifest.from_yaml(reward_manifest_path)
+                self._reward_contract = self._reward_manifest.reward
             except Exception as exc:  # reason: bad manifest must not block startup
                 self.get_logger().warning(
                     f"reward_manifest_path={reward_manifest_path!r} failed to load "
@@ -3010,6 +3056,80 @@ class ReasonerNode(LifecycleNode):
         self.get_logger().info(f"dispatch: memory_search {call.query!r} → {len(hits)} hit(s)")
         self._reprompt_memory(text, traceparent=traceparent)
 
+    def _manifest_for_rskill(self, rskill_id: str) -> RSkillManifest | None:
+        """The installed :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
+
+        ADR-0077 — the pre-dispatch pair check needs the VLA's manifest (for its
+        ``min_vram_gb``), but the palette path does not retain manifests. Load
+        them once on first miss (``rSkill`` pulls torch, so lazy-imported) and
+        cache by name. Returns ``None`` when the id is not installed / unloadable.
+        """
+        if rskill_id in self._manifests_by_id:
+            return self._manifests_by_id[rskill_id]
+        from openral_rskill.loader import rSkill  # heavy (torch) — lazy
+
+        for entry in rSkill.list_installed():
+            if entry.repo_id != rskill_id:
+                continue
+            try:
+                manifest = RSkillManifest.from_yaml(entry.manifest_path)
+            except (OSError, ValueError) as exc:
+                self.get_logger().warning(f"manifest load failed for {rskill_id!r}: {exc}")
+                return None
+            self._manifests_by_id[rskill_id] = manifest
+            return manifest
+        return None
+
+    def _refuse_unfittable_vla(
+        self,
+        call: ExecuteRskillTool,
+        *,
+        traceparent: str | None,
+    ) -> bool:
+        """ADR-0077 pre-dispatch gate: refuse a VLA that can't co-reside with its reward.
+
+        A VLA emits no success signal of its own, so it must run with its reward
+        model resident alongside it (ADR-0074). When a reward model is active and
+        the GPU budget is known, verify the pair fits *before* dispatch: on a miss
+        we refuse + publish a ``FailureTrigger`` (the reasoner sees it and bounds
+        retries → handoff) rather than OOM mid-run or run the VLA blind. Returns
+        ``True`` when the dispatch was refused (caller must not send the goal).
+
+        Skipped — dispatch proceeds — when no reward model is active (reward
+        monitoring off is a deliberate deploy choice), the GPU total is unreadable,
+        or the dispatched skill is not a VLA / not installed.
+        """
+        if self._reward_manifest is None or self._gpu_total_vram_gb <= 0.0:
+            return False
+        vla = self._manifest_for_rskill(call.rskill_id)
+        if vla is None or vla.kind != "vla":
+            return False
+        if vla.reward_rskill_name and vla.reward_rskill_name != self._reward_manifest.name:
+            self.get_logger().warning(
+                f"reward pairing mismatch: VLA {call.rskill_id!r} names "
+                f"{vla.reward_rskill_name!r} but the active reward model is "
+                f"{self._reward_manifest.name!r} (ADR-0077)",
+            )
+        try:
+            assert_vla_reward_fits(vla, self._reward_manifest, self._gpu_total_vram_gb)
+        except (ROSGPUMemoryError, ROSConfigError) as exc:
+            self.get_logger().error(
+                f"dispatch: refusing execute_rskill {call.rskill_id!r} — VLA + reward "
+                f"model cannot co-reside on GPU (ADR-0077): {exc}",
+            )
+            self._publish_skill_failure(
+                kind=_KIND_CONTROLLER,
+                rskill_id=call.rskill_id,
+                evidence=ControllerEvidence(
+                    controller_name=call.rskill_id,
+                    state="vram_insufficient",
+                    detail=str(exc)[:480],
+                ),
+                traceparent=traceparent,
+            )
+            return True
+        return False
+
     def _dispatch_execute_rskill(
         self,
         call: ExecuteRskillTool,
@@ -3068,6 +3188,13 @@ class ReasonerNode(LifecycleNode):
                 ),
                 traceparent=traceparent,
             )
+            return
+
+        # ADR-0077 — a VLA runs only with its reward model resident alongside it.
+        # Refuse (and notify) before the goal is sent if the pair can't co-reside
+        # on the GPU, rather than running the VLA with no progress signal / OOMing
+        # mid-run. No attempt is recorded — a refused dispatch is not a try.
+        if self._refuse_unfittable_vla(call, traceparent=traceparent):
             return
 
         # ADR-0073 §2 — count this dispatch as an attempt at the active mission
