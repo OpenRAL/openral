@@ -7664,8 +7664,17 @@ class LocateInViewTool(_ReasonerToolBase):
 
     Attributes:
         tool: Discriminator (always ``"locate_in_view"``).
-        query: Free-text object/description to look for (e.g. ``"the red mug"``).
-            Sent verbatim as the detector's open-vocabulary query.
+        query: The object(s) to look for, as concrete object **noun(s)** — sent
+            verbatim as the detector's open-vocabulary query. The fast default
+            locator (``omdet-turbo-locator``) is a multi-label detector: it
+            matches each comma-separated term as one object class, so query a
+            single noun (``"mug"``) or a comma-separated list for several
+            (``"cup, bowl, ketchup bottle"``). A collective/quantified PHRASE
+            (``"the objects on the table"``, ``"everything"``, ``"all items"``)
+            is treated as one literal class name and matches NOTHING — name the
+            concrete objects instead. Referring expressions with relations
+            (``"the mug behind the bowl"``) need the ``locateanything-3b``
+            locator (set ``detector``); omdet ignores the relation.
         camera: Optional camera selector. Empty (default) uses the detector's
             primary camera; otherwise names one of the detector's configured
             cameras so the reasoner can pick a viewpoint. **Not a hardcoded

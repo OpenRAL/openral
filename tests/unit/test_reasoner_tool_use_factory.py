@@ -131,6 +131,27 @@ def test_openrouter_default_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client._base_url == OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1"
 
 
+def test_max_tokens_unset_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No OPENRAL_REASONER_LLM_MAX_TOKENS → client sends no cap (endpoint default)."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-or-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._max_tokens is None
+
+
+def test_max_tokens_env_caps_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OPENRAL_REASONER_LLM_MAX_TOKENS bounds a metered gateway's reservation (HTTP 402)."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-or-secret")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MAX_TOKENS", "8000")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._max_tokens == 8000
+
+
 def test_openrouter_explicit_base_url_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     """An explicit BASE_URL overrides the OpenRouter default (proxy / staging)."""
     monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")

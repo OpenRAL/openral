@@ -1259,6 +1259,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             }
 
         det_params["use_sim_time"] = use_sim_time
+        # Register the cached frame under the REAL camera name, not the node's
+        # "default" fallback. The reasoner reads live camera names from
+        # PERCEPTION (e.g. "top") and passes them to locate_in_view; without
+        # this the frame caches under "default" and every locate misses with
+        # "no frame for camera 'top'" (found=False) regardless of the query.
+        det_params["primary_camera"] = det_camera
         # ADR-0050 — managed lifecycle node: autostarted to ACTIVE (detector
         # loaded) like the rest of the graph, but the reasoner can DEACTIVATE it
         # via LifecycleTransitionTool to free the detector's VRAM before a
@@ -1285,6 +1291,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             locator_params = {
                 "image_topic": det_image_topic,
                 "sensor_id": det_camera,
+                # Cache under the real camera name so locate_in_view(camera="top")
+                # hits — see the continuous detector's primary_camera note above.
+                "primary_camera": det_camera,
                 "manifest_path": spec["manifest"],
                 "onnx_path": object_detector_onnx,
                 "query": object_detector_query,

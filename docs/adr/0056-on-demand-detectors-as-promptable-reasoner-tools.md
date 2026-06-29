@@ -149,3 +149,25 @@ so it does not depend on the LLM choosing the tool (local models often don't). I
 continuous detector ingested it as "bread" — by grounding the exact prompt verbatim through the
 open-vocab locator. Read-only invariant unchanged (the locator never actuates). Verified live on
 `scenes/deploy/robocasa_baguette.yaml`: recall miss → locate `found=True` → autonomous pick.
+
+## Amendment — 2026-06-29 (deploy locate usability: noun queries + camera naming)
+
+Two fixes so a reasoner's `locate_in_view` actually hits in deploy-sim instead of looping on
+`found=False` (observed on `scenes/deploy/libero_object.yaml` with a collective operator goal):
+
+1. **Query phrasing is concrete object nouns.** The default `omdet-turbo-locator` is a multi-label
+   detector: `query_to_classes` splits the query on commas/`</c>` and matches each term as one
+   open-vocab **class**. A collective phrase (`"the objects on the table"`, `"everything"`) becomes
+   one literal class name that matches nothing. The `LocateInViewTool.query` schema doc and the
+   reasoner's GROUND-BEFORE-DECOMPOSE rule (`DEFAULT_SYSTEM_PROMPT`) now state this: query a single
+   noun or a comma-separated noun list (`"cup, bowl, bottle, basket"`), reading candidate nouns from
+   the raw `in_view` labels. Referring expressions with relations still need `locateanything-3b`.
+
+2. **The locator caches frames under the real camera name.** `sim_e2e.launch.py` set the detector /
+   locator `sensor_id` to the scene's camera (e.g. `top`) but left `primary_camera` at its `"default"`
+   fallback, so frames cached under `"default"`. The reasoner reads live camera names from PERCEPTION
+   and passes them to `locate_in_view(camera="top")` → "no frame for camera 'top'" → `found=False`
+   regardless of the query. The launch now sets `primary_camera=det_camera` on both detector nodes.
+
+Verified live with `OPENRAL_REASONER_LLM_MODEL=openai/gpt-5.5`: locate `query='cup, bowl, bottle, object'`
+camera `'top'` → `found=True` → `decompose_mission` into pixel-grounded subtasks → `execute_rskill`.

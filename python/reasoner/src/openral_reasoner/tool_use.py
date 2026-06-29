@@ -136,7 +136,13 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "collective/quantified goal (all / every / the objects / things): (1) if "
     "`located` does NOT yet name the goal objects, call locate_in_view to "
     "CONFIRM which visible objects are the ones to act on (this populates "
-    "`located`); (2) the MOMENT `located` names one or more concrete goal "
+    "`located`). Phrase that query as concrete object NOUNS — a single noun or "
+    "a comma-separated list of the candidate objects (read likely nouns from "
+    "the raw `in_view` labels even when mislabeled: e.g. query "
+    "`cup, bowl, bottle, basket`). NEVER query the collective phrase itself "
+    "(`the objects on the table`, `everything`): the fast locator matches each "
+    "term as one object class, so a phrase matches nothing and wastes a "
+    "look. (2) the MOMENT `located` names one or more concrete goal "
     "objects, call decompose_mission (one grounded subtask per located "
     "object) and do NOT locate_in_view / recall_object again for an object "
     "already in `located` — re-locating a confirmed object makes no progress. "
@@ -669,6 +675,12 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     slow_first_call = provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS or provider == "huggingface"
     default_timeout_s = 60.0 if slow_first_call else 10.0
     timeout_s = float(timeout_env) if timeout_env else default_timeout_s
+    # Optional completion-token cap (OpenAI-compatible providers only). Unset →
+    # the endpoint default; set it to fit a low-balance metered key or to bound
+    # cost/latency (a tick needs just one tool call). The Anthropic path keeps
+    # its own 1024 default.
+    max_tokens_env = os.environ.get("OPENRAL_REASONER_LLM_MAX_TOKENS", "").strip()
+    max_tokens = int(max_tokens_env) if max_tokens_env else None
     if provider == "anthropic":
         if api_key is None:
             raise ROSConfigError(
@@ -682,6 +694,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            max_tokens=max_tokens,
         )
     if provider in _OPENAI_COMPATIBLE_PRESETS:
         # openrouter / gemini / xai / deepseek — thin auth-required presets
@@ -701,6 +714,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             base_url=base_url,
             timeout_s=timeout_s,
             tool_choice="auto" if provider in _AUTO_TOOL_CHOICE_PROVIDERS else "required",
+            max_tokens=max_tokens,
         )
     if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS:
         # ollama / vllm — local self-hosted OpenAI-compatible servers whose
@@ -716,6 +730,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            max_tokens=max_tokens,
         )
     raise ROSConfigError(
         f"OPENRAL_REASONER_LLM_PROVIDER={provider!r} is unknown; "
@@ -1314,6 +1329,14 @@ class OpenAICompatibleToolUseClient:
             Some endpoints (the HF router) reject ``"required"`` and only honour
             ``"auto"``; pass ``"auto"`` for those and the client retries once
             with an explicit nudge if the model replies in prose instead.
+        max_tokens: Optional hard cap on completion tokens per call. ``None``
+            (the default) sends no cap, letting the endpoint apply its own —
+            but reasoning models (GPT-5.x) default that to their full window
+            (65k), which a metered gateway (OpenRouter) *reserves* up front and
+            may reject on a low-balance key (HTTP 402). Set a cap (env
+            ``OPENRAL_REASONER_LLM_MAX_TOKENS``) to bound cost/latency; a tick
+            only needs one tool call, so a few thousand tokens (plus reasoning
+            headroom) suffices.
     """
 
     def __init__(
@@ -1324,6 +1347,7 @@ class OpenAICompatibleToolUseClient:
         base_url: str | None = None,
         timeout_s: float = 10.0,
         tool_choice: str = "required",
+        max_tokens: int | None = None,
     ) -> None:
         """Stash configuration; no SDK import until :meth:`select_tool`."""
         self.model_id = model_id
@@ -1331,6 +1355,7 @@ class OpenAICompatibleToolUseClient:
         self._base_url = base_url
         self._timeout_s = timeout_s
         self._tool_choice = tool_choice
+        self._max_tokens = max_tokens
 
     def select_tool(
         self,
@@ -1360,12 +1385,17 @@ class OpenAICompatibleToolUseClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context_text},
         ]
+        # Omit ``max_tokens`` entirely when unset so the endpoint keeps its own
+        # default; only a configured cap is sent (bounds a metered gateway's
+        # up-front token reservation — see __init__).
+        cap: dict[str, int] = {} if self._max_tokens is None else {"max_tokens": self._max_tokens}
         try:
             response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages are heterogeneous TypedDicts (ChatCompletionMessageParam, ChatCompletionToolParam) that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
                 model=self.model_id,
                 messages=messages,
                 tools=tools,
                 tool_choice=self._tool_choice,
+                **cap,
             )
             choices = list(response.choices)
             no_tool_call = not choices or not choices[0].message.tool_calls
@@ -1380,6 +1410,7 @@ class OpenAICompatibleToolUseClient:
                     messages=messages,
                     tools=tools,
                     tool_choice=self._tool_choice,
+                    **cap,
                 )
                 choices = list(response.choices)
         except Exception as exc:  # reason: provider SDK boundary

@@ -121,6 +121,15 @@ export OPENRAL_REASONER_LLM_MODEL=qwen2.5-7b-instruct
 uv add openai --package openral-reasoner      # one-time, all four
 ```
 
+`OPENRAL_REASONER_LLM_MAX_TOKENS` (optional, OpenAI-compatible providers
+only) caps completion tokens per call. Unset → the endpoint's own default,
+which for reasoning models (GPT-5.x) is their full window (~65k); a metered
+gateway like OpenRouter *reserves* that up front and rejects the call on a
+low-balance key (HTTP 402 "requires more credits, or fewer max_tokens"). Set
+e.g. `16384` to bound the reservation (a tick only needs one tool call, plus
+reasoning headroom). The `anthropic` provider keeps its own internal 1024-token
+default and ignores this var.
+
 No cloud lock-in: the open-core path requires the deployment to pick
 the endpoint explicitly via env (`OPENRAL_REASONER_LLM_PROVIDER`,
 `OPENRAL_REASONER_LLM_MODEL`, `OPENRAL_REASONER_LLM_API_KEY`,
