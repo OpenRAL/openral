@@ -94,6 +94,7 @@ nav:
     - Robot descriptions: reference/robots.md
     - rSkills: reference/rskills.md
     - Reasoner (S2): reference/reasoner.md
+    - Reasoner design & decisions: reference/reasoner-design.md
     - Sim environments: reference/sim-environments.md
     - Safety hazard log: reference/hazard-log.md
   - Contributing:

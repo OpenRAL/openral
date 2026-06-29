@@ -9,6 +9,7 @@ It decides *what to do next*; it never drives motors itself.
 - **Core (transport-agnostic):** [`openral_reasoner.ReasonerCore`](https://github.com/OpenRAL/openral/blob/master/python/reasoner/src/openral_reasoner/core.py)
 - **ROS 2 lifecycle node:** [`openral_reasoner_ros.reasoner_node`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/) — full contract in its [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
 - **Design:** [ADR-0018](../adr/0018-ros2-reasoner-supervisor.md) (graph + F4 tool-dispatch), [ADR-0039](../adr/0039-llm-task-planning-active-search.md) (active search), ADR-0043/0047/0056/0057 (query tools)
+- **Design narrative (how it thinks):** [Reasoner Design & Decisions](reasoner-design.md) — the connective story across the decisions below, organized by logic problem (tick loop → grounding → decomposition → completion verdict → reward pairing → replanning → memory → LLM choice).
 
 > **Authority boundary.** The reasoner **never** publishes `openral_msgs/ActionChunk`.
 > Actuation lives behind the S1 skill runner (`/openral/execute_rskill` action
@@ -146,7 +147,13 @@ capability-matched, and licensed.
 
 The reasoner is wire-protocol agnostic — every provider satisfies the
 `ToolUseClient` Protocol, selected at `on_configure` from environment variables.
-There is **no default** (no cloud lock-in); the deployment picks the endpoint.
+The **library** factory (`build_tool_use_client_from_env`) has **no default**
+(no cloud lock-in) and refuses to guess. The **`openral deploy sim` launch** does
+pick one when the env is unset — `openrouter` / `openai/gpt-5.5` with
+`OPENRAL_REASONER_LLM_MAX_TOKENS=16384` (it decomposed collective goals most
+reliably in live testing; needs an API key, fails loudly without one). Any
+explicit `OPENRAL_REASONER_LLM_{PROVIDER,MODEL}` still wins. See
+[Reasoner Design & Decisions](reasoner-design.md) §8 (Choosing the brain).
 
 | `OPENRAL_REASONER_LLM_PROVIDER` | Client | Default base URL | API key |
 |---|---|---|---|
@@ -263,6 +270,7 @@ Still in flight:
 
 ## See also
 
+- [Reasoner Design & Decisions](reasoner-design.md) — the **why** behind every mechanism on this page, organized by logic problem.
 - [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — full ROS wrapper contract, provider presets, baseline LLM configs.
 - [ADR-0018](../adr/0018-ros2-reasoner-supervisor.md) — reasoner/supervisor graph + F4 dispatch.
 - [ADR-0025](../adr/0025-reasoner-managed-background-services.md) — reasoner-managed SLAM/Nav2 background services.
