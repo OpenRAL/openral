@@ -27,7 +27,7 @@ from pydantic import (
 # ROSConfigError lives in the sibling `exceptions` module and is the
 # canonical exception family for any configuration-level failure (see
 # CLAUDE.md §10).
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError
 
 # ─── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -5180,6 +5180,20 @@ class RSkillManifest(BaseModel):
                 raise ValueError(f"min_vram_gb[{dtype.value!r}] = {gb!r} must be > 0")
         return v
 
+    def active_min_vram_gb(self) -> float | None:
+        """Declared VRAM (GB) for this skill at its **active** quantization dtype.
+
+        Reads ``min_vram_gb[quantization.dtype]`` — the footprint the skill will
+        actually use at load, since ``quantization.dtype`` pins the runtime format
+        (ADR-0077). Returns ``None`` when ``min_vram_gb`` is unset or has no entry
+        for the active dtype (the size is simply not declared — the caller decides
+        whether that is an error). See ``assert_vla_reward_fits`` for the pair
+        check that consumes this (ADR-0077).
+        """
+        if self.min_vram_gb is None:
+            return None
+        return self.min_vram_gb.get(self.quantization.dtype)
+
     @model_validator(mode="after")
     def _check_self_referential_fallback(self) -> RSkillManifest:
         """A skill cannot list itself as its own fallback."""
@@ -5335,6 +5349,17 @@ class RSkillManifest(BaseModel):
     # advisory-only (never gates motors).
     reward: RewardContract | None = None
 
+    # ADR-0077 — the reward/progress-monitor rSkill this VLA pairs with (an rSkill
+    # ``name``, e.g. ``"OpenRAL/rskill-robometer-4b-nf4"``). A VLA emits no success
+    # signal of its own, so the reasoner needs a reward model resident alongside it
+    # to know whether the policy is progressing / has finished (ADR-0074). Allowed
+    # ONLY for ``kind == "vla"`` (forbidden otherwise — it is a reference FROM a VLA,
+    # distinct from the ``reward`` contract a reward-kind manifest carries). ``None``
+    # defers to the deployment default reward model — it does NOT mean "run without
+    # reward". The deploy refuses to launch a VLA + reward pair that does not fit GPU
+    # VRAM together (pre-load check over both manifests' ``min_vram_gb``).
+    reward_rskill_name: str | None = None
+
     # Playbook decision-procedure contract (ADR-0072). REQUIRED when
     # ``kind == "playbook"``; FORBIDDEN otherwise. Carries the SOP body pointer,
     # the trigger/done predicate, and the tool-call step bound. A playbook is a
@@ -5424,6 +5449,16 @@ class RSkillManifest(BaseModel):
             raise ValueError(
                 f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids a "
                 "`playbook` block (it is for kind='playbook' decision procedures only)."
+            )
+
+        # ADR-0077 — `reward_rskill_name` pairs a VLA with its progress-monitor
+        # reward rSkill; it is a reference FROM a VLA and meaningless on any other
+        # kind. One guard forbids it everywhere except kind='vla'.
+        if self.kind != "vla" and self.reward_rskill_name is not None:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): kind={self.kind!r} forbids "
+                "`reward_rskill_name` (it pairs a VLA with its reward model; "
+                "kind='vla' only)."
             )
 
         if self.kind == "vla":
@@ -5696,6 +5731,65 @@ class RSkillManifest(BaseModel):
         with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         return cls.model_validate(data)
+
+
+def assert_vla_reward_fits(
+    vla: RSkillManifest,
+    reward: RSkillManifest,
+    gpu_total_gb: float,
+    *,
+    margin_gb: float = 0.5,
+) -> float:
+    """Verify a VLA + its paired reward model co-reside in GPU VRAM (ADR-0077).
+
+    A VLA emits no success signal of its own, so the reasoner needs the reward
+    model resident *alongside* the running policy (ADR-0074). This is the
+    pre-load gate: both sizes are declared in their manifests, so we check the
+    pair fits before the VLA is ever loaded — failing fast and loud instead of a
+    mid-run CUDA OOM. It checks the **model pair footprint** only (a necessary
+    condition); the sim / ROS overhead is budgeted separately (ADR-0050).
+
+    Args:
+        vla: The VLA manifest (``kind == "vla"``) about to be loaded.
+        reward: Its paired reward manifest (``kind == "reward"``).
+        gpu_total_gb: The GPU's total VRAM in GB.
+        margin_gb: Headroom reserved for fragmentation / framework overhead.
+
+    Returns:
+        The combined VRAM (GB) the pair requires (``vla + reward``).
+
+    Raises:
+        ROSConfigError: Either manifest does not declare ``min_vram_gb`` for its
+            active dtype — co-residency we are about to *require* cannot be
+            verified, so the operator must declare the size.
+        ROSGPUMemoryError: ``vla + reward + margin_gb > gpu_total_gb`` — the pair
+            does not fit; the deploy must not run a VLA without its reward signal.
+
+    See ``tests/unit/test_vla_reward_pairing.py`` for fixture-backed coverage
+    (smolvla-libero + robometer-4b-nf4 = 4.8 GB, fits 8 GB, OOMs a 4 GB card).
+    """
+    vla_gb = vla.active_min_vram_gb()
+    reward_gb = reward.active_min_vram_gb()
+    missing = [
+        m.name for m, gb in ((vla, vla_gb), (reward, reward_gb)) if gb is None
+    ]
+    if missing:
+        raise ROSConfigError(
+            f"cannot verify VLA+reward VRAM co-residency: {missing!r} do not declare "
+            f"min_vram_gb for their active dtype. Declare it so the pair can be "
+            f"checked before load (ADR-0077)."
+        )
+    assert vla_gb is not None and reward_gb is not None  # narrowed by the guard above
+    combined = vla_gb + reward_gb
+    if combined + margin_gb > gpu_total_gb:
+        raise ROSGPUMemoryError(
+            f"VLA {vla.name!r} ({vla_gb:.2f} GB @ {vla.quantization.dtype.value}) + "
+            f"reward {reward.name!r} ({reward_gb:.2f} GB @ {reward.quantization.dtype.value}) "
+            f"= {combined:.2f} GB + {margin_gb:.2f} GB margin exceeds GPU VRAM "
+            f"{gpu_total_gb:.2f} GB. A VLA must run with its reward model resident "
+            f"(ADR-0074/0077); pick a smaller-footprint pair or a larger GPU."
+        )
+    return combined
 
 
 # ─── Skill evaluation results (rskills/<id>/eval/<benchmark>.json) ───────────

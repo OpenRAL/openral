@@ -56,6 +56,15 @@ runtime: "pytorch"
 quantization:
   dtype: "bf16"
   backend: "pytorch"
+# ADR-0077 — VRAM footprint per dtype, so the deploy can verify this VLA + its
+# paired reward model co-reside on the GPU before loading. bf16 measured at 0.93 GB
+# weights at load (RTX 4070); 1.2 GB declared with inference-activation headroom.
+min_vram_gb:
+  bf16: 1.2
+# ADR-0077 — a VLA emits no success signal of its own, so it runs with a reward /
+# progress monitor resident alongside it (ADR-0074). Robometer (NF4, 3.6 GB) is the
+# default; 1.2 + 3.6 = 4.8 GB fits an 8 GB card with room to spare.
+reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 # Update by re-running: tools/rskill_publisher.py --bump-revision
 weights_uri: "hf://lerobot/smolvla_libero"
