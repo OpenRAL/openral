@@ -1,6 +1,6 @@
 # ADR-0076 — Detection-time object identity + a camera-space `in_view` enumeration for the reasoner
 
-- **Status:** Accepted 2026-06-28.
+- **Status:** Accepted 2026-06-28. Amended 2026-06-29 (§4 — sticky `located` line).
 - **Date:** 2026-06-28
 - **ADR number:** `0076`. The integer is not load-bearing — cross-refs use
   filenames.
@@ -93,6 +93,35 @@ track keeps its stored id — 3D association is more stable than 2D), but a **ne
 `det_id < 0`). Net: a physical object carries **one id** whether it appears in the
 2D `in_view` line (no depth) or the 3D `scene_objects` line (depth) — and the
 existing 3D-only behavior is preserved byte-for-byte when no 2D tracker is wired.
+
+### 4. Sticky `located` line from open-vocab locate hits (amendment 2026-06-29)
+
+Live deploy on `libero_object` exposed a gap in §2: the `in_view` line is fed by
+the **continuous** detector (`omdet-turbo-indoor`), whose **fixed ~230-class
+indoor vocabulary** mislabels the task objects — on the real scene it emitted 29
+detections of `cup`/`bottle`/`mug`/`stool`/`sink`/… with **no `basket`** and
+`ketchup`/`milk` collapsed into `bottle`/`pitcher`. The reasoner therefore could
+not find the goal nouns in `in_view`, fell back to `recall_object` (empty without
+the 3D lift) → auto-escalated to the **open-vocab** `locate_in_view` (which *does*
+find them when prompted) → but that returned only a transient re-prompt, so the
+next tick clobbered `in_view` and the loop repeated — the exact stall this ADR set
+out to kill, resurfacing through the fixed-vocab feed.
+
+Fix: persist successful open-vocab `locate_in_view` hits. `ContextRenderer.note_located`
+stores them keyed by lowercased label (latest-wins, capped at `_LOCATED_CAP=12`)
+and `_render_in_view` emits a second, **sticky** line that survives the continuous
+detector's per-frame `set_in_view` clobber:
+
+```
+in_view[top]:  #0 cup @px(...), #1 bottle @px(...), …      (fixed-vocab, clobbered each frame)
+located[top]:  basket @px(150,350), teapot @px(...), …     (open-vocab hits, sticky)
+```
+
+`reasoner_node._on_locate_in_view_response` calls `note_located` on every `found`
+hit. Net: a goal noun the reasoner confirmed once stays grounded, so it decomposes
+and dispatches instead of re-locating. Verified live — glm-5.2 went from looping to
+`decompose_mission` (6 grounded subtasks) → `execute_rskill` (VLA) → mission ladder
+advancing on plateau.
 
 ### What stays the same
 

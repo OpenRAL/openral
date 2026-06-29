@@ -484,3 +484,56 @@ def test_set_in_view_bumps_seq_and_clears() -> None:
     assert r.seq > seq0
     r.set_in_view(None)
     assert "in_view" not in r.render(world_state=_world_state())
+
+
+def _located_basket() -> ObjectsMetadata:
+    """An open-vocab locate hit for the goal noun the fixed indoor vocab misses."""
+    return ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-locator",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(label="basket", confidence=0.6, bbox_xyxy=(100, 300, 200, 400)),
+        ],
+    )
+
+
+def test_note_located_survives_continuous_in_view_clobber() -> None:
+    """ADR-0076 — the deploy locate-loop fix: a goal noun the reasoner confirmed via
+    open-vocab locate_in_view (``basket``) must persist on the ``located`` line even
+    after the fixed-vocab continuous detector overwrites ``in_view`` (which never
+    carries ``basket``), so the LLM can decompose/dispatch instead of re-locating."""
+    r = ContextRenderer()
+    r.note_located(_located_basket())
+    assert "located[top]: basket @px(150,350)" in r.render(world_state=_world_state())
+    # Continuous detector clobbers in_view with its clutter — basket NOT in it.
+    r.set_in_view(_in_view())
+    out = r.render(world_state=_world_state())
+    assert "in_view[top]: #0 milk" in out  # continuous line present
+    assert "located[top]: basket @px(150,350)" in out  # sticky hit survives the clobber
+
+
+def test_note_located_latest_wins_and_bumps_seq() -> None:
+    """A re-confirmed label updates its bbox (latest wins); a hit wakes a heartbeat."""
+    r = ContextRenderer()
+    seq0 = r.seq
+    r.note_located(_located_basket())
+    assert r.seq > seq0
+    moved = ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-locator",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(label="basket", confidence=0.7, bbox_xyxy=(0, 0, 100, 100)),
+        ],
+    )
+    r.note_located(moved)
+    out = r.render(world_state=_world_state())
+    assert "located[top]: basket @px(50,50)" in out
+    assert out.count("basket @px") == 1  # one entry, not two
+    # None / empty is a no-op.
+    seq1 = r.seq
+    r.note_located(None)
+    assert r.seq == seq1

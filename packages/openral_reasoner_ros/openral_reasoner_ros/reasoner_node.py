@@ -2311,6 +2311,14 @@ class ReasonerNode(LifecycleNode):
         if resp.found:
             self._spatial_search.reset()
             self._locate_escalated.clear()
+            # ADR-0076 — fold the open-vocab hit into the sticky ``located`` line so
+            # the goal noun (which the fixed-vocab continuous in_view mislabels)
+            # survives the next clobber and the LLM grounds / decomposes against it
+            # instead of re-locating it every tick (the deploy locate-loop).
+            try:
+                self._renderer.note_located(ObjectsMetadata.model_validate_json(resp.metadata_json))
+            except ValidationError as exc:
+                self.get_logger().debug(f"located: dropping malformed locate metadata: {exc!s}")
             text = (
                 f"locate_in_view: {call.query!r} IS visible in camera {cam!r} right now. "
                 f"detections={resp.metadata_json}"

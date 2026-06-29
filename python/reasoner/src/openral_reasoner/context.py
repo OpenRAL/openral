@@ -24,6 +24,7 @@ from collections import deque
 
 from openral_core import (
     FailureEvidence,
+    ObjectDetection2D,
     ObjectsMetadata,
     PerceptionEventMetadata,
     RobotDescription,
@@ -394,6 +395,15 @@ class ContextRenderer:
         # `in_view[<camera>]` line in WORLD_STATE. None omits it. Depth-free, so it
         # populates even when the 3D lift / `scene_objects` cannot.
         self._in_view: ObjectsMetadata | None = None
+        # ADR-0076 — sticky open-vocab locate hits, keyed by lowercased label
+        # (latest bbox wins, insertion-ordered, capped). The continuous detector
+        # overwrites `_in_view` every frame with its fixed vocabulary; a goal noun
+        # the reasoner confirmed via `locate_in_view` (open-vocab) would otherwise
+        # vanish on the next clobber. Persisting it here keeps the grounded object
+        # in the `located[<cam>]` line so the LLM can decompose / dispatch instead
+        # of re-locating it every tick. Fed via `note_located`.
+        self._located: dict[str, ObjectDetection2D] = {}
+        self._located_sensor: str | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -453,6 +463,46 @@ class ContextRenderer:
         is empty (RGB-only / no lift).
         """
         self._in_view = objects
+        self._seq += 1
+
+    #: Max distinct labels retained in the sticky ``located`` store (ADR-0076).
+    _LOCATED_CAP = 12
+
+    def note_located(self, objects: ObjectsMetadata | None) -> None:
+        """Persist open-vocab ``locate_in_view`` hits into the sticky ``located`` line.
+
+        The complement to :meth:`set_in_view`: that holds the *continuous*
+        detector's latest (fixed-vocabulary) frame, which is overwritten every
+        tick. When the reasoner confirms a goal noun with the open-vocab
+        ``locate_in_view`` detector (e.g. ``basket``, ``ketchup`` — labels the
+        fixed indoor vocabulary mislabels as ``tray`` / ``bottle``), the hit is
+        kept here keyed by lowercased label (latest bbox wins, capped at
+        :attr:`_LOCATED_CAP`) so it survives the next continuous clobber and the
+        LLM can ground / decompose instead of re-locating it. A confirmed
+        detection is an **event**, so this bumps :attr:`seq`. ``None`` / empty is
+        a no-op.
+
+        Example:
+            >>> from openral_core import ObjectDetection2D, ObjectsMetadata
+            >>> r = ContextRenderer()
+            >>> r.note_located(ObjectsMetadata(sensor_id="top", model_id="omdet",
+            ...     frame_width=256, frame_height=256, detections=[
+            ...     ObjectDetection2D(label="basket", confidence=0.6,
+            ...                       bbox_xyxy=(10, 20, 30, 40))]))
+            >>> "located[top]: basket" in r.render(world_state=None)
+            True
+        """
+        if objects is None or not objects.detections:
+            return
+        self._located_sensor = objects.sensor_id or self._located_sensor
+        for det in objects.detections:
+            key = det.label.strip().lower()
+            if not key:
+                continue
+            self._located.pop(key, None)  # re-insert so newest sorts last / evicts last
+            self._located[key] = det
+        while len(self._located) > self._LOCATED_CAP:
+            self._located.pop(next(iter(self._located)))  # evict oldest
         self._seq += 1
 
     @property
@@ -649,15 +699,26 @@ class ContextRenderer:
         context. Distinct from the 3D ``scene_objects[<map>]:@(x,y,z)`` line so the
         two coordinate spaces never blur; it populates without the 3D lift.
         """
+        lines: list[str] = []
         md = self._in_view
-        if md is None or not md.detections:
-            return ""
-        items = ", ".join(
-            f"#{d.det_id} {d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
-            f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
-            for d in sorted(md.detections, key=lambda d: d.det_id)
-        )
-        return f"in_view[{md.sensor_id}]: {items}"
+        if md is not None and md.detections:
+            items = ", ".join(
+                f"#{d.det_id} {d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
+                f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
+                for d in sorted(md.detections, key=lambda d: d.det_id)
+            )
+            lines.append(f"in_view[{md.sensor_id}]: {items}")
+        # ADR-0076 — sticky open-vocab locate hits. These carry the goal nouns the
+        # fixed-vocabulary in_view line mislabels, so they are the authoritative
+        # grounding for decomposing / dispatching against the mission objects.
+        if self._located:
+            loc = ", ".join(
+                f"{d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
+                f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
+                for d in self._located.values()
+            )
+            lines.append(f"located[{self._located_sensor or 'view'}]: {loc}")
+        return "\n".join(lines)
 
     def _render_failures(self) -> str:
         """Render the failure buffer; one line per event, oldest first."""
