@@ -361,5 +361,4 @@ individual decisions follow:
 - [`reasoner.md`](reasoner.md) — the reasoner **reference** (cadence, tool
   contract, palette gating, provider table, observability, how to run it).
 - [`openral_reasoner_ros` README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md) — ROS wrapper contract, provider presets, baseline LLM configs.
-- [`docs/investigations/reasoner-success-gating-and-multitask.md`](../investigations/reasoner-success-gating-and-multitask.md) — the investigation that drove ADR-0073/0074.
 - [Architecture overview](../architecture/overview.md) · [repo state map](../architecture/repo-state-map.html).

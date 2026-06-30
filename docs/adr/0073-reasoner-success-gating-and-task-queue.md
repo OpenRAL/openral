@@ -36,9 +36,8 @@
     planning: a fast collision-aware reachability check that makes the
     `preflight-reach` playbook a *pre-dispatch feasibility gate* (stage or hand off
     instead of burning a 60 s VLA attempt on an unreachable target).
-  - Investigation that motivates this ADR:
-    [`docs/investigations/reasoner-success-gating-and-multitask.md`](../investigations/reasoner-success-gating-and-multitask.md)
-    — the full code map (file:line anchors) and the live run that exposed the gap.
+  - Investigation that motivates this ADR: the full code map (file:line anchors)
+    and the live run that exposed the gap.
 
 ## Context
 
