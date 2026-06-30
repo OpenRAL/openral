@@ -61,7 +61,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription
+    from openral_core import RobotDescription, RSkillManifest
 
 __all__ = [
     "LaunchInvocation",
@@ -394,6 +394,22 @@ class LaunchInvocation:
     foxglove_port: int
     """ADR-0059 — Foxglove WebSocket port. Forwarded as ``foxglove_port:=…``.
     Default 8765 (the ``foxglove_bridge`` upstream default)."""
+    initial_task_prompt: str
+    """Operator goal delivered to the reasoner at startup (cli priority).
+
+    Sourced only from ``--initial-task`` (or a later live ``/openral/prompt``);
+    deploy never derives it from scene tasks (ADR-0073). Forwarded as
+    ``initial_task_prompt:=<text>`` to the launch file. Empty = the reasoner
+    idles until an operator prompt arrives."""
+    enable_reward_monitor: bool
+    """ADR-0057/0077 — whether the Robometer reward monitor is brought up
+    co-active with the VLA. When true the deploy preflight checks the VLA↔reward
+    VRAM pairing (:func:`_preflight_reward_vram_fit`) before bringing up ROS."""
+    reward_monitor_manifest: str
+    """ADR-0077 — the RESOLVED reward-monitor manifest path. Defaults from the
+    capability-matched VLA palette's ``reward_rskill_name`` (the pairing the
+    reasoner will honour) when ``--reward-monitor-manifest`` is not given; empty
+    when no reward monitor is active. Forwarded as ``reward_monitor_manifest:=…``."""
     argv_template: list[str]
     """``argv_template`` carries ``HAL_PARAMS_FILE_PLACEHOLDER`` where
     the temp HAL-params YAML path goes. The dispatcher substitutes it
@@ -569,6 +585,291 @@ def _resolve_slam_backend(*, has_lidar: bool, has_vision_slam: bool, enable_slam
     return "none"
 
 
+def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
+    """Derive the sim_e2e.launch.py bundle args from a deploy memory-bundle dir (ADR-0072 §3b).
+
+    The bundle is a directory holding any of ``MEMORY.md`` (semantic memory),
+    ``scene_graph.json`` (3D world-state graph), and ``map.yaml`` (2D occupancy grid).
+    Each artifact is forwarded to its own consumer's launch arg. The dir must exist
+    (the robot writes ``MEMORY.md`` into it); ``scene_graph.json`` / ``map.yaml`` are
+    forwarded only when present, so a fresh bundle (empty dir) just starts the reasoner
+    with empty memory and no preloaded scene/map.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    d = Path(memory_dir).expanduser()
+    if not d.is_dir():
+        raise ROSConfigError(
+            f"--memory-dir {memory_dir!r} is not an existing directory. Create the bundle "
+            "dir first (the robot writes MEMORY.md into it; place scene_graph.json / map.yaml "
+            "there to preload the scene graph + occupancy grid)."
+        )
+    # memory_md_path may not exist yet — the reasoner creates it on the first memory_write.
+    args = [f"memory_md_path:={d / 'MEMORY.md'}"]
+    scene_graph = d / "scene_graph.json"
+    if scene_graph.is_file():
+        args.append(f"spatial_memory_path:={scene_graph}")
+    map_yaml = d / "map.yaml"
+    if map_yaml.is_file():
+        args.append(f"map_path:={map_yaml}")
+    return args
+
+
+# ADR-0077 — the in-tree directory of the default reward/progress-monitor rSkill
+# the deploy pairs with a VLA when nothing names one. Mirrors the reasoner's
+# launch default (``rskills/robometer-4b/rskill.yaml``, sim_e2e.launch.py).
+_DEFAULT_REWARD_RSKILL_DIR = "robometer-4b"
+
+
+def _detect_gpu_total_vram_gb() -> float:
+    """Total VRAM (GB) of GPU 0 via ``nvidia-smi``, or ``0.0`` when unavailable.
+
+    Torch-free probe (the CLI must not import torch just to size the GPU) — a
+    deliberate mirror of ``openral_reasoner_ros.reasoner_node._detect_gpu_total_vram_gb``
+    (a private, ROS-package-local helper the CLI cannot import without pulling in
+    rclpy). Used by the ADR-0077 deploy preflight. Any failure (no nvidia-smi, no
+    GPU, parse error) returns ``0.0`` → the caller skips the pair check rather than
+    blocking a launch on a host where the budget cannot be read.
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    lines = out.stdout.strip().splitlines()
+    if not lines:
+        return 0.0
+    try:
+        return float(lines[0].strip()) / 1024.0  # MiB → GiB
+    except ValueError:
+        return 0.0
+
+
+def _capability_matched_manifests(
+    repo_root: Path,
+    description: RobotDescription,
+    *,
+    commercial_deployment: bool = False,
+) -> list[RSkillManifest]:
+    """In-tree rSkill manifests that match this robot's reasoner palette.
+
+    Loads every ``rskills/*/rskill.yaml`` and runs the same
+    capability/role/license filter the reasoner seeds at ``on_configure``
+    (:func:`openral_reasoner.palette.build_tool_palette`), returning the matched
+    manifests. ``openral deploy sim`` does not preselect a VLA — the reasoner picks
+    one at runtime from exactly this set — so reward resolution + the ADR-0077 VRAM
+    preflight both reason over it (the "VLA known at launch" is the *palette*, not a
+    single policy). Unloadable manifests are skipped (the reasoner skips them too).
+    """
+    from openral_core import RSkillManifest
+    from openral_reasoner.palette import build_tool_palette
+
+    manifests: list[RSkillManifest] = []
+    for path in sorted((repo_root / "rskills").glob("*/rskill.yaml")):
+        try:
+            manifests.append(RSkillManifest.from_yaml(str(path)))
+        except (OSError, ValueError):
+            continue
+    if not manifests:
+        return []
+    palette = build_tool_palette(
+        installed_skills=manifests,
+        robot_capabilities=description.capabilities,
+        commercial_deployment=commercial_deployment,
+    )
+    matched = set(palette.execute_rskill_ids)
+    return [m for m in manifests if m.name in matched]
+
+
+def _resolve_reward_monitor_manifest(
+    *,
+    repo_root: Path,
+    description: RobotDescription,
+    explicit_manifest: str | None,
+) -> str:
+    """Resolve the reward-monitor manifest, defaulting from the VLA pairing (ADR-0077 §4).
+
+    The pairing used to be implicit: the reward model was chosen by a flag
+    (``--reward-monitor-manifest``) wholly decoupled from the VLA the reasoner
+    picks. ADR-0077 records the pairing on the VLA manifest
+    (``reward_rskill_name``); this honours it at launch. Because ``deploy sim``
+    does not preselect a single VLA, we read the pairing across the
+    capability-matched VLA palette:
+
+    * An explicit ``--reward-monitor-manifest`` always wins (operator override).
+    * Else, if the palette's VLAs agree on a single ``reward_rskill_name``, resolve
+      that rSkill ``name`` to its in-tree manifest path.
+    * Else (no VLA names a reward model, the named model is not in-tree, or the
+      palette VLAs disagree) fall back to the deployment default
+      (``robometer-4b``). A disagreement is warned — the reasoner additionally
+      warns per-VLA at dispatch when a VLA's ``reward_rskill_name`` differs from
+      the loaded reward model.
+
+    Returns the resolved manifest path as a string (empty only when even the
+    default is missing from the tree).
+    """
+    if explicit_manifest:
+        return explicit_manifest
+
+    from openral_core import RSkillManifest
+
+    default_path = repo_root / "rskills" / _DEFAULT_REWARD_RSKILL_DIR / "rskill.yaml"
+    default = str(default_path.resolve()) if default_path.is_file() else ""
+
+    # name → manifest path for every in-tree kind:reward rSkill.
+    reward_index: dict[str, Path] = {}
+    for path in sorted((repo_root / "rskills").glob("*/rskill.yaml")):
+        try:
+            man = RSkillManifest.from_yaml(str(path))
+        except (OSError, ValueError):
+            continue
+        if man.kind == "reward":
+            reward_index[man.name] = path
+
+    named = {
+        m.reward_rskill_name
+        for m in _capability_matched_manifests(repo_root, description)
+        if m.kind == "vla" and m.reward_rskill_name
+    }
+    if not named:
+        return default
+    if len(named) > 1:
+        _console.print(
+            "[yellow]warning:[/yellow] capability-matched VLAs name different reward "
+            f"models {sorted(named)!r} (ADR-0077); defaulting the reward monitor to "
+            f"{_DEFAULT_REWARD_RSKILL_DIR!r}. The reasoner re-checks each VLA's pairing "
+            "at dispatch."
+        )
+        return default
+    (target_name,) = tuple(named)
+    target_path = reward_index.get(target_name)
+    if target_path is None:
+        _console.print(
+            f"[yellow]warning:[/yellow] VLA(s) pair with reward model {target_name!r} "
+            "(ADR-0077) but no in-tree kind:reward rSkill declares that name; "
+            f"defaulting the reward monitor to {_DEFAULT_REWARD_RSKILL_DIR!r}."
+        )
+        return default
+    return str(target_path.resolve())
+
+
+def _preflight_reward_vram_fit(  # noqa: PLR0912  # reason: linear per-VLA classification (fit / oom / undeclared) + the three notify branches read clearest inline
+    *,
+    repo_root: Path,
+    description: RobotDescription,
+    reward_manifest_path: str,
+    gpu_total_gb: float,
+    commercial_deployment: bool = False,
+) -> None:
+    """Fail fast before launch when no VLA can co-reside with the reward model (ADR-0077 §4).
+
+    A VLA emits no success signal of its own, so it must run with its reward model
+    resident alongside it (ADR-0074). The reasoner enforces this per-VLA at
+    dispatch (``_refuse_unfittable_vla``) — but only *after* ROS is up. This is the
+    pre-LAUNCH gate: build the same capability-matched VLA palette the reasoner
+    will, and run :func:`openral_core.schemas.assert_vla_reward_fits` for each VLA
+    against the reward model + the GPU budget.
+
+    The contract mirrors :func:`_preflight_palette_deps`: it is advisory per-VLA
+    (the reasoner drops a non-fitting VLA from dispatch anyway) and a HARD gate only
+    when the palette would be empty of *runnable* policies — i.e. **no** matched VLA
+    can dispatch with the reward model resident. In that case the deploy could
+    actuate nothing, so we notify and ``typer.Exit(1)`` before bringing up ROS
+    instead of booting a graph that dispatches a VLA blind or OOMs mid-run.
+
+    Skipped (returns) when ``gpu_total_gb <= 0.0`` (budget unreadable — defer to the
+    reasoner's runtime check), when no reward model is active, or when the robot has
+    no capability-matched VLA palette to check.
+    """
+    if gpu_total_gb <= 0.0 or not reward_manifest_path:
+        return
+    from openral_core import RSkillManifest
+    from openral_core.exceptions import ROSGPUMemoryError
+    from openral_core.schemas import assert_vla_reward_fits
+
+    try:
+        reward = RSkillManifest.from_yaml(reward_manifest_path)
+    except (OSError, ValueError) as exc:
+        _console.print(
+            f"[red]config error:[/red] reward monitor manifest {reward_manifest_path!r} "
+            f"failed to load (ADR-0077 preflight): {exc}"
+        )
+        raise typer.Exit(code=1) from exc
+
+    vlas = [
+        m
+        for m in _capability_matched_manifests(
+            repo_root, description, commercial_deployment=commercial_deployment
+        )
+        if m.kind == "vla"
+    ]
+    if not vlas:
+        return
+
+    fits: list[str] = []
+    oom: list[str] = []
+    undeclared: list[str] = []
+    for vla in vlas:
+        try:
+            combined = assert_vla_reward_fits(vla, reward, gpu_total_gb)
+        except ROSGPUMemoryError as exc:
+            oom.append(f"{vla.name}: {exc}")
+        except ROSConfigError:
+            # min_vram_gb undeclared for the active dtype — the pair cannot be
+            # verified, so the reasoner will refuse this VLA at dispatch too.
+            undeclared.append(vla.name)
+        else:
+            fits.append(f"{vla.name} ({combined:.2f} GB)")
+
+    if not fits:
+        _console.print()
+        _console.print(
+            "[red]preflight failed:[/red] no capability-matched VLA can co-reside with "
+            f"the reward model {reward.name!r} on this GPU "
+            f"({gpu_total_gb:.2f} GB total) — every paired policy would be refused at "
+            "dispatch, so the deploy could actuate nothing (ADR-0077)."
+        )
+        for line in oom:
+            _console.print(f"  • too large: {line}")
+        if undeclared:
+            _console.print(
+                "  • undeclared min_vram_gb (cannot verify the required co-residency): "
+                f"{undeclared!r}"
+            )
+        _console.print(
+            "  Remedies: use a smaller-footprint VLA/reward pair or a larger GPU; "
+            "declare min_vram_gb on the VLA manifest(s); or run with "
+            "--no-enable-reward-monitor (accepting the VLA runs without a live reward "
+            "signal)."
+        )
+        raise typer.Exit(code=1)
+
+    if oom:
+        _console.print(
+            f"[yellow]preflight:[/yellow] {len(oom)} VLA(s) cannot fit beside the reward "
+            f"model {reward.name!r} on {gpu_total_gb:.2f} GB and will be refused at "
+            "dispatch (ADR-0077):"
+        )
+        for line in oom:
+            _console.print(f"  • {line}")
+    if undeclared:
+        _console.print(
+            f"[yellow]preflight:[/yellow] {len(undeclared)} VLA(s) do not declare "
+            "min_vram_gb for their active dtype, so the reward pairing cannot be "
+            f"verified and the reasoner will refuse them while a reward model is active "
+            f"(ADR-0077): {undeclared!r}"
+        )
+    _console.print(
+        f"[green]preflight:[/green] {len(fits)} VLA(s) fit beside reward "
+        f"{reward.name!r} on {gpu_total_gb:.2f} GB: {fits!r}"
+    )
+
+
 def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resolve sequence (robot_id → manifest → per-feature slam/nav2/octomap + sim/real hal_mode gating); splitting hurts readability
     *,
     config: Path | None = None,
@@ -595,9 +896,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     enable_critic: bool = False,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
+    memory_dir: str | None = None,
     enable_dashboard: bool = True,
     enable_foxglove: bool = False,
     foxglove_port: int = 8765,
+    initial_task_prompt: str | None = None,
 ) -> LaunchInvocation:
     """Resolve every input into the ``ros2 launch`` argv to execute.
 
@@ -624,6 +927,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "robot_id is undefined: pass ``--robot <id>`` or (for ``deploy sim``) "
             "set ``robot_id:`` in the DeployScene YAML / use a fixed-robot scene."
         )
+
+    # The deploy startup prompt comes ONLY from the operator (--initial-task /
+    # a live /openral/prompt). Deploy never reads sim-predefined scene tasks —
+    # that is `sim run`'s job (ADR-0073 amendment / deploy ≠ benchmark).
+    _resolved_initial_prompt: str = initial_task_prompt or ""
+
     # ADR-0034 — a --robot override that differs from the scene's declared robot
     # composes a different arm than the scene was authored for. The scene's cameras
     # + asset mounts (e.g. tabletop_push's wrist_camera_mount_body="gripper") are
@@ -902,12 +1211,37 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(f"object_detector_manifest:={resolved_object_detector_manifest}")
     if object_detector_query:
         argv_template.append(f"object_detector_query:={object_detector_query}")
-    # ADR-0057 — forward reward-monitor overrides only when set (ros2 launch
-    # rejects an empty ``name:=`` value; the launch file defaults both to "").
-    if reward_monitor_manifest:
-        argv_template.append(f"reward_monitor_manifest:={reward_monitor_manifest}")
-    if reward_monitor_task:
-        argv_template.append(f"reward_monitor_task:={reward_monitor_task}")
+    # ADR-0077 §4 — resolve the reward-monitor manifest from the VLA pairing when
+    # the operator did not pin one. ``deploy sim`` does not preselect a VLA, so the
+    # default is derived from the capability-matched VLA palette's
+    # ``reward_rskill_name`` (the pairing the reasoner will honour) instead of an
+    # independent flag. Only when the reward monitor is active; otherwise empty.
+    resolved_reward_monitor_manifest = (
+        _resolve_reward_monitor_manifest(
+            repo_root=repo_root,
+            description=description,
+            explicit_manifest=reward_monitor_manifest,
+        )
+        if enable_reward_monitor
+        else ""
+    )
+    # Forward the resolved reward manifest (ros2 launch rejects an empty ``name:=``
+    # value; the launch file defaults it to "" and the reasoner/monitor fall back
+    # to the robometer default when unset).
+    if resolved_reward_monitor_manifest:
+        argv_template.append(f"reward_monitor_manifest:={resolved_reward_monitor_manifest}")
+    # The reward monitor's always-on critic_score path scores against its
+    # `task` param; an empty task makes `_publish_critic_score` silently skip
+    # every tick (it never scores, never spawns the robometer sidecar). Default
+    # it to the operator goal so a deploy with `--initial-task` gets a
+    # background progress signal out of the box (an explicit
+    # `--reward-monitor-task` still wins; the reasoner's `query_task_progress`
+    # polls already carry the live subtask when it dispatches with a deadline).
+    effective_reward_task = reward_monitor_task
+    if not effective_reward_task and _resolved_initial_prompt:
+        effective_reward_task = _resolved_initial_prompt.strip()
+    if effective_reward_task:
+        argv_template.append(f"reward_monitor_task:={effective_reward_task}")
     # ADR-0056 — only forward the locator list when non-empty (ros2 launch rejects
     # an empty ``name:=`` value; the launch file defaults it to "").
     if resolved_object_detector_locators:
@@ -929,6 +1263,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             argv_template.append(f"dataset_repo_id:={dataset_repo_id}")
         if dataset_license:
             argv_template.append(f"dataset_license:={dataset_license}")
+
+    # ADR-0072 Decision 3b — the deploy memory bundle. ``--memory-dir`` (CLI) wins;
+    # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality
+    # launch paths by convention and forward them (each to its consumer's arg).
+    effective_memory_dir = memory_dir
+    if effective_memory_dir is None and config is not None:
+        from openral_core import DeployScene
+
+        effective_memory_dir = DeployScene.from_yaml(str(config)).memory_dir
+    if effective_memory_dir:
+        argv_template.extend(_memory_bundle_launch_args(effective_memory_dir))
+
+    # Forward the startup prompt only when non-empty (ADR-0073). The launch
+    # file defaults ``initial_task_prompt`` to "" (no prompt), so omitting it
+    # leaves the reasoner in idle mode until an operator prompt arrives.
+    if _resolved_initial_prompt:
+        argv_template.append(f"initial_task_prompt:={_resolved_initial_prompt}")
 
     return LaunchInvocation(
         robot_id=robot_id,
@@ -952,6 +1303,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         approach_skill_id=approach_skill,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
+        initial_task_prompt=_resolved_initial_prompt,
+        enable_reward_monitor=enable_reward_monitor,
+        reward_monitor_manifest=resolved_reward_monitor_manifest,
         argv_template=argv_template,
     )
 
@@ -999,10 +1353,22 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
     ``run_preflight`` probes the rSkill palette extras.
     """
     if run_preflight:
+        repo_root = _repo_root_from(Path(__file__))
         _preflight_palette_deps(
-            repo_root=_repo_root_from(Path(__file__)),
+            repo_root=repo_root,
             robot_yaml=Path(invocation.robot_yaml),
         )
+        # ADR-0077 §4 — VLA↔reward VRAM pair preflight (deploy run path). No-op
+        # unless a reward monitor is active and the GPU budget is readable.
+        if invocation.enable_reward_monitor and invocation.reward_monitor_manifest:
+            from openral_core import RobotDescription
+
+            _preflight_reward_vram_fit(
+                repo_root=repo_root,
+                description=RobotDescription.from_yaml(str(invocation.robot_yaml)),
+                reward_manifest_path=invocation.reward_monitor_manifest,
+                gpu_total_gb=_detect_gpu_total_vram_gb(),
+            )
     hal_params_tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115  # reason: HAL reads after this scope
         mode="w",
         prefix=f"openral-hal-params-{invocation.robot_id}-",
@@ -1143,6 +1509,21 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str, ...] = (
     # GR00T/RLDX weights resident and starves the GPU (~6.5 GiB) of the
     # next run. The cache dir is openral-specific, so this is unambiguous.
     "/.cache/openral/rldx-sidecar/",
+    # Robometer reward sidecar (ADR-0057). Same out-of-process pattern as
+    # rldx: ``reward_monitor_node`` spawns it in its own session, so killpg on
+    # the launch group never reaches it, and it forks one torch-inductor
+    # ``compile_worker`` per CPU. The venv path appears in the server's AND
+    # every compile_worker's cmdline, so this single needle reaps the whole
+    # sidecar tree (~3.3 GiB GPU) if the graceful ``close()`` doesn't run.
+    "/.cache/openral/robometer-sidecar/",
+    # Perception / critic graph nodes spawned by ``sim_e2e.launch.py``. These
+    # were absent from the sweep, so under a heavy graph whose graceful
+    # shutdown doesn't finish within ``grace_s`` they orphaned (the reward
+    # monitor holds the sidecar; the detector holds its model). Scoped to the
+    # in-tree node entry points so we never touch an unrelated process.
+    "openral_perception_ros/reward_monitor_node.py",
+    "openral_perception_ros/ros_image_detector_node.py",
+    "openral_reasoner_ros/critic_producer_node.py",
 )
 
 
@@ -1860,6 +2241,18 @@ def deploy_sim_command(
             "detector is."
         ),
     ),
+    memory_dir: str | None = typer.Option(
+        None,
+        "--memory-dir",
+        help=(
+            "ADR-0072 — path to a deploy memory bundle directory. The reasoner "
+            "loads MEMORY.md (semantic memory + memory_write/search tools) from it; "
+            "if the dir also holds scene_graph.json it preloads the 3D world-state "
+            "graph (recall_object), and if it holds map.yaml a nav2 map_server seeds "
+            "the 2D occupancy grid. The dir must exist (the robot writes MEMORY.md "
+            "into it). Overrides the DeployScene's own memory_dir."
+        ),
+    ),
     dashboard: bool = typer.Option(
         True,
         "--dashboard/--no-dashboard",
@@ -1901,6 +2294,18 @@ def deploy_sim_command(
             "ADR-0059 — Foxglove WebSocket port (ws://127.0.0.1:<port>). "
             "Default 8765 (the foxglove_bridge upstream default). "
             "Ignored unless ``--foxglove`` is set."
+        ),
+    ),
+    initial_task: str | None = typer.Option(
+        None,
+        "--initial-task",
+        help=(
+            "Single natural-language goal the reasoner decomposes into ordered subtasks "
+            "via ``decompose_mission``, e.g. ``--initial-task 'pick the bowl and place "
+            "it on the plate, then push the mug back'``. Passed as "
+            "``initial_task_prompt`` to the launch. When omitted, no startup prompt is "
+            "set and the reasoner idles until a manual ``openral prompt`` or dashboard "
+            "prompt arrives."
         ),
     ),
     dry_run: bool = typer.Option(
@@ -1946,9 +2351,11 @@ def deploy_sim_command(
             enable_critic=enable_critic,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
+            memory_dir=memory_dir,
             enable_dashboard=dashboard,
             enable_foxglove=foxglove,
             foxglove_port=foxglove_port,
+            initial_task_prompt=initial_task,
         )
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
@@ -2022,6 +2429,15 @@ def deploy_sim_command(
         )
     )
     _console.print("  envelope:      synthesised at launch time from robot.yaml (no envelope file)")
+    _console.print(
+        "  startup_prompt: "
+        + (
+            f"[green]{invocation.initial_task_prompt!r}[/green] "
+            "(from --initial-task; delivered to reasoner at activate)"
+            if invocation.initial_task_prompt
+            else "[dim](none — reasoner idles until openral prompt or dashboard)[/dim]"
+        )
+    )
 
     if dry_run:
         printed = [
@@ -2063,6 +2479,21 @@ def deploy_sim_command(
         repo_root=_repo_root_from(Path(__file__)),
         robot_yaml=Path(invocation.robot_yaml),
     )
+
+    # ADR-0077 §4 — VLA↔reward VRAM pair preflight. A VLA must run with its reward
+    # model resident (ADR-0074); verify the pair fits the GPU BEFORE bringing up
+    # ROS. No-op unless the reward monitor is active and the GPU budget is readable;
+    # hard-exits (before launch) when no capability-matched VLA can co-reside with
+    # the reward model.
+    if invocation.enable_reward_monitor and invocation.reward_monitor_manifest:
+        from openral_core import RobotDescription
+
+        _preflight_reward_vram_fit(
+            repo_root=_repo_root_from(Path(__file__)),
+            description=RobotDescription.from_yaml(str(invocation.robot_yaml)),
+            reward_manifest_path=invocation.reward_monitor_manifest,
+            gpu_total_gb=_detect_gpu_total_vram_gb(),
+        )
 
     # Write the ephemeral HAL params YAML (lifetime = subprocess) and
     # substitute its path into argv. ROS 2 parameter YAML uses the

@@ -69,6 +69,13 @@ _CANCEL_DRAIN_S = 0.1
 # trajectories are far smaller (hundreds of points).
 _MAX_APPROACH_WAYPOINTS = 100_000
 
+# CLAUDE.md §3 — global fallback for a single execute_rskill goal's wall-clock
+# budget when the dispatch leaves ``deadline_s=0`` (the LLM's "use the manifest
+# default" sentinel) AND the skill manifest declares no ``latency_budget.
+# max_execution_s``. A VLA policy never self-terminates, so without a bound the
+# goal runs forever and the reasoner can never re-evaluate the attempt.
+_DEFAULT_EXECUTION_DEADLINE_S = 45.0
+
 
 def _commercial_deployment() -> bool:
     """Return whether the running deployment is commercial.
@@ -550,6 +557,29 @@ if _ROS2_AVAILABLE:
                     return result
 
                 self._active_skill = skill
+
+                # CLAUDE.md §3 — deadline fallback (mandatory). ``deadline_s<=0``
+                # is the LLM's documented "use the skill manifest's default"
+                # sentinel; resolve it to the manifest's ``latency_budget.
+                # max_execution_s`` (else a global default) so a VLA goal — which
+                # never self-terminates — is bounded and the reasoner can
+                # re-evaluate the attempt instead of hanging forever.
+                if deadline_s <= 0.0:
+                    _budget = None
+                    for _src in (
+                        getattr(skill, "manifest", None),
+                        getattr(self, "manifest", None),
+                    ):
+                        _lb = getattr(_src, "latency_budget", None)
+                        _budget = getattr(_lb, "max_execution_s", None)
+                        if _budget:
+                            break
+                    deadline_s = float(_budget) if _budget else _DEFAULT_EXECUTION_DEADLINE_S
+                    self.get_logger().info(
+                        f"deadline_s=0 → resolved to {deadline_s:.0f}s "
+                        f"({'manifest max_execution_s' if _budget else 'global default'}); "
+                        "a VLA never self-terminates (ADR-0018 / CLAUDE.md §3)",
+                    )
 
                 # Move the HAL to the manifest's in-distribution ``starting_pose``
                 # before the first inference tick (without this a checkpoint

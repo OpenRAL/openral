@@ -57,6 +57,18 @@ def test_deploy_scene_minimal():
     assert d.composition is None
 
 
+def test_deploy_scene_rejects_tasks_field():
+    """ADR-0073 amendment — deploy goals come from the operator prompt, not the scene."""
+    import pytest
+    from openral_core import DeployScene
+    from pydantic import ValidationError
+
+    base = {"scene": {"id": "libero_spatial", "backend": "mujoco"}}
+    DeployScene.model_validate(base)  # valid without tasks
+    with pytest.raises(ValidationError):
+        DeployScene.model_validate({**base, "tasks": ["pick the milk"]})
+
+
 def test_deploy_scene_composition_round_trips():
     # ADR-0066 — a deploy scene declares its own MJCF composition (its arena),
     # so the robot manifest doesn't have to carry scene config.

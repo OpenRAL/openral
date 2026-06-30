@@ -32,6 +32,7 @@ exclusively in tests.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Mapping
@@ -96,6 +97,55 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "Follow the operator's instruction in PROMPTS as literally and "
     "faithfully as you can. Do not substitute your own objective, do "
     "not expand scope, and do not skip steps the instruction implies. "
+    # ── Smallest actionable unit: one specific object per skill ───────
+    "A skill acts on EXACTLY ONE specific, concrete object. Before you "
+    "dispatch execute_rskill, the active task MUST name a single specific "
+    "object you can point to in PERCEPTION — two lines enumerate what the "
+    "detector currently sees: `in_view[<camera>]` lists every object with a "
+    "stable id and a camera-space pixel centre (`#3 milk @px(412,233)`; always "
+    "present), and `scene_objects[<map>]` adds 3D world positions when depth is "
+    "available. Use EITHER to enumerate — prefer `in_view` when `scene_objects` "
+    "is absent. A collective or quantified target is NEVER directly actionable: a "
+    "quantifier (all / every / each / both / everything) or a bare generic "
+    "plural (the objects / items / things) means 'look and enumerate "
+    "FIRST'. When the goal targets such a set, do NOT call execute_rskill "
+    "— read the concrete objects from PERCEPTION and call decompose_mission "
+    "to split the goal into one subtask per specific object, each phrased "
+    "as a verb + that specific object (+ destination), e.g. 'pick up the "
+    "milk and put it in the basket', 'pick up the ketchup and put it in "
+    "the basket'. Each subtask names ONE concrete object — never 'the "
+    "first batch of objects', never 'the remaining items'. Only once the "
+    "active task names a single specific object may you dispatch a skill "
+    "on it. The same rule generalises beyond picking: a coarse goal "
+    "('bring me a glass of wine') decomposes into specific verb+object "
+    "steps (navigate to the kitchen, open the fridge, pick up the wine "
+    "bottle, …), each naming a concrete object, never a vague category. "
+    # ── Ground (confirm) before you decompose a collective goal ────────
+    # ADR-0075/0076 — the continuous detector's `in_view` line is a FIXED
+    # vocabulary that mislabels goal nouns (teapot→bottle, basket→box). A
+    # direct probe (glm-5.2, .goals/.../probe_reasoner_decompose_gate.py)
+    # showed the LLM building a mission straight from those raw clutter
+    # labels (0/3) unless told `located` is authoritative; with this block it
+    # locates-to-confirm first and decomposes only on confirmed objects (3/3).
+    "GROUND BEFORE YOU DECOMPOSE (collective goals). The `in_view[<camera>]` "
+    "line comes from a FIXED-VOCABULARY continuous detector that frequently "
+    "MISLABELS the goal objects (a teapot read as 'bottle', a basket as "
+    "'box'); do NOT build a mission directly from raw `in_view` labels. The "
+    "authoritative grounding is the `located[<camera>]` line — open-vocab "
+    "locate_in_view confirmations of the actual goal nouns. Procedure for a "
+    "collective/quantified goal (all / every / the objects / things): (1) if "
+    "`located` does NOT yet name the goal objects, call locate_in_view to "
+    "CONFIRM which visible objects are the ones to act on (this populates "
+    "`located`). Phrase that query as concrete object NOUNS — a single noun or "
+    "a comma-separated list of the candidate objects (read likely nouns from "
+    "the raw `in_view` labels even when mislabeled: e.g. query "
+    "`cup, bowl, bottle, basket`). NEVER query the collective phrase itself "
+    "(`the objects on the table`, `everything`): the fast locator matches each "
+    "term as one object class, so a phrase matches nothing and wastes a "
+    "look. (2) the MOMENT `located` names one or more concrete goal "
+    "objects, call decompose_mission (one grounded subtask per located "
+    "object) and do NOT locate_in_view / recall_object again for an object "
+    "already in `located` — re-locating a confirmed object makes no progress. "
     # ── Skill selection (robot- and scene-matched) ────────────────────
     "The palette includes one execute_rskill__<skill> tool per installed "
     "rSkill. The palette has ALREADY been filtered to THIS robot's body "
@@ -162,6 +212,25 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "If progress stalled or regressed, change tactic — tweak the goal "
     "params, substitute a different skill, or re-plan the approach — "
     "rather than re-issuing the same call against unchanged context. "
+    # ── Break a stuck task into finer steps (decompose_mission, #123) ──
+    "The MISSION section shows the ordered task queue (one task active at a "
+    "time); it advances only when the active task is verified. When a task is "
+    "too coarse for one skill, or query_task_progress shows it stalling and a "
+    "skill swap / param tweak is not helping, use decompose_mission to break it "
+    "into finer subtasks instead of burning attempts until it is abandoned: "
+    "call it with target_task_id set to the active task's id (e.g. 't2') and "
+    "subtasks = the ordered finer steps. Each subtask is grounded: "
+    "{object_ref: <ONE specific object, e.g. 'milk'>, text: <the instruction, "
+    "naming that object>} — object_ref must name exactly one concrete object "
+    "(never 'all'/'the objects'/'the first batch'), and text must name it. The "
+    "active task is flat-spliced in place by its children and you continue on "
+    "the first. Subdivision is "
+    "depth-bounded; a task already broken down twice is handed to the operator "
+    "rather than split again. You may also call decompose_mission with an EMPTY "
+    "target_task_id once at the very start to replace a coarse operator goal "
+    "with a better ordered decomposition (only before any task has been "
+    "attempted). decompose_mission only edits the task ledger — it never moves "
+    "the robot. "
     # ── Poll the reward monitor to judge a running skill (ADR-0057) ────
     "When the read-only query_task_progress tool is in the palette, a "
     "reward monitor is running IN PARALLEL with the executing skill (e.g. a "
@@ -439,6 +508,29 @@ class ToolUseClient(Protocol):
                 (timeout, transport error, malformed response).
         """
 
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask the model a free-text question about a single camera frame.
+
+        Encodes ``image_jpeg`` as base64 and sends ONE chat/messages
+        request with the image + ``question`` as user content; returns
+        the model's text answer (stripped). No tool-use, no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame (e.g.
+                "Is the cup placed on the coaster?").
+
+        Returns:
+            The model's text answer, stripped of leading/trailing
+            whitespace.  For reasoning models that surface their answer
+            in a ``reasoning`` field with an empty ``content``, the
+            ``reasoning`` text is returned instead.
+
+        Raises:
+            ROSConfigError: When the SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+
 
 # OpenRouter's OpenAI-compatible base URL; pre-filled by the
 # ``OPENRAL_REASONER_LLM_PROVIDER=openrouter`` shortcut so users don't
@@ -474,17 +566,27 @@ VLLM_BASE_URL: str = "http://localhost:8000/v1"
 GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 XAI_BASE_URL: str = "https://api.x.ai/v1"
 DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+# Hugging Face's OpenAI-compatible inference router (serverless / provider-routed
+# models, e.g. ``Qwen/Qwen3-8B``). Auth via an HF access token.
+HUGGINGFACE_BASE_URL: str = "https://router.huggingface.co/v1"
 
 # Auth-required named presets that wrap :class:`OpenAICompatibleToolUseClient`
 # with a pre-filled base URL. ``openrouter`` is the original member;
-# ``gemini`` / ``xai`` / ``deepseek`` mirror it for the direct vendor
-# endpoints. Keyed by PROVIDER value → default base URL.
+# ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` mirror it for the direct
+# vendor endpoints. Keyed by PROVIDER value → default base URL.
 _OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
     "openrouter": OPENROUTER_BASE_URL,
     "gemini": GEMINI_BASE_URL,
     "xai": XAI_BASE_URL,
     "deepseek": DEEPSEEK_BASE_URL,
+    "huggingface": HUGGINGFACE_BASE_URL,
 }
+
+# Providers whose endpoint rejects ``tool_choice="required"`` and only honours
+# ``"auto"``/``"none"`` (the HF router returns 400 INVALID_TOOL_CHOICE on
+# ``required``). The client falls back to ``"auto"`` for these and retries once
+# with an explicit nudge if the model answers in prose instead of a tool call.
+_AUTO_TOOL_CHOICE_PROVIDERS: frozenset[str] = frozenset({"huggingface"})
 
 # Local self-hosted OpenAI-compatible presets. Same wrapper as the cloud
 # presets above, but these point at a loopback daemon and do NOT require
@@ -515,23 +617,25 @@ def build_tool_use_client_from_env() -> ToolUseClient:
 
     * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
       ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``vllm`` /
-      ``gemini`` / ``xai`` / ``deepseek``. Required.
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``. Required.
     * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
       Required.
     * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
       ``anthropic`` and the auth-required cloud presets (``openrouter`` /
-      ``gemini`` / ``xai`` / ``deepseek``); ignored by local
-      ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that don't
-      enforce it.
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``); ignored by
+      local ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that
+      don't enforce it.
     * ``OPENRAL_REASONER_LLM_BASE_URL`` — for ``openai-compatible`` and
       every preset. For ``openai-compatible`` it defaults to the OpenAI
       cloud; for the local presets it defaults to
       :data:`OLLAMA_BASE_URL` (``http://localhost:11434/v1``) /
       :data:`VLLM_BASE_URL` (``http://localhost:8000/v1``); for
-      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` it defaults to
-      that vendor's OpenAI-compatible endpoint
-      (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
-      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`).
+      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` /
+      ``huggingface`` it defaults to that vendor's OpenAI-compatible
+      endpoint (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
+      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`,
+      :data:`HUGGINGFACE_BASE_URL`). ``huggingface`` uses
+      ``tool_choice="auto"`` (its router rejects ``"required"``).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -551,8 +655,8 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
             "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
-            "'vllm' / 'gemini' / 'xai' / 'deepseek' to enable the reasoner. The open-core "
-            "path has no default — tests use FakeToolUseClient."
+            "'vllm' / 'gemini' / 'xai' / 'deepseek' / 'huggingface' to enable the reasoner. "
+            "The open-core path has no default — tests use FakeToolUseClient."
         )
         raise ROSConfigError(msg)
     model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
@@ -566,8 +670,17 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     # the cloud providers stay tight on the 10 s default. An explicit env
     # wins for either side.
     timeout_env = os.environ.get("OPENRAL_REASONER_LLM_TIMEOUT_S", "").strip()
-    default_timeout_s = 60.0 if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS else 10.0
+    # The HF router can cold-start a serverless model on the first call, so it
+    # gets the same generous default as the local self-hosted presets.
+    slow_first_call = provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS or provider == "huggingface"
+    default_timeout_s = 60.0 if slow_first_call else 10.0
     timeout_s = float(timeout_env) if timeout_env else default_timeout_s
+    # Optional completion-token cap (OpenAI-compatible providers only). Unset →
+    # the endpoint default; set it to fit a low-balance metered key or to bound
+    # cost/latency (a tick needs just one tool call). The Anthropic path keeps
+    # its own 1024 default.
+    max_tokens_env = os.environ.get("OPENRAL_REASONER_LLM_MAX_TOKENS", "").strip()
+    max_tokens = int(max_tokens_env) if max_tokens_env else None
     if provider == "anthropic":
         if api_key is None:
             raise ROSConfigError(
@@ -581,6 +694,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            max_tokens=max_tokens,
         )
     if provider in _OPENAI_COMPATIBLE_PRESETS:
         # openrouter / gemini / xai / deepseek — thin auth-required presets
@@ -599,6 +713,8 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            tool_choice="auto" if provider in _AUTO_TOOL_CHOICE_PROVIDERS else "required",
+            max_tokens=max_tokens,
         )
     if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS:
         # ollama / vllm — local self-hosted OpenAI-compatible servers whose
@@ -614,6 +730,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             api_key=api_key,
             base_url=base_url,
             timeout_s=timeout_s,
+            max_tokens=max_tokens,
         )
     raise ROSConfigError(
         f"OPENRAL_REASONER_LLM_PROVIDER={provider!r} is unknown; "
@@ -671,7 +788,7 @@ def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
     return " ".join(parts)
 
 
-def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:
+def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, object]]:  # noqa: PLR0912  # reason: a flat one-branch-per-optional-tool-group table is clearer than nesting
     """Render the palette as Anthropic ``tools`` schemas.
 
     ADR-0022: when ``palette.skills`` is populated, the LLM gets one
@@ -891,6 +1008,71 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "input_schema": QueryTaskProgressTool.model_json_schema(),
             },
         )
+
+    # ADR-0072 §3 — the self-maintained MEMORY.md tools are surfaced only when the
+    # reasoner_node has a MEMORY.md wired (memory_md_path param). The reasoner
+    # already READS current memory every tick (the ## MEMORY context block); these
+    # add the WRITE path (memory_write — the reasoner's first actuation-free
+    # write-capable tool) and archival recall (memory_search). Advisory only — a
+    # wrong memory yields a bad plan the C++ safety kernel still vetoes.
+    if palette.memory_available:
+        from openral_core import MemorySearchTool, MemoryWriteTool  # noqa: PLC0415
+
+        tools.append(
+            {
+                "name": "memory_write",
+                "description": (
+                    "Persist a durable fact to the robot's self-maintained semantic memory "
+                    "(MEMORY.md). Use SPARINGLY for facts useful across tasks/sessions: a user "
+                    "PREFERENCE ('clothes go in the bedroom drawer'), a learned LESSON / "
+                    "correction ('grasp mugs by the handle'), a durable HOME-MAP fact, a "
+                    "long-lived OBJECT-LOCATION, or an OPEN-TASK commitment. Pick 'section'. Ops: "
+                    "'add' a new fact; 'update' to replace a 'target' fact's text in place; "
+                    "'supersede' when a fact CHANGED (keeps the old one as a stale search hint); "
+                    "'delete' a wrong/obsolete 'target'. Set 'importance' (0-1). Do NOT store "
+                    "transient world state (live poses, battery) — that lives in world state. "
+                    "No actuation."
+                ),
+                "input_schema": MemoryWriteTool.model_json_schema(),
+            },
+        )
+        tools.append(
+            {
+                "name": "memory_search",
+                "description": (
+                    "Read-only: recall facts from the memory ARCHIVE (superseded / deleted "
+                    "entries no longer in the live ## MEMORY block) by keyword. Current memory is "
+                    "always in context already; use this only to retrieve an older fact you lost — "
+                    "e.g. where an object USED to be. Optionally restrict to a 'section'. "
+                    "No actuation."
+                ),
+                "input_schema": MemorySearchTool.model_json_schema(),
+            },
+        )
+
+    # ADR-0073 amendment (#123) — the typed path for the decompose-mission
+    # playbook to write the ## MISSION task queue. Always available: it is a core
+    # reasoner capability with no resident-resource dependency (unlike the
+    # reward/scene/memory tools above). Edits the S2 ledger only — no actuation.
+    from openral_core import DecomposeMissionTool  # noqa: PLC0415
+
+    tools.append(
+        {
+            "name": "decompose_mission",
+            "description": (
+                "Write the reasoner's task queue (the ## MISSION ledger). Two modes by "
+                "'target_task_id': set it to the ACTIVE task's id (e.g. 't2') to break a "
+                "too-coarse or STALLED task into finer ordered 'subtasks' — the task is "
+                "flat-spliced in place by its children and you continue on the first child. "
+                "Leave 'target_task_id' empty to replace the WHOLE queue with a better "
+                "decomposition of the operator goal (only before any task has been attempted). "
+                "Subdivision is depth-bounded (a task split twice is handed off, not split "
+                "again). Use this instead of burning execute_rskill attempts on a task one "
+                "skill cannot finish. No actuation — it only edits the task ledger."
+            ),
+            "input_schema": DecomposeMissionTool.model_json_schema(),
+        },
+    )
     return tools
 
 
@@ -1063,6 +1245,65 @@ class AnthropicToolUseClient:
             "Anthropic response did not contain a tool_use block",
         )
 
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask the Anthropic model a free-text question about a camera frame.
+
+        Sends one ``messages.create`` request with a base64-encoded image
+        content block and the question; returns the text answer.  No tool-use,
+        no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame.
+
+        Returns:
+            Model's text answer, stripped.  Falls back to the ``reasoning``
+            field when ``content`` is empty (thinking-mode models).
+
+        Raises:
+            ROSConfigError: When the ``anthropic`` SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+        try:
+            import anthropic  # noqa: PLC0415  # reason: optional cloud dep
+        except ImportError as exc:
+            raise ROSConfigError(
+                "AnthropicToolUseClient requires the `anthropic` SDK; "
+                "install with `uv add anthropic --package openral-reasoner`.",
+            ) from exc
+        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        b64 = base64.b64encode(image_jpeg).decode()
+        try:
+            response = client.messages.create(
+                model=self.model_id,
+                max_tokens=self._max_tokens,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": b64,
+                                },
+                            },
+                            {"type": "text", "text": question},
+                        ],
+                    }
+                ],
+            )
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"Anthropic describe_image failed: {exc!s}") from exc
+        # Extract text; fall back to reasoning field for thinking/reasoning models.
+        text: str = ""
+        if response.content:
+            text = getattr(response.content[0], "text", "") or ""
+        if not text:
+            text = getattr(response, "reasoning", "") or ""
+        return text.strip()
+
 
 class OpenAICompatibleToolUseClient:
     """OpenAI-compatible SDK-backed :class:`ToolUseClient`.
@@ -1083,6 +1324,19 @@ class OpenAICompatibleToolUseClient:
         base_url: Endpoint base URL. Defaults to
             ``https://api.openai.com/v1`` when ``None``.
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to 10 s.
+        tool_choice: OpenAI ``tool_choice`` mode. ``"required"`` (the default)
+            forces exactly one tool call per tick — the reasoner's contract.
+            Some endpoints (the HF router) reject ``"required"`` and only honour
+            ``"auto"``; pass ``"auto"`` for those and the client retries once
+            with an explicit nudge if the model replies in prose instead.
+        max_tokens: Optional hard cap on completion tokens per call. ``None``
+            (the default) sends no cap, letting the endpoint apply its own —
+            but reasoning models (GPT-5.x) default that to their full window
+            (65k), which a metered gateway (OpenRouter) *reserves* up front and
+            may reject on a low-balance key (HTTP 402). Set a cap (env
+            ``OPENRAL_REASONER_LLM_MAX_TOKENS``) to bound cost/latency; a tick
+            only needs one tool call, so a few thousand tokens (plus reasoning
+            headroom) suffices.
     """
 
     def __init__(
@@ -1092,12 +1346,16 @@ class OpenAICompatibleToolUseClient:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_s: float = 10.0,
+        tool_choice: str = "required",
+        max_tokens: int | None = None,
     ) -> None:
         """Stash configuration; no SDK import until :meth:`select_tool`."""
         self.model_id = model_id
         self._api_key = api_key
         self._base_url = base_url
         self._timeout_s = timeout_s
+        self._tool_choice = tool_choice
+        self._max_tokens = max_tokens
 
     def select_tool(
         self,
@@ -1123,28 +1381,124 @@ class OpenAICompatibleToolUseClient:
             {"type": "function", "function": {**spec, "parameters": spec.pop("input_schema")}}
             for spec in _tool_palette_to_anthropic_tools(palette)
         ]
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": context_text},
+        ]
+        # Omit ``max_tokens`` entirely when unset so the endpoint keeps its own
+        # default; only a configured cap is sent (bounds a metered gateway's
+        # up-front token reservation — see __init__).
+        cap: dict[str, int] = {} if self._max_tokens is None else {"max_tokens": self._max_tokens}
         try:
             response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages are heterogeneous TypedDicts (ChatCompletionMessageParam, ChatCompletionToolParam) that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
                 model=self.model_id,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": context_text},
-                ],
+                messages=messages,
                 tools=tools,
-                tool_choice="required",
+                tool_choice=self._tool_choice,
+                **cap,
             )
+            choices = list(response.choices)
+            no_tool_call = not choices or not choices[0].message.tool_calls
+            if no_tool_call and self._tool_choice != "required":
+                # ``tool_choice="auto"`` endpoints (HF router) may answer in prose;
+                # nudge once before giving up so the tick is not wasted.
+                messages.append(
+                    {"role": "user", "content": "You must respond with exactly one tool call now."},
+                )
+                response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary (see above)
+                    model=self.model_id,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=self._tool_choice,
+                    **cap,
+                )
+                choices = list(response.choices)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
-        choices = list(response.choices)
         if not choices or not choices[0].message.tool_calls:
             raise ROSReasonerInvalidPlan(
                 "OpenAI-compatible response did not contain a tool_calls block",
             )
         call = choices[0].message.tool_calls[0]
-        import json  # noqa: PLC0415
-
+        raw_arguments = call.function.arguments or "{}"
+        # A weak / cheap model can emit tool-call ``arguments`` that aren't a
+        # single clean JSON object (trailing tokens, two concatenated objects,
+        # a bare list). Surface it as ROSReasonerInvalidPlan — core.tick catches
+        # ROSPlanningError and the reasoner_node feeds the hint back into the
+        # next prompt's ``## EXECUTION`` section — instead of letting a raw
+        # JSONDecodeError (or a downstream dict() TypeError) crash the node.
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned malformed JSON arguments "
+                f"({exc!s}); emit a single valid JSON object: {raw_arguments!r}",
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise ROSReasonerInvalidPlan(
+                f"tool {call.function.name!r} returned JSON arguments of type "
+                f"{type(arguments).__name__}; emit a single JSON object: {raw_arguments!r}",
+            )
         return _decode_tool_payload(
             tool_name=call.function.name,
-            arguments=json.loads(call.function.arguments or "{}"),
+            arguments=arguments,
             palette=palette,
         )
+
+    def describe_image(self, *, image_jpeg: bytes, question: str) -> str:
+        """Ask an OpenAI-compatible model a free-text question about a frame.
+
+        Sends one ``chat.completions.create`` request with the question as a
+        text block and the image as an ``image_url`` data-URI block; returns
+        the text answer.  No tool-use, no streaming.
+
+        Args:
+            image_jpeg: JPEG-encoded image bytes.
+            question: Natural-language question about the frame.
+
+        Returns:
+            Model's text answer, stripped.  Falls back to the ``reasoning``
+            field when ``message.content`` is empty (observed with reasoning
+            models such as ``z-ai/glm-5.2`` on OpenRouter).
+
+        Raises:
+            ROSConfigError: When the ``openai`` SDK is not installed.
+            ROSPlanningError: On transport / provider failure.
+        """
+        try:
+            from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
+        except ImportError as exc:
+            raise ROSConfigError(
+                "OpenAICompatibleToolUseClient requires the `openai` SDK; "
+                "install with `uv add openai --package openral-reasoner`.",
+            ) from exc
+        client = OpenAI(
+            api_key=self._api_key or "local",
+            base_url=self._base_url,
+            timeout=self._timeout_s,
+        )
+        b64 = base64.b64encode(image_jpeg).decode()
+        messages: list[dict[str, object]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    },
+                ],
+            }
+        ]
+        try:
+            response = client.chat.completions.create(
+                model=self.model_id,
+                messages=messages,  # type: ignore[arg-type]  # reason: provider SDK boundary — image_url content blocks use heterogeneous TypedDicts that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
+            )
+        except Exception as exc:  # reason: provider SDK boundary
+            raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc
+        message = response.choices[0].message
+        text: str = message.content or ""
+        if not text:
+            text = getattr(message, "reasoning", "") or ""
+        return text.strip()

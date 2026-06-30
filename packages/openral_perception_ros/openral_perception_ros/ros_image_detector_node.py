@@ -220,6 +220,10 @@ def main(args: Any = None) -> None:
             # Built across lifecycle transitions (ADR-0050). The detector model
             # is the only GPU-resident piece; it tracks active→inactive.
             self._detector: Any = None
+            # ADR-0076: 2D-IoU tracker for the continuous leg — stamps a stable
+            # per-camera ``det_id`` on each detection so the reasoner can enumerate
+            # and de-duplicate objects without the 3D lift. Built in on_configure.
+            self._tracker: Any = None
             self._cameras: dict[str, str] = {}
             self._primary_id = ""
             self._sensor_id = ""
@@ -311,6 +315,12 @@ def main(args: Any = None) -> None:
                 onnx_path = gp("onnx_path").get_parameter_value().string_value
                 manifest_path = gp("manifest_path").get_parameter_value().string_value
                 self._detector = self._build_detector(onnx_path, manifest_path)
+                # ADR-0076: the continuous leg stamps stable det_ids; the on-demand
+                # locator (visibility queries) does not need identity.
+                if self._wiring.run_continuous_leg and self._tracker is None:
+                    from openral_core import DetectionTracker2D
+
+                    self._tracker = DetectionTracker2D()
                 initial_query = gp("query").get_parameter_value().string_value
                 if initial_query and hasattr(self._detector, "set_query"):
                     self._detector.set_query(initial_query)
@@ -530,6 +540,11 @@ def main(args: Any = None) -> None:
             self._log_throttled(level, message)
             if md is None:
                 return
+            # ADR-0076: stamp a stable per-camera det_id on each detection so the
+            # reasoner can enumerate + de-duplicate objects (and the lift can carry
+            # the id into 3D). Only the continuous leg tracks identity.
+            if self._tracker is not None:
+                md = md.model_copy(update={"detections": self._tracker.assign(list(md.detections))})
             self._last_pub_ns = now_ns
             out = PromptStamped()
             out.header.stamp = msg.header.stamp

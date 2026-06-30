@@ -9,6 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s1
   kind: detector
+  embodiment_tags: [any]
   actions: [detect]
   objects: [person, cup, bottle, bowl, chair, table]
   scenes: [tabletop, kitchen, indoor]
@@ -41,6 +42,7 @@ An OpenRAL **object detector** (`role: s1`, `kind: detector`). RT-DETR-L (Real-T
 - **Verbs:** detect
 - **Objects:** person · cup · bottle · bowl · chair · table
 - **Scenes:** tabletop · kitchen · indoor
+- **Embodiments:** any
 
 ## Why this is discovery-only
 

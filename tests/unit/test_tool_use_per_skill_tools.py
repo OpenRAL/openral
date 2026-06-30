@@ -4,11 +4,10 @@ Drives the real :class:`RSkillManifest` loader against the in-tree
 ``rskills/*/rskill.yaml`` files, builds a real palette, then asserts
 on the shape of the LLM-facing tool schema:
 
-1. The four-tool fixed scaffold is replaced by ``N + 3`` tools when
-   the palette carries ``N`` skills: one ``execute_rskill__<slug>`` per
-   skill plus the three always-present tools
-   (``reload_gst_pipeline`` / ``lifecycle_transition`` /
-   ``emit_prompt``).
+1. The fixed scaffold gains one ``execute_rskill__<slug>`` per skill
+   when the palette carries ``N`` skills, alongside the always-present
+   tools (``reload_gst_pipeline`` / ``lifecycle_transition`` /
+   ``emit_prompt`` / ``decompose_mission``).
 
 2. Each per-skill tool's ``description`` includes the manifest's
    description text and the structured action / object / scene tags so
@@ -159,11 +158,18 @@ def test_id_only_palette_collapses_to_single_execute_skill() -> None:
 
 
 def test_empty_palette_omits_execute_skill_entirely() -> None:
-    """No skills and no legacy ids → no execute_rskill tool at all (only the 3 fixed)."""
+    """No skills and no legacy ids → no execute_rskill tool at all (only the fixed scaffold)."""
     palette = ToolPalette()
     tools = _tool_palette_to_anthropic_tools(palette)
     names = {t["name"] for t in tools}
-    assert names == {"reload_gst_pipeline", "lifecycle_transition", "emit_prompt"}
+    # The always-present scaffold: three plumbing tools plus the ADR-0073 (#123)
+    # decompose_mission ledger editor (a core S2 capability, no resident-resource dep).
+    assert names == {
+        "reload_gst_pipeline",
+        "lifecycle_transition",
+        "emit_prompt",
+        "decompose_mission",
+    }
 
 
 # ── decoder round-trip ─────────────────────────────────────────────────────────

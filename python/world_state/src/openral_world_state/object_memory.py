@@ -99,15 +99,24 @@ class ObjectMemory:
                     tr.obj = tr.obj.model_copy(update={"confidence": cand.confidence})
                 matched.add(best_i)
             else:
+                # ADR-0076: a new track adopts the detection-time id propagated
+                # from the 2D detector (DetectedObject.track_id, from
+                # ObjectDetection2D.det_id) when present, so a physical object
+                # carries one id across the 2D in_view line and the 3D
+                # scene_objects line. Fall back to minting for legacy detectors
+                # (track_id None / < 0). Matched tracks keep their stored id (3D
+                # association is more stable than 2D re-id).
+                adopted = cand.track_id
+                new_id = adopted if adopted is not None and adopted >= 0 else self._next_id
                 self._tracks.append(
                     _Tracked(
-                        obj=cand.model_copy(update={"track_id": self._next_id}),
+                        obj=cand.model_copy(update={"track_id": new_id}),
                         last_seen_ns=stamp_ns,
                         miss_count=0,
                     ),
                 )
                 matched.add(len(self._tracks) - 1)
-                self._next_id += 1
+                self._next_id = max(self._next_id, new_id) + 1
 
         survivors: list[_Tracked] = []
         for i, tr in enumerate(self._tracks):

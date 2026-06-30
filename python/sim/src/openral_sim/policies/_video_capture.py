@@ -12,6 +12,7 @@ that image without each having to reimplement uint8 conversion / flip.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -49,7 +50,7 @@ def to_input_frame(
     return arr
 
 
-def tile_input_frames(images: list[object | None]) -> NDArray[np.uint8] | None:
+def tile_input_frames(images: Sequence[object | None]) -> NDArray[np.uint8] | None:
     """Compose multiple adapter input images into one debug-preview frame.
 
     The MP4 helper stores one ``vla_input_frame`` per step. Multi-camera
@@ -66,7 +67,11 @@ def tile_input_frames(images: list[object | None]) -> NDArray[np.uint8] | None:
         cameras are arranged into a padded near-square grid so downstream video
         resizing keeps each stream readable.
     """
-    frames = [to_input_frame(image) for image in images if image is not None]
+    frames = [
+        frame
+        for frame in (to_input_frame(image) for image in images if image is not None)
+        if frame is not None
+    ]
     if not frames:
         return None
     if len(frames) == 1:

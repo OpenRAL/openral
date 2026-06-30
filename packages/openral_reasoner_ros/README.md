@@ -64,8 +64,8 @@ a `ToolUseClient` selection plus a pre-filled `OPENRAL_REASONER_LLM_BASE_URL`
 (except `anthropic` / bare `openai-compatible`) so you don't hand-configure
 it. An explicit `OPENRAL_REASONER_LLM_BASE_URL` always overrides the preset
 (proxy / staging gateway / non-default port). The cloud presets
-(`openrouter` / `gemini` / `xai` / `deepseek`) and the local presets
-(`ollama` / `vllm`) are all thin shortcuts over the same
+(`openrouter` / `gemini` / `xai` / `deepseek` / `huggingface`) and the local
+presets (`ollama` / `vllm`) are all thin shortcuts over the same
 `OpenAICompatibleToolUseClient`, pointed at each target's OpenAI-compatible
 endpoint; the local ones also drop the API-key requirement and get a longer
 default timeout to absorb a cold first call.
@@ -80,6 +80,13 @@ default timeout to absorb a cold first call.
 | `gemini` | `OpenAICompatibleToolUseClient` | `https://generativelanguage.googleapis.com/v1beta/openai/` | required |
 | `xai` | `OpenAICompatibleToolUseClient` | `https://api.x.ai/v1` | required |
 | `deepseek` | `OpenAICompatibleToolUseClient` | `https://api.deepseek.com` | required |
+| `huggingface` | `OpenAICompatibleToolUseClient` | `https://router.huggingface.co/v1` | required³ |
+
+³ `huggingface` targets the HF inference **router** (e.g. `OPENRAL_REASONER_LLM_MODEL=Qwen/Qwen3-8B`)
+with an HF access token. The router only honours `tool_choice="auto"` (it rejects
+the `"required"` the other presets force), so this preset selects `"auto"` and the
+client retries once with an explicit nudge if the model answers in prose; it also
+gets the longer cold-start timeout.
 
 ¹ `openai-compatible` ignores the key for local endpoints (vLLM /
 llama-server) that don't enforce auth; set it when targeting cloud OpenAI.
@@ -113,6 +120,15 @@ export OPENRAL_REASONER_LLM_MODEL=qwen2.5-7b-instruct
 
 uv add openai --package openral-reasoner      # one-time, all four
 ```
+
+`OPENRAL_REASONER_LLM_MAX_TOKENS` (optional, OpenAI-compatible providers
+only) caps completion tokens per call. Unset → the endpoint's own default,
+which for reasoning models (GPT-5.x) is their full window (~65k); a metered
+gateway like OpenRouter *reserves* that up front and rejects the call on a
+low-balance key (HTTP 402 "requires more credits, or fewer max_tokens"). Set
+e.g. `16384` to bound the reservation (a tick only needs one tool call, plus
+reasoning headroom). The `anthropic` provider keeps its own internal 1024-token
+default and ignores this var.
 
 No cloud lock-in: the open-core path requires the deployment to pick
 the endpoint explicitly via env (`OPENRAL_REASONER_LLM_PROVIDER`,
@@ -160,6 +176,19 @@ The reasoner is event-driven with a 0.2 Hz heartbeat (one tick every
 picks exactly one of four typed tool calls per tick from a small
 palette. This is a constrained tool-use task — a small instruction-
 tuned model with reliable function-calling is plenty. Three baselines:
+
+> **Deploy-sim default — `openai/gpt-5.5` (via `openrouter`).** The *library*
+> (`build_tool_use_client_from_env`) has no default and refuses to guess (open-core,
+> no cloud lock-in). The `openral deploy sim` **launch** does pick one when the env
+> is unset: `provider=openrouter`, `model=openai/gpt-5.5`, with
+> `OPENRAL_REASONER_LLM_MAX_TOKENS` defaulted to `16384`. In live deploy testing
+> GPT-5.5 was the most reliable at decomposing a *collective* operator goal ("put
+> all the objects on the table into the basket") into grounded per-object subtasks —
+> glm-5.2 over-located and never called `decompose_mission`; Opus 4.8 worked but
+> needed nudges. Simple single-object goals run fine on the cheaper baselines below.
+> The default needs `OPENRAL_REASONER_LLM_API_KEY` in the environment; without it
+> the node fails loudly at activate (no silent fallback). Any explicit
+> `OPENRAL_REASONER_LLM_{PROVIDER,MODEL}` still wins.
 
 ### Paid baseline — Anthropic Haiku 4.5
 
@@ -236,6 +265,7 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.rskill_id` | When tool=`execute_skill` | Skill id the LLM chose. |
 | `reasoner.suppressed_reason` | Suppressed ticks | One of `palette_empty` / `retry_cap` / `heartbeat_idle`. The `min_interval` and `heartbeat_idle` short-circuits fire BEFORE the span opens (so dashboards don't show noise). |
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
+| `reasoner.mission_json` | When a mission is active (ADR-0073) | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
 
 The active W3C `traceparent` captured inside this span is threaded

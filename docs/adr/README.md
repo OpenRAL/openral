@@ -62,6 +62,7 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0025](0025-reasoner-managed-background-services.md) | Reasoner-managed background services (SLAM, perception trees) | Accepted | amended 2026-06-08 for 0041 |
 | [0039](0039-llm-task-planning-active-search.md) | LLM task planning + active object search over the scene graph | Proposed | extends 0018 §4; depends 0038 |
 | [0043](0043-locate-in-view-reasoner-tool.md) | `locate_in_view` — on-demand live-detector query for the reasoner | Accepted | related 0037, 0039; reconciled by 0051 |
+| [0073](0073-reasoner-success-gating-and-task-queue.md) | Reasoner success-gating on the reward/critic signal + a sequential task queue | Proposed | amends 0018; consumes 0057, 0064; refs 0036 |
 
 ## D · HAL & robot description
 

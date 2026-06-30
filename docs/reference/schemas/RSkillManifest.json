@@ -306,6 +306,19 @@
         "mode": {
           "$ref": "#/$defs/DetectorMode",
           "default": "continuous"
+        },
+        "max_side": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Side"
         }
       },
       "required": [
@@ -416,6 +429,51 @@
       "title": "ImagePreprocessing",
       "type": "object"
     },
+    "PlaybookContract": {
+      "additionalProperties": false,
+      "description": "Manifest contract for ``kind: \"playbook\"`` rSkills (ADR-0072).\n\nA **playbook** is a human-authored standard-operating-procedure \u2014 a\nstructured Markdown document describing *how the S2 Reasoner should approach\na class of task*: its trigger, the ordered decision steps it composes from\nexisting reasoner tools, the bound on those steps, and its verifiable\nacceptance (``done``) predicate. It is **content the reasoner reads, never\ncode it executes**, and carries no weights, actuators, ROS server, or Action\ncontract \u2014 the symbolic counterpart to a ``vla`` policy.\n\nRequired when :attr:`RSkillManifest.kind` is ``\"playbook\"``; forbidden for\nall other kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nThe ``body_uri`` Markdown body is what the reasoner injects into its system\nprompt (or retrieves by ``trigger`` similarity at scale); the manifest\n``description`` + ``trigger`` drive selection. Advisory only \u2014 a playbook\nchanges what the LLM *decides*, never its actuation authority: every motion\nit triggers is still an ``ExecuteRskill`` \u2192 Action chunk \u2192 C++ safety kernel\n(CLAUDE.md \u00a71.1).\n\nAttributes:\n    trigger: Natural-language description of when this playbook applies.\n        Used as the retrieval key when more playbooks are installed than\n        fit the system prompt (the deferred ``load_playbook`` tool).\n    body_uri: Repo-relative path to the Markdown SOP (e.g. ``\"./PLAYBOOK.md\"``).\n    composes_tools: The ``ReasonerToolCall`` discriminators the SOP uses\n        (``execute_rskill``, ``recall_object``, ``locate_in_view``,\n        ``query_scene``, ``query_task_progress``, ``memory_write``,\n        ``memory_search`` \u2026). Advisory \u2014 a manifest-level hint of the\n        playbook's tool surface; at least one entry is required.\n    done_predicate: Natural-language acceptance test the playbook verifies\n        before declaring success (e.g. ``\"the target object is in the\n        gripper\"``).\n    max_steps: Hard bound on the number of tool calls before the playbook\n        must terminate (no hidden default \u2014 CLAUDE.md \u00a71.4). Must be > 0.\n\nExample:\n    >>> p = PlaybookContract(\n    ...     trigger=\"the goal names a physical object whose location is not given\",\n    ...     body_uri=\"./PLAYBOOK.md\",\n    ...     composes_tools=[\"recall_object\", \"locate_in_view\", \"execute_rskill\"],\n    ...     done_predicate=\"the target object is confirmed in view at a known pose\",\n    ...     max_steps=12,\n    ... )\n    >>> p.max_steps\n    12",
+      "properties": {
+        "trigger": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Trigger",
+          "type": "string"
+        },
+        "body_uri": {
+          "minLength": 1,
+          "title": "Body Uri",
+          "type": "string"
+        },
+        "composes_tools": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Composes Tools",
+          "type": "array"
+        },
+        "done_predicate": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Done Predicate",
+          "type": "string"
+        },
+        "max_steps": {
+          "exclusiveMinimum": 0,
+          "title": "Max Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "trigger",
+        "body_uri",
+        "composes_tools",
+        "done_predicate",
+        "max_steps"
+      ],
+      "title": "PlaybookContract",
+      "type": "object"
+    },
     "QuantizationBackend": {
       "description": "Inference backend that will execute the quantized model.\n\nAttributes:\n    PYTORCH: ``torch.quantization`` / ``bitsandbytes`` / ``torchao``.\n    ONNX: ``onnxruntime`` with quantization pre-applied at export.\n    TENSORRT: NVIDIA TensorRT engine (INT8 / FP8 calibrated).\n    GGUF: llama.cpp / ggml GGUF format (CPU and Metal).\n    MLX: Apple MLX framework (Apple Silicon only).\n\nExample:\n    >>> QuantizationBackend.PYTORCH.value\n    'pytorch'",
       "enum": [
@@ -479,7 +537,7 @@
       "type": "string"
     },
     "RSkillAction": {
-      "description": "Closed vocabulary of high-level action verbs an rSkill can perform.\n\nDeclared on :attr:`RSkillManifest.actions` so the reasoner's LLM tool\npalette can present each skill with a structured \"what does it do\"\nlabel, in addition to the free-form ``description`` and the slug.\nThe LLM scores tools primarily on natural-language description, but\na closed verb vocabulary lets the palette pre-filter and lets the\nschema be unit-testable. New entries are additive.\n\nCategories (descriptive only \u2014 not part of the wire format):\n\n- Manipulation primitives: ``PICK``, ``PLACE``, ``PICK_AND_PLACE``,\n  ``TRANSFER``, ``GRASP``, ``RELEASE``.\n- Articulated / contact-rich: ``OPEN``, ``CLOSE``, ``PUSH``, ``PULL``,\n  ``SLIDE``, ``INSERT``, ``POUR``, ``WIPE``, ``ROTATE``.\n- Motion: ``REACH``; ``LOOK`` (aim a camera at a point, ADR-0044).\n- Mobile (for mobile-manipulator embodiments): ``NAVIGATE``.\n- Social / expressive: ``WAVE``, ``SHAKE``.\n- Generalist marker: ``GENERALIST`` for foundation / multi-task\n  checkpoints (e.g. RoboCasa-365, DROID, MetaWorld-MT50). The palette\n  surfaces a generalist skill for goals that don't match a specific\n  verb.",
+      "description": "Closed vocabulary of high-level action verbs an rSkill can perform.\n\nDeclared on :attr:`RSkillManifest.actions` so the reasoner's LLM tool\npalette can present each skill with a structured \"what does it do\"\nlabel, in addition to the free-form ``description`` and the slug.\nThe LLM scores tools primarily on natural-language description, but\na closed verb vocabulary lets the palette pre-filter and lets the\nschema be unit-testable. New entries are additive.\n\nCategories (descriptive only \u2014 not part of the wire format):\n\n- Manipulation primitives: ``PICK``, ``PLACE``, ``PICK_AND_PLACE``,\n  ``TRANSFER``, ``GRASP``, ``RELEASE``.\n- Articulated / contact-rich: ``OPEN``, ``CLOSE``, ``PUSH``, ``PULL``,\n  ``SLIDE``, ``INSERT``, ``POUR``, ``WIPE``, ``ROTATE``.\n- Motion: ``REACH``; ``LOOK`` (aim a camera at a point, ADR-0044).\n- Mobile (for mobile-manipulator embodiments): ``NAVIGATE``.\n- Social / expressive: ``WAVE``, ``SHAKE``.\n- Generalist marker: ``GENERALIST`` for foundation / multi-task\n  checkpoints (e.g. RoboCasa-365, DROID, MetaWorld-MT50). The palette\n  surfaces a generalist skill for goals that don't match a specific\n  verb.\n- Perception / reasoning (non-actuating S2 kinds): ``DETECT`` (detector),\n  ``QUERY`` (scene VLM, ADR-0047), ``MONITOR`` (reward monitor, ADR-0057),\n  ``PLAN`` (playbook decision procedure, ADR-0072). These verbs are\n  registry/discovery metadata only \u2014 their skills are reached via\n  read-only reasoner tools or system-prompt injection, never an\n  ``ExecuteSkill`` dispatch.",
       "enum": [
         "pick",
         "place",
@@ -504,13 +562,14 @@
         "generalist",
         "detect",
         "query",
-        "monitor"
+        "monitor",
+        "plan"
       ],
       "title": "RSkillAction",
       "type": "string"
     },
     "RSkillLatencyBudget": {
-      "description": "Per-stage latency budget declared in ``rskill.yaml``.\n\nAttributes:\n    per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on\n        the reference host (CLAUDE.md \u00a77.4).\n    warmup_ms: Maximum allowed warm-up time during ``activate()``.\n    load_ms: Maximum allowed weight-load time during ``configure()``.",
+      "description": "Per-stage latency budget declared in ``rskill.yaml``.\n\nAttributes:\n    per_chunk_ms: End-to-end ``step()`` budget.  CI fails if exceeded on\n        the reference host (CLAUDE.md \u00a77.4).\n    warmup_ms: Maximum allowed warm-up time during ``activate()``.\n    load_ms: Maximum allowed weight-load time during ``configure()``.\n    max_execution_s: Total wall-clock budget for a single ``execute_rskill``\n        goal (one task attempt). A VLA policy never self-terminates (only\n        wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy\n        dispatch with ``deadline_s=0`` (the LLM's \"use the manifest default\"\n        sentinel) would otherwise run forever. The skill_runner resolves\n        ``deadline_s<=0`` to this value (or a global default) and aborts the\n        goal when it lapses so the reasoner re-evaluates the outcome \u2014\n        CLAUDE.md \u00a73 \"Deadline fallback mandatory\". ``None`` = fall back to\n        the runner's global default.",
       "properties": {
         "per_chunk_ms": {
           "exclusiveMinimum": 0,
@@ -542,6 +601,19 @@
           ],
           "default": null,
           "title": "Load Ms"
+        },
+        "max_execution_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Execution S"
         }
       },
       "required": [
@@ -605,7 +677,7 @@
     },
     "RewardContract": {
       "additionalProperties": false,
-      "description": "Manifest contract for ``kind: \"reward\"`` rSkills (ADR-0057).\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    frame_window_s: Length of the rolling frame buffer in seconds. The\n        sidecar evicts frames older than this relative to the newest.\n        Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.num_bins\n    100",
+      "description": "Manifest contract for ``kind: \"reward\"`` rSkills (ADR-0057).\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    frame_window_s: Length of the rolling frame buffer in seconds. The\n        sidecar evicts frames older than this relative to the newest.\n        Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n    check_floor: Below this progress value the attempt is clearly not done\n        \u2192 no VLM adjudication, straight to the replanning ladder. Must be\n        \u2264 ``success_threshold``; default ``0.4`` (calibrated for robometer's\n        loose/general eval distribution that wanders ~0.55-0.78).\n    plateau_window_s: Trailing window (seconds) over which\n        ``progress_trend \u2248 0`` indicates the policy has stopped getting\n        closer to the goal. Default ``3.0``.\n    plateau_tolerance: \u03b5 band absorbing critic noise when deciding whether\n        the trend is flat. Default ``0.05``.\n    default_patience_s: Baseline execution ceiling (seconds) used as a\n        backstop before the Reasoner escalates. Default ``30.0``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.check_floor\n    0.4",
       "properties": {
         "progress_range": {
           "default": [
@@ -657,6 +729,31 @@
           "default": true,
           "title": "Instruction Required",
           "type": "boolean"
+        },
+        "check_floor": {
+          "default": 0.4,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Check Floor",
+          "type": "number"
+        },
+        "plateau_window_s": {
+          "default": 3.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Plateau Window S",
+          "type": "number"
+        },
+        "plateau_tolerance": {
+          "default": 0.05,
+          "minimum": 0.0,
+          "title": "Plateau Tolerance",
+          "type": "number"
+        },
+        "default_patience_s": {
+          "default": 30.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Default Patience S",
+          "type": "number"
         }
       },
       "required": [
@@ -1016,7 +1113,8 @@
                 "gr1",
                 "rc365",
                 "simpler_widowx",
-                "simpler_google"
+                "simpler_google",
+                "libero_eef8d"
               ],
               "type": "string"
             },
@@ -1157,7 +1255,8 @@
         "ros_service",
         "detector",
         "vlm",
-        "reward"
+        "reward",
+        "playbook"
       ],
       "title": "Kind",
       "type": "string"
@@ -1191,6 +1290,7 @@
         "enum": [
           "aloha",
           "aloha_agilex",
+          "any",
           "custom",
           "franka_panda",
           "g1",
@@ -1545,6 +1645,29 @@
       "anyOf": [
         {
           "$ref": "#/$defs/RewardContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "reward_rskill_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reward Rskill Name"
+    },
+    "playbook": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlaybookContract"
         },
         {
           "type": "null"

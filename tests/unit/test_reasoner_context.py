@@ -7,10 +7,18 @@ contract for the prompt buffer.
 
 from __future__ import annotations
 
-from openral_core import JointState, Pose6D, TimeoutEvidence, WorldState
+from openral_core import (
+    JointState,
+    ObjectDetection2D,
+    ObjectsMetadata,
+    Pose6D,
+    TimeoutEvidence,
+    WorldState,
+)
 from openral_reasoner import (
     ContextRenderer,
     FailureEventRecord,
+    MissionState,
     PerceptionEventRecord,
     PromptRecord,
 )
@@ -38,12 +46,12 @@ def _world_state() -> WorldState:
 
 
 def test_renders_empty_when_no_state() -> None:
-    """An empty renderer produces the four section headers + '(none)' filler."""
+    """An empty renderer produces the five section headers + '(none)' filler."""
     text = ContextRenderer().render(world_state=None)
-    for header in ("## WORLD_STATE", "## FAILURES", "## PERCEPTION", "## PROMPTS"):
+    for header in ("## WORLD_STATE", "## EXECUTION", "## FAILURES", "## PERCEPTION", "## PROMPTS"):
         assert header in text
     assert "(no snapshot yet)" in text
-    assert text.count("(none)") == 3  # failures, perception, prompts
+    assert text.count("(none)") == 4  # executions, failures, perception, prompts
 
 
 def test_renders_world_state_joint_positions() -> None:
@@ -358,3 +366,174 @@ def test_seq_is_not_reset_by_drain_prompts() -> None:
     seq_before = r.seq
     r.drain_prompts()
     assert r.seq == seq_before
+
+
+# ── ADR-0073 §1 — mission (## MISSION) rendering ─────────────────────────────
+
+
+def test_no_mission_omits_section() -> None:
+    r = ContextRenderer()
+    assert "## MISSION" not in r.render(world_state=None)
+
+
+def test_empty_mission_omits_section() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("   "))  # no tasks
+    assert "## MISSION" not in r.render(world_state=None)
+
+
+def test_set_mission_renders_active_task_and_bumps_seq() -> None:
+    r = ContextRenderer()
+    seq_before = r.seq
+    r.set_mission(MissionState(["pick the bowl", "place the butter"]))
+    # A new goal is an event — it must wake an idle heartbeat.
+    assert r.seq == seq_before + 1
+    out = r.render(world_state=None)
+    assert "## MISSION" in out
+    assert "▶ t1: pick the bowl" in out
+    assert "1 pending task(s)" in out  # t2 still pending
+
+
+def test_advance_mission_completes_and_activates_next_and_bumps_seq() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState(["pick the bowl", "place the butter"]))
+    seq_before = r.seq
+    nxt = r.advance_mission(done=True, verdict="success=0.92")
+    # Advancing the queue is an event — the new active task wakes the reasoner.
+    assert r.seq == seq_before + 1
+    assert nxt is not None and nxt.text == "place the butter"
+    out = r.render(world_state=None)
+    assert "✓ t1: pick the bowl [success=0.92]" in out
+    assert "▶ t2: place the butter" in out
+
+
+def test_advance_mission_abandons_on_done_false() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState(["hard task", "easy task"]))
+    r.advance_mission(done=False, verdict="ladder exhausted: stalled@0.73")
+    out = r.render(world_state=None)
+    assert "✗ t1: hard task" in out
+    assert "▶ t2: easy task" in out
+
+
+def test_advance_mission_with_no_mission_is_noop() -> None:
+    r = ContextRenderer()
+    seq_before = r.seq
+    assert r.advance_mission(done=True, verdict="x") is None
+    assert r.seq == seq_before  # no mission → no bump
+
+
+def test_mission_property_exposes_state_for_in_place_bookkeeping() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState(["a", "b"]))
+    # The node records attempts in place (non-waking bookkeeping).
+    r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
+    assert r.mission.active().attempts == 1
+    assert "attempts=1" in r.render(world_state=None)
+
+
+def test_mission_finishes_when_last_task_completed() -> None:
+    r = ContextRenderer()
+    r.set_mission(MissionState.from_prompt("only task"))
+    assert r.advance_mission(done=True, verdict="success=0.95") is None
+    assert r.mission.is_complete()
+    out = r.render(world_state=None)
+    assert "✓ t1: only task" in out
+
+
+def _in_view() -> ObjectsMetadata:
+    """A camera-space ObjectsMetadata with stable det_ids (ADR-0076)."""
+    return ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-indoor",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(
+                label="milk", confidence=0.9, bbox_xyxy=(402, 211, 432, 261), det_id=0
+            ),
+            ObjectDetection2D(
+                label="ketchup", confidence=0.8, bbox_xyxy=(370, 230, 406, 272), det_id=1
+            ),
+        ],
+    )
+
+
+def test_in_view_line_rendered_in_world_state() -> None:
+    """ADR-0076 — set_in_view surfaces a camera-space `in_view[<cam>]` line with ids+px."""
+    r = ContextRenderer()
+    r.set_in_view(_in_view())
+    out = r.render(world_state=_world_state())
+    assert "in_view[top]: #0 milk @px(417,236), #1 ketchup @px(388,251)" in out
+
+
+def test_in_view_renders_before_first_world_state_snapshot() -> None:
+    """The enumeration is depth-free and may arrive before any WorldState."""
+    r = ContextRenderer()
+    r.set_in_view(_in_view())
+    out = r.render(world_state=None)
+    assert "(no snapshot yet)" in out
+    assert "in_view[top]: #0 milk" in out
+
+
+def test_set_in_view_bumps_seq_and_clears() -> None:
+    """A new detection snapshot is an event (wakes a heartbeat); None clears the line."""
+    r = ContextRenderer()
+    seq0 = r.seq
+    r.set_in_view(_in_view())
+    assert r.seq > seq0
+    r.set_in_view(None)
+    assert "in_view" not in r.render(world_state=_world_state())
+
+
+def _located_basket() -> ObjectsMetadata:
+    """An open-vocab locate hit for the goal noun the fixed indoor vocab misses."""
+    return ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-locator",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(label="basket", confidence=0.6, bbox_xyxy=(100, 300, 200, 400)),
+        ],
+    )
+
+
+def test_note_located_survives_continuous_in_view_clobber() -> None:
+    """ADR-0076 — the deploy locate-loop fix: a goal noun the reasoner confirmed via
+    open-vocab locate_in_view (``basket``) must persist on the ``located`` line even
+    after the fixed-vocab continuous detector overwrites ``in_view`` (which never
+    carries ``basket``), so the LLM can decompose/dispatch instead of re-locating."""
+    r = ContextRenderer()
+    r.note_located(_located_basket())
+    assert "located[top]: basket @px(150,350)" in r.render(world_state=_world_state())
+    # Continuous detector clobbers in_view with its clutter — basket NOT in it.
+    r.set_in_view(_in_view())
+    out = r.render(world_state=_world_state())
+    assert "in_view[top]: #0 milk" in out  # continuous line present
+    assert "located[top]: basket @px(150,350)" in out  # sticky hit survives the clobber
+
+
+def test_note_located_latest_wins_and_bumps_seq() -> None:
+    """A re-confirmed label updates its bbox (latest wins); a hit wakes a heartbeat."""
+    r = ContextRenderer()
+    seq0 = r.seq
+    r.note_located(_located_basket())
+    assert r.seq > seq0
+    moved = ObjectsMetadata(
+        sensor_id="top",
+        model_id="omdet-turbo-locator",
+        frame_width=640,
+        frame_height=480,
+        detections=[
+            ObjectDetection2D(label="basket", confidence=0.7, bbox_xyxy=(0, 0, 100, 100)),
+        ],
+    )
+    r.note_located(moved)
+    out = r.render(world_state=_world_state())
+    assert "located[top]: basket @px(50,50)" in out
+    assert out.count("basket @px") == 1  # one entry, not two
+    # None / empty is a no-op.
+    seq1 = r.seq
+    r.note_located(None)
+    assert r.seq == seq1

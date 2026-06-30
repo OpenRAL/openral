@@ -41,9 +41,53 @@
     </div>
   </section>
 
-  <!-- ========== COUNTERS ========== -->
+  <!-- ========== OPERATOR PROMPT ========== -->
   <section>
-    <h2>Alarms</h2>
+    <h2>Operator prompt</h2>
+    <div class="prompt-box">
+      <button id="prompt-mic" type="button" data-state="idle" aria-pressed="false" aria-label="Speak a prompt" title="Speak a prompt">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="11" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="19" x2="12" y2="22" />
+        </svg>
+      </button>
+      <span id="mic-meter" class="mic-meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <input id="prompt-input" type="text" placeholder='e.g. "pick the red cube"' autocomplete="off" spellcheck="false" />
+      <button id="prompt-send" type="button">Send</button>
+      <button id="estop-reset" type="button" title="Clear a latched safety e-stop so the robot can be re-tasked (calls /openral/estop_reset)">Reset e-stop</button>
+      <span id="prompt-status" class="status"></span>
+    </div>
+    <div class="prompt-hint">After a safety e-stop the kernel drops every command until reset. Click <b>Reset e-stop</b>, then send a new prompt to resume.</div>
+  </section>
+
+  <!-- ========== REASONER · MISSION (ADR-0073 task queue + ADR-0018 F4 tick) ========== -->
+  <section id="card-reasoner" class="card accent-skill">
+    <div class="hd">
+      <span class="title">Reasoner · mission</span>
+      <span class="age" id="reasoner-age">—</span>
+    </div>
+    <div id="reasoner-body">
+      <div class="empty-state" id="reasoner-empty">
+        waiting for reasoner.tick (the reasoner_node must be ACTIVE)
+      </div>
+      <div id="reasoner-detail" style="display:none">
+        <div class="mission-failed" id="reasoner-mission-failed" style="display:none"></div>
+        <div class="mission-head" id="reasoner-mission-head"></div>
+        <ol class="mission-list" id="reasoner-mission"></ol>
+        <div class="reasoner-tick-foot" id="reasoner-tick-foot">
+          <span id="reasoner-tool"></span>
+          <span id="reasoner-tick"></span>
+          <span id="reasoner-rskill"></span>
+          <span id="reasoner-model"></span>
+          <span id="reasoner-force"></span>
+          <span id="reasoner-error"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SAFETY (alarms + check ledger) ========== -->
+  <section>
+    <h2>Safety</h2>
     <div class="counters" id="counters">
       <div class="counter danger zero" id="counter-safety">
         <div>
@@ -73,25 +117,19 @@
         </div>
         <div class="val" id="cnt-sensor">0</div>
       </div>
+      <div class="counter danger zero" id="counter-skill-failure">
+        <div>
+          <div class="label">skill failures</div>
+          <div class="sub" id="skill-failure-sub">openral.event.skill_failure</div>
+        </div>
+        <div class="val" id="cnt-skill-failure">0</div>
+      </div>
     </div>
-  </section>
-
-  <!-- ========== OPERATOR PROMPT ========== -->
-  <section>
-    <h2>Operator prompt</h2>
-    <div class="prompt-box">
-      <button id="prompt-mic" type="button" data-state="idle" aria-pressed="false" aria-label="Speak a prompt" title="Speak a prompt">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="9" y="2" width="6" height="11" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="19" x2="12" y2="22" />
-        </svg>
-      </button>
-      <span id="mic-meter" class="mic-meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <input id="prompt-input" type="text" placeholder='e.g. "pick the red cube"' autocomplete="off" spellcheck="false" />
-      <button id="prompt-send" type="button">Send</button>
-      <button id="estop-reset" type="button" title="Clear a latched safety e-stop so the robot can be re-tasked (calls /openral/estop_reset)">Reset e-stop</button>
-      <span id="prompt-status" class="status"></span>
+    <!-- Safety check ledger (per-check pass/fail) -->
+    <div class="card accent-ledger ledger" id="card-safety-ledger" style="margin-top:14px">
+      <div class="hd"><span class="title">Safety check ledger</span><span class="age" id="ledger-age">—</span></div>
+      <div class="ws-diag flush" id="ledger"></div>
     </div>
-    <div class="prompt-hint">After a safety e-stop the kernel drops every command until reset. Click <b>Reset e-stop</b>, then send a new prompt to resume.</div>
   </section>
 
   <!-- ========== CAMERAS ========== -->
@@ -165,78 +203,19 @@
     </div>
   </section>
 
-  <!-- WORLD SCENE OBJECTS · durable spatial memory (ADR-0038) -->
-  <section id="card-scene-objects" class="card accent-world">
-    <div class="hd">
-      <span class="title">World · scene objects (memory)</span>
-      <span class="age" id="scene-objects-age">—</span>
-    </div>
-    <div id="scene-objects-body">
-      <div class="empty-state" id="scene-objects-empty">
-        waiting for world.scene_objects (preload a scene graph via spatial_memory_path, or merge the perception object-lift producer)
-      </div>
-      <div id="scene-objects-wrap" style="display:none">
-        <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-          <thead>
-            <tr style="text-align:left;color:var(--text-dim)">
-              <th style="padding:2px 6px">object</th>
-              <th style="padding:2px 6px">position (m)</th>
-              <th style="padding:2px 6px">conf</th>
-              <th style="padding:2px 6px">seen</th>
-              <th style="padding:2px 6px">obs</th>
-            </tr>
-          </thead>
-          <tbody id="scene-objects-rows"></tbody>
-        </table>
-        <div class="meta-row" id="scene-objects-meta" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
-          <span id="scene-objects-count"></span>
-          <span id="scene-objects-frame"></span>
-          <span id="scene-objects-source"></span>
-        </div>
-      </div>
-    </div>
-  </section>
-
   </div>
 
-  <!-- ========== REASONER (ADR-0018 F4) ========== -->
-  <section id="card-reasoner" class="card accent-skill">
-    <div class="hd">
-      <span class="title">Reasoner · last tick</span>
-      <span class="age" id="reasoner-age">—</span>
-    </div>
-    <div id="reasoner-body">
-      <div class="empty-state" id="reasoner-empty">
-        waiting for reasoner.tick (the reasoner_node must be ACTIVE)
-      </div>
-      <div id="reasoner-detail" style="display:none">
-        <div class="primary" id="reasoner-tool">—</div>
-        <div class="meta-row" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
-          <span id="reasoner-tick"></span>
-          <span id="reasoner-rskill"></span>
-          <span id="reasoner-model"></span>
-          <span id="reasoner-force"></span>
-          <span id="reasoner-error"></span>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ========== LIVE SIGNALS ========== -->
+  <!-- ========== LIVE SIGNAL · running skill ========== -->
   <section>
-    <h2>Live signals</h2>
+    <h2>Live signal</h2>
     <div class="live-signals">
+      <!-- rSkill.execute (full step) with the model forward-pass latency
+           (rskill.chunk_inference) folded in as a sub-stat — the only datum the
+           old separate Inference card carried that isn't already in Identity. -->
       <div class="card empty accent-skill" id="card-rskill_execute">
-        <div class="hd"><span class="title">rSkill.execute</span><span class="age">—</span></div>
+        <div class="hd"><span class="title">rSkill · running skill</span><span class="age">—</span></div>
         <div class="primary">waiting…</div>
-      </div>
-      <div class="card empty accent-inference" id="card-inference">
-        <div class="hd"><span class="title">Inference</span><span class="age">—</span></div>
-        <div class="primary">waiting…</div>
-      </div>
-      <div class="card empty accent-safety" id="card-safety">
-        <div class="hd"><span class="title">Safety</span><span class="age">—</span></div>
-        <div class="primary">waiting…</div>
+        <div class="substat" id="rskill-inference"></div>
       </div>
     </div>
   </section>
@@ -257,29 +236,40 @@
         </div>
       </div>
 
-      <!-- Commands -->
-      <div class="card accent-cmd commands" id="card-commands">
-        <div class="hd"><span class="title">Commands · next action</span><span class="age" id="cmd-age">—</span></div>
-        <div class="attrs" id="cmd-attrs"></div>
-      </div>
-
-      <!-- World state -->
+      <!-- World state (+ durable scene-object memory, ADR-0038) -->
       <div class="card accent-world world" id="card-world-state">
         <div class="hd"><span class="title">World state</span><span class="age" id="ws-age">—</span></div>
         <div class="ws-attrs" id="ws-attrs"></div>
         <div class="ws-diag" id="ws-diag"></div>
+        <div class="ws-subhead">spatial memory · scene objects</div>
+        <div class="empty-state" id="scene-objects-empty">
+          waiting for world.scene_objects (preload a scene graph via spatial_memory_path, or merge the perception object-lift producer)
+        </div>
+        <div id="scene-objects-wrap" style="display:none">
+          <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+            <thead>
+              <tr style="text-align:left;color:var(--text-dim)">
+                <th style="padding:2px 6px">object</th>
+                <th style="padding:2px 6px">position (m)</th>
+                <th style="padding:2px 6px">conf</th>
+                <th style="padding:2px 6px">seen</th>
+                <th style="padding:2px 6px">obs</th>
+              </tr>
+            </thead>
+            <tbody id="scene-objects-rows"></tbody>
+          </table>
+          <div class="meta-row" id="scene-objects-meta" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
+            <span id="scene-objects-count"></span>
+            <span id="scene-objects-frame"></span>
+            <span id="scene-objects-source"></span>
+          </div>
+        </div>
       </div>
 
       <!-- System health -->
       <div class="card accent-system system" id="card-system">
         <div class="hd"><span class="title">System health</span><span class="age" id="sys-age">—</span></div>
         <div class="gauges" id="gauges"></div>
-      </div>
-
-      <!-- Safety ledger -->
-      <div class="card accent-ledger ledger" id="card-safety-ledger">
-        <div class="hd"><span class="title">Safety check ledger</span><span class="age" id="ledger-age">—</span></div>
-        <div class="ws-diag flush" id="ledger"></div>
       </div>
 
     </div>

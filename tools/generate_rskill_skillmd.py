@@ -47,6 +47,7 @@ _KIND_NOUN = {
     "ros_action": "ROS action skill (weightless)",
     "ros_service": "ROS service skill (weightless)",
     "wam": "World Action Model",
+    "playbook": "decision-procedure playbook (weightless)",
 }
 
 

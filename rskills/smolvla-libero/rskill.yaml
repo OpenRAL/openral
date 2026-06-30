@@ -56,6 +56,15 @@ runtime: "pytorch"
 quantization:
   dtype: "bf16"
   backend: "pytorch"
+# ADR-0077 — VRAM footprint per dtype, so the deploy can verify this VLA + its
+# paired reward model co-reside on the GPU before loading. bf16 measured at 0.93 GB
+# weights at load (RTX 4070); 1.2 GB declared with inference-activation headroom.
+min_vram_gb:
+  bf16: 1.2
+# ADR-0077 — a VLA emits no success signal of its own, so it runs with a reward /
+# progress monitor resident alongside it (ADR-0074). Robometer (NF4, 3.6 GB) is the
+# default; 1.2 + 3.6 = 4.8 GB fits an 8 GB card with room to spare.
+reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 # Update by re-running: tools/rskill_publisher.py --bump-revision
 weights_uri: "hf://lerobot/smolvla_libero"
@@ -76,7 +85,27 @@ image_preprocessing:
     top: "image"
     wrist: "image2"
 state_contract:
+  # ADR-0027 — the LIBERO checkpoint trains on 8-D TASK-SPACE proprio
+  # (eef_pos ‖ eef_axisangle ‖ gripper). The benchmark (`openral sim run`)
+  # supplies it directly; deploy (`openral deploy sim`) assembles it from live
+  # TF + JointState via the `libero_eef8d` state-adapter. Without the layout the
+  # runner falls back to raw joint-space state and the policy never reaches the
+  # target. The franka deploy sim publishes a static `world -> panda_link0` from
+  # the sim's robot mount pose (sim_sensor_bridge, ADR-0027) so the EE pose is
+  # read in the same world frame as robosuite's `robot0_eef_pos`.
+  layout: "libero_eef8d"
   dim: 8
+  bindings:
+    # panda_hand_tcp matches robosuite's grip site (the eef the checkpoint saw)
+    # within ~6 mm; panda_hand is the wrist body ~9 cm above the grasp point.
+    eef_frame: "panda_hand_tcp"
+    # World root the HAL publishes for the fixed-base franka (robosuite world).
+    world_frame: "world"
+    # The franka deploy HAL exposes ONE parallel-gripper joint (`panda_gripper`,
+    # ~0.04 m open); the assembler mirrors it to [v, -v] to reconstruct
+    # robosuite's symmetric two-finger qpos (~[0.039, -0.039]) the checkpoint saw.
+    gripper_qpos_joints:
+      - "panda_gripper"
 
 # ── Execution semantics ────────────────────────────────────────────────────
 chunk_size: 16
@@ -86,6 +115,11 @@ chunk_size: 16
 n_action_steps: 25
 latency_budget:
   per_chunk_ms: 150.0   # SmolVLA inference at bf16 on a desktop GPU ≈ 80–120 ms
+  # Total wall-clock budget for ONE execute_rskill attempt (CLAUDE.md §3). A VLA
+  # never self-terminates, so the deploy runner resolves `deadline_s=0` to this.
+  # 60 s is generous for a single LIBERO-spatial pick-place at the deploy's
+  # closed-loop rate; on lapse the goal aborts and the reasoner re-evaluates.
+  max_execution_s: 60.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 # Headline success rates from skills/smolvla-libero/eval/*.json. The

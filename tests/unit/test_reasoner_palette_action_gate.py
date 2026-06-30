@@ -118,7 +118,12 @@ def test_required_modes_cartesian_representation() -> None:
 
 def test_required_modes_bare_dim_joint() -> None:
     """A bare-dim action_contract (legacy, no representation/slots) → joint_position."""
-    m = _act_aloha()
+    # act-aloha now declares `representation: joint_positions` on disk, so strip it
+    # back to a legacy bare-dim contract to exercise the dim-only fallback path.
+    base = _act_aloha()
+    assert base.action_contract is not None
+    bare_contract = base.action_contract.model_copy(update={"representation": None, "slots": None})
+    m = base.model_copy(update={"action_contract": bare_contract})
     assert m.action_contract is not None
     assert m.action_contract.representation is None
     assert m.action_contract.slots is None
@@ -139,6 +144,14 @@ def test_cartesian_not_executable_on_real_joint_only_robot() -> None:
     m = _cartesian_pi05()
     franka = _franka()
     assert _action_executable(m, franka, "real") is False
+
+
+def test_franka_manifest_declares_vision_for_libero_cameras() -> None:
+    """Franka's LIBERO camera pair must surface as a vision-capable robot."""
+    franka = _franka()
+    assert franka.capabilities.has_vision is True
+    rgb_names = [sensor.name for sensor in franka.sensors if sensor.modality == "rgb"]
+    assert rgb_names == ["top", "wrist"]
 
 
 def test_cartesian_executable_on_sim() -> None:

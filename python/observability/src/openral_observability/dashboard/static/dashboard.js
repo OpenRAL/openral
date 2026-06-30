@@ -45,18 +45,12 @@
 
   const PRIMARY_BY_FAMILY = {
     rskill_execute: ["rskill.id", "openral.skill.id"],
-    inference: ["inference.engine", "rskill.id"],
-    safety: ["safety.check_name", "openral.safety.check_name"],
   };
   const ATTR_KEYS_BY_FAMILY = {
-    rskill_execute: ["rskill.id", "rskill.role", "skill.action_applied", "openral.tick.idx"],
-    inference: ["inference.kind", "inference.chunk_index", "inference.chunk_size"],
-    safety: ["safety.check_name", "safety.severity", "safety.clamped"],
+    rskill_execute: ["rskill.role", "skill.action_applied", "openral.tick.idx"],
   };
   const LATENCY_CLASS_BY_FAMILY = {
     rskill_execute: "",
-    inference: "info",
-    safety: "warn",
   };
 
   function renderCard(family, card) {
@@ -102,6 +96,25 @@
     }
   }
 
+  // The running-skill card's two latencies, on one labelled line so they can't
+  // be misread as separate cards: the full skill step (rskill.execute) and the
+  // model forward pass inside it (rskill.chunk_inference). The skill id is the
+  // card headline and the engine lives in Identity, so neither is repeated here.
+  // The generic card renderer's bare latency line is hidden via CSS in favour
+  // of this. Prefetch chunks are tagged so they aren't read as the live one.
+  function foldInference(liveSkill, inf) {
+    const el = $("rskill-inference");
+    if (!el) return;
+    const parts = [];
+    if (liveSkill && liveSkill.duration_ms != null) parts.push("step " + fmtMs(liveSkill.duration_ms));
+    if (inf && inf.ts_unix != null) {
+      const kind = inf.attrs && inf.attrs["inference.kind"];
+      const tag = (kind && kind !== "foreground") ? " (" + kind + ")" : "";
+      parts.push("forward " + fmtMs(inf.duration_ms) + tag);
+    }
+    el.textContent = parts.join("  ·  ");
+  }
+
   function renderRobotState(rs, cmd) {
     const el = $("joints");
     $("robot-state-age").textContent = fmtAge(rs && rs.ts_unix);
@@ -136,29 +149,6 @@
         <span class="vel ${velClass}">${vel != null ? num(vel, 2) + " /s" : "—"}</span>
       `;
       el.appendChild(row);
-    }
-  }
-
-  function renderCommands(cmd) {
-    $("cmd-age").textContent = fmtAge(cmd && cmd.ts_unix);
-    const el = $("cmd-attrs");
-    el.innerHTML = "";
-    if (!cmd || !cmd.next_row) {
-      el.innerHTML = '<div class="empty-state">waiting for hal.send_action</div>';
-      return;
-    }
-    const pairs = [
-      ["control", cmd.control_mode || "—"],
-      ["dim × horizon", `${cmd.dim || "?"} × ${cmd.horizon || "?"}`],
-      ["applied", cmd.applied === false ? "✗ no" : "✓ yes"],
-      ["next", "[" + cmd.next_row.slice(0, 6).map(v => num(v, 2)).join(", ") + (cmd.next_row.length > 6 ? ", …" : "") + "]"],
-    ];
-    if (cmd.gripper_position != null) pairs.push(["gripper", num(cmd.gripper_position, 2)]);
-    if (cmd.gripper_force_n != null) pairs.push(["grip force", num(cmd.gripper_force_n, 2) + " N"]);
-    for (const [k, v] of pairs) {
-      const kEl = document.createElement("div"); kEl.className = "k"; kEl.textContent = k;
-      const vEl = document.createElement("div"); vEl.className = "v"; vEl.textContent = v;
-      el.appendChild(kEl); el.appendChild(vEl);
     }
   }
 
@@ -495,10 +485,25 @@
     svg.insertAdjacentHTML("beforeend", markup);
   }
 
-  // ADR-0018 F4 — render the latest ReasonerCore tick. Same shape as
-  // the SLAM card: empty-state until the first reasoner.tick span
-  // lands, then "<tool>" headline + tick_idx / rskill_id / model /
-  // force / error_kind metadata pinned below.
+  // ADR-0073 task-queue markers, mirroring MissionState.render().
+  const MISSION_MARK = { pending: "·", active: "▶", verifying: "?", done: "✓", abandoned: "✗" };
+
+  // ADR-0074 three-tier reward verdict → bar colour band. The verdict text the
+  // reasoner stamps is the source of truth (no client-side threshold guessing):
+  // "success=…" → ok, "ambiguous=…" → amber, anything else (not verified /
+  // unverified) or an abandoned task → fail.
+  function rewardBand(t) {
+    if (t.status === "abandoned") return "band-fail";
+    const v = t.verdict || "";
+    if (/^success=/.test(v)) return "band-ok";
+    if (/^ambiguous=/.test(v)) return "band-ambiguous";
+    return "band-fail";
+  }
+
+  // ADR-0073 + ADR-0018 F4 — render the reasoner's active MISSION queue
+  // (ordered subtasks, status, attempts, reward verdict) with the latest
+  // ReasonerCore tick (tool / model / error) demoted to a footer line.
+  // Empty-state until the first reasoner.tick span lands.
   function renderReasoner(r) {
     const ageEl = $("reasoner-age");
     const empty = $("reasoner-empty");
@@ -512,10 +517,87 @@
     if (ageEl) ageEl.textContent = fmtAge(r.ts_unix);
     if (empty) empty.style.display = "none";
     if (detail) detail.style.display = "block";
+
+    // ── mission checklist ──
+    const head = $("reasoner-mission-head");
+    const list = $("reasoner-mission");
+    const banner = $("reasoner-mission-failed");
+    const mission = r.mission;
+    const tasks = (mission && Array.isArray(mission.tasks)) ? mission.tasks : [];
+    const maxAttempts = (mission && mission.max_attempts) || 3;
+    if (list) list.innerHTML = "";
+    if (banner) banner.style.display = "none";
+    if (tasks.length === 0) {
+      if (head) head.textContent = "no active mission (bare operator goal)";
+    } else {
+      const activeIdx = tasks.findIndex(t => t.status === "active" || t.status === "verifying");
+      const doneCount = tasks.filter(t => t.status === "done").length;
+      const failedCount = tasks.filter(t => t.status === "abandoned").length;
+      if (head) {
+        // Failed count is always shown when non-zero so a partial-failure run
+        // never reads as "all good"; the operator's headline ask (#127 follow-up).
+        head.textContent =
+          tasks.length + " task" + (tasks.length === 1 ? "" : "s") +
+          " · " + doneCount + " done" +
+          (failedCount ? " · " + failedCount + " failed" : "") +
+          (activeIdx >= 0 ? " · on " + (activeIdx + 1) + "/" + tasks.length : " · complete");
+      }
+      // Mission finished (no active/pending task) but abandoned ≥1 subtask → the
+      // mission FAILED. Surface a loud banner above the checklist.
+      const allTerminal = activeIdx < 0 && !tasks.some(t => t.status === "pending");
+      if (banner && allTerminal && failedCount > 0) {
+        banner.textContent = "✗ mission failed · " + failedCount + " of " +
+          tasks.length + " task" + (tasks.length === 1 ? "" : "s") + " abandoned";
+        banner.style.display = "block";
+      }
+      for (const t of tasks) {
+        const li = document.createElement("li");
+        li.className = "mission-task st-" + t.status;
+        // Depth comes free from the dot-path task id (t1 → 0, t1.2 → 1, t1.2.1 → 2):
+        // a #123 subdivision splices children in place, so indent them to show the
+        // hierarchy the flat list would otherwise hide.
+        const depth = t.id ? t.id.split(".").length - 1 : 0;
+        if (depth > 0) li.style.paddingLeft = (depth * 14) + "px";
+        const mk = document.createElement("span"); mk.className = "mk";
+        mk.textContent = MISSION_MARK[t.status] || "·";
+        const tx = document.createElement("span"); tx.className = "tx";
+        if (depth > 0) {
+          const id = document.createElement("span"); id.className = "tid";
+          id.textContent = t.id; tx.appendChild(id);
+        }
+        tx.appendChild(document.createTextNode(t.text));
+        const mt = document.createElement("span"); mt.className = "mt";
+        const succ = t.verdict && t.verdict.match(/(?:success|ambiguous)=([0-9.]+)/);
+        if (succ) {
+          const s = Math.max(0, Math.min(1, parseFloat(succ[1])));
+          const bar = document.createElement("span"); bar.className = "mbar " + rewardBand(t);
+          bar.title = "reward " + (t.verdict || "");
+          const fill = document.createElement("i");
+          fill.style.width = Math.round(s * 100) + "%";
+          bar.appendChild(fill); mt.appendChild(bar);
+        }
+        if (t.attempts || t.status === "active" || t.status === "verifying") {
+          const a = document.createElement("span"); a.className = "att";
+          a.textContent = t.attempts + "/" + maxAttempts;
+          mt.appendChild(a);
+        }
+        // The verdict text is the WHY (reward band / abandon reason). Show it on
+        // every terminal/active task that carries one so a failure explains itself.
+        if (t.verdict) {
+          const vd = document.createElement("span"); vd.className = "verdict";
+          vd.textContent = t.verdict; vd.title = t.verdict;
+          mt.appendChild(vd);
+        }
+        li.appendChild(mk); li.appendChild(tx); li.appendChild(mt);
+        list.appendChild(li);
+      }
+    }
+
+    // ── last-tick footer (demoted) ──
     const tool = $("reasoner-tool");
     if (tool) {
-      const t = r.tool || (r.suppressed_reason ? "(suppressed: " + r.suppressed_reason + ")" : "(no tool)");
-      tool.textContent = t;
+      const t = r.tool || (r.suppressed_reason ? "suppressed: " + r.suppressed_reason : "no tool");
+      tool.textContent = "tool " + t;
     }
     const tick = $("reasoner-tick");
     if (tick) tick.textContent = r.tick_idx != null ? "tick " + r.tick_idx : "";
@@ -597,24 +679,37 @@
     }
   }
 
-  function renderCounters(counters) {
+  function renderCounters(counters, events) {
     const map = {
       "cnt-safety": "openral.event.safety_violation",
       "cnt-estop": "openral.event.estop_requested",
       "cnt-deadline": "openral.event.deadline_missed",
       "cnt-sensor": "openral.event.sensor_stale",
+      "cnt-skill-failure": "openral.event.skill_failure",
     };
     const containerMap = {
       "cnt-safety": "counter-safety",
       "cnt-estop": "counter-estop",
       "cnt-deadline": "counter-deadline",
       "cnt-sensor": "counter-sensor",
+      "cnt-skill-failure": "counter-skill-failure",
     };
     for (const [elId, key] of Object.entries(map)) {
       const v = counters[key] || 0;
-      $(elId).textContent = v;
+      const el = $(elId);
+      if (el) el.textContent = v;
       const cardEl = $(containerMap[elId]);
       if (cardEl) cardEl.classList.toggle("zero", v === 0);
+    }
+    // Surface the latest skill-failure STATE (vram_insufficient / timeout / …)
+    // under the counter so the operator sees the cause, not just a tally.
+    const sub = $("skill-failure-sub");
+    if (sub) {
+      const latest = (events || []).find(
+        (e) => e.kind === "openral.event.skill_failure" && e.attrs
+      );
+      const state = latest && latest.attrs && latest.attrs["openral.event.skill_failure.state"];
+      sub.textContent = state ? "latest: " + state : "openral.event.skill_failure";
     }
   }
 
@@ -1255,15 +1350,11 @@
     const cards = state.cards || {};
     const liveSkill = cards.rskill_execute || cards.rskill_tick || cards.rskill_activate || null;
     renderCard("rskill_execute", liveSkill);
-    renderCard("inference", cards.inference || null);
-    renderCard("safety", cards.safety || null);
+    foldInference(liveSkill, cards.inference || null);
     if (liveSkill) pulseIfNew("card-rskill_execute", liveSkill.ts_unix);
-    if (cards.inference) pulseIfNew("card-inference", cards.inference.ts_unix);
-    if (cards.safety) pulseIfNew("card-safety", cards.safety.ts_unix);
 
     const topics = state.topics || {};
     renderRobotState(topics.robot_state, topics.commands);
-    renderCommands(topics.commands);
     renderWorldState(topics.world_state);
     renderPerception(topics.perception);
     renderSlamMap(topics.slam);
@@ -1276,30 +1367,24 @@
     renderTrace(topics.trace);
 
     pulseIfNew("card-robot-state", topics.robot_state && topics.robot_state.ts_unix);
-    pulseIfNew("card-commands", topics.commands && topics.commands.ts_unix);
     pulseIfNew("card-world-state", topics.world_state && topics.world_state.ts_unix);
     pulseIfNew("card-system", topics.system && topics.system.ts_unix);
     pulseIfNew("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix);
     pulseIfNew("card-slam-map", topics.slam && topics.slam.ts_unix);
     pulseIfNew("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix);
-    pulseIfNew("card-scene-objects", topics.scene_objects && topics.scene_objects.ts_unix);
     pulseIfNew("card-reasoner", topics.reasoner && topics.reasoner.ts_unix);
 
     // Status dot per card — same 4-state logic as the header conn dot.
     setDot("card-rskill_execute", liveSkill && liveSkill.ts_unix, !!(liveSkill && liveSkill.status_code === 2));
-    setDot("card-inference", cards.inference && cards.inference.ts_unix, !!(cards.inference && cards.inference.status_code === 2));
-    setDot("card-safety", cards.safety && cards.safety.ts_unix, !!(cards.safety && cards.safety.status_code === 2));
     setDot("card-robot-state", topics.robot_state && topics.robot_state.ts_unix, false);
-    setDot("card-commands", topics.commands && topics.commands.ts_unix, false);
     setDot("card-world-state", topics.world_state && topics.world_state.ts_unix, false);
     setDot("card-system", topics.system && topics.system.ts_unix, false);
     setDot("card-safety-ledger", topics.safety && topics.safety.latest_ts_unix, false);
     setDot("card-slam-map", topics.slam && topics.slam.ts_unix, false);
     setDot("card-world-cloud", topics.pointcloud && topics.pointcloud.ts_unix, false);
-    setDot("card-scene-objects", topics.scene_objects && topics.scene_objects.ts_unix, false);
     setDot("card-reasoner", topics.reasoner && topics.reasoner.ts_unix, false);
 
-    renderCounters(state.counters || {});
+    renderCounters(state.counters || {}, state.events || []);
     renderEvents(state.events || []);
     renderMetrics(state.metrics || []);
 

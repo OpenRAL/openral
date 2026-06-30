@@ -198,6 +198,32 @@ def test_span_event_counters_increment() -> None:
     assert "error" in severities  # safety_violation
 
 
+def test_skill_failure_event_counts_and_carries_state() -> None:
+    """ADR-0074/0077 — a Reasoner-published skill failure (mirrored onto the
+    span path by ``_publish_skill_failure``) tallies on its own counter, lands
+    on the event log at ``error`` severity, and carries the failure state so the
+    dashboard can show *why* a skill failed (e.g. ``vram_insufficient``)."""
+    store = TelemetryStore()
+    span = _make_span(
+        "reasoner.skill_failure",
+        events=[
+            (
+                "openral.event.skill_failure",
+                {
+                    "openral.event.skill_failure.state": "vram_insufficient",
+                    "reasoner.rskill_id": "pi05-libero-nf4",
+                },
+            ),
+        ],
+    )
+    store.ingest_spans(_wrap_spans([span]))
+    snap = store.snapshot()
+    assert snap["counters"]["openral.event.skill_failure"] == 1
+    failure = next(ev for ev in snap["events"] if ev["kind"] == "openral.event.skill_failure")
+    assert failure["severity"] == "error"
+    assert failure["attrs"]["openral.event.skill_failure.state"] == "vram_insufficient"
+
+
 def test_error_status_propagates_to_card_severity() -> None:
     store = TelemetryStore()
     span = _make_span("rskill.execute", status_code=2, attrs={"rskill.id": "x"})

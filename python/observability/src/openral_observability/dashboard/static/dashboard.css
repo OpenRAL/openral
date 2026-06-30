@@ -433,25 +433,38 @@
   .camera .footer .meta-sub.right { color: var(--fg-mute); text-align: right; }
 
   /* ------------------- LIVE SIGNALS ------------------- */
-  .live-signals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .live-signals { display: grid; grid-template-columns: minmax(0, 460px); gap: 14px; }
   @media (max-width: 1100px) { .live-signals { grid-template-columns: 1fr; } }
-  .live-signals .card { min-height: 128px; }
+  .live-signals .card { min-height: 110px; }
+  /* the running-skill card shows its latencies on the labelled .substat line
+     below, so suppress the generic card renderer's bare unlabelled ms. */
+  .live-signals .latency { display: none; }
+  /* step + model forward-pass latency folded into the running-skill card */
+  .live-signals .substat {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--accent-line);
+    font-size: 11.5px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .live-signals .substat:empty { display: none; }
 
-  /* ------------------- EMBODIMENT GRID ------------------- */
+  /* ------------------- EMBODIMENT GRID -------------------
+     Three cards after the commands + ledger cards moved out (ADR-0073
+     dashboard reorg): robot joints tall on the left, world state (now
+     carrying the scene-object memory table) wide on the right, system
+     health beneath it. */
   .embodiment {
     display: grid;
-    grid-template-columns: 1.6fr 1fr 1fr;
+    grid-template-columns: 1.4fr 2fr;
     grid-template-rows: auto auto;
     gap: 14px;
   }
   .embodiment .robot { grid-column: 1; grid-row: 1 / span 2; }
-  .embodiment .commands { grid-column: 2; grid-row: 1; }
-  .embodiment .world { grid-column: 3; grid-row: 1; }
+  .embodiment .world { grid-column: 2; grid-row: 1; }
   .embodiment .system { grid-column: 2; grid-row: 2; }
-  .embodiment .ledger { grid-column: 3; grid-row: 2; }
   @media (max-width: 1100px) {
     .embodiment { grid-template-columns: 1fr; grid-template-rows: none; }
-    .embodiment .robot, .embodiment .commands, .embodiment .world, .embodiment .system, .embodiment .ledger {
+    .embodiment .robot, .embodiment .world, .embodiment .system {
       grid-column: 1; grid-row: auto;
     }
   }
@@ -871,6 +884,82 @@
 
   /* full-bleed card sections (slam / reasoner) keep card chrome */
   section.card { gap: 0; }
+
+  /* ------------------- REASONER · MISSION (ADR-0073) ------------------- */
+  .mission-head {
+    font-size: 11.5px; color: var(--text-dim);
+    margin: 2px 0 8px; letter-spacing: .02em;
+  }
+  .mission-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .mission-task {
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    align-items: center; gap: 8px;
+    padding: 4px 8px; border-radius: 6px;
+    background: var(--accent-soft);
+    border-left: 2px solid transparent;
+    font-size: 12.5px;
+  }
+  .mission-task .mk { text-align: center; font-weight: 700; opacity: .85; }
+  .mission-task .tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* subdivided-child id badge (#123): marks a task spliced in from a parent (t1.2) */
+  .mission-task .tx .tid { color: var(--fg-mute); font-size: 10px; margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .mission-task .mt { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 11px; }
+  /* status accents — monochrome palette's semantic colours */
+  .mission-task.st-done       { border-left-color: var(--ok);   }
+  .mission-task.st-done .mk    { color: var(--ok);   }
+  .mission-task.st-active,
+  .mission-task.st-verifying   { border-left-color: var(--warn); background: var(--accent-line); }
+  .mission-task.st-active .mk,
+  .mission-task.st-verifying .mk { color: var(--warn); }
+  /* abandoned = a FAILED task: the operator must NOT miss it, so it reads loud
+     (red wash + thick edge + bold mark) rather than dimmed into the background. */
+  .mission-task.st-abandoned {
+    border-left: 3px solid var(--err);
+    background: rgba(217,138,142,0.16);
+  }
+  .mission-task.st-abandoned .mk { color: var(--err); opacity: 1; }
+  .mission-task.st-abandoned .tx { text-decoration: line-through; color: var(--err); }
+  .mission-task.st-pending     { opacity: .5; }
+  /* per-task verdict (reward band / reason): the WHY behind done/abandoned */
+  .mission-task .verdict {
+    color: var(--text-dim); font-size: 10.5px; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px;
+  }
+  .mission-task.st-abandoned .verdict { color: var(--err); }
+  /* reward success bar (success vs threshold gate, ADR-0073 §2 / ADR-0074). The
+     fill colour reflects the reasoner's three-tier verdict band over the score:
+     ok (≥ success threshold) green, ambiguous (VLM-adjudicated) amber, fail
+     (below check floor / unverified) red. */
+  .mission-task .mbar {
+    display: inline-block; width: 46px; height: 6px;
+    border-radius: 3px; background: var(--accent-soft); overflow: hidden;
+  }
+  .mission-task .mbar > i { display: block; height: 100%; background: var(--ok); }
+  .mission-task .mbar.band-ambiguous > i { background: var(--warn); }
+  .mission-task .mbar.band-fail > i { background: var(--err); }
+  .mission-task .att { font-variant-numeric: tabular-nums; }
+  /* mission-complete-with-failures banner: a run that finished but abandoned
+     ≥1 task is a FAILED mission — call it out at the top of the card. */
+  .mission-failed {
+    margin: 2px 0 8px; padding: 5px 10px; border-radius: 6px;
+    background: rgba(217,138,142,0.16); border-left: 3px solid var(--err);
+    color: var(--err); font-size: 11.5px; font-weight: 600; letter-spacing: .02em;
+  }
+  /* demoted last-tick footer */
+  .reasoner-tick-foot {
+    margin-top: 10px; padding-top: 8px;
+    border-top: 1px solid var(--accent-line);
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 11px; color: var(--text-dim);
+  }
+  .reasoner-tick-foot span:empty { display: none; }
+  /* sub-header inside the merged World state card */
+  .ws-subhead {
+    margin: 12px 0 6px; font-size: 11px; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .06em;
+    border-top: 1px solid var(--accent-line); padding-top: 10px;
+  }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

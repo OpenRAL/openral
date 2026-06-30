@@ -562,14 +562,16 @@ class TelemetryStore:
         )
 
         # Span events (e.g. estop_requested, safety_violation) get their
-        # own event log entries with elevated severity.
+        # own event log entries with elevated severity. The title folds in the
+        # event's salient attributes (e.g. WHY a skill failed) so the operator
+        # reads the reason, not just the bare event name.
         for event in span.events:
             event_attrs = _attrs_to_dict(list(event.attributes))
             self._events.append(
                 TelemetryEvent(
                     ts_unix=event.time_unix_nano / 1_000_000_000.0,
                     kind=event.name,
-                    title=event.name,
+                    title=_summarise_event(event.name, event_attrs),
                     attrs=event_attrs,
                     severity=_event_severity(event.name),
                 )
@@ -836,6 +838,13 @@ class TelemetryStore:
         the full history; this is the "headline latest" surface so the
         operator can see what the LLM just picked).
         """
+        mission_raw = attrs.get("reasoner.mission_json")
+        mission: Any = None
+        if isinstance(mission_raw, str):
+            try:
+                mission = json.loads(mission_raw)
+            except json.JSONDecodeError:
+                mission = None
         self._topics["reasoner"].update(
             {
                 "ts_unix": ts_unix,
@@ -847,6 +856,7 @@ class TelemetryStore:
                 "force": attrs.get("reasoner.force"),
                 "suppressed_reason": attrs.get("reasoner.suppressed_reason"),
                 "error_kind": attrs.get("reasoner.error_kind"),
+                "mission": mission,
             }
         )
 
@@ -1061,6 +1071,10 @@ _COUNTED_EVENTS = frozenset(
         "openral.event.deadline_missed",
         "openral.event.sensor_stale",
         "openral.event.action_dropped",
+        # ADR-0074/0077 — Reasoner-published skill failures (vram_insufficient,
+        # reward_plateau, unavailable, timeout, aborted). Tallied so the
+        # dashboard's "skill failures" counter makes a failing run obvious.
+        "openral.event.skill_failure",
     }
 )
 
@@ -1069,6 +1083,7 @@ _ERROR_EVENTS = frozenset(
         "openral.event.estop_requested",
         "openral.event.safety_violation",
         "openral.event.error_latched",
+        "openral.event.skill_failure",
     }
 )
 
@@ -1092,6 +1107,30 @@ def _event_severity(name: str) -> str:
     if name in _WARN_EVENTS:
         return "warn"
     return "info"
+
+
+def _summarise_event(name: str, attrs: dict[str, Any]) -> str:
+    """One-line label for a span event, surfacing the 'why' an operator needs.
+
+    Span events carry their reason as attributes, not in the name: a
+    ``skill_failure`` event names only ``openral.event.skill_failure`` while its
+    concrete state (``timeout`` / ``vram_insufficient`` / ``reward_plateau`` /
+    ``aborted`` …) and the offending rSkill ride on
+    ``openral.event.skill_failure.state`` / ``reasoner.rskill_id``. Without
+    folding those into the title the dashboard event log + traces section show
+    only the bare event name, so the operator can't see why the skill failed.
+    Mirrors :func:`_summarise_span` for spans.
+    """
+    short = name.rsplit(".", 1)[-1]  # openral.event.skill_failure -> skill_failure
+    parts: list[str] = [short]
+    state = attrs.get("openral.event.skill_failure.state")
+    if state:
+        parts.append(str(state))
+    label = " · ".join(parts)
+    rskill = attrs.get("reasoner.rskill_id")
+    if rskill:
+        label += f" ({rskill})"
+    return label
 
 
 # Fallback when an OTLP LogRecord carries no severity_number (0): map the

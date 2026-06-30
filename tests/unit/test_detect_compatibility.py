@@ -111,19 +111,24 @@ class TestInTreeSkillsAgainstSo100:
         # SO-100-tagged skills must not be rejected on EMBODIMENT grounds
         # (their embodiment intersects so100_follower). A skill may still fail
         # on an orthogonal sensor/capability check — e.g. the `kind: detector`
-        # RT-DETR rSkills carry a broad embodiment set incl. so100_follower but
-        # require a 640x480 RGB camera the bare SO-100 manifest doesn't declare
+        # RT-DETR rSkills are embodiment-agnostic (``embodiment_tags: ["any"]``,
+        # ADR-0072) so they clear the embodiment gate but still require a 640x480
+        # RGB camera the bare SO-100 manifest doesn't declare
         # (failure_kind="sensor_modality") — which is the sensor case, not the
         # embodiment case under test here.
         so100_rows = [r for r in report.rows if "so100_follower" in r.embodiment_tags]
         assert so100_rows, "expected at least one so100_follower-tagged manifest"
         assert all(r.failure_kind != "embodiment_tag" for r in so100_rows)
-        # Skills with **no shared tag** with SO-100 must fail on
-        # embodiment_tag.  (Skills that share `lerobot` may fail later on a
-        # sensor / capability check; they are not the case under test here.)
+        # Skills with **no shared tag** with SO-100 must fail on embodiment_tag.
+        # Excludes the ``["any"]`` wildcard skills (they clear the gate) and skills
+        # that share `lerobot` (they may fail later on a sensor/capability check).
         so100_set = {"so100_follower", "lerobot"}
         embodiment_fail_rows = [
-            r for r in report.rows if not set(r.embodiment_tags) & so100_set and r.embodiment_tags
+            r
+            for r in report.rows
+            if r.embodiment_tags
+            and "any" not in r.embodiment_tags
+            and not set(r.embodiment_tags) & so100_set
         ]
         assert embodiment_fail_rows, "expected at least one disjoint-embodiment manifest"
         for r in embodiment_fail_rows:

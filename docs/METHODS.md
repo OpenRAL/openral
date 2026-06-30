@@ -1,7 +1,7 @@
 # METHODS.md — Public Symbol Inventory (index)
 
 > **Last cleaned: 2026-06-11** — split the single-file inventory into
-> per-layer files under [`docs/methods/`](methods/) and refreshed every
+> per-layer files under [`docs/methods/`](https://github.com/OpenRAL/openral/tree/master/docs/methods/) and refreshed every
 > `(LNN)` citation via `tools/refresh_methods_linenos.py`. (Previous pass
 > 2026-05-16: repo-wide de-slop, ADR renumber, `skills/` → `rskills/`.)
 >

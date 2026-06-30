@@ -130,10 +130,10 @@ pattern `_maybe_reset_hal_to_starting_pose` already uses.
 
 ## Two reference skills land in the same PR
 
-* [`rskills/rskill-moveit-joints/`](../../rskills/rskill-moveit-joints/)
+* [`rskills/rskill-moveit-joints/`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-joints/)
   — trajectory mode against `moveit_msgs/action/MoveGroup` (introduced here as
   `openral-moveit-plan-arm`; renamed `rskill-moveit-joints` under ADR-0054).
-* [`rskills/rskill-nav2-navigate-to-pose/`](../../rskills/rskill-nav2-navigate-to-pose/)
+* [`rskills/rskill-nav2-navigate-to-pose/`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-nav2-navigate-to-pose/)
   — result-only mode against `nav2_msgs/action/NavigateToPose`.
 
 Both ship a real `rskill.yaml` + `README.md` that pass the

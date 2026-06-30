@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "Tool variant \u2014 invoke an installed, capability-matched rSkill.\n\nDispatch: action goal on ``/openral/execute_skill`` (the\n``openral_msgs/action/ExecuteSkill`` action server in F1's\n``rskill_runner_node``). The chunk path that follows is\n``Skill \u2192 /openral/candidate_action \u2192 safety_node \u2192\n/openral/safe_action \u2192 HAL`` per ADR-0018 \u00a73.\n\nAttributes:\n    tool: Discriminator (always ``\"execute_rskill\"``).\n    rskill_id: ``RSkillManifest.name`` of an installed, capable skill.\n        Validated against the local registry by the reasoner at\n        palette-build time; an unknown id raises\n        :class:`ROSReasonerInvalidPlan`.\n    prompt: Natural-language prompt forwarded to the skill's\n        ``ExecuteSkill`` goal alongside the rskill_id. For VLA\n        skills this is the policy's task-conditioning signal\n        (SmolVLA writes it into ``observation[\"task\"]``); for\n        wrapped-ROS skills it's carried for trace / log context\n        but the actual goal is built from ``goal_params_json``\n        merged over the manifest's ``default_goal_json``.\n    goal_params_json: ADR-0026 \u2014 serialised JSON object carrying\n        per-skill typed parameters the LLM produces against the\n        skill's :attr:`RSkillManifest.goal_params_schema`. Empty\n        string disables the merge (today's behaviour). Wrapped-ROS\n        skills (``kind: ros_action`` / ``ros_service``) deep-merge\n        it over ``ros_integration.default_goal_json`` at\n        configure-time; VLA skills accept the field and ignore it\n        (their prompt is already the structured signal).\n    deadline_s: Hard deadline in seconds for the action server to\n        complete the goal. ``0`` means \"use the skill manifest's\n        default latency budget\".\n    patience_s: Task-adaptive execution ceiling override (short for a\n        quick grab, long for a precise insertion). ``None`` \u2192 use the\n        reward model's ``default_patience_s``.\n    progress_tolerance: Override the reward model's ``plateau_tolerance``\n        when a task misbehaves (e.g. a noisy critic). ``None`` \u2192 use the\n        model default.",
+  "properties": {
+    "rationale": {
+      "default": "",
+      "title": "Rationale",
+      "type": "string"
+    },
+    "tool": {
+      "const": "execute_rskill",
+      "default": "execute_rskill",
+      "title": "Tool",
+      "type": "string"
+    },
+    "rskill_id": {
+      "minLength": 1,
+      "title": "Rskill Id",
+      "type": "string"
+    },
+    "prompt": {
+      "default": "",
+      "title": "Prompt",
+      "type": "string"
+    },
+    "goal_params_json": {
+      "default": "",
+      "title": "Goal Params Json",
+      "type": "string"
+    },
+    "deadline_s": {
+      "default": 0.0,
+      "minimum": 0.0,
+      "title": "Deadline S",
+      "type": "number"
+    },
+    "patience_s": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Patience S"
+    },
+    "progress_tolerance": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Progress Tolerance"
+    }
+  },
+  "required": [
+    "rskill_id"
+  ],
+  "title": "ExecuteRskillTool",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

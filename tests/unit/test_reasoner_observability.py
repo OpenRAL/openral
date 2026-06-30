@@ -236,3 +236,52 @@ def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
     assert reasoner["model"] == "claude-haiku-4-5"
     assert reasoner["force"] is False
     assert "ts_unix" in reasoner
+
+
+def test_skill_failure_event_log_title_carries_reason() -> None:
+    """A skill_failure span event surfaces its state + rSkill in the event-log title.
+
+    The dashboard ingests OTLP, not the ROS FailureTrigger bus, so the only
+    thing it sees is the ``openral.event.skill_failure`` span event. Its concrete
+    state (timeout / vram_insufficient / …) rides on the
+    ``openral.event.skill_failure.state`` attribute. Without folding that into the
+    event-log title the operator sees only the bare event name and can't tell WHY
+    the skill failed — this guards the ``_summarise_event`` enrichment.
+    """
+    pytest.importorskip("opentelemetry.proto")
+    from openral_observability.dashboard.store import TelemetryStore
+    from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+    from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
+
+    event = Span.Event(
+        name="openral.event.skill_failure",
+        time_unix_nano=3_000_000_000,
+        attributes=[
+            KeyValue(
+                key="openral.event.skill_failure.state",
+                value=AnyValue(string_value="timeout after 30s patience ceiling"),
+            ),
+            KeyValue(
+                key="reasoner.rskill_id",
+                value=AnyValue(string_value="OpenRAL/rskill-smolvla-libero"),
+            ),
+        ],
+    )
+    span = Span(
+        trace_id=b"1" * 16,
+        span_id=b"1" * 8,
+        name="reasoner.skill_failure",
+        start_time_unix_nano=3_000_000_000,
+        end_time_unix_nano=3_000_100_000,
+        events=[event],
+    )
+    resource_spans = ResourceSpans(scope_spans=[ScopeSpans(spans=[span])])
+
+    store = TelemetryStore()
+    store.ingest_spans([resource_spans])
+    events = store.snapshot()["events"]
+
+    failure = next(e for e in events if e["kind"] == "openral.event.skill_failure")
+    assert "timeout after 30s patience ceiling" in failure["title"]
+    assert "OpenRAL/rskill-smolvla-libero" in failure["title"]
+    assert failure["severity"] == "error"

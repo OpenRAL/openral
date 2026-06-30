@@ -98,12 +98,18 @@ def weights_source_from_manifest(manifest: RSkillManifest) -> str:
     """Resolve the HF repo the model backend should load.
 
     Used by both the VLM-sidecar (``LocateAnythingDetector``) and the in-process
-    zero-shot (``OmDetTurboDetector``) backends. Prefers ``source_repo`` (the
-    upstream weights the rSkill wraps), falling back to ``weights_uri``. Strips
-    the ``hf://`` scheme and any ``@revision`` suffix so the value is a bare
-    ``org/name`` repo id for ``from_pretrained``.
+    zero-shot (``OmDetTurboDetector``) backends. Prefers ``weights_uri`` — the
+    weights the rSkill actually ships: for an NF4 rSkill that is the
+    self-describing prequantized mirror (loaded directly, ~2.3 GB, no on-the-fly
+    quantize), for a thin wrapper it is the same upstream repo. Falls back to
+    ``source_repo`` (upstream provenance) when ``weights_uri`` is absent or not an
+    ``hf://`` URI (e.g. a ``local://`` ONNX path). Strips the ``hf://`` scheme and
+    any ``@revision`` suffix so the value is a bare ``org/name`` repo id for
+    ``from_pretrained``.
     """
-    raw = manifest.source_repo or manifest.weights_uri or "nvidia/LocateAnything-3B"
+    weights_uri = manifest.weights_uri
+    hf_weights = weights_uri if weights_uri and weights_uri.startswith("hf://") else None
+    raw = hf_weights or manifest.source_repo or "nvidia/LocateAnything-3B"
     return raw.removeprefix("hf://").split("@", 1)[0]
 
 
@@ -159,11 +165,14 @@ def build_manifest_detector(
             LocateAnythingDetector,
         )
 
-        vlm = LocateAnythingDetector(
-            labels=contract.labels,
-            model_id=manifest.name,
-            weights_source=weights_source_from_manifest(manifest),
-        )
+        vlm_kwargs: dict[str, Any] = {
+            "labels": contract.labels,
+            "model_id": manifest.name,
+            "weights_source": weights_source_from_manifest(manifest),
+        }
+        if contract.max_side is not None:
+            vlm_kwargs["max_side"] = contract.max_side
+        vlm = LocateAnythingDetector(**vlm_kwargs)
         return vlm, DetectorTier.VLM_SIDECAR
 
     if onnx_path is None:

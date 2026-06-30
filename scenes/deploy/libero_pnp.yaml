@@ -1,8 +1,23 @@
-# LIBERO floor environment — deploy-sim digital twin (DeployScene; env-only).
-# Boots the OpenRAL stack (HAL + reasoner + safety kernel) without a predefined
-# task or success criterion; the reasoner picks the rSkill at runtime. Robot
-# auto-resolves via ``SCENES.fixed_robot("libero_spatial") == "franka_panda"``.
+# LIBERO spatial environment — deploy-sim digital twin (DeployScene; operator-goal driven).
+#
+# Boots the full OpenRAL stack (HAL + reasoner + safety kernel) against the
+# LIBERO spatial MuJoCo scene. The operator supplies the goal at runtime via
+# ``--initial-task`` (or ``/openral/prompt``) — there is no ``tasks:`` block;
+# ``openral deploy sim`` delivers that single goal to the reasoner at startup.
+#
+# The reasoner decomposes the goal into ordered subtasks, selects
+# the matching rSkills (smolvla-libero for VLA execution, omdet-turbo-locator
+# for object localisation, robometer-4b for reward evaluation), and drives the
+# run to a terminal outcome.  All subtask selections, rSkill choices,
+# localisation steps, VLA executions, reward evaluations, and the final result
+# are emitted as structured OTel spans on ``reasoner.tick`` (attribute
+# ``reasoner.tool``) and ``rskill.tick`` (attributes ``rskill.id``,
+# ``rskill.reward``) so failures can be diagnosed from the trace log.
+#
+# Robot auto-resolves via ``SCENES.fixed_robot("libero_spatial") == "franka_panda"``.
 # Run: openral deploy sim --config scenes/deploy/libero_pnp.yaml
+#      --enable-reward-monitor --enable-critic
+#      --object-detector-locator rskills/omdet-turbo-locator/rskill.yaml
 # Setup: CC=/usr/bin/gcc just sync --all-packages --group libero
 
 scene:
@@ -10,3 +25,8 @@ scene:
   backend: mujoco
   observation_height: 256
   observation_width: 256
+
+# Deploy goal is supplied by the operator at runtime, e.g.:
+#   openral deploy sim --config scenes/deploy/libero_pnp.yaml \
+#     --initial-task "pick the black bowl from the stove and put it on the cabinet, then put the butter in the basket"
+# The reasoner decomposes that single goal into ordered subtasks via decompose_mission (ADR-0073).

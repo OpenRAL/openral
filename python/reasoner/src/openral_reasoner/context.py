@@ -24,18 +24,30 @@ from collections import deque
 
 from openral_core import (
     FailureEvidence,
+    ObjectDetection2D,
+    ObjectsMetadata,
     PerceptionEventMetadata,
+    RobotDescription,
     WorldState,
 )
 from pydantic import TypeAdapter
+
+from openral_reasoner.mission import MissionState, TaskState
 
 __all__ = [
     "DEFAULT_BUFFER_SIZE",
     "DEFAULT_PROMPT_PRIORITY",
     "ContextRenderer",
+    "ExecutionEventRecord",
     "FailureEventRecord",
     "PerceptionEventRecord",
     "PromptRecord",
+    "RewardStateRecord",
+    "reflect_on_failure",
+    "reflect_on_invalid_plan",
+    "reflect_on_retry_cap",
+    "render_playbooks_block",
+    "render_robot_self_model",
 ]
 
 # Each rolling buffer is sized so an entire window fits in ~1 KB of
@@ -107,6 +119,269 @@ class PromptRecord:
     priority: int = DEFAULT_PROMPT_PRIORITY
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionEventRecord:
+    """One entry in the reasoner's rolling **execution-feedback** buffer.
+
+    ADR-0072 Decision 2.2 (Inner Monologue): a typed one-line outcome appended
+    after every dispatched skill — on *success as well as failure*, so the LLM
+    reasons on what actually happened (closed loop) instead of only seeing
+    failures. On failure it also carries a :attr:`reflection` strategy hint
+    (Decision 2.3, Reflexion).
+    """
+
+    rskill_id: str
+    outcome: str  # "ok" | "failed"
+    summary: str  # short NL outcome ("trace=abc12345", "object not in gripper")
+    reflection: str | None  # Decision 2.3 strategy hint (failures only)
+    stamp_ns: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RewardStateRecord:
+    """Latest reward-model assessment surfaced to the LLM (ADR-0074 amendment).
+
+    Robometer-4B emits **two distinct heads** with different meanings, and the
+    LLM must use each for the right decision:
+
+    * :attr:`progress` — task *closeness* (0=untouched, 1=done). This is the
+        head the verdict gates on (it reaches ~0.80-0.86 on a genuine success);
+        the LLM should weigh it for *persist-vs-replan*.
+    * :attr:`success` — done-*confidence* (a separate probability that is
+        empirically compressed, ~0.56-0.79 even on a real success); the LLM
+        should weigh it for *done-ness*, not as the primary completion bar.
+
+    Rendered as the ``## REWARD`` section so both heads are labelled and never
+    blurred. Set by the node from each ``query_task_progress`` / mission-verify
+    response; ``None`` omits the section.
+
+    Attributes:
+        progress: Latest progress (closeness) score in [0, 1].
+        success: Latest success (done-confidence) score in [0, 1].
+        progress_trend: Per-frame progress slope (+rising / -falling).
+        success_trend: Per-frame success slope.
+        task: The task text the assessment was scored against.
+        stamp_ns: Arrival timestamp in nanoseconds.
+    """
+
+    progress: float
+    success: float
+    progress_trend: float
+    success_trend: float
+    task: str
+    stamp_ns: int
+
+
+def reflect_on_failure(outcome_state: str, detail: str) -> str:
+    """One-line strategy hint from a terminal skill outcome (ADR-0072 §2.3).
+
+    Reflexion-style: convert a raw failure into a *next-step* hint so the
+    replanning ladder advances instead of blindly retrying. Deterministic — no
+    LLM call.
+
+    Args:
+        outcome_state: The terminal state — ``"aborted"`` / ``"canceled"`` /
+            ``"failed"`` / ``"error"``.
+        detail: Free-text failure reason (matched for ``timeout`` / ``deadline``).
+
+    Example:
+        >>> "infeasible" in reflect_on_failure("aborted", "joint limit")
+        True
+    """
+    state = outcome_state.lower()
+    if "timeout" in detail.lower() or "deadline" in detail.lower():
+        return (
+            "the skill timed out — it may be stuck; try a shorter-horizon step "
+            "or a different skill."
+        )
+    if state == "aborted":
+        return (
+            "the controller aborted mid-execution — the action is likely infeasible from "
+            "here; reposition or substitute a different skill rather than retrying."
+        )
+    if state == "canceled":
+        return (
+            "the action was canceled — re-check the goal and preconditions before re-dispatching."
+        )
+    return (
+        "the skill failed — don't repeat the same call; try a different skill "
+        "or replan the subgoal."
+    )
+
+
+def reflect_on_reward_plateau(progress_now: float) -> str:
+    """One-line strategy hint for a reward-plateau failure (ADR-0074).
+
+    Distinct from :func:`reflect_on_failure`: there the *controller* faulted
+    (timeout / abort) so "shorten the horizon or substitute a skill" is right.
+    Here the skill executed **without a fault** — it just didn't accomplish the
+    task (the reward signal says the object was not picked / placed). The wrong
+    move is to subdivide the same action or re-issue the identical instruction
+    (a direct LLM probe showed both: the timeout hint → subdivide; no signal →
+    blind repeat). The right move is to change *tactic*.
+
+    Args:
+        progress_now: The reward model's **progress** (closeness) score for the
+            attempt — the gated head (ADR-0074 amendment), below the contract's
+            ``check_floor`` (a genuine failure).
+
+    Example:
+        >>> "different approach" in reflect_on_reward_plateau(0.48)
+        True
+    """
+    return (
+        f"the policy executed but the reward says the task was NOT completed "
+        f"(progress={progress_now:.2f}) — this exact approach is not working. Do NOT "
+        "re-issue the same instruction or subdivide it into the same action: "
+        "re-dispatch with a DIFFERENT approach (a different grasp / angle / "
+        "strategy). If several different approaches keep failing, this object is "
+        "abandoned and the mission moves on to the next one."
+    )
+
+
+def reflect_on_invalid_plan(detail: str) -> str:
+    """Strategy hint when the model's own tool call was malformed (ADR-0072 §2.3).
+
+    The previous tick produced a tool call the reasoner could not decode —
+    malformed JSON arguments, a non-object payload, a wrong/missing field, or an
+    rskill_id outside the palette. Feed it straight back so the *next* tick fixes
+    the call instead of re-emitting the same broken one. Deterministic — no LLM
+    call.
+
+    Args:
+        detail: The decode/validation error text (carried verbatim so the model
+            sees exactly what was wrong).
+
+    Example:
+        >>> "valid tool call" in reflect_on_invalid_plan("malformed JSON arguments")
+        True
+    """
+    return (
+        "your previous tool call could not be decoded — emit one valid tool call with a "
+        "single well-formed JSON arguments object, using only fields and rskill_ids the "
+        f"palette allows. Decode error: {detail}"
+    )
+
+
+def reflect_on_retry_cap(tool: str, cap: int) -> str:
+    """Strategy hint when the per-kind retry ladder is exhausted (ADR-0072 §2.3).
+
+    Upgrades the bare retry counter into an explicit "stop repeating, change
+    approach" reflection the next tick can act on.
+    """
+    return (
+        f"'{tool}' was selected {cap}+ ticks in a row with no progress — the retry ladder "
+        "is exhausted; substitute a different skill, adjust parameters, or replan the goal."
+    )
+
+
+def render_playbooks_block(entries: list[tuple[str, str]]) -> str:
+    r"""Render the ``## PLAYBOOKS`` system-prompt block (ADR-0072 Decision 1 / Phase 3).
+
+    Each entry is ``(header, body_markdown)`` — the playbook's ``name — trigger``
+    header and its hand-authored ``PLAYBOOK.md`` SOP. The reasoner appends this to
+    its system prompt at configure time so the LLM follows an installed decision
+    procedure when its trigger matches the goal. The playbook guides *decisions*
+    only — every motion still goes through ``execute_rskill`` and the C++ safety
+    kernel (CLAUDE.md §1.1).
+
+    Returns ``""`` when no playbooks are installed, so appending it to a system
+    prompt is a no-op (the block is omitted entirely).
+
+    Example:
+        >>> render_playbooks_block([])
+        ''
+        >>> block = render_playbooks_block([("find-object — locate X", "## Steps\\n1. ...")])
+        >>> "## PLAYBOOKS" in block
+        True
+    """
+    if not entries:
+        return ""
+    parts = [
+        "## PLAYBOOKS",
+        (
+            "Installed decision procedures (SOPs). When a goal matches a playbook's "
+            "trigger, follow its steps, verify its done predicate, and use its "
+            "fallbacks. Playbooks guide your decisions; every motion still goes "
+            "through execute_rskill and the safety kernel. A playbook is NOT a "
+            "skill: never pass a playbook name to execute_rskill. The only "
+            "executable skills are the ones in your tool list; a playbook only "
+            "tells you which of those to dispatch and in what order."
+        ),
+    ]
+    for header, body in entries:
+        parts.append(f"\n--- playbook: {header} ---\n{body.strip()}")
+    return "\n".join(parts)
+
+
+def render_robot_self_model(description: RobotDescription) -> str:
+    """Render the static **robot self-model** ("robot resume") text block.
+
+    A one-time, deterministic summary of what the robot *is and can do* —
+    embodiment, DOF, end-effectors, locomotion, payload, capability flags, and
+    cameras (with field-of-view) — derived from the :class:`RobotDescription`.
+    The reasoner injects this as the ``## ROBOT`` context section (computed once
+    at configure time) so the LLM can judge feasibility — "is the target in
+    reach / in view?" — before dispatching a skill, instead of guessing (ADR-0072
+    Decision 2.1, the EMOS "Robot Resume" idea). Pixel-free (ADR-0018 §4).
+
+    Args:
+        description: The robot manifest loaded from ``robots/<id>/robot.yaml``.
+
+    Returns:
+        A deterministic multi-line block (no trailing newline).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/so100_follower/robot.yaml")
+        >>> "name: so100_follower" in render_robot_self_model(d)
+        True
+    """
+    caps = description.capabilities
+    lines: list[str] = [
+        f"name: {description.name} (embodiment={description.embodiment_kind.value})",
+        f"dof: {len(description.joints)} joints",
+    ]
+    if description.end_effectors:
+        ees = ", ".join(f"{e.name}({e.kind})" for e in description.end_effectors)
+        lines.append(f"end_effectors: {ees}")
+    if caps.locomotion:
+        # LocomotionKind is a Literal[str], so the items are already strings.
+        lines.append(f"locomotion: {', '.join(sorted(caps.locomotion))}")
+    if caps.can_lift_kg > 0.0:
+        lines.append(f"payload_kg: {caps.can_lift_kg:.1f}")
+    flags = [
+        name
+        for name, present in (
+            ("vision", caps.has_vision),
+            ("force_control", caps.has_force_control),
+            ("tactile", caps.has_tactile),
+            ("dexterous_hands", caps.has_dexterous_hands),
+            ("lidar", caps.has_lidar),
+            ("audio", caps.has_audio),
+            ("bimanual", caps.bimanual),
+        )
+        if present
+    ]
+    if flags:
+        lines.append(f"capabilities: {', '.join(flags)}")
+    # Cameras = sensors carrying pinhole intrinsics or a declared FOV. The FOV
+    # (frustum) is the LLM's "what can I see and how wide" cue for view feasibility.
+    cameras: list[str] = []
+    for sensor in description.sensors:
+        if sensor.intrinsics is None and sensor.fov_h_deg is None:
+            continue
+        if sensor.fov_h_deg is not None and sensor.fov_v_deg is not None:
+            cameras.append(f"{sensor.name}(fov {sensor.fov_h_deg:.0f}x{sensor.fov_v_deg:.0f}deg)")
+        else:
+            cameras.append(sensor.name)
+    if cameras:
+        lines.append(f"cameras: {', '.join(cameras)}")
+    if caps.supported_control_modes:
+        lines.append(f"control_modes: {', '.join(m.value for m in caps.supported_control_modes)}")
+    return "\n".join(lines)
+
+
 class ContextRenderer:
     """Stateful structured-text builder for the reasoner LLM.
 
@@ -127,14 +402,52 @@ class ContextRenderer:
         True
     """
 
-    def __init__(self, *, buffer_size: int = DEFAULT_BUFFER_SIZE) -> None:
-        """Stash buffer capacity and arm empty FIFOs."""
+    def __init__(
+        self, *, buffer_size: int = DEFAULT_BUFFER_SIZE, robot_model: str | None = None
+    ) -> None:
+        """Stash buffer capacity, the static robot self-model, and arm empty FIFOs.
+
+        Args:
+            buffer_size: Per-category rolling-buffer retention.
+            robot_model: Pre-rendered robot self-model text (ADR-0072 Decision
+                2.1, from :func:`render_robot_self_model`), rendered as the
+                ``## ROBOT`` section. ``None`` omits the section (e.g. before the
+                robot description is loaded).
+        """
         if buffer_size < 1:
             raise ValueError(
                 f"ContextRenderer.buffer_size must be >= 1; got {buffer_size!r}",
             )
         self._buffer_size = buffer_size
+        self._robot_model = robot_model
+        # ADR-0072 §3 / Phase 4b — the rendered `## MEMORY` block (the self-
+        # maintained MEMORY.md), set via `set_memory_block`. None omits the section.
+        self._memory_block: str | None = None
+        # ADR-0073 §1 — the active mission (ordered task queue). Set via
+        # `set_mission`, advanced via `advance_mission`; rendered as `## MISSION`.
+        # None (or an empty mission) omits the section.
+        self._mission: MissionState | None = None
+        # ADR-0076 — latest continuous-detector enumeration (camera-space 2D
+        # detections with stable det_ids). Set via `set_in_view`; rendered as the
+        # `in_view[<camera>]` line in WORLD_STATE. None omits it. Depth-free, so it
+        # populates even when the 3D lift / `scene_objects` cannot.
+        self._in_view: ObjectsMetadata | None = None
+        # ADR-0076 — sticky open-vocab locate hits, keyed by lowercased label
+        # (latest bbox wins, insertion-ordered, capped). The continuous detector
+        # overwrites `_in_view` every frame with its fixed vocabulary; a goal noun
+        # the reasoner confirmed via `locate_in_view` (open-vocab) would otherwise
+        # vanish on the next clobber. Persisting it here keeps the grounded object
+        # in the `located[<cam>]` line so the LLM can decompose / dispatch instead
+        # of re-locating it every tick. Fed via `note_located`.
+        self._located: dict[str, ObjectDetection2D] = {}
+        self._located_sensor: str | None = None
+        # ADR-0074 amendment — latest reward-model assessment (both heads). Set
+        # via `set_reward_state`; rendered as the `## REWARD` section. None omits
+        # it. Kept as a single latest snapshot (not a buffer): the reward is a
+        # current-state readout, not an event stream.
+        self._reward_state: RewardStateRecord | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
+        self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
         # Prompt buffer is a list (not a deque) because we order it by
         # priority on insert (ADR-0018 §3.F10 — human-source prompts
@@ -148,11 +461,174 @@ class ContextRenderer:
         # ADR-0018 amendment 2026-05-25 §2 ("heartbeat_idle").
         self._seq: int = 0
 
+    # ── static robot self-model ─────────────────────────────────────────────
+
+    def set_robot_model(self, robot_model: str | None) -> None:
+        """Set (or clear) the static robot self-model rendered as ``## ROBOT``.
+
+        Called once after the ``RobotDescription`` is loaded (ADR-0072 Decision
+        2.1). Static config, not an event: it does not touch the rolling buffers
+        or bump :attr:`seq`, so it is safe to call on a live renderer.
+        """
+        self._robot_model = robot_model
+
+    def set_memory_block(self, memory_block: str | None) -> None:
+        """Set (or clear) the ``## MEMORY`` block — the self-maintained MEMORY.md.
+
+        ADR-0072 §3 / Phase 4b. Re-set after each ``memory_write`` so the LLM sees
+        the updated memory next tick. Static config — does not bump :attr:`seq`.
+        """
+        self._memory_block = memory_block
+
+    # ── mission (ADR-0073 §1 — sequential task queue) ───────────────────────
+
+    def set_mission(self, mission: MissionState | None) -> None:
+        """Set (or clear) the active mission rendered as ``## MISSION``.
+
+        A new mission is a new goal — an **event** — so this bumps :attr:`seq`
+        to wake an otherwise-idle heartbeat (unlike the static
+        :meth:`set_robot_model` / :meth:`set_memory_block`). The active task's
+        text is the goal the reasoner pursues until it is verified and the queue
+        advances.
+        """
+        self._mission = mission
+        self._seq += 1
+
+    def set_in_view(self, objects: ObjectsMetadata | None) -> None:
+        """Set (or clear) the camera-space ``in_view`` enumeration (ADR-0076).
+
+        The latest continuous-detector :class:`ObjectsMetadata` — 2D detections
+        with stable ``det_id``s — rendered as the ``in_view[<camera>]`` line in
+        WORLD_STATE. A new perception snapshot is an **event**, so this bumps
+        :attr:`seq` to wake an otherwise-idle heartbeat. Depth-free: it grounds
+        a goal noun onto a concrete object even when the 3D ``scene_objects`` line
+        is empty (RGB-only / no lift).
+        """
+        self._in_view = objects
+        self._seq += 1
+
+    #: Max distinct labels retained in the sticky ``located`` store (ADR-0076).
+    _LOCATED_CAP = 12
+
+    def note_located(self, objects: ObjectsMetadata | None) -> None:
+        """Persist open-vocab ``locate_in_view`` hits into the sticky ``located`` line.
+
+        The complement to :meth:`set_in_view`: that holds the *continuous*
+        detector's latest (fixed-vocabulary) frame, which is overwritten every
+        tick. When the reasoner confirms a goal noun with the open-vocab
+        ``locate_in_view`` detector (e.g. ``basket``, ``ketchup`` — labels the
+        fixed indoor vocabulary mislabels as ``tray`` / ``bottle``), the hit is
+        kept here keyed by lowercased label (latest bbox wins, capped at
+        :attr:`_LOCATED_CAP`) so it survives the next continuous clobber and the
+        LLM can ground / decompose instead of re-locating it. A confirmed
+        detection is an **event**, so this bumps :attr:`seq`. ``None`` / empty is
+        a no-op.
+
+        Example:
+            >>> from openral_core import ObjectDetection2D, ObjectsMetadata
+            >>> r = ContextRenderer()
+            >>> r.note_located(
+            ...     ObjectsMetadata(
+            ...         sensor_id="top",
+            ...         model_id="omdet",
+            ...         frame_width=256,
+            ...         frame_height=256,
+            ...         detections=[
+            ...             ObjectDetection2D(
+            ...                 label="basket", confidence=0.6, bbox_xyxy=(10, 20, 30, 40)
+            ...             )
+            ...         ],
+            ...     )
+            ... )
+            >>> "located[top]: basket" in r.render(world_state=None)
+            True
+        """
+        if objects is None or not objects.detections:
+            return
+        self._located_sensor = objects.sensor_id or self._located_sensor
+        for det in objects.detections:
+            key = det.label.strip().lower()
+            if not key:
+                continue
+            self._located.pop(key, None)  # re-insert so newest sorts last / evicts last
+            self._located[key] = det
+        while len(self._located) > self._LOCATED_CAP:
+            self._located.pop(next(iter(self._located)))  # evict oldest
+        self._seq += 1
+
+    def set_reward_state(self, reward: RewardStateRecord | None) -> None:
+        """Set (or clear) the latest reward assessment rendered as ``## REWARD``.
+
+        ADR-0074 amendment — surfaces **both** reward heads (progress closeness +
+        success done-confidence), distinctly labelled, so the LLM uses progress
+        for persist-vs-replan and success for done-ness. A fresh assessment is an
+        **event**, so this bumps :attr:`seq` to wake an otherwise-idle heartbeat.
+
+        Example:
+            >>> r = ContextRenderer()
+            >>> r.set_reward_state(
+            ...     RewardStateRecord(
+            ...         progress=0.81,
+            ...         success=0.45,
+            ...         progress_trend=0.04,
+            ...         success_trend=0.01,
+            ...         task="pick the bowl",
+            ...         stamp_ns=0,
+            ...     )
+            ... )
+            >>> "progress=0.81 (closeness" in r.render(world_state=None)
+            True
+            >>> "success=0.45 (done-confidence" in r.render(world_state=None)
+            True
+        """
+        self._reward_state = reward
+        self._seq += 1
+
+    @property
+    def mission(self) -> MissionState | None:
+        """The active :class:`MissionState`, or ``None``.
+
+        The node mutates it in place for non-waking bookkeeping
+        (:meth:`MissionState.record_attempt` / :meth:`MissionState.mark_verifying`);
+        completion/abandonment go through :meth:`advance_mission` so the next
+        active task wakes the reasoner.
+        """
+        return self._mission
+
+    def advance_mission(self, *, done: bool, verdict: str) -> TaskState | None:
+        """Terminate the active task and activate the next, bumping :attr:`seq`.
+
+        ``done=True`` marks the active task ``done`` (verified complete);
+        ``done=False`` marks it ``abandoned`` (ladder exhausted / unverifiable).
+        Advancing the queue is an event — the new active task must wake the
+        reasoner to dispatch it — so this bumps :attr:`seq` whenever a mission is
+        present. Returns the newly-active :class:`TaskState`, or ``None`` when the
+        mission is finished. A no-op (no mission / no active task) does not bump.
+        """
+        if self._mission is None:
+            return None
+        nxt = (
+            self._mission.complete_active(verdict)
+            if done
+            else self._mission.abandon_active(verdict)
+        )
+        self._seq += 1
+        return nxt
+
     # ── rolling buffer mutators ─────────────────────────────────────────────
 
     def append_failure(self, record: FailureEventRecord) -> None:
         """Push a failure event onto the rolling buffer."""
         self._failures.append(record)
+        self._seq += 1
+
+    def append_execution(self, record: ExecutionEventRecord) -> None:
+        """Push a skill execution outcome onto the rolling buffer (ADR-0072 §2.2).
+
+        A completed skill is a meaningful event, so this bumps :attr:`seq` —
+        the success/failure feedback should wake an otherwise-idle heartbeat.
+        """
+        self._executions.append(record)
         self._seq += 1
 
     def append_perception(self, record: PerceptionEventRecord) -> None:
@@ -211,13 +687,27 @@ class ContextRenderer:
                 the aggregator has not yet produced one.
 
         Returns:
-            A multi-section text block with ``## WORLD_STATE``,
-            ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``
-            sections.
+            A multi-section text block: optional ``## ROBOT`` self-model,
+            ``## MEMORY``, ``## MISSION`` (the active task queue, when a
+            non-empty mission is set), and ``## REWARD`` (the latest two-head
+            reward assessment, when set) followed by ``## WORLD_STATE``,
+            ``## EXECUTION``, ``## FAILURES``, ``## PERCEPTION``, ``## PROMPTS``.
         """
-        sections: list[str] = [
+        sections: list[str] = []
+        if self._robot_model is not None:
+            sections += ["## ROBOT", self._robot_model, ""]
+        if self._memory_block is not None:
+            sections += [self._memory_block, ""]
+        if self._mission is not None and not self._mission.is_empty():
+            sections += ["## MISSION", self._mission.render(), ""]
+        if self._reward_state is not None:
+            sections += ["## REWARD", self._render_reward(), ""]
+        sections += [
             "## WORLD_STATE",
             self._render_world_state(world_state),
+            "",
+            "## EXECUTION",
+            self._render_executions(),
             "",
             "## FAILURES",
             self._render_failures(),
@@ -230,10 +720,30 @@ class ContextRenderer:
         ]
         return "\n".join(sections).rstrip() + "\n"
 
+    def _render_reward(self) -> str:
+        """Render the two-head reward assessment (ADR-0074 amendment).
+
+        Both heads carry distinct meanings, so they are labelled in line: progress
+        is *closeness* (the gated head, drives persist-vs-replan), success is
+        *done-confidence* (compressed; secondary). Trends are per-frame slopes so a
+        rising progress (``+``) says "persist", a flat/falling one says "replan".
+        """
+        r = self._reward_state
+        assert r is not None  # render() guards `is not None` before calling
+        return (
+            f"reward[{r.task}]: progress={r.progress:.2f} (closeness, "
+            f"trend {r.progress_trend:+.3f}/frame), "
+            f"success={r.success:.2f} (done-confidence, trend {r.success_trend:+.3f}/frame). "
+            "Gate on progress for persist-vs-replan; success is a secondary done-ness cue."
+        )
+
     def _render_world_state(self, world_state: WorldState | None) -> str:
         """Render the WorldState block — deterministic key order, no pixels."""
         if world_state is None:
-            return "(no snapshot yet)"
+            # ADR-0076: the camera-space in_view enumeration is depth-free and may
+            # arrive before the first WorldState snapshot — surface it regardless.
+            in_view = self._render_in_view()
+            return f"(no snapshot yet)\n{in_view}" if in_view else "(no snapshot yet)"
         lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
         if world_state.joint_state is not None:
             js = world_state.joint_state
@@ -274,6 +784,39 @@ class ContextRenderer:
                 for label, xyz in sorted(first_seen.items())
             )
             lines.append(f"scene_objects[{frame}]: {items}")
+        in_view = self._render_in_view()
+        if in_view:
+            lines.append(in_view)
+        return "\n".join(lines)
+
+    def _render_in_view(self) -> str:
+        """Render the camera-space ``in_view`` enumeration (ADR-0076), or ``""``.
+
+        ``in_view[<camera>]: #<det_id> <label> @px(<cx>,<cy>), …`` — one entry per
+        live 2D detection, ``@px`` the pixel centre in the detector's frame
+        (image space, **not** a 3D pose). Ordered by ``det_id`` for a stable
+        context. Distinct from the 3D ``scene_objects[<map>]:@(x,y,z)`` line so the
+        two coordinate spaces never blur; it populates without the 3D lift.
+        """
+        lines: list[str] = []
+        md = self._in_view
+        if md is not None and md.detections:
+            items = ", ".join(
+                f"#{d.det_id} {d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
+                f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
+                for d in sorted(md.detections, key=lambda d: d.det_id)
+            )
+            lines.append(f"in_view[{md.sensor_id}]: {items}")
+        # ADR-0076 — sticky open-vocab locate hits. These carry the goal nouns the
+        # fixed-vocabulary in_view line mislabels, so they are the authoritative
+        # grounding for decomposing / dispatching against the mission objects.
+        if self._located:
+            loc = ", ".join(
+                f"{d.label} @px({(d.bbox_xyxy[0] + d.bbox_xyxy[2]) // 2},"
+                f"{(d.bbox_xyxy[1] + d.bbox_xyxy[3]) // 2})"
+                for d in self._located.values()
+            )
+            lines.append(f"located[{self._located_sensor or 'view'}]: {loc}")
         return "\n".join(lines)
 
     def _render_failures(self) -> str:
@@ -287,6 +830,22 @@ class ContextRenderer:
                 f"[{rec.source}] kind={rec.kind} severity={rec.severity} "
                 f"skill={rec.rskill_id or '-'} trace={rec.trace_id[:8] or '-'} {evidence_summary}",
             )
+        return "\n".join(lines)
+
+    def _render_executions(self) -> str:
+        """Render the execution-feedback buffer; one line per outcome, oldest first.
+
+        ``[ok] skill=<id>: <summary>`` for successes; failures append the
+        Reflexion strategy hint: ``[failed] skill=<id>: <summary> — reflect: <hint>``.
+        """
+        if not self._executions:
+            return "(none)"
+        lines: list[str] = []
+        for rec in self._executions:
+            line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
+            if rec.reflection:
+                line += f" — reflect: {rec.reflection}"
+            lines.append(line)
         return "\n".join(lines)
 
     def _render_perception(self) -> str:
@@ -307,6 +866,11 @@ class ContextRenderer:
     def failures(self) -> tuple[FailureEventRecord, ...]:
         """Return a snapshot of the failure buffer (oldest first)."""
         return tuple(self._failures)
+
+    @property
+    def executions(self) -> tuple[ExecutionEventRecord, ...]:
+        """Return a snapshot of the execution-feedback buffer (oldest first)."""
+        return tuple(self._executions)
 
     @property
     def perception_events(self) -> tuple[PerceptionEventRecord, ...]:
