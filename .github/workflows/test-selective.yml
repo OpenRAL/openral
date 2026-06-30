@@ -39,15 +39,12 @@ on:
         default: "HEAD"
   pull_request:
     branches: [master]
-    # Skip the workflow entirely for documentation-only changes.  A mixed PR
-    # (docs + code) still triggers because paths-ignore only fires when EVERY
-    # changed file matches the patterns.  The workflow files themselves are NOT
-    # in this list, so changes to test-selective.yml still trigger the suite
-    # (and hit the full_run_globs blast-radius in test_selection.toml).
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-      - 'mkdocs.yml'
+    # NB: deliberately NO paths-ignore. `select-and-test` is a REQUIRED status
+    # check in the master ruleset, and a required check skipped by a path filter
+    # is never reported — GitHub leaves it "Expected" forever and blocks the
+    # merge (docs-only PRs could then never merge). So we always trigger: for a
+    # docs-only diff the selector finds no affected tests in a few seconds and
+    # the job reports success without the heavy uv sync / ffmpeg install.
 
 permissions:
   contents: read
