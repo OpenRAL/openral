@@ -97,6 +97,9 @@ from openral_reasoner.completion import (
     image_msg_to_jpeg as _image_msg_to_jpeg,
 )
 from openral_reasoner.completion import (
+    is_frame_fresh as _is_frame_fresh,
+)
+from openral_reasoner.completion import (
     is_reward_wake as _is_reward_wake,
 )
 from openral_reasoner.completion import (
@@ -146,6 +149,7 @@ from openral_reasoner.tool_use import (
 from pydantic import ValidationError
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+from rclpy.time import Time
 from rclpy.qos import (
     QoSDurabilityPolicy,
     QoSHistoryPolicy,
@@ -799,6 +803,17 @@ class ReasonerNode(LifecycleNode):
         # as JPEG bytes in `_latest_completion_frame` for `_adjudicate_completion`.
         # Empty string disables the subscription (no hidden camera subscription).
         self.declare_parameter("completion_camera_topic", "/openral/cameras/top/image")
+        # ADR-0074 §5 — the HAL publishes LIBERO/MuJoCo frames bottom-up (the topic
+        # is raw; OPENRAL_DASHBOARD_FLIP_180 flips only the dashboard thumbnail —
+        # sim_sensor_bridge). Rotate the cached completion frame 180° so the VLM
+        # judges an upright scene (the dashboard and the VLA apply the same flip).
+        self.declare_parameter("completion_camera_flip_180", False)
+        # ADR-0074 §5 — reject a completion frame older than this many seconds (a
+        # stale frame from a prior attempt would make the VLM judge the wrong
+        # scene → false verdict). 0 disables the guard. Frames stream continuously
+        # on real hardware; in deploy-sim the sim-clock is frozen during verify so
+        # the end-of-execution frame reads age≈0.
+        self.declare_parameter("completion_frame_max_age_s", 2.0)
 
         # ADR-0074 §5 — tool-use client handle (mirrors the one held by ReasonerCore)
         # so the completion gate can call describe_image without reaching into the core.
@@ -806,6 +821,11 @@ class ReasonerNode(LifecycleNode):
         self._tool_use_client: ToolUseClient | None = None
         # Latest completion frame as JPEG bytes; None until the first camera message.
         self._latest_completion_frame: bytes | None = None
+        # ROS-clock receipt time of the cached frame (for the freshness guard).
+        self._latest_completion_frame_time: Time | None = None
+        # Cached at on_configure from the params above.
+        self._completion_flip_180: bool = False
+        self._completion_frame_max_age_s: float = 0.0
 
         # Populated by on_configure.
         self._renderer: ContextRenderer = ContextRenderer()
@@ -932,6 +952,12 @@ class ReasonerNode(LifecycleNode):
         # instead of failing configure. An empty topic param disables the sub.
         completion_camera_topic = (
             self.get_parameter("completion_camera_topic").get_parameter_value().string_value
+        )
+        self._completion_flip_180 = (
+            self.get_parameter("completion_camera_flip_180").get_parameter_value().bool_value
+        )
+        self._completion_frame_max_age_s = (
+            self.get_parameter("completion_frame_max_age_s").get_parameter_value().double_value
         )
         if completion_camera_topic:
             try:
@@ -1172,11 +1198,13 @@ class ReasonerNode(LifecycleNode):
                 height=int(msg.height),
                 width=int(msg.width),
                 encoding=str(msg.encoding),
+                flip_180=self._completion_flip_180,
             )
         except Exception as exc:  # reason: never raise in a topic callback
             self.get_logger().debug(f"completion-camera: decode failed, cache unchanged: {exc}")
             return
         self._latest_completion_frame = jpeg
+        self._latest_completion_frame_time = self.get_clock().now()
 
     def _adjudicate_completion(self, task_text: str) -> bool | None:
         """Ask the VLM whether ``task_text`` is complete in the latest camera frame.
@@ -1194,6 +1222,14 @@ class ReasonerNode(LifecycleNode):
                 "adjudicate_completion: no frame cached — cannot adjudicate; treating as no"
             )
             return None
+        if self._latest_completion_frame_time is not None:
+            age_s = (self.get_clock().now() - self._latest_completion_frame_time).nanoseconds / 1e9
+            if not _is_frame_fresh(age_s=age_s, max_age_s=self._completion_frame_max_age_s):
+                self.get_logger().info(
+                    f"adjudicate_completion: frame is stale ({age_s:.1f}s > "
+                    f"{self._completion_frame_max_age_s:.1f}s) — cannot adjudicate; treating as no"
+                )
+                return None
         if self._tool_use_client is None:
             self.get_logger().debug(
                 "adjudicate_completion: no VLM client — cannot adjudicate; treating as no"

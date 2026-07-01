@@ -678,6 +678,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # locate_in_view call leaves ``detector`` empty (the first locator brought up).
     if locator_specs:
         reasoner_params["default_on_demand_detector"] = locator_specs[0]["alias"]
+    # ADR-0074 §5 — the completion-camera topic is raw (bottom-up for LIBERO/MuJoCo);
+    # mirror OPENRAL_DASHBOARD_FLIP_180 so the VLM judges an upright frame (the topic
+    # itself is not flipped — sim_sensor_bridge flips only the dashboard thumbnail).
+    reasoner_params["completion_camera_flip_180"] = os.environ.get(
+        "OPENRAL_DASHBOARD_FLIP_180", ""
+    ) not in ("", "0", "false", "False")
     reasoner = LifecycleNode(
         package="openral_reasoner_ros",
         executable="reasoner_node.py",
