@@ -657,7 +657,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reasoner_params["spatial_memory_ingest"] = spatial_memory_ingest
     # ADR-0043 — offer the read-only locate_in_view tool to the LLM when an object
     # detector is in the graph (it exposes /openral/perception/locate_in_view).
-    reasoner_params["detector_available"] = enable_object_detector
+    # locate_in_view is served by BOTH the continuous detector AND any on-demand
+    # locator (each exposes /openral/perception/<alias>/locate_in_view), so offer
+    # the tool when either is present — a lean ``--no-object-detector`` deploy still
+    # grounds via the locator (otherwise the reasoner can never see objects).
+    reasoner_params["detector_available"] = enable_object_detector or bool(locator_specs)
     # ADR-0057 — offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
@@ -1163,7 +1167,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         extra_nodes.extend([octomap_server, octomap_bridge])
 
-    if enable_object_detector:
+    if enable_object_detector or locator_specs:
+        # ADR-0056 — the perception leg runs when EITHER the continuous detector
+        # is on OR an on-demand locator was requested (a lean ``--no-object-detector``
+        # deploy grounds via the locator alone). The continuous-detector node itself
+        # stays gated on ``enable_object_detector`` below; the camera resolution and
+        # the locator loop run for both.
         # ADR-0035 — the object-detection perception leg. The ROS-Image
         # detector runs RT-DETR over the agentview RGB tee and publishes
         # ObjectsMetadata to /openral/perception/objects. The world-state
@@ -1278,17 +1287,21 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # loaded) like the rest of the graph, but the reasoner can DEACTIVATE it
         # via LifecycleTransitionTool to free the detector's VRAM before a
         # co-resident grab policy loads on an 8 GB GPU.
-        object_detector = LifecycleNode(
-            package="openral_perception_ros",
-            executable="ros_image_detector_node.py",
-            name="openral_ros_image_detector",
-            namespace="",
-            parameters=[det_params],
-            additional_env=otel_env,
-            output="screen",
-        )
-        extra_nodes.append(object_detector)
-        autostart += _autostart_lifecycle(object_detector, "openral_ros_image_detector")
+        # The continuous detector node is the VRAM-heavy always-on leg — only
+        # create it when explicitly enabled. The on-demand locators below come up
+        # regardless (they load per-query and evict), so a lean deploy still grounds.
+        if enable_object_detector:
+            object_detector = LifecycleNode(
+                package="openral_perception_ros",
+                executable="ros_image_detector_node.py",
+                name="openral_ros_image_detector",
+                namespace="",
+                parameters=[det_params],
+                additional_env=otel_env,
+                output="screen",
+            )
+            extra_nodes.append(object_detector)
+            autostart += _autostart_lifecycle(object_detector, "openral_ros_image_detector")
 
         # ADR-0056 — on-demand locator nodes: one per --object-detector-locator,
         # each serving its own namespaced /openral/perception/<alias>/locate_in_view
