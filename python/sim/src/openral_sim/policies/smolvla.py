@@ -223,15 +223,16 @@ class _SmolVLAAdapter:
             tensor = v
             if str(tensor.device) != self.device and not str(tensor.device).startswith(device_kind):
                 tensor = tensor.to(self.device)
-            # Cast image inputs to the bf16 backbone dtype (float32 image × bf16
-            # vision weight raises "mat1 and mat2 must have the same dtype").
-            # state / everything else stays float32 to match the float32 action
-            # expert and the sampler's internal float32 tensors — the load is
-            # forced under a float32 default dtype below so the expert is always
-            # float32, immune to a leaked process-global bf16 default.
+            # Cast the PREFIX inputs — images AND observation.state — to the bf16
+            # backbone dtype. embed_prefix cats the state embedding with the bf16
+            # VLM image/text embeddings, so float32 state × bf16 state_proj (and the
+            # subsequent cat) raises "mat1 and mat2 must have the same dtype". The
+            # action/suffix path is fed float32 by the sampler and stays float32
+            # (the load above pins state_proj to the backbone dtype and the action
+            # projections to float32).
             if (
                 self._image_dtype is not None
-                and "image" in k
+                and ("image" in k or k == "observation.state")
                 and hasattr(tensor, "is_floating_point")
                 and tensor.is_floating_point()
                 and tensor.dtype != self._image_dtype
@@ -426,20 +427,29 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     finally:
         torch.set_default_dtype(prev_default_dtype)
     policy.eval()
-    # lerobot's from_pretrained now loads SmolVLA *mixed* — a bf16 VLM backbone
-    # but a float32 action expert (the flow-matching sampler allocates float32
-    # noise/time internally and needs the expert in float32). Keep that native
-    # layout: don't unify (fp32-unify ~doubles memory and OOMs the reward
-    # sidecar on 8 GB; bf16-unify breaks the sampler). step() instead casts only
-    # the image inputs to the backbone dtype. The backbone is the model's
-    # majority dtype by param count (the VLM dwarfs the small action expert).
-    from collections import Counter
-
-    dtypes = Counter(p.dtype for p in policy.parameters())
-    image_dtype = dtypes.most_common(1)[0][0] if dtypes else None
-    # No cast needed on a fully-float32 load (the float32 images already match).
-    if image_dtype == torch.float32:
-        image_dtype = None
+    # Pin SmolVLA's dtype-split legs. lerobot's current dtype-preserving
+    # ``from_pretrained`` returns an INCONSISTENT mix — a bf16 VLM backbone plus
+    # an action path (state_proj / action projections / flow-matching expert)
+    # whose dtype varies run-to-run — which cannot run as-loaded:
+    # (a) ``embed_prefix`` ``torch.cat``s the state embedding with the bf16 VLM
+    #     image/text embeddings, so ``state_proj`` (and the state input) must be
+    #     the BACKBONE dtype; but
+    # (b) the flow-matching sampler hard-codes float32 noise/time and ``suffix_out``
+    #     is cast back to float32 before ``action_out_proj``, so the action path
+    #     must be float32.
+    # The expert bridges the two internally (``smolvlm_with_expert`` casts each
+    # leg to its own layer weight dtype). Pinning these legs — rather than a full
+    # ``policy.float()`` — keeps the large VLM backbone bf16, so the policy still
+    # co-resides with the robometer reward sidecar on an 8 GB card (fp32-unify
+    # OOMs it). Observed pre-fix failure: ``mat1 and mat2 must have the same
+    # dtype, got Float and BFloat16`` at ``state_proj(state)``.
+    _backbone_dtype = next(policy.model.vlm_with_expert.vlm.parameters()).dtype
+    policy.model.state_proj.to(_backbone_dtype)
+    for _leg in ("action_in_proj", "action_out_proj", "action_time_mlp_in", "action_time_mlp_out"):
+        getattr(policy.model, _leg).float()
+    # step() casts BOTH the image inputs and ``observation.state`` to this dtype
+    # (the backbone/prefix dtype); the action path reads float32 from the sampler.
+    image_dtype = None if _backbone_dtype == torch.float32 else _backbone_dtype
 
     # `n_action_steps` precedence (apply_chunk_replay):
     # vla.extra > manifest.n_action_steps > chunk_size. SmolVLA on LIBERO

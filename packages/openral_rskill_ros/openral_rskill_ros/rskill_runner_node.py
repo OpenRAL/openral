@@ -552,7 +552,7 @@ if _ROS2_AVAILABLE:
                     )
                     result.success = False
                     result.failure_reason = f"{type(exc).__name__}: {exc!s}"
-                    goal_handle.abort()
+                    self._finalize_goal(goal_handle, "abort")
                     self._reset_active_goal()
                     return result
 
@@ -623,7 +623,7 @@ if _ROS2_AVAILABLE:
                         span.record_exception(exc)
                         result.success = False
                         result.failure_reason = f"safety_estop:{exc!s}"
-                        goal_handle.abort()
+                        self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
                     except ROSSafetyViolation:
@@ -645,7 +645,25 @@ if _ROS2_AVAILABLE:
                         )
                         result.success = False
                         result.failure_reason = f"{_kind}: {exc!s}"
-                        goal_handle.abort()
+                        self._finalize_goal(goal_handle, "abort")
+                        self._reset_active_goal()
+                        return result
+                    except Exception as exc:  # noqa: BLE001  # reason: torch inference
+                        # errors (CUDA OOM, dtype/quantization mismatch) are raw
+                        # RuntimeErrors, NOT ROSError subclasses, so they escaped the
+                        # callback uncaught → rclpy aborted with an EMPTY Result and the
+                        # reasoner saw ``status=6 reason=''`` (misread as an infeasible
+                        # workspace). Label a typed reason so the ladder can act.
+                        # ROSSafetyViolation is re-raised above, so it never reaches here.
+                        span.record_exception(exc)
+                        _reason = self._label_runtime_failure(exc)
+                        self.get_logger().error(
+                            f"rskill_runner.execute_failed: kind={type(exc).__name__} "
+                            f"reason={exc!s}"
+                        )
+                        result.success = False
+                        result.failure_reason = _reason
+                        self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
 
@@ -654,13 +672,13 @@ if _ROS2_AVAILABLE:
                         self._drain_and_idle_hold(skill)
                         result.success = False
                         result.failure_reason = "cancelled"
-                        goal_handle.canceled()
+                        self._finalize_goal(goal_handle, "canceled")
                         self._reset_active_goal()
                         return result
 
                     result.success = True
                     result.failure_reason = ""
-                    goal_handle.succeed()
+                    self._finalize_goal(goal_handle, "succeed")
                     self._reset_active_goal()
                     return result
                 finally:
@@ -847,7 +865,15 @@ if _ROS2_AVAILABLE:
                 feedback.state = "executing"
                 feedback.chunk_index = chunk_index
                 feedback.chunks_total = 0  # unknown — rskills are open-loop
-                goal_handle.publish_feedback(feedback)
+                try:
+                    goal_handle.publish_feedback(feedback)
+                except Exception as exc:  # noqa: BLE001  # reason: a concurrent cancel
+                    # can move the goal terminal mid-tick; publishing feedback on it
+                    # raises. Stop the loop cleanly and let the caller finalize.
+                    self.get_logger().debug(
+                        f"rskill_runner: publish_feedback skipped (goal not active): {exc!s}"
+                    )
+                    return
 
                 # Sleep until the next tick boundary — the loop's
                 # rate-limiting is intentionally minimal here; production
@@ -867,9 +893,49 @@ if _ROS2_AVAILABLE:
             self.get_logger().error(f"rskill_runner.approach_failed: {reason}")
             result.success = False
             result.failure_reason = reason
-            goal_handle.abort()
+            self._finalize_goal(goal_handle, "abort")
             self._reset_active_goal()
             return True
+
+        def _finalize_goal(self, goal_handle: ServerGoalHandle, transition: str) -> None:
+            """Apply a terminal goal transition (``abort`` / ``succeed`` / ``canceled``),
+            tolerating a goal that a concurrent cancel or re-dispatch already moved out
+            of EXECUTING.
+
+            The reasoner cancels an in-flight goal at the patience ceiling (and may
+            re-dispatch); if that lands mid-tick, rclpy has already advanced the goal
+            state and the transition raises ``RCLError: Failed to update goal state:
+            goal_handle attempted invalid transition from state EXECUTING``. That error
+            was escaping the execute callback uncaught, so rclpy aborted the goal with a
+            DEFAULT (empty) Result — the reasoner then saw ``status=6 reason=''``. Make
+            the transition best-effort so the populated Result is still returned.
+            """
+            try:
+                getattr(goal_handle, transition)()
+            except Exception as exc:  # reason: RCLError on a racing goal state
+                self.get_logger().warning(
+                    f"rskill_runner: goal.{transition}() skipped (racing goal state): {exc!s}"
+                )
+
+        @staticmethod
+        def _label_runtime_failure(exc: BaseException) -> str:
+            """Map a raw non-``ROSError`` exception raised during execution to a typed,
+            reasoner-legible ``failure_reason``.
+
+            ``skill.step`` runs torch inference, so a CUDA OOM
+            (``torch.cuda.OutOfMemoryError``) or a dtype/quantization mismatch surfaces
+            as a plain ``RuntimeError`` — NOT a :class:`ROSError` — and previously
+            escaped the callback into an empty-reason abort. Label the common cases so
+            the replanning ladder (and the operator) can act on the real cause instead
+            of misreading it as a workspace/infeasibility failure.
+            """
+            text = str(exc)
+            low = text.lower()
+            if "out of memory" in low or "outofmemory" in type(exc).__name__.lower():
+                return f"ROSGPUMemoryError: {text}"
+            if "must have the same dtype" in low or "quantiz" in low:
+                return f"ROSQuantizationError: {text}"
+            return f"{type(exc).__name__}: {text}"
 
         def _wait_for_post_reset_joint_state(self, skill: Any, reset_wall_ns: int) -> None:
             """Block until the aggregator's joint state is newer than the reset.

@@ -23,6 +23,7 @@ import pytest
 from openral_reasoner.completion import (
     COMPLETION_QUESTION,
     image_msg_to_jpeg,
+    is_frame_fresh,
     is_reward_wake,
     parse_yes_no,
     resolve_band_edges,
@@ -151,6 +152,46 @@ def test_image_msg_to_jpeg_malformed_buffer_raises() -> None:
         image_msg_to_jpeg(data=b"\x00\x01\x02", height=2, width=2, encoding="rgb8")
 
 
+def test_image_msg_to_jpeg_flip_180_inverts_vertically() -> None:
+    """flip_180 rotates the image 180°: a top-bright/bottom-dark frame inverts.
+
+    JPEG is lossy, so assert on region means (robust to compression) rather than
+    exact pixels. Without flip the top half is bright; with flip_180 it is dark.
+    """
+    np = pytest.importorskip("numpy", reason="numpy not installed")
+    PIL_Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    h, w = 16, 16
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[: h // 2, :, :] = 255  # bright top half, dark bottom half
+    raw = img.tobytes()
+
+    def _top_mean(jpeg: bytes) -> float:
+        arr = np.asarray(PIL_Image.open(io.BytesIO(jpeg)).convert("RGB"))
+        return float(arr[: h // 2].mean())
+
+    plain = image_msg_to_jpeg(data=raw, height=h, width=w, encoding="rgb8")
+    flipped = image_msg_to_jpeg(data=raw, height=h, width=w, encoding="rgb8", flip_180=True)
+    assert _top_mean(plain) > 200.0, "unflipped: top half should stay bright"
+    assert _top_mean(flipped) < 55.0, "flip_180: top half should become dark (was bottom)"
+
+
+@pytest.mark.parametrize(
+    "age_s,max_age_s,expected",
+    [
+        (0.0, 2.0, True),
+        (0.5, 2.0, True),
+        (2.0, 2.0, True),  # boundary inclusive
+        (2.1, 2.0, False),
+        (3.0, 2.0, False),
+        (999.0, 0.0, True),  # guard disabled
+        (999.0, -1.0, True),  # negative also disables
+    ],
+)
+def test_is_frame_fresh(age_s: float, max_age_s: float, expected: bool) -> None:
+    """The freshness guard accepts fresh frames, rejects stale ones, off when <=0."""
+    assert is_frame_fresh(age_s=age_s, max_age_s=max_age_s) is expected
+
+
 def test_completion_question_contains_task_placeholder() -> None:
     """COMPLETION_QUESTION formats correctly with a task string."""
     q = COMPLETION_QUESTION.format(task="pick the cup")
@@ -257,6 +298,10 @@ class _FakeAdjudicationNode:
         describe_result: str | Exception | None = None,
     ) -> None:
         self._latest_completion_frame = frame
+        # None disables the freshness branch in _adjudicate_completion (the guard
+        # logic itself is covered by test_is_frame_fresh on the pure helper).
+        self._latest_completion_frame_time = None
+        self._completion_frame_max_age_s = 0.0
         if describe_result is not None:
             self._tool_use_client: object | None = _FakeDescribeClient(describe_result)
         else:

@@ -11,11 +11,40 @@ import io
 __all__ = [
     "COMPLETION_QUESTION",
     "image_msg_to_jpeg",
+    "is_frame_fresh",
     "is_reward_wake",
     "parse_yes_no",
     "resolve_band_edges",
     "resolve_patience_s",
 ]
+
+
+def is_frame_fresh(*, age_s: float, max_age_s: float) -> bool:
+    """Whether a cached completion frame is recent enough to adjudicate.
+
+    A stale frame (e.g. one cached from a *previous* attempt while the camera
+    topic briefly stalled) would make the VLM judge the wrong scene, so an
+    over-age frame is treated as "cannot adjudicate" (degrades to the ladder,
+    never a false verdict). ``max_age_s <= 0`` disables the guard (always fresh).
+
+    Args:
+        age_s: Seconds since the cached frame was received.
+        max_age_s: Maximum tolerated age; ``<= 0`` disables the check.
+
+    Returns:
+        ``True`` if the frame may be used; ``False`` if it is too old.
+
+    Example:
+        >>> is_frame_fresh(age_s=0.5, max_age_s=2.0)
+        True
+        >>> is_frame_fresh(age_s=3.0, max_age_s=2.0)
+        False
+        >>> is_frame_fresh(age_s=999.0, max_age_s=0.0)  # guard disabled
+        True
+    """
+    if max_age_s <= 0.0:
+        return True
+    return age_s <= max_age_s
 
 
 def resolve_band_edges(
@@ -199,6 +228,7 @@ def image_msg_to_jpeg(
     height: int,
     width: int,
     encoding: str,
+    flip_180: bool = False,
 ) -> bytes:
     r"""Convert a raw ``sensor_msgs/Image`` payload to JPEG bytes.
 
@@ -212,6 +242,12 @@ def image_msg_to_jpeg(
         height: Image height in pixels.
         width: Image width in pixels.
         encoding: Pixel encoding, e.g. ``"rgb8"`` or ``"bgr8"``.
+        flip_180: Rotate the image 180° before encoding. The HAL publishes
+            LIBERO/MuJoCo frames bottom-up (the published Image is *raw* — the
+            ``OPENRAL_DASHBOARD_FLIP_180`` flip is applied only to the dashboard
+            thumbnail, not the topic; ``sim_sensor_bridge``), so a VLM judging
+            the scene needs the same 180° correction the dashboard and the VLA
+            apply. A 180° rotation = flip both spatial axes; channels untouched.
 
     Returns:
         JPEG-encoded bytes.
@@ -240,6 +276,10 @@ def image_msg_to_jpeg(
         raise ValueError(
             f"image_msg_to_jpeg: unsupported encoding {encoding!r} (expected rgb8/bgr8)"
         )
+    if flip_180:
+        # 180° rotation = reverse rows and columns; ascontiguousarray because the
+        # negative-stride view is not C-contiguous and PIL.fromarray needs it.
+        rgb = np.ascontiguousarray(rgb[::-1, ::-1])
     buf = io.BytesIO()
     _PILImage.fromarray(rgb, mode="RGB").save(buf, "JPEG")
     return buf.getvalue()

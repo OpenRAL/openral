@@ -1082,21 +1082,24 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # Default = omdet-turbo-locator when the detector is on and the omdet deps are
     # importable (LocateAnything is opt-in — NVIDIA non-commercial, 5 GB VRAM).
     resolved_object_detector_locators: list[str] = []
-    if enable_object_detector:
-        if object_detector_locators is not None:
-            locator_tokens = object_detector_locators
-        elif _omdet_runtime_available():
-            locator_tokens = ["omdet-turbo-locator"]
-        else:
-            locator_tokens = []
-        for token in locator_tokens:
-            candidate = Path(token)
-            manifest_path = (
-                candidate
-                if candidate.suffix == ".yaml"
-                else repo_root / "rskills" / token / "rskill.yaml"
-            )
-            resolved_object_detector_locators.append(str(manifest_path.resolve()))
+    # An explicit ``--object-detector-locator`` is an independent grounding source —
+    # honour it even with ``--no-object-detector`` (a lean deploy that grounds via
+    # the on-demand locator alone, no always-on detector holding VRAM). The implicit
+    # omdet-turbo-locator default only applies when the continuous detector is on.
+    if object_detector_locators is not None:
+        locator_tokens = object_detector_locators
+    elif enable_object_detector and _omdet_runtime_available():
+        locator_tokens = ["omdet-turbo-locator"]
+    else:
+        locator_tokens = []
+    for token in locator_tokens:
+        candidate = Path(token)
+        manifest_path = (
+            candidate
+            if candidate.suffix == ".yaml"
+            else repo_root / "rskills" / token / "rskill.yaml"
+        )
+        resolved_object_detector_locators.append(str(manifest_path.resolve()))
 
     # ADR-0038 — auto-enable durable spatial-memory ingest whenever the object
     # detector runs (the producer that feeds it); an explicit flag overrides.
