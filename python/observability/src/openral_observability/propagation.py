@@ -263,8 +263,3 @@ def remote_parent_from_env(env: Mapping[str, str] | None = None) -> Iterator[obj
             # to keep the OTel ``Token`` type off the public surface; narrow
             # it back for ``detach``, which is the value ``attach`` returned.
             otel_context.detach(cast("Token[Context]", token))
-
-
-def _extract_from_mapping(carrier: Mapping[str, str]) -> otel_context.Context:
-    """Test helper: extract context from a generic header-style mapping."""
-    return _PROPAGATOR.extract(carrier, getter=DefaultGetter())

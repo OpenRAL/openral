@@ -344,11 +344,6 @@ class ReasonerCore:
                 traceparent=traceparent,
             )
 
-    @property
-    def last_tick_s(self) -> float:
-        """Monotonic timestamp of the last :meth:`tick` invocation."""
-        return self._last_tick_s
-
 
 # Re-export :class:`ROSReasonerInvalidPlan` so test code can ``from
 # openral_reasoner.core import ROSReasonerInvalidPlan`` without

@@ -43,7 +43,6 @@ import contextlib
 import json
 import queue
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -587,8 +586,3 @@ class Rosbag2Sink(DatasetSink):
 def _to_float_list(arr: Any) -> list[float]:
     """Flatten an array-like to a JSON-serialisable list of floats."""
     return [float(x) for x in np.asarray(arr, dtype=np.float64).ravel().tolist()]
-
-
-def _now_ns() -> int:
-    """Wall-clock monotonic nanoseconds — exposed for tests' freezer."""
-    return time.time_ns()
