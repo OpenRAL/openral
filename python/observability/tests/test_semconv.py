@@ -60,6 +60,7 @@ def test_namespace_invariants() -> None:
         "openral.dataset.",
         "openral.event.",
         "openral.inference.",
+        "openral.metric.",
         "openral.safety.",
         "openral.observability.",
         "openral.sim.",
