@@ -1,6 +1,6 @@
 # Prototype verification record
 
-Spike from `docs/investigations/foxglove-dashboard-port-feasibility.md`.
+Spike for ADR-0059 (`docs/adr/0059-foxglove-live-scene-visualization.md`).
 Verified 2026-06-16 on ROS 2 Jazzy, `foxglove_bridge` 3.2.6.
 
 ## What was proven (real, end-to-end)

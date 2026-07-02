@@ -10,8 +10,8 @@ Governed by [**ADR-0059**](../../docs/adr/0059-foxglove-live-scene-visualization
 this is the live-scene half of a **hybrid** — Foxglove owns the live 3D/2D
 scene; the `openral dashboard` OTel receiver (ADR-0017) keeps traces, metrics,
 system health, and the reasoner/safety cards. Foxglove is a visualization tool,
-not an observability backend, so the OTel plane does **not** port here (see the
-[feasibility study](../../docs/investigations/foxglove-dashboard-port-feasibility.md)).
+not an observability backend, so the OTel plane does **not** port here
+(ADR-0059 records the rationale).
 
 The surface is **read-only and cannot actuate the robot**. Any path that
 re-enables a write capability (E-stop reset, Publish/Teleop, prompt input) is out
@@ -166,4 +166,4 @@ robot-connected run.
 
 Traces, OTLP metrics, system-health gauges, the reasoner/safety cards — these
 live on the OpenTelemetry plane, which Foxglove cannot ingest. Keep
-Jaeger/OTLP for those (see the feasibility report).
+Jaeger/OTLP for those (ADR-0059).

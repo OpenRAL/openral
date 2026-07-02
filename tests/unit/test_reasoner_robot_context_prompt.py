@@ -180,8 +180,8 @@ def test_ladder_rungs_stay_conditional_not_imperative() -> None:
 def test_prompt_grounds_before_decomposing_collective_goal() -> None:
     """ADR-0075/0076 — the collective-goal rule prefers `located` over raw `in_view`.
 
-    A direct glm-5.2 probe (``.goals/libero-multitask-deploy/
-    probe_reasoner_decompose_gate.py``) showed the LLM decomposing a collective
+    A direct glm-5.2 probe (recorded in ADR-0076 §"decompose gate"; the probe
+    script itself was deploy scratch, since removed) showed the LLM decomposing a collective
     goal straight from the continuous detector's mislabelled `in_view` clutter
     (0/3 correct) until told that the open-vocab `located` line is authoritative
     and goal objects must be confirmed into it before decomposing (3/3). This

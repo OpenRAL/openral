@@ -16,15 +16,17 @@
   CLAUDE.md §1.1 (safety beats helpfulness), §3 Layer 7 (Observability boundary),
   §3 Safety (safety-WG review).
 
-> Investigation (panel-by-panel feasibility, the Bucket-1/2/3 effort split, the
-> two-data-plane analysis). Prototype + protocol-level verification: [`packages/openral_foxglove_bringup/`](https://github.com/OpenRAL/openral/tree/master/packages/openral_foxglove_bringup/)
+> An investigation (panel-by-panel feasibility, the Bucket-1/2/3 effort split, the
+> two-data-plane analysis) preceded this ADR; that report was since removed from the
+> repo, and its load-bearing conclusions are restated here. Prototype +
+> protocol-level verification: [`packages/openral_foxglove_bringup/`](https://github.com/OpenRAL/openral/tree/master/packages/openral_foxglove_bringup/)
 > (`README.md`, `VERIFICATION.md`). This ADR records the decision to graduate
 > that spike into a supported, gated component and integrate it into the deploy
-> path; the investigation carries the working detail.
+> path.
 
 ## Context
 
-OpenRAL has **two parallel data planes** (feasibility report §TL;DR):
+OpenRAL has **two parallel data planes**:
 
 1. A **live ROS 2 plane** — HAL, sensors, SLAM, and the runner publish real ROS
    topics (`sensor_msgs/Image`, `sensor_msgs/JointState`,

@@ -124,7 +124,7 @@ and dispatches instead of re-locating. Verified live — glm-5.2 went from loopi
 advancing on plateau.
 
 Having the `located` line is necessary but not sufficient: a direct, sim-free
-glm-5.2 probe (`.goals/libero-multitask-deploy/probe_reasoner_decompose_gate.py`,
+glm-5.2 probe (`probe_reasoner_decompose_gate.py`, a since-removed deploy scratch script,
 mirroring `probe_reasoner_grounding`/`_replan`) drove the single decompose tick over
 five post-locate context states and found glm did **not** loop — it was *eager to
 decompose*, and would build a mission straight from the **raw `in_view` clutter**

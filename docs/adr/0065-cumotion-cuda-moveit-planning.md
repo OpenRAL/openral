@@ -1,6 +1,6 @@
 # ADR-0065 — cuMotion: CUDA-accelerated MoveIt planning behind a GPU capability gate
 
-- **Status:** Proposed 2026-06-21. Addresses the *manipulation* half of issue #76 ("Evaluate GPU-accelerated navigation (cuMotion / GPU-MPPI)"); the *navigation* half (GPU-MPPI for the mobile/humanoid base + the `cmd_vel` safety-supervisor bypass) is explicitly **split out** to a separate ADR (see §Out of scope). Seeded by `docs/evaluations/issue-76-cumotion-moveit.md`.
+- **Status:** Proposed 2026-06-21. Addresses the *manipulation* half of issue #76 ("Evaluate GPU-accelerated navigation (cuMotion / GPU-MPPI)"); the *navigation* half (GPU-MPPI for the mobile/humanoid base + the `cmd_vel` safety-supervisor bypass) is explicitly **split out** to a separate ADR (see §Out of scope). Seeded by an evaluation doc (`docs/evaluations/issue-76-cumotion-moveit.md`, since removed; findings folded into this ADR).
 - **Date:** 2026-06-21
 - **ADR number:** `0065` (next free; 0064 is the highest accepted). The integer is not load-bearing — cross-refs use filenames.
 - **Related:**

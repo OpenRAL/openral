@@ -26,7 +26,7 @@ repos:
         entry: uv run mypy --strict -p openral_core -p openral_cli -p openral_sim
         language: system
         pass_filenames: false
-        files: ^python/(core|cli|eval)/
+        files: ^python/(core|cli|sim)/
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:

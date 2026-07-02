@@ -21,9 +21,9 @@ Two deliberate safety choices distinguish this from the upstream
 
 The ``topic_whitelist`` is an explicit allowlist: anything not matched —
 including ``/openral/estop``, ``/openral/safe_action``, the failure bus —
-is invisible to the bridge. This is the feasibility spike from
-``docs/investigations/foxglove-dashboard-port-feasibility.md``; graduating
-it past prototype requires the ADR named there.
+is invisible to the bridge. This is the feasibility spike for ADR-0059
+(``docs/adr/0059-foxglove-live-scene-visualization.md``); graduating it
+past prototype requires that ADR's sign-offs.
 
 Run:
     ros2 launch openral_foxglove_bringup foxglove.launch.py

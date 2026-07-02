@@ -22,7 +22,8 @@ bool(has_lidar)`; `enable_nav2` co-enables). A robot without a lidar gets **no `
 no Nav2** — it cannot navigate absolutely. Only `panda_mobile` declares a `lidar_2d` sensor; the
 rest of the fleet (fixed-base arms, camera-only mobile manipulators) is shut out.
 
-A prior investigation (`docs/feasibility/isaac-ros-visual-slam.md`) established:
+A prior investigation (`docs/feasibility/isaac-ros-visual-slam.md`, since removed from the
+repo; its conclusions are recorded here) established:
 
 1. **NVIDIA Isaac ROS Visual SLAM (cuVSLAM) now supports ROS 2 Jazzy** — matching OpenRAL's
    distro + Cyclone DDS. (Pre-2026 it was Humble-only; that mismatch is gone.)
@@ -85,7 +86,7 @@ the vision-nav stack occupies the resident slot during the nav phase and is evic
 loads for the manipulation phase. **No co-residency, no second GPU, no cloud dispatch required.** The
 one footprint to watch is cuVSLAM's **mono-depth** mode (~55 % GPU) on truly camera-only robots.
 
-### Other frictions (from the feasibility doc)
+### Other frictions (from the same investigation)
 
 - **cuVSLAM input**: primary mode is **stereo**; also mono+IMU and RGB-D (Feb 2026). Sim publishes a
   single **mono RGB @ 10 Hz**, no IMU/stereo. Requires **30 Hz, ±2 ms jitter** — hard under the
