@@ -30,6 +30,7 @@ openral/                      ← THIS monorepo
 │  ├─ openral_hal_ur5e/  · openral_hal_ur10e/  ← UR5e / UR10e lifecycle nodes ✓
 │  ├─ openral_hal_aloha/  · openral_hal_openarm/  ← bimanual lifecycle nodes ✓
 │  ├─ openral_hal_rizon4/  · openral_hal_g1/  · openral_hal_h1/  · openral_hal_panda_mobile/  ← per-robot lifecycle nodes (ADR-0029 unified base) ✓
+│  ├─ openral_hal_scene_attached/ ← scene-attached sim HAL node (`deploy sim`, ADR-0034) ✓
 │  ├─ openral_reasoner_ros/   ← ADR-0018 F4 reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← ADR-0018 F10 prompt fan-in lifecycle node ✓
 │  ├─ openral_rskill_ros/      ← ADR-0018 F1 rskill_runner_node + ExecuteSkill action server ✓
@@ -40,7 +41,7 @@ openral/                      ← THIS monorepo
 │  ├─ openral_nav2_bringup/ · openral_slam_bringup/ ← reasoner-managed Nav2 / slam_toolbox services (ADR-0025) ✓
 │  └─ openral_foxglove_bringup/ ← read-only Foxglove live-scene bridge + Bucket-2 converter + MCAP (ADR-0059) ✓
 │  Planned: core_ros, sensors_ros, dispatcher_ros, launch
-├─ cpp/                           ← openral_safety_kernel — C++ deny-by-default kernel (ADR-0020, planned) ◐
+├─ cpp/                           ← openral_safety_kernel — C++ deny-by-default kernel (ADR-0020; implemented + tested, certification pending) ✓
 ├─ rskills/                       ← rSkill packages (manifest + weights + eval/) — VLA + detector kinds ✓
 ├─ scenes/                        ← SimEnvironment YAMLs (`sim run`) + native scenes (ADR-0002/0033) ✓
 ├─ benchmarks/                    ← benchmark suite definitions ✓

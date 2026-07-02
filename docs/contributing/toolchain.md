@@ -210,16 +210,15 @@ openral calibrate camera --sensor S  # ros2 camera_calibration helper
 openral install sim              # post-install opt-in dep groups (ADR-0021)
 openral install ros              # re-run scripts/bootstrap_ubuntu.sh (sudo)
 openral install list             # show every known dep group
-openral skill install <hub-id>   # download an rSkill from HF Hub (license-gated)
-openral skill list               # list installed rSkills
-openral skill new <id>           # scaffold a new local rSkill from rskills/template/
+openral rskill install <hub-id>  # download an rSkill from HF Hub (license-gated)
+openral rskill list              # list installed rSkills
+openral rskill new <id>          # scaffold a new local rSkill from rskills/template/
 openral sensor list              # browse the sensor catalog
 openral sensor show <id>         # resolve a catalog entry to a SensorSpec/Bundle
+openral benchmark run --suite S --vla V  # run a benchmark suite (canonical eval producer, ADR-0009)
 openral benchmark report         # aggregate rskills/<id>/eval/*.json benchmark blocks
-openral sim run --config FILE    # run a SimEnvironment YAML end-to-end (ADR-0009)
+openral sim run --config FILE    # run a SimScene YAML end-to-end (ADR-0009)
 ```
-
-Planned (not yet wired): `openral run`, `openral benchmark run`.
 
 ## Tooling self-help
 

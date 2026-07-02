@@ -39,7 +39,7 @@
 | [03-world-state.md](methods/03-world-state.md) | Layer 3 — state adapter registry, world-state aggregator, spatial memory, geometry/grid, object lift |
 | [04-rskill.md](methods/04-rskill.md) | Layer 4 — rSkill ABC, runtimes (PyTorch/ONNX/TensorRT), loader, executor, VLA adapters |
 | [05-inference-runner.md](methods/05-inference-runner.md) | Inference Runner (ADR-0010) — clocks, runner loop, sensor readers, dataset recording |
-| [06-reasoning-wam-safety-observability.md](methods/06-reasoning-wam-safety-observability.md) | Layers 5–8 — Reasoner core/tool-use, WAM, safety supervisor, observability |
+| [06-reasoning-wam-safety-observability.md](methods/06-reasoning-wam-safety-observability.md) | CLAUDE.md layers 4–7 — Reasoner core/tool-use, WAM, safety supervisor, observability |
 | [07-eval-sim.md](methods/07-eval-sim.md) | Eval (sim) — scene/robot registries, SimRunner, scene + policy adapters, benchmark suites |
 | [08-cli.md](methods/08-cli.md) | CLI — `openral` command tree |
 | [09-auto-provisioning.md](methods/09-auto-provisioning.md) | Auto-provisioning (detection) — GStreamer perception bus, detector tiers |

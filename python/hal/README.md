@@ -24,7 +24,7 @@ hal.disconnect()
 ```
 
 The `HAL` Protocol is **structural**: any class with `connect / disconnect /
-read_state / send_action / e_stop` and an `embodiment_tag: str` field
+read_state / send_action / estop` and an `embodiment_tag: str` field
 satisfies it. There is no inheritance requirement.
 
 ## What's in here

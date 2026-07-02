@@ -52,6 +52,9 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0036](0036-osc-action-contracts-deploy-path-gate.md) | Cartesian/OSC action contracts + deploy-path-aware palette gate | Accepted | extends 0028b; amended for 0041 |
 | [0047](0047-vlm-rskill-kind.md) | `vlm` rSkill kind for video-language scene-understanding models | Accepted | — |
 | [0055](0055-rskill-registry-model-and-discoverability.md) | rSkill registry model + discoverability (`rskill search`) | Proposed | — |
+| [0057](0057-robometer-reward-rskill.md) | `kind: reward` rSkills — robotic reward models as parallel task-progress monitors | Accepted | consumed by 0073/0074/0077 |
+| [0071](0071-task-space-contract.md) | `TaskSpace` — one shared action-space contract across robots, rSkills, and scenes | Draft | cross-layer; refs 0028/0036 |
+| [0077](0077-vla-reward-pairing-and-vram-fit.md) | A VLA names its reward model; the pair must fit GPU VRAM together | Accepted | builds on 0057, 0074; refs 0050 |
 
 ## C · Reasoner & S2 planning
 
@@ -62,7 +65,10 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0025](0025-reasoner-managed-background-services.md) | Reasoner-managed background services (SLAM, perception trees) | Accepted | amended 2026-06-08 for 0041 |
 | [0039](0039-llm-task-planning-active-search.md) | LLM task planning + active object search over the scene graph | Proposed | extends 0018 §4; depends 0038 |
 | [0043](0043-locate-in-view-reasoner-tool.md) | `locate_in_view` — on-demand live-detector query for the reasoner | Accepted | related 0037, 0039; reconciled by 0051 |
+| [0072](0072-reasoner-playbooks-and-self-maintained-memory.md) | Reasoner playbooks (`kind: playbook`) + self-maintained `MEMORY.md` | Proposed | extends 0018; refs 0038 |
 | [0073](0073-reasoner-success-gating-and-task-queue.md) | Reasoner success-gating on the reward/critic signal + a sequential task queue | Proposed | amends 0018; consumes 0057, 0064; refs 0036 |
+| [0074](0074-vlm-adjudicated-completion-and-reward-driven-progress.md) | VLM-adjudicated task completion + reward-driven progress | Proposed | amendment C of 0073; consumes 0047, 0057 |
+| [0075](0075-grounded-decomposition-contract.md) | Grounded task decomposition — smallest actionable unit is verb + perceived object | Accepted | extends 0039; refs 0076 |
 
 ## D · HAL & robot description
 
@@ -90,6 +96,9 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0045](0045-isaac-sim-backend-integration.md) | NVIDIA Isaac Sim as an optional sim backend | Proposed | refs 0034 idle-step amendment |
 | [0061](0061-robotwin-dual-arm-benchmark-backend.md) | RoboTwin 2.0 dual-arm benchmark backend (SAPIEN, out-of-process sidecar) | Accepted | reuses 0045 sidecar; refs 0060 gate, 0009 producers |
 | [0062](0062-rlbench-benchmark-backend.md) | RLBench (CoppeliaSim/PyRep) benchmark backend + 3D Diffuser Actor | Accepted | renumbered from 0061; reuses 0045 sidecar; refs 0060 gate |
+| [0060](0060-benchmark-task-data-compatibility-gate.md) | Benchmark task-data compatibility gate (`evaluated_tasks`) | Accepted | gates 0061/0062/0063 |
+| [0065](0065-generic-sim-camera-rig.md) | Generic sim camera rig driven by `SensorSpec.sim_placement` | Accepted | closes issue #88 |
+| [0066](0066-deploy-scene-owns-composition.md) | `DeployScene` owns its MJCF composition (robot / scene / rSkill separation) | Accepted | extends 0034, 0041 |
 
 ## F · Deploy path & runtime
 
@@ -122,6 +131,8 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0038](0038-persistent-semantic-spatial-memory.md) | Persistent spatial memory — object-centric recall, scene graph | Proposed | feeds 0039 |
 | [0051](0051-detector-invocation-mode.md) | Detector invocation mode — continuous producers vs on-demand locators | Accepted | reconciles 0037, 0043 |
 | [0052](0052-cross-frame-object-lift.md) | Cross-frame object-lift (RGB optical TF + octomap/kernel decoupling) | Proposed | refines 0035 |
+| [0056](0056-on-demand-detectors-as-promptable-reasoner-tools.md) | On-demand detectors as prompt-able read-only reasoner tools | Accepted | extends 0043, 0051 |
+| [0076](0076-detection-identity-and-camera-space-enumeration.md) | Detection-time object identity + camera-space `in_view` enumeration | Accepted | extends 0035, 0075; amended 2026-06-29 |
 
 ## I · Sensors & observability
 
@@ -132,6 +143,10 @@ the highest-numbered ADR in its cluster — that is usually the live one.
 | [0019](0019-rosbag2-lerobot-dataset-bridge.md) | rosbag2 ↔ LeRobotDataset v3 bridge | Accepted | amends 0010 |
 | [0059](0059-foxglove-live-scene-visualization.md) | Foxglove as the read-only live-scene surface (hybrid with the OTel dashboard) | Accepted | keeps 0017; taps 0058 `/tf`; safety-WG-signed-off |
 | [0064](0064-vision-slam-lidarless-cuvslam-nvblox-monodepth.md) | Vision SLAM for lidar-less robots (cuVSLAM + nvblox + monocular metric depth) | Accepted | extends 0025; reuses 0046 license/sidecar pattern; competes with 0050 VRAM budget; Ph1+2 landed, live mapping operator-run |
+| [0064](0064-critic-score-topic-and-tier-c-producer.md) | Generic `CriticScore` topic + Tier-C critic producer | Accepted | duplicate number (cross-refs use filenames); consumed by 0073 |
+| [0064](0064-dashboard-write-controls.md) | Dashboard guarded write-controls | Proposed | duplicate number; pending safety-WG review |
+| [0068](0068-robot-sensor-catalog-provenance.md) | Robot sensor catalog provenance via `SensorSpec.catalog_id` | Accepted | extends 0058 |
+| [0070](0070-canonical-camera-slot-names.md) | Canonical camera slot names | Accepted | refs 0065 camera rig; consumed by 0071 |
 
 ## J · Motion / MoveIt goal building
 

@@ -65,7 +65,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Capability | What you get | Where it lives |
 |---|---|---|
 | Typed robot manifests | `RobotDescription` (Pydantic v2): joints, links, sensors, embodiment tags, capabilities | `python/core/`, fixtures in `robots/` |
-| HAL adapters | Uniform `HAL` Protocol — `connect / read_state / write_command / disconnect`; per-robot lifecycle nodes | `python/hal/`, `packages/openral_hal_*/` |
+| HAL adapters | Uniform `HAL` Protocol — `connect / read_state / send_action / estop / disconnect`; per-robot lifecycle nodes | `python/hal/`, `packages/openral_hal_*/` |
 | Sensor catalog | Typed `SensorSpec` / `SensorBundle` for cameras, depth, IMU, F/T, tactile, lidar | `python/sensors/` |
 | World state | 30 Hz tf2-aware snapshot with staleness latching; carries lifted `detected_objects`; consumed by S1 and S2 | `python/world_state/`, `packages/world_state/` |
 | Object detection | Promptable open-vocabulary `kind: detector` rSkills (OmDet-Turbo default, RT-DETR fallback, LocateAnything-3B) → `ObjectsMetadata`, lifted 2D→3D into world state; on-demand `locate_in_view` for novel targets | `packages/openral_perception_ros/`, ADR-0035/0037/0051/0056 |
@@ -80,7 +80,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
 | Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface | `python/observability/`, ADR-0059 |
-| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
+| CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; manifests at `schema_version: "0.2"` (ADR-0069) | `python/core/`, `tools/schema_export.py` |
 | ROS 2 IDL | `openral_msgs` (.msg, .action) — normative across the runtime | `packages/msgs/` |
 
