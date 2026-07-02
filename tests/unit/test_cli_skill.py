@@ -1,17 +1,20 @@
-"""Unit tests for ``ral skill install`` and ``ral skill list`` CLI commands.
+"""Unit tests for ``openral rskill install / list / search`` CLI commands.
 
-All HF Hub I/O and the rSkill loader are mocked.  The local registry is
-isolated per test via tmp_path.
+Only the HF Hub network boundary is doubled (CLAUDE.md §1.11) — manifests
+resolve to real in-tree ``rskills/`` fixtures and the real loader, license
+guard, and registry code paths execute. The local registry is isolated per
+test via tmp_path.
 
 Coverage
 --------
-- ``ral skill list``          — empty registry → informational message, exit 0
-- ``ral skill list``          — populated registry → table with correct rows
-- ``ral skill list --json``   — emits valid JSON array
-- ``ral skill install``       — happy path (Apache license, no confirmation needed)
-- ``ral skill install``       — ROSConfigError surfaces as non-zero exit
-- ``ral skill install``       — proprietary license + --yes skips prompt
-- ``ral skill install``       — no HUB_ID argument → non-zero exit (typer)
+- ``openral rskill list``          — empty registry → informational message, exit 0
+- ``openral rskill list``          — populated registry → table with correct rows
+- ``openral rskill list --json``   — emits valid JSON array
+- ``openral rskill install``       — happy path (Apache license, real registry write)
+- ``openral rskill install``       — non-commercial license guard blocks by default
+- ``openral rskill install``       — proprietary license + --yes skips prompt
+- ``openral rskill install``       — --revision pins every Hub boundary call
+- ``openral rskill search``        — recorded org listing + real manifest fixtures
 """
 
 from __future__ import annotations
@@ -24,18 +27,6 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from openral_cli.main import app
-from openral_core.exceptions import ROSConfigError
-from openral_core.schemas import (
-    ActuatorRequirement,
-    ControlMode,
-    ControlModeSemantics,
-    RSkillAction,
-    RSkillLatencyBudget,
-    RSkillLicensePosture,
-    RSkillManifest,
-    RSkillProcessors,
-    RSkillRuntime,
-)
 from openral_rskill.loader import InstalledRSkillEntry, rSkill
 from typer.testing import CliRunner
 
@@ -43,37 +34,6 @@ runner = CliRunner()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
-
-
-def _make_manifest(
-    name: str = "test/rskill-alpha",
-    license_: RSkillLicensePosture = RSkillLicensePosture.APACHE_2_0,
-) -> RSkillManifest:
-    return RSkillManifest(
-        name=name,
-        version="0.2.0",
-        license=license_,
-        role="s1",
-        kind="vla",
-        model_family="smolvla",
-        embodiment_tags=["so100_follower"],
-        runtime=RSkillRuntime.PYTORCH,
-        weights_uri="hf://test/rskill-alpha",
-        chunk_size=16,
-        latency_budget=RSkillLatencyBudget(per_chunk_ms=500.0),
-        actuators_required=[
-            ActuatorRequirement(
-                kind=ControlMode.JOINT_POSITION,
-                control_mode_semantics=ControlModeSemantics(mode="absolute"),
-            )
-        ],
-        processors=RSkillProcessors(
-            preprocessor_uri="hf://test/rskill-alpha/policy_preprocessor.json",
-            postprocessor_uri="hf://test/rskill-alpha/policy_postprocessor.json",
-        ),
-        description="Test rSkill fixture for the ral skill install / list CLI suite.",
-        actions=[RSkillAction.GENERALIST],
-    )
 
 
 def _make_entry(
@@ -160,111 +120,139 @@ class TestSkillList:
 # ── ral skill install ──────────────────────────────────────────────────────────
 
 
+_RSKILLS_DIR = Path(__file__).resolve().parents[2] / "rskills"
+
+
+class _FakeHub:
+    """HF network boundary fake for the install path (CLAUDE.md §1.11).
+
+    Resolves ``hf_hub_download`` / ``snapshot_download`` to **real in-tree
+    ``rskills/<id>/`` fixture dirs** so the real ``RSkillManifest.from_yaml``,
+    the real license/provenance guards, and the real registry write in
+    ``rSkill.from_pretrained`` all execute. Only the network is doubled.
+    """
+
+    def __init__(self, repo_map: dict[str, Path], error: Exception | None = None) -> None:
+        self.repo_map = repo_map
+        self.error = error
+        self.download_calls: list[dict[str, object]] = []
+        self.snapshot_calls: list[dict[str, object]] = []
+
+    def hf_hub_download(self, *, repo_id: str, filename: str, **kwargs: object) -> str:
+        self.download_calls.append({"repo_id": repo_id, "filename": filename, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return str(self.repo_map[repo_id] / filename)
+
+    def snapshot_download(self, *, repo_id: str, **kwargs: object) -> str:
+        self.snapshot_calls.append({"repo_id": repo_id, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return str(self.repo_map[repo_id])
+
+
 class TestSkillInstall:
-    """Tests for ``ral skill install``."""
+    """Tests for ``openral rskill install``.
 
-    def _run_install(
+    Only the HF network boundary is faked (`_FakeHub`); manifest parsing,
+    license/provenance guards, and registry writes are the real code paths,
+    exercised against real in-tree ``rskills/`` fixtures.
+    """
+
+    APACHE_REPO = "OpenRAL/rskill-act-libero"
+    NONCOMMERCIAL_REPO = "OpenRAL/rskill-locateanything-3b-nf4"
+
+    def _invoke(
         self,
-        hub_id: str,
-        *extra_args: str,
-        manifest: RSkillManifest | None = None,
-        manifest_path: str = "/tmp/rskill.yaml",
-        local_dir: str = "/tmp/skill_cache",
-        install_error: Exception | None = None,
-        tmp_path: Path | None = None,
+        hub: _FakeHub,
+        tmp_path: Path,
+        *args: str,
     ) -> CliRunner.Result:
-        """Invoke ``ral skill install`` with all HF Hub + loader calls mocked."""
-        if manifest is None:
-            manifest = _make_manifest()
-        mock_hf_download = MagicMock(return_value=manifest_path)
-        mock_from_yaml = MagicMock(return_value=manifest)
-        if install_error:
-            mock_from_pretrained = MagicMock(side_effect=install_error)
-        else:
-            mock_from_pretrained = MagicMock(
-                return_value=rSkill(manifest=manifest, local_dir=Path(local_dir))
-            )
-
+        reg = tmp_path / "rskills.json"
+        env = dict(os.environ)
+        env.pop("OPENRAL_ALLOW_NONCOMMERCIAL", None)
+        env.pop("OPENRAL_REQUIRE_SIGNED_SKILLS", None)
         with (
-            patch("huggingface_hub.hf_hub_download", mock_hf_download),
-            patch("openral_core.schemas.RSkillManifest.from_yaml", mock_from_yaml),
-            patch("openral_rskill.loader.rSkill.from_pretrained", mock_from_pretrained),
+            patch("huggingface_hub.hf_hub_download", new=hub.hf_hub_download),
+            patch("huggingface_hub.snapshot_download", new=hub.snapshot_download),
+            patch("openral_rskill.loader.DEFAULT_REGISTRY_PATH", reg),
+            patch.dict(os.environ, env, clear=True),
         ):
-            args = ["rskill", "install", hub_id, *extra_args]
-            return runner.invoke(app, args, catch_exceptions=False)
+            return runner.invoke(app, ["rskill", "install", *args], catch_exceptions=False)
 
-    def test_happy_path_apache_exits_zero(self) -> None:
-        """Apache-2.0 skill install must exit 0 without prompting."""
-        result = self._run_install("test/rskill-alpha")
-        assert result.exit_code == 0
+    def test_happy_path_apache_exits_zero(self, tmp_path: Path) -> None:
+        """Apache-2.0 skill install must exit 0, register, and not prompt."""
+        hub = _FakeHub({self.APACHE_REPO: _RSKILLS_DIR / "act-libero"})
+        result = self._invoke(hub, tmp_path, self.APACHE_REPO)
+        assert result.exit_code == 0, result.output
         assert "Installed" in result.output
+        assert "apache-2.0" in result.output
+        # The real registry write happened with the real manifest's fields.
+        reg = json.loads((tmp_path / "rskills.json").read_text(encoding="utf-8"))
+        (entry,) = [e for e in reg if e["repo_id"] == self.APACHE_REPO]
+        assert entry["license"] == "apache-2.0"
 
-    def test_ros_config_error_exits_nonzero(self) -> None:
-        """ROSConfigError from loader must print error and exit non-zero."""
-        result = self._run_install(
-            "test/rskill-groot",
-            install_error=ROSConfigError("non-commercial"),
-        )
+    def test_noncommercial_license_guard_blocks_install(self, tmp_path: Path) -> None:
+        """The real license guard must reject non-commercial weights by default."""
+        hub = _FakeHub({self.NONCOMMERCIAL_REPO: _RSKILLS_DIR / "locateanything-3b-nf4"})
+        # --yes passes the CLI confirm gate so the loader's guard is what rejects.
+        result = self._invoke(hub, tmp_path, self.NONCOMMERCIAL_REPO, "--yes")
         assert result.exit_code != 0
         assert "Install failed" in result.output
+        # Nothing was registered.
+        assert not (tmp_path / "rskills.json").exists()
 
-    def test_proprietary_with_yes_skips_prompt(self) -> None:
+    def test_proprietary_with_yes_skips_prompt(self, tmp_path: Path) -> None:
         """--yes must bypass the confirmation prompt for proprietary licenses."""
-        manifest = _make_manifest(license_=RSkillLicensePosture.PROPRIETARY)
-        result = self._run_install("test/rskill-helix", "--yes", manifest=manifest)
-        assert result.exit_code == 0
+        # Real fixture content with only the license posture flipped — the
+        # proprietary path is warn-and-proceed in the loader (vendor review is
+        # out-of-band), so install completes.
+        src = (_RSKILLS_DIR / "act-libero" / "rskill.yaml").read_text(encoding="utf-8")
+        skill_dir = tmp_path / "rskill-helix"
+        skill_dir.mkdir()
+        (skill_dir / "rskill.yaml").write_text(
+            src.replace('license: "apache-2.0"', 'license: "proprietary"'), encoding="utf-8"
+        )
+        hub = _FakeHub({"test-vendor/rskill-helix": skill_dir})
+        result = self._invoke(hub, tmp_path, "test-vendor/rskill-helix", "--yes")
+        assert result.exit_code == 0, result.output
         assert "Installed" in result.output
 
-    def test_revision_flag_passed(self) -> None:
-        """--revision <sha> must be forwarded to from_pretrained."""
-        manifest = _make_manifest()
-        mock_hf_download = MagicMock(return_value="/tmp/rskill.yaml")
-        mock_from_yaml = MagicMock(return_value=manifest)
-        mock_from_pretrained = MagicMock(
-            return_value=rSkill(manifest=manifest, local_dir=Path("/tmp/skill"))
-        )
-        with (
-            patch("huggingface_hub.hf_hub_download", mock_hf_download),
-            patch("openral_core.schemas.RSkillManifest.from_yaml", mock_from_yaml),
-            patch("openral_rskill.loader.rSkill.from_pretrained", mock_from_pretrained),
-        ):
-            result = runner.invoke(
-                app,
-                ["rskill", "install", "test/rskill-alpha", "--revision", "deadbeef"],
-                catch_exceptions=False,
-            )
-        assert result.exit_code == 0
-        _, kwargs = mock_from_pretrained.call_args
-        assert kwargs.get("revision") == "deadbeef"
+    def test_revision_flag_reaches_hub_boundary(self, tmp_path: Path) -> None:
+        """--revision <sha> must be forwarded to both Hub download calls."""
+        hub = _FakeHub({self.APACHE_REPO: _RSKILLS_DIR / "act-libero"})
+        result = self._invoke(hub, tmp_path, self.APACHE_REPO, "--revision", "deadbeef")
+        assert result.exit_code == 0, result.output
+        # CLI manifest fetch + loader manifest fetch + snapshot all pin it.
+        assert all(c["revision"] == "deadbeef" for c in hub.download_calls)
+        assert all(c["revision"] == "deadbeef" for c in hub.snapshot_calls)
 
-    def test_no_revision_prints_tip(self) -> None:
+    def test_no_revision_prints_tip(self, tmp_path: Path) -> None:
         """Installing without --revision must print a pinning tip."""
-        result = self._run_install("test/rskill-alpha")
-        assert result.exit_code == 0
+        hub = _FakeHub({self.APACHE_REPO: _RSKILLS_DIR / "act-libero"})
+        result = self._invoke(hub, tmp_path, self.APACHE_REPO)
+        assert result.exit_code == 0, result.output
         assert "Pin a revision" in result.output
 
-    def test_manifest_fetch_error_exits_nonzero(self) -> None:
+    def test_manifest_fetch_error_exits_nonzero(self, tmp_path: Path) -> None:
         """Network error fetching rskill.yaml must exit non-zero."""
-        mock_hf_download = MagicMock(side_effect=RuntimeError("connection refused"))
-        with patch("huggingface_hub.hf_hub_download", mock_hf_download):
-            result = runner.invoke(app, ["rskill", "install", "test/rskill-alpha"])
+        hub = _FakeHub({}, error=RuntimeError("connection refused"))
+        result = self._invoke(hub, tmp_path, self.APACHE_REPO)
         assert result.exit_code != 0
         assert "Failed to fetch manifest" in result.output
 
-    def test_bare_name_suggests_org_without_network(self) -> None:
+    def test_bare_name_suggests_org_without_network(self, tmp_path: Path) -> None:
         """An org-less id must fail fast with an OpenRAL/ suggestion and never hit HF."""
-        mock_hf_download = MagicMock(side_effect=AssertionError("must not download"))
-        with patch("huggingface_hub.hf_hub_download", mock_hf_download):
-            result = runner.invoke(
-                app, ["rskill", "install", "rskill-qwen35-4b-nf4"], catch_exceptions=False
-            )
+        hub = _FakeHub({}, error=AssertionError("must not download"))
+        result = self._invoke(hub, tmp_path, "rskill-qwen35-4b-nf4")
         assert result.exit_code != 0
         # Suggests the canonical org-qualified id …
         assert "OpenRAL/rskill-qwen35-4b-nf4" in result.output
         # … and points at the discovery command.
         assert "rskill search" in result.output
         # The org-less guard short-circuits before any network call.
-        mock_hf_download.assert_not_called()
+        assert hub.download_calls == []
+        assert hub.snapshot_calls == []
 
 
 # ── ral skill search ───────────────────────────────────────────────────────────

@@ -284,8 +284,10 @@ class TestCalibrateCameraCLI:
             ["calibrate", "camera", "--sensor", "head_color", "--dry-run"],
         )
         assert result.exit_code == 0
-        assert "ros2" in result.output
-        assert "cameracalibrator" in result.output
+        assert "ros2 run camera_calibration cameracalibrator" in result.output
+        # Topic derivation: image: /head_color/image_raw, info: /head_color/camera_info
+        assert "/head_color/image_raw" in result.output
+        assert "/head_color/camera_info" in result.output
 
     def test_dry_run_custom_chessboard(self) -> None:
         result = runner.invoke(
@@ -341,13 +343,17 @@ class TestCalibrateCameraCLI:
             patch(
                 "openral_cli.main.subprocess.run",
                 return_value=type("R", (), {"returncode": 2})(),
-            ),
+            ) as run_patch,
         ):
             result = runner.invoke(
                 app,
                 ["calibrate", "camera", "--sensor", "head_color"],
             )
         assert result.exit_code == 2
+        # Command is built deterministically; spot-check key fragments.
+        cmd = run_patch.call_args.args[0]
+        assert cmd[:4] == ["ros2", "run", "camera_calibration", "cameracalibrator"]
+        assert "image:=/head_color/image_raw" in cmd
 
     def test_calibrator_success_exits_0(self) -> None:
         with (

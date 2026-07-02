@@ -93,8 +93,8 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_sensor_catalog.py` | 592 | `SensorCatalog` register/get/filter/build, `openral sensor list` / `show` CLI. | Keep |
 | `test_rskill_loader.py` | 514 | `rSkill.from_yaml` / `from_pretrained`, license guards, capability matching, registry I/O (HF mocked). | Keep |
 | `test_doctor.py` | 283 | `openral doctor` per-check helpers + `CliRunner` end-to-end. | Keep |
-| `test_cli_skill.py` | 217 | `ral skill list` / `install` (license prompt, JSON output, isolated registry). | Keep |
-| `test_cli_init_connect.py` | 230 | `ral init` (write paths + DDS inference + overwrite prompt), `openral connect` (happy + ROSConfigError + ROSRuntimeError + finally-disconnect), `openral calibrate camera` (size parsing, --dry-run, ros2 missing, subprocess rc). **Added 2026-05-08.** | Keep |
+| `test_cli_skill.py` | ~330 | `openral rskill list` / `install` / `search` — real in-tree `rskills/` manifests through the real loader/license-guard/registry paths; only the HF network boundary is faked (`_FakeHub`). | Keep |
+| `test_cli_init_connect.py` | ~110 | `openral connect` (happy + ROSConfigError + ROSRuntimeError + finally-disconnect) via the recording `FakeSO100FollowerHAL` serial-boundary fake (`tests/unit/fakes/`). `calibrate camera` coverage lives in `test_sensors.py`. **Added 2026-05-08; MagicMock HAL replaced with a real boundary fake + calibrate block deduped 2026-07-02.** | Keep |
 | `test_autodetect.py` | 434 | USB VID/PID table, Linux glob enumeration, DDS topic inference, `ral init` Typer flow. | Keep |
 | `test_eval_registry_and_runner.py` | 159 | `SCENES` / `POLICIES` registries, `make_env`, `make_policy`, `SimRunner` mock path. | Keep |
 | `test_eval_adapters_helpers.py` | 427 | LIBERO / MetaWorld / SmolVLA helper functions; lazy-import failure paths. | Keep |
@@ -188,7 +188,7 @@ For each layer (per repo state map) and cross-cutting surface:
 | L6 Safety — supervisor, C++ kernel, deadman/E-stop | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | L7 Observability | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | Cross — `openral` CLI (`doctor`, `skill`, `sensor`) | ✓ | ✓ (`doctor`, `init`) | ✗ | ✗ | n/a | ✓ | n/a |
-| Cross — `openral` CLI (`init`, `connect`, `calibrate camera`) | ✓ (`test_cli_init_connect.py`) | ◐ | ✗ | ✗ | n/a | ✓ | n/a |
+| Cross — `openral` CLI (`init`, `connect`, `calibrate camera`) | ✓ (`test_cli_init_connect.py` connect; `test_sensors.py` calibrate) | ◐ | ✗ | ✗ | n/a | ✓ | n/a |
 | Cross — `openral_sim` registry/runner/factory/rollout/adapters | ✓ (registry + factory error paths + Protocol conformance) | ✗ | ✓ | ✗ | ✓ (Sim*/Scene*/Task*/VLA* fuzzed) | ✗ | n/a |
 | Cross — `tools/schema_export.py` (drift) | ✓ (`lint.yml --check`) | n/a | n/a | n/a | n/a | n/a | n/a |
 | Cross — `tools/rskill_publisher.py` | ✓ (`test_rskill_publisher.py`, incl. privacy-gate regression guard) | n/a | n/a | n/a | n/a | n/a | n/a |
