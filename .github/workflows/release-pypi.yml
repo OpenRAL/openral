@@ -18,12 +18,13 @@ name: release-pypi
 #     deliberate confirmation).
 #
 # One-time PyPI-side setup per index — register a trusted publisher for this
-# repo + this workflow file. Pending publishers are fine for names that don't
-# exist yet (https://docs.pypi.org/trusted-publishers/):
-#   - TestPyPI (https://test.pypi.org): set up now to exercise the path.
-#   - PyPI (https://pypi.org): blocked until the OpenRAL org / project names
-#     are approved; until then use the testpypi target (or a local twine
-#     upload) for trials.
+# repo + this workflow file. Pending publishers cover names that don't exist
+# yet and need no org approval (https://docs.pypi.org/trusted-publishers/):
+#   owner: OpenRAL · repo: openral · workflow: release-pypi.yml · env: (none)
+#   - TestPyPI (https://test.pypi.org): already registered.
+#   - PyPI (https://pypi.org): register a pending publisher per project under
+#     the individual account, then dispatch target=pypi (or push a v*.*.* tag).
+#     Projects transfer into the OpenRAL org later with no re-publish.
 #
 # Every workspace package is pinned to 0.1.x — see CLAUDE.md.
 
