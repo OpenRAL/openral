@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ControlMode",
+  "description": "Action space / control interface exposed by a robot or skill.",
+  "type": "string",
+  "enum": [
+    "joint_position",
+    "joint_velocity",
+    "joint_torque",
+    "joint_trajectory",
+    "cartesian_pose",
+    "cartesian_delta",
+    "cartesian_twist",
+    "body_twist",
+    "foot_placement",
+    "gripper_binary",
+    "gripper_position",
+    "dex_hand_joint",
+    "composite_mode"
+  ]
+}

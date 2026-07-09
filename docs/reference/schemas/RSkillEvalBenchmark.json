@@ -1,0 +1,43 @@
+{
+  "additionalProperties": true,
+  "description": "The benchmark suite a :class:`RSkillEvalResult` was measured against.\n\nAttributes:\n    name: Canonical suite name (``\"LIBERO\"``, ``\"MetaWorld\"``,\n        ``\"ALOHA\"``, ``\"PushT\"``, ``\"RoboCasa\"`` \u2026).  Used by\n        ``openral benchmark report`` to group rows.\n    dataset: Optional HF dataset identifier.\n    protocol: Free-text description of the eval protocol.\n    robot: ``robot_id`` the benchmark was evaluated on.\n    simulator: Free-text simulator description.",
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "dataset": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dataset"
+    },
+    "protocol": {
+      "title": "Protocol",
+      "type": "string"
+    },
+    "robot": {
+      "title": "Robot",
+      "type": "string"
+    },
+    "simulator": {
+      "title": "Simulator",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "protocol",
+    "robot",
+    "simulator"
+  ],
+  "title": "RSkillEvalBenchmark",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,15 @@
+# Diffusion Policy PushT — single-rollout SimScene for `openral sim run`.
+# Benchmark protocol lives in scenes/benchmark/pusht.yaml.
+# Run: openral sim run --config scenes/sim/pusht.yaml \
+#                      --rskill rskill://rskills/diffusion-pusht
+
+scene:
+  id: pusht
+  backend: mujoco
+
+task:
+  id: pusht/0
+  scene_id: pusht
+  instruction: "push the T-block onto the target"
+  success_key: is_success
+  max_steps: 300

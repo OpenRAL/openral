@@ -1,0 +1,43 @@
+name: test-python
+# Auto-triggers disabled: out of GitHub Actions credits.
+# Re-enable PR/push triggers once billing is restored. See issue tracker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        # `ubuntu-24.04-arm` is GitHub's free aarch64 hosted
+        # runner (GA since 2025). No GPU, but it catches aarch64-only import
+        # bugs (e.g. the `tegra` library paths in `nvbufsurface.py`) that the
+        # x86 lanes can't see.
+        #
+        # macOS is intentionally not in the matrix: the shared macOS hosted
+        # runner can't honor the hot-loop timing budgets (`precise_sleep`
+        # overshoot, 30 Hz cadence) that CLAUDE.md §2 pins to the *reference
+        # host*, so a macOS lane only produces false-red timing flakes — not a
+        # valid signal. Linux x86 (+ aarch64) is the supported CI surface.
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-24.04-arm]
+        python: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    # PR 3/3 onboarding: keep aarch64 non-blocking for two weeks of warm-up,
+    # then promote to required (drop continue-on-error and tighten branch
+    # protection). Tracked in a later amendment to the CI-matrix decision.
+    continue-on-error: ${{ matrix.os == 'ubuntu-24.04-arm' }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run pytest -q --cov=python --cov-branch --cov-report=xml
+      - name: Upload coverage reports to Codecov
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.12'
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml

@@ -1,0 +1,33 @@
+# ManiSkill3 PickCube-v1 — Panda arm, SAPIEN backend (mujoco enum slot reused).
+# Run: openral benchmark scene --config scenes/benchmark/maniskill_pick_cube.yaml \
+#                              --rskill rskill://rskills/<maniskill-rskill>
+# Setup: just sync --all-packages --group maniskill3
+
+robot_id: franka_panda
+
+scene:
+  id: maniskill3
+  backend: mujoco            # SAPIEN under the hood; mujoco enum slot reused
+  observation_height: 256
+  observation_width: 256
+  cameras: ["top", "wrist"]
+  backend_options:
+    control_mode: "pd_joint_pos"   # 8-D (7 arm joints + 1 gripper) — matches
+                                   # smolvla-maniskill-franka action_contract.dim
+    robot_uids: "panda_wristcam"   # adds hand_camera → camera2 / wrist stream
+
+task:
+  id: maniskill3/PickCube-v1
+  scene_id: maniskill3
+  instruction: "pick up the cube"
+  success_key: is_success
+  max_steps: 50              # ManiSkill3 official max_episode_steps for PickCube-v1
+
+n_episodes: 100            # ManiSkill3 standard eval (>=100 episodes)
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2410.00425"
+  honest_scope: >
+    PickCube-v1 (ManiSkill3, Mu et al. 2410.00425). Official env
+    max_episode_steps=50; standard eval is >=100 episodes.

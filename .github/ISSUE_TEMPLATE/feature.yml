@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new feature or improvement
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    attributes:
+      label: Problem or motivation
+      description: What problem does this feature solve?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you'd like.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why you prefer this one.
+  - type: dropdown
+    attributes:
+      label: Which layer does this touch?
+      multiple: true
+      options:
+        - HAL (layer 0)
+        - Sensors (layer 1)
+        - World State (layer 2)
+        - Skill / S1 (layer 3)
+        - Reasoning / S2 (layer 4)
+        - WAM (layer 5)
+        - Safety (layer 6)
+        - Observability (layer 7)
+        - CLI / tooling
+        - CI / infra

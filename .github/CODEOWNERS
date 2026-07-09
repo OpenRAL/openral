@@ -1,0 +1,16 @@
+# Default reviewers
+*                                   @openral/maintainers
+
+# Schemas and IDL — extra care
+python/core/**                      @openral/maintainers @openral/schemas
+packages/msgs/**                    @openral/maintainers @openral/schemas
+
+# Safety — mandatory review by safety WG
+packages/openral_safety/**          @openral/safety
+cpp/openral_safety_kernel/**        @openral/safety
+
+# HAL adapters
+packages/openral_hal_*/**           @openral/hal
+
+# CI / release
+.github/**                          @openral/maintainers

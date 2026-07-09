@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "ControlMode": {
+      "description": "Action space / control interface exposed by a robot or skill.",
+      "enum": [
+        "joint_position",
+        "joint_velocity",
+        "joint_torque",
+        "joint_trajectory",
+        "cartesian_pose",
+        "cartesian_delta",
+        "cartesian_twist",
+        "body_twist",
+        "foot_placement",
+        "gripper_binary",
+        "gripper_position",
+        "dex_hand_joint",
+        "composite_mode"
+      ],
+      "title": "ControlMode",
+      "type": "string"
+    }
+  },
+  "description": "Physical capability flags for a robot body.\n\nDescribes what the *robot* can do (sensors, actuation, embodiment tags).\nRuntime compute / GPU properties live on :class:`ComputeSpec` and are\nattached to the :class:`RobotDescription` via its ``compute`` field.\n\nAttributes:\n    locomotion: Locomotion types available.\n    can_lift_kg: Maximum payload in kg.\n    has_dexterous_hands: Whether dexterous hands are present.\n    has_tactile: Whether tactile sensing is available.\n    has_force_control: Whether force/impedance control is supported.\n    has_vision: Whether camera(s) are present.\n    has_lidar: Whether LiDAR is present. Gates the 2D-lidar\n        ``slam_toolbox`` backend.\n    has_vision_slam: Whether the robot should run camera-based visual\n        SLAM (cuVSLAM + nvblox) for localization/mapping, for robots\n        that lack a lidar. Gates the visual SLAM backend.\n        Independent of ``has_lidar``; when both are set the lidar\n        backend wins (it does not require an AI depth model).\n    has_audio: Whether audio I/O is present.\n    bimanual: Whether the robot has two arms.\n    supported_control_modes: List of supported ControlMode values.\n    supported_vla_embodiments: VLA embodiment IDs this robot can run.\n    embodiment_tags: Short tags mapping to VLA heads / dataset splits.",
+  "properties": {
+    "locomotion": {
+      "items": {
+        "enum": [
+          "bipedal",
+          "quadruped",
+          "wheeled",
+          "tracked",
+          "none"
+        ],
+        "type": "string"
+      },
+      "title": "Locomotion",
+      "type": "array"
+    },
+    "can_lift_kg": {
+      "default": 0.0,
+      "title": "Can Lift Kg",
+      "type": "number"
+    },
+    "has_dexterous_hands": {
+      "default": false,
+      "title": "Has Dexterous Hands",
+      "type": "boolean"
+    },
+    "has_tactile": {
+      "default": false,
+      "title": "Has Tactile",
+      "type": "boolean"
+    },
+    "has_force_control": {
+      "default": false,
+      "title": "Has Force Control",
+      "type": "boolean"
+    },
+    "has_vision": {
+      "default": true,
+      "title": "Has Vision",
+      "type": "boolean"
+    },
+    "has_lidar": {
+      "default": false,
+      "title": "Has Lidar",
+      "type": "boolean"
+    },
+    "has_vision_slam": {
+      "default": false,
+      "title": "Has Vision Slam",
+      "type": "boolean"
+    },
+    "has_audio": {
+      "default": false,
+      "title": "Has Audio",
+      "type": "boolean"
+    },
+    "bimanual": {
+      "default": false,
+      "title": "Bimanual",
+      "type": "boolean"
+    },
+    "supported_control_modes": {
+      "items": {
+        "$ref": "#/$defs/ControlMode"
+      },
+      "title": "Supported Control Modes",
+      "type": "array"
+    },
+    "supported_vla_embodiments": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Supported Vla Embodiments",
+      "type": "array"
+    },
+    "embodiment_tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Embodiment Tags",
+      "type": "array"
+    }
+  },
+  "title": "RobotCapabilities",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

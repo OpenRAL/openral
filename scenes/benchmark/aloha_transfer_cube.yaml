@@ -1,0 +1,32 @@
+# gym-aloha AlohaTransferCube-v0 — ALOHA bimanual fixed.
+# Run: openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml \
+#                              --rskill rskill://rskills/act-aloha
+# Setup: just sync --all-packages --group sim
+# Note: set MUJOCO_GL=egl (osmesa fails on dm_control GLFW conflict).
+
+robot_id: aloha_bimanual
+
+scene:
+  id: aloha_transfer_cube
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top"]
+
+task:
+  id: aloha_transfer_cube/0
+  scene_id: aloha_transfer_cube
+  instruction: "transfer the cube"
+  success_key: is_success
+  max_steps: 400         # ACT paper sim episode_len (Zhao et al. SIM_TASK_CONFIGS)
+
+n_episodes: 50           # ACT paper eval count
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2304.13705"
+  honest_scope: >
+    Single task (AlohaTransferCube-v0). Official ACT sim protocol:
+    episode_len=400 over 50 eval episodes (gym-aloha's registration
+    TimeLimit default is 300; we honour the paper's 400). ACT paper
+    reports 90%+ success on cube transfer.

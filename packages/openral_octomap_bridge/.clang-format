@@ -1,0 +1,31 @@
+---
+# CLAUDE.md §5.2 — LLVM style at 100 columns.
+BasedOnStyle: LLVM
+ColumnLimit: 100
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+AccessModifierOffset: -2
+AlwaysBreakTemplateDeclarations: Yes
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:    '^"openral_safety_kernel/'
+    Priority: 1
+  - Regex:    '^<[a-z_]+>'
+    Priority: 2
+  - Regex:    '^<[a-z_]+\.h>'
+    Priority: 3
+  - Regex:    '^<rclcpp/|^<rclcpp_lifecycle/|^<lifecycle_msgs/|^<std_msgs/|^<std_srvs/|^<diagnostic_msgs/|^<openral_msgs/'
+    Priority: 5
+  - Regex:    '^<.+/.+>'
+    Priority: 4
+  - Regex:    '^<.+>'
+    Priority: 2
+SortIncludes: true
+SpaceAfterCStyleCast: false
+SpaceBeforeCpp11BracedList: false
+SpacesBeforeTrailingComments: 2
+...

@@ -1,0 +1,113 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-robometer-4b-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s2"
+kind: "reward"
+
+# Embodiment-agnostic: a reward monitor scores any rollout video + task
+# instruction and is exempt from the rSkill<->robot embodiment gate.
+embodiment_tags: ["any"]  # explicit embodiment-agnostic wildcard
+
+# Consumes the same RGB camera stream the co-active VLA uses. No actuators.
+sensors_required:
+  - modality: "rgb"
+    min_width: 224
+    min_height: 224
+
+actuators_required: []
+
+runtime: "pytorch"
+
+# NF4 bitsandbytes quantization (empirically validated):
+# 236 Linear modules -> Linear4bit, 8.91 GB bf16 -> 3.33 GB resident,
+# 3.56 GB peak incl. an 8-frame forward (4.44 GB headroom on an 8 GB GPU).
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+  extra:
+    scheme: "nf4"
+    quantizer: "bitsandbytes"
+    compute_dtype: "bfloat16"
+    min_params_to_quantize: 4000000
+    # Loaded via lerobot's in-tree lerobot.rewards.robometer.RobometerRewardModel
+    # (a vanilla AutoModelForImageTextToText / Qwen3-VL-4B) with plain
+    # transformers >= 5 — NO robometer git package, NO auto_map, NO
+    # transformers==4.57.1 pin. The runtime builds the native module on the meta
+    # device and drops these packed NF4 weights straight in. See
+    # openral_runner.backends.reward.robometer_reward.
+    loader: "lerobot.rewards.robometer.RobometerRewardModel"
+
+# MEASURED runtime footprint of the loaded sidecar (nvidia-smi on the resident
+# robometer-sidecar process), NOT weights-only. The NF4 packed weights are
+# ~3.6 GB, but the live sidecar also holds a CUDA context + the Qwen3-VL-4B
+# backbone's VLM-scoring activations over its frame window, measured at ~5.34 GB
+# steady-state → declare 5.5 GB so the VLA↔reward co-residency preflight budgets
+# the real footprint (a 3.6 GB figure under-counted it and greenlit a pair that
+# OOM-crashed the runner beside it on an 8 GB card). fp32/bf16 stay weights-only
+# estimates — they carry the same context/activation overhead, unmeasured here.
+min_vram_gb:
+  fp32: 18.0
+  bf16: 9.0
+  int4: 5.5
+
+# Pre-quantized NF4 checkpoint: the runtime loads the packed weights
+# DIRECTLY on the meta device via Params4bit.from_prequantized — no bf16
+# materialization, no requantize (~25 s to ready vs ~110 s + a 19 GB CPU spike).
+# Bit-identical to the bf16+quantize path. Built by
+# tools/build_robometer_nf4_checkpoint.py from the SHA-pinned upstream below.
+weights_uri: "hf://OpenRAL/rskill-robometer-4b-nf4"
+
+chunk_size: 1
+latency_budget:
+  # S2-cadence monitor over a frame window; not a per-control-step signal.
+  per_chunk_ms: 3000.0
+
+source_repo: "hf://robometer/Robometer-4B@beef63bc914c5c189329d49c6d712d96d632aa34"
+
+# Reward / progress-monitor contract. Discrete mode yields
+# per-frame normalized progress in [0,1] + per-frame success probability.
+reward:
+  progress_range: [0.0, 1.0]
+  # Calibrated to a later reward-calibration amendment (Decision 5): the bars gate the PROGRESS head
+  # (task closeness). Measured on cached LIBERO rollouts, full-attempt progress
+  # reaches ~0.80–0.86 on a genuine physical success and ~0.74 on a failure, so
+  # 0.8 is the auto-pass bar and 0.5 the clearly-incomplete floor. The success
+  # head is compressed (~0.56–0.79 even on a real success) and is used only as a
+  # secondary corroborating cue, never as the completion bar.
+  success_threshold: 0.8
+  preference: false
+  # Robometer scores a trajectory from its START; the attempt horizon
+  # is the patience ceiling (default_patience_s=30 s). An 8 s trailing slice
+  # systematically MISSED the completion arc and under-scored progress to ~0.70
+  # (vlm_check/ladder) on real successes whose full-attempt progress was ~0.85.
+  # Sized to retain the whole attempt + margin so the mission-verify query (which
+  # requests the full buffer span) scores start→now, not a trailing tail.
+  frame_window_s: 40.0
+  target_fps: 3.0
+  num_bins: 100
+  instruction_required: true
+  check_floor: 0.5
+  plateau_window_s: 3.0
+  plateau_tolerance: 0.06
+  default_patience_s: 30.0
+
+description: >
+  Robometer-4B (Qwen3-VL-4B robotic reward foundation model, arXiv 2603.02115)
+  as an NF4 reward rSkill. Runs parallel to a VLA: given rollout frames + the
+  task instruction it emits per-frame normalized progress (0-1) and success
+  probability, queried on demand by the Reasoner. Advisory-only — never gates
+  motors. Embodiment-agnostic. Apache-2.0.
+
+actions:
+  - "monitor"
+
+objects:
+  - "task progress"
+  - "task success"
+
+scenes:
+  - "tabletop"
+  - "kitchen"
+  - "indoor"
+  - "manipulation"

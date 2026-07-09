@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "description": "Configuration for a HAL adapter instantiation by the inference runner.\n\nPicks which HAL adapter class to use (sim digital twin vs real hardware)\nand how to reach the robot (serial port, FCI URI, ROS 2 namespace).\nAdapter-specific fields are forwarded as ``params``.\n\nAttributes:\n    adapter: HAL adapter id, e.g. ``\"so100_follower\"``,\n        ``\"so100_digital_twin\"``, ``\"franka_panda_real\"``, ``\"ur5e_real\"``,\n        ``\"ros_control\"``. Resolved against the HAL registry.\n    transport: Transport-layer parameters. Examples:\n        ``{\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000}`` for SO-100;\n        ``{\"fci_uri\": \"172.16.0.2\"}`` for Franka;\n        ``{\"namespace\": \"/ur5e\"}`` for ros2_control.\n    params: Adapter-specific keyword arguments forwarded to the\n        constructor (e.g. calibration overrides).\n\nExample:\n    >>> HalConfig(\n    ...     adapter=\"so100_follower\",\n    ...     transport={\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000},\n    ... ).adapter\n    'so100_follower'",
+  "properties": {
+    "adapter": {
+      "title": "Adapter",
+      "type": "string"
+    },
+    "transport": {
+      "additionalProperties": true,
+      "title": "Transport",
+      "type": "object"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    }
+  },
+  "required": [
+    "adapter"
+  ],
+  "title": "HalConfig",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

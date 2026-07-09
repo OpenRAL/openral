@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_hal_ur10e</name>
+  <version>0.1.0</version>
+  <description>
+    openral HAL lifecycle node for the Universal Robots UR10e arm.
+    Wraps UR10eHAL (from openral-hal) as a ROS 2 managed lifecycle node,
+    publishing sensor_msgs/JointState and subscribing to joint trajectory commands.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>openral_msgs</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>rclpy_lifecycle</depend>
+
+  <exec_depend>python3-openral-hal</exec_depend>
+  <exec_depend>python3-openral-observability</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

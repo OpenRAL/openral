@@ -1,0 +1,34 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "RLDX-1 model card (RLWRLD/RLDX-1-FT-LIBERO on HuggingFace)",
+    "arxiv": null,
+    "model_variant": "RLDX-1-FT-LIBERO (Qwen3-VL-8B + MSAT, ~6.9 B params, NF4 backbone + bf16 head)",
+    "evaluated_by": "RLWRLD",
+    "reproduced_locally": false,
+    "reproduction_planned": "Boot rldx sidecar (tools/rldx_sidecar.py) and run the reproduction_cli below. The bundled 8 GiB GPU is insufficient even with NF4 backbone — see skills/rldx1-ft-libero-nf4/README.md.",
+    "reproduction_cli": "tools/rldx_sidecar.py --model RLWRLD/RLDX-1-FT-LIBERO --port 5555 --quantization nf4 &  OPENRAL_RLDX_PORT=5555 openral benchmark run --suite libero_spatial --rskill rldx1-ft-libero-nf4",
+    "table": "RLWRLD/RLDX-1-FT-LIBERO model card § Benchmarks",
+    "status": "deferred"
+  },
+  "benchmark": {
+    "name": "LIBERO-Spatial",
+    "dataset": null,
+    "protocol": "10 episodes per task, success_key=is_success, max_steps=200",
+    "robot": "franka_panda",
+    "simulator": "LIBERO (MuJoCo)"
+  },
+  "eval_config": {
+    "n_episodes": 10,
+    "success_key": "is_success",
+    "max_steps": 200,
+    "vla_id": "rldx",
+    "weights_uri": "rskills/rldx1-ft-libero-nf4"
+  },
+  "results": {
+    "n_tasks": 10,
+    "n_episodes_per_task": 10,
+    "n_episodes_total": 100
+  },
+  "baselines": {}
+}

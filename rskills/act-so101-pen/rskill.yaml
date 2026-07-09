@@ -1,0 +1,149 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Wraps: gabrycina/so101-passing-pen-policy (Apache-2.0) — ACT (Zhao et al.,
+#        2023) finetuned from scratch on a real SO-101 "pass the pen"
+#        pick-and-place teleop dataset (gabrycina/so101-passing-pen,
+#        ~22.4k frames), recorded with TWO cameras: an arm-mounted view
+#        ("wrist") and a front/overview view ("front").
+# Paper: arxiv:2304.13705 — Action Chunking with Transformers.
+#
+# WHY "-better": the sibling rskills/smolvla-so101-pen wraps a SmolVLA
+# checkpoint on the same task. This ACT policy (resnet18 backbone, VAE,
+# chunk_size=100) is a smaller, faster, ONNX/TRT-friendly alternative — a
+# plain CNN+transformer with no VLM/flow-matching, so it exports whole-model
+# to a single ONNX graph (see rskills/act-so101-pen/README.md, "ONNX / TensorRT").
+#
+# UNITS — degrees: trained on LeRobot SO-101 teleop recorded in joint
+# DEGREES (normalizer observation.state / action stats span ±100; MEAN_STD
+# normalization). The runner's _detect_joint_units_are_degrees handles the
+# deg↔rad conversion at the HAL boundary; declared explicitly below so it
+# does NOT rely on the stats-magnitude heuristic.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-act-so101-pen"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # learnable Vision-Language-Action policy
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "act"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+
+# Two RGB streams, trained at 640x480. The runner matches each entry against
+# the robot's SensorSpec.vla_feature_key declared in
+# robots/so101_follower/robot.yaml (top→camera1, wrist→camera2).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side. The loader auto-fills n_dof + vla_action_key from
+# robots/so101_follower/robot.yaml. Absolute joint-position targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+# Baseline is pytorch (always-works fallback). An optional whole-model ONNX /
+# TensorRT path is shipped alongside this manifest (model.onnx) and engaged
+# via OPENRAL_ACT_TRT=1 — the ACT analogue of OPENRAL_SMOLVLA_TRT (PR #139).
+# The TRT engine is built + cached on the host on first load.
+runtime: "pytorch"
+quantization:
+  dtype: "fp32"
+  backend: "pytorch"
+weights_uri: "hf://gabrycina/so101-passing-pen-policy"
+
+# Whole-model ONNX export of ACTPolicy.select_action (2 images + 6-D state ->
+# action chunk), shipped inside this rSkill's HF repo (model.onnx). The ACT
+# adapter's OPENRAL_ACT_TRT=1 hook reads policy_extras.act_onnx_uri, and
+# onnxruntime/TensorRT build it into a cached engine on first load. See
+# README "ONNX / TensorRT".
+policy_extras:
+  act_onnx_uri: "hf://OpenRAL/rskill-act-so101-pen/model.onnx"
+  # Device-resident path: image/state normalize + action unnormalize
+  # baked in, image inputs are /255 RGB (the on-GPU nvrtc kernel output). Used
+  # when the DeepStream NVMM sensor leg delivers frames as GPU handles.
+  act_device_onnx_uri: "hf://OpenRAL/rskill-act-so101-pen/model_device.onnx"
+
+# ── Reward / progress monitor co-resident with this VLA ─────────────────────
+# A VLA emits no success signal of its own, so it runs paired with a reward
+# monitor. Robometer (NF4, 3.6 GB) is the default; ACT (fp32,
+# ~0.2 GB) + 3.6 GB fits an 8 GB card with room to spare.
+min_vram_gb:
+  fp32: 0.5
+reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# This checkpoint ships lerobot policy_preprocessor.json / policy_postprocessor.json
+# sidecars (MEAN_STD normalizer). The ACT adapter dispatches on
+# manifest.processors is not None and downloads each file via hf_hub_download.
+processors:
+  preprocessor_uri: "hf://gabrycina/so101-passing-pen-policy/policy_preprocessor.json"
+  postprocessor_uri: "hf://gabrycina/so101-passing-pen-policy/policy_postprocessor.json"
+# Real SO-101 teleop is recorded upright — no rotation. Aliases are keyed by
+# the VLA SLOT names (camera1/camera2): the runner has already re-keyed the
+# manifest sensor names via vla_feature_key (top→camera1, wrist→camera2). The
+# aliases then rename the slots to this checkpoint's input-feature keys: the
+# overview camera (camera1) fills the training "front" view, wrist→"wrist".
+image_preprocessing:
+  flip_180: false
+  aliases:
+    camera1: "front"
+    camera2: "wrist"
+state_contract:
+  dim: 6
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# ACT chunk_size=100 (checkpoint config; temporal_ensemble_coeff=null).
+# n_action_steps omitted — ACT's apply_chunk_replay default is 1 (per-step
+# re-inference, paper-faithful).
+chunk_size: 100
+latency_budget:
+  per_chunk_ms: 100.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2304.13705"
+dataset_uri: "hf://gabrycina/so101-passing-pen"
+source_repo: "hf://gabrycina/so101-passing-pen-policy"
+
+description: >
+  ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a
+  real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec,
+  latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in
+  joint degrees) from two RGB views (front/overview + wrist). A smaller,
+  faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101-pen; the
+  whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
+
+# Action vocabulary for the reasoner LLM tool palette.
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+  - "transfer"
+objects:
+  - "pen"
+scenes:
+  - "tabletop"
+
+# Per-checkpoint action contract.
+action_contract:
+  dim: 6
+  # SO-101 emits absolute joint positions (5 arm joints + 1 gripper).
+  representation: "joint_positions"
+  # EXPLICIT joint units — this checkpoint's normalizer stats span ±100
+  # (verified: observation.state.max≈99.3, .min≈-99.3), i.e. DEGREES. The runner
+  # converts deg↔rad at the policy boundary. Declared here so the runner does
+  # NOT rely on the stats-magnitude heuristic.
+  joint_units: "degrees"

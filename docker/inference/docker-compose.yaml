@@ -1,0 +1,38 @@
+# OpenRAL inference deploy — docker-compose reference.
+#
+# Single supported open deployment surface. `inference-x86` is built from the
+# GStreamer-free `Dockerfile.x86` (CUDA 13 + ROS 2 Jazzy; cameras via OpenCV,
+# inference via pytorch/onnxruntime). The GStreamer/NVMM + DeepStream + TensorRT
+# variant is an OpenRAL Pro plugin — see openral-pro's own compose file, not this
+# one, to bring it up.
+#
+# Usage:
+#   docker compose -f docker/inference/docker-compose.yaml up inference-x86
+
+services:
+  inference-x86:
+    image: openral:x86
+    build:
+      context: ../..  # workspace root, so the COPY directives find python/
+      dockerfile: docker/inference/Dockerfile.x86
+    runtime: nvidia    # docker engine GPU integration
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      OPENRAL_CUDA_DEVICE_INDEX: "0"
+    devices:
+      # A real deploy needs the robot serial port + the USB cameras the scene's
+      # opencv_thread bindings point at, e.g.:
+      # - /dev/ttyACM0:/dev/ttyACM0
+      # - /dev/video0:/dev/video0
+      # - /dev/video4:/dev/video4
+      []
+    volumes:
+      - ../../examples:/workspace/examples:ro
+      - ../../skills:/workspace/skills:ro
+      - ../../robots:/workspace/robots:ro
+      - ../../scenes:/workspace/scenes:ro
+    # `deploy run` is real-hardware only: append your own
+    # `command: ["run", "--config", "scenes/deploy/<your-workcell>.yaml"]`
+    # once a DeployScene config exists and a robot is connected. With no
+    # command the image runs its `openral deploy` entrypoint (prints help).

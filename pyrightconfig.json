@@ -1,0 +1,10 @@
+{
+  "include": ["python"],
+  "exclude": ["build", "install", "log", ".venv", "**/_generated/**"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "strict",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "venvPath": ".",
+  "venv": ".venv"
+}

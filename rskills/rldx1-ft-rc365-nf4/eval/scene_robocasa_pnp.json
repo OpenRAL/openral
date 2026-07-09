@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://robocasa.ai",
+    "arxiv": null,
+    "model_variant": "rldx",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/robocasa_pnp.yaml --rskill rskills/rldx1-ft-rc365-nf4",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "robocasa/PickPlaceCounterToCabinet",
+    "dataset": null,
+    "protocol": "1 episodes, seed=1, success_key=is_success, max_steps=600",
+    "robot": "panda_mobile",
+    "simulator": "robocasa/PickPlaceCounterToCabinet"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      1
+    ],
+    "success_key": "is_success",
+    "max_steps": 600,
+    "vla_id": "rldx",
+    "weights_uri": "rskills/rldx1-ft-rc365-nf4"
+  },
+  "results": {
+    "robocasa/PickPlaceCounterToCabinet/0_success_rate": 1.0,
+    "avg_success_rate": 1.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 84.11062962493494
+  },
+  "baselines": {},
+  "trace_id": null
+}

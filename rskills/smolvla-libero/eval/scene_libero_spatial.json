@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2309.11500",
+    "arxiv": "https://arxiv.org/abs/2309.11500",
+    "model_variant": "smolvla",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/libero_spatial.yaml --rskill rskills/smolvla-libero",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "libero_spatial",
+    "dataset": null,
+    "protocol": "1 episodes, seed=42, success_key=is_success, max_steps=100",
+    "robot": "franka_panda",
+    "simulator": "libero_spatial"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      42
+    ],
+    "success_key": "is_success",
+    "max_steps": 100,
+    "vla_id": "smolvla",
+    "weights_uri": "rskills/smolvla-libero"
+  },
+  "results": {
+    "libero_spatial/0_success_rate": 1.0,
+    "avg_success_rate": 1.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 15.481978866446298
+  },
+  "baselines": {},
+  "trace_id": null
+}

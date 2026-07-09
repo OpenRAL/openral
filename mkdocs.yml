@@ -1,0 +1,104 @@
+site_name: OpenRAL
+site_url: https://docs.openral.com
+repo_url: https://github.com/OpenRAL/openral
+edit_uri: edit/master/docs/
+
+# Files reachable by link rather than the nav tree. `docs/methods/*` is the
+# per-layer public-symbol inventory browsed via `METHODS.md`; `docs/audit/` holds
+# generated report artifacts linked from the Contributing pages. Listing them here
+# keeps `mkdocs build --strict` green without cluttering the top-level nav.
+not_in_nav: |
+  /methods/
+  /audit/
+
+theme:
+  name: material
+  # Self-hosted fonts only (no Google Fonts request) — families are declared in
+  # docs/stylesheets/openral.css via @font-face, matching the marketing site.
+  font: false
+  logo: assets/openral-logo-white.svg
+  favicon: assets/openral-logo-white.svg
+  # Refined-dark, monochrome — locked to the slate scheme the override styles.
+  palette:
+    scheme: slate
+    primary: black
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+
+extra_css:
+  - stylesheets/openral.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - python/core/src
+            - python/cli/src
+            - python/hal/src
+            - python/sensors/src
+            - python/world_state/src
+            - python/rskill/src
+            - python/runner/src
+            - python/observability/src
+            - python/sim/src
+            - python/reasoner/src
+            - python/wam/src
+            - python/dataset/src
+            - python/detect/src
+          options:
+            merge_init_into_class: true
+            show_docstring_attributes: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Quickstart:
+    - quickstart/index.md
+    - Dashboard: quickstart/dashboard.md
+  - Tutorials:
+    - Create a sim environment: tutorials/sim/create-a-sim-environment.md
+    - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
+    - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Repo map: architecture/repo-map.md
+    - Methods inventory: METHODS.md
+    # The repo state map ships as a static .html under docs/architecture/ —
+    # mkdocs nav only renders Markdown, so it is linked from
+    # architecture/overview.md instead of listed here. mkdocs copies it to
+    # the output verbatim.
+  - Roadmap:
+    - roadmap/index.md
+  - Reference:
+    - API: reference/api.md
+    - Glossary: reference/glossary.md
+    - VLA × Robot × Sim compatibility: reference/vla_compatibility.md
+    - Sensor catalog & roadmap: reference/sensors_landscape.md
+    - Robot descriptions: reference/robots.md
+    - rSkills: reference/rskills.md
+    - Reasoner (S2): reference/reasoner.md
+    - Reasoner design & decisions: reference/reasoner-design.md
+    - Sim environments: reference/sim-environments.md
+    - Design decisions: decisions.md
+  - Contributing:
+    - Development: contributing/development.md
+    - Toolchain cheatsheet: contributing/toolchain.md
+    - Selective testing: contributing/selective-testing.md
+    - Test-suite audit: contributing/test-audit.md

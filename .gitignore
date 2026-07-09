@@ -1,0 +1,167 @@
+# Unsloth writes a compiled-kernel cache into CWD when the robometer sidecar runs 
+unsloth_compiled_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# uv
+.venv/
+.venv-*/  # isolated sidecar dev venvs (e.g. .venv-la for the LocateAnything sidecar)
+# uv.lock is committed for reproducibility (uv convention for monorepos)
+
+# ROS 2 / colcon
+install/
+log/
+build/
+
+# MuJoCo
+*.mjb
+mjx_tmp/
+
+# Docker
+.dockerignore
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.env
+.env.*
+!.env.example
+
+# HF Hub cache
+.cache/huggingface/
+
+# Generated schemas (committed as canonical reference — do NOT ignore)
+# docs/reference/schemas/ is tracked in git; CI fails on drift.
+
+# Docs build output (mkdocs)
+site/
+
+# Temp
+*.tmp
+*.bak
+tmp/
+.claude/
+.worktrees/
+
+# Locally-generated example videos (each example writes here when --save-video
+# is used; not a checked-in artefact).
+example_videos/
+outputs/
+
+# Optional project-local LIBERO config dir — useful when overriding
+# LIBERO_CONFIG_PATH to bypass ~/.libero (see tools/fix_libero_config.py
+# + docs/reference/vla_compatibility.md). The auto-fix targets ~/.libero
+# by default; this directory only appears when a contributor opts in.
+.libero/
+
+# NVIDIA DeepStream SDK tarball — must be downloaded locally by the user
+# after accepting the NVIDIA EULA. Never committed . The tarball is loaded into
+# the build via `docker buildx build --build-context ds=docker/inference/deepstream/`
+# rather than the default build context, so it never inflates non-DS
+# builds.
+docker/inference/deepstream/*.tbz2
+# Backward-compat for users who still have a tarball at the old PR #93
+# path; harmless to keep ignored after the consolidation lands.
+docker/inference/deepstream_sdk_v*.tbz2
+.cache/
+
+# Dashboard voice-prompt (VAD) binary assets — fetched + sha256-verified at
+# first `openral dashboard` start by openral_observability.dashboard.vad_assets
+# into $OPENRAL_CACHE_DIR and hard-linked/copied here; see NOTICE.md in this
+# directory. The small JS glue files alongside these stay committed.
+python/observability/src/openral_observability/dashboard/static/vendor/vad/ort-wasm-simd-threaded.wasm
+python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_v5.onnx
+python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_legacy.onnx
+
+# rSkill ONNX weights — binary artefacts reproduced locally via tools/export_rtdetr_onnx.py
+# ; provenance (sha256 + export command) recorded in rskills/*/README.md.
+# model.onnx.data is the external-data companion produced by the torch 2.9 new exporter
+# (weights split out from the graph file when the model exceeds 2 GB threshold).
+rskills/rtdetr-coco-r18/model.onnx
+rskills/rtdetr-coco-r18/model.onnx.data
+rskills/rtdetr-coco-r18/onnx_tmp/
+rskills/rtdetr-v2-r50vd/model.onnx
+rskills/rtdetr-v2-r50vd/model.onnx.data
+rskills/rtdetr-v2-r50vd/onnx_tmp/
+# ACT so101-pen whole-model ONNX (host + device engines), reproduced via
+# tools/export_act_onnx.py [--preprocess host|device] and published to HF
+# (act_onnx_uri / act_device_onnx_uri in rskill.yaml); provenance in README.
+rskills/act-so101-pen/model.onnx
+rskills/act-so101-pen/model_device.onnx
+
+# rSkill NF4 weights and upstream custom-code sidecars generated locally for
+# private HF publication. The committed package records provenance and
+# reproduction commands; binary/code artefacts are uploaded to the HF repo.
+rskills/locateanything-3b-nf4/model.safetensors
+rskills/locateanything-3b-nf4/quantization_metadata.json
+rskills/locateanything-3b-nf4/.gitattributes
+rskills/locateanything-3b-nf4/LICENSE
+rskills/locateanything-3b-nf4/*.json
+rskills/locateanything-3b-nf4/*.py
+rskills/locateanything-3b-nf4/*.bin
+rskills/locateanything-3b-nf4/*.txt
+!rskills/locateanything-3b-nf4/rskill.yaml
+!rskills/locateanything-3b-nf4/README.md
+
+# --- Internal / historical docs kept local but excluded from the public repo ---
+# Removed from tracking for public release (still present in your working tree).
+# Agentic-development plan/spec artifacts, one-off research surveys, a dated
+# internal security audit, and superseded historical roadmaps. The living
+# roadmap (docs/roadmap/index.md) and the repo-state map stay tracked.
+docs/superpowers/
+docs/research/
+docs/security/
+docs/roadmap/30-day-kickoff.md
+docs/roadmap/repo-bootstrap-historical.md
+# Forward-looking architecture docs kept local but excluded from the public
+# repo: the long-form research RFC, the pre-implementation ROS 2 capability
+# review, and the rSkill strategy brief. The public architecture surface stays:
+# overview.md, repo-map.md, and the repo-state-map.html canvas.
+docs/architecture/technical-rfc.md
+docs/architecture/ros2-capability-review.md
+docs/architecture/rskills-strategy.html
+
+# Local colcon build artifacts (non-standard base dirs)
+build_py312/
+install_py312/
+
+# Impeccable copy-edit hook scratch cache (scattered wherever it edits)
+.impeccable/
+
+# Superpowers skill scratch/state cache
+.superpowers/
+
+# Agent-session transcripts and worktree-creation logs dropped at repo root
+# by Copilot/Claude tooling — never a checked-in artefact.
+/copilot-session-*.md
+/[0-9][0-9][0-9][0-9]-*-*.txt

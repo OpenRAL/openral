@@ -1,0 +1,114 @@
+# SO-101 laptop bench rig — converted from the retired
+# deployments/so101.yaml RobotEnvironment.
+#
+# The `sensors:` entries are deploy-time bindings for the robot manifest's own
+# `top` / `wrist` cameras (same names → scene entry wins; the manifest stays
+# authoritative for frames/intrinsics). Host-specific by nature — retune the
+# /dev/video* paths per host with `openral detect --deployment`.
+#
+# HAL facts (serial port + lerobot calibration identity) live in the `hal:`
+# binding below — the HAL analogue of a sensor `deploy_binding` — so
+# this scene is self-contained and needs no `--hal` overrides:
+#
+#   openral deploy run --config scenes/deploy/so101_bench.yaml
+#
+# The calibration is COMMITTED next to this scene
+# (scenes/deploy/calibration/so_follower.json) so the deploy owns it instead of
+# depending on whatever `<id>.json` is in the ambient HF cache; a relative
+# `calibration_dir` resolves against THIS file's directory. `--hal` still wins
+# over these for one-off host overrides (precedence: --hal > scene hal > robot.yaml).
+scene:
+  id: so101_bench
+robot_id: so101_follower
+# Host-specific HAL binding. port: this arm enumerates on
+# /dev/ttyACM0 (robot.yaml's generic default is /dev/ttyUSB0). id +
+# calibration_dir load the committed Feetech calibration
+# (calibration/so_follower.json, relative to this file); without it every
+# send_action/read_state raises "has no calibration registered".
+hal:
+  defaults:
+    port: "/dev/ttyACM0"
+    id: "so_follower"
+    calibration_dir: "calibration"
+    calibrate_on_connect: false
+sensors:
+  # Cameras use the `opencv_thread` backend (cv2.VideoCapture) — the open
+  # host-camera path with no GStreamer/pygobject dependency. The gstreamer +
+  # NVMM zero-copy sensor fast path (nvjpegdec → NVMM, DeepStream container)
+  # lives in OpenRAL Pro; this open scene must run on a bare host where `gi`/Gst
+  # is absent. cv2 negotiates the MJPG cameras (both bench cams deliver MJPG)
+  # itself, so no explicit jpeg-decode knob is needed. To run the NVMM tier,
+  # re-bind these to `backend: gstreamer` (source/jpeg params) under Pro.
+  #
+  # DEVICE PATHS: use the kernel's STABLE `/dev/v4l/*` symlinks, never a raw
+  # `/dev/videoN` number — the number is assigned in USB enumeration order, so
+  # unplugging/replugging a cam (or a reboot) silently renumbers it and the
+  # bare node points at nothing (v4l2src dies with `streaming stopped (-5)`).
+  # These paths are host-specific by nature; retune per host with
+  # `ls -l /dev/v4l/by-id /dev/v4l/by-path` (or `openral detect --deployment`).
+  #  * wrist → `by-id` keys on the camera's USB serial, so it follows the
+  #    icspring across ANY port or re-enumeration. `-video-index0` is the
+  #    capture node (index1 is the metadata node).
+  #  * top → `by-path` keys on the physical USB port + interface. The built-in
+  #    Integrated Camera can't use `by-id`: its `by-id` symlink resolves to the
+  #    interface-1.2 GREY *IR* sensor (video2), not the interface-1.0 RGB node
+  #    (video0). `by-path` pins interface 1.0 correctly.
+  - name: top
+    modality: rgb
+    frame_id: world
+    rate_hz: 30.0
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:9:1.0-video-index0
+        width: 640
+        height: 480
+        fps: 30
+  - name: wrist
+    modality: rgb
+    frame_id: wrist_camera
+    rate_hz: 30.0
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
+        width: 640
+        height: 480
+        fps: 30
+
+# Committed deploy posture (DeployRuntime) — every runtime leg pinned
+# explicitly so nothing depends on hidden CLI defaults. Precedence:
+# CLI flag > this block > auto. The SO-101 bench is a fixed-base arm with two
+# RGB cameras: no lidar/depth → SLAM/Nav2/octomap off; the continuous
+# open-vocab detector stays on for locate_in_view; the reward monitor is on
+# by default (auto-pairs Robometer from the VLA's reward_rskill_name).
+# Both perception legs are gstreamer-free ROS-topic consumers: the detector
+# (ros_image_detector_node) and reward monitor (reward_monitor_node) each
+# subscribe to /openral/cameras/<name>/image — here published by the
+# opencv_thread sensor leg above — and need no GStreamer/NVMM. The detector
+# auto-selects its CPU-ONNX tier when gst-inspect-1.0/nvinfer is absent.
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: true
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: true
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: true
+  approach_skill_id: null
+
+# NOTE: an earlier `extra_allowed_collision_pairs: [[base, lower_arm]]` ACM
+# override lived here to suppress a self-collision false-E-stop at the home pose
+# (base<->lower_arm reported -0.078 m while the true clearance is +0.16 m). That
+# was an expedient masking a geometry bug; it has been REMOVED. The real fix
+# (issue #84) replaces the base's over-conservative capsule with a
+# tight OBB in robots/so101_follower/robot.yaml, so base<->lower_arm (and
+# base<->wrist) clear at reachable poses without loosening the ACM. Full base
+# self-collision detection is restored.

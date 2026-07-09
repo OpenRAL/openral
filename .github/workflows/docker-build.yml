@@ -1,0 +1,96 @@
+name: docker-build
+# Builds the open GStreamer-free deploy image (`openral:x86`) from
+# docker/inference/Dockerfile.x86.
+#
+# Auto-triggers are DISABLED (repo is out of GitHub Actions credits — same as
+# every other workflow here). The intended path-filtered triggers are written
+# out below, commented, ready to flip on once billing is restored:
+#   * pull_request → build + smoke only (no push)
+#   * push to master → build + push openral:x86 to GHCR
+# The `paths:` filter means it only runs when the image's build inputs change,
+# not on every commit. Until then, run it by hand via workflow_dispatch.
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   paths:
+  #     - docker/inference/**
+  #     - pyproject.toml
+  #     - uv.lock
+  #     - packages/**
+  #     - cpp/**
+  #     - python/**
+  #     - .github/workflows/docker-build.yml
+  # push:
+  #   branches: [master]
+  #   paths:
+  #     - docker/inference/**
+  #     - pyproject.toml
+  #     - uv.lock
+  #     - packages/**
+  #     - cpp/**
+  #     - python/**
+  #     - .github/workflows/docker-build.yml
+
+permissions:
+  contents: read
+  packages: write  # GHCR push on merge to master
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: ghcr.io/openral/openral
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      # The image is ~16 GB (CUDA 13 + ROS Jazzy + colcon build). GitHub-hosted
+      # runners ship ~14 GB free on /, so reclaim the big preinstalled toolchains
+      # we don't need before building.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          docker image prune -af || true
+          df -h /
+
+      - name: Build openral:x86 (GStreamer-free)
+        run: |
+          docker buildx build --progress=plain \
+            -f docker/inference/Dockerfile.x86 \
+            -t openral:x86 --load .
+
+      # GStreamer-free deploy smoke: gi absent; cv2 / feetech / onnxruntime /
+      # omdet present; `deploy run --dry-run` resolves the real launch.
+      - name: Smoke test (gstreamer-free deploy)
+        run: |
+          docker run --rm --entrypoint /entrypoint.sh openral:x86 bash -lc '
+            set -e
+            python -c "import cv2, scservo_sdk, onnxruntime; \
+              from transformers import AutoModelForZeroShotObjectDetection; \
+              import importlib.util as u; \
+              assert u.find_spec(\"gi\") is None, \"gi present — expected gstreamer-free\"; \
+              print(\"OK: cv2\", cv2.__version__, \"| feetech + onnxruntime + omdet present | gi absent\")"
+            openral deploy run --config scenes/deploy/so101_bench.yaml --dry-run | grep -q "hal_mode:=real"
+            echo "OK: deploy run --dry-run resolves"
+          '
+
+      # Push only on merge to master (never on PRs).
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag + push to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          docker tag openral:x86 "$IMAGE:x86"
+          docker tag openral:x86 "$IMAGE:x86-${GITHUB_SHA::12}"
+          docker push "$IMAGE:x86"
+          docker push "$IMAGE:x86-${GITHUB_SHA::12}"

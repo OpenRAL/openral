@@ -1,0 +1,88 @@
+{
+  "additionalProperties": false,
+  "description": "Aggregated summary returned by :meth:`InferenceRunner.run`.\n\nAttributes:\n    n_ticks: Total ticks executed.\n    success: Task success when the runner has a success signal (sim,\n        scripted goal). ``None`` for open-ended hardware runs.\n    budget_violations: Count of ticks whose ``tick_ms`` exceeded the\n        rSkill manifest's :attr:`RSkillLatencyBudget.per_chunk_ms`.\n    avg_inference_ms: Mean of :attr:`TickResult.inference_ms`.\n    p99_inference_ms: 99th-percentile of :attr:`TickResult.inference_ms`.\n    avg_tick_ms: Mean of :attr:`TickResult.tick_ms`.\n    p99_tick_ms: 99th-percentile of :attr:`TickResult.tick_ms`.\n    trace_id: OTel trace id (hex) of the run's root span. ``None`` when\n        tracing is not configured.\n    save_dir: Directory where artefacts were written, when configured.\n    metadata: Free-form metadata (runner id, host, git SHA, \u2026).",
+  "properties": {
+    "n_ticks": {
+      "minimum": 0,
+      "title": "N Ticks",
+      "type": "integer"
+    },
+    "success": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Success"
+    },
+    "budget_violations": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Budget Violations",
+      "type": "integer"
+    },
+    "avg_inference_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Avg Inference Ms",
+      "type": "number"
+    },
+    "p99_inference_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "P99 Inference Ms",
+      "type": "number"
+    },
+    "avg_tick_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Avg Tick Ms",
+      "type": "number"
+    },
+    "p99_tick_ms": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "P99 Tick Ms",
+      "type": "number"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
+    },
+    "save_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Save Dir"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "n_ticks"
+  ],
+  "title": "RunResult",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

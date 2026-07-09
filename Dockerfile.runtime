@@ -1,0 +1,15 @@
+ARG ROS_DISTRO=jazzy
+FROM ros:${ROS_DISTRO}-ros-core
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/openral
+COPY install/ /opt/openral/install/
+COPY python/ /opt/openral/python/
+ENV PYTHONPATH="/opt/openral/python"
+
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/openral/install/setup.bash && exec \"$@\"", "--"]
+CMD ["ros", "doctor"]

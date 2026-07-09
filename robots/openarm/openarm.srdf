@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OpenArm v2 bimanual — hand-reviewed self-collision exemptions.
+
+  This SRDF exists ONLY to carry deliberate ACM exemptions into the MJCF
+  collision lowering (`openral collision lower`, source: mjcf). The sweep can
+  auto-disable a pair only when it collides in EVERY sampled pose; these pairs
+  do NOT (fractions below, 2000 seeded samples over the joint limits with the
+  manifest capsules + mujoco FK), yet they DO collide at the robot's rest pose,
+  so checking them would E-stop the arm at home. Disabling them is therefore a
+  reviewed usability judgment, not a sweep result — recorded here, the same
+  explicit channel URDF robots use, instead of hand edits to the generated ACM
+  block (which are unreproducible and broke the fleet lowering regression).
+
+  Originally introduced with the 2026-06-20 capsule re-placement
+  ("fix(robots): correct OpenArm collision-capsule placement + wrist/gripper
+  ACM"); re-measured 2026-07-09:
+    link1<->link3         collides in ~23% of poses, rest pose d=-0.0006 m
+    finger_pair<->link5   collides in ~50% of poses, rest pose d=-0.051 m
+    finger_pair<->link6   collides in ~57% of poses, rest pose d=-0.052 m
+  The former finger_pair<->link4 exemption was REMOVED: it never collides
+  (min clearance +0.021 m across 2000 poses, clear at rest) — the kernel now
+  checks it.
+
+  SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
+  needs safety-WG sign-off to change.
+-->
+<robot name="openarm">
+  <disable_collisions link1="openarm_left_link1" link2="openarm_left_link3" reason="Rest-pose contact (d=-0.0006 m at qpos0) under the conservative capsules; not always-colliding (23%)."/>
+  <disable_collisions link1="openarm_right_link1" link2="openarm_right_link3" reason="Rest-pose contact (d=-0.0006 m at qpos0) under the conservative capsules; not always-colliding (23%)."/>
+  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link5" reason="Folded gripper rests beside the forearm (d=-0.051 m at qpos0); not always-colliding (50%)."/>
+  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link5" reason="Folded gripper rests beside the forearm (d=-0.051 m at qpos0); not always-colliding (49%)."/>
+  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link6" reason="Folded gripper rests beside the wrist (d=-0.052 m at qpos0); not always-colliding (57%)."/>
+  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link6" reason="Folded gripper rests beside the wrist (d=-0.052 m at qpos0); not always-colliding (56%)."/>
+</robot>

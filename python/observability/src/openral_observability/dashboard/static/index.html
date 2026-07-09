@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenRAL · Live Dashboard</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css" />
+<link rel="stylesheet" href="/static/dashboard.css" />
+</head>
+<body>
+
+<header>
+  <div class="logo"><img src="/static/openral-logo.svg" alt="OpenRAL" /></div>
+  <div class="brand">
+    <span class="name">Open<span class="lo">RAL</span></span>
+    <span class="sub">robot action layer · live telemetry</span>
+  </div>
+  <div class="spacer"></div>
+  <!-- Trace demoted from its own section to a compact header control. -->
+  <span class="trace-chip">
+    <span class="lbl">trace</span>
+    <span class="trace-id" id="trace-id" title="click to copy">—</span>
+    <a class="jaeger disabled" id="jaeger-link" target="_blank" rel="noopener" title="open latest trace in Jaeger">jaeger ↗</a>
+  </span>
+  <span class="deck-tag">otlp / http · :4318</span>
+  <div class="conn wait" id="conn"><span class="dot"></span><span id="conn-label">waiting…</span></div>
+</header>
+
+<main>
+
+  <!-- ========== IDENTITY (immutable) — demoted to a thin readout strip ========== -->
+  <div class="idbar" id="idbar">
+    <div class="pair"><span class="k">service</span><span class="v empty" id="id-service">—</span></div>
+    <div class="pair"><span class="k">run mode</span><span class="v empty" id="id-runmode">—</span></div>
+    <div class="pair"><span class="k">run id</span><span class="v empty" id="id-runid">—</span></div>
+    <div class="pair"><span class="k">git sha</span><span class="v empty" id="id-gitsha">—</span></div>
+    <div class="pair"><span class="k">robot</span><span class="v empty" id="id-robot">—</span></div>
+    <div class="pair"><span class="k">hal adapter</span><span class="v empty" id="id-hal">—</span></div>
+    <div class="pair"><span class="k">control mode</span><span class="v empty" id="id-ctrl">—</span></div>
+    <div class="pair"><span class="k">skill id</span><span class="v empty" id="id-skill">—</span></div>
+    <div class="pair"><span class="k">skill role</span><span class="v empty" id="id-skillrole">—</span></div>
+    <div class="pair"><span class="k">engine · device</span><span class="v empty" id="id-engine">—</span></div>
+    <div class="pair"><span class="k">action horizon</span><span class="v empty" id="id-horizon">—</span></div>
+    <div class="pair"><span class="k">safety kernel</span><span class="v empty" id="id-kernel">—</span></div>
+  </div>
+
+  <!-- ========== COMMAND BAND: operator prompt + E-stop + safety counters (always visible) ========== -->
+  <div class="band band-command">
+    <div class="cmd-prompt">
+      <div class="prompt-box">
+        <button id="prompt-mic" type="button" data-state="idle" aria-pressed="false" aria-label="Speak a prompt" title="Speak a prompt">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="11" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="19" x2="12" y2="22" />
+          </svg>
+        </button>
+        <span id="mic-meter" class="mic-meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+        <input id="prompt-input" type="text" placeholder='e.g. "pick the red cube"' autocomplete="off" spellcheck="false" />
+        <button id="prompt-send" type="button">Send</button>
+        <button id="estop-btn" type="button" class="trigger" data-mode="trigger" title="Stop the robot NOW. Publishes /openral/estop so the kernel and HAL latch.">⛔ E-STOP</button>
+        <span id="prompt-status" class="status"></span>
+      </div>
+      <div class="prompt-hint">Hit <b>E-STOP</b> to latch the safety kernel and drop every command. It becomes <b>Reset e-stop</b>; click it, then send a new prompt to resume.</div>
+    </div>
+
+    <!-- Safety alarm counters — compact, riding alongside the command line so a
+         trip is never off-screen. -->
+    <div class="counters counters-compact" id="counters">
+      <div class="counter danger zero" id="counter-safety">
+        <div><div class="label">safety violations</div><div class="sub">openral.event.safety_violation</div></div>
+        <div class="val" id="cnt-safety">0</div>
+      </div>
+      <div class="counter danger zero" id="counter-estop">
+        <div><div class="label">e-stops</div><div class="sub">openral.event.estop_requested</div></div>
+        <div class="val" id="cnt-estop">0</div>
+      </div>
+      <div class="counter warn zero" id="counter-deadline">
+        <div><div class="label">deadline misses</div><div class="sub">openral.event.deadline_missed</div></div>
+        <div class="val" id="cnt-deadline">0</div>
+      </div>
+      <div class="counter warn zero" id="counter-sensor">
+        <div><div class="label">sensor-stale</div><div class="sub">openral.event.sensor_stale</div></div>
+        <div class="val" id="cnt-sensor">0</div>
+      </div>
+      <div class="counter danger zero" id="counter-skill-failure">
+        <div><div class="label">skill failures</div><div class="sub" id="skill-failure-sub">openral.event.skill_failure</div></div>
+        <div class="val" id="cnt-skill-failure">0</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== WORKSPACE: main visual area (left) + instrument rail (right) ==========
+       Big visual cards (cameras, reasoner, SLAM, pointcloud) fill the main area;
+       the short list/gauge cards (rSkill, joints, system, ledger, world state)
+       stack in a narrow right rail at their natural height. -->
+  <div class="workspace">
+
+    <!-- MAIN VISUAL — 2×2: cameras · reasoner on top, SLAM · pointcloud enlarged below -->
+    <div class="main-visual">
+
+      <!-- Perception cameras -->
+      <section class="mv-cam" id="cell-cameras">
+        <h2>Perception · cameras</h2>
+        <div class="cameras scroll-y grow" id="cameras"></div>
+      </section>
+
+      <!-- Reasoner · mission -->
+      <section class="card accent-skill mv-reason" id="card-reasoner">
+        <div class="hd">
+          <span class="title">Reasoner · mission</span>
+          <span class="age" id="reasoner-age">—</span>
+        </div>
+        <div id="reasoner-body" class="scroll-y grow">
+          <div class="empty-state" id="reasoner-empty">
+            waiting for reasoner.tick (the reasoner_node must be ACTIVE)
+          </div>
+          <div id="reasoner-detail" style="display:none">
+            <div class="mission-failed" id="reasoner-mission-failed" style="display:none"></div>
+            <div class="mission-head" id="reasoner-mission-head"></div>
+            <ol class="mission-list" id="reasoner-mission"></ol>
+            <div class="reasoner-tick-foot" id="reasoner-tick-foot">
+              <span id="reasoner-tool"></span>
+              <span id="reasoner-tick"></span>
+              <span id="reasoner-rskill"></span>
+              <span id="reasoner-model"></span>
+              <span id="reasoner-force"></span>
+              <span id="reasoner-error"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLAM 2D map — enlarged -->
+      <section class="card accent-world mv-slam" id="card-slam-map">
+        <div class="hd">
+          <span class="title">SLAM · 2D map</span>
+          <span class="age" id="slam-age">—</span>
+        </div>
+        <div id="slam-map-body" class="scroll-y grow">
+          <div class="empty-state" id="slam-empty">
+            waiting for slam.occupancy_grid (SLAM backend must publish /map)
+          </div>
+          <div id="slam-image-wrap" style="display:none">
+            <div id="slam-image-stage" style="position:relative;display:block;margin:0 auto">
+              <img
+                id="slam-image"
+                alt="SLAM occupancy grid"
+                style="display:block;width:100%;image-rendering:pixelated;border:1px solid var(--accent-world,#345)"
+              />
+              <svg
+                id="slam-overlay"
+                preserveAspectRatio="none"
+                style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"
+              ></svg>
+            </div>
+            <div class="meta-row" id="slam-meta" style="margin-top:6px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text-dim)">
+              <span id="slam-dims"></span>
+              <span id="slam-resolution"></span>
+              <span id="slam-origin"></span>
+              <span id="slam-frame"></span>
+              <span id="slam-source"></span>
+              <span id="slam-pose"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- WORLD POINTCLOUD · robot view (robot-perspective octomap pointcloud render) — enlarged -->
+      <section class="card accent-world mv-cloud" id="card-world-cloud">
+        <div class="hd">
+          <span class="title">Pointcloud · robot view</span>
+          <span class="age" id="world-cloud-age">—</span>
+        </div>
+        <div id="world-cloud-body" class="scroll-y grow">
+          <div class="empty-state" id="world-cloud-empty">
+            waiting for world.pointcloud (deploy with --enable-octomap)
+          </div>
+          <div id="world-cloud-image-wrap" style="display:none">
+            <img
+              id="world-cloud-image"
+              alt="Robot-perspective octomap pointcloud"
+              style="width:100%;border:1px solid var(--accent-world,#345)"
+            />
+            <div class="meta-row" id="world-cloud-meta" style="margin-top:6px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--text-dim)">
+              <span id="world-cloud-points"></span>
+              <span id="world-cloud-range"></span>
+              <span id="world-cloud-frame"></span>
+              <span id="world-cloud-source"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- INSTRUMENT RAIL — compact cards stacked at natural height -->
+    <div class="rail">
+
+      <!-- rSkill.execute (full step) with model forward-pass latency folded in. -->
+      <div class="card empty accent-skill rskill-strip" id="card-rskill_execute">
+        <div class="hd"><span class="title">rSkill · running skill</span><span class="age">—</span></div>
+        <div class="primary">waiting…</div>
+        <div class="substat" id="rskill-inference"></div>
+        <!-- Latest reward-monitor assessment (reward.score span):
+             progress + success bars, colour-banded red/orange/green by value. -->
+        <div class="reward-bars" id="rskill-reward" style="display:none"></div>
+      </div>
+
+      <!-- Robot state · joints -->
+      <div class="card accent-robot robot rail-joints" id="card-robot-state">
+        <div class="hd"><span class="title">Robot state · joints</span><span class="age" id="robot-state-age">—</span></div>
+        <div class="joints scroll-y" id="joints"></div>
+        <div class="joint-legend">
+          <span class="item"><span class="swatch actual"></span>actual</span>
+          <span class="item"><span class="swatch cmd"></span>commanded</span>
+          <span class="item">range [lo, hi]</span>
+        </div>
+      </div>
+
+      <!-- System health -->
+      <div class="card accent-system system" id="card-system">
+        <div class="hd"><span class="title">System health</span><span class="age" id="sys-age">—</span></div>
+        <div class="gauges" id="gauges"></div>
+      </div>
+
+      <!-- Safety check ledger (per-check pass/fail) -->
+      <div class="card accent-ledger ledger" id="card-safety-ledger">
+        <div class="hd"><span class="title">Safety check ledger</span><span class="age" id="ledger-age">—</span></div>
+        <div class="ws-diag flush scroll-y" id="ledger"></div>
+      </div>
+
+    </div>
+    <!-- /rail -->
+
+  </div>
+  <!-- /workspace -->
+
+  <!-- ========== STREAM BAND: metrics + event log (scroll inside their cards) ========== -->
+  <div class="band band-stream">
+
+    <!-- METRICS -->
+    <section class="stream-cell" id="cell-metrics">
+      <div class="stream-hd">
+        <h2>Metrics</h2>
+        <div class="filter-bar" id="metric-filters">
+          <span class="flbl">group</span>
+          <!-- chips rendered dynamically by namespace (system / world_state / sdk / …) -->
+          <button class="freeze-chip" id="metric-freeze" type="button" title="Freeze the live update so you can inspect a moment">❚❚ freeze</button>
+          <button class="freeze-chip" id="metric-zoom-reset" type="button" title="Reset the time zoom to the full retained window" style="display:none">⊟ reset zoom</button>
+        </div>
+      </div>
+      <div class="panel scroll-y grow" id="metrics">
+        <div class="empty-state">No metrics ingested yet. Point a workload at this port with <code>OTEL_EXPORTER_OTLP_ENDPOINT</code>.</div>
+      </div>
+    </section>
+
+    <!-- EVENT LOG -->
+    <section class="stream-cell" id="cell-events">
+      <div class="stream-hd">
+        <h2>Event log</h2>
+        <div class="filter-bar" id="event-filters">
+          <span class="flbl">show</span>
+          <span class="filter-chip debug" data-sev="debug">debug<span class="cnt">0</span></span>
+          <span class="filter-chip info active" data-sev="info">info<span class="cnt">0</span></span>
+          <span class="filter-chip warn active" data-sev="warn">warn<span class="cnt">0</span></span>
+          <span class="filter-chip error active" data-sev="error">error<span class="cnt">0</span></span>
+        </div>
+      </div>
+      <div class="panel grow">
+        <div class="event-log scroll-y grow" id="events">
+          <div class="empty-state">No events yet.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- World state (+ durable spatial-memory scene-object graph) -->
+    <div class="card accent-world world stream-world" id="card-world-state">
+      <div class="hd"><span class="title">World state</span><span class="age" id="ws-age">—</span></div>
+      <div class="scroll-y grow">
+        <div class="ws-attrs" id="ws-attrs"></div>
+        <div class="ws-diag" id="ws-diag"></div>
+        <div class="ws-subhead">spatial memory · scene objects</div>
+        <div class="empty-state" id="scene-objects-empty">
+          waiting for world.scene_objects (preload a scene graph via spatial_memory_path, or merge the perception object-lift producer)
+        </div>
+        <div id="scene-objects-wrap" style="display:none">
+          <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+            <thead>
+              <tr style="text-align:left;color:var(--text-dim)">
+                <th style="padding:2px 6px">object</th>
+                <th style="padding:2px 6px">position (m)</th>
+                <th style="padding:2px 6px">conf</th>
+                <th style="padding:2px 6px">seen</th>
+                <th style="padding:2px 6px">obs</th>
+              </tr>
+            </thead>
+            <tbody id="scene-objects-rows"></tbody>
+          </table>
+          <div class="meta-row" id="scene-objects-meta" style="margin-top:6px;display:flex;gap:18px;flex-wrap:wrap;font-size:11.5px;color:var(--text-dim)">
+            <span id="scene-objects-count"></span>
+            <span id="scene-objects-frame"></span>
+            <span id="scene-objects-source"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>

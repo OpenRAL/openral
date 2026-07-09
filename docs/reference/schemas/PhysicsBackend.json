@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PhysicsBackend",
+  "description": "Physics / scene backend used to instantiate a :class:`SceneSpec`.",
+  "type": "string",
+  "enum": [
+    "mujoco",
+    "mujoco_mjx",
+    "pybullet",
+    "sapien",
+    "isaacsim",
+    "coppeliasim",
+    "genesis",
+    "mock"
+  ]
+}

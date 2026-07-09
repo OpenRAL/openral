@@ -1,0 +1,78 @@
+# OpenTelemetry Collector config — single OTLP ingress for the dev stack.
+#
+# Why this exists: jaegertracing/all-in-one accepts OTLP/gRPC for traces
+# but returns StatusCode.UNIMPLEMENTED for /v1/metrics — Jaeger doesn't
+# ingest metrics. We sit otel/opentelemetry-collector-contrib in front,
+# fan out: traces -> jaeger, metrics -> prometheus exporter + debug,
+# logs -> debug. End-to-end metric validation now works against a real
+# wire, not just the in-memory reader the unit tests cover.
+#
+# Image:  otel/opentelemetry-collector-contrib (contrib is required
+#         because the `jaeger` exporter and the `prometheus` exporter
+#         only ship in contrib, not the upstream `collector` distro).
+#
+# Ports:
+#   4317  OTLP/gRPC  receiver  — what `OTEL_EXPORTER_OTLP_ENDPOINT` points at
+#   4318  OTLP/HTTP  receiver  — alternative path for HTTP-only SDKs
+#   8889  Prometheus exporter  — scrape from prometheus / grafana
+#   13133 health_check          — `docker compose` healthcheck endpoint
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    # 1s timeout is fine for dev; production should batch larger.
+    timeout: 1s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Traces -> jaeger (via OTLP/gRPC; Jaeger >= 1.35 accepts OTLP natively
+  # so we don't need the deprecated `jaeger` exporter).
+  otlp/jaeger:
+    endpoint: jaeger:14317
+    tls:
+      insecure: true
+
+  # Metrics -> Prometheus pull endpoint at :8889. Browse with
+  # `curl localhost:8889/metrics | grep openral_` from the host.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    send_timestamps: true
+    metric_expiration: 5m
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Stdout fallback so a developer can see telemetry land even without
+  # Jaeger/Prometheus running.
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

@@ -1,0 +1,25 @@
+root = true
+
+[*]
+indent_style = space
+indent_size = 4
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+[*.{yml,yaml,json,toml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[Justfile]
+indent_style = space
+indent_size = 4
+
+[*.{md,rst}]
+trim_trailing_whitespace = false
+
+[*.{cpp,hpp,h,c,cc}]
+indent_size = 2

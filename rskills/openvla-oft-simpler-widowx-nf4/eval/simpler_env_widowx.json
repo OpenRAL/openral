@@ -1,0 +1,54 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood local OpenRAL reproduction",
+    "arxiv": null,
+    "model_variant": "OpenVLA-OFT RLinf PPO ManiSkill3 25ood NF4",
+    "evaluated_by": "OpenRAL contributor GPU probe",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run --suite simpler_env_widowx --task simpler_env/widowx_carrot_on_plate --rskill openvla-oft-simpler-widowx-nf4 --n-episodes 5 --max-steps 60",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "simpler_env_widowx",
+    "dataset": null,
+    "protocol": "5 episodes, seeds=0..4, success_key=is_success, max_steps=60, torch_seed=0 reapplied on policy reset, generate_action_verl, action_scale=2.0",
+    "robot": "widowx",
+    "simulator": "SimplerEnv / ManiSkill3"
+  },
+  "eval_config": {
+    "n_episodes": 5,
+    "seeds": [0, 1, 2, 3, 4],
+    "success_key": "is_success",
+    "max_steps": 60,
+    "vla_id": "openvla",
+    "weights_uri": "rskills/openvla-oft-simpler-widowx-nf4",
+    "policy_extras": {
+      "openvla_generation_method": "generate_action_verl",
+      "openvla_do_sample": true,
+      "openvla_temperature": 0.6,
+      "openvla_padding_max_length": 30,
+      "openvla_action_scale": 2.0,
+      "openvla_binarize_gripper": true,
+      "openvla_gripper_threshold": 0.5,
+      "openvla_torch_seed": 0
+    }
+  },
+  "results": {
+    "simpler_env/widowx_carrot_on_plate_success_rate": 0.4,
+    "avg_success_rate": 0.4,
+    "n_tasks": 1,
+    "n_episodes_per_task": 5,
+    "n_episodes_total": 5,
+    "successes": 2,
+    "failure_count": 3,
+    "successful_episode_indices": [3, 4],
+    "successful_episode_steps": [25, 42],
+    "model_vram_gb_allocated_after_load": 4.38,
+    "model_vram_gb_peak_after_smoke": 4.69
+  },
+  "baselines": {},
+  "trace_id": null
+}

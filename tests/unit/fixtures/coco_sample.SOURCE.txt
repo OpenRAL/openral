@@ -1,0 +1,3 @@
+COCO val2017 image 000000039769.jpg (two cats on a couch + remotes).
+Source: http://images.cocodataset.org/val2017/000000039769.jpg
+COCO images are released for non-commercial research; used here only as a unit-test fixture.

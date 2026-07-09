@@ -1,0 +1,162 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/pi05_libero_finetuned_v044 with int8 runtime packing.
+# Base:  lerobot/pi05_base (Physical Intelligence π0.5)
+#
+# Why int8 (not NF4): bf16 π0.5 (~7 GB, ~13.6 GiB peak) OOMs on an 8 GB
+# consumer GPU. NF4 4-bit fits but is *too lossy* for the 3.4 B π0.5
+# backbone — it destroys competence (0/5 on libero_spatial with NF4
+# 4-bit). LLM.int8 (bitsandbytes Linear8bitLt on every
+# Linear ≥4M elements) restores the policy AND fits 8 GB: measured
+# 0.5–0.7 on libero_spatial across 10-episode runs (RTX 4070 8 GB;
+# eval/scene_libero_spatial.json records 0.5). The pi05 adapter loads the
+# bf16 source, rewraps Linears to Linear8bitLt, then packs to int8 on the
+# device move (accelerate-free meta-init fast path).
+#
+# LICENSE WARNING (CLAUDE.md §7.4):
+#   Code: Apache-2.0
+#   Weights: Physical Intelligence "permissive research" license — NOT full Apache-2.0.
+#   Commercial deployment is prohibited without a separate agreement with Physical Intelligence.
+#   The OpenRAL loader derives is_commercial_use_allowed=False from
+#   license=permissive_research; activating commercially still requires
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 plus a vendor agreement.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-pi05-libero-int8"
+evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # trained on the full LIBERO set (all 4 suites, 40 tasks)
+version: "0.1.0"
+license: "permissive_research"   # non-standard; weights are NOT apache-2.0
+role: "s1"
+kind: "vla"  # rSkill kind discriminator. "vla" = learnable Vision-Language-Action policy.
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "pi05"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# LIBERO benchmark targets table-top manipulation with a Franka Panda arm.
+embodiment_tags:
+  - "franka_panda"
+
+# π0.5 LIBERO consumes the same two-RGB-camera + 8-D state contract as
+# smolvla_libero (LiberoEnv ``image`` and ``image2`` streams renamed to
+# ``camera1`` / ``camera2`` by the stored preprocessor).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side. For the canonical franka_panda embodiment the
+# loader auto-fills n_dof + vla_action_key from robots/franka_panda/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # ``int8`` selects the OpenRAL pi05 adapter's LLM.int8 path: load the bf16
+  # source, rewrap every Linear ≥4M weight elements to bitsandbytes
+  # ``Linear8bitLt`` (accelerate-free meta-init), then pack to int8 on the
+  # ``.to(cuda)`` move. Unlike NF4 there is no prequantized pack —
+  # quantization runs at startup from the bf16 checkpoint below.
+  dtype: "int8"
+  backend: "pytorch"
+# Informational VRAM ceilings, used by `ral skill check` / `openral doctor`.
+# int8-packed weights are ~4–5 GiB and fit under the 8 GiB consumer-GPU
+# ceiling (measured live on RTX 4070). CLAUDE.md §11 still forbids silent
+# downcast — the actually-applied dtype stays pinned by quantization.dtype.
+min_vram_gb:
+  fp32: 14.0
+  bf16: 7.0
+  int8: 6.0
+weights_uri: "hf://lerobot/pi05_libero_finetuned_v044"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+# Processors are self-hosted in the OpenRAL rSkill repo (published copies of the
+# source checkpoint's processors), so the rSkill does not depend on the upstream
+# lerobot/pi05_libero_finetuned_v044 repo to resolve them.
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-int8/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-int8/policy_postprocessor.json"
+# The pi05 LIBERO finetune wants the default LIBERO image preprocessing
+# (180° rotation + camera1/2 alias remap to image/image2) and the canonical
+# LIBERO 8-D proprio state.
+image_preprocessing:
+  flip_180: true
+  aliases:
+    top: "image"
+    wrist: "image2"
+state_contract:
+  # LIBERO checkpoints train on 8-D TASK-SPACE proprio
+  # (eef_pos ‖ eef_axisangle ‖ gripper). `openral sim run` supplies it directly;
+  # `openral deploy sim` assembles it from live TF + JointState via the
+  # `libero_eef8d` state-adapter. Without the layout the runner falls back to raw
+  # joint-space state and the policy never reaches the target. Shared verbatim
+  # with smolvla-libero — same franka_panda LIBERO 8-D contract.
+  layout: "libero_eef8d"
+  dim: 8
+  bindings:
+    eef_frame: "panda_hand_tcp"       # robosuite grip site within ~6 mm
+    world_frame: "world"              # HAL-published static world->base root
+    gripper_qpos_joints:
+      - "panda_gripper"               # single deploy gripper joint, mirrored to [v,-v]
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 50
+# Half-chunk replan — closed-loop replanning every 25 env steps.
+n_action_steps: 25
+latency_budget:
+  per_chunk_ms: 200.0   # π0.5 (3B PaliGemma backbone) is heavier than SmolVLA
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Headline benchmark dict is populated by `openral benchmark scene
+# --write-eval --update-manifest` (see eval/scene_libero_spatial.json for the
+# locally-reproduced result).
+
+paper_url: "https://arxiv.org/abs/2410.24164"
+source_repo: "hf://lerobot/pi05_libero_finetuned_v044"
+
+description: >
+  π0.5 fine-tuned on LIBERO (v0.44), loaded from the upstream LeRobot
+  checkpoint and LLM.int8-packed at runtime so 8 GB GPUs can run the rollout
+  without the NF4 competence regression (NF4 scored 0/5 on libero_spatial;
+  int8 scores ~0.5–0.7). π0.5 uses a PaliGemma 3B backbone with a
+  flow-matching head. Weights are PI permissive-research — commercial use
+  needs a vendor agreement. See eval/scene_libero_spatial.json for the
+  locally-reproduced result.
+
+# Action vocabulary surfaced to the reasoner LLM tool
+# palette so it can pick this skill by what it does (action verb +
+# object + scene), not just by its slug.
+actions:
+  - "pick"
+  - "place"
+  - "open"
+  - "close"
+objects:
+  - "bowl"
+  - "cup"
+  - "drawer"
+  - "object"
+scenes:
+  - "tabletop"
+  - "kitchen"
+
+# Per-checkpoint action contract (consumed by the dataset bridge
+# to bind the LeRobot v3 `action` feature shape).
+action_contract:
+  dim: 7
+  # LIBERO action space is 6-D OSC end-effector delta + gripper.
+  # Declaring the representation makes deploy-sim dispatch cartesian_delta +
+  # gripper (via canonical_slots_for_representation) instead of defaulting the
+  # whole vector to JOINT_POSITION, which the joint-space envelope rejects.
+  representation: "delta_ee_6d_plus_gripper"
+
+benchmarks:
+  libero_spatial: 0.5

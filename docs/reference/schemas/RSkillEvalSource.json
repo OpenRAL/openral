@@ -1,0 +1,95 @@
+{
+  "additionalProperties": true,
+  "description": "Provenance for a benchmark result block.\n\nUsed inside :class:`RSkillEvalResult` so consumers know where the numbers\ncame from (paper vs local reproduction) without having to read the\n``_comment`` line.\n\nAttributes:\n    paper: Plain-text title of the source paper / report.\n    arxiv: Optional arxiv URL or id.\n    model_variant: Which checkpoint variant the numbers describe\n        (e.g. ``\"SmolVLA (0.45B)\"``).\n    evaluated_by: Free-text \u2014 ``\"upstream authors\"`` or a contributor.\n    reproduced_locally: ``True`` only when OpenRAL CI / contributor\n        re-ran the benchmark and the listed numbers match.\n    reproduction_planned: Optional plan for closing the gap when\n        ``reproduced_locally`` is ``False``.\n    reproduction_cli: Either a single command string or a structured\n        ``{description, single_suite_example, all_suites, suite_max_steps,\n        notes}`` block (matches the LIBERO eval JSON shape).\n    table: Optional pointer at a specific table in the source paper.\n    status: Optional state marker \u2014 ``\"in_progress\"``, ``\"deferred\"``,\n        ``\"reproduced\"`` \u2014 for benchmarks that are not yet final.",
+  "properties": {
+    "paper": {
+      "title": "Paper",
+      "type": "string"
+    },
+    "arxiv": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Arxiv"
+    },
+    "model_variant": {
+      "title": "Model Variant",
+      "type": "string"
+    },
+    "evaluated_by": {
+      "title": "Evaluated By",
+      "type": "string"
+    },
+    "reproduced_locally": {
+      "title": "Reproduced Locally",
+      "type": "boolean"
+    },
+    "reproduction_planned": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reproduction Planned"
+    },
+    "reproduction_cli": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reproduction Cli"
+    },
+    "table": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Table"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    }
+  },
+  "required": [
+    "paper",
+    "model_variant",
+    "evaluated_by",
+    "reproduced_locally"
+  ],
+  "title": "RSkillEvalSource",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

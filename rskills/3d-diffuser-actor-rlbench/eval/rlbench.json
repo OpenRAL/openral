@@ -1,0 +1,67 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/1909.12271",
+    "arxiv": "https://arxiv.org/abs/1909.12271",
+    "model_variant": "diffuser_actor",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite rlbench --rskill rskills/3d-diffuser-actor-rlbench",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "RLBench (PerAct 18-task subset)",
+    "dataset": null,
+    "protocol": "25 episodes per task, success_key=is_success, max_steps=25",
+    "robot": "franka_panda",
+    "simulator": "CoppeliaSim 4.1.0 / PyRep (RLBench@peract)"
+  },
+  "eval_config": {
+    "n_episodes": 25,
+    "seeds": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24
+    ],
+    "success_key": "is_success",
+    "max_steps": 25,
+    "vla_id": "diffuser_actor",
+    "weights_uri": "rskills/3d-diffuser-actor-rlbench"
+  },
+  "results": {
+    "rlbench/open_drawer_success_rate": 0.88,
+    "rlbench/meat_off_grill_success_rate": 0.96,
+    "rlbench/close_jar_success_rate": 0.76,
+    "avg_success_rate": 0.8666666666666667,
+    "n_tasks": 3,
+    "n_episodes_per_task": 25,
+    "n_episodes_total": 75,
+    "mean_step_latency_ms_avg": 945.6086301968047
+  },
+  "baselines": {},
+  "trace_id": null
+}

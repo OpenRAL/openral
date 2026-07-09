@@ -1,0 +1,150 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps: nota-gmbh/so101_pick_place_pen_smolvla (Apache-2.0) — SmolVLA
+#        finetuned from lerobot/smolvla_base (40k steps, 53 episodes) on a real
+#        SO-101 pen pick-and-place teleop dataset
+#        (nota-gmbh/pick_and_place_pen_so101), recorded with TWO cameras: a
+#        fixed overview ("fixed", 640x480) and an arm-mounted view
+#        ("handy", 1920x1080).
+# Base:  lerobot/smolvla_base (arxiv:2506.01844)
+#
+# CAMERA COUNT — TWO, not three. smolvla_base ships 3 camera slots
+# (observation.images.camera1/2/3) and this checkpoint's config.json inherits
+# all three, but it trained on only 2 cameras and sets `empty_cameras: 0`.
+# lerobot `prepare_images` therefore DROPS the unfilled camera3 at inference
+# (present cameras only, no black padding) — native inference runs on 2
+# cameras. The split-ONNX/TRT engine is exported for the deploy's *resolved*
+# camera count (this manifest's 2 sensors_required), so it never attends a
+# phantom camera3. Verified: a 2-camera export reproduces native torch
+# `sample_actions` on a real dataset frame to 1.7e-06 (fp32), whereas a
+# 3-camera export (black camera3, attended) diverges. See
+# tests/integration/test_smolvla_pen_camera_parity.py.
+#
+# UNITS — degrees: the normalizer observation.state/action stats span
+# ~[-103, +168] (MEAN_STD), i.e. joint DEGREES (radians would be ±3.14). The
+# runner converts deg<->rad at the HAL boundary; declared explicitly below so
+# it does not rely on the stats-magnitude heuristic.
+#
+# PROVENANCE — weights are the OpenRAL mirror `OpenRAL/rskill-smolvla-so101-pick-place-pen`
+# (byte-identical to upstream `nota-gmbh/so101_pick_place_pen_smolvla`, Apache-2.0).
+# The upstream config.json carried a stray `pretrained_revision` key that lerobot
+# 0.5.1's draccus `SmolVLAConfig` rejects — and which forced an offline-breaking
+# revision re-fetch on load. The mirror strips that one key AT REST, so
+# `SmolVLAPolicy.from_pretrained` loads cleanly (incl. HF_HUB_OFFLINE=1) with NO
+# runtime config-sanitize — identical to the proven SmolVLA deploy path.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-so101-pick-place-pen"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+
+# Two RGB streams. The runner matches each entry against the robot's
+# SensorSpec.vla_feature_key declared in robots/so101_follower/robot.yaml
+# (top -> camera1, wrist -> camera2). This checkpoint's own input-feature keys
+# are already camera1/camera2 (config.json), so NO rename aliases are needed
+# (unlike checkpoints trained with side/wrist keys).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side. The loader auto-fills n_dof + vla_action_key from
+# robots/so101_follower/robot.yaml. Absolute joint-position targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Starting pose ────────────────────────────────────────────────────────
+# Joint order = robots/so101_follower manifest joints (radians):
+# [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper].
+# The so101 SRDF `rest` group_state (MoveIt-verified collision-free folded
+# pose) — same in-distribution start the sibling pen skill uses.
+starting_pose: [0.0, -1.5708, 1.5708, 0.75, 0.0, 0.5]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# VRAM footprint for the VLA↔reward co-residency preflight. Same
+# SmolVLA base (~0.45B, SmolVLM2-500M backbone) as rskill-smolvla-so101-pen, so
+# mirror its measured 1.2 GB + 0.3 GB TRT-engine margin. Without this the reward
+# preflight refuses the skill while a reward model is active. Re-measure on the
+# reference host if the 8 GB budget gets tight (1.5 + Robometer NF4 3.6 + 0.5
+# margin = 5.6 GB).
+min_vram_gb:
+  bf16: 1.5
+# Pair this VLA with its task-progress reward monitor so a
+# reward-enabled deploy auto-resolves the Robometer NF4 manifest.
+reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
+weights_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen/policy_postprocessor.json"
+# Real SO-101 teleop recorded upright — no rotation. The checkpoint's input
+# keys are already camera1/camera2, matching the robot's vla_feature_key slots,
+# so no rename aliases.
+image_preprocessing:
+  flip_180: false
+  aliases: {}
+state_contract:
+  dim: 6
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# SmolVLA chunk_size=50 (checkpoint config); full-chunk synchronous replay.
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  per_chunk_ms: 400.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2506.01844"
+dataset_uri: "hf://nota-gmbh/pick_and_place_pen_so101"
+source_repo: "hf://nota-gmbh/so101_pick_place_pen_smolvla"
+
+description: >
+  SmolVLA finetuned for pen pick-and-place on a real SO-101 follower arm
+  (Apache-2.0). Emits 6-DoF absolute joint-position chunks (size 50, in joint
+  degrees) from two RGB views (fixed overview + arm-mounted). The checkpoint
+  declares three camera slots inherited from smolvla_base but trains and runs
+  on two (empty_cameras=0 drops the third); the TRT export mirrors that with a
+  2-camera engine, verified bit-exact against native torch inference.
+
+# Action vocabulary for the reasoner LLM tool palette.
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+objects:
+  - "pen"
+scenes:
+  - "tabletop"
+
+# Per-checkpoint action contract.
+action_contract:
+  dim: 6
+  # SO-101 emits absolute joint positions (5 arm joints + 1 gripper).
+  representation: "joint_positions"
+  # EXPLICIT joint units — normalizer stats span ~[-103, +168] (verified:
+  # observation.state.max=168.0, .min=-102.9), i.e. DEGREES. The runner
+  # converts deg<->rad at the policy boundary. Declared so the runner does NOT
+  # rely on the stats-magnitude heuristic.
+  joint_units: "degrees"

@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2304.13705",
+    "arxiv": "https://arxiv.org/abs/2304.13705",
+    "model_variant": "act",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "aloha_transfer_cube",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=500",
+    "robot": "aloha_bimanual",
+    "simulator": "aloha_transfer_cube"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 500,
+    "vla_id": "act",
+    "weights_uri": "rskills/act-aloha"
+  },
+  "results": {
+    "aloha_transfer_cube/0_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 9.474873240003944
+  },
+  "baselines": {},
+  "trace_id": null
+}

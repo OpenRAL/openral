@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SensorReaderBackend",
+  "description": "Which :class:`SensorReader` implementation to instantiate.",
+  "type": "string",
+  "enum": [
+    "opencv_thread",
+    "ros2_image",
+    "gstreamer",
+    "holoscan"
+  ]
+}

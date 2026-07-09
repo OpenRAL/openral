@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2405.05941",
+    "arxiv": "https://arxiv.org/abs/2405.05941",
+    "model_variant": "rldx",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/widowx_carrot_on_plate.yaml --rskill rskills/rldx1-ft-simpler-widowx-nf4",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "simpler_env",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=400",
+    "robot": "widowx",
+    "simulator": "simpler_env"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 400,
+    "vla_id": "rldx",
+    "weights_uri": "rskills/rldx1-ft-simpler-widowx-nf4"
+  },
+  "results": {
+    "simpler_env/widowx_carrot_on_plate_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 40.090628317775554
+  },
+  "baselines": {},
+  "trace_id": null
+}

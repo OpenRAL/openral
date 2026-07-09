@@ -1,0 +1,37 @@
+{
+  "name": "OpenRAL dev",
+  "build": { "dockerfile": "../Dockerfile.dev" },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "runArgs": ["--privileged", "--network=host"],
+  "mounts": [
+    "source=/dev,target=/dev,type=bind",
+    "source=/run/udev,target=/run/udev,type=bind"
+  ],
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": { "label": "mkdocs", "onAutoForward": "notify" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff",
+        "ms-vscode.cpptools",
+        "ms-iot.vscode-ros",
+        "tamasfe.even-better-toml",
+        "yzhang.markdown-all-in-one",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  },
+  "postCreateCommand": "uv sync --all-packages"
+}

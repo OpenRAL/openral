@@ -1,0 +1,50 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2306.03310",
+    "arxiv": "https://arxiv.org/abs/2306.03310",
+    "model_variant": "pi05",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/libero_spatial.yaml --rskill rskill://rskills/pi05-libero-int8",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "libero_spatial",
+    "dataset": null,
+    "protocol": "10 episodes, seed=42, success_key=is_success, max_steps=220",
+    "robot": "franka_panda",
+    "simulator": "libero_spatial"
+  },
+  "eval_config": {
+    "n_episodes": 10,
+    "seeds": [
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51
+    ],
+    "success_key": "is_success",
+    "max_steps": 220,
+    "vla_id": "pi05",
+    "weights_uri": "rskill://rskills/pi05-libero-int8"
+  },
+  "results": {
+    "libero_spatial/0_success_rate": 0.5,
+    "avg_success_rate": 0.5,
+    "n_tasks": 1,
+    "n_episodes_per_task": 10,
+    "n_episodes_total": 10,
+    "mean_step_latency_ms_avg": 36.99745816003456
+  },
+  "baselines": {},
+  "trace_id": null
+}

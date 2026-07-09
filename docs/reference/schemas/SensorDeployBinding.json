@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "SensorReaderBackend": {
+      "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+      "enum": [
+        "opencv_thread",
+        "ros2_image",
+        "gstreamer",
+        "holoscan"
+      ],
+      "title": "SensorReaderBackend",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to :attr:`SensorSpec.sim_placement`: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which :class:`SensorReaderBackend` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA :class:`SensorSpec` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a :attr:`DeployScene.sensors` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n:class:`SensorSpec` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which :class:`SensorReaderBackend` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+  "properties": {
+    "backend": {
+      "$ref": "#/$defs/SensorReaderBackend",
+      "default": "opencv_thread"
+    },
+    "backend_params": {
+      "additionalProperties": true,
+      "title": "Backend Params",
+      "type": "object"
+    },
+    "max_age_ms": {
+      "default": 100,
+      "exclusiveMinimum": 0,
+      "title": "Max Age Ms",
+      "type": "integer"
+    }
+  },
+  "title": "SensorDeployBinding",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

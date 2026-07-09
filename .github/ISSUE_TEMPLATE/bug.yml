@@ -1,0 +1,35 @@
+name: Bug report
+description: File a bug report
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report.
+  - type: textarea
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: To reproduce
+      description: Steps to reproduce the behavior.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Run `openral doctor --json` and paste the output here.
+  - type: dropdown
+    attributes:
+      label: ROS 2 distro
+      options: [humble, jazzy, rolling]
+    validations:
+      required: true

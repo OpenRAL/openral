@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2503.14734",
+    "arxiv": "https://arxiv.org/abs/2503.14734",
+    "model_variant": "rldx",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config scenes/benchmark/robocasa_gr1_pnp_cup_to_drawer.yaml --rskill rskills/rldx1-ft-gr1-nf4",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "robocasa/gr1/PnPCupToDrawerClose",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=600",
+    "robot": "gr1",
+    "simulator": "robocasa/gr1/PnPCupToDrawerClose"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 600,
+    "vla_id": "rldx",
+    "weights_uri": "rskills/rldx1-ft-gr1-nf4"
+  },
+  "results": {
+    "robocasa/gr1/PnPCupToDrawerClose/0_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 50.090565149997325
+  },
+  "baselines": {},
+  "trace_id": null
+}

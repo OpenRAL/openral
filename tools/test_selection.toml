@@ -1,0 +1,175 @@
+# Selective test-execution config — consumed by tools/select_tests.py.
+#
+# CLAUDE.md §1.4 (explicit beats implicit): the blast-radius list and the
+# non-code fixture triggers live here as data, not buried in code. The
+# package dependency graph itself is *derived* from each
+# python/<pkg>/pyproject.toml at runtime — it is never hand-maintained here,
+# so it cannot drift from the real workspace.
+
+# Changed paths whose blast radius is the whole suite. A match here forces a
+# full run (select_tests.py emits `full_run = true`) — we never try to be
+# clever about a root config, the lockfile, a shared conftest, or the
+# selector's own inputs, because a wrong *negative* here silently skips a
+# real regression.
+full_run_globs = [
+  "pyproject.toml",
+  "uv.lock",
+  "Justfile",
+  "conftest.py",
+  "tests/conftest.py",
+  "tests/sim/conftest.py",
+  "python/*/conftest.py",
+  "python/*/tests/conftest.py",
+  ".github/workflows/test-selective.yml",
+  ".github/workflows/test-python.yml",
+  ".github/workflows/test-ros2.yml",
+  "tools/select_tests.py",
+  "tools/test_selection.toml",
+]
+
+# Source domains the *Python* suite legitimately does not cover, so a change
+# confined to them selects nothing here rather than forcing a wasteful full
+# Python run. They are covered by their own workflows: cpp/ by `test-ros2`
+# (colcon) and the safety-kernel ctest, packages/**/*.cpp likewise.
+ignore_globs = [
+  "cpp/**",
+]
+
+# Test files that must run in their OWN pytest process, never folded into a
+# broad partition. These drive lerobot's dataset `compute_stats`, which forks a
+# multiprocessing pool; when the fork happens inside an interpreter that other
+# CLI tests have already made multi-threaded (numpy/pyarrow/torch threadpools,
+# structlog/OTel, HF http pools), a forked child or a C-extension `atexit`
+# handler crashes during Python finalization — a non-zero process exit AFTER an
+# all-pass summary (issue #24). Run alone, the fork happens in a not-yet-threaded
+# process and they pass clean. Globs are matched against repo-relative paths;
+# `select_tests.py` peels any in-scope match into `isolated_targets` and the
+# `test-selective` workflow runs each in its own `pytest` invocation (mirroring
+# the per-process handling for EGL/MuJoCo sim tests).
+isolate_globs = [
+  "tests/unit/test_cli_dataset_from_bag.py",
+  "tests/unit/test_cli_replay_record_profile.py",
+  # Also write/aggregate a LeRobotDataset (→ lerobot `compute_stats` fork), so
+  # they hit the same finalization crash when packed into a broad partition.
+  # (Job-level thread-pinning from #33 is NOT sufficient on its own — a broad
+  # selection that includes a forker still exits non-zero despite all-pass.)
+  "tests/unit/test_smolvla_processor_fallback.py",
+  "tests/unit/test_cli_dataset_push.py",
+  "tests/unit/test_hardware_runner_dataset_recording.py",
+  # Records a rollout into a LeRobotDataset v3 then re-opens it via the real
+  # lerobot reader (→ `compute_stats` fork). It lives under `tests/sim`, so a
+  # broad diff folds it into the single `tests` partition alongside the
+  # torch/mujoco/robosuite imports the sim suite pulls in; the fork then lands in
+  # an already-threaded interpreter and crashes at finalization (issue #24) — a
+  # non-zero exit after an all-pass summary. Its deps (gym_aloha/lerobot) are
+  # absent in most local checkouts so it skips there, which is why this only ever
+  # bit on CI. Run alone in a fresh interpreter it passes clean.
+  "tests/sim/test_dataset_emission.py",
+]
+
+# Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
+# scan can attribute to a package, mapped to the tests that load them. Keys
+# are globs (matched against the repo-relative changed path); values are
+# pytest targets. CLAUDE.md §1.11 — these fixtures are loaded for real by the
+# listed tests, so a fixture edit must re-run them.
+[extra_triggers]
+"scenes/**" = ["tests/unit/test_examples_sim_configs_load.py"]
+"scenes/benchmark/aloha*.yaml" = ["tests/sim/test_aloha_bimanual_act_aloha.py"]
+"scenes/benchmark/pusht.yaml" = ["tests/sim/test_pusht_2d_diffusion_pusht.py"]
+"scenes/sim/libero*.yaml" = ["tests/sim/test_franka_panda_smolvla_libero.py"]
+"scenes/sim/robocasa*.yaml" = ["tests/sim/test_gr1_robocasa_env_build.py"]
+"robots/**" = ["tests/unit"]
+"robots/aloha_bimanual/**" = ["tests/sim/test_aloha_bimanual_hal_mujoco.py"]
+"robots/gr1/**" = ["tests/sim/test_gr1_robocasa_env_build.py"]
+"rskills/**" = ["tests/unit"]
+"rskills/act-aloha*/**" = ["tests/sim/test_aloha_bimanual_act_aloha.py"]
+"rskills/diffusion-pusht/**" = ["tests/sim/test_pusht_2d_diffusion_pusht.py"]
+"rskills/*libero*/**" = ["tests/sim/test_franka_panda_smolvla_libero.py"]
+"rskills/*robotwin*/**" = ["tests/sim/test_aloha_agilex_smolvla_robotwin.py"]
+
+# Selected tests matching these globs need an opt-in dependency group. The
+# default selective lane still runs them in the cheap env (where they may skip);
+# CI then reruns the matching targets with the named group installed so a
+# missing optional stack is not a false-green when the diff touches that surface.
+[requirement_globs]
+sim = [
+  "tests/sim/test_aloha_bimanual_act_aloha.py",
+  "tests/sim/test_aloha_bimanual_hal_mujoco.py",
+  "tests/sim/test_data_driven_mujoco_hal.py",
+  "tests/sim/test_dataset_emission.py",
+  "tests/sim/test_hal_joint_convention.py",
+  "tests/sim/test_hal_protocol_contracts.py",
+  "tests/sim/test_pusht_2d_diffusion_pusht.py",
+]
+libero = [
+  "tests/sim/test_*libero*.py",
+  "tests/sim/test_libero_continuous.py",
+  "tests/sim/test_franka_3dda_rlbench.py",
+  "python/hal/tests/test_sim_attached_action_dim.py",
+  "python/hal/tests/test_sim_attached_idle_step.py",
+]
+robocasa = [
+  "tests/sim/test_so100_robosuite_lift.py",
+]
+robocasa-gr1 = [
+  "tests/sim/test_gr1_robocasa_env_build.py",
+]
+maniskill3 = [
+  "tests/sim/test_*maniskill*.py",
+]
+simpler-env = [
+  "tests/sim/test_widowx_simpler_env_adapter.py",
+]
+isaacsim = [
+  "tests/sim/test_*isaac*.py",
+]
+robotwin = [
+  "tests/sim/test_*robotwin*.py",
+]
+sidecar-wire = [
+  "tests/unit/test_isaac_sim_sidecar_wire.py",
+  "tests/unit/test_rldx_adapter_auto_spawn.py",
+  "tests/unit/test_robotwin_backend.py",
+  "tests/unit/test_sidecar_identity_and_layout.py",
+]
+rldx = [
+]
+dataset = [
+  "tests/unit/test_cli_dataset_from_bag.py",
+  "tests/unit/test_cli_replay_record_profile.py",
+  "tests/unit/test_smolvla_processor_fallback.py",
+]
+rlbench = [
+  "tests/sim/test_franka_3dda_rlbench.py",
+]
+gr00t = [
+  "tests/sim/test_franka_groot_libero.py",
+]
+locateanything = [
+  "tests/unit/test_locateanything_detector.py",
+]
+qwen-vlm = [
+  "tests/unit/test_qwen_scene_vlm.py",
+  "tests/integration/test_scene_vlm_query_service.py",
+]
+omdet = [
+  "tests/unit/test_omdet_turbo_detector.py",
+]
+onnx-export = [
+  "tests/unit/test_rtdetr_onnx_detects.py",
+]
+clip = [
+  "tests/unit/test_spatial_memory_openvocab.py",
+]
+opencv = [
+  "tests/unit/test_opencv_thread_sensor_reader.py",
+  "tests/integration/test_act_onnx.py",
+]
+lowering = [
+  "tests/unit/test_collision_cli.py",
+  "packages/openral_safety/test/test_urdf_lowering_fk.py",
+  "packages/openral_safety/test/test_urdf_lowering_geometry.py",
+  "packages/openral_safety/test/test_urdf_lowering_lower_robot.py",
+  "packages/openral_safety/test/test_urdf_lowering_sampling.py",
+  "packages/openral_safety/test/test_urdf_lowering_srdf.py",
+]

@@ -1,0 +1,308 @@
+# RobotDescription — Hugging Face SO-101 follower (real + sim).
+#
+# The SO-101 is the hardware revision of the SO-100: identical 6-DoF
+# kinematic chain (5 servo joints + 1-DoF jaw, all driven over a USB
+# serial bus by Feetech STS3215 servos), updated mechanical design and
+# calibration. The same lerobot-side SDK driver (SO100DigitalTwin /
+# the Feetech serial backend) handles the hardware; only the
+# Onshape-derived MJCF mesh set is different.
+#
+# Joint kinematic detail is taken from the public SO-101 MJCF in
+# ``robot_descriptions`` / ``TheRobotStudio/SO-ARM100/Simulation/SO101``
+# (the ``new_calib`` variant). ``position_limits`` are in radians
+# despite the lerobot SDK exposing degrees — OpenRAL keeps the
+# URDF-native units.
+#
+# Manifest joint order is the kinematic chain order:
+#   shoulder_pan → shoulder_lift → elbow_flex → wrist_flex → wrist_roll → gripper
+# which is also the order the SO-101 MJCF declares its <position>
+# actuators (named "1"…"6") and hinge joints (sim_joint_name "1"…"6") —
+# :func:`MujocoArmHAL._sim_kwargs_for` resolves the manifest-to-MJCF
+# mapping by INDEX, while SimAttachedHAL reads live joint state by
+# sim_joint_name so deploy-sim publishes the same non-zero state as
+# direct `openral sim run`.
+
+name: "so101_follower"
+embodiment_kind: "manipulator"
+
+base_frame: "base"
+# URDF for the offline collision-lowering tool (geometry + joint FK).
+# robot_descriptions ships a real URDF for the SO-ARM101. No SRDF with matching
+# link names, so the ACM uses the conservative sampling fallback.
+# Unified asset block (URDF / MJCF).
+assets:
+  urdf:
+    ref: "file:so101_follower.urdf"
+  mjcf: "rd:so_arm101_mj_description"
+
+joints:
+  - name: "shoulder_pan"
+    sim_joint_name: "1"
+    origin_xyz: [0.0207909, -0.0230745, 0.0948817]
+    origin_rpy: [-3.14159, 0, 1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "base"
+    child_link: "shoulder"
+    position_limits: [-1.9199, 1.9199]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "shoulder_lift"
+    sim_joint_name: "2"
+    origin_xyz: [-0.0303992, -0.0182778, -0.0542]
+    origin_rpy: [1.5707927, -1.5707927, 3.1415927]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "shoulder"
+    child_link: "upper_arm"
+    position_limits: [-1.7453, 1.7453]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "elbow_flex"
+    sim_joint_name: "3"
+    origin_xyz: [-0.11257, -0.028, 0]
+    origin_rpy: [0, 0, 1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "upper_arm"
+    child_link: "lower_arm"
+    position_limits: [-1.7453, 1.5708]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "wrist_flex"
+    sim_joint_name: "4"
+    origin_xyz: [-0.1349, 0.0052, 0]
+    origin_rpy: [0, 0, -1.5708]
+    axis_xyz: [0, 0, 1]
+    joint_type: "revolute"
+    parent_link: "lower_arm"
+    child_link: "wrist"
+    position_limits: [-1.6581, 1.6581]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "wrist_roll"
+    sim_joint_name: "5"
+    joint_type: "revolute"
+    parent_link: "wrist"
+    child_link: "gripper_base"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-2.7925, 2.7925]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+  - name: "gripper"
+    sim_joint_name: "6"
+    joint_type: "revolute"
+    parent_link: "gripper_base"
+    child_link: "moving_jaw"
+    axis_xyz: [0.0, 0.0, 1.0]
+    position_limits: [-0.1745, 1.7453]
+    velocity_limit: 4.5
+    effort_limit: 3.35
+    actuator_kind: "servo"
+    # Per the gripper/task-space joint-role convention, tag the gripper joint
+    # (was role: unknown) so the runner / dataset bridge identify it structurally,
+    # matching so100_follower. The
+    # gripper is one of the 6 enumerated joints (not a separate channel).
+    role: "gripper"
+
+end_effectors:
+  - name: "gripper"
+    kind: "parallel_gripper"
+    hand: "right"
+    n_dof: 1
+    max_grip_force_n: 5.0
+    max_payload_kg: 0.5
+    workspace_radius_m: 0.32
+
+# SO-101 ships with optional USB cameras. ``top`` mirrors the
+# overhead third-person view used by the lerobot SO-101 datasets;
+# ``wrist`` is the wrist-mounted view on the gripper body. The
+# ``so101_box`` sim scene routes the in-scene OAK-D Pro overhead
+# stream into ``observation.images.camera1`` and the MJCF wrist
+# camera into ``observation.images.camera2`` (the ``vla_feature_key``
+# values stay camera1/2 since they are checkpoint-frozen per the canonical
+# HAL-facing sensor-naming convention).
+sensors:
+  - name: "top"
+    modality: "rgb"
+    frame_id: "world"
+    rate_hz: 30.0
+    # Per the sim camera-placement convention — sim placement for the overhead OAK-D Pro. The generic HAL
+    # camera rig splices this `top` camera into the bare SO-101 MJCF for
+    # `deploy sim` (the upstream arm ships zero cameras, issue #88), world-fixed
+    # above the arm's workspace looking straight down. Poses are in metres
+    # relative to the arm base at the MJCF origin (the bare twin is NOT
+    # re-anchored). The `so101_box` sim-run scene renders its own `oak_top`
+    # camera and ignores this block.
+    sim_placement:
+      pos: [0.0, -0.15, 0.70]
+      target: [0.0, -0.15, 0.0]
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 480.0
+      fy: 480.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    vendor: "luxonis"
+    model: "oak_d_pro"
+  - name: "wrist"
+    modality: "rgb"
+    # The wrist camera is bolted to the terminal gripper body; its own optical
+    # frame is `wrist_camera`, parented to the `gripper` URDF link. `wrist_roll` is a joint,
+    # not a tf frame; `wrist` is the arm link and must not be reused as the
+    # camera frame (it would gain a second parent).
+    frame_id: "wrist_camera"
+    parent_frame: "gripper"
+    rate_hz: 30.0
+    # Per the sim camera-placement convention — sim placement for the wrist camera, matching the real lerobot
+    # SO-101 phone-on-bracket rig (Cornito/so101_test2): mounted on the static
+    # finger face (~60 mm out along the face normal + ~35 mm toward the
+    # fingertips) and rolled 180° (`up: [0, 0, -1]`, the phone is inverted) so
+    # the open jaws hang into the bottom ~20% of the frame and the workspace +
+    # grasped object fill the rest. fovy 90 ≈ the wide phone lens.
+    sim_placement:
+      parent_body: "gripper"
+      pos: [-0.0084, 0.0834, -0.0545]
+      target: [-0.0074, -0.091, -0.1886]
+      up: [0.0, 0.0, -1.0]
+      fovy_deg: 90.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 192.0
+      fy: 192.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera2"
+    catalog_id: "generic/usb_uvc_rgb"
+    vendor: "generic_usb"
+    model: "so101_wrist"
+
+capabilities:
+  locomotion: ["none"]
+  can_lift_kg: 0.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: false
+  has_vision: true
+  has_lidar: false
+  has_audio: false
+  bimanual: false
+  supported_control_modes:
+    - "joint_position"
+    - "gripper_position"
+  supported_vla_embodiments: ["so101_follower"]
+  embodiment_tags:
+    - "so101_follower"
+    - "lerobot"
+
+safety:
+  workspace_box_min_xyz: [-0.4, -0.4, 0.0]
+  workspace_box_max_xyz: [0.4, 0.4, 0.6]
+  max_ee_speed_m_s: 0.5
+  max_ee_accel_m_s2: 2.0
+  max_joint_speed_factor: 0.7
+  max_force_n: 10.0
+  max_torque_nm: 3.35
+  deadman_required: true
+  contact_force_threshold_n: 5.0
+  # Per the SO-101 negative self-collision-margin safety exception — the SO-101 operates in light SELF-CONTACT across the pen VLA's
+  # compact folded envelope: the true (fcl non-convex) link clearance is ≈ 0
+  # everywhere the arm works, so a geometric self-collision check cannot cleanly
+  # separate safe grazing from harmful pressing — the *real* self-contact
+  # protection is the force/torque limits above (max_torque_nm / max_force_n /
+  # contact_force_threshold_n). This negative margin lets the OBB self-check pass
+  # the VLA's operating envelope (kernel box distance −0.02…−0.05 there, verified
+  # offline) with headroom, while gross over-folds (elbow ≳ 125°, far outside the
+  # VLA distribution) and — importantly — WORLD/voxel collisions (arm vs
+  # table/objects, where clearances are real and positive) are unaffected and
+  # still E-stop. Safety-WG sign-off required (hazard-log). Do NOT enlarge without
+  # re-running the envelope sweep; the world/self split is deliberate.
+  self_collision_margin_m: -0.06
+
+sdk_kind: "open"
+# Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# sim: null → derive MujocoArmHAL.from_description from the `sim:` block below.
+# real: the SO-101 reuses the SO-100 lerobot Feetech follower verbatim.
+hal:
+  sim: null
+  real: "openral_hal.so100_follower:SO100FollowerHAL"
+  # Real-HAL construction defaults threaded by build_hal so the
+  # manifest-driven lifecycle node needs no bespoke `port` ROS parameter.
+  parameters:
+    defaults:
+      port: "/dev/ttyUSB0"
+      calibrate_on_connect: false
+
+# MuJoCo wiring consumed by ``MujocoArmHAL.from_description``.
+# Source: ``Simulation/SO101/so101_new_calib.xml`` in
+# ``TheRobotStudio/SO-ARM100`` (vendored via ``robot_descriptions``).
+# The jaw joint range is ``[-0.1745, 1.7453]`` (radians) and its
+# closed position is non-zero, so ``gripper.read_mode`` is
+# ``affine_low_high`` (same as SO-100). The qpos slot for the jaw is
+# index 5 (sixth joint in the kinematic chain).
+sim:
+  grippers:
+    - joint: "gripper"
+      ctrl_range: [-0.1745, 1.7453]
+      qpos_addrs: [5]
+      qpos_scale: 1.9198  # 1.7453 - (-0.1745); kept for symmetry, unused in affine mode
+      read_mode: "affine_low_high"
+
+observation_spec:
+  state_key: "observation.state"
+  state_shape: [6]
+  state_representation: "joint_positions"
+  image_flip_180: false
+
+action_spec:
+  dim: 6
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
+# Hand-authored OBB (box) collision model, part of the SO-101 negative
+# self-collision-margin safety exception above (issue #84). Every link is
+# a tight oriented box fit to the link-frame mesh (PCA extents), NOT a capsule:
+# the SO-101 links are rectangular 3D-printed brackets, so a capsule's circular
+# cross-section over-reports clearance by ~7-9 cm at the arm's compact folded
+# operating poses (the VLA's whole distribution), false-E-stopping valid poses.
+# Boxes cut the over-report to ~1-4 cm (verified vs an fcl non-convex mesh
+# oracle). half_extents + origin_xyz_rpy are the link-frame mesh OBB; rpy orients
+# the box. The true (non-convex) self-clearance in the VLA envelope is ~0
+# (grazing contact by design), handled by a small negative self_collision_margin
+# (see safety.self_collision_margin_m below), NOT by disabling any pair. Teaching
+# `openral collision lower` to emit OBBs for blocky links is the follow-up that
+# makes this regenerable.
+collision_geometry:
+  - link_name: "base"
+    shape: { shape: "box", half_extents_m: [0.0555, 0.0478, 0.0360] }
+    origin_xyz_rpy: [0.0208, -0.0011, 0.0661, 0.0, 0.0, 0.0]
+  - link_name: "shoulder"
+    shape: { shape: "box", half_extents_m: [0.0605, 0.0304, 0.0361] }
+    origin_xyz_rpy: [-0.0260, 0.0010, -0.0057, -0.3991, -1.2500, 0.0899]
+  - link_name: "upper_arm"
+    shape: { shape: "box", half_extents_m: [0.0746, 0.0405, 0.0265] }
+    origin_xyz_rpy: [-0.0578, -0.0079, 0.0153, -1.5445, -0.1867, 0.0821]
+  - link_name: "lower_arm"
+    shape: { shape: "box", half_extents_m: [0.0805, 0.0400, 0.0194] }
+    origin_xyz_rpy: [-0.0661, 0.0030, 0.0161, -1.6109, 0.1700, 3.1187]
+  - link_name: "wrist"
+    shape: { shape: "box", half_extents_m: [0.0398, 0.0397, 0.0217] }
+    origin_xyz_rpy: [0.0008, -0.0258, 0.0234, 1.3443, 0.2097, -1.7865]
+
+# GENERATED by `openral collision lower` (source: sampling) — do not hand-edit.
+allowed_collision_pairs:
+  - [base, shoulder]
+  - [lower_arm, upper_arm]
+  - [lower_arm, wrist]
+  - [shoulder, upper_arm]
+schema_version: '0.1'

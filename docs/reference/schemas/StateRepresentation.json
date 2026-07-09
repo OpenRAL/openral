@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StateRepresentation",
+  "description": "State vector representation format.",
+  "type": "string",
+  "enum": [
+    "joint_positions",
+    "eef_pos_axisangle",
+    "eef_pos_euler",
+    "eef_pos_quat",
+    "eef_pos_axisangle_gripper"
+  ]
+}

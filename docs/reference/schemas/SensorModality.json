@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SensorModality",
+  "description": "Physical sensing modality.",
+  "type": "string",
+  "enum": [
+    "rgb",
+    "depth",
+    "stereo",
+    "ir",
+    "point_cloud",
+    "lidar_2d",
+    "imu",
+    "force_torque",
+    "joint_state",
+    "tactile_vision",
+    "tactile_array",
+    "audio",
+    "gps",
+    "battery"
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    }
+  },
+  "description": "A detected object in the scene.\n\nAttributes:\n    label: Semantic class label.\n    confidence: Detection confidence in [0, 1].\n    pose: 6D pose in the world or camera frame.\n    bbox_3d: 3D bounding box (x_min, y_min, z_min, x_max, y_max, z_max).\n    track_id: Persistent track ID across frames.",
+  "properties": {
+    "label": {
+      "title": "Label",
+      "type": "string"
+    },
+    "confidence": {
+      "title": "Confidence",
+      "type": "number"
+    },
+    "pose": {
+      "$ref": "#/$defs/Pose6D"
+    },
+    "bbox_3d": {
+      "anyOf": [
+        {
+          "maxItems": 6,
+          "minItems": 6,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bbox 3D"
+    },
+    "track_id": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Track Id"
+    }
+  },
+  "required": [
+    "label",
+    "confidence",
+    "pose"
+  ],
+  "title": "DetectedObject",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

@@ -1,0 +1,104 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: lerobot/smolvla_vlabench (Apache-2.0) — SmolVLA (~0.5 B) finetuned on
+#        VLABench (lerobot/vlabench_unified, 97 tasks).
+# Base:  lerobot/smolvla_base (arxiv:2506.01844)
+#
+# VLABench (ICCV 2025, OpenMOSS) is a MuJoCo + dm_control language-conditioned
+# manipulation benchmark. This SmolVLA checkpoint is lerobot-native and runs
+# in-process on lerobot 0.6.0 (bf16, ~1 GiB — fits 8 GB trivially, no quant).
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-vlabench"
+evaluated_tasks: ["vlabench"]  # Family gate: covers "vlabench/<task>" ids.
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# VLABench uses a Franka Panda 7-DOF arm.
+embodiment_tags:
+  - "franka_panda"
+
+# VLABench renders 3 RGB views. The backend emits them as camera1/2/3 (the
+# franka_panda robot's canonical sensor keys); the checkpoint's own preprocessor
+# rename (image→camera1, …) then no-ops on the already-canonical keys.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+min_vram_gb:
+  fp32: 4.0
+  bf16: 2.0
+weights_uri: "hf://lerobot/smolvla_vlabench"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+processors:
+  preprocessor_uri: "hf://lerobot/smolvla_vlabench/policy_preprocessor.json"
+  postprocessor_uri: "hf://lerobot/smolvla_vlabench/policy_postprocessor.json"
+# No adapter-level flip — VLABench renders upright. The stored preprocessor
+# handles the camera rename + resize to 256; the backend emits native frames.
+image_preprocessing:
+  flip_180: false
+state_contract:
+  # VLABench proprio is 7-D (pos[3] + euler[3] + gripper[1]); the checkpoint's
+  # normalizer stats + vlabench_unified dataset are 7-D. No `layout` — that
+  # selects a deploy-time state adapter; for sim the vlabench backend
+  # emits the 7-D state directly.
+  dim: 7
+
+# ── Execution semantics ────────────────────────────────────────────────────
+chunk_size: 50
+n_action_steps: 25
+latency_budget:
+  per_chunk_ms: 100.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2412.18194"
+source_repo: "hf://lerobot/smolvla_vlabench"
+
+description: >
+  SmolVLA (~0.5 B) finetuned on VLABench (lerobot/vlabench_unified), lerobot-native,
+  runs in-process on lerobot 0.6.0 (bf16, fits 8 GB). VALIDATED INTEGRATION BASELINE,
+  not a passing policy: 0/3 on six diverse primitives (identical to lerobot's own
+  lerobot-eval reference — the 0% is the policy, not the wiring). The only >50%
+  VLABench policy (pi0-fast-ft 51.2% primitive avg) is openpi/JAX needing conversion.
+  See README + project memory. Use this to exercise the VLABench backend.
+
+actions:
+  - "pick"
+  - "place"
+  - "grasp"
+objects:
+  - "fruit"
+  - "object"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 7
+  representation: "delta_ee_6d_plus_gripper"

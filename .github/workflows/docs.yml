@@ -1,0 +1,24 @@
+name: docs
+# Standalone, manual `mkdocs build --strict` (full --all-packages env).
+# PR coverage for docs lives in quality.yml (folded in to reuse its synced env);
+# pages.yml builds + deploys on push to master. This workflow remains for
+# on-demand local-parity verification via the Actions UI.
+# Auto-triggers disabled: out of GitHub Actions credits.
+# Re-enable PR/push triggers once billing is restored. See issue tracker.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv run mkdocs build --strict

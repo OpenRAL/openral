@@ -1,0 +1,50 @@
+# OpenArm v2 bimanual — tabletop deploy environment.
+#
+# Env-only DeployScene (no task, no eval) — boots the full OpenRAL stack
+# (HAL + reasoner + safety kernel) on the openarm tabletop with the
+# mandatory mounting pose. The reasoner picks the rSkill at runtime;
+# no scene-level task is prescribed.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_tabletop_pnp
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist_left", "wrist_right"]
+  backend_options:
+    render_width: 640
+    render_height: 480
+    max_steps: 500
+
+# Mandatory mounting pose for the
+# openarm_tabletop_pnp scene. Lift bases above the table top + shift
+# forward into the workspace so the 0.6 m arm reach can sweep the
+# picking targets.
+base_pose:
+  xyz: [0.20, 0.0, 0.55]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+  frame_id: world
+
+# Scene-owns-composition convention — the SCENE owns its environment. This composes the OpenArm tabletop
+# MJCF (arm + table + 3 cubes + drawer + overview camera) and `openral deploy
+# sim` threads it to the manifest-driven HAL node, which builds a bare twin off
+# the result. Previously this lived in the robot manifest's
+# `scene_defaults.composition`; moving it here keeps `robots/openarm/robot.yaml`
+# describing only the robot (robot / scene / rSkill are now separate concerns).
+# `top_camera_*` is the overview-camera pose (was `scene_defaults.top_camera`).
+composition:
+  composer: "openral_sim.backends.openarm_robosuite._assets:compose_openarm_tabletop_mjcf"
+  params:
+    strip_actuators: false
+    robot_lift_z: 0.36
+    robot_forward_x: 0.20
+    white_background: true
+    top_camera_pos: [0.20, 0.0, 0.95]
+    top_camera_target: [0.65, 0.0, 0.05]
+    top_camera_fovy: 65.0
