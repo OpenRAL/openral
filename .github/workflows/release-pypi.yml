@@ -136,11 +136,19 @@ jobs:
       - name: build sdist + wheel
         working-directory: ${{ matrix.package }}
         run: uv build --out-dir dist
-      - name: publish (${{ needs.resolve.outputs.index }}, Trusted Publishing)
+      - name: publish (${{ needs.resolve.outputs.index }})
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: ${{ matrix.package }}/dist
           repository-url: ${{ needs.resolve.outputs.repository-url }}
+          # BOOTSTRAP: PyPI's pending-publisher model can't create N projects
+          # from one shared workflow (uniqueness on owner/repo/workflow/env), so
+          # the first publish that creates all 14 projects uses an account-scoped
+          # API token. Once the projects exist, add per-project trusted publishers
+          # (they may share this workflow) and revert this to OIDC — see the
+          # header note. attestations require a Trusted Publisher, off for token.
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          attestations: false
           # Skip-existing lets a re-run of the matrix after a partial failure
           # skip the already-published packages instead of erroring out.
           skip-existing: true
