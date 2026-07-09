@@ -3139,7 +3139,7 @@ clip = [{ name = "open-clip-torch", specifier = ">=2.24" }]
 dataset = [{ name = "openral-dataset", extras = ["lerobot"], editable = "python/dataset" }]
 dev = [
     { name = "catkin-pkg", specifier = ">=1.0" },
-    { name = "empy", specifier = "<4" },
+    { name = "empy", specifier = "<5" },
     { name = "hypothesis", specifier = ">=6.100" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "lark", specifier = ">=1.3.1" },
@@ -3170,7 +3170,7 @@ libero = [
     { name = "bitsandbytes", specifier = ">=0.45" },
     { name = "lerobot", extras = ["libero"] },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 locateanything = [
     { name = "msgpack", specifier = ">=1" },
@@ -3178,7 +3178,7 @@ locateanything = [
 ]
 lowering = [
     { name = "mujoco", specifier = ">=3.8.0" },
-    { name = "numpy", specifier = ">=2.0.0,<2.3.0" },
+    { name = "numpy", specifier = ">=2.0.0,<2.6.0" },
     { name = "trimesh", specifier = ">=4.0.0" },
     { name = "xacrodoc", specifier = ">=0.3.0" },
     { name = "yourdfpy", specifier = ">=0.0.56" },
@@ -3189,7 +3189,7 @@ maniskill3 = [
     { name = "lerobot" },
     { name = "mani-skill", specifier = ">=3.0.0b9" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 metaworld = [
     { name = "accelerate", specifier = ">=1.13.0" },
@@ -3197,13 +3197,13 @@ metaworld = [
     { name = "lerobot" },
     { name = "mujoco", specifier = ">=3.8.0" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 omdet = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "timm", specifier = ">=1.0" },
     { name = "torch", specifier = ">=2.2" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 onnx-export = [
     { name = "torch", specifier = ">=2.2" },
@@ -3232,7 +3232,7 @@ robocasa = [
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" },
     { name = "robosuite-models", specifier = ">=1.0.0" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 robotwin = [
     { name = "msgpack", specifier = ">=1" },
@@ -3251,9 +3251,9 @@ sim = [
     { name = "lerobot", extras = ["diffusion"] },
     { name = "mujoco", specifier = ">=3.8.0" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "pymunk", specifier = "<7" },
+    { name = "pymunk", specifier = "<8" },
     { name = "robot-descriptions", specifier = ">=1.12.0" },
-    { name = "transformers", specifier = ">=5.4.0,<5.6.0" },
+    { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
 simpler-env = [
     { name = "gymnasium", specifier = ">=1.0.0" },
