@@ -90,7 +90,7 @@ min_vram_gb:
   fp32: 25.5
   bf16: 12.8
   int4: 7.0
-weights_uri: "hf://robbyant/lingbot-vla-v2-6b"
+weights_uri: "hf://robbyant/lingbot-vla-v2-6b@11c703bf6a5c1f45b3b69168482da11fdbba53d7"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 # No `processors` block: LingBot-VLA 2.0 is not a lerobot PolicyProcessorPipeline
