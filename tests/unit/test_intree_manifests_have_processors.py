@@ -40,6 +40,11 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         # lerobot PolicyProcessorPipeline, so `processors is None` is correct.
         "3d-diffuser-actor-rlbench",
         "openvla-oft-simpler-widowx-nf4",
+        # LingBot-VLA 2.0: normalization ships in the upstream repo at
+        # `assets/norm_stats/robotwin.json` and is applied server-side by the
+        # model's own FeatureTransform inside the torch-2.8 sidecar — not a
+        # lerobot PolicyProcessorPipeline — so `processors is None` is correct.
+        "lingbot-vla2-robotwin",
     }
 )
 
