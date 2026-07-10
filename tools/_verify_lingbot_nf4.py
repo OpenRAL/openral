@@ -96,20 +96,18 @@ def main(argv: list[str]) -> int:
     #    on-line pack of the source fp32 weight.
     backbone = srv.vla.model.qwenvl_with_expert.qwenvl
     prefix_root = "model.qwenvl_with_expert.qwenvl"
-    named = [
-        (name, m) for name, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)
-    ]
+    named = [(name, m) for name, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
     step = max(1, len(named) // args.samples)
-    sampled = named[:: step][: args.samples]
+    sampled = named[::step][: args.samples]
     print(f"[verify] comparing {len(sampled)} sampled backbone modules ...", flush=True)
     source = Path(args.source)
     max_pack_diff = 0.0
     for local_name, module in sampled:
         full_key = f"{prefix_root}.{local_name}.weight"
         # fast-path (overlaid) dequant
-        deq_fast = bnb.functional.dequantize_4bit(
-            module.weight.data, module.weight.quant_state
-        ).to(torch.float32)
+        deq_fast = bnb.functional.dequantize_4bit(module.weight.data, module.weight.quant_state).to(
+            torch.float32
+        )
         # fresh on-line pack of the source fp32 weight
         w_fp32 = _fp32_weight_for(source, full_key)
         w_bf16 = w_fp32.to(torch.bfloat16)
@@ -137,7 +135,10 @@ def main(argv: list[str]) -> int:
         torch.cuda.empty_cache()
 
     peak = torch.cuda.max_memory_allocated() / 1e9
-    print(f"[verify] max pack diff across samples = {max_pack_diff:.3e}; VRAM peak {peak:.2f} GB", flush=True)
+    print(
+        f"[verify] max pack diff across samples = {max_pack_diff:.3e}; VRAM peak {peak:.2f} GB",
+        flush=True,
+    )
     ok = max_pack_diff == 0.0 and finite
     print(f"[verify] {'PASS' if ok else 'FAIL'}", flush=True)
     return 0 if ok else 1

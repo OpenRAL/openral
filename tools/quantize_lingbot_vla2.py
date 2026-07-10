@@ -167,7 +167,9 @@ def _stream_pack_backbone(srv: Any, *, min_params: int) -> int:
     srv_mod._nf4_backbone_in_place(backbone, torch=torch, min_params=min_params)
 
     linears = [m for _, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
-    print(f"[quantize] packing {len(linears)} backbone Linear4bit modules (streamed) ...", flush=True)
+    print(
+        f"[quantize] packing {len(linears)} backbone Linear4bit modules (streamed) ...", flush=True
+    )
     t0 = time.perf_counter()
     for i, module in enumerate(linears):
         module.cuda()  # bitsandbytes packs bf16 -> nf4 here
@@ -175,7 +177,9 @@ def _stream_pack_backbone(srv: Any, *, min_params: int) -> int:
         torch.cuda.empty_cache()
         if (i + 1) % 50 == 0 or i + 1 == len(linears):
             peak = torch.cuda.max_memory_allocated() / 1e6
-            print(f"[quantize]   {i + 1}/{len(linears)} packed (GPU peak {peak:.0f} MB)", flush=True)
+            print(
+                f"[quantize]   {i + 1}/{len(linears)} packed (GPU peak {peak:.0f} MB)", flush=True
+            )
     print(f"[quantize] pack: {time.perf_counter() - t0:.1f} s", flush=True)
     return len(linears)
 
@@ -206,7 +210,9 @@ def _save_pack(
         else:
             dropped.append(key)
     if dropped:
-        print(f"[quantize] dropped {len(dropped)} non-tensor state entries: {dropped[:5]}", flush=True)
+        print(
+            f"[quantize] dropped {len(dropped)} non-tensor state entries: {dropped[:5]}", flush=True
+        )
 
     out_path = out_dir / "model.safetensors"
     print(f"[quantize] writing {out_path} ({len(cleaned)} tensors) ...", flush=True)

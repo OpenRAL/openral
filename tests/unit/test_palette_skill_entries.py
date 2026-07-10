@@ -138,9 +138,7 @@ def test_lingbot_vla2_robotwin_manifest_and_palette() -> None:
     set, a real (non-scaffold) description, and that the skill actually lands in
     the aloha_agilex robot's ExecuteSkill palette with its verb set.
     """
-    manifest = RSkillManifest.from_yaml(
-        str(_RSKILLS_DIR / "lingbot-vla2-robotwin" / "rskill.yaml")
-    )
+    manifest = RSkillManifest.from_yaml(str(_RSKILLS_DIR / "lingbot-vla2-robotwin" / "rskill.yaml"))
     assert manifest.name == "OpenRAL/rskill-lingbot-vla2-robotwin"
     assert manifest.role == "s1"
     assert manifest.model_family == "lingbot_vla2"
@@ -154,9 +152,7 @@ def test_lingbot_vla2_robotwin_manifest_and_palette() -> None:
 
     caps = RobotCapabilities(embodiment_tags=["aloha_agilex"])
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
-    entry = next(
-        (e for e in palette.skills if e.rskill_id == manifest.name), None
-    )
+    entry = next((e for e in palette.skills if e.rskill_id == manifest.name), None)
     assert entry is not None, "lingbot_vla2 rSkill must reach the aloha_agilex palette"
     assert isinstance(entry, RSkillToolEntry)
     assert entry.description and not entry.description.startswith("Scaffold template")
