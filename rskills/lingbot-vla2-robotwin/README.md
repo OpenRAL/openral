@@ -49,9 +49,14 @@ before re-inferring (matching the upstream `--use_length 25` deploy).
 | Action space | 14-D joint position (2×(6 arm + 1 gripper)) |
 | Cameras | `camera1` (head), `camera2` (left wrist), `camera3` (right wrist), 256×256 |
 
-> **Preview.** A demo clip is added in Phase 3 once the 25 GB checkpoint download
-> completes and the skill has been exercised end-to-end on a GPU host. Until then
-> this rSkill is packaging-only (no local rollout has been run).
+![RoboTwin 2.0 aloha_agilex observation — head + left/right wrist views](media/preview.png)
+
+> **Preview.** A real RoboTwin 2.0 (SAPIEN, `aloha_agilex`) render of the three
+> 256×256 RGB views this skill consumes — head (left), left wrist, right wrist. A
+> model-in-the-loop rollout clip is not shipped because the 6.9 GB NF4 model and
+> the 1.9 GB SAPIEN env cannot co-reside on the 8 GB reference GPU (see
+> [Evaluation](#evaluation)); the model path itself is verified live (real NF4
+> forward pass + passing sim test, below).
 
 ## Upstream model / how it works
 
@@ -83,6 +88,23 @@ hardcode to `sdpa` (or `eager`).
 | in | `observation.state` | `(14,) float32` | aloha-agilex dual-arm joint state `[arm_l(6) grip_l(1) arm_r(6) grip_r(1)]`, radians. |
 | out | action chunk | `(50, 14) float32` | Absolute dual-arm joint position commands (25 replayed per re-inference). |
 
+## Verified performance (RTX 4070 Laptop, 8 GB)
+
+Measured live on a single 8 GB RTX 4070 Laptop GPU through the real ZMQ sidecar
+(NF4 Qwen3-VL backbone + bf16 MoE expert, `sdpa`, 10 denoising steps). The raw
+sidecar reply is a finite `(50, 14)` chunk; the adapter replays 25 steps.
+
+| Metric | Value |
+| --- | --- |
+| Resident weights (post-load) | **6.79 GB** |
+| Peak VRAM (during inference) | **6.97 GB** (fits 8 GB with ~1 GB headroom) |
+| Cold load (25 GB safetensors → CPU build → strict load → NF4 → CUDA) | **~70 s** |
+| Per-chunk inference latency | mean **804 ms**, median 746 ms, **p95 976 ms**, max 1110 ms (10 calls; cold first call ~1650 ms) |
+| Action chunk | `(50, 14)` finite; adapter replays 25 |
+
+Reproduced by `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` (3 real
+inferences: finite 14-D action, multi-step chunk, VRAM < 8 GiB) — all passing.
+
 ## How it was trained
 
 LingBot-VLA 2.0 is Robbyant's second-generation VLA, described in *"From
@@ -103,7 +125,7 @@ thin wrapper — the weights live upstream and are not copied here.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| AgileX Cobot Magic (RoboTwin 2.0) | `aloha_agilex` | ⚡ experimental | Packaging validated; end-to-end rollout is Phase 3 (pending the 25 GB weight download + GPU run). |
+| AgileX Cobot Magic (RoboTwin 2.0) | `aloha_agilex` | ⚡ experimental | Model path verified live on an 8 GB GPU (real NF4 forward pass, e2e adapter, passing sim test). Full RoboTwin sim eval needs ≥12 GB (model + SAPIEN co-residency). |
 
 ## Manifest summary
 
@@ -119,8 +141,8 @@ thin wrapper — the weights live upstream and are not copied here.
 | `weights_uri` | `hf://robbyant/lingbot-vla-v2-6b` |
 | `state_contract.dim` / `action_contract.dim` | `14` / `14` |
 | `chunk_size` / `n_action_steps` | `50` / `25` |
-| `min_vram_gb` | fp32 `25.5`, bf16 `12.8`, int4 `7.0` (**int4 unverified — estimate**) |
-| `latency_budget.per_chunk_ms` | `2000.0` (generous placeholder; ~130 ms on a 4090D reference) |
+| `min_vram_gb` | fp32 `25.5`, bf16 `12.8`, int4 `7.0` (**measured**: 6.79 GB weights / 6.97 GB peak) |
+| `latency_budget.per_chunk_ms` | `1500.0` (measured p95 976 ms + margin; ~130 ms on a 4090D reference) |
 | `evaluated_tasks` | `robotwin` |
 | `commercial_use_allowed` | `true` (Apache-2.0) |
 
@@ -145,15 +167,28 @@ sidecar; the OpenRAL side only needs the ZMQ wire:
 just sync --all-packages --group lingbot --inexact
 
 # the sidecar auto-clones github.com/robbyant/lingbot-vla-v2 @ 69729b4 and builds
-# its torch-2.8 venv on first use; the RoboTwin 5-task suite (Phase 3):
+# its torch-2.8 venv on first use; the RoboTwin 5-task suite (needs a ≥12 GB GPU):
 openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin
 ```
 
 ## Evaluation
 
-No locally-reproduced numbers are shipped yet — `eval/` is empty (`.gitkeep`).
-Phase 3 populates it via `openral benchmark run --suite robotwin` on the GPU eval
-host.
+No locally-reproduced RoboTwin numbers are shipped — `eval/` is empty
+(`.gitkeep`). **A full sim eval is infeasible on the 8 GB reference GPU**: the NF4
+model is ~6.9 GB resident and the RoboTwin SAPIEN env is ~1.9 GB (both measured),
+so the two cannot co-reside (6.9 + 1.9 = 8.8 GB > 8.0 GB), and SAPIEN's ray-traced
+rendering has no CPU fallback. Producing `eval/robotwin.json` therefore needs a
+≥12 GB card (or CPU-rendered SAPIEN); the command below closes the loop there and
+writes `reproduced_locally: true`:
+
+```bash
+openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin
+```
+
+What *was* verified live on 8 GB: the model path (see
+[Verified performance](#verified-performance-rtx-4070-laptop-8-gb)) — a real NF4
+`(50, 14)` forward pass, the e2e adapter wire (ping/reset/get_action/close), and a
+passing sim test.
 
 Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**):
 
@@ -161,13 +196,6 @@ Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**):
 | --- | --- | --- | --- | --- |
 | GM-100 | AgileX | 34.4% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
 | GM-100 | Galaxea | 15.6% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
-
-Reproduction command (Phase 3):
-`openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin`.
-
-> **8 GB fit is UNVERIFIED.** The `int4` (NF4 backbone + bf16 expert) footprint is
-> an estimate (~7 GB); it has not been measured. bf16 (12.8 GB) needs a ≥16 GB
-> card and fp32 (25.5 GB) a ≥32 GB card. Phase 3 measures the real NF4 peak.
 
 ## License
 

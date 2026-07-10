@@ -23,7 +23,7 @@ metadata:
   min_vram_gb: {fp32: 25.5, bf16: 12.8, int4: 7.0}
   chunk_size: 50
   n_action_steps: 25
-  latency_budget: {per_chunk_ms: 2000.0}
+  latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
   weights_uri: hf://robbyant/lingbot-vla-v2-6b

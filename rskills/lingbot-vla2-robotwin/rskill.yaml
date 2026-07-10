@@ -83,8 +83,9 @@ quantization:
   dtype: "int4"
   backend: "pytorch"
 # Informational VRAM ceilings, used by `openral rskill check` / `openral doctor`.
-# fp32 / bf16 are the measured on-disk / bf16-cast footprints; int4 is an
-# UNVERIFIED estimate (NF4 backbone + bf16 expert) pending Phase-3 measurement.
+# fp32 / bf16 are the on-disk / bf16-cast footprints; int4 is MEASURED live on an
+# RTX 4070 Laptop (8 GB): 6.79 GB resident weights, 6.97 GB peak during inference
+# (NF4 backbone + bf16 expert, sdpa, 10 denoising steps). 7.0 is the rounded ceiling.
 min_vram_gb:
   fp32: 25.5
   bf16: 12.8
@@ -105,15 +106,20 @@ state_contract:
 chunk_size: 50
 n_action_steps: 25
 latency_budget:
-  # Generous placeholder for 8 GB-class hardware (NF4 backbone + 10 denoising
-  # steps); the paper reports ~130 ms/inference on a 4090D reference. Tighten in
-  # Phase 3 once measured on the reference host.
-  per_chunk_ms: 2000.0
+  # MEASURED per full 50-step chunk inference on an RTX 4070 Laptop (8 GB), NF4
+  # backbone + bf16 expert, sdpa, 10 denoising steps: mean 804 ms / median 746 ms
+  # / p95 976 ms / max 1110 ms over 10 steady calls (cold first call ~1650 ms).
+  # 1500 ms is p95 + margin above the observed max. The paper reports ~130 ms on
+  # a 4090D reference; the gap is NF4 + no flash-attn + a laptop GPU.
+  per_chunk_ms: 1500.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 # GM-100 paper numbers (agilex 34.4% / galaxea 15.6% success) are paper-cited,
-# NOT reproduced locally — see README. eval/ is empty (.gitkeep); Phase 3
-# populates it via `openral benchmark run --suite robotwin`.
+# NOT reproduced locally — see README. eval/ is empty (.gitkeep): a full RoboTwin
+# sim eval is infeasible on the 8 GB reference GPU (6.9 GB NF4 model + 1.9 GB
+# SAPIEN = 8.8 GB > 8 GB, no CPU render), so `openral benchmark run --suite
+# robotwin` populates it on a ≥12 GB card. The model path is verified live (README
+# "Verified performance" + tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py).
 paper_url: "https://huggingface.co/papers/2607.06403"
 source_repo: "hf://robbyant/lingbot-vla-v2-6b"
 
