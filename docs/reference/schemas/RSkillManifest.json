@@ -1308,7 +1308,8 @@
             "molmoact2",
             "gr00t",
             "diffuser_actor",
-            "openvla"
+            "openvla",
+            "lingbot_vla2"
           ],
           "type": "string"
         },
