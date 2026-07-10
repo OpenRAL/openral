@@ -125,8 +125,7 @@ def _write_cli_yaml(repo: Path, ckpt_dir: str, qwen: str) -> Path:
     for _key in ("joints", "norm_type"):
         if _key in tmpl["data"]:
             tmpl["data"][_key] = [
-                str(entry) if isinstance(entry, dict) else entry
-                for entry in tmpl["data"][_key]
+                str(entry) if isinstance(entry, dict) else entry for entry in tmpl["data"][_key]
             ]
     # loader path: Path(model_path).parent.parent.parent / "lingbotvla_cli.yaml"
     cli = Path(ckpt_dir).parent.parent.parent / "lingbotvla_cli.yaml"
@@ -219,7 +218,9 @@ def _install_attn_fallback(*, target: str) -> None:
     for cls in (Qwen3VLForConditionalGeneration, Qwen2ForCausalLM):
         orig = cls._from_config.__func__  # type: ignore[attr-defined]  # reason: classmethod unwrap
 
-        def _patched(inner_cls: Any, config: Any, *args: Any, _orig: Any = orig, **kwargs: Any) -> Any:
+        def _patched(
+            inner_cls: Any, config: Any, *args: Any, _orig: Any = orig, **kwargs: Any
+        ) -> Any:
             _coerce_attn_config(config, target)
             kwargs.setdefault("attn_implementation", target)
             try:
@@ -240,15 +241,19 @@ def _nf4_backbone_in_place(backbone: Any, *, torch: Any, min_params: int = 2_000
         for name, child in list(module.named_children()):
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 new = bnb.nn.Linear4bit(
-                    child.in_features, child.out_features,
+                    child.in_features,
+                    child.out_features,
                     bias=child.bias is not None,
-                    compute_dtype=torch.bfloat16, quant_type="nf4",
+                    compute_dtype=torch.bfloat16,
+                    quant_type="nf4",
                 )
                 new.weight = bnb.nn.Params4bit(
-                    child.weight.data.clone(), requires_grad=False, quant_type="nf4")
+                    child.weight.data.clone(), requires_grad=False, quant_type="nf4"
+                )
                 if child.bias is not None:
                     new.bias = torch.nn.Parameter(
-                        child.bias.data.clone().to(torch.bfloat16), requires_grad=False)
+                        child.bias.data.clone().to(torch.bfloat16), requires_grad=False
+                    )
                 setattr(module, name, new)
             else:
                 _replace(child)
@@ -293,7 +298,12 @@ class _LingBotPolicy:
         srv = LingbotVLAv2Server.__new__(LingbotVLAv2Server)
         srv.adaptive_ensemble_alpha = 0.1
         srv.action_ensemble_horizon = 8
-        srv.use_length = 1
+        # Return the FULL predicted chunk (chunk_ret) untruncated: upstream infer
+        # slices the chunk to use_length when use_length > 0 (modeling infer path),
+        # so use_length=1 would emit a single 14-D step per inference and defeat
+        # the adapter's chunk replay. use_length=-1 keeps all predicted steps; the
+        # openral adapter slices its own replan window (_replan_steps).
+        srv.use_length = -1
         srv.chunk_ret = True
         srv.robot_norm_path = None
         srv.task_description = None
@@ -318,7 +328,7 @@ class _LingBotPolicy:
         if torch.cuda.is_available():
             print(
                 f"[lingbot_vla2_server] loaded ({quant}, attn={args.attn}); "
-                f"VRAM={torch.cuda.max_memory_allocated()/1e9:.2f}GB",
+                f"VRAM={torch.cuda.max_memory_allocated() / 1e9:.2f}GB",
                 flush=True,
             )
 
@@ -329,8 +339,12 @@ class _LingBotPolicy:
         images = obs["images"]
         raw = {
             "observation.images.cam_high": np.asarray(images["cam_high"], dtype=np.uint8),
-            "observation.images.cam_left_wrist": np.asarray(images["cam_left_wrist"], dtype=np.uint8),
-            "observation.images.cam_right_wrist": np.asarray(images["cam_right_wrist"], dtype=np.uint8),
+            "observation.images.cam_left_wrist": np.asarray(
+                images["cam_left_wrist"], dtype=np.uint8
+            ),
+            "observation.images.cam_right_wrist": np.asarray(
+                images["cam_right_wrist"], dtype=np.uint8
+            ),
             "observation.state": np.asarray(obs["state"], dtype=np.float32),
             "task": str(obs.get("task", "")),
         }
