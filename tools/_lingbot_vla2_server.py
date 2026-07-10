@@ -312,7 +312,7 @@ def _detect_prequantized(ckpt_dir: str) -> bool:
         meta = json.loads(meta_path.read_text())
     except (json.JSONDecodeError, OSError):
         return False
-    return meta.get("quantization", {}).get("scheme") == "nf4"
+    return bool(meta.get("quantization", {}).get("scheme") == "nf4")
 
 
 def _install_prequantized_backbone(
@@ -546,7 +546,7 @@ class _LingBotPolicy:
             # safetensors. Building under a bf16 default dtype halves the transient
             # CPU footprint of the throwaway init (every param is overwritten by the
             # overlay a moment later).
-            srv.load_model_weights = lambda *a, **k: None  # type: ignore[assignment,method-assign]
+            srv.load_model_weights = lambda *a, **k: None
             prev_dtype = torch.get_default_dtype()
             torch.set_default_dtype(torch.bfloat16)
             try:

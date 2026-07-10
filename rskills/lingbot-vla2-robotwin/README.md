@@ -30,8 +30,15 @@ This package wraps
 [`robbyant/lingbot-vla-v2-6b`](https://huggingface.co/robbyant/lingbot-vla-v2-6b)
 (upstream code: [`github.com/robbyant/lingbot-vla-v2`](https://github.com/robbyant/lingbot-vla-v2)
 @ `69729b4`) with an `rskill.yaml` manifest that adds capability checking, license
-surfacing, latency budgets, and local registry integration. It does **not** copy
-model weights.
+surfacing, latency budgets, and local registry integration. Its `weights_uri`
+points at the **NF4 pre-quantized mirror**
+[`OpenRAL/lingbot-vla-v2-6b-nf4`](https://huggingface.co/OpenRAL/lingbot-vla-v2-6b-nf4)
+(~6.8 GB packed vs 25.5 GB fp32), so a deploy downloads the already-quantized
+weights and skips the per-boot NF4 conversion. Loading a pre-quantized pack
+requires a **CUDA GPU** (bitsandbytes has no CPU 4-bit kernel); for a CPU / bf16
+or ≥16 GB-card bf16 load, override `vla.extra.model_id` (or
+`OPENRAL_LINGBOT_VLA2_DEVICE=cpu` with `model_id`) to the fp32 upstream
+`robbyant/lingbot-vla-v2-6b`.
 
 ## What this skill does
 
@@ -96,11 +103,19 @@ sidecar reply is a finite `(50, 14)` chunk; the adapter replays 25 steps.
 
 | Metric | Value |
 | --- | --- |
-| Resident weights (post-load) | **6.79 GB** |
+| Resident weights (post-load) | **6.84 GB** (pre-quantized NF4 overlay) |
 | Peak VRAM (during inference) | **6.97 GB** (fits 8 GB with ~1 GB headroom) |
-| Cold load (25 GB safetensors → CPU build → strict load → NF4 → CUDA) | **~70 s** |
+| Download | **~6.8 GB** packed NF4 (vs 25.5 GB fp32) — one-time |
+| Cold load (download cached → CPU graph build → NF4 overlay → CUDA) | **~90 s** |
 | Per-chunk inference latency | mean **804 ms**, median 746 ms, **p95 976 ms**, max 1110 ms (10 calls; cold first call ~1650 ms) |
 | Action chunk | `(50, 14)` finite; adapter replays 25 |
+
+The pre-quantized pack skips the fp32 read (6.8 GB vs 25.5 GB download) and the
+~30 s on-line bitsandbytes pack; wall-clock cold load is dominated by the 6.38 B
+graph construction + cold torch/transformers import, so it is comparable to the
+fp32 path rather than dramatically faster. The overlaid backbone weights
+dequantize **bitwise-identically** (`max|Δ| = 0`) to a fresh on-line
+`.to("cuda")` pack of the same fp32 source (verified on sampled modules).
 
 Reproduced by `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` (3 real
 inferences: finite 14-D action, multi-step chunk, VRAM < 8 GiB) — all passing.
@@ -109,16 +124,18 @@ inferences: finite 14-D action, multi-step chunk, VRAM < 8 GiB) — all passing.
 
 LingBot-VLA 2.0 is Robbyant's second-generation VLA, described in *"From
 Foundation to Application: Improving VLA Models in Practice"*. This rSkill is a
-thin wrapper — the weights live upstream and are not copied here.
+thin wrapper; the runtime weights come from the OpenRAL NF4 mirror of the upstream
+checkpoint (an NF4-quantized copy, not a re-train).
 
 | Field | Value |
 | --- | --- |
-| Source repo | [`robbyant/lingbot-vla-v2-6b`](https://huggingface.co/robbyant/lingbot-vla-v2-6b) |
+| Weights (runtime) | [`OpenRAL/lingbot-vla-v2-6b-nf4`](https://huggingface.co/OpenRAL/lingbot-vla-v2-6b-nf4) @ `773051f` (NF4 backbone / bf16 expert, ~6.8 GB) |
+| Upstream checkpoint | [`robbyant/lingbot-vla-v2-6b`](https://huggingface.co/robbyant/lingbot-vla-v2-6b) @ `11c703b` (fp32, ~25.5 GB) |
 | Upstream code | [`github.com/robbyant/lingbot-vla-v2`](https://github.com/robbyant/lingbot-vla-v2) @ `69729b4` |
 | Base backbone | [`Qwen/Qwen3-VL-4B-Instruct`](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct) |
 | Paper | [huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403) |
 | License | apache-2.0 (code **and** weights) |
-| Parameters | 6.38 B (fp32 safetensors, ~25.5 GB on disk) |
+| Parameters | 6.38 B (NF4 backbone + bf16 expert, ~6.8 GB packed; 25.5 GB fp32 upstream) |
 | Embodiment | RoboTwin 2.0 / AgileX Cobot Magic (dual-arm) |
 
 ## Supported robots
@@ -137,8 +154,8 @@ thin wrapper — the weights live upstream and are not copied here.
 | `role` | `s1` |
 | `model_family` | `lingbot_vla2` |
 | `embodiment_tags` | `aloha_agilex` |
-| `runtime` / `quantization.dtype` | `pytorch` / `int4` (bitsandbytes NF4 backbone, bf16 expert) |
-| `weights_uri` | `hf://robbyant/lingbot-vla-v2-6b` |
+| `runtime` / `quantization.dtype` | `pytorch` / `int4` (bitsandbytes NF4 backbone, bf16 expert; **pre-quantized**) |
+| `weights_uri` | `hf://OpenRAL/lingbot-vla-v2-6b-nf4@773051f` |
 | `state_contract.dim` / `action_contract.dim` | `14` / `14` |
 | `chunk_size` / `n_action_steps` | `50` / `25` |
 | `min_vram_gb` | fp32 `25.5`, bf16 `12.8`, int4 `7.0` (**measured**: 6.79 GB weights / 6.97 GB peak) |
@@ -199,11 +216,12 @@ Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**):
 
 ## License
 
-This rSkill package (`rskill.yaml`, `README.md`) is **Apache-2.0**. The wrapped
-weights at `hf://robbyant/lingbot-vla-v2-6b` and the upstream `lingbotvla` code are
-also **Apache-2.0** (code and weights), so commercial use is permitted. The package
-does not copy weights into this repository; runtime loading still emits OpenRAL's
-unverified-provenance warning until the planned signing control exists.
+This rSkill package (`rskill.yaml`, `README.md`) is **Apache-2.0**. The runtime
+weights at `hf://OpenRAL/lingbot-vla-v2-6b-nf4` are an NF4-quantized copy of the
+upstream `hf://robbyant/lingbot-vla-v2-6b` checkpoint, redistributed under the same
+**Apache-2.0** license (code and weights), so commercial use is permitted. The
+package does not copy weights into this git repository; runtime loading still emits
+OpenRAL's unverified-provenance warning until the planned signing control exists.
 
 ## See also
 

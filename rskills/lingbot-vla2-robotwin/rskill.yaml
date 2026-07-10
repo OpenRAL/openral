@@ -1,5 +1,6 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
-# Wraps: robbyant/lingbot-vla-v2-6b            (Apache-2.0 code + weights)
+# Wraps: OpenRAL/lingbot-vla-v2-6b-nf4         (NF4 pre-quantized mirror of
+#        robbyant/lingbot-vla-v2-6b, Apache-2.0 code + weights)
 # Source: https://github.com/robbyant/lingbot-vla-v2 @ 69729b4
 # Paper:  "From Foundation to Application: Improving VLA Models in Practice"
 #         (https://huggingface.co/papers/2607.06403)
@@ -76,10 +77,14 @@ actuators_required:
 runtime: "pytorch"
 quantization:
   # `int4` is the OpenRAL QuantizationDtype enum value that matches the sidecar's
-  # bitsandbytes NF4 scheme (nf4 + compute_dtype bf16), applied in place to the
-  # Qwen3-VL backbone only; the MoE action expert stays bf16. `none` loads bf16
-  # for ≥16 GB cards. Unlike the pre-quantized molmoact2 rSkill, the NF4 rewrite
-  # happens at load time in the sidecar (weights ship fp32).
+  # bitsandbytes NF4 scheme (nf4 + compute_dtype bf16), applied to the Qwen3-VL
+  # backbone only; the MoE action expert stays bf16. The weights ship
+  # PRE-quantized (like the molmoact2 / pi05 nf4 rSkills): `weights_uri` points at
+  # the OpenRAL nf4 mirror, whose `quantization_metadata.json` (scheme=nf4)
+  # sentinel makes the sidecar overlay the packed weights straight into
+  # `Linear4bit` shells (no fp32 read, no ~30 s on-line pack). Prequant NF4 is
+  # CUDA-only; for a CPU/bf16 or ≥16 GB-card bf16 load, point `model_id` at the
+  # fp32 upstream `robbyant/lingbot-vla-v2-6b` instead.
   dtype: "int4"
   backend: "pytorch"
 # Informational VRAM ceilings, used by `openral rskill check` / `openral doctor`.
@@ -90,7 +95,9 @@ min_vram_gb:
   fp32: 25.5
   bf16: 12.8
   int4: 7.0
-weights_uri: "hf://robbyant/lingbot-vla-v2-6b@11c703bf6a5c1f45b3b69168482da11fdbba53d7"
+# Pre-quantized NF4 mirror (~6.8 GB download vs 25.5 GB fp32); the sidecar detects
+# the quantization_metadata.json sentinel and fast-loads the packed weights.
+weights_uri: "hf://OpenRAL/lingbot-vla-v2-6b-nf4@773051f96656efe886a4405dca63b88062cc6b50"
 
 # ── Preprocessing ──────────────────────────────────────────────────────────
 # No `processors` block: LingBot-VLA 2.0 is not a lerobot PolicyProcessorPipeline
