@@ -46,7 +46,7 @@ import io
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -119,11 +119,63 @@ def _write_cli_yaml(repo: Path, ckpt_dir: str, qwen: str) -> Path:
     tmpl["model"]["tokenizer_path"] = qwen
     tmpl["data"]["norm_stats_file"] = "assets/norm_stats/robotwin.json"
     tmpl["data"].setdefault("img_size", 256)
+    # FeatureInfo.update_info / get_normalizer ast.literal_eval each joints +
+    # norm_type entry, so they must be string-reprs of the {name: val} dicts,
+    # not YAML-parsed dicts (verified live: FeatureTransform crashes otherwise).
+    for _key in ("joints", "norm_type"):
+        if _key in tmpl["data"]:
+            tmpl["data"][_key] = [
+                str(entry) if isinstance(entry, dict) else entry
+                for entry in tmpl["data"][_key]
+            ]
     # loader path: Path(model_path).parent.parent.parent / "lingbotvla_cli.yaml"
     cli = Path(ckpt_dir).parent.parent.parent / "lingbotvla_cli.yaml"
     cli.parent.mkdir(parents=True, exist_ok=True)
     cli.write_text(yaml.safe_dump(tmpl))
     return cli
+
+
+def _install_lerobot_stub() -> None:
+    """Stub any ``lerobot.*`` import so the model class imports.
+
+    The upstream model import chain pulls in ``lingbotvla.data`` (training-only
+    ``lerobot`` imports scattered across submodules) — not needed for inference,
+    and ``lerobot`` cannot be installed here anyway (it wants transformers 5.x,
+    conflicting with the pinned 4.57.3). A meta-path finder returns a permissive
+    stub module for every ``lerobot`` submodule. Verified live: without this the
+    ``from deploy.lingbot_vla_v2_policy import ...`` chain ModuleNotFound's.
+    """
+    import importlib.abc
+    import importlib.machinery
+    import types
+
+    class _Dummy:
+        def __init__(self, *a: Any, **k: Any) -> None: ...
+
+        def __call__(self, *a: Any, **k: Any) -> None:
+            return None
+
+    class _AnyStub(types.ModuleType):
+        __path__: ClassVar[list[str]] = []
+
+        def __getattr__(self, name: str) -> Any:
+            if name.startswith("__") and name.endswith("__"):
+                raise AttributeError(name)
+            return _Dummy
+
+    class _LerobotFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, fullname: str, path: Any, target: Any = None) -> Any:
+            if fullname == "lerobot" or fullname.startswith("lerobot."):
+                return importlib.machinery.ModuleSpec(fullname, self)
+            return None
+
+        def create_module(self, spec: Any) -> Any:
+            return _AnyStub(spec.name)
+
+        def exec_module(self, module: Any) -> None: ...
+
+    if not any(type(f).__name__ == "_LerobotFinder" for f in sys.meta_path):
+        sys.meta_path.insert(0, _LerobotFinder())
 
 
 def _coerce_attn_config(config: Any, target: str) -> None:
@@ -219,6 +271,10 @@ class _LingBotPolicy:
         os.environ["QWEN3VL_PATH"] = qwen
         ckpt_dir = _resolve_checkpoint(args.model)
         _write_cli_yaml(repo, ckpt_dir, qwen)
+
+        # The model import chain pulls training-only lerobot imports; stub them
+        # before importing the deploy module (see _install_lerobot_stub).
+        _install_lerobot_stub()
 
         from deploy.lingbot_vla_v2_policy import LingbotVLAv2Server
         from lingbotvla.models.vla.lingbot_vla.qwen3vl_in_vla import apply_lingbot_qwen3_vl_patch
