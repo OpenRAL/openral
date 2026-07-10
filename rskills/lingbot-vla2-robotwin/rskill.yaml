@@ -136,7 +136,10 @@ description: >
   Cobot Magic embodiment. Multi-task: predicts 50-step action chunks across
   three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command,
   replaying 25 steps per re-inference. Runs out-of-process in a torch-2.8 ZMQ
-  sidecar; NF4 backbone quantization targets 8 GB-class GPUs.
+  sidecar; NF4 backbone quantization targets 8 GB-class GPUs. NOTE: this is the
+  pre-trained FOUNDATION checkpoint — zero-shot it does not solve RoboTwin tasks
+  (actions collapse to the distribution mean); post-train on RoboTwin data before
+  deployment (serving path is verified correct — not a quantization/serving bug).
 
 # ── Task-data gate ─────────────────────────────────────────────────────────
 # RoboTwin dual-arm generalist; declaring `robotwin` makes the benchmark runner

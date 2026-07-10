@@ -40,6 +40,19 @@ or ≥16 GB-card bf16 load, override `vla.extra.model_id` (or
 `OPENRAL_LINGBOT_VLA2_DEVICE=cpu` with `model_id`) to the fp32 upstream
 `robbyant/lingbot-vla-v2-6b`.
 
+> ⚠️ **Zero-shot status — this is a pre-training *foundation* checkpoint, not a
+> task policy.** `robbyant/lingbot-vla-v2-6b` is the LingBot-VLA 2.0 **pre-trained
+> foundation model** (per the upstream card: "from large-scale pre-training toward
+> reliable real-world applications", ~60,000 h across 20 robot configs). Run
+> **zero-shot** on a specific RoboTwin task it does **not** produce coherent
+> task actions — its action chunks collapse toward the action-distribution mean
+> (see [Zero-shot action quality](#zero-shot-action-quality-measured) below). The
+> **intended usage is post-training on RoboTwin data** before deployment; the
+> paper's success numbers are **post-trained** results. This is a model/checkpoint
+> property, **not** an OpenRAL serving or quantization bug — the serving path is
+> verified correct (open-loop A/B: NF4 and bf16 identical; normalization bounds
+> match the data; MoE + attention backends exonerated).
+
 ## What this skill does
 
 A multi-task dual-arm policy for the RoboTwin 2.0 benchmark on the AgileX
@@ -120,6 +133,50 @@ dequantize **bitwise-identically** (`max|Δ| = 0`) to a fresh on-line
 Reproduced by `tests/sim/test_aloha_agilex_lingbot_vla2_robotwin.py` (3 real
 inferences: finite 14-D action, multi-step chunk, VRAM < 8 GiB) — all passing.
 
+> The table above verifies the **serving path** (a finite, correctly-shaped,
+> in-range `(50, 14)` chunk at the stated VRAM/latency). It does **not** claim the
+> zero-shot actions solve the task — they do not; see below.
+
+## Zero-shot action quality (measured)
+
+Open-loop evaluation against **real, in-distribution** RoboTwin 2.0 `lift_pot`
+(`aloha-agilex_clean`) ground truth — the recorded head + wrist frames, 14-D
+proprio state, and `joint_action/vector` from
+[`TianxingChen/RoboTwin2.0`](https://huggingface.co/datasets/TianxingChen/RoboTwin2.0),
+fed frame-by-frame through this rSkill's sidecar and compared to the recorded
+actions. **The zero-shot foundation checkpoint does not track the task:**
+
+| Signal (ep0, t ∈ {0,20,40,60,80}) | This checkpoint (zero-shot) | GT reference |
+| --- | --- | --- |
+| Overall action MAE vs GT | **~0.5 rad** | 0 (self) |
+| Within-chunk step-to-step jitter (arm dims) | **~0.07–0.32 rad/step** | **~0.011 rad/step** |
+| `action[0]` vs current state (absolute-action model → should ≈ state) | **decoupled** (closer to the global action *mean* than to the state at every probed step) | `action[0] = state` |
+| Grippers | pinned mid-range (~0.3–0.5), ignore the GT open→close transition | follow the task |
+
+The predicted arm joints cluster at the **norm-stats mean pose** (e.g. joint 2
+≈ 1.1–1.6 rad regardless of a state ranging 0 → 2.55 rad) — the classic signature
+of a flow-matching policy whose conditioning is too weak to overcome the marginal
+action prior, i.e. an un-adapted foundation model on an unseen task/embodiment.
+
+**Ruled out as causes** (so this is not fixable by changing the OpenRAL wrapper):
+
+- **Quantization** — GPU NF4 and CPU bf16 give the *same* mean-collapse and MAE
+  (NF4 jitter is if anything slightly *lower*), so it is not the 4-bit backbone.
+- **Normalization** — the reconstructed `lingbotvla_cli.yaml` parses `joints` /
+  `norm_type` back correctly, the norm-stats JSON carries real state **and** action
+  bounds, and the action `q99` (joint 2 ≈ 2.60, joint 3 ≈ 2.45) matches the GT data
+  range; unnormalized outputs land in joint space (not `[-1, 1]`), so the
+  `bounds_99_woclip` round-trip is applied.
+- **MoE / attention backends** — the real Triton fused-MoE (GPU) and the pure-torch
+  SwiGLU MoE fallback (CPU) collapse identically, and `sdpa`/`eager` agree; state
+  and image inputs each still produce a weak-but-nonzero, structured response (not
+  the bit-identical output a conditioning-drop bug would give), so inputs are wired.
+
+**Intended usage:** post-train `robbyant/lingbot-vla-v2-6b` on RoboTwin data for the
+target task/embodiment (upstream README), then package the post-trained checkpoint
+as the rSkill's `weights_uri`. Reproduce the probe with
+`tools/_lingbot_vla2_server.py` + the open-loop script in the PR discussion.
+
 ## How it was trained
 
 LingBot-VLA 2.0 is Robbyant's second-generation VLA, described in *"From
@@ -142,7 +199,7 @@ checkpoint (an NF4-quantized copy, not a re-train).
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| AgileX Cobot Magic (RoboTwin 2.0) | `aloha_agilex` | ⚡ experimental | Model path verified live on an 8 GB GPU (real NF4 forward pass, e2e adapter, passing sim test). Full RoboTwin sim eval needs ≥12 GB (model + SAPIEN co-residency). |
+| AgileX Cobot Magic (RoboTwin 2.0) | `aloha_agilex` | ⚡ experimental (foundation checkpoint — post-train before use) | Serving path verified live on an 8 GB GPU (real NF4 forward pass, e2e adapter, passing sim test). **Zero-shot action quality does not solve RoboTwin tasks** ([measured](#zero-shot-action-quality-measured)); post-train on RoboTwin data first. Full RoboTwin sim eval needs ≥12 GB (model + SAPIEN co-residency). |
 
 ## Manifest summary
 
@@ -207,12 +264,15 @@ What *was* verified live on 8 GB: the model path (see
 `(50, 14)` forward pass, the e2e adapter wire (ping/reset/get_action/close), and a
 passing sim test.
 
-Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**):
+Paper-cited results (GM-100 benchmark, **`reproduced_locally: false`**). These are
+**post-trained** numbers (the paper fine-tunes the foundation checkpoint per
+benchmark); they are **not** achievable zero-shot from the released weights this
+rSkill wraps — see [Zero-shot action quality](#zero-shot-action-quality-measured):
 
 | Benchmark | Embodiment | Success | `reproduced_locally` | Source |
 | --- | --- | --- | --- | --- |
-| GM-100 | AgileX | 34.4% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
-| GM-100 | Galaxea | 15.6% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
+| GM-100 (post-trained) | AgileX | 34.4% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
+| GM-100 (post-trained) | Galaxea | 15.6% | false | paper ([huggingface.co/papers/2607.06403](https://huggingface.co/papers/2607.06403)) |
 
 ## License
 
