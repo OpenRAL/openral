@@ -16,6 +16,9 @@ tags:
 - robotwin
 - bimanual
 - manipulation
+base_model:
+- robbyant/lingbot-vla-v2-6b
+base_model_relation: quantized
 inference: false
 ---
 

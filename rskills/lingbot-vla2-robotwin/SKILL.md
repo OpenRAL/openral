@@ -1,7 +1,7 @@
 ---
 name: lingbot-vla2-robotwin
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: generalist, pick, place, transfer, pour on block, bottle, cup, bowl. LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX Cobot Magic embodiment. Multi-task: predicts 50-step action chunks across three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command, replaying 25 steps per re-inference. Runs out-of-process in a torch-2.8 ZMQ sidecar; NF4 backbone quantization targets 8 GB-class GPUs. NOTE: this is the pre-trained FOUNDATION checkpoint — zero-shot it does not solve RoboTwin tasks (actions collapse to the distribution mean); post-train on RoboTwin data before deployment (serving path is verified correct — not a quantization/serving bug). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: generalist, pick, place, transfer, pour on block, bottle, cup, bowl. LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX Cobot Magic embodiment. Predicts 50-step action chunks from three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command (25-step replay). Runs in a torch-2.8 ZMQ sidecar; NF4 backbone quantization targets 8 GB GPUs. NOTE: pre-trained FOUNDATION checkpoint — zero-shot actions collapse to the distribution mean; post-train on RoboTwin first. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -41,7 +41,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX Cobot Magic embodiment. Multi-task: predicts 50-step action chunks across three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command, replaying 25 steps per re-inference. Runs out-of-process in a torch-2.8 ZMQ sidecar; NF4 backbone quantization targets 8 GB-class GPUs. NOTE: this is the pre-trained FOUNDATION checkpoint — zero-shot it does not solve RoboTwin tasks (actions collapse to the distribution mean); post-train on RoboTwin data before deployment (serving path is verified correct — not a quantization/serving bug).
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX Cobot Magic embodiment. Predicts 50-step action chunks from three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command (25-step replay). Runs in a torch-2.8 ZMQ sidecar; NF4 backbone quantization targets 8 GB GPUs. NOTE: pre-trained FOUNDATION checkpoint — zero-shot actions collapse to the distribution mean; post-train on RoboTwin first.
 
 ## Capabilities
 
