@@ -3035,6 +3035,10 @@ libero = [
     { name = "num2words" },
     { name = "transformers" },
 ]
+lingbot = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 locateanything = [
     { name = "msgpack" },
     { name = "pyzmq" },
@@ -3171,6 +3175,10 @@ libero = [
     { name = "lerobot", extras = ["libero"] },
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
+]
+lingbot = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
 ]
 locateanything = [
     { name = "msgpack", specifier = ">=1" },
