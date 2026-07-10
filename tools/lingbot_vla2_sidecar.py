@@ -141,6 +141,12 @@ def main() -> int:
     p.add_argument("--robo-name", default="robotwin", help="upstream robot config stem")
     p.add_argument("--quantization", choices=("none", "nf4"), default="nf4")
     p.add_argument(
+        "--device",
+        choices=("cuda", "cpu"),
+        default="cuda",
+        help="Inference device (cpu forces bf16; frees the GPU for a co-resident sim).",
+    )
+    p.add_argument(
         "--attn",
         choices=("sdpa", "eager"),
         default="sdpa",
@@ -180,16 +186,24 @@ def main() -> int:
     cmd = [
         str(venv_py),
         str(_SERVER),
-        "--model", str(args.model),
-        "--robo-name", str(args.robo_name),
-        "--quantization", str(args.quantization),
-        "--attn", str(args.attn),
-        "--host", str(args.host),
-        "--port", str(args.port),
+        "--model",
+        str(args.model),
+        "--robo-name",
+        str(args.robo_name),
+        "--quantization",
+        str(args.quantization),
+        "--device",
+        str(args.device),
+        "--attn",
+        str(args.attn),
+        "--host",
+        str(args.host),
+        "--port",
+        str(args.port),
     ]
     print(
         f"[{_LABEL}] launching server: model={args.model} port={args.port} "
-        f"quant={args.quantization} attn={args.attn} repo={source}",
+        f"quant={args.quantization} device={args.device} attn={args.attn} repo={source}",
         flush=True,
     )
     os.execvpe(str(venv_py), cmd, env)

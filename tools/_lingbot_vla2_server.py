@@ -93,14 +93,31 @@ def _resolve_qwen() -> str:
 def _resolve_checkpoint(model: str) -> str:
     """Return a local checkpoint dir (dir of ``*.safetensors``) for ``model``.
 
-    A local path is used verbatim; an HF id is snapshot-downloaded.
+    A local path is used verbatim; an HF id is snapshot-downloaded. The id may be
+    a manifest-style ref: an optional ``hf://`` scheme is stripped and an optional
+    ``@<branch-or-sha>`` revision pin is split off and passed as ``revision=``
+    (``huggingface_hub`` ignores an ``@sha`` glued onto the repo id — the same
+    ``resolve_rskill_repo_revision`` convention the lerobot adapters use). Only the
+    quantized pack / configs / tokenizer are fetched, never a stray fp32 shard set.
     """
+    # A local checkpoint override wins over the passed id — lets an operator serve
+    # a local fp32 checkout (skipping the HF download) regardless of the rskill's
+    # weights_uri, mirroring OPENRAL_LINGBOT_VLA2_REPO for the code checkout.
+    override = os.environ.get("OPENRAL_LINGBOT_VLA2_CKPT")
+    if override and Path(override).expanduser().is_dir():
+        return str(Path(override).expanduser())
     p = Path(model).expanduser()
     if p.is_dir():
         return str(p)
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(model, allow_patterns=["*.safetensors", "*.json", "tokenizer*"])
+    ref = model[len("hf://") :] if model.startswith("hf://") else model
+    repo_id, _, revision = ref.partition("@")
+    return snapshot_download(
+        repo_id,
+        revision=revision or None,
+        allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
+    )
 
 
 def _write_cli_yaml(repo: Path, ckpt_dir: str, qwen: str) -> Path:
@@ -261,6 +278,194 @@ def _nf4_backbone_in_place(backbone: Any, *, torch: Any, min_params: int = 2_000
     _replace(backbone)
 
 
+# bnb serialises a packed Params4bit into ``<prefix>.weight`` (packed uint8) plus
+# these sibling metadata tensors (double/nested quant is on by default in the
+# bnb our sidecar pins, so ``.absmax`` is itself quantized with ``.nested_*``).
+# The suffixes mirror ``openral_sim._quantization._BNB_META_SUFFIXES`` so the
+# on-disk pack format is identical to every other OpenRAL nf4 rSkill.
+_BNB_META_SUFFIXES = (
+    ".absmax",
+    ".quant_map",
+    ".nested_absmax",
+    ".nested_quant_map",
+    ".quant_state.bitsandbytes__nf4",
+    ".quant_state.bitsandbytes__fp4",
+)
+
+
+def _detect_prequantized(ckpt_dir: str) -> bool:
+    """True when ``ckpt_dir`` carries a pre-quantized NF4 pack.
+
+    The house sentinel is ``quantization_metadata.json`` with
+    ``quantization.scheme == "nf4"`` (produced by
+    ``tools/quantize_lingbot_vla2.py``, same shape as
+    ``tools/quantize_rskill.py`` writes for the lerobot nf4 rSkills). When present
+    the server can skip the 25.5 GB fp32 read + the on-line bf16->nf4 pack and
+    overlay the packed weights straight into ``Linear4bit`` shells.
+    """
+    import json
+
+    meta_path = Path(ckpt_dir) / "quantization_metadata.json"
+    if not meta_path.is_file():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    return meta.get("quantization", {}).get("scheme") == "nf4"
+
+
+def _install_prequantized_backbone(
+    vla: Any, state: dict[str, Any], *, device: str, torch: Any
+) -> tuple[int, set[str]]:
+    """Overlay packed nf4 weights onto the ``Linear4bit`` shells in ``vla``.
+
+    Self-contained twin of ``openral_sim._quantization.install_prequantized_linears``
+    (the sidecar never imports ``openral_*``). Walks the policy, and for every
+    ``bnb.nn.Linear4bit`` rebuilds ``weight`` via ``Params4bit.from_prequantized``
+    so the packed uint8 tensor lands directly on ``device`` with no intermediate
+    bf16 materialisation (the ~30 s ``.to(cuda)`` re-pack the standard path runs).
+
+    Returns ``(n_modules_rebuilt, consumed_state_keys)`` so the caller can drop the
+    consumed keys from the residual bf16 ``load_state_dict`` overlay.
+    """
+    del torch  # kept for parity with the sibling helpers
+    import bitsandbytes as bnb
+
+    consumed: set[str] = set()
+    count = 0
+    for prefix, module in vla.named_modules():
+        if not isinstance(module, bnb.nn.Linear4bit):
+            continue
+        weight_key = f"{prefix}.weight"
+        if weight_key not in state:
+            continue
+        quantized_stats: dict[str, Any] = {}
+        for suffix in _BNB_META_SUFFIXES:
+            full = f"{weight_key}{suffix}"
+            if full in state:
+                quantized_stats[suffix.lstrip(".")] = state[full]
+                consumed.add(full)
+        consumed.add(weight_key)
+        module.weight = bnb.nn.Params4bit.from_prequantized(
+            data=state[weight_key],
+            quantized_stats=quantized_stats,
+            requires_grad=False,
+            device=device,
+        )
+        bias_key = f"{prefix}.bias"
+        if module.bias is not None and bias_key in state:
+            module.bias.data = state[bias_key].to(device).to(module.bias.dtype)
+            consumed.add(bias_key)
+        count += 1
+    return count, consumed
+
+
+def _overlay_prequantized(vla: Any, ckpt_dir: str, *, torch: Any) -> None:
+    """Load ``model.safetensors`` from ``ckpt_dir`` into the nf4 shells + bf16 rest.
+
+    The backbone ``Linear4bit`` modules get their packed weights via
+    :func:`_install_prequantized_backbone`; every remaining bf16 tensor (MoE
+    expert, align heads, action MLPs, embeddings, vision tower) is applied with a
+    non-strict ``load_state_dict`` (the consumed nf4 keys are dropped so PyTorch
+    does not flag them as missing on the already-rebuilt modules). Prequant NF4 is
+    CUDA-only, so the packed weights are placed on ``cuda`` directly.
+    """
+    from safetensors.torch import load_file
+
+    weights_path = Path(ckpt_dir) / "model.safetensors"
+    if not weights_path.is_file():
+        raise SystemExit(
+            f"[lingbot_vla2_server] pre-quantized ckpt {ckpt_dir} has no "
+            "model.safetensors; the quantization_metadata.json sentinel is present "
+            "but the packed weights are missing."
+        )
+    state = load_file(str(weights_path), device="cpu")
+    loaded, consumed = _install_prequantized_backbone(vla, state, device="cuda", torch=torch)
+    leftover = {k: v for k, v in state.items() if k not in consumed}
+    missing, unexpected = vla.load_state_dict(leftover, strict=False)
+    print(
+        f"[lingbot_vla2_server] prequant overlay: {loaded} nf4 modules, "
+        f"{len(leftover)} bf16 residual keys, {len(unexpected)} unexpected "
+        f"(nf4-shell missing slots are expected, not an error).",
+        flush=True,
+    )
+
+
+def _follow_model_device(srv: Any, *, torch: Any) -> None:
+    """Make ``srv.sample_actions_fn`` move its tensor inputs to the model's device.
+
+    The upstream ``sample_actions_batch`` moves inputs to a hardcoded
+    ``device="cuda"`` before calling the sampler; on a CPU (or otherwise
+    non-cuda) deployment that would land inputs on the GPU while the weights sit
+    on CPU. We wrap the sampler so every tensor arg/kwarg follows the model's
+    real device, resolved per call (the model's ``sample_actions`` is otherwise
+    device-agnostic — ``device = state.device``).
+    """
+    model = srv.vla.model
+    orig = srv.sample_actions_fn
+
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        dev = next(model.parameters()).device
+        moved_args = [a.to(dev) if isinstance(a, torch.Tensor) else a for a in args]
+        moved_kwargs = {
+            k: (v.to(dev) if isinstance(v, torch.Tensor) else v) for k, v in kwargs.items()
+        }
+        return orig(*moved_args, **moved_kwargs)
+
+    srv.sample_actions_fn = _wrapped
+
+
+def _install_cpu_moe_fallback() -> None:
+    """Replace the CUDA-only fused MoE kernel with a pure-torch SwiGLU expert loop.
+
+    The action expert routes tokens through ``Qwen2FusedExperts.forward`` ->
+    ``lingbotvla.ops.fused_moe.fused_moe_forward``, whose ``group_gemm`` Triton
+    kernel hard-asserts ``input.is_cuda`` (``ops/group_gemm/kernel/moe.py``), so
+    the expert cannot run on CPU. The math is a standard top-k SwiGLU mixture over
+    the packed per-expert weights (``gate_proj``/``up_proj``/``down_proj`` of shape
+    ``[E, I, H]``/``[E, I, H]``/``[E, H, I]``): ``down(silu(gate·x) * (up·x))``,
+    scaled by the token's routing weight and summed over its selected experts —
+    exactly what the fused kernel computes (``fused_moe.py`` steps 4-10). We monkey-
+    patch ``Qwen2FusedExperts.forward`` with that per-expert loop; it matches the
+    method the outer ``Qwen2MoeSparseMoeBlock.forward`` already calls on the fused
+    path, so only the inner kernel changes. Idempotent.
+    """
+    import torch
+    from lingbotvla.models.vla.lingbot_vla.qwen2_action_expert import Qwen2FusedExperts
+    from torch.nn.functional import linear, silu
+
+    if getattr(Qwen2FusedExperts, "_openral_cpu_moe", False):
+        return
+
+    def _torch_forward(
+        self: Any,
+        module: Any,
+        num_experts: int,
+        routing_weights: Any,
+        selected_experts: Any,
+        hidden_states: Any,
+    ) -> Any:
+        # hidden_states (N, H); routing_weights / selected_experts (N, top_k).
+        out = torch.zeros_like(hidden_states)
+        for e in range(num_experts):
+            sel = selected_experts == e  # (N, top_k)
+            tok = sel.any(dim=1)  # (N,) tokens routed to expert e
+            if not bool(tok.any()):
+                continue
+            x = hidden_states[tok]
+            hidden = silu(linear(x, self.gate_proj[e])) * linear(x, self.up_proj[e])
+            y = linear(hidden, self.down_proj[e])
+            weight = (routing_weights[tok] * sel[tok].to(routing_weights.dtype)).sum(
+                dim=1, keepdim=True
+            )
+            out[tok] += (y * weight).to(out.dtype)
+        return out
+
+    Qwen2FusedExperts.forward = _torch_forward  # type: ignore[method-assign]  # reason: CPU MoE patch
+    Qwen2FusedExperts._openral_cpu_moe = True  # type: ignore[attr-defined]  # reason: idempotence guard
+
+
 class _LingBotPolicy:
     """Loads ``LingbotVLAv2Server`` (NF4 backbone / bf16 expert) and serves actions."""
 
@@ -287,6 +492,30 @@ class _LingBotPolicy:
         self._torch = torch
         self._robo_name = args.robo_name
         quant = args.quantization
+        device = args.device
+        # bitsandbytes NF4 packs its weights on ``.cuda()`` and has no CPU kernel,
+        # so a CPU deployment can only run bf16. Skip the quant rewrite (and say
+        # so) rather than crash — the model then needs ~12.8 GB RAM at bf16.
+        if device == "cpu" and quant == "nf4":
+            print(
+                "[lingbot_vla2_server] device=cpu: NF4 needs CUDA (bitsandbytes); "
+                "loading bf16 on CPU instead (~12.8 GB RAM).",
+                flush=True,
+            )
+            quant = "none"
+
+        # A pre-quantized NF4 checkpoint (quantization_metadata.json scheme=nf4)
+        # ships packed 4-bit weights that only bitsandbytes' CUDA kernels can
+        # dequantize, so a CPU deployment cannot load it. Refuse early with a clear
+        # pointer to the fp32 upstream ckpt rather than crashing deep in the overlay.
+        is_prequant = _detect_prequantized(ckpt_dir)
+        if is_prequant and device == "cpu":
+            raise SystemExit(
+                f"[lingbot_vla2_server] {ckpt_dir} is a pre-quantized NF4 pack, which "
+                "requires CUDA (bitsandbytes has no CPU 4-bit kernel). Re-run with "
+                "--device cuda, or point --model at the fp32 upstream checkpoint "
+                "(robbyant/lingbot-vla-v2-6b) for a CPU/bf16 load."
+            )
 
         # flash-attn is not installed in the sidecar venv; coerce the upstream
         # hardcoded flash_attention_2 configs to a flash-free backend BEFORE the
@@ -309,13 +538,46 @@ class _LingBotPolicy:
         srv.task_description = None
         srv.use_compile = False
         apply_lingbot_qwen3_vl_patch()
-        srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
-        # Belt-and-suspenders: coerce any attn config the build left on flash.
-        _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
-        srv.vla.model = srv.vla.model.to(torch.bfloat16)
-        if quant == "nf4":
+        if is_prequant:
+            # Fast path: skip the 25.5 GB fp32 read + the ~30 s on-line bf16->nf4
+            # pack. Build the graph structure only (weight load stubbed to a no-op),
+            # rewrite the backbone Linears to Linear4bit shells, then overlay the
+            # packed nf4 weights + bf16 remainder straight from the prequant
+            # safetensors. Building under a bf16 default dtype halves the transient
+            # CPU footprint of the throwaway init (every param is overwritten by the
+            # overlay a moment later).
+            srv.load_model_weights = lambda *a, **k: None  # type: ignore[assignment,method-assign]
+            prev_dtype = torch.get_default_dtype()
+            torch.set_default_dtype(torch.bfloat16)
+            try:
+                srv.vla = srv.load_vla(ckpt_dir)
+            finally:
+                torch.set_default_dtype(prev_dtype)
+            _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
+            srv.vla.model = srv.vla.model.to(torch.bfloat16)
             _nf4_backbone_in_place(srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch)
-        srv.vla = srv.vla.to("cuda").eval()
+            _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
+            srv.vla = srv.vla.to(device).eval()
+        else:
+            srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
+            # Belt-and-suspenders: coerce any attn config the build left on flash.
+            _coerce_attn_config(getattr(srv.vla, "config", None), args.attn)
+            srv.vla.model = srv.vla.model.to(torch.bfloat16)
+            if quant == "nf4":
+                _nf4_backbone_in_place(srv.vla.model.qwenvl_with_expert.qwenvl, torch=torch)
+            srv.vla = srv.vla.to(device).eval()
+        # ``sample_actions_batch`` hardcodes ``device="cuda"`` before the model
+        # forward (upstream deploy path), which would move inputs to the GPU while
+        # our weights sit on CPU. Wrap the sampler so inputs always follow the
+        # model's real device; the model's own ``sample_actions`` is otherwise
+        # device-agnostic (``device = state.device``). No-op cost on the CUDA path,
+        # so only install it off-GPU.
+        if device != "cuda":
+            _follow_model_device(srv, torch=torch)
+            # The sparse-MoE action expert dispatches through a custom Triton
+            # group_gemm kernel that hard-asserts CUDA (lingbotvla.ops.group_gemm);
+            # swap it for a pure-torch SwiGLU MoE so the expert runs off-GPU.
+            _install_cpu_moe_fallback()
         srv.global_step = 0
         srv.last_action_chunk = None
         srv.last_normalized_action_chunk = None
@@ -325,10 +587,16 @@ class _LingBotPolicy:
         srv.reset(self._robo_name)
         self._srv = srv
         self._action_keys = list(srv.vla.feature_transform.org_features["actions"])
-        if torch.cuda.is_available():
+        mode = "nf4-prequant" if is_prequant else quant
+        if device == "cuda" and torch.cuda.is_available():
             print(
-                f"[lingbot_vla2_server] loaded ({quant}, attn={args.attn}); "
+                f"[lingbot_vla2_server] loaded ({mode}, attn={args.attn}); "
                 f"VRAM={torch.cuda.max_memory_allocated() / 1e9:.2f}GB",
+                flush=True,
+            )
+        else:
+            print(
+                f"[lingbot_vla2_server] loaded ({mode}, attn={args.attn}, device={device})",
                 flush=True,
             )
 
@@ -396,6 +664,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--model", required=True, help="HF id or local checkpoint dir")
     p.add_argument("--robo-name", default="robotwin", help="upstream robot config stem")
     p.add_argument("--quantization", choices=("none", "nf4"), default="nf4")
+    p.add_argument(
+        "--device",
+        choices=("cuda", "cpu"),
+        default="cuda",
+        help="Inference device. cpu forces bf16 (NF4 needs CUDA) — frees the GPU "
+        "for a co-resident SAPIEN sim on an 8 GB card, at a large latency cost.",
+    )
     p.add_argument(
         "--attn",
         choices=("sdpa", "eager"),
