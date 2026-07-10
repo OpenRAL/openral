@@ -126,3 +126,38 @@ def test_palette_order_is_stable_across_calls() -> None:
     p1 = build_tool_palette(installed_skills=manifests, robot_capabilities=caps)
     p2 = build_tool_palette(installed_skills=list(reversed(manifests)), robot_capabilities=caps)
     assert [s.rskill_id for s in p1.skills] == [s.rskill_id for s in p2.skills]
+
+
+def test_lingbot_vla2_robotwin_manifest_and_palette() -> None:
+    """The LingBot-VLA 2.0 rSkill loads and reaches an aloha_agilex palette.
+
+    Exercises the real ``RSkillManifest`` loader against the in-tree
+    ``rskills/lingbot-vla2-robotwin/rskill.yaml`` (no synthetic manifest) and
+    the real ``build_tool_palette`` filter, asserting the palette-relevant
+    surface: ``role: s1``, the 14-D action contract, a non-empty embodiment tag
+    set, a real (non-scaffold) description, and that the skill actually lands in
+    the aloha_agilex robot's ExecuteSkill palette with its verb set.
+    """
+    manifest = RSkillManifest.from_yaml(
+        str(_RSKILLS_DIR / "lingbot-vla2-robotwin" / "rskill.yaml")
+    )
+    assert manifest.name == "OpenRAL/rskill-lingbot-vla2-robotwin"
+    assert manifest.role == "s1"
+    assert manifest.model_family == "lingbot_vla2"
+    assert manifest.kind == "vla"
+    assert manifest.action_contract is not None and manifest.action_contract.dim == 14
+    assert manifest.state_contract is not None and manifest.state_contract.dim == 14
+    assert manifest.embodiment_tags == ["aloha_agilex"]
+    # A real description, not the scaffold template default.
+    assert not manifest.is_scaffold_placeholder
+    assert RSkillAction.GENERALIST in manifest.actions
+
+    caps = RobotCapabilities(embodiment_tags=["aloha_agilex"])
+    palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
+    entry = next(
+        (e for e in palette.skills if e.rskill_id == manifest.name), None
+    )
+    assert entry is not None, "lingbot_vla2 rSkill must reach the aloha_agilex palette"
+    assert isinstance(entry, RSkillToolEntry)
+    assert entry.description and not entry.description.startswith("Scaffold template")
+    assert RSkillAction.GENERALIST in entry.actions

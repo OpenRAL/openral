@@ -1152,6 +1152,15 @@ const LAYERS = [
         schemas: ["RSkillLicensePosture", "RSkillManifest", "ModelFamily"],
       },
       {
+        title: "LingBot-VLA 2.0 sidecar adapter (packaging)",
+        pkg: "rskills/lingbot-vla2-robotwin · policies/lingbot_vla2.py · tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py",
+        status: "yellow",
+        desc: "Robbyant LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching action expert, Apache-2.0 code AND weights) integrated out-of-process via a ZMQ + msgpack sidecar — the boot helper (openral interpreter) auto-clones github.com/robbyant/lingbot-vla-v2 @ 69729b4 and builds its OWN Python 3.12 + torch-2.8 venv on first use (upstream pins torch==2.8.0 / transformers==4.57.3 + custom Triton MoE kernels, incompatible with the workspace torch>=2.9 / transformers>=5), then execs the server. NF4 backbone / bf16 expert; flash-attn is not installed so the upstream flash_attention_2 hardcode is coerced to sdpa/eager. Default embodiment robotwin (dual-arm AgileX Cobot Magic). Yellow: packaging + adapter wiring landed (manifest loads, palette-reachable, unit-tested); the end-to-end GPU forward pass + VRAM measurement + eval JSON are Phase 3 (blocked on the 25 GB weight fetch).",
+        inputs: ["WorldState (via ZMQ)"],
+        outputs: ["Action (chunk, via ZMQ)"],
+        schemas: ["RSkillManifest", "VLASpec", "ModelFamily"],
+      },
+      {
         title: "OpenVLA-OFT adapter (shipped)",
         pkg: "python/sim · policies/openvla.py",
         status: "green",
@@ -1579,7 +1588,7 @@ const CROSS = [
     title: "Skills (rSkill manifests)",
     pkg: "rskills/",
     status: "green",
-    desc: "38 manifests: VLA skills include smolvla, molmoact2, pi05-libero-int8, ACT, diffusion, xVLA, OpenVLA-OFT, 3D Diffuser Actor, GR00T, and the RLDX-1 family (rldx1-ft-libero, rldx1-ft-gr1, rldx1-ft-rc365, rldx1-ft-simpler-widowx). Detector / VLM / reward / ROS-wrapped skills also live here. Apache-2.0 / MIT / permissive-research / NVIDIA non-commercial / RLWRLD non-commercial. Every benchmarked skill ships rskills/<id>/eval/<benchmark>.json — validated against RSkillEvalResult by the rSkill loader and aggregated by openral benchmark report. The RLDX-1 family runs out-of-process via the `rldx` sidecar adapter — see openral_sim.policies.rldx + tools/rldx_sidecar.py.",
+    desc: "42 manifests: VLA skills include smolvla, molmoact2, pi05-libero-int8, ACT, diffusion, xVLA, OpenVLA-OFT, 3D Diffuser Actor, GR00T, LingBot-VLA 2.0 (lingbot-vla2-robotwin), and the RLDX-1 family (rldx1-ft-libero, rldx1-ft-gr1, rldx1-ft-rc365, rldx1-ft-simpler-widowx). Detector / VLM / reward / ROS-wrapped skills also live here. Apache-2.0 / MIT / permissive-research / NVIDIA non-commercial / RLWRLD non-commercial (LingBot-VLA 2.0 is Apache-2.0 code AND weights). Every benchmarked skill ships rskills/<id>/eval/<benchmark>.json — validated against RSkillEvalResult by the rSkill loader and aggregated by openral benchmark report. The RLDX-1 family runs out-of-process via the `rldx` sidecar adapter (openral_sim.policies.rldx + tools/rldx_sidecar.py); LingBot-VLA 2.0 likewise via the `lingbot_vla2` adapter (auto-provisioned torch-2.8 sidecar — tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py).",
     schemas: ["RSkillManifest", "RSkillEvalResult"],
   },
   {

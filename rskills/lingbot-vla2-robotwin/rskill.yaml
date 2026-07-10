@@ -1,0 +1,160 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+# Wraps: robbyant/lingbot-vla-v2-6b            (Apache-2.0 code + weights)
+# Source: https://github.com/robbyant/lingbot-vla-v2 @ 69729b4
+# Paper:  "From Foundation to Application: Improving VLA Models in Practice"
+#         (https://huggingface.co/papers/2607.06403)
+#
+# Robbyant LingBot-VLA 2.0: a 6.38 B Qwen3-VL-4B backbone with a sparse-MoE
+# flow-matching action expert (10 denoising steps), trained for dual-arm
+# manipulation on the RoboTwin / AgileX "Cobot Magic" embodiment. Routed via the
+# out-of-process `lingbot_vla2` adapter (openral_sim.policies.lingbot_vla2): the
+# upstream `lingbotvla` package pins torch==2.8.0 / transformers==4.57.3 + custom
+# Triton MoE kernels (incompatible with the openral torch>=2.9 / transformers>=5
+# workspace, CLAUDE.md §3), so the model runs in an auto-provisioned Python 3.12 +
+# torch-2.8 ZMQ sidecar (tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py).
+#
+# Contract (verified against the upstream configs/vla/robotwin/robotwin.yaml +
+# assets/norm_stats/robotwin.json):
+#   3 cameras cam_high / cam_left_wrist / cam_right_wrist (HWC uint8, resized to
+#     256×256 server-side by the model's FeatureTransform)
+#   observation.state 14-D  [arm_l(6) grip_l(1) arm_r(6) grip_r(1)]
+#   action            14-D per step (arm.position 12 + effector.position 2)
+#   chunk_size 50; the upstream RoboTwin deploy replays 25 (`--use_length 25`).
+#
+# Camera-name mapping
+# -------------------
+# The aloha_agilex RobotDescription declares three sensors named
+# top / wrist_left / wrist_right with frozen vla_feature_keys
+# observation.images.camera1 / camera2 / camera3 (so the compatibility check
+# below resolves against camera1/2/3). The runtime wire mapping is handled by the
+# adapter, NOT a lerobot rename_map: it aligns the scene's first three camera keys
+# positionally onto the upstream origin keys cam_high → cam_left_wrist →
+# cam_right_wrist. No `image_preprocessing.aliases` block is needed.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-lingbot-vla2-robotwin"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"  # learnable Vision-Language-Action policy
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "lingbot_vla2"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# RoboTwin 2.0 dual-arm embodiment: AgileX Cobot Magic (robots/aloha_agilex).
+embodiment_tags:
+  - "aloha_agilex"
+
+# Three RGB streams. Keyed on the aloha_agilex frozen vla_feature_keys
+# camera1 / camera2 / camera3 so the loader's compatibility check resolves; the
+# adapter re-keys the scene cameras onto the model's cam_high / cam_left_wrist /
+# cam_right_wrist positionally at runtime.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 256
+    min_height: 256
+
+# Output side. 14-DoF dual-arm command. For aloha_agilex the loader auto-fills
+# n_dof (14) + vla_action_key from robots/aloha_agilex/robot.yaml.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  # `int4` is the OpenRAL QuantizationDtype enum value that matches the sidecar's
+  # bitsandbytes NF4 scheme (nf4 + compute_dtype bf16), applied in place to the
+  # Qwen3-VL backbone only; the MoE action expert stays bf16. `none` loads bf16
+  # for ≥16 GB cards. Unlike the pre-quantized molmoact2 rSkill, the NF4 rewrite
+  # happens at load time in the sidecar (weights ship fp32).
+  dtype: "int4"
+  backend: "pytorch"
+# Informational VRAM ceilings, used by `openral rskill check` / `openral doctor`.
+# fp32 / bf16 are the measured on-disk / bf16-cast footprints; int4 is an
+# UNVERIFIED estimate (NF4 backbone + bf16 expert) pending Phase-3 measurement.
+min_vram_gb:
+  fp32: 25.5
+  bf16: 12.8
+  int4: 7.0
+weights_uri: "hf://robbyant/lingbot-vla-v2-6b"
+
+# ── Preprocessing ──────────────────────────────────────────────────────────
+# No `processors` block: LingBot-VLA 2.0 is not a lerobot PolicyProcessorPipeline
+# family (smolvla / pi05 / xvla / diffusion / rldx). Normalization ships inside
+# the upstream repo at assets/norm_stats/robotwin.json and is applied server-side
+# by the model's FeatureTransform, so there is nothing to download here.
+state_contract:
+  dim: 14
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# chunk_size=50 predicted; the adapter replays 25 steps before re-inferring,
+# mirroring the upstream RoboTwin deploy (`--use_length 25`).
+chunk_size: 50
+n_action_steps: 25
+latency_budget:
+  # Generous placeholder for 8 GB-class hardware (NF4 backbone + 10 denoising
+  # steps); the paper reports ~130 ms/inference on a 4090D reference. Tighten in
+  # Phase 3 once measured on the reference host.
+  per_chunk_ms: 2000.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# GM-100 paper numbers (agilex 34.4% / galaxea 15.6% success) are paper-cited,
+# NOT reproduced locally — see README. eval/ is empty (.gitkeep); Phase 3
+# populates it via `openral benchmark run --suite robotwin`.
+paper_url: "https://huggingface.co/papers/2607.06403"
+source_repo: "hf://robbyant/lingbot-vla-v2-6b"
+
+description: >
+  LingBot-VLA 2.0 (6.38 B, Qwen3-VL-4B backbone + sparse-MoE flow-matching
+  action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX
+  Cobot Magic embodiment. Multi-task: predicts 50-step action chunks across
+  three RGB views (head + per-wrist) driving a 14-DoF dual-arm joint command,
+  replaying 25 steps per re-inference. Runs out-of-process in a torch-2.8 ZMQ
+  sidecar; NF4 backbone quantization targets 8 GB-class GPUs.
+
+# ── Task-data gate ─────────────────────────────────────────────────────────
+# RoboTwin dual-arm generalist; declaring `robotwin` makes the benchmark runner
+# accept all `robotwin/<task>` scenes (family match) and refuse non-RoboTwin ones.
+evaluated_tasks: ["robotwin"]
+
+# ── Action vocabulary ──────────────────────────────────────────────────────
+# GENERALIST marks the multi-task foundation checkpoint; the specific verbs
+# cover the RoboTwin dual-arm task families (pick-place / handover / pouring).
+actions:
+  - "generalist"
+  - "pick"
+  - "place"
+  - "transfer"
+  - "pour"
+objects:
+  - "block"
+  - "bottle"
+  - "cup"
+  - "bowl"
+scenes:
+  - "tabletop"
+
+# ── Per-checkpoint action contract ─────────────────────────────────────────
+action_contract:
+  dim: 14
+  # RoboTwin / AgileX aloha-agilex emits absolute joint positions
+  # (2×(6 arm + 1 gripper)).
+  representation: "joint_positions"
+  # EXPLICIT joint units — the RoboTwin aloha-agilex arms record in RADIANS
+  # (same rationale as smolvla-robotwin: continuous joints wrap past π, so the
+  # >5.0 peak would otherwise trip the degrees-vs-radians heuristic and corrupt
+  # every command with a ÷π/180 scaling). Channels 6/13 are the 0–1 grippers.
+  joint_units: "radians"

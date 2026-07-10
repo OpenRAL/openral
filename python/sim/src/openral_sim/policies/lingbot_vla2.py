@@ -28,10 +28,12 @@ Mirrors the :mod:`openral_sim.policies.rldx` rationale:
   the sidecar owns in its repo checkout. There is no ``trust_remote_code``
   escape.
 
-So the sidecar (``tools/lingbot_vla2_sidecar.py``) runs the upstream
-``LingbotVLAv2Server`` in its own py3.12 + torch-2.8 venv and answers
-``ping`` / ``reset`` / ``get_action`` over ZMQ + msgpack, exactly like the
-rldx / rlbench-3dda sidecars.
+So the sidecar runs the upstream ``LingbotVLAv2Server`` in its own py3.12 +
+torch-2.8 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +
+msgpack, exactly like the rldx / rlbench-3dda sidecars. The boot helper
+``tools/lingbot_vla2_sidecar.py`` (openral interpreter) auto-provisions the
+clone + venv on first use, then execs the server ``tools/_lingbot_vla2_server.py``
+(sidecar venv) — same two-file boot/server split as the qwen-vlm sidecar.
 
 Observation / action contract (verified against the upstream configs)
 ---------------------------------------------------------------------
@@ -62,6 +64,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import sys
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -143,10 +146,16 @@ def _resolve_camera_keys(env_cfg: SimEnvironment, extra: dict[str, Any]) -> tupl
     return keys[: len(_LINGBOT_IMAGE_KEYS)]
 
 
-_SIDECAR_VENV = Path.home() / ".cache" / "openral" / "lingbot-vla2-sidecar" / "source" / ".venv"
-
-
 def _locate_sidecar_script() -> Path:
+    """Find ``tools/lingbot_vla2_sidecar.py`` (the boot helper) relative to the repo.
+
+    The boot helper runs under the openral interpreter (:data:`sys.executable`)
+    so it can import :mod:`openral_sim._sidecar_common`; it clones the upstream
+    repo + builds the torch-2.8 venv on first use, then execs the server. The
+    venv itself no longer needs to exist when this adapter is constructed —
+    provisioning is the boot helper's job (escape hatch:
+    ``OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` to reuse a prebuilt interpreter).
+    """
     override = os.environ.get("OPENRAL_LINGBOT_VLA2_SIDECAR_SCRIPT")
     if override:
         p = Path(override).expanduser().resolve()
@@ -161,32 +170,6 @@ def _locate_sidecar_script() -> Path:
     raise ROSConfigError(
         f"Could not locate tools/lingbot_vla2_sidecar.py upwards from {here}. "
         "Set OPENRAL_LINGBOT_VLA2_SIDECAR_SCRIPT to its absolute path."
-    )
-
-
-def _sidecar_python() -> Path:
-    """Resolve the py3.12 + torch-2.8 sidecar venv interpreter.
-
-    ``lingbotvla`` pins torch==2.8.0 / transformers==4.57.3 / triton==3.4.0, so
-    it lives in its own venv (default under
-    ``~/.cache/openral/lingbot-vla2-sidecar``); override with
-    ``OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON``. Phase 2 wires the git-clone + venv
-    build (``tools/lingbot_vla2_sidecar.py`` provisioning) into this path.
-    """
-    override = os.environ.get("OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON")
-    if override:
-        p = Path(override).expanduser()
-        if not p.is_file():
-            raise ROSConfigError(f"OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON={override!r} is not a file.")
-        return p
-    default = _SIDECAR_VENV / "bin" / "python"
-    if default.is_file():
-        return default
-    raise ROSConfigError(
-        "lingbot_vla2 sidecar venv not found. It needs a py3.12 venv with the "
-        "upstream `lingbotvla` package (torch==2.8.0). Provision it and set "
-        "OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON, or run "
-        "`python tools/lingbot_vla2_sidecar.py --help`."
     )
 
 
@@ -273,9 +256,9 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     """Build the LingBot-VLA 2.0 adapter behind its auto-managed ZMQ sidecar.
 
     YAML knobs (``vla.extra``): ``model_id``, ``robo_name``, ``camera_keys``,
-    ``quantization`` (``nf4`` default / ``int8`` / ``none``), ``port``,
-    ``replan_steps``, ``auto_spawn``. Environment overrides:
-    ``OPENRAL_LINGBOT_VLA2_{QUANTIZATION,PORT,AUTO_SPAWN}``.
+    ``quantization`` (``nf4`` default / ``none``), ``attn`` (``sdpa`` default /
+    ``eager``), ``port``, ``replan_steps``, ``auto_spawn``. Environment overrides:
+    ``OPENRAL_LINGBOT_VLA2_{QUANTIZATION,ATTN,PORT,AUTO_SPAWN}``.
     """
     spec = env_cfg.vla
     extra = dict(spec.extra or {})
@@ -284,6 +267,9 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     robo_name = str(extra.get("robo_name") or _DEFAULT_ROBO_NAME)
     quantization = str(
         os.environ.get("OPENRAL_LINGBOT_VLA2_QUANTIZATION") or extra.get("quantization", "nf4")
+    ).lower()
+    attn = str(
+        os.environ.get("OPENRAL_LINGBOT_VLA2_ATTN") or extra.get("attn", "sdpa")
     ).lower()
     replan_steps = _opt_int(extra.get("replan_steps"), _DEFAULT_REPLAN_STEPS)
     camera_keys = _resolve_camera_keys(env_cfg, extra)
@@ -297,10 +283,13 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     )
     auto_spawn = os.environ.get("OPENRAL_LINGBOT_VLA2_AUTO_SPAWN", "1") != "0"
 
+    # Launch the boot helper with the OPENRAL interpreter (it imports
+    # openral_sim._sidecar_common to auto-provision the clone + torch-2.8 venv,
+    # then execs tools/_lingbot_vla2_server.py inside that venv). PYTHONPATH is
+    # stripped by SidecarClient._spawn; expandable_segments is re-set by the boot
+    # helper's make_isolated_env.
     launch_argv = [
-        "env",
-        "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
-        str(_sidecar_python()),
+        sys.executable,
         str(_locate_sidecar_script()),
         "--model",
         model_id,
@@ -308,6 +297,8 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
         robo_name,
         "--quantization",
         quantization,
+        "--attn",
+        attn,
         "--host",
         host,
         "--port",

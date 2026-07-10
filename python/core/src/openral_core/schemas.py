@@ -4390,6 +4390,7 @@ ModelFamily: TypeAlias = Literal[
     "gr00t",
     "diffuser_actor",
     "openvla",
+    "lingbot_vla2",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -4401,6 +4402,13 @@ matching adapter under ``python/sim/src/openral_sim/adapters/``.
 ``gr00t`` (NVIDIA Isaac GR00T N1.x / N2) runs out-of-process via a ZMQ
 sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 ``rldx`` adapter (RLDX-1 is itself a GR00T-N1.5 finetune).
+
+``lingbot_vla2`` (Robbyant LingBot-VLA 2.0, Qwen3-VL-4B backbone + sparse-MoE
+flow-matching action expert, Apache-2.0 code + weights) runs out-of-process
+via a ZMQ sidecar in its own Python 3.12 + torch-2.8 venv — the upstream
+``lingbotvla`` package pins ``torch==2.8.0`` / ``transformers==4.57.3`` +
+custom Triton MoE kernels, incompatible with the workspace torch>=2.9 /
+transformers>=5 (adapter: ``openral_sim.policies.lingbot_vla2``).
 
 ``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
 loaded in-process (``trust_remote_code``, gated by
