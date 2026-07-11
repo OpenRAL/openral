@@ -20,7 +20,9 @@ just test                       # run unit tests (<30 s)
 just test-doctest               # run docstring examples on the curated set
 uv run pytest -k so100          # filter by keyword
 just lint                       # ruff check + ruff format --check + mypy --strict
-                                # (mypy targets: openral_core, openral_cli, openral_sim, tools/)
+                                # (mypy targets: openral_core, openral_cli, openral_sim,
+                                #  openral_observability, openral_runner, openral_reasoner,
+                                #  openral_wam, tools/)
 uv run ruff check . --fix       # autofix
 uv run ruff format .            # format
 ```
@@ -49,7 +51,7 @@ just sync                       # the only correct full-workspace sync
 
 **2. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
-`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers==5.3.0`,
+`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers>=5.4.0,<5.14.0`,
 `scipy`, `opencv`, robosuite — live in these groups, **not** in the core deps.
 A default sync (no `--group`) deliberately *removes* them, so for any VLA / sim
 work you need at least the `sim` group:

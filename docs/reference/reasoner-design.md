@@ -262,9 +262,9 @@ saw its own body or its execution outcomes.
   *reads and interprets*, never executes. Their `PlaybookContract` (trigger,
   `composes_tools`, `done_predicate`, `max_steps`, fallback) is selection
   metadata; the `PLAYBOOK.md` body is injected into the `## PLAYBOOKS` prompt
-  block. Seven launch playbooks encode the recurring procedures
+  block. Six launch playbooks encode the recurring procedures
   (`find-object`, `decompose-mission`, `verify-outcome`, `preflight-reach`,
-  `stage-for-manipulation`, `clarify-ambiguity`, `subtask-with-goal`).
+  `stage-for-manipulation`, `clarify-ambiguity`).
 - **Self-maintained `MEMORY.md`** — *semantic/narrative* memory (preferences,
   corrections, lessons, durable home facts), complementary to the *geometric*
   scene graph:

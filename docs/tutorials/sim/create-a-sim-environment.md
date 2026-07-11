@@ -48,8 +48,8 @@ runtime through one of three registries (no hardcoded IDs):
 
 | Registry | Defined in | Populated by |
 |---|---|---|
-| `SCENES` | `python/sim/src/openral_sim/registry.py` | `@SCENES.register("<id>")` decorators in `adapters/*.py` |
-| `POLICIES` | same | `@POLICIES.register("<id>")` decorators in `adapters/*.py` |
+| `SCENES` | `python/sim/src/openral_sim/registry.py` | `@SCENES.register("<id>")` decorators in `backends/*.py` |
+| `POLICIES` | same | `@POLICIES.register("<id>")` decorators in `policies/*.py` |
 | `ROBOTS` | same | Auto-discovered from `robots/<id>/robot.yaml` at import time |
 
 List everything that is currently registered on your install:
@@ -154,10 +154,10 @@ See [GH-134](https://github.com/OpenRAL/openral/issues/134).
 ## 2. Author a SimScene YAML
 
 The on-disk shape is a [`SimScene`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-— `(robot × scene × task)` — defined at `python/core/src/openral_core/schemas.py:4728`.
+— `(robot × scene × task)` — defined at `python/core/src/openral_core/schemas.py:6652`.
 At runtime the CLI composes it with the rSkill manifest (`--rskill`) into a
 [`SimEnvironment`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
-(`schemas.py:4598`) that adapter factories consume. Loading a YAML that
+(`schemas.py:6425`) that adapter factories consume. Loading a YAML that
 carries a `vla:` block raises `ROSConfigError` — policy *always* travels
 on the CLI, not in the YAML.
 
@@ -216,8 +216,8 @@ vice versa.
 
 | Block | Schema | Required keys |
 |---|---|---|
-| `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:4285`) | `id`; `backend` defaults to `mujoco` |
-| `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:4500`) | `id`, `scene_id` (must equal `scene.id`) |
+| `scene` | [`SceneSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:6109`) | `id`; `backend` defaults to `mujoco` |
+| `task` | [`TaskSpec`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py) (`schemas.py:6327`) | `id`, `scene_id` (must equal `scene.id`) |
 | `robot_id` | string, key into `ROBOTS` | Only on **free-axis** scenes — and only if you want to bake the robot into the YAML rather than passing `--robot`. Forbidden on `fixed_robot` scenes (LIBERO/MetaWorld/RoboCasa). |
 
 Policy is **not** a YAML block; it is supplied at the CLI as
@@ -243,7 +243,7 @@ the reasoner select policy at runtime.
 
 Robots are auto-registered from `robots/<id>/robot.yaml` at import time — no
 Python edit required. The discovery loop lives at
-[`python/sim/src/openral_sim/policies/robots.py:67-118`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py).
+[`python/sim/src/openral_sim/policies/robots.py:71-125`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py).
 The search path is, in order:
 
 1. `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` (if the env var is set)
@@ -418,7 +418,7 @@ reads success from `info[task.success_key]`.
 The smallest working scene adapter lives in
 [`python/sim/src/openral_sim/policies/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py).
 It is the recommended reference because it has no physics and no external
-dependencies. The realistic reference is `adapters/libero.py` (wraps the
+dependencies. The realistic reference is `backends/libero.py` (wraps the
 LIBERO gymnasium env).
 
 ### Skeleton
@@ -558,9 +558,9 @@ class PolicyAdapter(Protocol):
 ```
 
 The simplest reference is `_ZeroPolicy` / `_RandomPolicy` in
-[`adapters/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py)
+[`policies/mock.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/mock.py)
 (no weights, CPU-only, end-to-end test on any machine). The realistic
-reference is `adapters/smolvla.py` (loads a `SmolVLAPolicy`, normalises the
+reference is `policies/smolvla.py` (loads a `SmolVLAPolicy`, normalises the
 observation dict, caches action chunks).
 
 ### Skeleton
@@ -601,7 +601,7 @@ def _build(env_cfg: "SimEnvironment") -> _MyPolicy:
     return _MyPolicy(spec=env_cfg.vla, device=env_cfg.vla.device)
 ```
 
-Wire it in via the same `adapters/__init__.py` import pattern as §4.
+Wire it in via the same `policies/__init__.py` import pattern as §4.
 
 ### Pair it with an rSkill manifest
 

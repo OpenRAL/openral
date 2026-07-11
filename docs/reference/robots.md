@@ -13,6 +13,7 @@ Every embodiment is a typed `RobotDescription` manifest under `robots/<robot_id>
 | UR10e | [`robots/ur10e/`](https://github.com/OpenRAL/openral/tree/master/robots/ur10e/) | `UR10eHAL` (`MujocoArmHAL`) + `openral_hal_ur10e` | ✓ sim · HW bring-up M3 |
 | Flexiv Rizon 4 | [`robots/rizon4/`](https://github.com/OpenRAL/openral/tree/master/robots/rizon4/) | `Rizon4MujocoHAL` (`MujocoArmHAL`) | ✓ sim |
 | ALOHA bimanual (gym-aloha) | [`robots/aloha_bimanual/`](https://github.com/OpenRAL/openral/tree/master/robots/aloha_bimanual/) | `AlohaMujocoHAL` (`MujocoArmHAL`, bimanual) + real-HW `AlohaHAL` over Interbotix XS | ✓ sim · ✓ HW |
+| ALOHA-AgileX (RoboTwin 2.0) | [`robots/aloha_agilex/`](https://github.com/OpenRAL/openral/tree/master/robots/aloha_agilex/) | eval-only (RoboTwin 2.0 dual-arm, 14-DoF; py3.10 SAPIEN sidecar) — targeted by `smolvla-robotwin` | ✓ sim |
 | Enactic OpenArm v2 bimanual | [`robots/openarm/`](https://github.com/OpenRAL/openral/tree/master/robots/openarm/) | `OpenArmMujocoHAL` (`MujocoArmHAL`, 16-DoF bimanual) | ✓ sim |
 | Anvil OpenARM 2.0 bimanual | [`robots/anvil_openarm_v2/`](https://github.com/OpenRAL/openral/tree/master/robots/anvil_openarm_v2/) | `AnvilOpenArmV2MujocoHAL` (`MujocoArmHAL`, 16-DoF bimanual; v2 + Anvil J1/J6 range deltas + wrist support bracket) | ✓ sim |
 | Unitree H1 humanoid | [`robots/h1/`](https://github.com/OpenRAL/openral/tree/master/robots/h1/) | `H1MujocoHAL` (software PD loop, no S0 cerebellum) | ✓ sim |
