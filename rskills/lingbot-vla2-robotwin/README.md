@@ -174,6 +174,22 @@ action prior, i.e. an un-adapted foundation model on an unseen task/embodiment.
   SwiGLU MoE fallback (CPU) collapse identically, and `sdpa`/`eager` agree; state
   and image inputs each still produce a weak-but-nonzero, structured response (not
   the bit-identical output a conditioning-drop bug would give), so inputs are wired.
+- **Flow-matching denoising steps (`num_steps`)** — the reconstructed config's
+  runtime `model.config.num_steps` is **10** (printed live + the model's own
+  `Denoise 10 steps`; it is the `LingbotVLAV2Config` default, not a silent `1`). A
+  seeded sweep `num_steps ∈ {1,4,10,50}` on the same GT obs shows MAE is **flat
+  from 4 steps up** and mean-collapse **persists at 50 steps** — more denoising
+  smooths the chunk but does not recover the task:
+
+  | `num_steps` | MAE vs GT (t=0/40/60) | within-chunk jitter | `\|pred[0]−state\|` vs `\|pred[0]−mean\|` (t=60) |
+  | --- | --- | --- | --- |
+  | 1  | 0.74 / 0.69 / 0.86 | ~0.73 | 0.93 vs 0.76 — collapsed |
+  | 4  | 0.52 / 0.54 / 0.67 | ~0.22 | 0.72 vs 0.30 — collapsed |
+  | 10 (runtime) | 0.50 / 0.52 / 0.66 | ~0.10 | 0.71 vs 0.29 — collapsed |
+  | 50 | 0.50 / 0.52 / 0.66 | ~0.06 | 0.70 vs 0.28 — collapsed |
+
+  (`pred[0]` sits closer to the action mean than to the current state at every
+  step even at 50 denoising steps; GT jitter is ~0.005–0.016 for reference.)
 
 **Intended usage:** post-train `robbyant/lingbot-vla-v2-6b` on RoboTwin data for the
 target task/embodiment (upstream README), then package the post-trained checkpoint
