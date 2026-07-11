@@ -1034,24 +1034,33 @@ class TestRepoNameIsCanonical:
 
         assert repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
 
-    def test_multi_robot_and_none_quant_for_ros_action(self) -> None:
+    def test_ros_action_is_four_part_no_quant(self) -> None:
         from openral_core import repo_name_is_canonical
 
+        # ROS wrappers carry no weights → no <quant> segment (4 parts).
         assert repo_name_is_canonical(
-            "OpenRAL/rskill-moveit-multi-eef_pose-none", kind="ros_action"
+            "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
         )
 
-    def test_ros_action_must_use_none_quant(self) -> None:
+    def test_ros_action_rejects_a_quant_segment(self) -> None:
         from openral_core import repo_name_is_canonical
 
-        # A weightless wrapper may not carry a dtype token.
+        # A weightless wrapper may not carry any 5th (quant) segment.
         assert not repo_name_is_canonical(
             "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
         )
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-moveit-multi-eef_pose-none", kind="ros_action"
+        )
 
-    def test_weight_bearing_kind_may_not_use_none_quant(self) -> None:
+    def test_weight_bearing_kind_requires_a_quant_segment(self) -> None:
         from openral_core import repo_name_is_canonical
 
+        # A VLA needs the 5th (quant) segment; the 4-part ROS shape is rejected.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero", kind="vla"
+        )
+        # ...and `none` is not a valid quant token for a weight-bearing kind.
         assert not repo_name_is_canonical(
             "OpenRAL/rskill-smolvla-franka_panda-libero-none", kind="vla"
         )
@@ -1126,8 +1135,8 @@ class TestCanonicalTokenSets:
     def test_quant_tokens_exact_set(self) -> None:
         from openral_core import CANONICAL_QUANT_TOKENS
 
-        # Weight-bearing dtypes plus the weightless-wrapper token `none`.
-        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4", "none"}
+        # Weight-bearing dtype tokens only; ROS wrappers omit the quant segment.
+        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4"}
 
 
 class TestExpectedRepoName:
@@ -1211,6 +1220,16 @@ class TestExpectedRepoName:
         )
         assert expected_repo_name(pen).endswith("-pen-bf16")
         assert expected_repo_name(pick).endswith("-pick_place_pen-bf16")
+
+    def test_ros_action_suggestion_has_no_quant_segment(self) -> None:
+        from openral_core import expected_repo_name, repo_name_is_canonical
+
+        m = _naming_fixture("rskill-moveit-eef-pose")
+        got = expected_repo_name(m)
+        # 4 hyphen-parts: rskill-<model>-<robot>-<task> (no quant).
+        assert got.split("/", 1)[1].count("-") == 3, got
+        assert got.endswith("-moveit-multi-eef_pose"), got
+        assert repo_name_is_canonical(got, kind=m.kind)
 
     def test_all_in_tree_suggestions_are_canonical(self) -> None:
         """For every shipped rskill.yaml, the suggestion validates for its kind.

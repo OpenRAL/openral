@@ -5895,7 +5895,8 @@ class RSkillManifest(BaseModel):
 # Enforced published-repo shape (CLAUDE.md §3 rSkill packaging), ratified by the
 # org naming audit:
 #
-#   <owner>/rskill-<model>-<robot>-<task>-<quant>       (all non-playbook kinds)
+#   <owner>/rskill-<model>-<robot>-<task>-<quant>       (weight-bearing kinds)
+#   <owner>/rskill-<model>-<robot>-<task>               (ros_action / ros_service)
 #   <owner>/rskill-playbook-<name>                      (kind == "playbook")
 #
 # Grammar rules:
@@ -5913,8 +5914,8 @@ class RSkillManifest(BaseModel):
 #   "pick_place_pen", or omdet "indoor" vs "locator"). :func:`expected_repo_name`
 #   only *suggests* a default task slug.
 # - ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`. ``int4`` weights ship as
-#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``;
-#   weightless wrappers (``ros_action`` / ``ros_service``) use ``none``.
+#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``.
+#   Weightless wrappers (``ros_action`` / ``ros_service``) OMIT ``<quant>``.
 # - When ``model_family`` is set (VLA skills), the ``<model>`` token must also be
 #   family-consistent — in :data:`_MODEL_FAMILY_ALLOWED_TOKENS` for that family —
 #   so a smolvla checkpoint can't be mislabelled ``pi05``.
@@ -5925,27 +5926,26 @@ _DEFAULT_RSKILL_OWNER = "OpenRAL"
 _RSKILL_NAME_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 """Every name segment (model / robot / task / quant / playbook name) shape."""
 
-# ``rskill-<model>-<robot>-<task>-<quant>`` and ``rskill-playbook-<name>`` split
-# on hyphen into this many parts (the leading ``rskill`` counts as one).
+# Split-on-hyphen part counts (the leading ``rskill`` counts as one):
+#   5 → ``rskill-<model>-<robot>-<task>-<quant>``  (weight-bearing kinds)
+#   4 → ``rskill-<model>-<robot>-<task>``          (ROS wrappers, no quant)
+#   3 → ``rskill-playbook-<name>``                 (playbooks)
 _RSKILL_NAME_PARTS = 5
+_RSKILL_ROS_NAME_PARTS = 4
 _RSKILL_PLAYBOOK_NAME_PARTS = 3
 
-_WEIGHT_BEARING_QUANT_TOKENS: frozenset[str] = frozenset(
-    {"fp32", "fp16", "bf16", "int8", "nf4"}
-)
-"""``<quant>`` tokens for kinds that carry model weights (everything except the
-ROS wrappers). ``int4`` → ``nf4`` (bitsandbytes NF4)."""
-
-_WEIGHTLESS_QUANT_TOKEN = "none"
-"""``<quant>`` token for kinds with no weights (``ros_action`` / ``ros_service``)."""
+CANONICAL_QUANT_TOKENS: frozenset[str] = frozenset({"fp32", "fp16", "bf16", "int8", "nf4"})
+"""Canonical ``<quant>`` name tokens for weight-bearing kinds. ``int4`` → ``nf4``
+(bitsandbytes NF4). The ROS wrappers (:data:`_WEIGHTLESS_KINDS`) carry no
+weights and OMIT the ``<quant>`` segment entirely (a 4-part name)."""
 
 _WEIGHTLESS_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
-"""Kinds that wrap an existing ROS interface — no weights, so ``<quant>`` = ``none``."""
+"""Kinds that wrap an existing ROS interface — no weights, so their name has no
+``<quant>`` segment: ``rskill-<model>-<robot>-<task>``."""
 
-CANONICAL_QUANT_TOKENS: frozenset[str] = _WEIGHT_BEARING_QUANT_TOKENS | {_WEIGHTLESS_QUANT_TOKEN}
-"""All canonical ``<quant>`` name tokens. Which apply is kind-specific: weight-
-bearing kinds use :data:`_WEIGHT_BEARING_QUANT_TOKENS`; the ROS wrappers
-(:data:`_WEIGHTLESS_KINDS`) use ``none``."""
+_NAME_TAIL_QUANT_LIKE: frozenset[str] = CANONICAL_QUANT_TOKENS | {"none"}
+"""Trailing tokens the author-slug fallback drops from a name tail — the quant
+tokens plus the legacy ``none`` some pre-convention names carried."""
 
 _QUANT_DTYPE_TO_TOKEN: dict[QuantizationDtype, str] = {
     QuantizationDtype.FP32: "fp32",
@@ -6108,20 +6108,19 @@ def _repo_tail_slug(name: str) -> str:
     return tail.lower().replace("-", "_")
 
 
-def _task_slug_for_manifest(
-    manifest: RSkillManifest, model_token: str, robot_token: str, quant_token: str
-) -> str:
+def _task_slug_for_manifest(manifest: RSkillManifest, model_token: str, robot_token: str) -> str:
     """Suggest the AUTHOR-OWNED ``<task>`` slug (a default only — never enforced).
 
     Priority:
 
     1. :attr:`evaluated_tasks` — first entry's :func:`scene_family`.
     2. :attr:`benchmarks` — lexicographically first suite key.
-    3. The current repo tail with the ``<model>`` prefix and ``<quant>`` suffix
-       removed — recovers an author's discriminator that lives only in the name
-       (``omdet-turbo-locator`` → ``locator``; the two so101 pen skills → ``pen``
-       vs ``pick_place_pen``), which the benchmark fields cannot distinguish. A
-       remainder that merely echoes the model / robot / quant token is dropped.
+    3. The current repo tail with the ``<model>`` / ``<robot>`` prefixes and a
+       trailing quant-like token removed — recovers an author's discriminator
+       that lives only in the name (``omdet-turbo-locator`` → ``locator``; the
+       two so101 pen skills → ``pen`` vs ``pick_place_pen``), which the benchmark
+       fields cannot distinguish. Idempotent on an already-canonical name and
+       drops a stale/legacy trailing quant token (``fp32`` / ``none``).
     4. :attr:`scenes` — first scene keyword.
     5. ``"main"`` — shape-valid placeholder when nothing else is available.
     """
@@ -6130,22 +6129,18 @@ def _task_slug_for_manifest(
     if manifest.benchmarks:
         return sorted(manifest.benchmarks)[0].lower().replace("-", "_")
     tail = _repo_tail_slug(manifest.name)
-    # Strip the model prefix, then a robot prefix, then a trailing quant token —
-    # so an already-canonical ``model-robot-task-quant`` name yields just ``task``
-    # (the derivation is idempotent, and a STALE quant token like a pre-migration
-    # ``fp32`` is dropped too), while a dir-style name yields its discriminator.
     for prefix in (model_token, robot_token):
         if tail == prefix:
             tail = ""
         elif tail.startswith(f"{prefix}_"):
             tail = tail[len(prefix) + 1 :]
     segments = tail.split("_")
-    if len(segments) > 1 and segments[-1] in CANONICAL_QUANT_TOKENS:
+    if len(segments) > 1 and segments[-1] in _NAME_TAIL_QUANT_LIKE:
         tail = "_".join(segments[:-1])
-    elif tail in CANONICAL_QUANT_TOKENS:
+    elif tail in _NAME_TAIL_QUANT_LIKE:
         tail = ""
     tail = tail.strip("_")
-    if tail and tail not in {robot_token, quant_token} and _RSKILL_NAME_SEGMENT_RE.match(tail):
+    if tail and tail != robot_token and _RSKILL_NAME_SEGMENT_RE.match(tail):
         return tail
     if manifest.scenes:
         return manifest.scenes[0].lower().replace("-", "_")
@@ -6157,14 +6152,18 @@ def repo_name_is_canonical(
 ) -> bool:
     """Return ``True`` when ``name`` obeys the repo-naming grammar for ``kind``.
 
-    Playbooks (``kind == "playbook"``) must be ``rskill-playbook-<name>``;
-    every other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with
-    ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS`, ``<robot>`` ∈
-    :data:`CANONICAL_ROBOT_NAME_TOKENS`, ``<task>`` matching the segment shape,
-    and ``<quant>`` kind-specific: the ROS wrappers (``ros_action`` /
-    ``ros_service``) carry no weights so it must be ``none``; every other kind
-    uses a real dtype token (:data:`_WEIGHT_BEARING_QUANT_TOKENS`, never
-    ``none``). The owner prefix (``<owner>/``) is ignored.
+    Three shapes, chosen by ``kind``:
+
+    * ``playbook`` → ``rskill-playbook-<name>`` (3 parts).
+    * ``ros_action`` / ``ros_service`` (:data:`_WEIGHTLESS_KINDS`) →
+      ``rskill-<model>-<robot>-<task>`` (4 parts) — no ``<quant>`` segment, since
+      a ROS wrapper carries no weights.
+    * every other kind → ``rskill-<model>-<robot>-<task>-<quant>`` (5 parts) with
+      ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`.
+
+    In all cases ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS`, ``<robot>`` ∈
+    :data:`CANONICAL_ROBOT_NAME_TOKENS`, and ``<task>`` matches the segment
+    shape. The owner prefix (``<owner>/``) is ignored.
 
     When ``model_family`` is given (a VLA skill), the ``<model>`` segment must
     additionally be family-consistent — one of
@@ -6178,6 +6177,10 @@ def repo_name_is_canonical(
         ... )
         True
         >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
+        ... )  # ROS wrapper: no quant segment
+        True
+        >>> repo_name_is_canonical(
         ...     "OpenRAL/rskill-pi05-franka_panda-libero-bf16",
         ...     kind="vla", model_family="smolvla",
         ... )  # wrong family token
@@ -6189,31 +6192,33 @@ def repo_name_is_canonical(
     """
     repo = name.split("/", 1)[1] if "/" in name else name
     parts = repo.split("-")
+    if parts[0] != "rskill":
+        return False
     if kind == "playbook":
         return (
             len(parts) == _RSKILL_PLAYBOOK_NAME_PARTS
-            and parts[0] == "rskill"
             and parts[1] == "playbook"
             and bool(_RSKILL_NAME_SEGMENT_RE.match(parts[2]))
         )
-    if len(parts) != _RSKILL_NAME_PARTS or parts[0] != "rskill":
-        return False
-    _, model, robot, task, quant = parts
-    # ``<quant>`` is kind-specific: the ROS wrappers have no weights → ``none``;
-    # weight-bearing kinds use a real dtype token (never ``none``).
-    allowed_quant = (
-        {_WEIGHTLESS_QUANT_TOKEN} if kind in _WEIGHTLESS_KINDS else _WEIGHT_BEARING_QUANT_TOKENS
-    )
-    if not (
+    if kind in _WEIGHTLESS_KINDS:
+        if len(parts) != _RSKILL_ROS_NAME_PARTS:
+            return False
+        _, model, robot, task = parts
+        quant_ok = True
+    else:
+        if len(parts) != _RSKILL_NAME_PARTS:
+            return False
+        _, model, robot, task, quant = parts
+        quant_ok = quant in CANONICAL_QUANT_TOKENS
+    ok = (
         model in CANONICAL_MODEL_TOKENS
         and robot in CANONICAL_ROBOT_NAME_TOKENS
         and bool(_RSKILL_NAME_SEGMENT_RE.match(task))
-        and quant in allowed_quant
-    ):
-        return False
-    if model_family is not None:
-        return model in _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset())
-    return True
+        and quant_ok
+    )
+    if ok and model_family is not None:
+        ok = model in _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset())
+    return ok
 
 
 def expected_repo_name(manifest: RSkillManifest) -> str:
@@ -6226,7 +6231,9 @@ def expected_repo_name(manifest: RSkillManifest) -> str:
     agent may refine it. The owner prefix is preserved from
     :attr:`RSkillManifest.name` (default :data:`_DEFAULT_RSKILL_OWNER`).
 
-    Playbooks map to ``<owner>/rskill-playbook-<name>``; all other kinds to
+    Playbooks map to ``<owner>/rskill-playbook-<name>``; ROS wrappers
+    (``ros_action`` / ``ros_service``) to ``<owner>/rskill-<model>-<robot>-<task>``
+    (no ``<quant>``); every other kind to
     ``<owner>/rskill-<model>-<robot>-<task>-<quant>``.
 
     Raises:
@@ -6271,13 +6278,11 @@ def expected_repo_name(manifest: RSkillManifest) -> str:
         return f"{owner}/rskill-playbook-{name}"
     model = _model_token_for_manifest(manifest)
     robot = _robot_token_for_manifest(manifest)
-    # Weightless wrappers (ros_action / ros_service) have no dtype → token `none`.
-    quant = (
-        _WEIGHTLESS_QUANT_TOKEN
-        if manifest.kind in ("ros_action", "ros_service")
-        else _quant_token_for_dtype(manifest.quantization.dtype)
-    )
-    task = _task_slug_for_manifest(manifest, model, robot, quant)
+    task = _task_slug_for_manifest(manifest, model, robot)
+    # Weightless wrappers (ros_action / ros_service) omit the <quant> segment.
+    if manifest.kind in _WEIGHTLESS_KINDS:
+        return f"{owner}/rskill-{model}-{robot}-{task}"
+    quant = _quant_token_for_dtype(manifest.quantization.dtype)
     return f"{owner}/rskill-{model}-{robot}-{task}-{quant}"
 
 
