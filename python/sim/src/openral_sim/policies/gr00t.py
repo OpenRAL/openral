@@ -29,13 +29,20 @@ side-steps the GR00T DiT ``TimestepEncoder`` uint8 bug (bug (b) below).
 
 Embodiment mapping
 ------------------
-The rSkill manifest declares ``embodiment_tags: [franka_panda]`` (the OpenRAL
-robot namespace). GR00T's ``embodiment_tag`` is its OWN namespace — the LIBERO
-checkpoint's tag is ``libero_sim``. Mapping it explicitly is load-bearing: it
-selects the ``libero_sim`` modality config (``image`` + ``wrist_image`` views,
-7-D ``x,y,z,roll,pitch,yaw,gripper`` state/action) AND — via
-``action_decode_transform='auto'`` → ``'libero'`` — the gripper-sign flip and the
-8-of-16 execution horizon. Feed the wrong tag and eval scores 0 %.
+The rSkill manifest declares its OpenRAL robot tag (e.g. ``franka_panda`` /
+``so101_follower``). GR00T's ``embodiment_tag`` is its OWN namespace, carried in
+``policy_extras.embodiment_tag`` — ``libero_sim`` for the LIBERO checkpoint,
+``new_embodiment`` for the SO-101 fruit checkpoint. Mapping it explicitly is
+load-bearing: it selects that embodiment's modality config (image views,
+state/action layout) AND the action-decode transform. Feed the wrong tag and
+eval scores 0 %.
+
+The per-embodiment I/O contract — state width, action width, and GR00T video
+modality keys — is read from the rSkill rather than hard-coded: ``state_dim`` /
+``action_dim`` from ``state_contract.dim`` / ``action_contract.dim`` and the
+image keys from ``policy_extras.image_modality_keys`` (``image``/``wrist_image``
+for LIBERO, ``front``/``wrist`` for SO-101). The LIBERO values remain the
+fallback when a manifest omits them.
 """
 
 from __future__ import annotations
@@ -132,31 +139,40 @@ def _import_real_groot_policy() -> Any:
     return module.GrootPolicy
 
 
-def _quantize_groot_backbone_nf4(policy: Any, torch: Any) -> None:
-    """NF4-quantize the Qwen3-VL backbone in place (accelerate-free).
+def _quantize_groot_nf4(policy: Any, torch: Any, *, scope: str) -> None:
+    """NF4-quantize the GR00T model in place (accelerate-free).
 
-    Two GR00T-specific bnb hazards the old py3.10 sidecar had to patch are
-    avoided structurally here:
+    ``scope`` selects how much of the model is packed to 4-bit:
+
+    - ``"backbone"`` (default): only ``_groot_model.backbone`` (the ~2 B Qwen3-VL
+      VLM). The diffusion action head stays bf16. Enough for the LIBERO N1.7
+      checkpoint (16-layer DiT head) to fit 8 GB.
+    - ``"model"``: the whole ``_groot_model`` — backbone **and** the diffusion
+      action head's large ``Linear`` blocks. Needed for checkpoints with a
+      heavier head (e.g. the SO-101 fruit checkpoint's 32-layer DiT), which
+      overshoot 8 GB by ~300 MiB when the head stays bf16.
+
+    Two GR00T-specific bnb hazards are avoided structurally in both scopes:
 
     (a) ``.to(dtype=...)`` on a bnb model raises ``"cannot cast a bitsandbytes
         model in a new dtype"``. We never dtype-cast the quantized model — the
         rewrite keeps bf16 placeholder weights until a pure device-move
         ``policy.to(cuda)`` packs them, and ``model_params_fp32=False`` stops
-        ``GrootPolicy`` from fp32-casting the params before we quantize. No
-        ``.to()`` monkey-patch is needed.
+        ``GrootPolicy`` from fp32-casting the params before we quantize.
 
     (b) The GR00T DiT ``TimestepEncoder.forward`` infers its compute dtype from
-        ``next(self.parameters()).dtype``; a 4bit-packed action head would make
-        that ``uint8`` and the following SiLU crashes (``silu not implemented
-        for 'Byte'``). We quantize **only** ``_groot_model.backbone`` and leave
-        the diffusion action head in bf16, so the encoder reads bf16, not uint8,
-        and the bug cannot recur. The memory win is dominated by the ~2 B
-        Qwen3-VL backbone anyway.
+        ``next(self.parameters()).dtype``; a 4bit-packed encoder makes that
+        ``uint8`` and the following SiLU crashes (``silu not implemented for
+        'Byte'``). ``quantize_nf4_in_place`` only rewrites ``Linear`` modules with
+        ``>=4M`` weight elements, so the small ``TimestepEncoder`` MLP (its
+        Linears are ~0.26–1 M params) stays bf16 even under ``scope="model"`` —
+        the encoder reads bf16, not uint8, and the bug cannot recur.
     """
     from openral_sim._quantization import quantize_nf4_in_place
 
+    target = policy._groot_model if scope == "model" else policy._groot_model.backbone
     quantize_nf4_in_place(
-        policy._groot_model.backbone,
+        target,
         torch=torch,
         compute_dtype=torch.bfloat16,
     )
@@ -217,20 +233,21 @@ def _redirect_groot_backbone_processor() -> None:
     _pg.GROOT_N1_7_BACKBONE_MODEL = backbone
 
 
-def _to_groot_libero_state(state: Any) -> NDArray[np.float32]:
-    """Return the GR00T libero_sim 8-D proprio vector as flat float32.
+def _to_groot_state(state: Any, expected_dim: int) -> NDArray[np.float32]:
+    """Return the GR00T proprio vector as flat float32, width-checked.
 
-    The GR00T ``libero_sim`` state modality (x,y,z,roll,pitch,yaw + 2-D gripper)
-    is 8-D and lines up one-for-one with the OpenRAL LIBERO backend's
-    ``eef_pos(3) ‖ axisangle(3) ‖ gripper_qpos(2)`` vector, so no re-slicing is
-    needed — only a width check.
+    ``expected_dim`` comes from the rSkill's ``state_contract.dim``: 8 for the
+    LIBERO eef-pose vector (``eef_pos(3) ‖ axisangle(3) ‖ gripper_qpos(2)``),
+    6 for the SO-101 ``single_arm(5) ‖ gripper(1)`` joint vector. GR00T pads to
+    ``max_state_dim`` internally, so the adapter only enforces the embodiment's
+    declared width — no re-slicing.
     """
     arr = np.asarray(state, dtype=np.float32).reshape(-1)
-    if arr.shape[0] != _GR00T_LIBERO_STATE_DIM:
+    if arr.shape[0] != expected_dim:
         raise ROSConfigError(
-            f"gr00t libero_sim adapter expects a {_GR00T_LIBERO_STATE_DIM}-D `state`, "
-            f"got {arr.shape[0]}-D. The scene adapter must populate the LIBERO "
-            "proprio vector (eef_pos(3) + axisangle(3) + gripper_qpos(2))."
+            f"gr00t adapter expects a {expected_dim}-D `state` (from the rSkill's "
+            f"state_contract.dim), got {arr.shape[0]}-D. The scene adapter must "
+            "populate the checkpoint's proprio vector for this embodiment."
         )
     return arr
 
@@ -261,6 +278,8 @@ class _GrootAdapter:
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
     # GR00T modality video keys aligned positionally with ``_camera_keys``.
     _image_input_keys: tuple[str, ...] = _GR00T_LIBERO_IMAGE_KEYS
+    # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
+    _state_dim: int = _GR00T_LIBERO_STATE_DIM
     _queue: deque[NDArray[np.float32]] = field(default_factory=deque)
     _last_input_frame: NDArray[np.uint8] | None = None
 
@@ -339,7 +358,7 @@ class _GrootAdapter:
                 "gr00t adapter requires a non-empty LIBERO proprio `state` on the "
                 "observation; the scene adapter must populate it."
             )
-        state_np = _to_groot_libero_state(state)
+        state_np = _to_groot_state(state, self._state_dim)
         batch["observation.state"] = torch.from_numpy(state_np).to(self.device)
         return batch
 
@@ -403,14 +422,39 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
         )
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="GR00T")
 
+    # Merge the manifest's policy_extras under any scene/CLI spec.extra overrides
+    # (spec.extra wins) so a checkpoint's embodiment_tag / image_modality_keys
+    # travel in its rSkill without every scene having to repeat them.
+    policy_extras = dict(getattr(manifest, "policy_extras", {}) or {})
+    extra = {**policy_extras, **extra}
+
     embodiment_tag = str(
         os.environ.get("OPENRAL_GR00T_EMBODIMENT_TAG")
         or extra.get("embodiment_tag", _GR00T_DEFAULT_EMBODIMENT_TAG)
     )
+
+    # I/O contract per embodiment. LIBERO (8-D state / 7-D action /
+    # image,wrist_image) is the fallback; SO-101 (6-D / 6-D / front,wrist)
+    # and any other GR00T checkpoint come from the manifest contracts +
+    # policy_extras.image_modality_keys.
+    img_keys_raw = extra.get("image_modality_keys")
+    image_input_keys = (
+        tuple(str(k) for k in img_keys_raw)
+        if isinstance(img_keys_raw, (list, tuple)) and img_keys_raw
+        else _GR00T_LIBERO_IMAGE_KEYS
+    )
+    state_dim = int(getattr(manifest.state_contract, "dim", 0) or _GR00T_LIBERO_STATE_DIM)
+    action_dim = int(getattr(manifest.action_contract, "dim", 0) or _GR00T_LIBERO_ACTION_DIM)
     quantization = str(
         os.environ.get("OPENRAL_GR00T_QUANTIZATION") or extra.get("quantization", "nf4")
     ).lower()
     quantize = quantization not in {"none", "", "fp16", "bf16", "fp32"}
+    # How much of the model to pack to NF4 — "backbone" (default; LIBERO fits
+    # 8 GB) or "model" (backbone + DiT head; needed for heavier-head checkpoints
+    # like SO-101 fruit that overshoot 8 GB when the head stays bf16).
+    quantize_scope = str(
+        os.environ.get("OPENRAL_GR00T_QUANTIZE_SCOPE") or extra.get("quantize_scope", "backbone")
+    ).lower()
 
     ip = resolve_image_preprocessing(manifest, spec.extra)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
@@ -427,7 +471,24 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
     # be treated as a serialized-pipeline path and fail. Snapshot once and drive
     # both the model + processor loads off the local path.
     with _groot_phase("snapshot", repo=repo_id):
-        local_path = snapshot_download(repo_id, revision=revision)
+        # Skip training-only artifacts: a raw GR00T training checkpoint (e.g.
+        # aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking) ships an ~13 GB optimizer.pt
+        # plus rng/scheduler/trainer state that inference never touches — pulling
+        # them ~doubles the download and can stall the load. The inference set
+        # (model shards + index + config + embodiment_id + experiment_cfg +
+        # processor_config + statistics) is untouched.
+        local_path = snapshot_download(
+            repo_id,
+            revision=revision,
+            ignore_patterns=[
+                "optimizer.pt",
+                "rng_state*.pth",
+                "scheduler.pt",
+                "trainer_state.json",
+                "training_args.bin",
+                "wandb_config.json",
+            ],
+        )
 
     _patch_groot_dtype_property(torch)
     _redirect_groot_backbone_processor()
@@ -436,9 +497,9 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
         local_path=local_path,
         embodiment_tag=embodiment_tag,
         quantize=quantize,
-        image_keys=_GR00T_LIBERO_IMAGE_KEYS,
-        state_dim=_GR00T_LIBERO_STATE_DIM,
-        action_dim=_GR00T_LIBERO_ACTION_DIM,
+        image_keys=image_input_keys,
+        state_dim=state_dim,
+        action_dim=action_dim,
     )
 
     # Load on CPU (no device_map / quantization_config → no accelerate needed),
@@ -450,8 +511,8 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
         with _groot_phase("from_pretrained", repo=repo_id, quantization=quantization):
             policy = GrootPolicy.from_pretrained(local_path, config=config)
         if quantize:
-            with _groot_phase("quantize_nf4"):
-                _quantize_groot_backbone_nf4(policy, torch)
+            with _groot_phase("quantize_nf4", scope=quantize_scope):
+                _quantize_groot_nf4(policy, torch, scope=quantize_scope)
         with _groot_phase("to_device", device=device):
             policy = policy.to(device)
     finally:
@@ -477,5 +538,6 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
         _flip_images_180=ip.flip_180,
         _flip_vertical=ip.flip_vertical,
         _camera_keys=tuple(cam_keys),
-        _image_input_keys=_GR00T_LIBERO_IMAGE_KEYS,
+        _image_input_keys=image_input_keys,
+        _state_dim=state_dim,
     )

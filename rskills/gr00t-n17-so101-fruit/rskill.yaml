@@ -1,0 +1,127 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
+#
+# Wraps: aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking (community finetune of
+#        nvidia/GR00T-N1.7-3B on the SO-101 `so101_fruit` teleop dataset).
+# Base:  nvidia/GR00T-N1.7-3B (Cosmos-Reason2-2B VLM backbone + diffusion
+#        action head) — arXiv:2503.14734.
+#
+# GR00T embodiment: this checkpoint's experiment_cfg pins embodiment_tag
+# `new_embodiment` (id 10) with video modality keys `front` + `wrist`, a
+# `single_arm`+`gripper` 6-D state, and a `single_arm`+`gripper` 6-D absolute
+# action over a 16-step horizon (final_model_config: use_relative_action=false).
+# That tag is load-bearing — it selects the modality/normalization config; feed
+# the wrong one and the policy scores 0.
+#
+# 8 GB VRAM: the model ships bf16 and the in-process `gr00t` adapter NF4-
+# quantizes it on load. This checkpoint's DiT action head is 32 layers (LIBERO's
+# is 16), so — unlike gr00t-n17-libero's backbone-only NF4 — it needs whole-model
+# NF4 (policy_extras.quantize_scope: "model"; the 4M-param threshold spares the
+# TimestepEncoder). GPU-verified: 5.8 GiB peak on an 8 GB RTX 4070. No separate
+# pre-packed NF4 artifact exists for this family — quantization is a runtime knob.
+#
+# License (CLAUDE.md §7.4): NVIDIA Open Model License (N1.7) — commercial use
+# permitted, unlike the OneWay Noncommercial license on N1/N1.5/N1.6.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-gr00t-n17-so101-fruit"
+version: "0.1.0"
+license: "nvidia_open_model"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "gr00t"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+
+# GR00T's own embodiment namespace — the checkpoint was finetuned under the
+# `new_embodiment` tag (front+wrist views, single_arm+gripper 6-D state/action).
+# Override with vla.extra.embodiment_tag / OPENRAL_GR00T_EMBODIMENT_TAG.
+policy_extras:
+  embodiment_tag: "new_embodiment"
+  # GR00T video modality keys for this embodiment (positionally aligned with the
+  # resolved camera_keys). The adapter writes observation.images.front / .wrist.
+  image_modality_keys: ["front", "wrist"]
+  # This checkpoint's DiT action head is 32 layers (LIBERO's is 16); leaving it
+  # bf16 overshoots 8 GB by ~300 MiB. Quantize the whole model (backbone + head)
+  # to NF4 — the 4M-param threshold spares the small TimestepEncoder. GPU-
+  # verified to fit the 8 GB RTX 4070.
+  quantize_scope: "model"
+
+# so101_fruit records front (fixed) + wrist (in-hand) RGB at 640×480. GR00T
+# resizes internally (image_target_size 256²); these are minimum source sizes.
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+# `dtype: bf16` describes the shipped weights; the `gr00t` adapter rewrites the
+# backbone to NF4 on load (see header). min_vram_gb records both ceilings for
+# `openral rskill check` / `openral doctor`.
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+min_vram_gb:
+  bf16: 12.0
+  int4: 6.0  # measured 5.8 GiB peak (whole-model NF4) on an 8 GB RTX 4070
+weights_uri: "hf://aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking@26b179c37f35168359ccdf2e51fed6c2690186cf"
+
+# GR00T checkpoints carry their own normalization metadata (experiment_cfg +
+# statistics.json + processor_config.json) that lerobot reads directly, so this
+# family declares no `processors` block. SO-101 teleop is recorded upright — no
+# 180° flip (unlike the LIBERO checkpoints).
+image_preprocessing:
+  flip_180: false
+
+state_contract:
+  dim: 6
+
+chunk_size: 16
+latency_budget:
+  per_chunk_ms: 1500.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2503.14734"
+source_repo: "hf://aaronsu11/GR00T-N1.7-3B-SO101-FruitPicking"
+
+description: >
+  GR00T N1.7 (3B, Cosmos-Reason2-2B backbone) community-finetuned on the SO-101
+  `so101_fruit` teleop dataset (200 eps, front+wrist RGB). Emits 6-D absolute
+  joint chunks (5 arm + gripper) over a 16-step horizon under GR00T's
+  `new_embodiment` tag. In-process lerobot GrootPolicy, whole-model NF4 —
+  GPU-verified 5.8 GiB peak on 8 GB. NVIDIA Open Model License (commercial OK).
+
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+  - "grasp"
+objects:
+  - "banana"
+  - "orange"
+  - "apple"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 6
+  # 5 arm joints + 1 gripper, absolute joint positions. LeRobot SO-101 teleop is
+  # recorded in DEGREES (same convention as smolvla-so101-pen / molmoact2-so101);
+  # a MuJoCo (radian) scene must convert deg↔rad at the policy boundary.
+  representation: "joint_positions"
+  joint_units: "degrees"

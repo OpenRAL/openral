@@ -67,7 +67,17 @@ def sim(scene_env):
         seed=scene_env.seed,
         n_episodes=scene_env.n_episodes,
     )
-    built = SCENES.get("maniskill3")(env_cfg)
+    try:
+        built = SCENES.get("maniskill3")(env_cfg)
+    except RuntimeError as exc:
+        # SAPIEN needs a working Vulkan ICD to build its RenderSystem and
+        # raises a bare RuntimeError ("vk::createInstanceUnique:
+        # ErrorIncompatibleDriver") on hosts without one — e.g. GPU-less CI
+        # runners where mani_skill itself imports fine. That is a missing
+        # runtime dependency, not an adapter regression — skip, don't fail.
+        if "vk::" in str(exc) or "vulkan" in str(exc).lower():
+            pytest.skip(f"SAPIEN rendering needs a working Vulkan driver: {exc}")
+        raise
     yield built
     built.close()
 
