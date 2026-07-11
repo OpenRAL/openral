@@ -215,7 +215,7 @@ def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
             KeyValue(key="reasoner.tool", value=AnyValue(string_value="ExecuteSkill")),
             KeyValue(
                 key="reasoner.rskill_id",
-                value=AnyValue(string_value="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none"),
+                value=AnyValue(string_value="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"),
             ),
             KeyValue(key="reasoner.model", value=AnyValue(string_value="claude-haiku-4-5")),
             KeyValue(key="reasoner.force", value=AnyValue(bool_value=False)),
@@ -231,7 +231,7 @@ def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
     reasoner = snapshot["topics"]["reasoner"]
     assert reasoner["tick_idx"] == 7
     assert reasoner["tool"] == "ExecuteSkill"
-    assert reasoner["rskill_id"] == "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none"
+    assert reasoner["rskill_id"] == "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
     assert reasoner["model"] == "claude-haiku-4-5"
     assert reasoner["force"] is False
     assert "ts_unix" in reasoner

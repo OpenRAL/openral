@@ -16,7 +16,7 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-so101_follower-so101_pen-bf16
+# rskill-smolvla-so101-pen-bf16
 
 > **OpenRAL rSkill** — [SmolVLA](https://arxiv.org/abs/2506.01844) finetuned for
 > pen pick-and-place on a **real SO-101 follower arm**, packaged for `OpenRAL`.

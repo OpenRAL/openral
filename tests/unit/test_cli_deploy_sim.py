@@ -921,7 +921,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     rSkills via ``build_tool_palette`` — the policy-extras-gated
     ``rskill-pi05-franka_panda-libero_spatial-int8`` (``model_family=pi05``, imports
     ``transformers`` gated behind ``uv sync --group sim``/``--group libero``)
-    and the family-less ``rskill-moveit-multi-joints-none``
+    and the family-less ``rskill-moveit-multi-joints``
     (``kind: ros_action``, no policy extras, always importable). Because a
     dispatchable skill survives a pi05 miss, the advisory preflight does
     NOT hard-fail: it drops the blocked pi05 skill and proceeds, printing
@@ -959,7 +959,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     import sys as _sys
 
     # The pi05 miss blocks rskill-pi05-franka_panda-libero_spatial-int8, but the family-less
-    # rskill-moveit-multi-joints-none stays dispatchable → palette is
+    # rskill-moveit-multi-joints stays dispatchable → palette is
     # non-empty → the advisory preflight drops the blocked skill and
     # proceeds (no Exit). Disable auto-install (default=1) so the test
     # exercises the warn-and-proceed path without calling `just sync`.
@@ -973,7 +973,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     out = capsys.readouterr().out
     assert "proceeding" in out and "dropped from the reasoner palette" in out, (
         "preflight should drop the blocked pi05 skill and proceed (the "
-        "family-less rskill-moveit-multi-joints-none keeps the palette non-empty); "
+        "family-less rskill-moveit-multi-joints keeps the palette non-empty); "
         f"got:\n{out}"
     )
     assert "just sync --all-packages" in out, (

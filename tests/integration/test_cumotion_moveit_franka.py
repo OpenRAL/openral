@@ -2,7 +2,7 @@
 
 Launches a real Panda MoveIt graph with ``isaac_ros_cumotion`` registered as a
 planning pipeline, starts NVIDIA's real cuMotion action server on the local GPU,
-then drives the in-tree ``rskill-moveit-multi-joints-none`` manifest through
+then drives the in-tree ``rskill-moveit-multi-joints`` manifest through
 ``JointGoalRskill``. The rSkill's capability gate injects
 ``MotionPlanRequest.pipeline_id = "isaac_ros_cumotion"``; a passing plan proves
 the MoveIt request went through the cuMotion-backed pipeline rather than the

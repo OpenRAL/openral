@@ -1192,7 +1192,7 @@ class TestExpectedRepoName:
             evaluated_tasks=["libero_object"],
             quantization={"dtype": "int4", "backend": "pytorch"},
         )
-        assert expected_repo_name(m) == "openral/rskill-smolvla-so100_follower-libero_object-nf4"
+        assert expected_repo_name(m) == "openral/rskill-smolvla-so100-libero_object-nf4"
 
     def test_multi_robot_token(self) -> None:
         from openral_core import expected_repo_name
@@ -1209,12 +1209,12 @@ class TestExpectedRepoName:
         # No evaluated_tasks/benchmarks → the name-tail author slug is recovered,
         # keeping two otherwise-identical skills distinct.
         pen = self._vla(
-            "openral/rskill-smolvla-so101_follower-pen-bf16",
+            "openral/rskill-smolvla-so101-pen-bf16",
             embodiment_tags=["so101_follower"],
             quantization={"dtype": "bf16", "backend": "pytorch"},
         )
         pick = self._vla(
-            "openral/rskill-smolvla-so101_follower-pick_place_pen-bf16",
+            "openral/rskill-smolvla-so101-pick_place_pen-bf16",
             embodiment_tags=["so101_follower"],
             quantization={"dtype": "bf16", "backend": "pytorch"},
         )

@@ -16,7 +16,7 @@ datasets:
 inference: false
 ---
 
-# rskill-act-so101_follower-so101_pen-fp32
+# rskill-act-so101-pen-fp32
 
 > **OpenRAL rSkill** — [ACT](https://arxiv.org/abs/2304.13705) (Action Chunking
 > with Transformers) finetuned for **"pass the pen"** pick-and-place on a **real

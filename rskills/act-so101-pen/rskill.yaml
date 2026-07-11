@@ -21,7 +21,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-act-so101_follower-so101_pen-fp32"
+name: "OpenRAL/rskill-act-so101-pen-fp32"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -71,11 +71,11 @@ weights_uri: "hf://gabrycina/so101-passing-pen-policy"
 # onnxruntime/TensorRT build it into a cached engine on first load. See
 # README "ONNX / TensorRT".
 policy_extras:
-  act_onnx_uri: "hf://OpenRAL/rskill-act-so101_follower-so101_pen-fp32/model.onnx"
+  act_onnx_uri: "hf://OpenRAL/rskill-act-so101-pen-fp32/model.onnx"
   # Device-resident path: image/state normalize + action unnormalize
   # baked in, image inputs are /255 RGB (the on-GPU nvrtc kernel output). Used
   # when the DeepStream NVMM sensor leg delivers frames as GPU handles.
-  act_device_onnx_uri: "hf://OpenRAL/rskill-act-so101_follower-so101_pen-fp32/model_device.onnx"
+  act_device_onnx_uri: "hf://OpenRAL/rskill-act-so101-pen-fp32/model_device.onnx"
 
 # ── Reward / progress monitor co-resident with this VLA ─────────────────────
 # A VLA emits no success signal of its own, so it runs paired with a reward
@@ -123,7 +123,7 @@ description: >
   real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec,
   latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in
   joint degrees) from two RGB views (front/overview + wrist). A smaller,
-  faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101_follower-so101_pen-bf16; the
+  faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101-pen-bf16; the
   whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
 
 # Action vocabulary for the reasoner LLM tool palette.

@@ -6035,10 +6035,21 @@ declares ``model_family``, the name's ``<model>`` segment must be one of these
 ``lingbot_vla`` and ``lingbot_vla2`` — where one string prefixes the other —
 stay distinct). Keyed by every :data:`ModelFamily` value."""
 
-CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(get_args(EmbodimentTag))
+_EMBODIMENT_TO_ROBOT_TOKEN: dict[str, str] = {
+    "so100_follower": "so100",
+    "so101_follower": "so101",
+}
+"""EmbodimentTag values whose ``<robot>`` name token is shortened: the
+``_follower`` suffix carries no information in a repo name (there is no other
+so100/so101 embodiment), so names use the bare robot id."""
+
+CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(
+    _EMBODIMENT_TO_ROBOT_TOKEN.get(t, t) for t in get_args(EmbodimentTag)
+)
 """Canonical ``<robot>`` name tokens: the :data:`EmbodimentTag` values —
 including the ``"any"`` wildcard and the ``"multi"`` aggregate (a skill
-declaring >1 concrete robot)."""
+declaring >1 concrete robot) — with the ``so10x_follower`` tags shortened to
+``so100``/``so101`` via :data:`_EMBODIMENT_TO_ROBOT_TOKEN`."""
 
 
 def _quant_token_for_dtype(dtype: QuantizationDtype) -> str:
@@ -6063,7 +6074,7 @@ def _robot_token_for_manifest(manifest: RSkillManifest) -> str:
     if len(concrete) > 1:
         return "multi"
     if len(concrete) == 1:
-        return concrete[0]
+        return _EMBODIMENT_TO_ROBOT_TOKEN.get(concrete[0], concrete[0])
     return "any"
 
 

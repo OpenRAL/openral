@@ -3,7 +3,7 @@
 Promotes the look-at math that was previously triplicated across the MuJoCo
 scene composers (``openral_sim.backends.{so101_box,openarm_robosuite,
 tabletop_push}._assets``) into one public helper, and adds the full-pose
-variant the ``rskill-moveit-multi-look_at-none`` rSkill consumes.
+variant the ``rskill-moveit-multi-look_at`` rSkill consumes.
 
 Lives in ``openral_core`` so every layer can compute camera
 orientations from one source — in particular the layer-0 HAL camera rig
@@ -115,7 +115,7 @@ def _basis_to_quat_wxyz(rot: NDArray[np.float64]) -> tuple[float, float, float, 
 def rotation_to_quat_wxyz(rot: NDArray[np.float64]) -> tuple[float, float, float, float]:
     """Public matrix→quaternion conversion (``w, x, y, z``), Shepperd's method.
 
-    Used by the ``rskill-moveit-multi-look_at-none`` skill to re-express a camera gaze pose for
+    Used by the ``rskill-moveit-multi-look_at`` skill to re-express a camera gaze pose for
     the camera's mount link after a homogeneous-matrix composition.
 
     Example:
@@ -199,7 +199,7 @@ def compute_gaze_pose(
 ) -> Pose6D:
     """Full 6-DOF camera pose at ``camera_xyz`` whose view axis hits ``target_xyz``.
 
-    The pose the ``rskill-moveit-multi-look_at-none`` rSkill plans the
+    The pose the ``rskill-moveit-multi-look_at`` rSkill plans the
     camera frame to: position fixed at ``camera_xyz``, orientation from
     :func:`look_at_quat_wxyz`. Defaults to the ROS optical-frame convention
     (``"+z"`` forward) since real camera ``frame_id``s are optical frames.

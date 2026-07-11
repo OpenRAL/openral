@@ -65,7 +65,7 @@ def publisher() -> types.ModuleType:
 # Name follows the enforced grammar rskill-<model>-<robot>-<task>-<quant>
 # (hyphens separate segments; tokens use underscores):
 # smolvla / so100_follower / tabletop / fp32 (default dtype).
-_FIXTURE_NAME = "test/rskill-smolvla-so100_follower-tabletop-fp32"
+_FIXTURE_NAME = "test/rskill-smolvla-so100-tabletop-fp32"
 _VALID_MANIFEST_YAML = f"""\
 name: {_FIXTURE_NAME}
 version: 0.1.0
@@ -529,7 +529,7 @@ def test_main_dry_run_exits_1_on_noncompliant_name(
     assert excinfo.value.code == 1
     out = capsys.readouterr().out
     # The suggested name (derived from the manifest) is surfaced to the author.
-    assert "test/rskill-smolvla-so100_follower-" in out
+    assert "test/rskill-smolvla-so100-" in out
 
 
 def test_fix_name_rewrites_manifest_to_canonical(
@@ -548,7 +548,7 @@ def test_fix_name_rewrites_manifest_to_canonical(
 
     rewritten = RSkillManifest.from_yaml(str(skill_dir / "rskill.yaml"))
     assert repo_name_is_canonical(rewritten.name, kind="vla")
-    assert rewritten.name.startswith("test/rskill-smolvla-so100_follower-")
+    assert rewritten.name.startswith("test/rskill-smolvla-so100-")
     # Only the top-level name changed; other content is intact.
     assert "model_family: smolvla" in (skill_dir / "rskill.yaml").read_text()
 
