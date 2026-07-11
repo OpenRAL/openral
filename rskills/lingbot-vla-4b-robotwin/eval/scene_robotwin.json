@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2506.18088",
+    "arxiv": "https://arxiv.org/abs/2506.18088",
+    "model_variant": "lingbot_vla",
+    "evaluated_by": "OpenRAL:openral benchmark scene",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark scene --config /tmp/claude-1000/-home-allopart-workspace-openral/dfe7b013-2737-43f2-9151-4dbc7344746c/scratchpad/robotwin_lift_pot_150.yaml --rskill rskills/lingbot-vla-4b-robotwin",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "robotwin",
+    "dataset": null,
+    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=150",
+    "robot": "aloha_agilex",
+    "simulator": "robotwin"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 150,
+    "vla_id": "lingbot_vla",
+    "weights_uri": "rskills/lingbot-vla-4b-robotwin"
+  },
+  "results": {
+    "robotwin/lift_pot_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 25.42880785379869
+  },
+  "baselines": {},
+  "trace_id": null
+}

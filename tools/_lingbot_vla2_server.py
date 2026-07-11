@@ -116,7 +116,9 @@ def _resolve_checkpoint(model: str) -> str:
     return snapshot_download(
         repo_id,
         revision=revision or None,
-        allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
+        # ``*.yaml`` fetches the V1 checkpoint's ``lingbotvla_cli.yaml`` (the V1
+        # loader reads it from the ckpt dir directly); harmless for v2.
+        allow_patterns=["*.safetensors", "*.json", "*.yaml", "tokenizer*"],
     )
 
 
@@ -250,12 +252,27 @@ def _install_attn_fallback(*, target: str) -> None:
         cls._from_config = classmethod(_patched)  # type: ignore[assignment]  # reason: monkeypatch
 
 
-def _nf4_backbone_in_place(backbone: Any, *, torch: Any, min_params: int = 2_000_000) -> None:
-    """Self-contained NF4 rewrite of ``nn.Linear`` -> ``Linear4bit`` (bnb packs on ``.cuda()``)."""
+def _nf4_backbone_in_place(
+    backbone: Any,
+    *,
+    torch: Any,
+    min_params: int = 2_000_000,
+    skip_names: frozenset[str] = frozenset(),
+) -> None:
+    """Self-contained NF4 rewrite of ``nn.Linear`` -> ``Linear4bit`` (bnb packs on ``.cuda()``).
+
+    ``skip_names`` leaves matching child modules unquantized. The V1 Qwen2.5-VL
+    backbone needs ``{"o_proj"}`` skipped: its interleaved-attention forward reads
+    ``o_proj.weight.dtype`` (uint8 once packed) to cast the attention output, which
+    would corrupt the bf16 activations to Byte — keeping o_proj bf16 also improves
+    accuracy at ~0.3 GB cost.
+    """
     import bitsandbytes as bnb
 
     def _replace(module: Any) -> None:
         for name, child in list(module.named_children()):
+            if name in skip_names:
+                continue
             if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
                 new = bnb.nn.Linear4bit(
                     child.in_features,
@@ -623,7 +640,214 @@ class _LingBotPolicy:
         return chunk, self._action_keys
 
 
-def _serve(policy: _LingBotPolicy, *, host: str, port: int, model: str, robo_name: str) -> int:
+# ── LingBot-VLA 1.0 (4B) variant ────────────────────────────────────────────
+# The V1 family (paper "A Pragmatic VLA Foundation Model", arXiv 2601.18692) is a
+# Qwen2.5-VL-3B backbone + a *dense* Qwen2 flow-matching action expert — a
+# different upstream repo (github.com/robbyant/lingbot-vla), deploy class
+# (LingbotVLAServer), and stack (transformers==4.51.3 + lerobot==0.4.2, flat
+# layout, no lerobot stub) than the v2 6B MoE model. Its checkpoint ships real
+# config.json + lingbotvla_cli.yaml, so no _write_cli_yaml reconstruction is
+# needed. It shares the transport, obs contract, and NF4 recipe, so the two run
+# through the same server behind a --variant switch.
+
+
+def _resolve_repo_v1() -> Path:
+    override = os.environ.get("OPENRAL_LINGBOT_VLA_REPO")
+    default = Path.home() / ".cache" / "openral" / "lingbot-vla-v1-sidecar" / "source"
+    repo = Path(override).expanduser() if override else default
+    if not (repo / "lingbotvla").is_dir():
+        raise SystemExit(
+            f"lingbotvla (V1) repo checkout not found at {repo}. The boot helper "
+            "(tools/lingbot_vla2_sidecar.py --variant v1) clones it; set "
+            "OPENRAL_LINGBOT_VLA_REPO to reuse an existing checkout."
+        )
+    return repo
+
+
+def _resolve_qwen25() -> str:
+    for env in ("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH"):
+        val = os.environ.get(env)
+        if val:
+            return val
+    return "Qwen/Qwen2.5-VL-3B-Instruct"
+
+
+def _install_attn_fallback_v1(*, target: str) -> None:
+    """Coerce every ``PreTrainedModel._from_config`` off flash for the V1 model.
+
+    The V1 builders call ``<Model>._from_config(cfg, use_flash_attention_2=True)``
+    at several sites (Qwen2.5-VL, its vision tower, the Qwen2 expert); the custom
+    vision/text attention only registers ``eager`` + ``flash_attention_2`` (no
+    sdpa), and flash-attn is not installed. Patch the shared base classmethod once:
+    strip the flash flag, coerce the config tree, force ``attn_implementation``.
+    """
+    from transformers.modeling_utils import PreTrainedModel
+
+    orig = PreTrainedModel._from_config.__func__  # type: ignore[attr-defined]  # reason: classmethod unwrap
+
+    def _patched(inner_cls: Any, config: Any, *a: Any, _orig: Any = orig, **k: Any) -> Any:
+        _coerce_attn_config(config, target)
+        k.pop("use_flash_attention_2", None)
+        k["attn_implementation"] = target
+        try:
+            return _orig(inner_cls, config, *a, **k)
+        except (TypeError, ValueError):
+            k.pop("attn_implementation", None)
+            return _orig(inner_cls, config, *a, **k)
+
+    PreTrainedModel._from_config = classmethod(_patched)  # type: ignore[assignment]  # reason: monkeypatch
+
+
+def _patch_eager_vision_rotary_v1() -> None:
+    """Inject the missing ``rotate_half`` into the V1 eager vision-attention path.
+
+    Upstream's eager vision attention references ``rotate_half`` without importing
+    it (only the flash path was exercised); pull the canonical impl from
+    ``modeling_lingbot_vla`` into the ``qwenvl_in_vla`` module namespace.
+    """
+    import lingbotvla.models.vla.pi0.qwenvl_in_vla as _qvl
+    from lingbotvla.models.vla.pi0.modeling_lingbot_vla import rotate_half as _rotate_half
+
+    _qvl.rotate_half = _rotate_half  # type: ignore[attr-defined]  # reason: fill upstream gap
+
+
+class _LingBotV1Policy:
+    """Loads the V1 ``LingbotVLAServer`` (NF4 backbone / bf16 expert) and serves actions."""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        import torch
+
+        repo = _resolve_repo_v1()
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        os.chdir(repo)  # configs/ + assets/ resolved relative to CWD
+        os.environ["QWEN25_PATH"] = _resolve_qwen25()
+        ckpt_dir = _resolve_checkpoint(args.model)
+
+        # V1 attention only registers eager/flash; flash is absent, so eager is the
+        # only flash-free backend (sdpa raises KeyError in the custom vision/text
+        # attention). The --attn choice is coerced to eager for v1.
+        target = "eager"
+        _install_attn_fallback_v1(target=target)
+        _patch_eager_vision_rotary_v1()
+
+        from deploy.lingbot_vla_policy import LingbotVLAServer
+
+        self._torch = torch
+        self._robo_name = args.robo_name
+        quant = args.quantization
+        device = args.device
+        if device == "cpu" and quant == "nf4":
+            print(
+                "[lingbot_vla2_server:v1] device=cpu: NF4 needs CUDA (bitsandbytes); "
+                "loading bf16 on CPU instead (~8.4 GB RAM).",
+                flush=True,
+            )
+            quant = "none"
+        is_prequant = _detect_prequantized(ckpt_dir)
+        if is_prequant and device == "cpu":
+            raise SystemExit(
+                f"[lingbot_vla2_server:v1] {ckpt_dir} is a pre-quantized NF4 pack, which "
+                "requires CUDA (bitsandbytes has no CPU 4-bit kernel). Re-run with "
+                "--device cuda, or point --model at the fp32 upstream checkpoint "
+                "(robbyant/lingbot-vla-4b-posttrain-robotwin) for a CPU/bf16 load."
+            )
+
+        srv = LingbotVLAServer.__new__(LingbotVLAServer)
+        srv.adaptive_ensemble_alpha = 0.1
+        srv.action_ensemble_horizon = 8
+        # Return the FULL predicted chunk untruncated (use_length=-1); the adapter
+        # slices its own replan window.
+        srv.use_length = -1
+        srv.use_compile = False
+        srv.num_denoising_step = 10
+        srv.robot_norm_path = None
+
+        # load_vla builds fp32 on CPU then calls policy.cuda(); no-op cuda during
+        # the build so the 16.8 GB fp32 graph never hits an 8 GB card before NF4.
+        _orig_cuda = torch.nn.Module.cuda
+        torch.nn.Module.cuda = lambda self, *a, **k: self  # type: ignore[method-assign]  # reason: build-time guard
+        try:
+            if is_prequant:
+                srv.load_model_weights = lambda *a, **k: None  # type: ignore[attr-defined]  # reason: prequant overlay replaces the load
+                prev_dtype = torch.get_default_dtype()
+                torch.set_default_dtype(torch.bfloat16)
+                try:
+                    srv.vla = srv.load_vla(ckpt_dir)
+                finally:
+                    torch.set_default_dtype(prev_dtype)
+            else:
+                srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
+        finally:
+            torch.nn.Module.cuda = _orig_cuda  # type: ignore[method-assign]  # reason: restore guard
+
+        _coerce_attn_config(getattr(srv.vla, "config", None), target)
+        srv.vla.model = srv.vla.model.to(torch.bfloat16)
+        if is_prequant:
+            _nf4_backbone_in_place(
+                srv.vla.model.qwenvl_with_expert.qwenvl,
+                torch=torch,
+                skip_names=frozenset({"o_proj"}),
+            )
+            _overlay_prequantized(srv.vla, ckpt_dir, torch=torch)
+            srv.vla = srv.vla.to(device).eval()
+        else:
+            if quant == "nf4":
+                _nf4_backbone_in_place(
+                    srv.vla.model.qwenvl_with_expert.qwenvl,
+                    torch=torch,
+                    skip_names=frozenset({"o_proj"}),
+                )
+            srv.vla = srv.vla.to(device).eval()
+
+        srv.global_step = 0
+        srv.last_action_chunk = None
+        srv.use_bf16 = True
+        srv.reset(self._robo_name)
+        self._srv = srv
+        self._action_keys = list(srv.vla.feature_transform.org_features["actions"])
+        mode = "nf4-prequant" if is_prequant else quant
+        if device == "cuda" and torch.cuda.is_available():
+            print(
+                f"[lingbot_vla2_server:v1] loaded ({mode}, attn={target}); "
+                f"VRAM={torch.cuda.max_memory_allocated() / 1e9:.2f}GB",
+                flush=True,
+            )
+        else:
+            print(
+                f"[lingbot_vla2_server:v1] loaded ({mode}, attn={target}, device={device})",
+                flush=True,
+            )
+
+    def reset(self, robo_name: str | None = None) -> None:
+        self._srv.reset(robo_name or self._robo_name)
+
+    def get_action(self, obs: dict[str, Any]) -> tuple[np.ndarray, list[str]]:
+        images = obs["images"]
+        raw = {
+            "observation.images.cam_high": np.asarray(images["cam_high"], dtype=np.uint8),
+            "observation.images.cam_left_wrist": np.asarray(images["cam_left_wrist"], dtype=np.uint8),
+            "observation.images.cam_right_wrist": np.asarray(
+                images["cam_right_wrist"], dtype=np.uint8
+            ),
+            "observation.state": np.asarray(obs["state"], dtype=np.float32),
+            "task": str(obs.get("task", "")),
+        }
+        out = self._srv.infer(raw)  # {action_key: (chunk, dim)}
+        chunk = np.concatenate(
+            [np.asarray(out[k], dtype=np.float32) for k in self._action_keys], axis=-1
+        )
+        return chunk, self._action_keys
+
+
+def _serve(
+    policy: _LingBotPolicy | _LingBotV1Policy,
+    *,
+    host: str,
+    port: int,
+    model: str,
+    robo_name: str,
+) -> int:
     import msgpack
     import zmq
 
@@ -677,6 +901,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="sdpa",
         help="flash-free attention backend to replace the upstream flash_attention_2 hardcode.",
     )
+    p.add_argument(
+        "--variant",
+        choices=("v2", "v1"),
+        default="v2",
+        help="Model family: v2 = 6B Qwen3-VL MoE (LingBot-VLA 2.0); v1 = 4B "
+        "Qwen2.5-VL dense expert (LingBot-VLA 1.0 / posttrain-robotwin). v1 forces "
+        "attn=eager (its custom attention has no sdpa kernel).",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5555)
     return p.parse_args(argv)
@@ -685,7 +917,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     args = _parse_args(argv)
-    policy = _LingBotPolicy(args)
+    policy: _LingBotPolicy | _LingBotV1Policy = (
+        _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)
+    )
     return _serve(
         policy, host=args.host, port=args.port, model=args.model, robo_name=args.robo_name
     )

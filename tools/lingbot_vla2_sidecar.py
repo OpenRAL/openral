@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from openral_sim._sidecar_common import (
@@ -63,22 +64,32 @@ _HOME_ENV = "OPENRAL_LINGBOT_VLA2_SIDECAR_HOME"
 _VENV_ENV = "OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON"
 _REPO_ENV = "OPENRAL_LINGBOT_VLA2_REPO"
 
+# LingBot-VLA 1.0 (4B) variant: the V1 codebase is a different repo with a
+# different stack (transformers==4.51.3 + lerobot==0.4.2 flat layout) than the v2
+# 6B model, so it gets its own clone + venv + home. See _lingbot_vla2_server.py's
+# _LingBotV1Policy for the loading path.
+_REPO_URL_V1 = "https://github.com/robbyant/lingbot-vla.git"
+_PINNED_SHA_V1 = "4eb34b7693a0565c67433f8fac9c59a2e67eb60b"
+_DEFAULT_HOME_V1 = Path.home() / ".cache" / "openral" / "lingbot-vla-v1-sidecar"
+_VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
+_REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
+
 _SERVER = Path(__file__).resolve().parent / "_lingbot_vla2_server.py"
 
 
-def _ensure_source(home: Path) -> Path:
-    """Clone ``lingbot-vla-v2`` at :data:`_PINNED_SHA` into ``<home>/source``.
+def _ensure_source(home: Path, *, url: str = _REPO_URL, sha: str = _PINNED_SHA, repo_env: str = _REPO_ENV) -> Path:
+    """Clone the upstream lingbotvla repo at the pinned commit into ``<home>/source``.
 
-    ``$OPENRAL_LINGBOT_VLA2_REPO`` overrides with an existing checkout (dev
-    escape hatch). Unlike the shared ``ensure_source`` (which shallow-clones the
-    default branch HEAD), we fetch exactly the pinned commit so the sidecar is
-    reproducible (CLAUDE.md §1.8) regardless of where upstream ``main`` has moved.
+    ``$<repo_env>`` overrides with an existing checkout (dev escape hatch). Unlike
+    the shared ``ensure_source`` (which shallow-clones the default branch HEAD), we
+    fetch exactly the pinned commit so the sidecar is reproducible (CLAUDE.md §1.8)
+    regardless of where upstream ``main`` has moved.
     """
-    override = os.environ.get(_REPO_ENV)
+    override = os.environ.get(repo_env)
     if override:
         src = Path(override).expanduser()
         if not (src / "lingbotvla").is_dir():
-            raise SystemExit(f"{_REPO_ENV}={override!r} has no lingbotvla/ package dir")
+            raise SystemExit(f"{repo_env}={override!r} has no lingbotvla/ package dir")
         print(f"[{_LABEL}] reusing operator-provided checkout at {src}", flush=True)
         return src
     source = home / "source"
@@ -88,13 +99,38 @@ def _ensure_source(home: Path) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     # Shallow-fetch exactly the pinned commit (no full history) and check it out.
     run_cmd(_LABEL, ["git", "init", "-q", str(source)])
-    run_cmd(_LABEL, ["git", "-C", str(source), "remote", "add", "origin", _REPO_URL])
-    run_cmd(_LABEL, ["git", "-C", str(source), "fetch", "--depth", "1", "origin", _PINNED_SHA])
+    run_cmd(_LABEL, ["git", "-C", str(source), "remote", "add", "origin", url])
+    run_cmd(_LABEL, ["git", "-C", str(source), "fetch", "--depth", "1", "origin", sha])
     run_cmd(_LABEL, ["git", "-C", str(source), "checkout", "-q", "FETCH_HEAD"])
     return source
 
 
-def _ensure_venv(home: Path, source: Path) -> Path:
+def _install_v1(uv: str, py: Path) -> None:
+    """Provision the V1 (4B) sidecar venv.
+
+    The V1 repo's ``requirements.txt`` is training-oriented and omits the
+    inference stack we need (lerobot / bitsandbytes / pyzmq), so we install the
+    pinned set explicitly. torch is cu128 to match the host driver; ``lerobot``
+    only carries transformers as an optional extra, so base install coexists with
+    the pinned ``transformers==4.51.3``. flash-attn is deliberately NOT installed —
+    the server coerces the upstream flash_attention_2 hardcode to eager.
+    """
+    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "torch==2.8.0", "torchvision==0.23.0"])
+    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "lerobot==0.4.2"])
+    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "transformers==4.51.3", "numpy==1.26.4", "torchcodec==0.6.0", "datasets==3.6.0"])
+    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py),
+                     "pyzmq", "msgpack", "bitsandbytes", "accelerate", "einops", "matplotlib",
+                     "pillow", "safetensors", "pyyaml", "opencv-python-headless", "h5py",
+                     "ipdb", "websockets", "torchdata", "blobfile", "tensorboard", "numpydantic"])
+
+
+def _ensure_venv(
+    home: Path,
+    source: Path,
+    *,
+    install: Callable[[str, Path], None] | None = None,
+    venv_env: str = _VENV_ENV,
+) -> Path:
     """Return the sidecar venv python, provisioning it from the upstream pins.
 
     ``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` reuses an existing interpreter
@@ -102,11 +138,11 @@ def _ensure_venv(home: Path, source: Path) -> Path:
     fully-pinned upstream ``requirements.txt`` is installed (cu128 torch wheels),
     plus the openral-side wire/quant deps (``pyzmq`` + ``bitsandbytes``).
     """
-    override = os.environ.get(_VENV_ENV)
+    override = os.environ.get(venv_env)
     if override:
         py = Path(override).expanduser()
         if not py.is_file():
-            raise SystemExit(f"{_VENV_ENV}={override!r} is not a file")
+            raise SystemExit(f"{venv_env}={override!r} is not a file")
         print(f"[{_LABEL}] reusing operator-provided interpreter at {py}", flush=True)
         return py
 
@@ -130,7 +166,7 @@ def _ensure_venv(home: Path, source: Path) -> Path:
         )
 
     ensure_uv()
-    return ensure_pip_venv(label=_LABEL, home=home, python="3.12", install=_install)
+    return ensure_pip_venv(label=_LABEL, home=home, python="3.12", install=install or _install)
 
 
 def main() -> int:
@@ -155,30 +191,52 @@ def main() -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5555)
     p.add_argument(
+        "--variant",
+        choices=("v2", "v1"),
+        default="v2",
+        help="Model family: v2 = 6B Qwen3-VL MoE; v1 = 4B Qwen2.5-VL dense expert "
+        "(LingBot-VLA 1.0 / posttrain-robotwin). Selects the repo + venv + server variant.",
+    )
+    p.add_argument(
         "--home",
         type=Path,
-        default=Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME)),
-        help=f"Sidecar work directory (default {_DEFAULT_HOME}).",
+        default=None,
+        help="Sidecar work directory (default depends on --variant).",
     )
     args = p.parse_args()
 
-    source = _ensure_source(args.home)
-    venv_py = _ensure_venv(args.home, source)
+    # Per-variant provisioning: repo URL/SHA, venv installer, home, env names.
+    if args.variant == "v1":
+        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME_V1))
+        url, sha, repo_env, venv_env, install = (
+            _REPO_URL_V1, _PINNED_SHA_V1, _REPO_ENV_V1, _VENV_ENV_V1, _install_v1,
+        )
+        qwen_envs = ("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH")
+    else:
+        default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME))
+        url, sha, repo_env, venv_env, install = (
+            _REPO_URL, _PINNED_SHA, _REPO_ENV, _VENV_ENV, None,
+        )
+        qwen_envs = ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH")
+    home = args.home or default_home
+
+    source = _ensure_source(home, url=url, sha=sha, repo_env=repo_env)
+    venv_py = _ensure_venv(home, source, install=install, venv_env=venv_env)
     venv = venv_py.parent.parent
 
     # Record which checkpoint this sidecar serves so the adapter's SidecarClient
     # can reap a stale sidecar bound to this port (identity is keyed by port).
     write_sidecar_identity(
         port=int(args.port),
-        family="lingbot_vla2",
+        family=f"lingbot_vla_{args.variant}",
         model=str(args.model),
         embodiment_tag=str(args.robo_name),
         quantization=str(args.quantization),
     )
 
     env = make_isolated_env(venv)
-    env[_REPO_ENV] = str(source)
-    for qenv in ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH"):
+    env[repo_env] = str(source)
+    for qenv in qwen_envs:
         val = os.environ.get(qenv)
         if val:
             env[qenv] = val
@@ -196,14 +254,16 @@ def main() -> int:
         str(args.device),
         "--attn",
         str(args.attn),
+        "--variant",
+        str(args.variant),
         "--host",
         str(args.host),
         "--port",
         str(args.port),
     ]
     print(
-        f"[{_LABEL}] launching server: model={args.model} port={args.port} "
-        f"quant={args.quantization} device={args.device} attn={args.attn} repo={source}",
+        f"[{_LABEL}] launching server (variant={args.variant}): model={args.model} "
+        f"port={args.port} quant={args.quantization} device={args.device} repo={source}",
         flush=True,
     )
     os.execvpe(str(venv_py), cmd, env)

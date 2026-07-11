@@ -152,19 +152,66 @@ def _build_bf16_model(ckpt_dir: str, qwen: str, attn: str) -> Any:
     return srv
 
 
-def _stream_pack_backbone(srv: Any, *, min_params: int) -> int:
-    """NF4-rewrite the Qwen3-VL backbone and pack each Linear GPU-frugally.
+def _build_bf16_model_v1(ckpt_dir: str, qwen: str, attn: str) -> Any:
+    """Reconstruct the V1 (4B) server, load fp32 (single safetensors), cast bf16.
+
+    Mirrors ``_LingBotV1Policy.__init__`` up to (but not including) the device move:
+    V1 repo resolution (no cli-yaml reconstruction, no lerobot stub — real lerobot),
+    eager attn fallback, rotate_half injection, and a cuda-no-op build so the fp32
+    graph stays on CPU. Returns the server with ``srv.vla.model`` bf16 on CPU.
+    """
+    import torch
+
+    repo = srv_mod._resolve_repo_v1()
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    os.chdir(repo)
+    os.environ["QWEN25_PATH"] = qwen
+    srv_mod._install_attn_fallback_v1(target=attn)
+    srv_mod._patch_eager_vision_rotary_v1()
+
+    from deploy.lingbot_vla_policy import LingbotVLAServer
+
+    srv = LingbotVLAServer.__new__(LingbotVLAServer)
+    srv.adaptive_ensemble_alpha = 0.1
+    srv.action_ensemble_horizon = 8
+    srv.use_length = -1
+    srv.use_compile = False
+    srv.num_denoising_step = 10
+    srv.robot_norm_path = None
+
+    print(f"[quantize] building graph + loading fp32 weights from {ckpt_dir} ...", flush=True)
+    t0 = time.perf_counter()
+    _orig_cuda = torch.nn.Module.cuda
+    torch.nn.Module.cuda = lambda self, *a, **k: self  # type: ignore[method-assign]  # reason: build-time guard
+    try:
+        srv.vla = srv.load_vla(ckpt_dir)
+    finally:
+        torch.nn.Module.cuda = _orig_cuda  # type: ignore[method-assign]  # reason: restore guard
+    srv_mod._coerce_attn_config(getattr(srv.vla, "config", None), attn)
+    srv.vla.model = srv.vla.model.to(torch.bfloat16)
+    print(f"[quantize] build + load + cast bf16: {time.perf_counter() - t0:.1f} s", flush=True)
+    return srv
+
+
+def _stream_pack_backbone(
+    srv: Any, *, min_params: int, skip_names: frozenset[str] = frozenset()
+) -> int:
+    """NF4-rewrite the backbone and pack each Linear GPU-frugally.
 
     Uses the server's ``_nf4_backbone_in_place`` (so the shell set is identical to
     the runtime) to build ``Linear4bit`` shells, then streams each to CUDA (bnb
     packs to nf4) and back to CPU (packed uint8 + quant_state preserved). Peak GPU
-    stays a few hundred MB regardless of the 8 GB backbone size.
+    stays a few hundred MB regardless of the backbone size. ``skip_names`` mirrors
+    the runtime (v1 skips ``o_proj``).
     """
     import bitsandbytes as bnb
     import torch
 
     backbone = srv.vla.model.qwenvl_with_expert.qwenvl
-    srv_mod._nf4_backbone_in_place(backbone, torch=torch, min_params=min_params)
+    srv_mod._nf4_backbone_in_place(
+        backbone, torch=torch, min_params=min_params, skip_names=skip_names
+    )
 
     linears = [m for _, m in backbone.named_modules() if isinstance(m, bnb.nn.Linear4bit)]
     print(
@@ -193,6 +240,7 @@ def _save_pack(
     source_revision: str,
     min_params: int,
     n_packed: int,
+    variant: str = "v2",
 ) -> None:
     """Write ``model.safetensors`` + ``quantization_metadata.json`` + sidecars."""
     import bitsandbytes as bnb
@@ -221,10 +269,22 @@ def _save_pack(
     size_gb = out_path.stat().st_size / 1e9
     print(f"[quantize] write: {time.perf_counter() - t0:.1f} s ({size_gb:.2f} GB)", flush=True)
 
+    _backbone_name = "Qwen3-VL" if variant == "v2" else "Qwen2.5-VL"
+    _policy_class = (
+        "lingbotvla:LingbotVLAv2Server" if variant == "v2" else "lingbotvla:LingbotVLAServer"
+    )
+    _skip_note = (
+        ""
+        if variant == "v2"
+        else " o_proj is kept bf16 (the interleaved attention reads o_proj.weight.dtype)."
+    )
+    _expert_note = (
+        "the sparse-MoE action expert" if variant == "v2" else "the dense Qwen2 action expert"
+    )
     meta = {
         "source_repo": source_repo,
         "source_revision": source_revision,
-        "policy_class": "lingbotvla:LingbotVLAv2Server",
+        "policy_class": _policy_class,
         "quantization": {
             "scheme": "nf4",
             "backend": "bitsandbytes",
@@ -235,10 +295,10 @@ def _save_pack(
             "quantized_modules": n_packed,
             "target_submodule": "model.qwenvl_with_expert.qwenvl",
             "rule": (
-                f"Qwen3-VL backbone (model.qwenvl_with_expert.qwenvl) Linear layers with "
-                f">={min_params:_} weight elements rewritten to bnb.nn.Linear4bit (nf4, "
-                "double/nested quant, bf16 compute); the sparse-MoE action expert, align "
-                "heads, and action MLPs stay bf16."
+                f"{_backbone_name} backbone (model.qwenvl_with_expert.qwenvl) Linear layers "
+                f"with >={min_params:_} weight elements rewritten to bnb.nn.Linear4bit (nf4, "
+                f"double/nested quant, bf16 compute); {_expert_note}, align heads, and action "
+                f"MLPs stay bf16.{_skip_note}"
             ),
             "runtime_status": (
                 "loader-backed: tools/_lingbot_vla2_server.py detects "
@@ -268,12 +328,18 @@ def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--ckpt", required=True, help="Local fp32 LingBot-VLA 2.0 checkpoint dir.")
+    p.add_argument("--ckpt", required=True, help="Local fp32 LingBot-VLA checkpoint dir.")
     p.add_argument("--out", required=True, help="Output dir for the nf4 pack.")
+    p.add_argument(
+        "--variant",
+        choices=("v2", "v1"),
+        default="v2",
+        help="Model family: v2 = 6B Qwen3-VL MoE; v1 = 4B Qwen2.5-VL dense expert.",
+    )
     p.add_argument(
         "--qwen",
         default=None,
-        help="Qwen3-VL backbone path/id (default: OPENRAL_QWEN3VL_PATH env or the HF id).",
+        help="VLM backbone path/id (default: the variant's OPENRAL_QWEN*_PATH env or HF id).",
     )
     p.add_argument("--attn", choices=("sdpa", "eager"), default="sdpa")
     p.add_argument(
@@ -302,10 +368,17 @@ def main(argv: list[str]) -> int:
         return 1
 
     ckpt_dir = str(Path(args.ckpt).expanduser().resolve())
-    qwen = args.qwen or srv_mod._resolve_qwen()
-
-    srv = _build_bf16_model(ckpt_dir, qwen, args.attn)
-    n_packed = _stream_pack_backbone(srv, min_params=args.min_params)
+    if args.variant == "v1":
+        qwen = args.qwen or srv_mod._resolve_qwen25()
+        attn = "eager"  # v1 custom attention registers no sdpa kernel
+        skip_names = frozenset({"o_proj"})
+        srv = _build_bf16_model_v1(ckpt_dir, qwen, attn)
+    else:
+        qwen = args.qwen or srv_mod._resolve_qwen()
+        attn = args.attn
+        skip_names = frozenset()
+        srv = _build_bf16_model(ckpt_dir, qwen, attn)
+    n_packed = _stream_pack_backbone(srv, min_params=args.min_params, skip_names=skip_names)
     _save_pack(
         srv,
         Path(args.out).expanduser().resolve(),
@@ -314,6 +387,7 @@ def main(argv: list[str]) -> int:
         source_revision=args.source_revision,
         min_params=args.min_params,
         n_packed=n_packed,
+        variant=args.variant,
     )
     print(
         f"[quantize] done. {n_packed} nf4 modules; pack at {args.out}. "

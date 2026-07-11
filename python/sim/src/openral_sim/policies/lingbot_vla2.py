@@ -86,6 +86,8 @@ if TYPE_CHECKING:
 _log = structlog.get_logger(__name__)
 
 _DEFAULT_MODEL_ID = "robbyant/lingbot-vla-v2-6b"
+# LingBot-VLA 1.0 (4B) RoboTwin post-train — the ``lingbot_vla`` (v1) policy.
+_DEFAULT_MODEL_ID_V1 = "robbyant/lingbot-vla-4b-posttrain-robotwin"
 _DEFAULT_ROBO_NAME = "robotwin"
 # Upstream FeatureTransform origin image keys, positionally aligned with the
 # scene-side camera keys resolved below.
@@ -114,13 +116,14 @@ def _opt_int(value: object, default: int) -> int:
         return default
 
 
-def _policy_default_port(model_id: str, robo_name: str) -> int:
-    """Deterministically map (model, embodiment) to a default sidecar port.
+def _policy_default_port(model_id: str, robo_name: str, variant: str = "v2") -> int:
+    """Deterministically map (variant, model, embodiment) to a default sidecar port.
 
     Two runs of the same checkpoint + embodiment share one sidecar; distinct
-    checkpoints land on distinct ports so they never adopt each other's server.
+    checkpoints (and variants) land on distinct ports so they never adopt each
+    other's server.
     """
-    key = f"lingbot_vla2|{model_id}|{robo_name}".encode()
+    key = f"lingbot_{variant}|{model_id}|{robo_name}".encode()
     digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
     return _PORT_MIN + (digest % (_PORT_MAX - _PORT_MIN))
 
@@ -146,7 +149,9 @@ def _resolve_camera_keys(env_cfg: SimEnvironment, extra: dict[str, Any]) -> tupl
     return keys[: len(_LINGBOT_IMAGE_KEYS)]
 
 
-def _resolve_model_id(spec: VLASpec, extra: dict[str, Any]) -> str:
+def _resolve_model_id(
+    spec: VLASpec, extra: dict[str, Any], default_model_id: str = _DEFAULT_MODEL_ID
+) -> str:
     """Resolve the HF id / local dir / manifest ``weights_uri`` to hand the sidecar.
 
     Precedence (first hit wins), mirroring the rldx adapter's ``_resolve_model_id``:
@@ -158,7 +163,7 @@ def _resolve_model_id(spec: VLASpec, extra: dict[str, Any]) -> str:
        verbatim; the sidecar's ``_resolve_checkpoint`` strips ``hf://`` and splits
        the ``@`` revision (``resolve_rskill_repo_revision`` convention).
     3. ``spec.weights_uri`` when the operator supplied a bare ``hf://`` directly.
-    4. the upstream fp32 default (:data:`_DEFAULT_MODEL_ID`).
+    4. the upstream fp32 default (``default_model_id``, per variant).
     """
     override = extra.get("model_id")
     if override:
@@ -172,7 +177,7 @@ def _resolve_model_id(spec: VLASpec, extra: dict[str, Any]) -> str:
     spec_uri = str(getattr(spec, "weights_uri", "") or "")
     if spec_uri.startswith("hf://"):
         return spec_uri
-    return _DEFAULT_MODEL_ID
+    return default_model_id
 
 
 def _locate_sidecar_script() -> Path:
@@ -280,55 +285,60 @@ class _LingBotVla2Adapter:
             self._queue.append(np.asarray(action, dtype=np.float32))
 
 
-@POLICIES.register("lingbot_vla2")
-def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
-    """Build the LingBot-VLA 2.0 adapter behind its auto-managed ZMQ sidecar.
+def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adapter:
+    """Build a LingBot-VLA adapter behind its auto-managed ZMQ sidecar.
+
+    ``variant`` selects the model family: ``v2`` (6B Qwen3-VL MoE) or ``v1`` (4B
+    Qwen2.5-VL dense expert / posttrain-robotwin). Both share the transport, obs
+    contract, and adapter; only the sidecar's repo + venv + server variant differ.
 
     YAML knobs (``vla.extra``): ``model_id``, ``robo_name``, ``camera_keys``,
     ``quantization`` (``nf4`` default / ``none``), ``device`` (``cuda`` default /
-    ``cpu``), ``attn`` (``sdpa`` default / ``eager``), ``port``, ``replan_steps``,
-    ``auto_spawn``. Environment overrides:
-    ``OPENRAL_LINGBOT_VLA2_{QUANTIZATION,DEVICE,ATTN,PORT,TIMEOUT_MS,AUTO_SPAWN}``.
-    ``device=cpu`` runs the model in bf16 on the CPU (NF4 needs CUDA), freeing the
-    GPU for a co-resident SAPIEN sim on an 8 GB card; pair it with a raised
-    ``OPENRAL_LINGBOT_VLA2_TIMEOUT_MS`` (CPU chunks run to minutes).
+    ``cpu``), ``attn`` (v2 ``sdpa`` / v1 ``eager``), ``port``, ``replan_steps``,
+    ``auto_spawn``. Environment overrides use the variant prefix
+    (``OPENRAL_LINGBOT_VLA2_*`` for v2, ``OPENRAL_LINGBOT_VLA_*`` for v1):
+    ``{QUANTIZATION,DEVICE,ATTN,PORT,TIMEOUT_MS,AUTO_SPAWN}``. ``device=cpu`` runs
+    the model in bf16 on the CPU (NF4 needs CUDA), freeing the GPU for a
+    co-resident SAPIEN sim on an 8 GB card; pair it with a raised ``TIMEOUT_MS``.
     """
+    env_prefix = "OPENRAL_LINGBOT_VLA2" if variant == "v2" else "OPENRAL_LINGBOT_VLA"
+    default_model_id = _DEFAULT_MODEL_ID if variant == "v2" else _DEFAULT_MODEL_ID_V1
+    default_attn = "sdpa" if variant == "v2" else "eager"
+
     spec = env_cfg.vla
     extra = dict(spec.extra or {})
 
-    model_id = _resolve_model_id(spec, extra)
+    model_id = _resolve_model_id(spec, extra, default_model_id)
     robo_name = str(extra.get("robo_name") or _DEFAULT_ROBO_NAME)
     quantization = str(
-        os.environ.get("OPENRAL_LINGBOT_VLA2_QUANTIZATION") or extra.get("quantization", "nf4")
+        os.environ.get(f"{env_prefix}_QUANTIZATION") or extra.get("quantization", "nf4")
     ).lower()
-    attn = str(os.environ.get("OPENRAL_LINGBOT_VLA2_ATTN") or extra.get("attn", "sdpa")).lower()
+    attn = str(os.environ.get(f"{env_prefix}_ATTN") or extra.get("attn", default_attn)).lower()
     # Inference device. ``cpu`` runs the model in bf16 on the CPU (NF4 needs
     # CUDA), freeing the GPU for a co-resident SAPIEN sim on an 8 GB card — at a
     # large latency cost, so pair it with a raised timeout below.
-    device = str(
-        os.environ.get("OPENRAL_LINGBOT_VLA2_DEVICE") or extra.get("device", "cuda")
-    ).lower()
+    device = str(os.environ.get(f"{env_prefix}_DEVICE") or extra.get("device", "cuda")).lower()
     replan_steps = _opt_int(extra.get("replan_steps"), _DEFAULT_REPLAN_STEPS)
     camera_keys = _resolve_camera_keys(env_cfg, extra)
-    # A single CPU forward of the 6.38 B model runs to minutes, far past the
-    # GPU-tuned default; let the operator raise the REQ recv timeout so a slow
-    # (but live) CPU chunk is not read as a dead sidecar.
-    timeout_ms = _opt_int(os.environ.get("OPENRAL_LINGBOT_VLA2_TIMEOUT_MS"), _DEFAULT_TIMEOUT_MS)
+    # A single CPU forward runs to minutes, far past the GPU-tuned default; let the
+    # operator raise the REQ recv timeout so a slow (but live) CPU chunk is not
+    # read as a dead sidecar.
+    timeout_ms = _opt_int(os.environ.get(f"{env_prefix}_TIMEOUT_MS"), _DEFAULT_TIMEOUT_MS)
 
     host = "127.0.0.1"
-    port_env = os.environ.get("OPENRAL_LINGBOT_VLA2_PORT")
+    port_env = os.environ.get(f"{env_prefix}_PORT")
     port = (
         int(port_env)
         if port_env
-        else _opt_int(extra.get("port"), _policy_default_port(model_id, robo_name))
+        else _opt_int(extra.get("port"), _policy_default_port(model_id, robo_name, variant))
     )
-    auto_spawn = os.environ.get("OPENRAL_LINGBOT_VLA2_AUTO_SPAWN", "1") != "0"
+    auto_spawn = os.environ.get(f"{env_prefix}_AUTO_SPAWN", "1") != "0"
 
     # Launch the boot helper with the OPENRAL interpreter (it imports
     # openral_sim._sidecar_common to auto-provision the clone + torch-2.8 venv,
-    # then execs tools/_lingbot_vla2_server.py inside that venv). PYTHONPATH is
-    # stripped by SidecarClient._spawn; expandable_segments is re-set by the boot
-    # helper's make_isolated_env.
+    # then execs tools/_lingbot_vla2_server.py --variant inside that venv).
+    # PYTHONPATH is stripped by SidecarClient._spawn; expandable_segments is
+    # re-set by the boot helper's make_isolated_env.
     launch_argv = [
         sys.executable,
         str(_locate_sidecar_script()),
@@ -342,6 +352,8 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
         device,
         "--attn",
         attn,
+        "--variant",
+        variant,
         "--host",
         host,
         "--port",
@@ -349,7 +361,7 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     ]
 
     client = SidecarClient(
-        name="lingbot-vla2",
+        name=f"lingbot-{variant}",
         host=host,
         port=port,
         timeout_ms=timeout_ms,
@@ -358,7 +370,7 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
         auto_spawn=auto_spawn,
         expected_identity={"model": model_id, "robo_name": robo_name},
     )
-    _log.info("lingbot_vla2_connecting", model=model_id, robo_name=robo_name, port=port)
+    _log.info("lingbot_connecting", variant=variant, model=model_id, robo_name=robo_name, port=port)
     client.connect()
     return _LingBotVla2Adapter(
         spec=spec,
@@ -367,3 +379,19 @@ def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
         _camera_keys=camera_keys,
         _replan_steps=replan_steps,
     )
+
+
+@POLICIES.register("lingbot_vla2")
+def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
+    """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see :func:`_build_lingbot`."""
+    return _build_lingbot(env_cfg, variant="v2")
+
+
+@POLICIES.register("lingbot_vla")
+def _build_lingbot_vla(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
+    """LingBot-VLA 1.0 (4B Qwen2.5-VL dense expert / posttrain-robotwin).
+
+    Same obs contract + adapter as v2; the sidecar loads the V1 repo + venv and
+    runs ``tools/_lingbot_vla2_server.py --variant v1``. See :func:`_build_lingbot`.
+    """
+    return _build_lingbot(env_cfg, variant="v1")

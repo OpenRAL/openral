@@ -4391,6 +4391,7 @@ ModelFamily: TypeAlias = Literal[
     "diffuser_actor",
     "openvla",
     "lingbot_vla2",
+    "lingbot_vla",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -4409,6 +4410,14 @@ via a ZMQ sidecar in its own Python 3.12 + torch-2.8 venv — the upstream
 ``lingbotvla`` package pins ``torch==2.8.0`` / ``transformers==4.57.3`` +
 custom Triton MoE kernels, incompatible with the workspace torch>=2.9 /
 transformers>=5 (adapter: ``openral_sim.policies.lingbot_vla2``).
+
+``lingbot_vla`` (Robbyant LingBot-VLA 1.0, 4B Qwen2.5-VL-3B backbone + a *dense*
+Qwen2 flow-matching action expert; paper "A Pragmatic VLA Foundation Model",
+arXiv 2601.18692) is the RoboTwin post-train checkpoint. It shares the v2
+sidecar transport + adapter but loads from the separate V1 upstream repo
+(``github.com/robbyant/lingbot-vla``) in its own ``transformers==4.51.3`` /
+``lerobot==0.4.2`` venv, driven by ``tools/_lingbot_vla2_server.py --variant v1``
+(adapter: ``openral_sim.policies.lingbot_vla2`` id ``lingbot_vla``).
 
 ``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
 loaded in-process (``trust_remote_code``, gated by
