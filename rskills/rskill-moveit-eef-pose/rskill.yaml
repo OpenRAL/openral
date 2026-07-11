@@ -4,7 +4,7 @@
 # selects the `PoseGoalRskill` adapter, which consumes a `pose` block (target
 # position + quaternion orientation for a constrained link) and lowers it into
 # MoveGroup position + orientation constraints. The generic Cartesian sibling
-# of rskill-moveit-multi-look_at-none (gaze is a computed-pose specialisation); new under
+# of rskill-moveit-multi-look_at (gaze is a computed-pose specialisation); new under
 # the rskill-moveit-* family.
 #
 # Collision posture: MoveIt's internal FCL planner does self + planning-scene
@@ -14,7 +14,7 @@
 # supervisor sees every waypoint.
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-moveit-multi-eef_pose-none"
+name: "OpenRAL/rskill-moveit-multi-eef_pose"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -51,7 +51,7 @@ description: >
   a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup
   (self + planning-scene collision checked). Use when you have a Cartesian
   end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use
-  rskill-moveit-multi-joints-none, and to aim a camera at a point use rskill-moveit-multi-look_at-none.
+  rskill-moveit-multi-joints, and to aim a camera at a point use rskill-moveit-multi-look_at.
 actions:
   - "reach"
 objects: []

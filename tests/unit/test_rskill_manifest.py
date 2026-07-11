@@ -1049,8 +1049,8 @@ class TestRepoNameIsCanonical:
         assert not repo_name_is_canonical(
             "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
         )
-        assert not repo_name_is_canonical(
-            "OpenRAL/rskill-moveit-multi-eef_pose-none", kind="ros_action"
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
         )
 
     def test_weight_bearing_kind_requires_a_quant_segment(self) -> None:

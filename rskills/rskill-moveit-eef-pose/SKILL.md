@@ -1,11 +1,11 @@
 ---
 name: rskill-moveit-eef-pose
 description: >-
-  S1 ROS action skill (weightless). Capabilities: reach. Plan and execute a collision-free motion that brings the end-effector link to a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup (self + planning-scene collision checked). Use when you have a Cartesian end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints-none, and to aim a camera at a point use rskill-moveit-multi-look_at-none. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 ROS action skill (weightless). Capabilities: reach. Plan and execute a collision-free motion that brings the end-effector link to a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup (self + planning-scene collision checked). Use when you have a Cartesian end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints, and to aim a camera at a point use rskill-moveit-multi-look_at. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-moveit-multi-eef_pose-none
+  rskill_id: OpenRAL/rskill-moveit-multi-eef_pose
   manifest: ./rskill.yaml
   role: s1
   kind: ros_action
@@ -28,7 +28,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **ROS action skill (weightless)** (`role: s1`, `kind: ros_action`). Plan and execute a collision-free motion that brings the end-effector link to a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup (self + planning-scene collision checked). Use when you have a Cartesian end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints-none, and to aim a camera at a point use rskill-moveit-multi-look_at-none.
+An OpenRAL **ROS action skill (weightless)** (`role: s1`, `kind: ros_action`). Plan and execute a collision-free motion that brings the end-effector link to a target 6-DOF Cartesian pose (position + orientation) via MoveIt's MoveGroup (self + planning-scene collision checked). Use when you have a Cartesian end-effector goal (e.g. a pre-grasp pose); for a joint-space goal use rskill-moveit-multi-joints, and to aim a camera at a point use rskill-moveit-multi-look_at.
 
 ## Capabilities
 
@@ -52,7 +52,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-moveit-multi-eef_pose-none")
+skill = rSkill.from_pretrained("OpenRAL/rskill-moveit-multi-eef_pose")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

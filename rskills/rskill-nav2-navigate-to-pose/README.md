@@ -12,7 +12,7 @@ tags:
 inference: false
 ---
 
-# rskill-nav2-mobile_base-navigate_to_pose-none
+# rskill-nav2-mobile_base-navigate_to_pose
 
 > **OpenRAL rSkill** — wraps the upstream `nav2_msgs/action/NavigateToPose`
 > action server as an OpenRAL rSkill so the Reasoner can dispatch
@@ -26,7 +26,7 @@ This package uses `kind: ros_action` with
 [`ROSActionRskill`](../../python/rskill/src/openral_rskill/ros_action_rskill.py)
 adapter into result-only mode: it sends the goal, awaits the action
 result, and raises `ROSRskillGoalSatisfied` on success. Compare with
-the sibling [`rskill-moveit-multi-joints-none`](../rskill-moveit-joints/)
+the sibling [`rskill-moveit-multi-joints`](../rskill-moveit-joints/)
 skill, which sets `result_trajectory_field` and replays a joint
 trajectory one waypoint at a time.
 
@@ -119,7 +119,7 @@ Nav2 launch — the wrapped action's contract is intact.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none` |
+| `name` | `OpenRAL/rskill-nav2-mobile_base-navigate_to_pose` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `kind` | `ros_action` |
@@ -156,7 +156,7 @@ ros2 launch openral_rskill_ros skill_runner.launch.py robot:=panda_mobile
 
 # 3. From the Reasoner (or by hand), dispatch the goal:
 ros2 action send_goal /openral/execute_skill openral_msgs/action/ExecuteSkill \
-    "{rskill_id: 'OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none', deadline_s: 120.0, prompt: 'go to map origin'}"
+    "{rskill_id: 'OpenRAL/rskill-nav2-mobile_base-navigate_to_pose', deadline_s: 120.0, prompt: 'go to map origin'}"
 ```
 
 ## Limitations / Roadmap

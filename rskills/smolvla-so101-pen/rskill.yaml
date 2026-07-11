@@ -59,7 +59,7 @@ actuators_required:
 # Joint order = robots/so101_follower manifest joints
 # [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
 # (radians). Before the first VLA tick the runner moves the arm here (approach
-# via rskill-moveit-multi-joints-none if a MoveIt config is wired, else the ResetToPose
+# via rskill-moveit-multi-joints if a MoveIt config is wired, else the ResetToPose
 # snap) so the policy starts from an in-distribution, collision-clear pose
 # rather than an arbitrary parked fold. This is the so101 SRDF `rest`
 # group_state (a MoveIt-verified collision-free folded pose,
