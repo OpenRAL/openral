@@ -88,9 +88,13 @@ plain `split("-")`. Two shapes:
 | Axis | Vocabulary | Example |
 | --- | --- | --- |
 | `<model>` | `CANONICAL_MODEL_TOKENS` — a versioned checkpoint token | `smolvla`, `gr00t_n17`, `lingbot_vla2`, `omdet_turbo` |
-| `<robot>` | `EmbodimentTag` values + `any` + `multi` (>1 concrete robot) | `franka_panda`, `aloha_agilex`, `any`, `multi` |
+| `<robot>` | `EmbodimentTag` values incl. `any` + `multi` (>1 concrete robot) | `franka_panda`, `aloha_agilex`, `any`, `multi` |
 | `<task>` | **author-chosen**, validated by shape `^[a-z0-9][a-z0-9_]*$` only | `libero_spatial`, `pen`, `pick_place_pen`, `locator` |
-| `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` (schema `int4` → `nf4`) | `bf16`, `int8`, `nf4` |
+| `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` for weight-bearing kinds (schema `int4` → `nf4`); `none` for weightless ROS wrappers (`ros_action`/`ros_service`) | `bf16`, `int8`, `nf4`, `none` |
+
+For a VLA the `<model>` token must be consistent with `model_family` (e.g. a
+`smolvla` checkpoint can't be named `pi05`). A ROS-wrapper skill uses the `none`
+quant token, e.g. `OpenRAL/rskill-moveit-multi-eef_pose-none`.
 
 The `<task>` segment is **yours to choose** — it is validated by shape, not by
 equality against `evaluated_tasks`, so two skills that share a benchmark can

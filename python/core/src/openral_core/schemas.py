@@ -4312,6 +4312,7 @@ EmbodimentTag: TypeAlias = Literal[
     "gr1",
     "h1",
     "mobile_base",
+    "multi",
     "openarm",
     "panda_mobile",
     "pusht",
@@ -4326,6 +4327,12 @@ EmbodimentTag: TypeAlias = Literal[
 """Canonical embodiment tags — one per ``robots/<id>/robot.yaml`` shipped in tree,
 plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
 ``"any"`` as the explicit **embodiment-agnostic wildcard**.
+
+``"multi"`` is a repo-name aggregate token (CLAUDE.md §3 rSkill packaging): the
+``<robot>`` segment a skill declaring >1 concrete robot uses (e.g. the
+``moveit-*`` ROS wrappers). It is a member of the Literal so the name validator
+can accept it; a manifest normally lists the specific robots in
+``embodiment_tags`` rather than the aggregate.
 
 ``"any"`` is the *declared* way to say "this rSkill runs on every embodiment":
 perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
@@ -5899,14 +5906,18 @@ class RSkillManifest(BaseModel):
 # - ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS` (a versioned checkpoint token,
 #   NOT the bare :data:`ModelFamily`, so future gr00t_n2 / rldx2 don't collide).
 # - ``<robot>`` ∈ :data:`CANONICAL_ROBOT_NAME_TOKENS` (the :data:`EmbodimentTag`
-#   values, plus ``"any"`` already in that set and ``"multi"`` for skills that
-#   declare >1 concrete robot).
+#   values — includes ``"any"`` and ``"multi"`` for skills that declare >1
+#   concrete robot).
 # - ``<task>`` is AUTHOR-CHOSEN — validated by shape only, never by equality
 #   against ``evaluated_tasks`` (that collapses e.g. so101 "pen" vs
 #   "pick_place_pen", or omdet "indoor" vs "locator"). :func:`expected_repo_name`
 #   only *suggests* a default task slug.
 # - ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`. ``int4`` weights ship as
-#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``.
+#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``;
+#   weightless wrappers (``ros_action`` / ``ros_service``) use ``none``.
+# - When ``model_family`` is set (VLA skills), the ``<model>`` token must also be
+#   family-consistent — in :data:`_MODEL_FAMILY_ALLOWED_TOKENS` for that family —
+#   so a smolvla checkpoint can't be mislabelled ``pi05``.
 
 _DEFAULT_RSKILL_OWNER = "OpenRAL"
 """Owner used when a manifest ``name`` carries no ``<owner>/`` prefix."""
@@ -5919,10 +5930,22 @@ _RSKILL_NAME_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
 _RSKILL_NAME_PARTS = 5
 _RSKILL_PLAYBOOK_NAME_PARTS = 3
 
-CANONICAL_QUANT_TOKENS: frozenset[str] = frozenset(
+_WEIGHT_BEARING_QUANT_TOKENS: frozenset[str] = frozenset(
     {"fp32", "fp16", "bf16", "int8", "nf4"}
 )
-"""Canonical ``<quant>`` name tokens. ``int4`` → ``nf4`` (bitsandbytes NF4)."""
+"""``<quant>`` tokens for kinds that carry model weights (everything except the
+ROS wrappers). ``int4`` → ``nf4`` (bitsandbytes NF4)."""
+
+_WEIGHTLESS_QUANT_TOKEN = "none"
+"""``<quant>`` token for kinds with no weights (``ros_action`` / ``ros_service``)."""
+
+_WEIGHTLESS_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
+"""Kinds that wrap an existing ROS interface — no weights, so ``<quant>`` = ``none``."""
+
+CANONICAL_QUANT_TOKENS: frozenset[str] = _WEIGHT_BEARING_QUANT_TOKENS | {_WEIGHTLESS_QUANT_TOKEN}
+"""All canonical ``<quant>`` name tokens. Which apply is kind-specific: weight-
+bearing kinds use :data:`_WEIGHT_BEARING_QUANT_TOKENS`; the ROS wrappers
+(:data:`_WEIGHTLESS_KINDS`) use ``none``."""
 
 _QUANT_DTYPE_TO_TOKEN: dict[QuantizationDtype, str] = {
     QuantizationDtype.FP32: "fp32",
@@ -5988,14 +6011,34 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "lingbot_vla": "lingbot_vla",
     "lingbot_vla2": "lingbot_vla2",
 }
-"""VLA :data:`ModelFamily` → its canonical ``<model>`` suggestion token."""
+"""VLA :data:`ModelFamily` → its canonical ``<model>`` *suggestion* token
+(the single token :func:`expected_repo_name` proposes)."""
 
-CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(get_args(EmbodimentTag)) | {"multi"}
-"""Canonical ``<robot>`` name tokens: the :data:`EmbodimentTag` values (incl.
-the ``"any"`` wildcard) plus ``"multi"`` for a skill declaring >1 concrete
-robot. ``"multi"`` is a name-segment-only token — it is deliberately NOT added
-to :data:`EmbodimentTag` so no manifest can declare ``embodiment_tags: [multi]``
-as a capability."""
+_MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
+    "smolvla": frozenset({"smolvla"}),
+    "pi05": frozenset({"pi05"}),
+    "xvla": frozenset({"xvla"}),
+    "act": frozenset({"act"}),
+    "diffusion": frozenset({"diffusion"}),
+    "molmoact2": frozenset({"molmoact2"}),
+    "rldx": frozenset({"rldx1_ft"}),
+    "gr00t": frozenset({"gr00t_n17"}),
+    "diffuser_actor": frozenset({"3d_diffuser_actor"}),
+    # A manifest family ``openvla`` may carry the base or the OFT checkpoint.
+    "openvla": frozenset({"openvla", "openvla_oft"}),
+    "lingbot_vla": frozenset({"lingbot_vla"}),
+    "lingbot_vla2": frozenset({"lingbot_vla2"}),
+}
+"""The documented **family → allowed ``<model>`` tokens** map: when a manifest
+declares ``model_family``, the name's ``<model>`` segment must be one of these
+(a per-family allowlist rather than a bare ``startswith`` stem, so
+``lingbot_vla`` and ``lingbot_vla2`` — where one string prefixes the other —
+stay distinct). Keyed by every :data:`ModelFamily` value."""
+
+CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(get_args(EmbodimentTag))
+"""Canonical ``<robot>`` name tokens: the :data:`EmbodimentTag` values —
+including the ``"any"`` wildcard and the ``"multi"`` aggregate (a skill
+declaring >1 concrete robot)."""
 
 
 def _quant_token_for_dtype(dtype: QuantizationDtype) -> str:
@@ -6087,14 +6130,20 @@ def _task_slug_for_manifest(
     if manifest.benchmarks:
         return sorted(manifest.benchmarks)[0].lower().replace("-", "_")
     tail = _repo_tail_slug(manifest.name)
-    if tail == model_token:
+    # Strip the model prefix, then a robot prefix, then a trailing quant token —
+    # so an already-canonical ``model-robot-task-quant`` name yields just ``task``
+    # (the derivation is idempotent, and a STALE quant token like a pre-migration
+    # ``fp32`` is dropped too), while a dir-style name yields its discriminator.
+    for prefix in (model_token, robot_token):
+        if tail == prefix:
+            tail = ""
+        elif tail.startswith(f"{prefix}_"):
+            tail = tail[len(prefix) + 1 :]
+    segments = tail.split("_")
+    if len(segments) > 1 and segments[-1] in CANONICAL_QUANT_TOKENS:
+        tail = "_".join(segments[:-1])
+    elif tail in CANONICAL_QUANT_TOKENS:
         tail = ""
-    elif tail.startswith(f"{model_token}_"):
-        tail = tail[len(model_token) + 1 :]
-    if tail == quant_token:
-        tail = ""
-    elif tail.endswith(f"_{quant_token}"):
-        tail = tail[: -(len(quant_token) + 1)]
     tail = tail.strip("_")
     if tail and tail not in {robot_token, quant_token} and _RSKILL_NAME_SEGMENT_RE.match(tail):
         return tail
@@ -6103,22 +6152,36 @@ def _task_slug_for_manifest(
     return "main"
 
 
-def repo_name_is_canonical(name: str, *, kind: RSkillKind) -> bool:
+def repo_name_is_canonical(
+    name: str, *, kind: RSkillKind, model_family: str | None = None
+) -> bool:
     """Return ``True`` when ``name`` obeys the repo-naming grammar for ``kind``.
 
     Playbooks (``kind == "playbook"``) must be ``rskill-playbook-<name>``;
     every other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with
     ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS`, ``<robot>`` ∈
-    :data:`CANONICAL_ROBOT_NAME_TOKENS`, ``<quant>`` ∈
-    :data:`CANONICAL_QUANT_TOKENS`, and ``<task>`` matching the segment shape.
-    The owner prefix (``<owner>/``) is ignored. Validation is vocab-membership +
-    shape only — it does NOT re-derive the segments from a manifest.
+    :data:`CANONICAL_ROBOT_NAME_TOKENS`, ``<task>`` matching the segment shape,
+    and ``<quant>`` kind-specific: the ROS wrappers (``ros_action`` /
+    ``ros_service``) carry no weights so it must be ``none``; every other kind
+    uses a real dtype token (:data:`_WEIGHT_BEARING_QUANT_TOKENS`, never
+    ``none``). The owner prefix (``<owner>/``) is ignored.
+
+    When ``model_family`` is given (a VLA skill), the ``<model>`` segment must
+    additionally be family-consistent — one of
+    :data:`_MODEL_FAMILY_ALLOWED_TOKENS` for that family — so a checkpoint can't
+    be mislabelled with another family's token. When ``model_family`` is ``None``
+    (tool / ROS skills, or a pure name check) only vocab membership is required.
 
     Example:
         >>> repo_name_is_canonical(
         ...     "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
         ... )
         True
+        >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-pi05-franka_panda-libero-bf16",
+        ...     kind="vla", model_family="smolvla",
+        ... )  # wrong family token
+        False
         >>> repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
         True
         >>> repo_name_is_canonical("OpenRAL/rskill-smolvla-libero", kind="vla")
@@ -6136,12 +6199,21 @@ def repo_name_is_canonical(name: str, *, kind: RSkillKind) -> bool:
     if len(parts) != _RSKILL_NAME_PARTS or parts[0] != "rskill":
         return False
     _, model, robot, task, quant = parts
-    return (
+    # ``<quant>`` is kind-specific: the ROS wrappers have no weights → ``none``;
+    # weight-bearing kinds use a real dtype token (never ``none``).
+    allowed_quant = (
+        {_WEIGHTLESS_QUANT_TOKEN} if kind in _WEIGHTLESS_KINDS else _WEIGHT_BEARING_QUANT_TOKENS
+    )
+    if not (
         model in CANONICAL_MODEL_TOKENS
         and robot in CANONICAL_ROBOT_NAME_TOKENS
         and bool(_RSKILL_NAME_SEGMENT_RE.match(task))
-        and quant in CANONICAL_QUANT_TOKENS
-    )
+        and quant in allowed_quant
+    ):
+        return False
+    if model_family is not None:
+        return model in _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset())
+    return True
 
 
 def expected_repo_name(manifest: RSkillManifest) -> str:
@@ -6199,7 +6271,12 @@ def expected_repo_name(manifest: RSkillManifest) -> str:
         return f"{owner}/rskill-playbook-{name}"
     model = _model_token_for_manifest(manifest)
     robot = _robot_token_for_manifest(manifest)
-    quant = _quant_token_for_dtype(manifest.quantization.dtype)
+    # Weightless wrappers (ros_action / ros_service) have no dtype → token `none`.
+    quant = (
+        _WEIGHTLESS_QUANT_TOKEN
+        if manifest.kind in ("ros_action", "ros_service")
+        else _quant_token_for_dtype(manifest.quantization.dtype)
+    )
     task = _task_slug_for_manifest(manifest, model, robot, quant)
     return f"{owner}/rskill-{model}-{robot}-{task}-{quant}"
 

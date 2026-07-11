@@ -27,10 +27,12 @@ parses by a plain ``split("-")``):
 
 - ``<owner>/rskill-<model>-<robot>-<task>-<quantization>`` — all non-playbook
   kinds. ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` (a versioned checkpoint token,
-  e.g. ``smolvla`` / ``gr00t_n17`` / ``omdet_turbo``); ``<robot>`` ∈ the
-  ``EmbodimentTag`` values plus ``any`` / ``multi``; ``<task>`` is AUTHOR-CHOSEN
-  (validated by shape ``^[a-z0-9][a-z0-9_]*$`` only); ``<quantization>`` ∈
-  ``{fp32, fp16, bf16, int8, nf4}`` (schema ``int4`` → ``nf4``).
+  e.g. ``smolvla`` / ``gr00t_n17`` / ``omdet_turbo``; for a VLA it must also be
+  consistent with ``model_family``); ``<robot>`` ∈ the ``EmbodimentTag`` values
+  (incl. ``any`` / ``multi``); ``<task>`` is AUTHOR-CHOSEN (validated by shape
+  ``^[a-z0-9][a-z0-9_]*$`` only); ``<quantization>`` ∈
+  ``{fp32, fp16, bf16, int8, nf4, none}`` (schema ``int4`` → ``nf4``; weightless
+  ROS wrappers → ``none``).
 - ``<owner>/rskill-playbook-<name>`` — ``kind: playbook``.
 
 Validation is :func:`openral_core.schemas.repo_name_is_canonical` (vocab +
@@ -246,10 +248,12 @@ def _enforce_repo_name(
 
     Validates ``manifest.name`` with
     :func:`openral_core.schemas.repo_name_is_canonical` for the manifest's
-    ``kind``: playbooks must be ``rskill-playbook-<name>``; every other kind must
-    be ``rskill-<model>-<robot>-<task>-<quant>`` with ``<model>`` /
-    ``<robot>`` / ``<quant>`` in their canonical vocabularies and ``<task>`` an
-    author-chosen, shape-valid slug. No kind is exempt.
+    ``kind`` (passing ``model_family`` so a VLA's ``<model>`` token must be
+    family-consistent): playbooks must be ``rskill-playbook-<name>``; every
+    other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with ``<model>``
+    / ``<robot>`` / ``<quant>`` in their canonical vocabularies (weightless ROS
+    wrappers use quant token ``none``) and ``<task>`` an author-chosen,
+    shape-valid slug. No kind is exempt.
 
     When the name is not canonical:
 
@@ -277,7 +281,9 @@ def _enforce_repo_name(
     """
     from openral_core.schemas import expected_repo_name, repo_name_is_canonical
 
-    if repo_name_is_canonical(manifest.name, kind=manifest.kind):
+    if repo_name_is_canonical(
+        manifest.name, kind=manifest.kind, model_family=manifest.model_family
+    ):
         log.info("rskill_publisher.name_ok", name=manifest.name)
         return manifest
 

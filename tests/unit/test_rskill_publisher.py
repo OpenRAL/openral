@@ -559,9 +559,12 @@ def test_enforce_repo_name_enforces_detector_kind(
     """Non-VLA kinds are NOT exempt: a non-canonical detector name hard-fails."""
     from openral_core.schemas import RSkillManifest
 
-    # rtdetr-coco-r18's in-tree name is not yet canonical → must exit 1.
+    # Force a deliberately non-canonical (hyphenated) name so the check fires
+    # regardless of the fixture's current on-disk name.
     detector_yaml = str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "rskill.yaml")
-    manifest = RSkillManifest.from_yaml(detector_yaml)
+    manifest = RSkillManifest.from_yaml(detector_yaml).model_copy(
+        update={"name": "OpenRAL/rskill-rtdetr-coco-r18"}
+    )
     with pytest.raises(SystemExit) as excinfo:
         publisher._enforce_repo_name(tmp_path, manifest, fix_name=False)
     assert excinfo.value.code == 1

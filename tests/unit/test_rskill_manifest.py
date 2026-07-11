@@ -1034,11 +1034,38 @@ class TestRepoNameIsCanonical:
 
         assert repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
 
-    def test_multi_robot_token_accepted(self) -> None:
+    def test_multi_robot_and_none_quant_for_ros_action(self) -> None:
         from openral_core import repo_name_is_canonical
 
         assert repo_name_is_canonical(
+            "OpenRAL/rskill-moveit-multi-eef_pose-none", kind="ros_action"
+        )
+
+    def test_ros_action_must_use_none_quant(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A weightless wrapper may not carry a dtype token.
+        assert not repo_name_is_canonical(
             "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
+        )
+
+    def test_weight_bearing_kind_may_not_use_none_quant(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero-none", kind="vla"
+        )
+
+    def test_model_family_consistency_enforced(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A valid token for the WRONG family is rejected when model_family is given.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-pi05-franka_panda-libero-bf16", kind="vla", model_family="smolvla"
+        )
+        # openvla family allows both the base and the OFT checkpoint token.
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-openvla_oft-widowx-simpler-nf4", kind="vla", model_family="openvla"
         )
 
     def test_hyphen_inside_token_is_rejected(self) -> None:
@@ -1099,92 +1126,107 @@ class TestCanonicalTokenSets:
     def test_quant_tokens_exact_set(self) -> None:
         from openral_core import CANONICAL_QUANT_TOKENS
 
-        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4"}
+        # Weight-bearing dtypes plus the weightless-wrapper token `none`.
+        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4", "none"}
 
 
 class TestExpectedRepoName:
     """``expected_repo_name`` — the canonical SUGGESTION (always valid).
 
-    Coverage: real in-tree fixtures across every kind (VLA / detector / reward /
-    vlm / ros_action / playbook), the ``int4`` → ``nf4`` quant token, the
-    ``multi`` robot token, and the author-slug fallback that recovers a
-    name-only discriminator (the two so101 pen skills).
+    Exact-value cases use SYNTHETIC manifests (``model_validate`` with a
+    controlled ``name`` + ``evaluated_tasks``) so they don't depend on the
+    in-tree fixture names, which the migration agent rewrites concurrently. Real
+    fixtures are only swept for canonicality of the suggestion.
     """
 
-    def test_real_manifests_suggest_canonical_names(self) -> None:
-        from openral_core import expected_repo_name, repo_name_is_canonical
+    @staticmethod
+    def _vla(name: str, **over: object) -> RSkillManifest:
+        d = _minimal_manifest_dict()
+        d["name"] = name
+        d.update(over)
+        return RSkillManifest.model_validate(d)
 
-        cases = {
-            # VLA — versioned model tokens, underscore robot tokens, quant tokens.
-            "smolvla-libero": "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
-            "pi05-libero-int8": "OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8",
-            "molmoact2-libero-nf4": "OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4",
-            "lingbot-vla2-robotwin": "OpenRAL/rskill-lingbot_vla2-aloha_agilex-robotwin-nf4",
-            "lingbot-vla-4b-robotwin": "OpenRAL/rskill-lingbot_vla-aloha_agilex-robotwin-nf4",
-            "gr00t-n17-libero": "OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16",
-            "rldx1-ft-libero-nf4": "OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4",
-            "3d-diffuser-actor-rlbench": (
-                "OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32"
-            ),
-            # multi-robot skill → robot token "multi"; author slug from name tail.
-            "molmoact2-so101-nf4": "OpenRAL/rskill-molmoact2-multi-so101-nf4",
-            # so101 pen pair — distinguished by the name-tail author slug.
-            "smolvla-so101-pen": "OpenRAL/rskill-smolvla-so101_follower-so101_pen-bf16",
-            "smolvla-so101-pick-place-pen": (
-                "OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16"
-            ),
-            # Non-VLA tool models — prefix-matched model token from the name.
-            "omdet-turbo-locator": "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
-            "rtdetr-coco-r18": "OpenRAL/rskill-rtdetr_coco_r18-any-tabletop-fp32",
-            "robometer-4b": "OpenRAL/rskill-robometer_4b-any-tabletop-nf4",
-            "rskill-moveit-eef-pose": "OpenRAL/rskill-moveit-multi-eef_pose-fp32",
-            "rskill-nav2-navigate-to-pose": (
-                "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-fp32"
-            ),
-            # Playbook carve-out.
-            "find-object": "OpenRAL/rskill-playbook-find_object",
-            "decompose-mission": "OpenRAL/rskill-playbook-decompose_mission",
-        }
-        for skill_dir, expected in cases.items():
-            m = _naming_fixture(skill_dir)
-            got = expected_repo_name(m)
-            assert got == expected, f"{skill_dir}: {got}"
-            # The suggestion must itself be canonical for the skill's kind.
-            assert repo_name_is_canonical(got, kind=m.kind), skill_dir
+    def test_task_from_evaluated_tasks_is_name_independent(self) -> None:
+        from openral_core import expected_repo_name
+
+        # evaluated_tasks drives <task>, so the suggestion is stable regardless
+        # of the current (arbitrary) name.
+        m = self._vla(
+            "openral/rskill-anything", embodiment_tags=["franka_panda"],
+            evaluated_tasks=["libero_spatial/3"],
+        )
+        assert (
+            expected_repo_name(m)
+            == "openral/rskill-smolvla-franka_panda-libero_spatial-fp32"
+        )
 
     def test_preserves_owner_prefix(self) -> None:
         from openral_core import expected_repo_name
 
-        d = _minimal_manifest_dict()  # name: openral/...
-        d["evaluated_tasks"] = ["libero_object"]
-        m = RSkillManifest.model_validate(d)
-        assert expected_repo_name(m).startswith("openral/rskill-")
+        m = self._vla("weird_owner/rskill-x", evaluated_tasks=["libero_object"])
+        assert expected_repo_name(m).startswith("weird_owner/rskill-")
 
     def test_versioned_model_token_from_family(self) -> None:
         from openral_core import expected_repo_name
 
-        d = _minimal_manifest_dict()
-        d["model_family"] = "lingbot_vla2"
-        d["embodiment_tags"] = ["franka_panda"]
-        d["evaluated_tasks"] = ["robotwin"]
-        m = RSkillManifest.model_validate(d)
+        m = self._vla(
+            "openral/rskill-x", model_family="lingbot_vla2",
+            embodiment_tags=["franka_panda"], evaluated_tasks=["robotwin"],
+        )
         assert expected_repo_name(m) == "openral/rskill-lingbot_vla2-franka_panda-robotwin-fp32"
 
     def test_int4_maps_to_nf4_token(self) -> None:
         from openral_core import expected_repo_name
 
-        d = _minimal_manifest_dict()
-        d["embodiment_tags"] = ["so100_follower"]
-        d["evaluated_tasks"] = ["libero_object"]
-        d["quantization"] = {"dtype": "int4", "backend": "pytorch"}
-        m = RSkillManifest.model_validate(d)
+        m = self._vla(
+            "openral/rskill-x", embodiment_tags=["so100_follower"],
+            evaluated_tasks=["libero_object"],
+            quantization={"dtype": "int4", "backend": "pytorch"},
+        )
         assert expected_repo_name(m) == "openral/rskill-smolvla-so100_follower-libero_object-nf4"
 
     def test_multi_robot_token(self) -> None:
         from openral_core import expected_repo_name
 
-        d = _minimal_manifest_dict()
-        d["embodiment_tags"] = ["so100_follower", "so101_follower"]
-        d["evaluated_tasks"] = ["libero_object"]
-        m = RSkillManifest.model_validate(d)
+        m = self._vla(
+            "openral/rskill-x", embodiment_tags=["so100_follower", "so101_follower"],
+            evaluated_tasks=["libero_object"],
+        )
         assert "-multi-" in expected_repo_name(m)
+
+    def test_name_tail_author_slug_distinguishes_pen_skills(self) -> None:
+        from openral_core import expected_repo_name
+
+        # No evaluated_tasks/benchmarks → the name-tail author slug is recovered,
+        # keeping two otherwise-identical skills distinct.
+        pen = self._vla(
+            "openral/rskill-smolvla-so101_follower-pen-bf16",
+            embodiment_tags=["so101_follower"],
+            quantization={"dtype": "bf16", "backend": "pytorch"},
+        )
+        pick = self._vla(
+            "openral/rskill-smolvla-so101_follower-pick_place_pen-bf16",
+            embodiment_tags=["so101_follower"],
+            quantization={"dtype": "bf16", "backend": "pytorch"},
+        )
+        assert expected_repo_name(pen).endswith("-pen-bf16")
+        assert expected_repo_name(pick).endswith("-pick_place_pen-bf16")
+
+    def test_all_in_tree_suggestions_are_canonical(self) -> None:
+        """For every shipped rskill.yaml, the suggestion validates for its kind.
+
+        Real-fixture sweep (CLAUDE.md §1.11) that does NOT assert exact names —
+        it only requires ``expected_repo_name`` to produce a name
+        ``repo_name_is_canonical`` accepts (model-family-consistent when set).
+        """
+        from openral_core import expected_repo_name, repo_name_is_canonical
+
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        for p in sorted(repo_root.glob("rskills/*/rskill.yaml")):
+            if p.parent.name == "template":
+                continue
+            m = RSkillManifest.from_yaml(str(p))
+            got = expected_repo_name(m)
+            assert repo_name_is_canonical(
+                got, kind=m.kind, model_family=m.model_family
+            ), f"{p.parent.name}: {got}"
