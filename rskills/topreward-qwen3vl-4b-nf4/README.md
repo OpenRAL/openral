@@ -23,7 +23,7 @@ base_model_relation: quantized
 inference: false
 ---
 
-# rskill-topreward-qwen3vl-4b-nf4
+# rskill-topreward_qwen3vl_4b-any-general-nf4
 
 > **OpenRAL rSkill** — [TOPReward](https://arxiv.org/abs/2602.19313) (*Token
 > Probabilities as Hidden Zero-Shot Rewards for Robotics*) packaged as an NF4
@@ -54,7 +54,7 @@ Qwen3-VL-4B backbone (peak **3.13 GB**, RTX 4070 Laptop 8 GB):
 ## Quick Start
 
 ```bash
-ral skill install hf://OpenRAL/rskill-topreward-qwen3vl-4b-nf4
+ral skill install hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
 ```
 
 ```python
@@ -161,7 +161,7 @@ supplied by the Reasoner from the active task.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-topreward-qwen3vl-4b-nf4` |
+| `name` | `OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4` |
 | `kind` | `reward` |
 | `role` | `s2` |
 | `weights_uri` | `hf://Qwen/Qwen3-VL-4B-Instruct` (zero-shot backbone) |

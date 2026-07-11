@@ -41,7 +41,7 @@ def test_build_reward_monitor_propagates_contract() -> None:
     assert mon._success_threshold == manifest.reward.success_threshold
     # hf:// scheme stripped from the weights source; the manifest now points at the
     # published pre-quantized NF4 repo (the sidecar meta-loads it directly as 4-bit).
-    assert mon._weights_source == "OpenRAL/rskill-robometer-4b-nf4"
+    assert mon._weights_source == "OpenRAL/rskill-robometer_4b-any-general-nf4"
 
 
 def test_build_reward_monitor_local_scheme() -> None:

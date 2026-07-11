@@ -31,8 +31,8 @@ def test_palette_carries_per_skill_metadata_for_aloha() -> None:
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
     assert palette.skills, "expected ALOHA palette to be non-empty"
     skill_ids = {entry.rskill_id for entry in palette.skills}
-    assert "OpenRAL/rskill-act-aloha" in skill_ids
-    assert "OpenRAL/rskill-act-aloha-insertion" in skill_ids
+    assert "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32" in skill_ids
+    assert "OpenRAL/rskill-act-aloha-aloha_insertion-fp32" in skill_ids
     for entry in palette.skills:
         assert isinstance(entry, RSkillToolEntry)
         assert entry.description, f"{entry.rskill_id} missing description"
@@ -77,7 +77,7 @@ def test_palette_filters_skills_not_matching_embodiment() -> None:
     caps = RobotCapabilities(embodiment_tags=["pusht"])
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
     ids = {s.rskill_id for s in palette.skills}
-    assert ids == {"OpenRAL/rskill-diffusion-pusht"}
+    assert ids == {"OpenRAL/rskill-diffusion-pusht-pusht-fp32"}
     (entry,) = palette.skills
     assert entry.actions == (RSkillAction.PUSH,)
     assert entry.objects == ("t_shape",)
@@ -139,7 +139,7 @@ def test_lingbot_vla2_robotwin_manifest_and_palette() -> None:
     the aloha_agilex robot's ExecuteSkill palette with its verb set.
     """
     manifest = RSkillManifest.from_yaml(str(_RSKILLS_DIR / "lingbot-vla2-robotwin" / "rskill.yaml"))
-    assert manifest.name == "OpenRAL/rskill-lingbot-vla2-robotwin"
+    assert manifest.name == "OpenRAL/rskill-lingbot_vla2-aloha_agilex-robotwin-nf4"
     assert manifest.role == "s1"
     assert manifest.model_family == "lingbot_vla2"
     assert manifest.kind == "vla"

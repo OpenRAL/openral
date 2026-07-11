@@ -17,7 +17,7 @@ tags:
 inference: false
 ---
 
-# rskill-act-aloha-insertion
+# rskill-act-aloha-aloha_insertion-fp32
 
 > **OpenRAL rSkill (custom example)** — ACT (Action Chunking Transformer)
 > finetuned on the ALOHA bimanual **peg-insertion** task, packaged for
@@ -29,7 +29,7 @@ with a `rskill.yaml` manifest that adds capability checking, license
 surfacing, latency budgets, and local registry integration. It does
 **not** copy model weights.
 
-It is the harder sibling of [`rskill-act-aloha`](../act-aloha) (cube
+It is the harder sibling of [`rskill-act-aloha-aloha_transfer_cube-fp32`](../act-aloha) (cube
 transfer) and demonstrates how a single packaging format covers multiple
 task-specific checkpoints from the same paper. The runnable demo lives at
 `scenes/benchmark/aloha_insertion.yaml` and is wired into the
@@ -80,7 +80,7 @@ checkpoint does not consume wrist or third-person views.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-act-aloha-insertion` |
+| `name` | `OpenRAL/rskill-act-aloha-aloha_insertion-fp32` |
 | `version` | `0.1.0` |
 | `license` | `mit` |
 | `role` | `s1` |

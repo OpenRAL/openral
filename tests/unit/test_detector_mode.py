@@ -70,16 +70,16 @@ def test_palette_collects_continuous_detectors_not_the_on_demand_locator() -> No
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
 
     cont_ids = {d.rskill_id for d in palette.continuous_detectors}
-    assert "OpenRAL/rskill-rtdetr-coco-r18" in cont_ids
-    assert "OpenRAL/rskill-omdet-turbo-indoor" in cont_ids
+    assert "OpenRAL/rskill-rtdetr_coco_r18-any-coco-fp32" in cont_ids
+    assert "OpenRAL/rskill-omdet_turbo-any-indoor-fp16" in cont_ids
     # The on-demand open-vocab locators are NOT continuous background producers.
-    assert "OpenRAL/rskill-locateanything-3b-nf4" not in cont_ids
-    assert "OpenRAL/rskill-omdet-turbo-locator" not in cont_ids
+    assert "OpenRAL/rskill-locateanything_3b-any-general-nf4" not in cont_ids
+    assert "OpenRAL/rskill-omdet_turbo-any-locator-fp16" not in cont_ids
 
     # No detector — continuous or on-demand — is an ExecuteSkill-dispatchable tool.
     skill_ids = {s.rskill_id for s in palette.skills}
     assert not (skill_ids & {d.rskill_id for d in palette.continuous_detectors})
-    assert "OpenRAL/rskill-locateanything-3b-nf4" not in skill_ids
+    assert "OpenRAL/rskill-locateanything_3b-any-general-nf4" not in skill_ids
 
     omdet = next(d for d in palette.continuous_detectors if "omdet" in d.rskill_id)
     assert omdet.num_labels > 200  # the curated indoor vocabulary
@@ -93,8 +93,8 @@ def test_palette_surfaces_on_demand_locators_with_aliases() -> None:
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
 
     aliases = {d.alias for d in palette.on_demand_detectors}
-    assert "omdet-turbo-locator" in aliases
-    assert "locateanything-3b-nf4" in aliases
+    assert "omdet_turbo-any-locator-fp16" in aliases
+    assert "locateanything_3b-any-general-nf4" in aliases
     # On-demand locators are not continuous producers and not ExecuteSkill tools.
     cont_ids = {d.rskill_id for d in palette.continuous_detectors}
     skill_ids = {s.rskill_id for s in palette.skills}
@@ -105,7 +105,9 @@ def test_palette_surfaces_on_demand_locators_with_aliases() -> None:
 
 
 def test_detector_alias_and_service_routing() -> None:
-    assert detector_alias("OpenRAL/rskill-omdet-turbo-locator") == "omdet-turbo-locator"
+    assert detector_alias("OpenRAL/rskill-omdet_turbo-any-locator-fp16") == (
+        "omdet_turbo-any-locator-fp16"
+    )
     assert detector_alias("plain-name") == "plain-name"
     assert detector_service_segment("omdet-turbo-locator") == "omdet_turbo_locator"
     # Explicit selector → namespaced service.
@@ -127,12 +129,12 @@ def test_locate_in_view_description_lists_locator_options() -> None:
         detector_available=True,
         on_demand_detectors=(
             OnDemandDetectorEntry(
-                rskill_id="OpenRAL/rskill-omdet-turbo-locator",
+                rskill_id="OpenRAL/rskill-omdet_turbo-any-locator-fp16",
                 alias="omdet-turbo-locator",
                 description="fast real-time open-vocab locator",
             ),
             OnDemandDetectorEntry(
-                rskill_id="OpenRAL/rskill-locateanything-3b-nf4",
+                rskill_id="OpenRAL/rskill-locateanything_3b-any-general-nf4",
                 alias="locateanything-3b-nf4",
                 description="high-quality grounding VLM",
             ),
@@ -164,7 +166,7 @@ def test_locate_in_view_description_lists_continuous_coverage() -> None:
         detector_available=True,
         continuous_detectors=(
             ContinuousDetectorEntry(
-                rskill_id="OpenRAL/rskill-omdet-turbo-indoor",
+                rskill_id="OpenRAL/rskill-omdet_turbo-any-indoor-fp16",
                 description="indoor detector",
                 objects=("kitchenware", "furniture"),
                 num_labels=266,
@@ -174,7 +176,7 @@ def test_locate_in_view_description_lists_continuous_coverage() -> None:
     tools = {t["name"]: t for t in _tool_palette_to_anthropic_tools(palette)}
     desc = tools["locate_in_view"]["description"]
     assert "already tracked continuously" in desc.lower()
-    assert "omdet-turbo-indoor" in desc
+    assert "OpenRAL/rskill-omdet_turbo-any-indoor-fp16" in desc
     assert "266 classes" in desc and "kitchenware" in desc
 
 

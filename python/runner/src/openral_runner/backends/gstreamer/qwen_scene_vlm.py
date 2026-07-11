@@ -260,7 +260,7 @@ def build_scene_vlm(
             f"build_scene_vlm requires kind='vlm', got {manifest.kind!r} for {manifest.name!r}"
         )
     # Load ``weights_uri`` — the deployable checkpoint (the pre-quantized NF4
-    # repo, e.g. OpenRAL/rskill-qwen35-4b-nf4) — NOT ``source_repo``, which is
+    # repo, e.g. OpenRAL/rskill-qwen35_4b-any-general-nf4) — NOT ``source_repo``, which is
     # provenance (the raw upstream model it was quantized from). The sidecar
     # server auto-detects a pre-quantized config and loads it directly.
     raw = manifest.weights_uri or manifest.source_repo or "Qwen/Qwen3.5-4B"

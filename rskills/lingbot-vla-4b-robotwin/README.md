@@ -19,7 +19,7 @@ inference: false
 
 <!-- OpenRAL rSkill README — LingBot-VLA 1.0 (4B) RoboTwin post-train -->
 
-# rskill-lingbot-vla-4b-robotwin
+# rskill-lingbot_vla-aloha_agilex-robotwin-nf4
 
 **LingBot-VLA 1.0 (4 B)** — a Qwen2.5-VL-3B backbone with a *dense* Qwen2
 flow-matching action expert (10 denoising steps), **post-trained on RoboTwin** for
@@ -28,7 +28,7 @@ Model"* ([arXiv 2601.18692](https://arxiv.org/abs/2601.18692)); code + weights
 Apache-2.0 ([github.com/robbyant/lingbot-vla](https://github.com/robbyant/lingbot-vla),
 [robbyant/lingbot-vla-4b-posttrain-robotwin](https://huggingface.co/robbyant/lingbot-vla-4b-posttrain-robotwin)).
 
-Unlike the v2 **6 B foundation** checkpoint (`rskill-lingbot-vla2-robotwin`), which
+Unlike the v2 **6 B foundation** checkpoint (`rskill-lingbot_vla2-aloha_agilex-robotwin-nf4`), which
 mean-collapses zero-shot, this is a **task post-train**: it reproduces ground-truth
 RoboTwin actions and drives the arms to the object. See *Verified performance*.
 

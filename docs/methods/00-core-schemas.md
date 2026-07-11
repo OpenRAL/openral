@@ -355,7 +355,7 @@ _Shared rotation geometry — look-at/camera gaze poses (relocated here from `op
 
 - `ViewAxis` (TypeAlias = `Literal["-z", "+z", "+x"]`) — Camera forward-axis conventions: `"-z"` MuJoCo cameras, `"+z"` ROS optical frames (REP-103), `"+x"` body-frame forward (the approach-viewpoint convention).
 - `look_at_quat_wxyz(eye, target, *, up=(0,0,1), view_axis="-z") -> tuple[float, float, float, float]` — Unit `(w, x, y, z)` quaternion orienting a camera at `eye` so `view_axis` points at `target`. Degenerate fallbacks (never raises): `target == eye` → MuJoCo straight-down flip for `"-z"` / identity otherwise; gaze near-parallel to `up` → +Y alternate up. Used by the sim scene composers and the HAL camera rig.
-- `compute_gaze_pose(camera_xyz, target_xyz, *, frame_id="map", up=(0,0,1), view_axis="+z") -> Pose6D` — Full 6-DOF camera pose whose view axis hits `target_xyz`; the `rskill-moveit-look-at` rSkill's goal (defaults to the optical-frame `"+z"` convention).
+- `compute_gaze_pose(camera_xyz, target_xyz, *, frame_id="map", up=(0,0,1), view_axis="+z") -> Pose6D` — Full 6-DOF camera pose whose view axis hits `target_xyz`; the `rskill-moveit-multi-look_at-none` rSkill's goal (defaults to the optical-frame `"+z"` convention).
 - `rotation_to_quat_wxyz(rot: 3x3) -> tuple[w, x, y, z]` — Public matrix→quaternion conversion (Shepperd's method); used by `LookAtRskill` to re-express a gaze pose for the camera's mount link.
 - `yaw_to_quat_xyzw(yaw: float) -> tuple[x, y, z, w]` — Unit quaternion (ROS order) for `Rz(yaw)`. Consumers: `MobileBaseBridge._publish_odom` (odometry + TF), spatial-memory approach viewpoints.
 - `yaw_to_quat_wxyz(yaw: float) -> tuple[w, x, y, z]` — Same rotation in MuJoCo order. Consumer: the so101_box MJCF composer's base re-anchor.

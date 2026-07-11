@@ -16,7 +16,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-act-aloha-insertion"
+name: "OpenRAL/rskill-act-aloha-aloha_insertion-fp32"
 version: "0.1.0"
 license: "mit"
 role: "s1"

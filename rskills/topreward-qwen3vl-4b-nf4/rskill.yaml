@@ -1,5 +1,5 @@
 schema_version: "0.1"
-name: "OpenRAL/rskill-topreward-qwen3vl-4b-nf4"
+name: "OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
 version: "0.1.0"
 # rSkill packaging is uniformly Apache-2.0. The TOPReward *method* is MIT and
 # the wrapped Qwen3-VL-4B-Instruct *weights* are themselves Apache-2.0
@@ -50,7 +50,7 @@ min_vram_gb:
 # Qwen3-VL-4B-Instruct VLM. OpenRAL hosts a pre-quantized NF4 copy so nobody
 # re-quantizes: weights_uri points at THIS repo (self-referencing, like Robometer);
 # source_repo credits the upstream bf16 backbone.
-weights_uri: "hf://OpenRAL/rskill-topreward-qwen3vl-4b-nf4"
+weights_uri: "hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
 
 chunk_size: 1
 latency_budget:

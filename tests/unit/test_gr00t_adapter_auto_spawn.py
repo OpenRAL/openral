@@ -36,5 +36,5 @@ def test_gr00t_rskill_manifest_loads() -> None:
     assert manifest.is_commercial_use_allowed is True
     # Weights are the root-level OpenRAL repackage of GR00T-N1.7-LIBERO's
     # libero_spatial/ inference checkpoint; nvidia stays as upstream provenance.
-    assert str(manifest.weights_uri) == "hf://OpenRAL/rskill-gr00t-n17-libero"
+    assert str(manifest.weights_uri) == "hf://OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16"
     assert str(manifest.source_repo).startswith("hf://nvidia/")

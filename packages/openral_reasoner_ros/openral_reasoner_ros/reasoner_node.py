@@ -704,7 +704,8 @@ class ReasonerNode(LifecycleNode):
             self.get_parameter("detector_available").get_parameter_value().bool_value
         )
         # On-demand detectors as prompt-able reasoner tools — the default on-demand locator alias
-        # used when a locate_in_view call leaves ``detector`` empty (e.g. "omdet-turbo-locator").
+        # used when a locate_in_view call leaves ``detector`` empty
+        # (e.g. "omdet_turbo-any-locator-fp16").
         # Empty = the legacy single-detector service /openral/perception/locate_in_view. Set by the
         # deploy launch to the default locator it brings up.
         self.declare_parameter("default_on_demand_detector", "")

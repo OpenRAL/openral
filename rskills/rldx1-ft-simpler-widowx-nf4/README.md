@@ -21,14 +21,14 @@ inference: false
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 
-# rskill-rldx1-ft-simpler-widowx-nf4
+# rskill-rldx1_ft-widowx-simpler_env-nf4
 
 > RLDX-1 finetuned on the [SIMPLER](https://github.com/simpler-env/SimplerEnv)
 > WidowX benchmark (real-to-sim correlator), packaged for OpenRAL.
 
 <!-- openral:rskill-readme-delegates-to: ../rldx1-ft-libero-nf4 -->
 
-This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1-ft-libero-nf4);
+This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4);
 that README owns the canonical architecture, license, auto-managed
 sidecar lifecycle, and NF4 quantization documentation for every member
 of the RLDX-1 family. Read it first.

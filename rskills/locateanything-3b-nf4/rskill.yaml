@@ -1,5 +1,5 @@
 schema_version: "0.1"
-name: "OpenRAL/rskill-locateanything-3b-nf4"
+name: "OpenRAL/rskill-locateanything_3b-any-general-nf4"
 version: "0.1.0"
 license: "nvidia_non_commercial"
 role: "s1"
@@ -34,7 +34,7 @@ min_vram_gb:
   bf16: 8.5
   int4: 5.0
 
-weights_uri: "hf://OpenRAL/rskill-locateanything-3b-nf4"
+weights_uri: "hf://OpenRAL/rskill-locateanything_3b-any-general-nf4"
 
 chunk_size: 1
 latency_budget:

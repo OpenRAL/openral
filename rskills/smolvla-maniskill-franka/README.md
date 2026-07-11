@@ -20,7 +20,7 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-maniskill-franka
+# rskill-smolvla-franka_panda-maniskill3-bf16
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on a 1000-demo Franka
 > LiftCube dataset in ManiSkill3 SAPIEN, packaged for use with the
@@ -97,7 +97,7 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-smolvla-maniskill-franka` |
+| `name` | `OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` (fast visuomotor policy) |

@@ -5,7 +5,7 @@ description: >-
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-molmoact2-so101-nf4
+  rskill_id: OpenRAL/rskill-molmoact2-multi-so101-nf4
   manifest: ./rskill.yaml
   role: s1
   kind: vla
@@ -24,7 +24,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-molmoact2-so101-nf4
+  weights_uri: hf://OpenRAL/rskill-molmoact2-multi-so101-nf4
   source_repo: hf://allenai/MolmoAct2-SO100_101
   paper_url: https://arxiv.org/abs/2605.02881
 ---
@@ -65,7 +65,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-molmoact2-so101-nf4")
+skill = rSkill.from_pretrained("OpenRAL/rskill-molmoact2-multi-so101-nf4")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

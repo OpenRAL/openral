@@ -192,7 +192,7 @@ def _build_nav2_include(
     brings the planner / controller / behavior / smoother /
     velocity_smoother sub-nodes to ACTIVE automatically. The
     Reasoner *triggers* Nav2 by dispatching the
-    ``OpenRAL/rskill-nav2-navigate-to-pose`` wrapped-action rSkill,
+    ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action rSkill,
     not by lifecycle-transitioning the planner.
 
     ``use_sim_time`` is derived from the graph-wide clock authority (see
@@ -1109,7 +1109,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # palette at on_configure (~5 s after launch), long before
         # Nav2 finishes its 15-30 s lifecycle bringup. The graph-
         # availability filter drops the
-        # ``OpenRAL/rskill-nav2-navigate-to-pose`` rSkill because
+        # ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` rSkill because
         # ``/navigate_to_pose`` isn't yet advertised — so the LLM
         # never sees the Nav2 tool and replies "I do not have a
         # tool available to perform base movement". Spawn a small
@@ -1736,7 +1736,7 @@ def generate_launch_description() -> LaunchDescription:
             default_value="false",
             description=(
                 "Bring up the Nav2 navigation stack so the "
-                "``OpenRAL/rskill-nav2-navigate-to-pose`` wrapped-action "
+                "``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action "
                 "rSkill has a ``/navigate_to_pose`` server to dispatch "
                 "to. Nav2 auto-activates (lifecycle_manager_navigation "
                 "drives its sub-nodes to ACTIVE); the Reasoner triggers "

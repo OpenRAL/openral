@@ -64,14 +64,14 @@ def test_clear_failures_drops_failure_context_and_bumps_seq() -> None:
             kind=4,
             severity=2,
             evidence_json='{"reason":"e-stop aborted the motion"}',
-            rskill_id="OpenRAL/rskill-smolvla-so101-pen",
+            rskill_id="OpenRAL/rskill-smolvla-so101_follower-so101_pen-bf16",
             trace_id="0123456789abcdef",
             stamp_ns=1,
         )
     )
     r.append_execution(
         ExecutionEventRecord(
-            rskill_id="OpenRAL/rskill-smolvla-so101-pen",
+            rskill_id="OpenRAL/rskill-smolvla-so101_follower-so101_pen-bf16",
             outcome="failed",
             summary="aborted by e-stop",
             reflection=None,
@@ -463,7 +463,7 @@ def test_mission_property_exposes_state_for_in_place_bookkeeping() -> None:
     r = ContextRenderer()
     r.set_mission(MissionState(["a", "b"]))
     # The node records attempts in place (non-waking bookkeeping).
-    r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
+    r.mission.record_attempt(rskill_id="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16")
     assert r.mission.active().attempts == 1
     assert "attempts=1" in r.render(world_state=None)
 

@@ -579,7 +579,7 @@ def _verify_auto_map_complete(out_dir: Path) -> None:
     deploy: shipping a ``trust_remote_code`` rSkill without one of its
     ``auto_map`` modules makes ``from_pretrained`` raise
     ``"<repo> does not appear to have a file named <module>.py"`` — the exact bug
-    that shipped ``rskill-molmoact2-libero-nf4`` without
+    that shipped ``rskill-molmoact2-franka_panda-libero_spatial-nf4`` without
     ``image_processing_molmoact2.py`` / ``video_processing_molmoact2.py``.
     """
     missing = sorted(m for m in _auto_map_modules(out_dir) if not (out_dir / m).is_file())

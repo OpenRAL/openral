@@ -5,7 +5,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-act-libero"
+name: "OpenRAL/rskill-act-franka_panda-libero-fp32"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

@@ -15,7 +15,7 @@ tags:
 inference: false
 ---
 
-# rskill-act-libero
+# rskill-act-franka_panda-libero-fp32
 
 > **OpenRAL rSkill** — Action Chunking Transformer
 > ([Zhao et al., 2023](https://arxiv.org/abs/2304.13705)) fine-tuned on
@@ -51,7 +51,7 @@ inference: false
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-act-libero` |
+| `name` | `OpenRAL/rskill-act-franka_panda-libero-fp32` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

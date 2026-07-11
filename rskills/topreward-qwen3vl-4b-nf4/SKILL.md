@@ -5,7 +5,7 @@ description: >-
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-topreward-qwen3vl-4b-nf4
+  rskill_id: OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
   manifest: ./rskill.yaml
   role: s2
   kind: reward
@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 3000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-topreward-qwen3vl-4b-nf4
+  weights_uri: hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
   source_repo: hf://Qwen/Qwen3-VL-4B-Instruct
   paper_url: https://arxiv.org/abs/2602.19313
 ---
@@ -63,7 +63,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-topreward-qwen3vl-4b-nf4")
+skill = rSkill.from_pretrained("OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

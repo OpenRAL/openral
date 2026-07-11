@@ -10,9 +10,9 @@ benchmark ``LiberoBackend._wrap_obs``)::
 
 The LIBERO-finetuned checkpoints distributed at e.g.
 
-* ``hf://lerobot/smolvla_libero``      (``rskill-smolvla-libero``)
-* ``hf://OpenRAL/rskill-pi05-libero-int8``
-* ``hf://OpenRAL/rskill-xvla-libero``
+* ``hf://lerobot/smolvla_libero``      (``rskill-smolvla-franka_panda-libero_spatial-bf16``)
+* ``hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8``
+* ``hf://OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16``
 
 consume this layout. In the **benchmark** path (``openral sim run``) the LIBERO
 env supplies this task-space state directly; in the **deploy** path

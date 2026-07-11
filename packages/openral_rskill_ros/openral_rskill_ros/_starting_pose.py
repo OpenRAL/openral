@@ -3,7 +3,7 @@
 Before the first inference tick of an ``ExecuteSkill`` goal, the runner can move
 the HAL to the rSkill's in-distribution ``starting_pose`` two ways:
 
-* **approach** — dispatch the MoveIt ``rskill-moveit-joints`` rSkill
+* **approach** — dispatch the MoveIt ``rskill-moveit-multi-joints-none`` rSkill
   (``kind: ros_action``) retargeted at ``starting_pose``: MoveIt plans a
   collision-free joint-space motion (self + planning-scene/world collision) and
   ``ROSActionRskill`` replays it per-waypoint through ``/openral/candidate_action``
@@ -84,7 +84,7 @@ def joint_names_from_goal_json(default_goal_json: str) -> list[str]:
     """Extract the planning-group joint names from a MoveGroup ``default_goal_json``.
 
     Reads the ``joint`` block's ``joint_names`` — the joint order the
-    ``rskill-moveit-joints`` (``goal_builder: "joint"``) approach manifest
+    ``rskill-moveit-multi-joints-none`` (``goal_builder: "joint"``) approach manifest
     declares for its MoveIt planning group. Used to length-check a robot's flat
     ``starting_pose`` before building the retarget override
     (:func:`moveit_joint_goal_override`).

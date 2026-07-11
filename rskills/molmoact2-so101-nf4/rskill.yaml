@@ -1,6 +1,6 @@
 # rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §6.4)
 #
-# Wraps: OpenRAL/rskill-molmoact2-so101-nf4 (NF4-quantized from
+# Wraps: OpenRAL/rskill-molmoact2-multi-so101-nf4 (NF4-quantized from
 #        allenai/MolmoAct2-SO100_101 via tools/quantize_rskill.py)
 # Base:  allenai/MolmoAct2 (Ai2 action reasoning model, Molmo2-ER VLM +
 #        flow-matching action expert) — arXiv:2605.02881
@@ -43,7 +43,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-molmoact2-so101-nf4"
+name: "OpenRAL/rskill-molmoact2-multi-so101-nf4"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -101,12 +101,12 @@ min_vram_gb:
   fp32: 22.0
   bf16: 11.0
   int4: 4.0
-weights_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4"
+weights_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-so101-nf4/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_postprocessor.json"
 # SO-100/101 teleop data is recorded upright — no rotation applied.
 # Aliases map from canonical SO101 scene camera keys (so101_box scene emits
 # ``oak_top`` + ``wrist``) to the model's training feature keys (``top`` /

@@ -123,7 +123,7 @@ def _resolve_tag_to_fixture(tag: str, fixtures: set[str]) -> str | None:
 # ``DELTA_EE_3D_PLUS_GRIPPER`` representation it needed was added; its contract now
 # declares a 3-D EE delta + gripper and passes the rule, so it was removed.)
 _KNOWN_DEFERRED: dict[str, str] = {
-    "OpenRAL/rskill-3d-diffuser-actor-rlbench": (
+    "OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32": (
         "3D Diffuser Actor emits end-effector cartesian_pose trajectories; the "
         "deploy-sim OSC path executes delta/joint modes only. RLBench "
         "runs it via its own Mover, not the deploy-sim OSC path; tracked separately"

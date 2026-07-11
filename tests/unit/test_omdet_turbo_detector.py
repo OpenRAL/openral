@@ -307,7 +307,7 @@ def test_e2e_detects_indoor_objects_on_coco_sample() -> None:
 
     det = OmDetTurboDetector(
         labels=["remote control", "sofa", "cat", "blanket", "cup"],
-        model_id="OpenRAL/rskill-omdet-turbo-indoor",
+        model_id="OpenRAL/rskill-omdet_turbo-any-indoor-fp16",
         weights_source="omlab/omdet-turbo-swin-tiny-hf",
         score_threshold=0.3,
     )
@@ -317,7 +317,7 @@ def test_e2e_detects_indoor_objects_on_coco_sample() -> None:
         det.close()
 
     assert md is not None, "expected indoor detections on coco_sample.jpg"
-    assert md.model_id == "OpenRAL/rskill-omdet-turbo-indoor"
+    assert md.model_id == "OpenRAL/rskill-omdet_turbo-any-indoor-fp16"
     for d in md.detections:
         x1, y1, x2, y2 = d.bbox_xyxy
         assert 0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h

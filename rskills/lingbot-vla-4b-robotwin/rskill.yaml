@@ -39,7 +39,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-lingbot-vla-4b-robotwin"
+name: "OpenRAL/rskill-lingbot_vla-aloha_agilex-robotwin-nf4"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

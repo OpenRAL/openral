@@ -21,7 +21,7 @@ base_model_relation: quantized
 inference: false
 ---
 
-# rskill-molmoact2-libero-nf4
+# rskill-molmoact2-franka_panda-libero_spatial-nf4
 
 > **OpenRAL rSkill** — MolmoAct2 (Ai2's open action reasoning model: a
 > Molmo2-ER embodied-reasoning VLM backbone with a flow-matching
@@ -30,7 +30,7 @@ inference: false
 > the ~5.5 B-param model fits an 8 GB GPU. Robot: Franka Panda in simulation.
 > **Apache-2.0 weights** — commercial use permitted.
 
-This package wraps `hf://OpenRAL/rskill-molmoact2-libero-nf4` (an
+This package wraps `hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` (an
 NF4-quantized mirror of `allenai/MolmoAct2-LIBERO`) with a `rskill.yaml`
 manifest that adds capability checking, license surfacing, latency budgets,
 and local registry integration. It does **not** copy model weights — they
@@ -118,13 +118,13 @@ full-precision weights.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-molmoact2-libero-nf4` |
+| `name` | `OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |
 | `embodiment_tags` | `["franka_panda"]` |
 | `runtime` / `quantization.dtype` | `pytorch` / `int4` (NF4) |
-| `weights_uri` | `hf://OpenRAL/rskill-molmoact2-libero-nf4` |
+| `weights_uri` | `hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` |
 | `chunk_size` / `n_action_steps` | 10 / 10 (= checkpoint `action_horizon`) |
 | `latency_budget.per_chunk_ms` | 1000 ms (flow-matching sampling; measured ~80–90 ms/step NF4) |
 | `commercial_use_allowed` | `true` (Apache-2.0) |
@@ -142,7 +142,7 @@ print(pkg.manifest.name, pkg.manifest.version)
 
 ```bash
 # CLI:
-uv run openral rskill install OpenRAL/rskill-molmoact2-libero-nf4
+uv run openral rskill install OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4
 uv run openral rskill check                # does this host meet the requirements?
 ```
 
@@ -162,7 +162,7 @@ host):
 ```bash
 HF_TOKEN=<write-token> uv run python tools/quantize_rskill.py \
     --source allenai/MolmoAct2-LIBERO \
-    --target OpenRAL/rskill-molmoact2-libero-nf4 \
+    --target OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4 \
     --loader transformers --trust-remote-code
 ```
 
@@ -182,7 +182,7 @@ and is documented but not yet run.
 
 This rSkill package (`rskill.yaml`, `README.md`, `eval/libero.json`) is
 **Apache-2.0**. The wrapped weights at
-`hf://OpenRAL/rskill-molmoact2-libero-nf4` (NF4 mirror of
+`hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4` (NF4 mirror of
 `allenai/MolmoAct2-LIBERO`) are also released under **Apache-2.0** by Ai2 —
 commercial use is permitted; review the upstream LICENSE before deployment.
 

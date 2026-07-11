@@ -45,10 +45,9 @@ def test_palette_contains_smolvla_which_names_its_reward_model() -> None:
     declares `reward_rskill_name` (the pairing the deploy must honour)."""
     vlas = [m for m in _capability_matched_manifests(_REPO_ROOT, _franka()) if m.kind == "vla"]
     by_name = {m.name: m for m in vlas}
-    assert "OpenRAL/rskill-smolvla-libero" in by_name
-    assert by_name["OpenRAL/rskill-smolvla-libero"].reward_rskill_name == (
-        "OpenRAL/rskill-robometer-4b-nf4"
-    )
+    skill_name = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+    assert skill_name in by_name
+    assert by_name[skill_name].reward_rskill_name == "OpenRAL/rskill-robometer_4b-any-general-nf4"
 
 
 def test_explicit_reward_manifest_wins() -> None:

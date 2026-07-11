@@ -1627,7 +1627,7 @@ def rskill_install(
     hub_id: str = typer.Argument(
         ...,
         metavar="HUB_ID",
-        help="HF Hub repository, e.g. OpenRAL/rskill-smolvla-libero",
+        help="HF Hub repository, e.g. OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
     ),
     revision: str = typer.Option(
         "",
@@ -1663,8 +1663,8 @@ def rskill_install(
     can be listed with ``openral rskill list``.
 
     Example:
-        >>> # openral rskill install OpenRAL/rskill-smolvla-libero
-        >>> # openral rskill install OpenRAL/rskill-smolvla-libero --revision abc1234
+        >>> # openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+        >>> # openral rskill install smolvla-libero --revision abc1234
     """
     from openral_rskill.loader import rSkill
 
@@ -2084,7 +2084,7 @@ def rskill_check(
         metavar="RSKILL_ID",
         help=(
             "rSkill to check — bare in-tree name, path (rskills/<name>), "
-            "or HF Hub repo id (e.g. OpenRAL/rskill-smolvla-libero). "
+            "or HF Hub repo id (e.g. OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16). "
             "Omit to walk every installed / in-tree rSkill (walk-all mode)."
         ),
     ),
@@ -2124,7 +2124,7 @@ def rskill_check(
 
     Example:
         >>> # openral rskill check smolvla-libero
-        >>> # openral rskill check OpenRAL/rskill-smolvla-libero --robot /tmp/robot.yaml --json
+        >>> # openral rskill check smolvla-libero --robot /tmp/robot.yaml --json
         >>> # openral rskill check                                              # walk-all
     """
     import json as _json_mod
@@ -2666,7 +2666,7 @@ def benchmark_run(
         help=(
             "rSkill reference — a bare name ('smolvla-libero'), a "
             "path ('rskills/smolvla-libero'), or an HF Hub repo id "
-            "('OpenRAL/rskill-smolvla-libero'). "
+            "('OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16'). "
             "Raw hf:// is rejected (weights must come from a manifest). "
             "The policy adapter id is read from the manifest's `model_family` "
             "field."
@@ -2913,7 +2913,7 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
 
     Accepts a bare rSkill reference — a name (``smolvla-libero``),
     a path (``rskills/smolvla-libero``), or an HF repo id
-    (``OpenRAL/rskill-smolvla-libero``). The adapter id is read from
+    (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The adapter id is read from
     the loaded manifest's ``model_family`` field.
     """
     from openral_core import VLASpec
@@ -2978,7 +2978,7 @@ def benchmark_scene(
         help=(
             "rSkill reference — a bare name ('smolvla-libero'), a "
             "path ('rskills/smolvla-libero'), or an HF Hub repo id "
-            "('OpenRAL/rskill-smolvla-libero'). "
+            "('OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16'). "
             "Raw hf:// is rejected (weights must come from a manifest). "
             "The policy adapter id is read from the manifest's `model_family` "
             "field."

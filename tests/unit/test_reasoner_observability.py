@@ -215,7 +215,7 @@ def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
             KeyValue(key="reasoner.tool", value=AnyValue(string_value="ExecuteSkill")),
             KeyValue(
                 key="reasoner.rskill_id",
-                value=AnyValue(string_value="OpenRAL/rskill-nav2-navigate-to-pose"),
+                value=AnyValue(string_value="OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none"),
             ),
             KeyValue(key="reasoner.model", value=AnyValue(string_value="claude-haiku-4-5")),
             KeyValue(key="reasoner.force", value=AnyValue(bool_value=False)),
@@ -231,7 +231,7 @@ def test_dashboard_store_picks_up_reasoner_tick_span() -> None:
     reasoner = snapshot["topics"]["reasoner"]
     assert reasoner["tick_idx"] == 7
     assert reasoner["tool"] == "ExecuteSkill"
-    assert reasoner["rskill_id"] == "OpenRAL/rskill-nav2-navigate-to-pose"
+    assert reasoner["rskill_id"] == "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none"
     assert reasoner["model"] == "claude-haiku-4-5"
     assert reasoner["force"] is False
     assert "ts_unix" in reasoner
@@ -262,7 +262,7 @@ def test_skill_failure_event_log_title_carries_reason() -> None:
             ),
             KeyValue(
                 key="reasoner.rskill_id",
-                value=AnyValue(string_value="OpenRAL/rskill-smolvla-libero"),
+                value=AnyValue(string_value="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"),
             ),
         ],
     )
@@ -282,5 +282,5 @@ def test_skill_failure_event_log_title_carries_reason() -> None:
 
     failure = next(e for e in events if e["kind"] == "openral.event.skill_failure")
     assert "timeout after 30s patience ceiling" in failure["title"]
-    assert "OpenRAL/rskill-smolvla-libero" in failure["title"]
+    assert "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16" in failure["title"]
     assert failure["severity"] == "error"

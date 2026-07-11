@@ -4463,7 +4463,7 @@ def contains_rskill_template_sentinel(text: str | None) -> bool:
     Example:
         >>> contains_rskill_template_sentinel("TEMPLATE_ORG/rskill-TEMPLATE_ID")
         True
-        >>> contains_rskill_template_sentinel("OpenRAL/rskill-smolvla-libero")
+        >>> contains_rskill_template_sentinel("OpenRAL/rskill-qwen35_4b-any-general-nf4")
         False
         >>> contains_rskill_template_sentinel(None)
         False
@@ -5481,7 +5481,7 @@ class RSkillManifest(BaseModel):
     reward: RewardContract | None = None
 
     # The reward/progress-monitor rSkill this VLA pairs with (an rSkill
-    # ``name``, e.g. ``"OpenRAL/rskill-robometer-4b-nf4"``). A VLA emits no success
+    # ``name``, e.g. ``"OpenRAL/rskill-robometer_4b-any-general-nf4"``). A VLA emits no success
     # signal of its own, so the reasoner needs a reward model resident alongside it
     # to know whether the policy is progressing / has finished. Allowed
     # ONLY for ``kind == "vla"`` (forbidden otherwise — it is a reference FROM a VLA,
@@ -6101,7 +6101,7 @@ def _model_token_for_manifest(manifest: RSkillManifest) -> str:
 def _repo_tail_slug(name: str) -> str:
     """Return the ``rskill-``-stripped repo tail as an underscore slug.
 
-    ``"OpenRAL/rskill-omdet-turbo-locator"`` → ``"omdet_turbo_locator"``.
+    ``"OpenRAL/rskill-omdet_turbo-any-locator-fp16"`` → ``"omdet_turbo_any_locator_fp16"``.
     """
     repo = name.split("/", 1)[1] if "/" in name else name
     tail = repo.removeprefix("rskill-")
@@ -6184,7 +6184,7 @@ def repo_name_is_canonical(
         False
         >>> repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
         True
-        >>> repo_name_is_canonical("OpenRAL/rskill-smolvla-libero", kind="vla")
+        >>> repo_name_is_canonical("OpenRAL/rskill-smolvla-libero", kind="vla")  # old 3-part name
         False
     """
     repo = name.split("/", 1)[1] if "/" in name else name
@@ -6235,7 +6235,7 @@ def expected_repo_name(manifest: RSkillManifest) -> str:
 
     Example:
         >>> m = RSkillManifest(
-        ...     name="OpenRAL/rskill-smolvla-libero",
+        ...     name="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
         ...     version="0.1.0",
         ...     license=RSkillLicensePosture.APACHE_2_0,
         ...     role="s1",
@@ -6804,7 +6804,7 @@ class VLASpec(BaseModel):
             ``"xvla"``, ``"random"``, ``"zero"``. Picks the loader.
         weights_uri: Where to fetch weights from. Pass a bare rSkill
             reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),
-            or a bare HF repo ID (``OpenRAL/rskill-smolvla-libero``). The
+            or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The
             :class:`openral_sim.SimRunner` requires a locally-resolvable
             reference — raw ``"hf://"`` URIs are rejected. Other URI shapes
             (e.g. ``"mock://"``) are still parsed by the schema so unit tests
@@ -8194,8 +8194,9 @@ class LocateInViewTool(_ReasonerToolBase):
         detector: Optional on-demand locator selector. Empty (default)
             uses the deployment's default locator; otherwise an rSkill id / short
             alias of one of the on-demand locators in the graph (e.g.
-            ``"omdet-turbo-locator"`` for fast simple "find X",
-            ``"locateanything-3b"`` for complex referring expressions). The
+            ``"omdet_turbo-any-locator-fp16"`` for fast simple "find X",
+            ``"locateanything_3b-any-general-nf4"`` for complex referring
+            expressions). The
             reasoner routes to ``/openral/perception/<detector>/locate_in_view``.
             Still **read-only** — choosing a model does not grant actuation.
     """

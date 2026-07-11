@@ -88,16 +88,16 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 - `sim_app: typer.Typer` — Public `openral sim` Typer group. Mounted into the top-level `openral` Typer tree by `openral_cli.main`. Hosts the `run` leaf (`--config / --robot / --scene / --task / --rskill / …`) and the `list` leaf (registry printer).
 - `sim_run_app: typer.Typer` — The leaf Typer (`invoke_without_command=True`) exposing every rollout CLI flag; users invoke it as `openral sim run`.
 - `_sim_run_callback(...)` — Typer callback carrying every rollout CLI flag; builds a `SimpleNamespace` and dispatches to `_run`. The optional `--dashboard` / `--dashboard-port` flags wrap `_run` in `attached_dashboard(...)`. Same flag is mirrored on `openral deploy run` and `openral benchmark run`.
-- `_discover_sim_configs() -> list[Path]` — Recursive read-only walk of `scenes/**/*.yaml` (benchmark / sim / deploy) under the repo root, sorted by relative path. Safe to call without any sim dependencies. (L471)
-- `sim_list() -> None` — `@sim_app.command("list")` callback that prints every sim config under `scenes/**/*.yaml`, each a paste-able `--config` path for `openral sim run`. No rollout, no OTel span, no GPU. (L492)
-- `_resolve_save_video(raw) -> Path | None` — Map the `--save-video` Typer string to the legacy `Path | None` semantics (empty string ⇒ `example_videos/`). (L288)
-- `_load_or_build_env(args) -> SimEnvironment` — `--config` XOR explicit flags; `--config` combined with any of `--task / --robot / --scene / --rskill / --instruction` raises `ROSConfigError`. Also enforces the scene-fixed-robot guard: when `SCENES.fixed_robot(scene.id)` is set and disagrees with `env.robot_id`, raises `ROSConfigError` naming the scene's required robot. (L304)
-- `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L510)
-- `main(argv=None) -> int` — Thin wrapper that invokes `sim_run_app` with `standalone_mode=False` so tests can get the return code without `sys.exit`. The legacy standalone console script was removed in 2026-05; `main` stays for internal callers. (L439)
-- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L699)
-- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L791)
-- `_write_debug_videos(args, results, env_cfg) -> None` — Render the 3-panel debug MP4(s) via `openral_sim._video.save_episode_mp4`. (L806)
-- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`. (L850)
+- `_discover_sim_configs() -> list[Path]` — Recursive read-only walk of `scenes/**/*.yaml` (benchmark / sim / deploy) under the repo root, sorted by relative path. Safe to call without any sim dependencies. (L472)
+- `sim_list() -> None` — `@sim_app.command("list")` callback that prints every sim config under `scenes/**/*.yaml`, each a paste-able `--config` path for `openral sim run`. No rollout, no OTel span, no GPU. (L493)
+- `_resolve_save_video(raw) -> Path | None` — Map the `--save-video` Typer string to the legacy `Path | None` semantics (empty string ⇒ `example_videos/`). (L289)
+- `_load_or_build_env(args) -> SimEnvironment` — `--config` XOR explicit flags; `--config` combined with any of `--task / --robot / --scene / --rskill / --instruction` raises `ROSConfigError`. Also enforces the scene-fixed-robot guard: when `SCENES.fixed_robot(scene.id)` is set and disagrees with `env.robot_id`, raises `ROSConfigError` naming the scene's required robot. (L305)
+- `_resolve_view(flag) -> tuple[bool, bool]` — tri-state resolver returning `(view, strict_view)` from the `--view/--no-view/auto` flag plus `MUJOCO_GL` / `DISPLAY` env. (L511)
+- `main(argv=None) -> int` — Thin wrapper that invokes `sim_run_app` with `standalone_mode=False` so tests can get the return code without `sys.exit`. The legacy standalone console script was removed in 2026-05; `main` stays for internal callers. (L440)
+- `_run(args) -> int` — Body of the callback after argv parsing + OTel setup. Configures observability with service name `ral-sim`. (L700)
+- `_write_videos(args, results, env_cfg) -> None` — Dispatch `--save-video` to the debug or world writer per `--video-style`; raises `ROSConfigError` for any other style. (L792)
+- `_write_debug_videos(args, results, env_cfg) -> None` — Render the 3-panel debug MP4(s) via `openral_sim._video.save_episode_mp4`. (L807)
+- `_write_website_videos(args, results, env_cfg) -> None` — Thin adapter that pulls scene/rskill/section from the run and delegates to `openral_sim._website_video.write_world_videos`. `--video-style world`. (L851)
 
 ### `python/sim/src/openral_sim/_video.py`
 _Shared 3-panel rollout-debug MP4 helper (was `examples/_video.py`)._

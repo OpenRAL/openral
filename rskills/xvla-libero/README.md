@@ -17,7 +17,7 @@ tags:
 inference: false
 ---
 
-# rskill-xvla-libero
+# rskill-xvla-franka_panda-libero_spatial-bf16
 
 > **OpenRAL rSkill** — xVLA (lerobot ecosystem VLA) finetuned on the
 > [LIBERO](https://libero-project.github.io/) benchmark. Apache-2.0
@@ -70,7 +70,7 @@ underlying paper are TBD pending checkpoint inspection — see
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-xvla-libero` |
+| `name` | `OpenRAL/rskill-xvla-franka_panda-libero_spatial-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

@@ -10,7 +10,7 @@ tags:
 inference: false
 ---
 
-# rskill-preflight-reach
+# rskill-playbook-preflight_reach
 
 A `kind: playbook` rSkill: a symbolic S2 **decision procedure** the
 Reasoner reads, not a neural policy. It carries no weights — the authored

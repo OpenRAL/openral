@@ -19,13 +19,13 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-so101-pick-place-pen
+# rskill-smolvla-so101_follower-so101_pick_place_pen-bf16
 
 > **OpenRAL rSkill** — [SmolVLA](https://arxiv.org/abs/2506.01844) finetuned for
 > pen pick-and-place on a **real SO-101 follower arm**, packaged for `OpenRAL`.
 
 This package wraps
-[`OpenRAL/rskill-smolvla-so101-pick-place-pen`](https://huggingface.co/OpenRAL/rskill-smolvla-so101-pick-place-pen)
+[`OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16`](https://huggingface.co/OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16)
 — an OpenRAL mirror (byte-identical weights, Apache-2.0) of upstream
 [`nota-gmbh/so101_pick_place_pen_smolvla`](https://huggingface.co/nota-gmbh/so101_pick_place_pen_smolvla)
 with the stray `pretrained_revision` config key stripped at rest, so
@@ -43,7 +43,7 @@ pkg = rSkill.from_yaml("rskills/smolvla-so101-pick-place-pen/rskill.yaml")
 
 ```bash
 # Real SO-101 deploy (weights are public Apache-2.0):
-uv run openral rskill install OpenRAL/rskill-smolvla-so101-pick-place-pen
+uv run openral rskill install OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16
 uv run openral deploy run --config scenes/deploy/so101_bench.yaml
 
 # Zero-copy NVMM TensorRT vision leg inside the GStreamer pipeline:
@@ -55,7 +55,7 @@ OPENRAL_SMOLVLA_TRT=1 uv run openral deploy run \
 
 | Field | Value |
 | --- | --- |
-| Weights repo | [`OpenRAL/rskill-smolvla-so101-pick-place-pen`](https://huggingface.co/OpenRAL/rskill-smolvla-so101-pick-place-pen) (mirror; clean config) |
+| Weights repo | [`OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16`](https://huggingface.co/OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16) (mirror; clean config) |
 | Source repo | [`nota-gmbh/so101_pick_place_pen_smolvla`](https://huggingface.co/nota-gmbh/so101_pick_place_pen_smolvla) |
 | Base model | [`lerobot/smolvla_base`](https://huggingface.co/lerobot/smolvla_base) |
 | Paper | [arXiv:2506.01844](https://arxiv.org/abs/2506.01844) — *SmolVLA* |
@@ -117,7 +117,7 @@ The **upstream** `nota-gmbh` `config.json` carries a stray `pretrained_revision`
 key that lerobot 0.5.1's `SmolVLAConfig` (draccus) rejects with `DecodingError`
 — and which forced an offline-breaking revision re-fetch inside
 `SmolVLAPolicy.from_pretrained`. The shipped weights repo
-(`OpenRAL/rskill-smolvla-so101-pick-place-pen`) **strips that one key at rest**,
+(`OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16`) **strips that one key at rest**,
 so `from_pretrained` loads cleanly, including under `HF_HUB_OFFLINE=1`, with no
 runtime config edit. (The shared
 `openral_rskill._lerobot_compat.sanitize_smolvla_config` helper still runs on
@@ -143,7 +143,7 @@ import torch
 from openral_rskill._lerobot_compat import sanitize_smolvla_config
 from openral_rskill.smolvla_trt import attach_trt_sample_actions
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-REPO = "OpenRAL/rskill-smolvla-so101-pick-place-pen"
+REPO = "OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16"
 torch.set_default_dtype(torch.float32)
 sanitize_smolvla_config(REPO)
 pol = SmolVLAPolicy.from_pretrained(REPO); pol.model = pol.model.to("cuda:0").eval()

@@ -916,7 +916,7 @@ def _vlm_manifest_dict() -> dict[str, object]:
     """Minimal valid manifest dict for kind='vlm'."""
     return {
         "schema_version": "0.1",
-        "name": "OpenRAL/rskill-qwen35-4b-nf4",
+        "name": "OpenRAL/rskill-qwen35_4b-any-general-nf4",
         "version": "0.1.0",
         "license": "apache-2.0",
         "role": "s2",
@@ -954,7 +954,7 @@ class TestVlmKind:
         assert m.role == "s2"
         # weights_uri is the deployable pre-quantized NF4 checkpoint; source_repo
         # is the SHA-pinned upstream it was quantized from (provenance).
-        assert m.weights_uri == "hf://OpenRAL/rskill-qwen35-4b-nf4"
+        assert m.weights_uri == "hf://OpenRAL/rskill-qwen35_4b-any-general-nf4"
         assert m.source_repo is not None and m.source_repo.startswith("hf://Qwen/Qwen3.5-4B@")
 
     def test_vlm_missing_weights_uri_raises(self) -> None:

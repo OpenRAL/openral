@@ -22,7 +22,7 @@ inference: false
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 
-# rskill-rldx1-ft-rc365-nf4
+# rskill-rldx1_ft-panda_mobile-robocasa-nf4
 
 > RLDX-1 finetuned on the **RoboCasa-365** cross-task generalization
 > benchmark — 365 tasks across a wide scene/skill distribution,
@@ -32,7 +32,7 @@ license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 
 <!-- openral:rskill-readme-delegates-to: ../rldx1-ft-libero-nf4 -->
 
-This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1-ft-libero-nf4);
+This is a sibling of [`rldx1-ft-libero-nf4`](https://huggingface.co/OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4);
 that README owns the canonical architecture, license, auto-managed
 sidecar lifecycle, and NF4 quantization documentation for every member
 of the RLDX-1 family. Read it first. The sections below cover only

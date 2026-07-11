@@ -22,7 +22,7 @@ base_model_relation: quantized
 inference: false
 ---
 
-# rskill-lingbot-vla2-robotwin
+# rskill-lingbot_vla2-aloha_agilex-robotwin-nf4
 
 > **OpenRAL rSkill** — Robbyant **LingBot-VLA 2.0** (6.38 B, Qwen3-VL-4B backbone +
 > sparse-MoE flow-matching action expert) for dual-arm manipulation on the
@@ -224,7 +224,7 @@ checkpoint (an NF4-quantized copy, not a re-train).
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-lingbot-vla2-robotwin` |
+| `name` | `OpenRAL/rskill-lingbot_vla2-aloha_agilex-robotwin-nf4` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |
@@ -247,7 +247,7 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 from openral_rskill.loader import rSkill
 
 pkg = rSkill.from_yaml("rskills/lingbot-vla2-robotwin/rskill.yaml")
-print(pkg.manifest.name, pkg.manifest.version)  # OpenRAL/rskill-lingbot-vla2-robotwin 0.1.0
+print(pkg.manifest.name, pkg.manifest.version)  # OpenRAL/rskill-lingbot_vla2-aloha_agilex-robotwin-nf4 0.1.0
 ```
 
 ## Reproduction

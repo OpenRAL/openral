@@ -58,7 +58,7 @@ def test_moveit_joints_rskill_plans_and_replays_waypoints(
 
     End-to-end exercise of the adapter contract:
 
-    1. Load the in-tree ``OpenRAL/rskill-moveit-joints`` manifest from
+    1. Load the in-tree ``OpenRAL/rskill-moveit-multi-joints-none`` manifest from
        ``rskills/rskill-moveit-joints/rskill.yaml`` (no HF Hub fetch).
     2. Construct :class:`ROSActionRskill` against the running
        ``move_group`` on the canonical Franka panda

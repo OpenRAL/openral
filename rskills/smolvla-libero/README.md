@@ -20,7 +20,7 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-libero
+# rskill-smolvla-franka_panda-libero_spatial-bf16
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on the [LIBERO](https://libero-project.github.io/) benchmark, packaged for use with the [OpenRAL](https://github.com/OpenRAL/openral) robot agent framework.
 
@@ -60,7 +60,7 @@ os.environ["HF_TOKEN"] = "<your-read-token>"
 from openral_rskill.loader import rSkill
 
 # Install from HF Hub (downloads manifest + registers locally):
-pkg = rSkill.from_pretrained("OpenRAL/rskill-smolvla-libero")
+pkg = rSkill.from_pretrained("OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16")
 # pkg.manifest.weights_uri → "hf://HuggingFaceVLA/smolvla_libero"
 # pkg.local_dir            → ~/.cache/openral/rskills/...
 
@@ -71,8 +71,8 @@ pkg = rSkill.from_yaml("skills/smolvla-libero/rskill.yaml")
 Via CLI:
 
 ```bash
-ral skill install hf://OpenRAL/rskill-smolvla-libero
-ral run examples/so100_smolvla --skill-id OpenRAL/rskill-smolvla-libero
+ral skill install hf://OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+ral run examples/so100_smolvla --skill-id OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 ```
 
 ---
@@ -197,7 +197,7 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-smolvla-libero` |
+| `name` | `OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` (fast visuomotor policy, 30–50 Hz) |

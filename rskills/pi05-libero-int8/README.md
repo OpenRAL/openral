@@ -25,7 +25,7 @@ base_model:
 base_model_relation: quantized
 ---
 
-# rskill-pi05-libero-int8
+# rskill-pi05-franka_panda-libero_spatial-int8
 
 > **OpenRAL rSkill** — π0.5 (3 B PaliGemma backbone, flow-matching
 > action head) finetuned on the [LIBERO](https://libero-project.github.io/)
@@ -62,7 +62,7 @@ pkg = rSkill.from_yaml("rskills/pi05-libero-int8/rskill.yaml")
 
 ```bash
 # CLI (will prompt to accept the non-permissive license unless --yes is passed):
-uv run openral skill install OpenRAL/rskill-pi05-libero-int8 --non-commercial --yes
+uv run openral skill install OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8 --non-commercial --yes
 
 # LIBERO closed-loop sim (int8 fits 8 GB):
 PYTORCH_ALLOC_CONF=expandable_segments:True \
@@ -101,7 +101,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True \
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-pi05-libero-int8` |
+| `name` | `OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8` |
 | `version` | `0.1.0` |
 | `license` | `permissive_research` |
 | `role` | `s1` |

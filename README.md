@@ -38,7 +38,7 @@
 OpenRAL is a typed, layered runtime that sits between a robot's motor API and a task planner. It is four things in one:
 
 - **Typed runtime** — eight well-defined layers (HAL → Sensors → World State → rSkill → Reasoning → WAM → Safety → Observability) with Pydantic v2 contracts at every boundary.
-- **rSkill packaging format** — Hugging Face Hub artifacts containing weights, a `rskill.yaml` manifest, quantization hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-libero`.
+- **rSkill packaging format** — Hugging Face Hub artifacts containing weights, a `rskill.yaml` manifest, quantization hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
 - **Planning kernel** — a slow, provider-agnostic LLM reasoner (S2) emitting typed `ReasonerToolCall` tool-calls (`ExecuteRskillTool`, `LifecycleTransition`, `EmitPrompt`, plus read-only `locate_in_view` / `query_scene` / `query_task_progress` / `recall_object` query tools), and a fast visuomotor policy (S1, 30–200 Hz) executing dispatched skills. Replanning is bounded and explicit. See the **[Reasoner reference](docs/reference/reasoner.md)**.
 - **Safety kernel** — a C++ separate process, deny-by-default. An allocation-free validator enforces joint position / velocity / torque limits, a global torque cap, Cartesian workspace and end-effector-speed limits, NaN/Inf rejection, and self / world / voxel-grid collision — backed by independent deadman and hardware-E-stop watchdog processes. Python proposes actions; C++ disposes them; `ROSSafetyViolation` is never silently caught. Formal certification is the remaining work.
 
@@ -274,7 +274,7 @@ uv run openral detect --no-write             # probe-only inspection (non-intera
 uv run openral sensor list                   # browse the sensor catalog
 uv run openral rskill search aloha           # discover rSkills on Hugging Face
 uv run openral rskill list                   # list installed rSkills
-uv run openral rskill install OpenRAL/rskill-smolvla-libero
+uv run openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 uv run openral benchmark report              # aggregate eval/*.json results
 
 # Simulated rollouts — see docs/reference/sim-environments.md
@@ -341,7 +341,7 @@ rSkills come in several **kinds**, all installed and run the same way:
 - **`kind: detector`** — open-vocabulary object detectors: RT-DETR (COCO ONNX), **OmDet-Turbo** (Apache-2.0 open-vocab, default), and LocateAnything-3B (NF4 VLM). Continuous detectors stream into world state; on-demand ones answer the reasoner's `locate_in_view`.
 - **`kind: vlm`** — the Qwen3.5-4B scene VLM (Apache-2.0), drives the read-only `query_scene` tool for success/progress verification.
 - **`kind: reward`** — the Robometer-4B progress monitor (Apache-2.0), runs parallel to a VLA and drives `query_task_progress`.
-- **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-joints` / `-eef-pose` / `-look-at`) and Nav2 (`rskill-nav2-navigate-to-pose`).
+- **`kind: ros_action`** — classical-control skills wrapping MoveIt (`rskill-moveit-multi-joints-none` / `-eef-pose` / `-look-at`) and Nav2 (`rskill-nav2-mobile_base-navigate_to_pose-none`).
 - **`kind: playbook`** — human-authored Markdown SOPs the S2 reasoner reads as content (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object); no weights, no actuation.
 
 Most are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything is private and non-commercial; the GR00T N1.7 policy (`gr00t-n17-libero`, NVIDIA Open Model License) runs in-process through lerobot 0.6.0's `GrootPolicy`. The OpenVLA-OFT policy (`openvla-oft-simpler-widowx-nf4`, MIT) is an in-process transformers custom-code NF4 model validated on the SimplerEnv WidowX carrot-on-plate task.
@@ -349,7 +349,7 @@ Most are published under `OpenRAL/rskill-*` on HuggingFace Hub. LocateAnything i
 → **Full table + license notes:** [docs/reference/rskills.md](docs/reference/rskills.md)
 
 ```bash
-openral rskill install OpenRAL/rskill-smolvla-libero
+openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 openral rskill check    # which installed rSkills run on this host?
 ```
 

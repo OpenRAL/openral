@@ -57,10 +57,10 @@ sudo apt-get install -y "ros-${ROS_DISTRO}-rmw-zenoh-cpp" || \
 # install lists (commit d814f4a) so a fresh-machine `just quickstart`
 # produces the same graph as the container images:
 #
-#   * moveit                              — openral/rskill-moveit-joints
+#   * moveit                              — openral/rskill-moveit-multi-joints-none
 #   * moveit-msgs                         — IDL for the MoveGroup action
 #   * moveit-resources-panda-moveit-config — tests/integration/test_moveit_*
-#   * nav2-bringup + nav2-msgs            — openral/rskill-nav2-navigate-to-pose
+#   * nav2-bringup + nav2-msgs            — openral/rskill-nav2-mobile_base-navigate_to_pose-none
 #   * slam-toolbox                        — reasoner-managed lifecycle peer
 #   * control-msgs                        — control_msgs/GripperCommand (ALOHA HIL gripper transport)
 #   * nav-msgs                            — Odometry/OccupancyGrid (panda_mobile HAL + slam bridge)

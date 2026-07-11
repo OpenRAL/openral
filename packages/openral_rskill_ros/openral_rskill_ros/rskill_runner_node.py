@@ -148,7 +148,7 @@ if _ROS2_AVAILABLE:
             # ``/openral/openarm/reset_to_pose``.
             self.declare_parameter("reset_to_pose_service", "")
             # MoveIt approach to the manifest ``starting_pose``. When
-            # set, the runner dispatches this rSkill (the rskill-moveit-joints
+            # set, the runner dispatches this rSkill (the rskill-moveit-multi-joints-none
             # MoveGroup wrapper) retargeted at the next skill's starting_pose,
             # preferred over ``reset_to_pose_service``; a failure ABORTS the goal
             # (vs. the best-effort snap). ``openral deploy sim`` / ``deploy run``
@@ -1038,7 +1038,7 @@ if _ROS2_AVAILABLE:
         def _dispatch_moveit_approach(self, pose: list[float]) -> str | None:
             """Run the MoveIt approach rSkill retargeted at ``pose``.
 
-            Resolves the ``approach_skill_id`` rSkill (``rskill-moveit-joints``)
+            Resolves the ``approach_skill_id`` rSkill (``rskill-moveit-multi-joints-none``)
             with a ``goal_params_json`` that overrides the MoveGroup goal's
             ``joint`` block positions with ``pose`` (the next skill's ``starting_pose``),
             then runs it through the standard skill loop — ``ROSActionRskill`` sends

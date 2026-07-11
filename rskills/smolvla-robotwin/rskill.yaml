@@ -42,7 +42,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-robotwin"
+name: "OpenRAL/rskill-smolvla-aloha_agilex-robotwin-bf16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

@@ -117,7 +117,7 @@ class TestSingleSkillResolution:
         payload = json.loads(result.output)
         assert len(payload["rows"]) == 1
         row = payload["rows"][0]
-        assert row["repo_id"] == "OpenRAL/rskill-smolvla-libero"
+        assert row["repo_id"] == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
         section_labels = [s["label"] for s in row["sections"]]
         assert section_labels == [
             "embodiment",
@@ -138,7 +138,7 @@ class TestSingleSkillResolution:
             [
                 "rskill",
                 "check",
-                "OpenRAL/rskill-smolvla-libero",
+                "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
                 "--robot",
                 str(so100_robot_yaml),
                 "--json",
@@ -147,7 +147,10 @@ class TestSingleSkillResolution:
         )
         assert result.exit_code == 1  # franka_panda manifest vs so100 host
         payload = json.loads(result.output)
-        assert payload["rows"][0]["repo_id"] == "OpenRAL/rskill-smolvla-libero"
+        assert (
+            payload["rows"][0]["repo_id"]
+            == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+        )
 
     def test_rskill_uri_scheme_is_stripped(self, so100_robot_yaml: Path) -> None:
         """``<id>`` is normalised before resolution."""
@@ -165,7 +168,10 @@ class TestSingleSkillResolution:
         )
         assert result.exit_code == 1
         payload = json.loads(result.output)
-        assert payload["rows"][0]["repo_id"] == "OpenRAL/rskill-smolvla-libero"
+        assert (
+            payload["rows"][0]["repo_id"]
+            == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+        )
 
 
 class TestCompatibleHost:

@@ -19,7 +19,7 @@ tags:
 inference: false
 ---
 
-# rskill-moveit-joints
+# rskill-moveit-multi-joints-none
 
 > **OpenRAL rSkill** — wraps the upstream `moveit_msgs/action/MoveGroup`
 > action server as an OpenRAL rSkill so the Reasoner can dispatch
@@ -167,7 +167,7 @@ MoveIt node's launch — the wrapped action's contract is intact.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-moveit-joints` |
+| `name` | `OpenRAL/rskill-moveit-multi-joints-none` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `kind` | `ros_action` |
@@ -204,7 +204,7 @@ ros2 launch openral_rskill_ros skill_runner.launch.py robot:=franka_panda
 
 # 3. From the Reasoner (or by hand via the action CLI), dispatch the goal:
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-    "{rskill_id: 'OpenRAL/rskill-moveit-joints', deadline_s: 30.0, prompt: 'move to home'}"
+    "{rskill_id: 'OpenRAL/rskill-moveit-multi-joints-none', deadline_s: 30.0, prompt: 'move to home'}"
 ```
 
 ## Limitations / Roadmap

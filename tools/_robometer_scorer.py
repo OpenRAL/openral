@@ -5,7 +5,7 @@ Native LeRobot backend (lerobot >= 0.6.0). The reward model is
 ``AutoModelForImageTextToText`` (Qwen3-VL-4B) with three prediction heads, loaded
 with plain ``transformers`` (no ``robometer`` git package, no ``auto_map``, no
 pinned ``transformers==4.57.1``). To fit an 8 GB GPU we keep OpenRAL's NF4
-pre-quantized checkpoint (``OpenRAL/rskill-robometer-4b-nf4``, ~3.3 GB resident)
+pre-quantized checkpoint (``OpenRAL/rskill-robometer_4b-any-general-nf4``, ~3.3 GB resident)
 and load its packed 4-bit weights DIRECTLY into the native ``nn.Module``:
 
   * build the native skeleton on the ``meta`` device (no Qwen weight download —
@@ -116,7 +116,7 @@ class _Scorer:
         if not q.is_prequantized_checkpoint(local):
             raise RuntimeError(
                 f"{local} is not an NF4 pre-quantized checkpoint (no bnb nf4 keys). "
-                "The native scorer loads OpenRAL/rskill-robometer-4b-nf4; the bf16 "
+                "The native scorer loads OpenRAL/rskill-robometer_4b-any-general-nf4; the bf16 "
                 "lerobot/Robometer-4B is too large for an 8 GB GPU."
             )
         self.cfg, self.model = self._load_prequantized(local)

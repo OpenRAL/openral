@@ -26,7 +26,7 @@ import pytest
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 _MP4 = _REPO / "example_videos" / "libero_spatial.mp4"
-_WEIGHTS = "OpenRAL/rskill-robometer-4b-nf4"
+_WEIGHTS = "OpenRAL/rskill-robometer_4b-any-general-nf4"
 _N_FRAMES = 6
 _RES = 256
 

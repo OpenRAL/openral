@@ -41,7 +41,7 @@ _LIVE_ROS_REASON = (
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _SMOLVLA = _REPO_ROOT / "rskills" / "smolvla-libero" / "rskill.yaml"
 _ROBOMETER = _REPO_ROOT / "rskills" / "robometer-4b" / "rskill.yaml"
-_VLA_ID = "OpenRAL/rskill-smolvla-libero"
+_VLA_ID = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)

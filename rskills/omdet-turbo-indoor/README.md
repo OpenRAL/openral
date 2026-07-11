@@ -18,7 +18,7 @@ base_model:
 - omlab/omdet-turbo-swin-tiny-hf
 ---
 
-# rskill-omdet-turbo-indoor
+# rskill-omdet_turbo-any-indoor-fp16
 
 > **OpenRAL rSkill** — OmDet-Turbo (Swin-tiny) packaged as an in-process,
 > Apache-2.0 open-vocabulary object detector run over a **fixed** curated indoor
@@ -109,7 +109,7 @@ Mirrors `rskill.yaml::sensors_required`.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-omdet-turbo-indoor` |
+| `name` | `OpenRAL/rskill-omdet_turbo-any-indoor-fp16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` / `kind` | `s1` / `detector` |

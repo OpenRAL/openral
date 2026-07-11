@@ -1,11 +1,11 @@
 ---
 name: act-so101-pen
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, pick_and_place, transfer on pen. ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec, latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in joint degrees) from two RGB views (front/overview + wrist). A smaller, faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101-pen; the whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, pick_and_place, transfer on pen. ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec, latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in joint degrees) from two RGB views (front/overview + wrist). A smaller, faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101_follower-so101_pen-bf16; the whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-act-so101-pen
+  rskill_id: OpenRAL/rskill-act-so101_follower-so101_pen-fp32
   manifest: ./rskill.yaml
   role: s1
   kind: vla
@@ -40,7 +40,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec, latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in joint degrees) from two RGB views (front/overview + wrist). A smaller, faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101-pen; the whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). ACT (Zhao et al., 2023) finetuned for "pass the pen" pick-and-place on a real SO-101 follower arm (Apache-2.0). ResNet-18 backbone, 4+1 enc/dec, latent VAE, chunk_size=100. Emits 6-DoF absolute joint-position chunks (in joint degrees) from two RGB views (front/overview + wrist). A smaller, faster, ONNX/TensorRT-friendly sibling of rskill-smolvla-so101_follower-so101_pen-bf16; the whole model exports to a single ONNX graph (OPENRAL_ACT_TRT=1).
 
 ## Capabilities
 
@@ -67,7 +67,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-act-so101-pen")
+skill = rSkill.from_pretrained("OpenRAL/rskill-act-so101_follower-so101_pen-fp32")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

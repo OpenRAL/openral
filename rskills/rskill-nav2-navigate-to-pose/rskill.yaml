@@ -25,7 +25,7 @@
 # from the manifest default.
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-nav2-navigate-to-pose"
+name: "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
