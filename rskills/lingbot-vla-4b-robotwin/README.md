@@ -87,7 +87,7 @@ lift_pot is a hard bimanual task; the open-loop MAE above confirms the policy is
 sound, and this is an honest NF4 + eager + laptop-GPU + single-seed rate (not
 paper-reported).
 
-## How it was trained
+## Upstream model / training
 
 Upstream (not by OpenRAL): LingBot-VLA foundation pre-training on 20 k h of
 real-world data from 9 dual-arm configs, then RoboTwin post-training on the
