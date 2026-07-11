@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://robbyant/lingbot-vla-4b-posttrain-robotwin@fb71a2c9749ccfedbb7290c2c3f0e5e7c7305c9e
+  weights_uri: hf://OpenRAL/lingbot-vla-4b-robotwin-nf4@b43c62245c34aef52f3aa3170375909dd186118a
   source_repo: hf://robbyant/lingbot-vla-4b-posttrain-robotwin
   paper_url: https://arxiv.org/abs/2601.18692
 ---

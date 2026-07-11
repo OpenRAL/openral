@@ -7,34 +7,43 @@
     "evaluated_by": "OpenRAL:openral benchmark scene",
     "reproduced_locally": true,
     "reproduction_planned": null,
-    "reproduction_cli": "openral benchmark scene --config /tmp/claude-1000/-home-allopart-workspace-openral/dfe7b013-2737-43f2-9151-4dbc7344746c/scratchpad/robotwin_lift_pot_150.yaml --rskill rskills/lingbot-vla-4b-robotwin",
+    "reproduction_cli": "openral benchmark scene --config /tmp/claude-1000/-home-allopart-workspace-openral/dfe7b013-2737-43f2-9151-4dbc7344746c/scratchpad/robotwin_lift_pot_300.yaml --rskill rskills/lingbot-vla-4b-robotwin",
     "table": null,
     "status": "reproduced"
   },
   "benchmark": {
     "name": "robotwin",
     "dataset": null,
-    "protocol": "1 episodes, seed=0, success_key=is_success, max_steps=150",
+    "protocol": "10 episodes, seed=0, success_key=is_success, max_steps=300",
     "robot": "aloha_agilex",
     "simulator": "robotwin"
   },
   "eval_config": {
-    "n_episodes": 1,
+    "n_episodes": 10,
     "seeds": [
-      0
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
     ],
     "success_key": "is_success",
-    "max_steps": 150,
+    "max_steps": 300,
     "vla_id": "lingbot_vla",
     "weights_uri": "rskills/lingbot-vla-4b-robotwin"
   },
   "results": {
-    "robotwin/lift_pot_success_rate": 0.0,
-    "avg_success_rate": 0.0,
+    "robotwin/lift_pot_success_rate": 0.1,
+    "avg_success_rate": 0.1,
     "n_tasks": 1,
-    "n_episodes_per_task": 1,
-    "n_episodes_total": 1,
-    "mean_step_latency_ms_avg": 25.42880785379869
+    "n_episodes_per_task": 10,
+    "n_episodes_total": 10,
+    "mean_step_latency_ms_avg": 25.667420505997143
   },
   "baselines": {},
   "trace_id": null

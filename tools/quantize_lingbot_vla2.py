@@ -71,7 +71,7 @@ import _lingbot_vla2_server as srv_mod
 # small the loader / tokenizer / processor might read). The fp32 weight shards and
 # their index are deliberately excluded — the nf4 model.safetensors is the only
 # weight file the pack ships.
-_COPY_SUFFIXES = (".json", ".md", ".txt")
+_COPY_SUFFIXES = (".json", ".md", ".txt", ".yaml")
 _SKIP_WEIGHTS = {"model.safetensors", "model.safetensors.index.json"}
 
 

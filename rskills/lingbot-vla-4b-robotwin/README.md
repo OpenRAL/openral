@@ -77,11 +77,15 @@ steps) — the decisive check the v2 foundation checkpoint failed:
   with ~4 GB free — enough to **co-reside with the SAPIEN RoboTwin sim** (~1.9 GB).
 - **~0.57 s** per 50-step chunk inference on the 4070 (eager, no flash-attn).
 
-**Closed-loop RoboTwin `lift_pot` (SAPIEN, aloha-agilex):** run live on the 8 GB
-4070 with the NF4 model (3.65 GB) and the SAPIEN sim (~1.9 GB) co-resident on one
-GPU — the robot drives both arms to the pot's side handles (correct bimanual
-approach) from the live renders. The measured success rate over the eval episodes
-is recorded in `eval/robotwin.json` (`reproduced_locally: true`).
+**Closed-loop RoboTwin `lift_pot` (SAPIEN, aloha-agilex):** **1/10 = 10 %** success
+over 10 episodes (seed 0, 300 steps) — run live on the 8 GB 4070 with the NF4 model
+(3.65 GB) and the SAPIEN sim (~1.9 GB) **co-resident on one GPU**, ~26 ms mean step
+latency. The robot drives both arms to the pot's side handles (correct bimanual
+approach) on every episode and completes the lift on the successful one. Details in
+`eval/scene_robotwin.json` (`reproduced_locally: true`, exact `reproduction_cli`).
+lift_pot is a hard bimanual task; the open-loop MAE above confirms the policy is
+sound, and this is an honest NF4 + eager + laptop-GPU + single-seed rate (not
+paper-reported).
 
 ## How it was trained
 

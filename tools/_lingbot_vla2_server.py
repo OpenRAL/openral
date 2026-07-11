@@ -769,13 +769,21 @@ class _LingBotV1Policy:
         torch.nn.Module.cuda = lambda self, *a, **k: self  # type: ignore[method-assign]  # reason: build-time guard
         try:
             if is_prequant:
-                srv.load_model_weights = lambda *a, **k: None  # type: ignore[attr-defined]  # reason: prequant overlay replaces the load
+                # V1 load_vla does its own strict load_state_dict from the ckpt's
+                # *.safetensors; for a prequant pack those are packed nf4 (wrong
+                # shape for the fp32 shells), so no-op the load during the build and
+                # fill everything from _overlay_prequantized instead.
+                _orig_lsd = torch.nn.Module.load_state_dict
+                torch.nn.Module.load_state_dict = (  # type: ignore[method-assign]  # reason: prequant build guard
+                    lambda self, *a, **k: ([], [])
+                )
                 prev_dtype = torch.get_default_dtype()
                 torch.set_default_dtype(torch.bfloat16)
                 try:
                     srv.vla = srv.load_vla(ckpt_dir)
                 finally:
                     torch.set_default_dtype(prev_dtype)
+                    torch.nn.Module.load_state_dict = _orig_lsd  # type: ignore[method-assign]  # reason: restore guard
             else:
                 srv.vla = srv.load_vla(ckpt_dir)  # CPU build + strict load_state_dict
         finally:
