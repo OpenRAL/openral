@@ -5884,6 +5884,148 @@ class RSkillManifest(BaseModel):
         return _load_yaml_model(cls, path)
 
 
+# ── rSkill HF-repo naming convention ────────────────────────────────────────
+# The enforced published-repo shape is
+# ``<owner>/rskill-<model>-<robot>-<task>-<quant>`` (CLAUDE.md §3 rSkill
+# packaging). ``<model>`` is the closed :data:`ModelFamily`, ``<robot>`` the
+# primary (first) :data:`EmbodimentTag`, ``<task>`` a benchmark/scene slug, and
+# ``<quant>`` the active :class:`QuantizationDtype` mapped through
+# :data:`_QUANT_DTYPE_REPO_SLUG`. Only ``kind == "vla"`` skills carry all four
+# axes; perception / playbook kinds (``detector`` / ``vlm`` / ``reward`` /
+# ``playbook`` / ``ros_*``) have no ``model_family`` and are exempt.
+
+_DEFAULT_RSKILL_OWNER = "OpenRAL"
+"""Owner used when a manifest ``name`` carries no ``<owner>/`` prefix."""
+
+_QUANT_DTYPE_REPO_SLUG: dict[QuantizationDtype, str] = {
+    QuantizationDtype.FP32: "fp32",
+    QuantizationDtype.FP16: "fp16",
+    QuantizationDtype.BF16: "bf16",
+    QuantizationDtype.INT8: "int8",
+    # 4-bit checkpoints ship as bitsandbytes NF4 (see the ``*-nf4`` in-tree
+    # rSkills and OpenRAL org repos, e.g. ``rskill-molmoact2-libero-nf4``); the
+    # published repo slug says ``nf4``, not the schema's ``int4`` dtype token.
+    QuantizationDtype.INT4: "nf4",
+    QuantizationDtype.FP4_NVFP4: "fp4",
+}
+"""Map an active :class:`QuantizationDtype` to its published-repo name slug.
+
+Every dtype maps to a slug so the ``<quant>`` axis is always present in the
+derived name — including full-precision ``fp32`` / ``bf16`` checkpoints, which
+older ad-hoc names omitted. ``int4`` maps to ``nf4`` to match the real
+published repos.
+"""
+
+
+def _slugify_name_token(token: str) -> str:
+    """Lower-case a name axis and map underscores to hyphens.
+
+    Example:
+        >>> _slugify_name_token("franka_panda")
+        'franka-panda'
+        >>> _slugify_name_token("lingbot_vla2")
+        'lingbot-vla2'
+    """
+    return token.strip().lower().replace("_", "-")
+
+
+def _rskill_task_slug(manifest: RSkillManifest) -> str:
+    """Derive the ``<task>`` axis of a VLA rSkill repo name.
+
+    Source precedence (most to least robust):
+
+    1. :attr:`RSkillManifest.evaluated_tasks` — reduced to its
+       :func:`scene_family` (``"libero_spatial/3"`` → ``"libero_spatial"``).
+    2. :attr:`RSkillManifest.benchmarks` — the lexicographically first suite
+       key (deterministic when several are scored).
+    3. :attr:`RSkillManifest.scenes` — the first scene keyword.
+
+    Raises:
+        ValueError: If none of the three carry a value (the name cannot be
+            derived without a task signal).
+    """
+    if manifest.evaluated_tasks:
+        return _slugify_name_token(scene_family(manifest.evaluated_tasks[0]))
+    if manifest.benchmarks:
+        return _slugify_name_token(sorted(manifest.benchmarks)[0])
+    if manifest.scenes:
+        return _slugify_name_token(manifest.scenes[0])
+    raise ValueError(
+        f"RSkillManifest({manifest.name!r}): cannot derive the <task> axis of the "
+        "repo name — set at least one of `evaluated_tasks`, `benchmarks`, or `scenes`."
+    )
+
+
+def expected_repo_name(manifest: RSkillManifest) -> str:
+    """Return the enforced HF-repo name for a VLA rSkill manifest.
+
+    Builds ``<owner>/rskill-<model>-<robot>-<task>-<quant>`` from the manifest,
+    lower-cased with underscores mapped to hyphens. ``<owner>`` is preserved
+    from :attr:`RSkillManifest.name` (the token before ``/``) so a rename keeps
+    the org, defaulting to :data:`_DEFAULT_RSKILL_OWNER`. This is the canonical
+    name the publisher enforces and ``--fix-name`` writes back.
+
+    Args:
+        manifest: A validated rSkill manifest.
+
+    Returns:
+        The canonical ``<owner>/rskill-...`` repo name.
+
+    Raises:
+        ValueError: If the manifest is not a namable VLA skill —
+            ``kind != "vla"``, no ``model_family``, no ``embodiment_tags``, or
+            no derivable ``<task>`` axis (see :func:`_rskill_task_slug`).
+
+    Example:
+        >>> m = RSkillManifest(
+        ...     name="OpenRAL/rskill-smolvla-libero",
+        ...     version="0.1.0",
+        ...     license=RSkillLicensePosture.APACHE_2_0,
+        ...     role="s1",
+        ...     kind="vla",
+        ...     model_family="smolvla",
+        ...     embodiment_tags=["franka_panda"],
+        ...     runtime=RSkillRuntime.PYTORCH,
+        ...     weights_uri="hf://lerobot/smolvla_base",
+        ...     chunk_size=16,
+        ...     latency_budget=RSkillLatencyBudget(per_chunk_ms=100.0),
+        ...     quantization=QuantizationConfig(dtype=QuantizationDtype.BF16),
+        ...     evaluated_tasks=["libero_spatial"],
+        ...     description="SmolVLA on LIBERO.",
+        ...     actions=[RSkillAction.GENERALIST],
+        ...     actuators_required=[
+        ...         ActuatorRequirement(
+        ...             kind=ControlMode.JOINT_POSITION,
+        ...             control_mode_semantics=ControlModeSemantics(mode="absolute"),
+        ...         ),
+        ...     ],
+        ...     processors=RSkillProcessors(
+        ...         preprocessor_uri="hf://lerobot/smolvla_base/policy_preprocessor.json",
+        ...         postprocessor_uri="hf://lerobot/smolvla_base/policy_postprocessor.json",
+        ...     ),
+        ... )
+        >>> expected_repo_name(m)
+        'OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16'
+    """
+    if manifest.kind != "vla" or manifest.model_family is None:
+        raise ValueError(
+            f"RSkillManifest({manifest.name!r}): the repo-name convention applies "
+            f"only to `kind: vla` skills (got kind={manifest.kind!r}); perception / "
+            "playbook kinds have no <model> axis and are exempt."
+        )
+    if not manifest.embodiment_tags:
+        raise ValueError(
+            f"RSkillManifest({manifest.name!r}): cannot derive the <robot> axis — "
+            "`embodiment_tags` is empty."
+        )
+    owner = manifest.name.split("/", 1)[0] if "/" in manifest.name else _DEFAULT_RSKILL_OWNER
+    model = _slugify_name_token(manifest.model_family)
+    robot = _slugify_name_token(manifest.embodiment_tags[0])
+    task = _rskill_task_slug(manifest)
+    quant = _QUANT_DTYPE_REPO_SLUG[manifest.quantization.dtype]
+    return f"{owner}/rskill-{model}-{robot}-{task}-{quant}"
+
+
 def assert_vla_reward_fits(
     vla: RSkillManifest,
     reward: RSkillManifest,

@@ -1003,3 +1003,96 @@ class TestVlmKind:
 
         m = RSkillManifest.model_validate(_vlm_manifest_dict())
         assert RSkillAction.QUERY in m.actions
+
+
+# ── HF-repo naming convention: expected_repo_name ────────────────────────────
+
+
+class TestExpectedRepoName:
+    """``expected_repo_name`` derives ``rskill-<model>-<robot>-<task>-<quant>``.
+
+    The publisher (``tools/rskill_publisher.py``) enforces this at publish time.
+    Coverage: real in-tree fixtures for the end-to-end derivation, plus the
+    underscore/case slugging and the ``int4`` → ``nf4`` quantization mapping,
+    and the exemption for perception / playbook kinds (no ``<model>`` axis).
+    """
+
+    @staticmethod
+    def _fixture(name: str) -> RSkillManifest:
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        return RSkillManifest.from_yaml(str(repo_root / "rskills" / name / "rskill.yaml"))
+
+    def test_real_manifests_map_to_canonical_names(self) -> None:
+        from openral_core import expected_repo_name
+
+        # (fixture dir, expected canonical name). Exercises: evaluated_tasks →
+        # scene-family (libero_spatial), underscore→hyphen on model + robot
+        # (franka_panda, lingbot_vla2, aloha_agilex), and the quant slugs
+        # bf16 / int8 / int4→nf4.
+        cases = {
+            "smolvla-libero": "OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16",
+            "pi05-libero-int8": "OpenRAL/rskill-pi05-franka-panda-libero-spatial-int8",
+            "molmoact2-libero-nf4": "OpenRAL/rskill-molmoact2-franka-panda-libero-spatial-nf4",
+            "smolvla-robotwin": "OpenRAL/rskill-smolvla-aloha-agilex-robotwin-bf16",
+            "lingbot-vla2-robotwin": "OpenRAL/rskill-lingbot-vla2-aloha-agilex-robotwin-nf4",
+            "lingbot-vla-4b-robotwin": "OpenRAL/rskill-lingbot-vla-aloha-agilex-robotwin-nf4",
+        }
+        for skill_dir, expected in cases.items():
+            assert expected_repo_name(self._fixture(skill_dir)) == expected, skill_dir
+
+    def test_preserves_owner_prefix(self) -> None:
+        from openral_core import expected_repo_name
+
+        d = _minimal_manifest_dict()  # name: openral/...
+        d["scenes"] = ["tabletop"]
+        m = RSkillManifest.model_validate(d)
+        assert expected_repo_name(m).startswith("openral/rskill-")
+
+    def test_underscore_and_case_slugging(self) -> None:
+        from openral_core import expected_repo_name
+
+        d = _minimal_manifest_dict()
+        d["model_family"] = "lingbot_vla2"
+        d["embodiment_tags"] = ["franka_panda"]
+        d["scenes"] = ["tabletop"]  # no evaluated_tasks/benchmarks → scenes[0]
+        m = RSkillManifest.model_validate(d)
+        # default quantization dtype is fp32.
+        assert expected_repo_name(m) == "openral/rskill-lingbot-vla2-franka-panda-tabletop-fp32"
+
+    def test_int4_maps_to_nf4(self) -> None:
+        from openral_core import expected_repo_name
+
+        d = _minimal_manifest_dict()
+        d["embodiment_tags"] = ["so100_follower"]
+        d["evaluated_tasks"] = ["libero_object"]
+        d["quantization"] = {"dtype": "int4", "backend": "pytorch"}
+        m = RSkillManifest.model_validate(d)
+        assert expected_repo_name(m) == "openral/rskill-smolvla-so100-follower-libero-object-nf4"
+
+    def test_task_precedence_evaluated_over_benchmarks_over_scenes(self) -> None:
+        from openral_core import expected_repo_name
+
+        d = _minimal_manifest_dict()
+        d["evaluated_tasks"] = ["libero_spatial/3"]  # scene-family wins → libero-spatial
+        d["benchmarks"] = {"libero_10": 0.5}
+        d["scenes"] = ["tabletop"]
+        assert "libero-spatial" in expected_repo_name(RSkillManifest.model_validate(d))
+
+    def test_raises_without_any_task_source(self) -> None:
+        from openral_core import expected_repo_name
+
+        d = _minimal_manifest_dict()  # no evaluated_tasks / benchmarks / scenes
+        with pytest.raises(ValueError, match="<task> axis"):
+            expected_repo_name(RSkillManifest.model_validate(d))
+
+    def test_exempt_for_detector_kind(self) -> None:
+        from openral_core import expected_repo_name
+
+        with pytest.raises(ValueError, match="kind: vla"):
+            expected_repo_name(self._fixture("rtdetr-coco-r18"))
+
+    def test_exempt_for_reward_kind(self) -> None:
+        from openral_core import expected_repo_name
+
+        with pytest.raises(ValueError, match="kind: vla"):
+            expected_repo_name(self._fixture("robometer-4b"))

@@ -55,7 +55,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 
 | Field | What it does |
 | --- | --- |
-| `name` | `<owner>/rskill-<id>` — the Hub repo id. |
+| `name` | `<owner>/rskill-<model>-<robot>-<task>-<quant>` — the Hub repo id (enforced; see [Naming convention](#naming-convention)). |
 | `license` | License **posture**; drives `commercial_use_allowed`. |
 | `role` | `s1` (fast policy), `s2` (reasoner), or `s0` (cerebellar). |
 | `kind` | `vla` for a learnable policy; detector kinds also exist. |
@@ -73,6 +73,35 @@ The full schema is
 Strip the pi0.5-shaped knobs (`image_preprocessing`, `state_contract`,
 `processors`) if your policy is a simpler ACT/Diffusion model that doesn't
 need them.
+
+### Naming convention
+
+For a `kind: vla` skill the `name` is **enforced** at publish time to:
+
+```
+<owner>/rskill-<model>-<robot>-<task>-<quantization>
+```
+
+| Axis | Source | Example |
+| --- | --- | --- |
+| `<model>` | `model_family` (closed `ModelFamily` enum) | `smolvla`, `lingbot_vla2` → `lingbot-vla2` |
+| `<robot>` | first `embodiment_tags` entry (closed `EmbodimentTag` enum) | `franka_panda` → `franka-panda` |
+| `<task>` | `evaluated_tasks[0]` scene-family, else first `benchmarks` key, else `scenes[0]` | `libero_spatial`, `robotwin` |
+| `<quantization>` | `quantization.dtype` slug (`int4` → `nf4`, `fp4_nvfp4` → `fp4`, else the dtype) | `bf16`, `int8`, `nf4` |
+
+The whole name is lower-cased with underscores mapped to hyphens, e.g.
+`OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16`. The canonical value
+comes from `openral_core.schemas.expected_repo_name`. Perception / playbook
+kinds (`detector` / `vlm` / `reward` / `playbook` / `ros_*`) have no `<model>`
+axis and are **exempt**.
+
+The publisher (and its dry-run) hard-fails on a mismatch and prints the
+expected name. To migrate an existing manifest in one step, let the tool
+rewrite it:
+
+```bash
+uv run python tools/rskill_publisher.py rskills/<id>/ --fix-name
+```
 
 ## 3. Write the README
 

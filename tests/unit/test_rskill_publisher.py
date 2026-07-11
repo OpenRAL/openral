@@ -62,14 +62,18 @@ def publisher() -> types.ModuleType:
 # ── Manifest fixture ────────────────────────────────────────────────────────
 
 
-_VALID_MANIFEST_YAML = """\
-name: test/rskill-publisher-fixture
+# Name follows the enforced convention rskill-<model>-<robot>-<task>-<quant>:
+# smolvla / so100_follower / tabletop (scenes[0]) / fp32 (default dtype).
+_FIXTURE_NAME = "test/rskill-smolvla-so100-follower-tabletop-fp32"
+_VALID_MANIFEST_YAML = f"""\
+name: {_FIXTURE_NAME}
 version: 0.1.0
 license: apache-2.0
 role: s1
 kind: vla
 model_family: smolvla
 embodiment_tags: [so100_follower]
+scenes: [tabletop]
 runtime: pytorch
 weights_uri: hf://lerobot/smolvla_base
 chunk_size: 16
@@ -77,7 +81,7 @@ latency_budget:
   per_chunk_ms: 100.0
 actuators_required:
   - kind: joint_position
-    control_mode_semantics: {mode: absolute}
+    control_mode_semantics: {{mode: absolute}}
 processors:
   preprocessor_uri: hf://lerobot/smolvla_base/policy_preprocessor.json
   postprocessor_uri: hf://lerobot/smolvla_base/policy_postprocessor.json
@@ -185,7 +189,7 @@ def test_validate_manifest_returns_parsed_rskill_manifest(
 ) -> None:
     skill_dir = _write_skill_dir(tmp_path)
     manifest = publisher._validate_manifest(skill_dir)
-    assert manifest.name == "test/rskill-publisher-fixture"
+    assert manifest.name == _FIXTURE_NAME
     assert manifest.version == "0.1.0"
     assert manifest.latency_budget.per_chunk_ms == 100.0
 
@@ -224,7 +228,7 @@ def test_main_dry_run_prints_valid_and_returns(
 
     out = capsys.readouterr().out
     assert "[dry-run]" in out
-    assert "test/rskill-publisher-fixture" in out
+    assert _FIXTURE_NAME in out
     assert "0.1.0" in out
 
 
@@ -495,3 +499,63 @@ def test_main_publish_aborts_when_description_is_template_default(
     assert excinfo.value.code == 1
     fake_api.create_repo.assert_not_called()
     fake_api.upload_folder.assert_not_called()
+
+
+# ── Naming convention enforcement (rskill-<model>-<robot>-<task>-<quant>) ────
+
+
+def test_enforce_repo_name_returns_manifest_when_compliant(
+    publisher: types.ModuleType, tmp_path: Path
+) -> None:
+    skill_dir = _write_skill_dir(tmp_path)  # fixture name is already canonical
+    manifest = publisher._validate_manifest(skill_dir)
+    out = publisher._enforce_repo_name(skill_dir, manifest, fix_name=False)
+    assert out.name == _FIXTURE_NAME
+
+
+def test_main_dry_run_exits_1_on_noncompliant_name(
+    publisher: types.ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wrong name must fail the dry-run and print the expected canonical name."""
+    bad = _VALID_MANIFEST_YAML.replace(_FIXTURE_NAME, "test/rskill-wrong-name")
+    skill_dir = _write_skill_dir(tmp_path, manifest_text=bad)
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir)])
+    with pytest.raises(SystemExit) as excinfo:
+        publisher.main()
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert _FIXTURE_NAME in out  # the expected name is surfaced to the author
+
+
+def test_fix_name_rewrites_manifest_in_place(
+    publisher: types.ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--fix-name`` rewrites the on-disk name to the canonical convention."""
+    from openral_core.schemas import RSkillManifest
+
+    bad = _VALID_MANIFEST_YAML.replace(_FIXTURE_NAME, "test/rskill-wrong-name")
+    skill_dir = _write_skill_dir(tmp_path, manifest_text=bad)
+    monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir), "--fix-name"])
+    publisher.main()  # dry-run + --fix-name → rewrites, then reports valid
+
+    rewritten = RSkillManifest.from_yaml(str(skill_dir / "rskill.yaml"))
+    assert rewritten.name == _FIXTURE_NAME
+    # Only the top-level name changed; other content is intact.
+    assert "model_family: smolvla" in (skill_dir / "rskill.yaml").read_text()
+
+
+def test_enforce_repo_name_exempts_non_vla_kind(
+    publisher: types.ModuleType, tmp_path: Path
+) -> None:
+    """A detector (no model_family) is exempt — any name passes unchanged."""
+    from openral_core.schemas import RSkillManifest
+
+    detector_yaml = str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "rskill.yaml")
+    manifest = RSkillManifest.from_yaml(detector_yaml)
+    out = publisher._enforce_repo_name(tmp_path, manifest, fix_name=False)
+    assert out.name == manifest.name  # unchanged, no exit

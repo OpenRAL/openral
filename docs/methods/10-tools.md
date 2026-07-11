@@ -89,15 +89,17 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
 
-- `public_visibility_error(manifest, public) -> str | None` (L77) — §9 license gate (pure, no network): returns an error string if `--public` is requested for a non-commercial-licensed skill (`not manifest.is_commercial_use_allowed`), else `None`. Lets `main` fail fast before any HF call.
-- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L122)
-- `_validate_manifest(skill_dir) -> RSkillManifest` (L141)
+- `public_visibility_error(manifest, public) -> str | None` (L100) — §9 license gate (pure, no network): returns an error string if `--public` is requested for a non-commercial-licensed skill (`not manifest.is_commercial_use_allowed`), else `None`. Lets `main` fail fast before any HF call.
+- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L145)
+- `_validate_manifest(skill_dir) -> RSkillManifest` (L164)
 - `_validate_docs(skill_dir, manifest) -> DocValidationReport` — Print + return the README / manifest documentation report via `_rskill_doc_validator.validate_rskill_docs`. Runs in both dry-run and `--publish` paths; the caller decides whether to exit on errors.
-- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L230)
-- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L281)
+- `_rewrite_manifest_name(manifest_path, old_name, new_name) -> None` — Rewrite the top-level `name:` value of `rskill.yaml` in place (column-0 line only, so nested `name:` keys are untouched; preserves quotes + trailing comment). Exits 1 if the line isn't found exactly once. Backs `--fix-name`.
+- `_enforce_repo_name(skill_dir, manifest, *, fix_name) -> RSkillManifest` — Enforce the `rskill-<model>-<robot>-<task>-<quant>` naming convention via `openral_core.schemas.expected_repo_name`. Non-`vla` kinds are exempt (derivation raises → logged, returns unchanged). On a VLA mismatch: `fix_name=True` rewrites + reloads the manifest; `fix_name=False` hard-fails (exit 1) printing the expected name. Runs in both dry-run and `--publish` paths.
+- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L353)
+- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L404)
 - `_ensure_public(api, repo_id) -> None` — The `--public` counterpart: abort if the (reused) repo is private, so a `--public` publish never lands in a private repo.
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
-- `main() -> None` — Entry point. Sequence: parse args (`--publish` / `--public` / `--bump-revision` / `--token`) → validate manifest → validate docs → `public_visibility_error` gate (exit 1 if `--public` on a non-commercial skill) → exit 1 on doc errors → optional `--bump-revision` → `--publish` (private unless `--public`).
+- `main() -> None` — Entry point. Sequence: parse args (`--publish` / `--public` / `--bump-revision` / `--fix-name` / `--token`) → validate manifest → `_enforce_repo_name` (exit 1 on a non-compliant VLA name unless `--fix-name`) → validate task space → validate docs → `public_visibility_error` gate (exit 1 if `--public` on a non-commercial skill) → exit 1 on doc errors → optional `--bump-revision` → `--publish` (private unless `--public`).
 
 ### `tools/rskill_scaffolder.py`
 _Standalone argparse wrapper around `openral_cli._rskill_scaffolder.scaffold_rskill`._
