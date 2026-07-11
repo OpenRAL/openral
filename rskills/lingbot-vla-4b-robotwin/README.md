@@ -1,3 +1,22 @@
+---
+language:
+- en
+license: apache-2.0
+pipeline_tag: robotics
+tags:
+- OpenRAL
+- rskill
+- lingbot_vla
+- vision-language-action
+- nf4
+- 4-bit
+- aloha_agilex
+base_model:
+- robbyant/lingbot-vla-4b-posttrain-robotwin
+base_model_relation: quantized
+inference: false
+---
+
 <!-- OpenRAL rSkill README — LingBot-VLA 1.0 (4B) RoboTwin post-train -->
 
 # rskill-lingbot-vla-4b-robotwin
@@ -126,8 +145,8 @@ openral benchmark scene \
 
 ## Reproduction
 
-`eval/robotwin.json` is produced by the command above (`reproduced_locally: true`);
-the exact `reproduction_cli` is recorded in that file. Open-loop numbers come from
+`eval/scene_robotwin.json` is produced by the command above (`reproduced_locally:
+true`); the exact `reproduction_cli` is recorded in that file. Open-loop numbers come from
 the GT-vs-prediction probe described under *Verified performance*.
 
 ## License
