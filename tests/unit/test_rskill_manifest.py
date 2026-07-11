@@ -1005,61 +1005,172 @@ class TestVlmKind:
         assert RSkillAction.QUERY in m.actions
 
 
-# ── HF-repo naming convention: expected_repo_name ────────────────────────────
+# ── HF-repo naming convention ────────────────────────────────────────────────
+
+
+def _naming_fixture(name: str) -> RSkillManifest:
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    return RSkillManifest.from_yaml(str(repo_root / "rskills" / name / "rskill.yaml"))
+
+
+class TestRepoNameIsCanonical:
+    """``repo_name_is_canonical`` — grammar + vocab parse (kind-aware).
+
+    Hyphens are only the segment separators; tokens use underscores. A
+    non-playbook name must split into exactly 5 parts with canonical
+    model/robot/quant tokens and a shape-valid task; a playbook must be
+    ``rskill-playbook-<name>``.
+    """
+
+    def test_valid_five_segment_name(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
+        )
+
+    def test_valid_playbook_name(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
+
+    def test_multi_robot_token_accepted(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
+        )
+
+    def test_hyphen_inside_token_is_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A hyphenated robot/model token over-splits (6 parts) → not canonical.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka-panda-libero_spatial-bf16", kind="vla"
+        )
+
+    def test_unknown_model_token_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-notamodel-franka_panda-libero-bf16", kind="vla"
+        )
+
+    def test_noncanonical_quant_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # int4 is the schema dtype, not the name token (nf4).
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero-int4", kind="vla"
+        )
+
+    def test_playbook_grammar_not_accepted_for_vla(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert not repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="vla")
+
+    def test_owner_prefix_optional(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical(
+            "rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
+        )
+
+
+class TestCanonicalTokenSets:
+    def test_model_tokens_use_underscores_not_hyphens(self) -> None:
+        from openral_core import CANONICAL_MODEL_TOKENS
+
+        assert "lingbot_vla" in CANONICAL_MODEL_TOKENS
+        assert "lingbot_vla2" in CANONICAL_MODEL_TOKENS
+        assert "gr00t_n17" in CANONICAL_MODEL_TOKENS
+        assert "3d_diffuser_actor" in CANONICAL_MODEL_TOKENS
+        assert "omdet_turbo" in CANONICAL_MODEL_TOKENS
+        # No hyphenated variant leaks in.
+        assert "lingbot-vla" not in CANONICAL_MODEL_TOKENS
+
+    def test_robot_tokens_include_embodiment_plus_multi(self) -> None:
+        from openral_core import CANONICAL_ROBOT_NAME_TOKENS
+
+        assert "franka_panda" in CANONICAL_ROBOT_NAME_TOKENS
+        assert "any" in CANONICAL_ROBOT_NAME_TOKENS
+        assert "multi" in CANONICAL_ROBOT_NAME_TOKENS
+
+    def test_quant_tokens_exact_set(self) -> None:
+        from openral_core import CANONICAL_QUANT_TOKENS
+
+        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4"}
 
 
 class TestExpectedRepoName:
-    """``expected_repo_name`` derives ``rskill-<model>-<robot>-<task>-<quant>``.
+    """``expected_repo_name`` — the canonical SUGGESTION (always valid).
 
-    The publisher (``tools/rskill_publisher.py``) enforces this at publish time.
-    Coverage: real in-tree fixtures for the end-to-end derivation, plus the
-    underscore/case slugging and the ``int4`` → ``nf4`` quantization mapping,
-    and the exemption for perception / playbook kinds (no ``<model>`` axis).
+    Coverage: real in-tree fixtures across every kind (VLA / detector / reward /
+    vlm / ros_action / playbook), the ``int4`` → ``nf4`` quant token, the
+    ``multi`` robot token, and the author-slug fallback that recovers a
+    name-only discriminator (the two so101 pen skills).
     """
 
-    @staticmethod
-    def _fixture(name: str) -> RSkillManifest:
-        repo_root = pathlib.Path(__file__).resolve().parents[2]
-        return RSkillManifest.from_yaml(str(repo_root / "rskills" / name / "rskill.yaml"))
+    def test_real_manifests_suggest_canonical_names(self) -> None:
+        from openral_core import expected_repo_name, repo_name_is_canonical
 
-    def test_real_manifests_map_to_canonical_names(self) -> None:
-        from openral_core import expected_repo_name
-
-        # (fixture dir, expected canonical name). Exercises: evaluated_tasks →
-        # scene-family (libero_spatial), underscore→hyphen on model + robot
-        # (franka_panda, lingbot_vla2, aloha_agilex), and the quant slugs
-        # bf16 / int8 / int4→nf4.
         cases = {
-            "smolvla-libero": "OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16",
-            "pi05-libero-int8": "OpenRAL/rskill-pi05-franka-panda-libero-spatial-int8",
-            "molmoact2-libero-nf4": "OpenRAL/rskill-molmoact2-franka-panda-libero-spatial-nf4",
-            "smolvla-robotwin": "OpenRAL/rskill-smolvla-aloha-agilex-robotwin-bf16",
-            "lingbot-vla2-robotwin": "OpenRAL/rskill-lingbot-vla2-aloha-agilex-robotwin-nf4",
-            "lingbot-vla-4b-robotwin": "OpenRAL/rskill-lingbot-vla-aloha-agilex-robotwin-nf4",
+            # VLA — versioned model tokens, underscore robot tokens, quant tokens.
+            "smolvla-libero": "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
+            "pi05-libero-int8": "OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8",
+            "molmoact2-libero-nf4": "OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4",
+            "lingbot-vla2-robotwin": "OpenRAL/rskill-lingbot_vla2-aloha_agilex-robotwin-nf4",
+            "lingbot-vla-4b-robotwin": "OpenRAL/rskill-lingbot_vla-aloha_agilex-robotwin-nf4",
+            "gr00t-n17-libero": "OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16",
+            "rldx1-ft-libero-nf4": "OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4",
+            "3d-diffuser-actor-rlbench": (
+                "OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32"
+            ),
+            # multi-robot skill → robot token "multi"; author slug from name tail.
+            "molmoact2-so101-nf4": "OpenRAL/rskill-molmoact2-multi-so101-nf4",
+            # so101 pen pair — distinguished by the name-tail author slug.
+            "smolvla-so101-pen": "OpenRAL/rskill-smolvla-so101_follower-so101_pen-bf16",
+            "smolvla-so101-pick-place-pen": (
+                "OpenRAL/rskill-smolvla-so101_follower-so101_pick_place_pen-bf16"
+            ),
+            # Non-VLA tool models — prefix-matched model token from the name.
+            "omdet-turbo-locator": "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
+            "rtdetr-coco-r18": "OpenRAL/rskill-rtdetr_coco_r18-any-tabletop-fp32",
+            "robometer-4b": "OpenRAL/rskill-robometer_4b-any-tabletop-nf4",
+            "rskill-moveit-eef-pose": "OpenRAL/rskill-moveit-multi-eef_pose-fp32",
+            "rskill-nav2-navigate-to-pose": (
+                "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-fp32"
+            ),
+            # Playbook carve-out.
+            "find-object": "OpenRAL/rskill-playbook-find_object",
+            "decompose-mission": "OpenRAL/rskill-playbook-decompose_mission",
         }
         for skill_dir, expected in cases.items():
-            assert expected_repo_name(self._fixture(skill_dir)) == expected, skill_dir
+            m = _naming_fixture(skill_dir)
+            got = expected_repo_name(m)
+            assert got == expected, f"{skill_dir}: {got}"
+            # The suggestion must itself be canonical for the skill's kind.
+            assert repo_name_is_canonical(got, kind=m.kind), skill_dir
 
     def test_preserves_owner_prefix(self) -> None:
         from openral_core import expected_repo_name
 
         d = _minimal_manifest_dict()  # name: openral/...
-        d["scenes"] = ["tabletop"]
+        d["evaluated_tasks"] = ["libero_object"]
         m = RSkillManifest.model_validate(d)
         assert expected_repo_name(m).startswith("openral/rskill-")
 
-    def test_underscore_and_case_slugging(self) -> None:
+    def test_versioned_model_token_from_family(self) -> None:
         from openral_core import expected_repo_name
 
         d = _minimal_manifest_dict()
         d["model_family"] = "lingbot_vla2"
         d["embodiment_tags"] = ["franka_panda"]
-        d["scenes"] = ["tabletop"]  # no evaluated_tasks/benchmarks → scenes[0]
+        d["evaluated_tasks"] = ["robotwin"]
         m = RSkillManifest.model_validate(d)
-        # default quantization dtype is fp32.
-        assert expected_repo_name(m) == "openral/rskill-lingbot-vla2-franka-panda-tabletop-fp32"
+        assert expected_repo_name(m) == "openral/rskill-lingbot_vla2-franka_panda-robotwin-fp32"
 
-    def test_int4_maps_to_nf4(self) -> None:
+    def test_int4_maps_to_nf4_token(self) -> None:
         from openral_core import expected_repo_name
 
         d = _minimal_manifest_dict()
@@ -1067,32 +1178,13 @@ class TestExpectedRepoName:
         d["evaluated_tasks"] = ["libero_object"]
         d["quantization"] = {"dtype": "int4", "backend": "pytorch"}
         m = RSkillManifest.model_validate(d)
-        assert expected_repo_name(m) == "openral/rskill-smolvla-so100-follower-libero-object-nf4"
+        assert expected_repo_name(m) == "openral/rskill-smolvla-so100_follower-libero_object-nf4"
 
-    def test_task_precedence_evaluated_over_benchmarks_over_scenes(self) -> None:
+    def test_multi_robot_token(self) -> None:
         from openral_core import expected_repo_name
 
         d = _minimal_manifest_dict()
-        d["evaluated_tasks"] = ["libero_spatial/3"]  # scene-family wins → libero-spatial
-        d["benchmarks"] = {"libero_10": 0.5}
-        d["scenes"] = ["tabletop"]
-        assert "libero-spatial" in expected_repo_name(RSkillManifest.model_validate(d))
-
-    def test_raises_without_any_task_source(self) -> None:
-        from openral_core import expected_repo_name
-
-        d = _minimal_manifest_dict()  # no evaluated_tasks / benchmarks / scenes
-        with pytest.raises(ValueError, match="<task> axis"):
-            expected_repo_name(RSkillManifest.model_validate(d))
-
-    def test_exempt_for_detector_kind(self) -> None:
-        from openral_core import expected_repo_name
-
-        with pytest.raises(ValueError, match="kind: vla"):
-            expected_repo_name(self._fixture("rtdetr-coco-r18"))
-
-    def test_exempt_for_reward_kind(self) -> None:
-        from openral_core import expected_repo_name
-
-        with pytest.raises(ValueError, match="kind: vla"):
-            expected_repo_name(self._fixture("robometer-4b"))
+        d["embodiment_tags"] = ["so100_follower", "so101_follower"]
+        d["evaluated_tasks"] = ["libero_object"]
+        m = RSkillManifest.model_validate(d)
+        assert "-multi-" in expected_repo_name(m)

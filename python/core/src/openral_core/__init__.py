@@ -28,6 +28,9 @@ from openral_core.exceptions import (
 from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_on_invalid_suite
 from openral_core.schemas import (
     BODY_TWIST_DIM,
+    CANONICAL_MODEL_TOKENS,
+    CANONICAL_QUANT_TOKENS,
+    CANONICAL_ROBOT_NAME_TOKENS,
     CONTROL_MODE_TO_UINT8,
     RSKILL_TEMPLATE_SENTINELS,
     SCENE_FAMILY_TASK_SPACE,
@@ -195,6 +198,7 @@ from openral_core.schemas import (
     expected_repo_name,
     extract_base_sim_joint_names,
     is_collective_target,
+    repo_name_is_canonical,
     scale_intrinsics_to,
     scene_family,
     scene_task_space_compatible,
@@ -203,6 +207,9 @@ from openral_core.schemas import (
 
 __all__ = [
     "BODY_TWIST_DIM",
+    "CANONICAL_MODEL_TOKENS",
+    "CANONICAL_QUANT_TOKENS",
+    "CANONICAL_ROBOT_NAME_TOKENS",
     "CONTROL_MODE_TO_UINT8",
     "RSKILL_TEMPLATE_SENTINELS",
     "SCENE_FAMILY_TASK_SPACE",
@@ -394,6 +401,7 @@ __all__ = [
     "load_benchmark_suite",
     "load_scene_strict",
     "raise_on_invalid_suite",
+    "repo_name_is_canonical",
     "scale_intrinsics_to",
     "scene_family",
     "scene_task_space_compatible",

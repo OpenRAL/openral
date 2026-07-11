@@ -62,9 +62,10 @@ def publisher() -> types.ModuleType:
 # ── Manifest fixture ────────────────────────────────────────────────────────
 
 
-# Name follows the enforced convention rskill-<model>-<robot>-<task>-<quant>:
-# smolvla / so100_follower / tabletop (scenes[0]) / fp32 (default dtype).
-_FIXTURE_NAME = "test/rskill-smolvla-so100-follower-tabletop-fp32"
+# Name follows the enforced grammar rskill-<model>-<robot>-<task>-<quant>
+# (hyphens separate segments; tokens use underscores):
+# smolvla / so100_follower / tabletop / fp32 (default dtype).
+_FIXTURE_NAME = "test/rskill-smolvla-so100_follower-tabletop-fp32"
 _VALID_MANIFEST_YAML = f"""\
 name: {_FIXTURE_NAME}
 version: 0.1.0
@@ -519,7 +520,7 @@ def test_main_dry_run_exits_1_on_noncompliant_name(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wrong name must fail the dry-run and print the expected canonical name."""
+    """A wrong name must fail the dry-run and print the suggested canonical name."""
     bad = _VALID_MANIFEST_YAML.replace(_FIXTURE_NAME, "test/rskill-wrong-name")
     skill_dir = _write_skill_dir(tmp_path, manifest_text=bad)
     monkeypatch.setattr(sys, "argv", ["rskill_publisher", str(skill_dir)])
@@ -527,15 +528,17 @@ def test_main_dry_run_exits_1_on_noncompliant_name(
         publisher.main()
     assert excinfo.value.code == 1
     out = capsys.readouterr().out
-    assert _FIXTURE_NAME in out  # the expected name is surfaced to the author
+    # The suggested name (derived from the manifest) is surfaced to the author.
+    assert "test/rskill-smolvla-so100_follower-" in out
 
 
-def test_fix_name_rewrites_manifest_in_place(
+def test_fix_name_rewrites_manifest_to_canonical(
     publisher: types.ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``--fix-name`` rewrites the on-disk name to the canonical convention."""
+    """``--fix-name`` rewrites the on-disk name to a canonical one."""
+    from openral_core import repo_name_is_canonical
     from openral_core.schemas import RSkillManifest
 
     bad = _VALID_MANIFEST_YAML.replace(_FIXTURE_NAME, "test/rskill-wrong-name")
@@ -544,18 +547,35 @@ def test_fix_name_rewrites_manifest_in_place(
     publisher.main()  # dry-run + --fix-name → rewrites, then reports valid
 
     rewritten = RSkillManifest.from_yaml(str(skill_dir / "rskill.yaml"))
-    assert rewritten.name == _FIXTURE_NAME
+    assert repo_name_is_canonical(rewritten.name, kind="vla")
+    assert rewritten.name.startswith("test/rskill-smolvla-so100_follower-")
     # Only the top-level name changed; other content is intact.
     assert "model_family: smolvla" in (skill_dir / "rskill.yaml").read_text()
 
 
-def test_enforce_repo_name_exempts_non_vla_kind(
+def test_enforce_repo_name_enforces_detector_kind(
     publisher: types.ModuleType, tmp_path: Path
 ) -> None:
-    """A detector (no model_family) is exempt — any name passes unchanged."""
+    """Non-VLA kinds are NOT exempt: a non-canonical detector name hard-fails."""
     from openral_core.schemas import RSkillManifest
 
+    # rtdetr-coco-r18's in-tree name is not yet canonical → must exit 1.
     detector_yaml = str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "rskill.yaml")
     manifest = RSkillManifest.from_yaml(detector_yaml)
+    with pytest.raises(SystemExit) as excinfo:
+        publisher._enforce_repo_name(tmp_path, manifest, fix_name=False)
+    assert excinfo.value.code == 1
+
+
+def test_enforce_repo_name_accepts_canonical_playbook(
+    publisher: types.ModuleType, tmp_path: Path
+) -> None:
+    """A playbook using the rskill-playbook-<name> grammar passes unchanged."""
+    from openral_core.schemas import RSkillManifest
+
+    playbook_yaml = str(_REPO_ROOT / "rskills" / "find-object" / "rskill.yaml")
+    manifest = RSkillManifest.from_yaml(playbook_yaml).model_copy(
+        update={"name": "OpenRAL/rskill-playbook-find_object"}
+    )
     out = publisher._enforce_repo_name(tmp_path, manifest, fix_name=False)
-    assert out.name == manifest.name  # unchanged, no exit
+    assert out.name == "OpenRAL/rskill-playbook-find_object"

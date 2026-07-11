@@ -21,22 +21,25 @@ Usage
 
 Naming convention (CLAUDE.md §3 — rSkill packaging)
 ---------------------------------------------------
-Every VLA rSkill's HF repo name is enforced to
-``<owner>/rskill-<model>-<robot>-<task>-<quantization>`` where:
+Every rSkill's HF repo name is enforced to one of two shapes (hyphens are ONLY
+the segment separators; every token uses underscores internally, so a name
+parses by a plain ``split("-")``):
 
-- ``<model>`` — the manifest ``model_family`` (closed ``ModelFamily`` enum).
-- ``<robot>`` — the primary (first) ``embodiment_tags`` entry (closed
-  ``EmbodimentTag`` enum).
-- ``<task>`` — ``evaluated_tasks[0]`` scene-family, else the first
-  ``benchmarks`` suite key, else ``scenes[0]``.
-- ``<quantization>`` — the active ``quantization.dtype`` slug (``int4`` → ``nf4``).
+- ``<owner>/rskill-<model>-<robot>-<task>-<quantization>`` — all non-playbook
+  kinds. ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` (a versioned checkpoint token,
+  e.g. ``smolvla`` / ``gr00t_n17`` / ``omdet_turbo``); ``<robot>`` ∈ the
+  ``EmbodimentTag`` values plus ``any`` / ``multi``; ``<task>`` is AUTHOR-CHOSEN
+  (validated by shape ``^[a-z0-9][a-z0-9_]*$`` only); ``<quantization>`` ∈
+  ``{fp32, fp16, bf16, int8, nf4}`` (schema ``int4`` → ``nf4``).
+- ``<owner>/rskill-playbook-<name>`` — ``kind: playbook``.
 
-The name is lower-cased with underscores mapped to hyphens; the canonical
-value is produced by :func:`openral_core.schemas.expected_repo_name`. Publish
-(and dry-run) hard-fails on a mismatch and prints the expected name; pass
-``--fix-name`` to rewrite ``rskill.yaml`` in place. Perception / playbook kinds
-(``detector`` / ``vlm`` / ``reward`` / ``playbook`` / ``ros_*``) have no
-``<model>`` axis and are exempt.
+Validation is :func:`openral_core.schemas.repo_name_is_canonical` (vocab +
+shape); the suggested compliant name (printed on a mismatch, written by
+``--fix-name``) comes from :func:`openral_core.schemas.expected_repo_name`,
+which derives ``<model>`` / ``<robot>`` / ``<quant>`` from the manifest and
+*suggests* a ``<task>`` default. Publish and dry-run both hard-fail on a
+non-canonical name. Weight-mirror repos without an ``rskill.yaml`` are out of
+scope (see the naming docs for their recommended non-enforced shape).
 
 Design constraints (CLAUDE.md §7.2, §9, §12)
 --------------------------------------------
@@ -239,60 +242,72 @@ def _enforce_repo_name(
     *,
     fix_name: bool,
 ) -> RSkillManifest:  # type: ignore[name-defined]  # noqa: F821
-    """Enforce the ``rskill-<model>-<robot>-<task>-<quant>`` repo-name convention.
+    """Enforce the ratified rSkill repo-naming grammar.
 
-    Derives the canonical name with
-    :func:`openral_core.schemas.expected_repo_name` and compares it to the
-    manifest ``name``. Perception / playbook kinds (``detector`` / ``vlm`` /
-    ``reward`` / ``playbook`` / ``ros_*``) have no ``<model>`` axis; the
-    derivation raises :class:`ValueError` for them and this gate logs an
-    exemption and returns unchanged.
+    Validates ``manifest.name`` with
+    :func:`openral_core.schemas.repo_name_is_canonical` for the manifest's
+    ``kind``: playbooks must be ``rskill-playbook-<name>``; every other kind must
+    be ``rskill-<model>-<robot>-<task>-<quant>`` with ``<model>`` /
+    ``<robot>`` / ``<quant>`` in their canonical vocabularies and ``<task>`` an
+    author-chosen, shape-valid slug. No kind is exempt.
 
-    For a VLA skill whose name does not match:
+    When the name is not canonical:
 
-    * ``fix_name=True`` — rewrite ``rskill.yaml`` in place to the canonical
-      name, reload, and return the corrected manifest (one-command migration).
-    * ``fix_name=False`` — hard-fail (``sys.exit(1)``) printing the expected
+    * ``fix_name=True`` — rewrite ``rskill.yaml`` in place to the suggested name
+      from :func:`openral_core.schemas.expected_repo_name`, reload, and return
+      the corrected manifest (one-command migration).
+    * ``fix_name=False`` — hard-fail (``sys.exit(1)``) printing the suggested
       name. Runs in both dry-run and ``--publish`` paths.
+
+    Note the suggested ``<task>`` slug is a *default* — it is author-owned, so an
+    author may pick a different (still shape-valid) task and the name stays
+    canonical without ``--fix-name`` re-running.
 
     Args:
         skill_dir: The local ``rskills/<name>`` directory.
         manifest: The validated manifest.
-        fix_name: When ``True``, rewrite a non-compliant name instead of failing.
+        fix_name: When ``True``, rewrite a non-canonical name instead of failing.
 
     Returns:
-        The compliant manifest (reloaded if it was rewritten).
+        The canonical manifest (reloaded if it was rewritten).
 
     Raises:
-        SystemExit: On a non-compliant name without ``--fix-name``.
+        SystemExit: On a non-canonical name without ``--fix-name`` (or when no
+            canonical name can be suggested).
     """
-    from openral_core.schemas import expected_repo_name
+    from openral_core.schemas import expected_repo_name, repo_name_is_canonical
 
-    try:
-        expected = expected_repo_name(manifest)
-    except ValueError as exc:
-        log.info("rskill_publisher.name_convention_exempt", name=manifest.name, reason=str(exc))
-        return manifest
-
-    if manifest.name == expected:
+    if repo_name_is_canonical(manifest.name, kind=manifest.kind):
         log.info("rskill_publisher.name_ok", name=manifest.name)
         return manifest
 
+    try:
+        suggested = expected_repo_name(manifest)
+    except ValueError as exc:
+        log.error("rskill_publisher.name_undeterminable", name=manifest.name, error=str(exc))
+        print(
+            f"\nrSkill name {manifest.name!r} is not canonical and no compliant name "
+            f"could be suggested:\n  {exc}"
+        )
+        sys.exit(1)
+
     if fix_name:
-        _rewrite_manifest_name(skill_dir / "rskill.yaml", manifest.name, expected)
+        _rewrite_manifest_name(skill_dir / "rskill.yaml", manifest.name, suggested)
         return _validate_manifest(skill_dir)
 
     log.error(
         "rskill_publisher.name_noncompliant",
         name=manifest.name,
-        expected=expected,
-        hint="Rename to the expected name, or pass --fix-name to rewrite rskill.yaml in place.",
+        suggested=suggested,
+        hint="Rename to a canonical name, or pass --fix-name to rewrite rskill.yaml in place.",
     )
     print(
         f"\nrSkill name {manifest.name!r} does not match the required convention "
-        f"rskill-<model>-<robot>-<task>-<quantization>.\n"
-        f"  expected: {expected}\n"
-        f"Fix the `name:` field (or run with --fix-name to rewrite it automatically)."
+        f"rskill-<model>-<robot>-<task>-<quantization> (or rskill-playbook-<name>).\n"
+        f"  suggested: {suggested}\n"
+        f"The <task> segment is author-chosen (shape ^[a-z0-9][a-z0-9_]*$); the other "
+        f"segments must use canonical tokens. Fix the `name:` field (or run with "
+        f"--fix-name to apply the suggestion)."
     )
     sys.exit(1)
 

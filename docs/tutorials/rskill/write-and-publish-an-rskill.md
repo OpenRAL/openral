@@ -76,32 +76,40 @@ need them.
 
 ### Naming convention
 
-For a `kind: vla` skill the `name` is **enforced** at publish time to:
+The `name` is **enforced** at publish time. Hyphens are ONLY the segment
+separators; every token uses underscores internally, so a name parses by a
+plain `split("-")`. Two shapes:
 
 ```
-<owner>/rskill-<model>-<robot>-<task>-<quantization>
+<owner>/rskill-<model>-<robot>-<task>-<quantization>   # all non-playbook kinds
+<owner>/rskill-playbook-<name>                          # kind: playbook
 ```
 
-| Axis | Source | Example |
+| Axis | Vocabulary | Example |
 | --- | --- | --- |
-| `<model>` | `model_family` (closed `ModelFamily` enum) | `smolvla`, `lingbot_vla2` → `lingbot-vla2` |
-| `<robot>` | first `embodiment_tags` entry (closed `EmbodimentTag` enum) | `franka_panda` → `franka-panda` |
-| `<task>` | `evaluated_tasks[0]` scene-family, else first `benchmarks` key, else `scenes[0]` | `libero_spatial`, `robotwin` |
-| `<quantization>` | `quantization.dtype` slug (`int4` → `nf4`, `fp4_nvfp4` → `fp4`, else the dtype) | `bf16`, `int8`, `nf4` |
+| `<model>` | `CANONICAL_MODEL_TOKENS` — a versioned checkpoint token | `smolvla`, `gr00t_n17`, `lingbot_vla2`, `omdet_turbo` |
+| `<robot>` | `EmbodimentTag` values + `any` + `multi` (>1 concrete robot) | `franka_panda`, `aloha_agilex`, `any`, `multi` |
+| `<task>` | **author-chosen**, validated by shape `^[a-z0-9][a-z0-9_]*$` only | `libero_spatial`, `pen`, `pick_place_pen`, `locator` |
+| `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` (schema `int4` → `nf4`) | `bf16`, `int8`, `nf4` |
 
-The whole name is lower-cased with underscores mapped to hyphens, e.g.
-`OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16`. The canonical value
-comes from `openral_core.schemas.expected_repo_name`. Perception / playbook
-kinds (`detector` / `vlm` / `reward` / `playbook` / `ros_*`) have no `<model>`
-axis and are **exempt**.
+The `<task>` segment is **yours to choose** — it is validated by shape, not by
+equality against `evaluated_tasks`, so two skills that share a benchmark can
+still carry distinct task slugs (e.g. `pen` vs `pick_place_pen`). The other
+segments must use canonical tokens. Example:
+`OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
 
-The publisher (and its dry-run) hard-fails on a mismatch and prints the
-expected name. To migrate an existing manifest in one step, let the tool
-rewrite it:
+Validation is `openral_core.schemas.repo_name_is_canonical`; the publisher
+prints a suggested name (from `expected_repo_name`) on a mismatch. To migrate an
+existing manifest in one step, let the tool rewrite it — then refine the
+suggested `<task>` slug if you want a better one:
 
 ```bash
 uv run python tools/rskill_publisher.py rskills/<id>/ --fix-name
 ```
+
+**Weight-mirror repos** (an HF repo holding only weights, with no `rskill.yaml`)
+are out of publisher scope. Recommended non-enforced shape:
+`<model>-<benchmark>-<quantization>` (e.g. `lingbot_vla-robotwin-nf4`).
 
 ## 3. Write the README
 

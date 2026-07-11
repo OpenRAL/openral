@@ -12,7 +12,7 @@ import binascii
 import math
 import re
 from enum import Enum
-from typing import Any, Literal, Self, TypeAlias, TypeVar
+from typing import Any, Literal, Self, TypeAlias, TypeVar, get_args
 
 from pydantic import (
     AliasChoices,
@@ -5885,96 +5885,281 @@ class RSkillManifest(BaseModel):
 
 
 # ── rSkill HF-repo naming convention ────────────────────────────────────────
-# The enforced published-repo shape is
-# ``<owner>/rskill-<model>-<robot>-<task>-<quant>`` (CLAUDE.md §3 rSkill
-# packaging). ``<model>`` is the closed :data:`ModelFamily`, ``<robot>`` the
-# primary (first) :data:`EmbodimentTag`, ``<task>`` a benchmark/scene slug, and
-# ``<quant>`` the active :class:`QuantizationDtype` mapped through
-# :data:`_QUANT_DTYPE_REPO_SLUG`. Only ``kind == "vla"`` skills carry all four
-# axes; perception / playbook kinds (``detector`` / ``vlm`` / ``reward`` /
-# ``playbook`` / ``ros_*``) have no ``model_family`` and are exempt.
+# Enforced published-repo shape (CLAUDE.md §3 rSkill packaging), ratified by the
+# org naming audit:
+#
+#   <owner>/rskill-<model>-<robot>-<task>-<quant>       (all non-playbook kinds)
+#   <owner>/rskill-playbook-<name>                      (kind == "playbook")
+#
+# Grammar rules:
+# - Hyphens are ONLY the segment separators; every token uses underscores
+#   internally. So a name parses by a plain ``split("-")`` into exactly 5 parts
+#   (``rskill`` + 4 segments) — no anchored vocab matching needed.
+# - Each segment matches ``^[a-z0-9][a-z0-9_]*$``.
+# - ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS` (a versioned checkpoint token,
+#   NOT the bare :data:`ModelFamily`, so future gr00t_n2 / rldx2 don't collide).
+# - ``<robot>`` ∈ :data:`CANONICAL_ROBOT_NAME_TOKENS` (the :data:`EmbodimentTag`
+#   values, plus ``"any"`` already in that set and ``"multi"`` for skills that
+#   declare >1 concrete robot).
+# - ``<task>`` is AUTHOR-CHOSEN — validated by shape only, never by equality
+#   against ``evaluated_tasks`` (that collapses e.g. so101 "pen" vs
+#   "pick_place_pen", or omdet "indoor" vs "locator"). :func:`expected_repo_name`
+#   only *suggests* a default task slug.
+# - ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`. ``int4`` weights ship as
+#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``.
 
 _DEFAULT_RSKILL_OWNER = "OpenRAL"
 """Owner used when a manifest ``name`` carries no ``<owner>/`` prefix."""
 
-_QUANT_DTYPE_REPO_SLUG: dict[QuantizationDtype, str] = {
+_RSKILL_NAME_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
+"""Every name segment (model / robot / task / quant / playbook name) shape."""
+
+# ``rskill-<model>-<robot>-<task>-<quant>`` and ``rskill-playbook-<name>`` split
+# on hyphen into this many parts (the leading ``rskill`` counts as one).
+_RSKILL_NAME_PARTS = 5
+_RSKILL_PLAYBOOK_NAME_PARTS = 3
+
+CANONICAL_QUANT_TOKENS: frozenset[str] = frozenset(
+    {"fp32", "fp16", "bf16", "int8", "nf4"}
+)
+"""Canonical ``<quant>`` name tokens. ``int4`` → ``nf4`` (bitsandbytes NF4)."""
+
+_QUANT_DTYPE_TO_TOKEN: dict[QuantizationDtype, str] = {
     QuantizationDtype.FP32: "fp32",
     QuantizationDtype.FP16: "fp16",
     QuantizationDtype.BF16: "bf16",
     QuantizationDtype.INT8: "int8",
     # 4-bit checkpoints ship as bitsandbytes NF4 (see the ``*-nf4`` in-tree
-    # rSkills and OpenRAL org repos, e.g. ``rskill-molmoact2-libero-nf4``); the
-    # published repo slug says ``nf4``, not the schema's ``int4`` dtype token.
+    # rSkills and OpenRAL org repos, e.g. rskill-molmoact2-...-nf4): the token
+    # says ``nf4``, not the schema's ``int4`` dtype. ``fp4_nvfp4`` has no
+    # canonical token yet (unused in tree) and is intentionally absent.
     QuantizationDtype.INT4: "nf4",
-    QuantizationDtype.FP4_NVFP4: "fp4",
 }
-"""Map an active :class:`QuantizationDtype` to its published-repo name slug.
+"""Map a :class:`QuantizationDtype` to its name token. Every manifest has a
+``quantization.dtype`` (default ``fp32``), so ``<quant>`` is always derivable."""
 
-Every dtype maps to a slug so the ``<quant>`` axis is always present in the
-derived name — including full-precision ``fp32`` / ``bf16`` checkpoints, which
-older ad-hoc names omitted. ``int4`` maps to ``nf4`` to match the real
-published repos.
-"""
+CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
+    {
+        # VLA / policy checkpoint tokens. Where a ModelFamily exists the token
+        # matches it verbatim; versioned families use a versioned token.
+        "smolvla",  # family smolvla
+        "pi05",  # family pi05
+        "xvla",  # family xvla
+        "act",  # family act
+        "diffusion",  # family diffusion
+        "molmoact2",  # family molmoact2
+        "openvla",  # family openvla (bare)
+        "openvla_oft",  # family openvla, OFT checkpoint
+        "gr00t_n17",  # family gr00t, N1.7 checkpoint
+        "rldx1_ft",  # family rldx, RLDX-1 finetune
+        "3d_diffuser_actor",  # family diffuser_actor
+        "lingbot_vla",  # family lingbot_vla
+        "lingbot_vla2",  # family lingbot_vla2
+        # Non-VLA tool-model tokens (detector / vlm / reward).
+        "omdet_turbo",
+        "rtdetr_coco_r18",
+        "rtdetr_v2_r50vd",
+        "robometer_4b",
+        "topreward_qwen3vl_4b",
+        "locateanything_3b",
+        "qwen35_4b",
+        # ROS wrapped-action tool tokens (ros_action / ros_service).
+        "moveit",
+        "nav2",
+    }
+)
+"""Canonical ``<model>`` name tokens — the versioned checkpoint vocabulary the
+repo-naming convention allows. Distinct from :data:`ModelFamily` (a runner
+dispatch key): several tokens can share one family (openvla / openvla_oft) and
+non-VLA tool models (omdet_turbo, robometer_4b, moveit, …) have no family at
+all. Adding a checkpoint token here lets a new rSkill publish under it."""
+
+_MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
+    "smolvla": "smolvla",
+    "pi05": "pi05",
+    "xvla": "xvla",
+    "act": "act",
+    "diffusion": "diffusion",
+    "molmoact2": "molmoact2",
+    "rldx": "rldx1_ft",
+    "gr00t": "gr00t_n17",
+    "diffuser_actor": "3d_diffuser_actor",
+    "openvla": "openvla_oft",
+    "lingbot_vla": "lingbot_vla",
+    "lingbot_vla2": "lingbot_vla2",
+}
+"""VLA :data:`ModelFamily` → its canonical ``<model>`` suggestion token."""
+
+CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(get_args(EmbodimentTag)) | {"multi"}
+"""Canonical ``<robot>`` name tokens: the :data:`EmbodimentTag` values (incl.
+the ``"any"`` wildcard) plus ``"multi"`` for a skill declaring >1 concrete
+robot. ``"multi"`` is a name-segment-only token — it is deliberately NOT added
+to :data:`EmbodimentTag` so no manifest can declare ``embodiment_tags: [multi]``
+as a capability."""
 
 
-def _slugify_name_token(token: str) -> str:
-    """Lower-case a name axis and map underscores to hyphens.
+def _quant_token_for_dtype(dtype: QuantizationDtype) -> str:
+    """Return the canonical ``<quant>`` token for a dtype (raises if unmapped)."""
+    token = _QUANT_DTYPE_TO_TOKEN.get(dtype)
+    if token is None:
+        raise ValueError(
+            f"quantization dtype {dtype.value!r} has no canonical name token yet; "
+            f"extend CANONICAL_QUANT_TOKENS + _QUANT_DTYPE_TO_TOKEN."
+        )
+    return token
 
-    Example:
-        >>> _slugify_name_token("franka_panda")
-        'franka-panda'
-        >>> _slugify_name_token("lingbot_vla2")
-        'lingbot-vla2'
+
+def _robot_token_for_manifest(manifest: RSkillManifest) -> str:
+    """Suggest the ``<robot>`` token: ``multi`` for >1 concrete tag, else the first.
+
+    Concrete = any tag other than the ``"any"`` wildcard. A skill declaring
+    several concrete robots (the ``moveit-*`` case) collapses to ``"multi"``.
+    An empty / wildcard-only tag list yields ``"any"``.
     """
-    return token.strip().lower().replace("_", "-")
+    concrete = [t for t in manifest.embodiment_tags if t != "any"]
+    if len(concrete) > 1:
+        return "multi"
+    if len(concrete) == 1:
+        return concrete[0]
+    return "any"
 
 
-def _rskill_task_slug(manifest: RSkillManifest) -> str:
-    """Derive the ``<task>`` axis of a VLA rSkill repo name.
+def _model_token_for_manifest(manifest: RSkillManifest) -> str:
+    """Suggest the ``<model>`` token.
 
-    Source precedence (most to least robust):
-
-    1. :attr:`RSkillManifest.evaluated_tasks` — reduced to its
-       :func:`scene_family` (``"libero_spatial/3"`` → ``"libero_spatial"``).
-    2. :attr:`RSkillManifest.benchmarks` — the lexicographically first suite
-       key (deterministic when several are scored).
-    3. :attr:`RSkillManifest.scenes` — the first scene keyword.
+    VLA skills map their :attr:`model_family` through
+    :data:`_MODEL_FAMILY_TO_TOKEN`. Non-VLA skills (no ``model_family``) match
+    the current repo tail against :data:`CANONICAL_MODEL_TOKENS` by longest
+    prefix (e.g. ``omdet-turbo-locator`` → ``omdet_turbo``).
 
     Raises:
-        ValueError: If none of the three carry a value (the name cannot be
-            derived without a task signal).
+        ValueError: If no canonical token can be determined.
+    """
+    if manifest.model_family is not None:
+        token = _MODEL_FAMILY_TO_TOKEN.get(manifest.model_family)
+        if token is None:
+            raise ValueError(
+                f"RSkillManifest({manifest.name!r}): model_family "
+                f"{manifest.model_family!r} has no canonical <model> token; "
+                "extend _MODEL_FAMILY_TO_TOKEN."
+            )
+        return token
+    tail = _repo_tail_slug(manifest.name)
+    candidates = [t for t in CANONICAL_MODEL_TOKENS if tail == t or tail.startswith(f"{t}_")]
+    if not candidates:
+        raise ValueError(
+            f"RSkillManifest({manifest.name!r}): cannot determine a canonical "
+            f"<model> token for a {manifest.kind!r} skill — no CANONICAL_MODEL_TOKENS "
+            f"entry is a prefix of {tail!r}. Add one or rename the skill."
+        )
+    return max(candidates, key=len)
+
+
+def _repo_tail_slug(name: str) -> str:
+    """Return the ``rskill-``-stripped repo tail as an underscore slug.
+
+    ``"OpenRAL/rskill-omdet-turbo-locator"`` → ``"omdet_turbo_locator"``.
+    """
+    repo = name.split("/", 1)[1] if "/" in name else name
+    tail = repo.removeprefix("rskill-")
+    return tail.lower().replace("-", "_")
+
+
+def _task_slug_for_manifest(
+    manifest: RSkillManifest, model_token: str, robot_token: str, quant_token: str
+) -> str:
+    """Suggest the AUTHOR-OWNED ``<task>`` slug (a default only — never enforced).
+
+    Priority:
+
+    1. :attr:`evaluated_tasks` — first entry's :func:`scene_family`.
+    2. :attr:`benchmarks` — lexicographically first suite key.
+    3. The current repo tail with the ``<model>`` prefix and ``<quant>`` suffix
+       removed — recovers an author's discriminator that lives only in the name
+       (``omdet-turbo-locator`` → ``locator``; the two so101 pen skills → ``pen``
+       vs ``pick_place_pen``), which the benchmark fields cannot distinguish. A
+       remainder that merely echoes the model / robot / quant token is dropped.
+    4. :attr:`scenes` — first scene keyword.
+    5. ``"main"`` — shape-valid placeholder when nothing else is available.
     """
     if manifest.evaluated_tasks:
-        return _slugify_name_token(scene_family(manifest.evaluated_tasks[0]))
+        return scene_family(manifest.evaluated_tasks[0]).lower().replace("-", "_")
     if manifest.benchmarks:
-        return _slugify_name_token(sorted(manifest.benchmarks)[0])
+        return sorted(manifest.benchmarks)[0].lower().replace("-", "_")
+    tail = _repo_tail_slug(manifest.name)
+    if tail == model_token:
+        tail = ""
+    elif tail.startswith(f"{model_token}_"):
+        tail = tail[len(model_token) + 1 :]
+    if tail == quant_token:
+        tail = ""
+    elif tail.endswith(f"_{quant_token}"):
+        tail = tail[: -(len(quant_token) + 1)]
+    tail = tail.strip("_")
+    if tail and tail not in {robot_token, quant_token} and _RSKILL_NAME_SEGMENT_RE.match(tail):
+        return tail
     if manifest.scenes:
-        return _slugify_name_token(manifest.scenes[0])
-    raise ValueError(
-        f"RSkillManifest({manifest.name!r}): cannot derive the <task> axis of the "
-        "repo name — set at least one of `evaluated_tasks`, `benchmarks`, or `scenes`."
+        return manifest.scenes[0].lower().replace("-", "_")
+    return "main"
+
+
+def repo_name_is_canonical(name: str, *, kind: RSkillKind) -> bool:
+    """Return ``True`` when ``name`` obeys the repo-naming grammar for ``kind``.
+
+    Playbooks (``kind == "playbook"``) must be ``rskill-playbook-<name>``;
+    every other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with
+    ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS`, ``<robot>`` ∈
+    :data:`CANONICAL_ROBOT_NAME_TOKENS`, ``<quant>`` ∈
+    :data:`CANONICAL_QUANT_TOKENS`, and ``<task>`` matching the segment shape.
+    The owner prefix (``<owner>/``) is ignored. Validation is vocab-membership +
+    shape only — it does NOT re-derive the segments from a manifest.
+
+    Example:
+        >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
+        ... )
+        True
+        >>> repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
+        True
+        >>> repo_name_is_canonical("OpenRAL/rskill-smolvla-libero", kind="vla")
+        False
+    """
+    repo = name.split("/", 1)[1] if "/" in name else name
+    parts = repo.split("-")
+    if kind == "playbook":
+        return (
+            len(parts) == _RSKILL_PLAYBOOK_NAME_PARTS
+            and parts[0] == "rskill"
+            and parts[1] == "playbook"
+            and bool(_RSKILL_NAME_SEGMENT_RE.match(parts[2]))
+        )
+    if len(parts) != _RSKILL_NAME_PARTS or parts[0] != "rskill":
+        return False
+    _, model, robot, task, quant = parts
+    return (
+        model in CANONICAL_MODEL_TOKENS
+        and robot in CANONICAL_ROBOT_NAME_TOKENS
+        and bool(_RSKILL_NAME_SEGMENT_RE.match(task))
+        and quant in CANONICAL_QUANT_TOKENS
     )
 
 
 def expected_repo_name(manifest: RSkillManifest) -> str:
-    """Return the enforced HF-repo name for a VLA rSkill manifest.
+    """Suggest the canonical HF-repo name for an rSkill manifest.
 
-    Builds ``<owner>/rskill-<model>-<robot>-<task>-<quant>`` from the manifest,
-    lower-cased with underscores mapped to hyphens. ``<owner>`` is preserved
-    from :attr:`RSkillManifest.name` (the token before ``/``) so a rename keeps
-    the org, defaulting to :data:`_DEFAULT_RSKILL_OWNER`. This is the canonical
-    name the publisher enforces and ``--fix-name`` writes back.
+    Returns a name that satisfies :func:`repo_name_is_canonical` for the
+    manifest's ``kind`` — the value the publisher prints on a mismatch and
+    ``--fix-name`` writes back. The ``<task>`` segment is a *suggested default*
+    (see :func:`_task_slug_for_manifest`); it is author-owned and the migration
+    agent may refine it. The owner prefix is preserved from
+    :attr:`RSkillManifest.name` (default :data:`_DEFAULT_RSKILL_OWNER`).
 
-    Args:
-        manifest: A validated rSkill manifest.
-
-    Returns:
-        The canonical ``<owner>/rskill-...`` repo name.
+    Playbooks map to ``<owner>/rskill-playbook-<name>``; all other kinds to
+    ``<owner>/rskill-<model>-<robot>-<task>-<quant>``.
 
     Raises:
-        ValueError: If the manifest is not a namable VLA skill —
-            ``kind != "vla"``, no ``model_family``, no ``embodiment_tags``, or
-            no derivable ``<task>`` axis (see :func:`_rskill_task_slug`).
+        ValueError: If no canonical ``<model>`` token can be determined (see
+            :func:`_model_token_for_manifest`).
 
     Example:
         >>> m = RSkillManifest(
@@ -6005,24 +6190,17 @@ def expected_repo_name(manifest: RSkillManifest) -> str:
         ...     ),
         ... )
         >>> expected_repo_name(m)
-        'OpenRAL/rskill-smolvla-franka-panda-libero-spatial-bf16'
+        'OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16'
     """
-    if manifest.kind != "vla" or manifest.model_family is None:
-        raise ValueError(
-            f"RSkillManifest({manifest.name!r}): the repo-name convention applies "
-            f"only to `kind: vla` skills (got kind={manifest.kind!r}); perception / "
-            "playbook kinds have no <model> axis and are exempt."
-        )
-    if not manifest.embodiment_tags:
-        raise ValueError(
-            f"RSkillManifest({manifest.name!r}): cannot derive the <robot> axis — "
-            "`embodiment_tags` is empty."
-        )
     owner = manifest.name.split("/", 1)[0] if "/" in manifest.name else _DEFAULT_RSKILL_OWNER
-    model = _slugify_name_token(manifest.model_family)
-    robot = _slugify_name_token(manifest.embodiment_tags[0])
-    task = _rskill_task_slug(manifest)
-    quant = _QUANT_DTYPE_REPO_SLUG[manifest.quantization.dtype]
+    if manifest.kind == "playbook":
+        tail = _repo_tail_slug(manifest.name).removeprefix("playbook_").strip("_")
+        name = tail if tail and _RSKILL_NAME_SEGMENT_RE.match(tail) else "main"
+        return f"{owner}/rskill-playbook-{name}"
+    model = _model_token_for_manifest(manifest)
+    robot = _robot_token_for_manifest(manifest)
+    quant = _quant_token_for_dtype(manifest.quantization.dtype)
+    task = _task_slug_for_manifest(manifest, model, robot, quant)
     return f"{owner}/rskill-{model}-{robot}-{task}-{quant}"
 
 
