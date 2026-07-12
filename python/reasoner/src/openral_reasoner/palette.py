@@ -112,7 +112,7 @@ def task_space_disagreement(
 class ContinuousDetectorEntry(BaseModel):
     """A ``mode: continuous`` detector's coverage, surfaced to the reasoner.
 
-    Continuous detectors are *not* ExecuteSkill tools and the reasoner never
+    Continuous detectors are *not* ExecuteRskill tools and the reasoner never
     prompts them — they stream ``ObjectsMetadata`` into
     ``WorldState.detected_objects`` every frame. But the LLM still needs to know
     *what they cover* so it can decide between reading world state for an object
@@ -398,7 +398,7 @@ def build_tool_palette(
        ``ExecuteRskillTool`` per CLAUDE.md §6.2 (S0/S2 slots are
        reserved and have separate dispatch paths) — **and**
        ``kind != "detector"``: detector rSkills are S1-rate perception
-       producers, not ExecuteSkill-dispatchable; they activate as the
+       producers, not ExecuteRskill-dispatchable; they activate as the
        perception ROS node / GStreamer tee consumer.
     4. If ``commercial_deployment`` is ``True``, the skill's license
        posture allows commercial use
@@ -470,7 +470,7 @@ def build_tool_palette(
         if skill.is_scaffold_placeholder:
             continue
         # ``detector`` rSkills are S1-rate perception producers (RT-DETR →
-        # ObjectsMetadata), not ExecuteSkill-dispatchable policies — they are
+        # ObjectsMetadata), not ExecuteRskill-dispatchable policies — they are
         # activated as the perception ROS node / GStreamer tee consumer, never
         # via ExecuteRskillTool. Admitting them here would let the reasoner
         # dispatch a detector as if it actuated the robot.
@@ -490,7 +490,7 @@ def build_tool_palette(
                 )
             elif skill.detector is not None and skill.detector.mode is DetectorMode.ON_DEMAND:
                 # On-demand locators are prompt-able read-only tools, not
-                # ExecuteSkill policies: surfaced as selectable ``detector`` options
+                # ExecuteRskill policies: surfaced as selectable ``detector`` options
                 # of locate_in_view, never admitted to the actuating palette.
                 on_demand_detectors.append(
                     OnDemandDetectorEntry(

@@ -18,7 +18,7 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence + ROS feeder pending |
 | Skill base + runtimes | ✅ shipped — lifecycle node, `PyTorchRuntime`, `ONNXRuntime`, quantization registry, engine cache |
 | rSkill manifest + loader | ✅ shipped — HF Hub packaging, `rSkill.from_pretrained`, license surface; sigstore provenance not yet implemented (unverified-provenance warning + `OPENRAL_REQUIRE_SIGNED_SKILLS` fail-closed gate) |
-| SmolVLA, π0.5, xVLA, ACT, DP, MolmoAct2, RLDX-1 adapters | ✅ shipped — loaded, tested, embodiment-tag gated; GR00T N1.7 via out-of-process ZMQ sidecar (🟡 live eval operator-run) |
+| SmolVLA, π0.5, xVLA, ACT, DP, MolmoAct2, RLDX-1 adapters | ✅ shipped — loaded, tested, embodiment-tag gated; GR00T N1.7 in-process (lerobot 0.6.0 `GrootPolicy`, NF4 backbone) — ✅ live LIBERO-spatial 5/5 |
 | End-to-end sim demo (SO-100 + SmolVLA) | ✅ shipped — smoketest + GIF; full LIBERO rollout verified |
 | Configurable sim/eval harness | ✅ shipped — `openral sim run` + `benchmark run`, three-tier scene registry; LIBERO / MetaWorld / gym-aloha / gym-pusht / ManiSkill3 / SimplerEnv / RoboCasa backends + Isaac Sim sidecar |
 | OpenTelemetry instrumentation | ✅ shipped — OTel SDK + OTLP exporter, `skill_span` / `inference_span` / `safety_span`, `openral dashboard` live OTLP receiver |

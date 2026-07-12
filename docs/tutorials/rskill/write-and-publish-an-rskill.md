@@ -199,7 +199,9 @@ openral rskill list                      # see it in the local registry
 `OpenRAL/…` suggestion. Use `rskill search [QUERY] [--kind/--role/--embodiment/--license]`
 when you don't already know the id.
 
-In a `SimScene` YAML, reference it by its bare rSkill reference in `vla.weights_uri` (see the
+Run it by passing the bare rSkill reference to `--rskill` on the CLI — scene YAMLs
+reject a `vla:` block (`_reject_legacy_vla_block` raises `ROSConfigError`); policy
+always travels on the CLI (see the
 [deploy tutorial](../deploy/deploy-run-and-dashboard.md)).
 
 ## See also

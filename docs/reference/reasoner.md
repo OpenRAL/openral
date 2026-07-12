@@ -99,7 +99,7 @@ Three S2 capabilities layer on top of the tool surface:
   gathers installed, capability-matched playbook rSkills, reads their
   `PLAYBOOK.md` bodies, and appends a `## PLAYBOOKS` section to the system prompt
   — so the LLM follows the relevant authored decision procedure when its trigger
-  matches the goal. Playbooks are `role: s2` content, never in the ExecuteSkill
+  matches the goal. Playbooks are `role: s2` content, never in the ExecuteRskill
   palette; every motion still crosses `execute_rskill` + the C++ safety kernel.
   Six ship in-tree: `decompose-mission`, `verify-outcome`, `clarify-ambiguity`,
   `preflight-reach`, `stage-for-manipulation`, `find-object`.

@@ -86,24 +86,24 @@ The RT-DETR rSkills are Apache-2.0 and runnable on any camera-equipped embodimen
 
 Detectors carry a `detector.mode` (`DetectorMode`) that is **orthogonal** to `detector.engine` — where `engine` says *how* the model runs, `mode` says *when the reasoner invokes it*:
 
-- **`continuous`** (default) — an always-on background producer (`rtdetr-coco-r18`, `rtdetr-v2-r50vd`, `omdet-turbo-indoor`). Runs on the camera tee every frame, streams `ObjectsMetadata` into `WorldState.detected_objects`; the reasoner reads it **passively** (world state / `recall_object`) and never prompts it. It is not an ExecuteSkill tool. `build_tool_palette` collects these into `ToolPalette.continuous_detectors` so the LLM is told *what is already tracked for free*.
+- **`continuous`** (default) — an always-on background producer (`rtdetr-coco-r18`, `rtdetr-v2-r50vd`, `omdet-turbo-indoor`). Runs on the camera tee every frame, streams `ObjectsMetadata` into `WorldState.detected_objects`; the reasoner reads it **passively** (world state / `recall_object`) and never prompts it. It is not an ExecuteRskill tool. `build_tool_palette` collects these into `ToolPalette.continuous_detectors` so the LLM is told *what is already tracked for free*.
 - **`on_demand`** — a prompted open-vocab locator (`locateanything-3b-nf4`, `omdet-turbo-locator`). The reasoner invokes it via the read-only `locate_in_view` tool only when it needs a specific object **right now** that the continuous bank doesn't cover. `omdet-turbo-locator` wraps the **same** Apache-2.0 OmDet-Turbo weights as `omdet-turbo-indoor` but in on-demand mode — a lightweight (~115M, real-time, in-process) alternative to the 3B LocateAnything VLM for simple "find X" queries; LocateAnything stays the higher-quality option for complex referring expressions. The `OmDetTurboDetector` backend exposes `set_query` / `detect_with_query`, which the detector node binds by `hasattr`, so the same backend serves either mode (packaging two single-purpose rSkills, not one dual-mode rSkill, is what keeps the modes from straddling).
 
 This cleanly separates open-vocabulary from prompting: the `locate_in_view` tool description is made coverage-aware (it lists the continuous detectors' class counts + keywords), so the LLM's rule is mechanical — *object within continuous coverage → read world state; object outside it (novel / attribute-qualified) → `locate_in_view`*.
 
 ## Scene-VLM rSkills (`kind: vlm`)
 
-`kind: vlm` rSkills are vision/video-language models used as **S2 scene-understanding** components: they answer open-ended natural-language questions about the current camera view (task-progress / success verification — "has the robot grasped the mug?", "did we drop the object?", "is the task complete?") and emit **text**, never actions. They are not localizers — use a `kind: detector` rSkill (`locate_in_view`) to find *where* an object is. A scene VLM is reached through the read-only `query_scene` reasoner tool, never `ExecuteSkill` (so `role: s2`, excluded from the actuation palette by design).
+`kind: vlm` rSkills are vision/video-language models used as **S2 scene-understanding** components: they answer open-ended natural-language questions about the current camera view (task-progress / success verification — "has the robot grasped the mug?", "did we drop the object?", "is the task complete?") and emit **text**, never actions. They are not localizers — use a `kind: detector` rSkill (`locate_in_view`) to find *where* an object is. A scene VLM is reached through the read-only `query_scene` reasoner tool, never `ExecuteRskill` (so `role: s2`, excluded from the actuation palette by design).
 
 | rSkill | Backbone | Notes |
 |---|---|---|
 | [`qwen35-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/qwen35-4b-nf4/) | Qwen3.5-4B NF4 (natively-multimodal, hybrid linear attention) | Apache-2.0; pre-quantized NF4 checkpoint (~3.3 GB, fits 8 GB); runs out-of-process via `tools/qwen_vlm_sidecar.py` + the `QwenSceneVlm` backend over ZMQ; served by `openral_perception_ros.scene_vlm_node` on `/openral/perception/query_scene`; drives the reasoner's read-only `query_scene` tool |
 
-Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers==5.3.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`uv sync --group qwen-vlm`). The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
+Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidecar venv** (its bitsandbytes / `qwen-vl-utils` / Gated-DeltaNet stack would perturb the lerobot-pinned `transformers>=5.4.0,<5.14.0` runtime, and a 4B model + CUDA context should not share the `rclpy` process). The node-side ZMQ + msgpack client ships in the `qwen-vlm` dependency group (`uv sync --group qwen-vlm`). The rSkill's `weights_uri` is a **pre-quantized** NF4 checkpoint (transformers-native `save_pretrained` layout with an embedded `quantization_config`) built by `tools/build_qwen_vlm_nf4_checkpoint.py`; it loads directly as 4-bit with no bf16 load spike. `source_repo` records the SHA-pinned upstream Apache-2.0 Qwen model (provenance). The reasoner offers `query_scene` when launched with `scene_query_available:=true`.
 
 ## Reward-monitor rSkills (`kind: reward`)
 
-`kind: reward` rSkills are robotic **reward / progress-monitor** models that run **in parallel with a VLA policy** and score the rollout: given the VLA's camera frames + the task instruction, they emit **per-frame normalized progress (0–1)** and **per-frame success probability**. Where a scene VLM (`query_scene`) returns free text, a reward monitor returns quantitative scalars + trends. It is reached through the read-only `query_task_progress` reasoner tool, never `ExecuteSkill` (so `role: s2`, excluded from the actuation palette); the signal is **advisory** — it feeds the replanning ladder, never the motors.
+`kind: reward` rSkills are robotic **reward / progress-monitor** models that run **in parallel with a VLA policy** and score the rollout: given the VLA's camera frames + the task instruction, they emit **per-frame normalized progress (0–1)** and **per-frame success probability**. Where a scene VLM (`query_scene`) returns free text, a reward monitor returns quantitative scalars + trends. It is reached through the read-only `query_task_progress` reasoner tool, never `ExecuteRskill` (so `role: s2`, excluded from the actuation palette); the signal is **advisory** — it feeds the replanning ladder, never the motors.
 
 | rSkill | Backbone | Notes |
 |---|---|---|
@@ -126,6 +126,17 @@ Robometer runs **in-process inside the reward-monitor ROS node**. That still kee
 | [`find-object`](https://github.com/OpenRAL/openral/tree/master/rskills/find-object/) | locate a target via `recall_object` (memory) → `locate_in_view` (live) → bounded active search before manipulation |
 
 The reasoner also maintains a self-written **`MEMORY.md`** — a persistent semantic memory it reads each tick and edits through the typed `memory_write` / `memory_search` tools, loaded at deploy time via `openral deploy sim/run --memory-dir`. See the [Reasoner reference](reasoner.md).
+
+## Wrapped-ROS rSkills (`kind: ros_action`)
+
+`kind: ros_action` rSkills wrap an existing ROS 2 action/service server (MoveIt, Nav2) behind the rSkill contract instead of shipping learned weights — the `RosIntegration` block (see manifest format below) names the package, interface type, and running server, and `ROSActionRskill` builds the client at configure time. They are `role: s1` (actuation) and dispatch through `execute_rskill` + the safety kernel like any policy, but carry **no `model.safetensors`**.
+
+| rSkill | Wraps | Targets | License |
+|---|---|---|---|
+| [`rskill-moveit-eef-pose`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-eef-pose/) | MoveIt `MoveGroup` (Cartesian EEF-pose goal) | `franka_panda`, `ur5e`, `ur10e`, `so100_follower`, `openarm`, `rizon4`, `sawyer` | Apache-2.0 |
+| [`rskill-moveit-joints`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-joints/) | MoveIt `MoveGroup` (joint-space goal) | same arm set as above | Apache-2.0 |
+| [`rskill-moveit-look-at`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-moveit-look-at/) | MoveIt `MoveGroup` (aim wrist camera at a point) | same arm set as above | Apache-2.0 |
+| [`rskill-nav2-navigate-to-pose`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-nav2-navigate-to-pose/) | Nav2 `NavigateToPose` (result-only; Nav2 publishes `/cmd_vel` itself) | `mobile_base` | Apache-2.0 |
 
 ## Manifest format
 

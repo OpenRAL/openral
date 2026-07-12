@@ -35,6 +35,17 @@
 #                            PyPI for them (`--index-strategy unsafe-best-match`
 #                            then pulls the broken placeholders instead). Use
 #                            TestPyPI to verify a *publish*, not a full install.
+#   OPENRAL_TORCH_BACKEND    PyTorch wheel backend (default: cpu). Tier-0 is the
+#                            CPU harness (doctor / detect / connect / CPU sim),
+#                            so the base install takes CPU-only torch — ~1.6 GB
+#                            instead of the ~5-6 GB CUDA stack, and no NVIDIA
+#                            wheels. GPU inference is a heavier opt-in: set
+#                            `auto` (uv detects the installed CUDA driver) or a
+#                            specific `cu128` / `cu130` / … to pull CUDA torch
+#                            into the base venv. Set empty to skip the flag and
+#                            take uv's default (PyPI's manylinux CUDA wheels).
+#                            `openral doctor` reports the GPU either way (it
+#                            probes via NVML, not torch).
 #   OPENRAL_INSTALL_DEBUG    1 → set -x.
 
 set -euo pipefail
@@ -121,11 +132,25 @@ if [[ -n "${OPENRAL_INSTALL_INDEX:-}" ]]; then
     extra_index_args=(--extra-index-url "${OPENRAL_INSTALL_INDEX}")
 fi
 
+# PyTorch backend selection. openral-cli's dependency chain pulls torch, which
+# defaults to PyPI's ~5-6 GB CUDA wheel + NVIDIA cu12/cu13 stack even on a
+# GPU-less host. Tier-0 is the CPU harness, so default to CPU-only torch
+# (~1.6 GB, zero NVIDIA wheels). GPU users opt in with OPENRAL_TORCH_BACKEND=auto
+# (uv detects the CUDA driver) or an explicit cuXXX. Same bash-3.2-safe empty
+# expansion as extra_index_args; an empty knob skips the flag.
+OPENRAL_TORCH_BACKEND="${OPENRAL_TORCH_BACKEND-cpu}"
+torch_backend_args=()
+if [[ -n "${OPENRAL_TORCH_BACKEND}" ]]; then
+    info "torch backend: ${OPENRAL_TORCH_BACKEND}"
+    torch_backend_args=(--torch-backend "${OPENRAL_TORCH_BACKEND}")
+fi
+
 info "installing ${spec} (uv tool install)"
 # --force re-installs even when the tool is already present; matches the
 # `curl … | bash` muscle memory of "running it again gives me the latest".
 uv tool install --force --python 3.12 \
-    ${extra_index_args[@]+"${extra_index_args[@]}"} "${spec}"
+    ${extra_index_args[@]+"${extra_index_args[@]}"} \
+    ${torch_backend_args[@]+"${torch_backend_args[@]}"} "${spec}"
 
 # ── 4. PATH guidance ───────────────────────────────────────────────────────────
 

@@ -160,7 +160,7 @@ class ROSRskillGoalSatisfied(ROSError):
     :meth:`openral_rskill.ros_action_rskill.ROSActionRskill._step_impl` after
     the last waypoint of a one-shot planner (e.g. MoveIt) has been emitted,
     or after a result-only wrapped action (e.g. Nav2 ``NavigateToPose``)
-    reports success. The ``ExecuteSkill`` action server catches this
+    reports success. The ``ExecuteRskill`` action server catches this
     specifically and closes the goal with ``success=True``.
 
     This is NOT an error — it inherits :class:`ROSError` only to stay

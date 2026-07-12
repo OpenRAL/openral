@@ -211,7 +211,15 @@ class _LiberoSim:
         robosuite's ``OffScreenRenderEnv`` on its private ``_env`` attr — so we
         walk the same wrapper chain ``mujoco_handles`` uses to find the env that
         carries ``robots``, robust to robosuite's cross-release re-layering.
+
+        lerobot 0.6.0's ``LiberoEnv`` builds that ``OffScreenRenderEnv`` lazily
+        (``_ensure_env`` on first reset/step), so ``self._env._env`` is ``None``
+        until the env is materialized. The HAL probes ``action_dim`` at
+        ``connect`` *before* the first reset, so trigger materialization here.
         """
+        ensure = getattr(self._env, "_ensure_env", None)
+        if callable(ensure):
+            ensure()
         candidates = (
             getattr(self._env, "_env", None),
             self._env,
@@ -325,6 +333,44 @@ def _quat_to_axisangle(quat: NDArray[np.float32]) -> NDArray[np.float32]:
     return np.zeros(3, dtype=np.float32)
 
 
+def _seed_libero_config_if_absent() -> None:
+    """Write LIBERO's ``~/.libero/config.yaml`` non-interactively when absent.
+
+    ``libero.libero.__init__`` runs, at MODULE-IMPORT time, a first-run setup
+    block that calls ``input("Do you want to specify a custom path ...")``
+    whenever its config file does not yet exist. Under pytest's captured stdin
+    (and any non-interactive process — a deploy-sim subprocess, a cron CI run)
+    that ``input()`` raises ``OSError: reading from stdin while output is
+    captured``, crashing the very first ``from lerobot.envs.libero import
+    LiberoEnv`` before :func:`_ensure_libero_config_matches_active_install`
+    below ever gets a chance to run.
+
+    LIBERO only prompts when ``$LIBERO_CONFIG_PATH/config.yaml`` (default
+    ``~/.libero/config.yaml``) is missing, and answering anything other than
+    ``"y"`` makes it write its own default path dict. So we temporarily stub
+    ``builtins.input`` to answer ``"n"`` and import ``libero.libero`` once:
+    LIBERO writes the correct defaults for the active install itself (no
+    fragile re-derivation of its path layout here), then we restore ``input``.
+    Idempotent — a no-op once the config exists, so the real
+    :func:`_ensure_libero_config_matches_active_install` still owns the
+    cross-venv repair on every subsequent build.
+    """
+    import builtins
+    import os
+
+    libero_config_path = os.environ.get("LIBERO_CONFIG_PATH", os.path.expanduser("~/.libero"))
+    if os.path.exists(os.path.join(libero_config_path, "config.yaml")):
+        return  # already seeded → libero.libero imports without prompting
+    os.makedirs(libero_config_path, exist_ok=True)
+
+    real_input = builtins.input
+    builtins.input = lambda *args, **kwargs: "n"  # accept LIBERO's default paths
+    try:
+        import libero.libero  # noqa: F401  # reason: one-time default-config write
+    finally:
+        builtins.input = real_input
+
+
 def _ensure_libero_config_matches_active_install() -> None:
     """Repoint LIBERO's global ``~/.libero/config.yaml`` at the ACTIVE install.
 
@@ -380,6 +426,11 @@ def _build_libero_scene(env_cfg: SimEnvironment) -> _LiberoSim:
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("libero")
+
+    # Seed ~/.libero/config.yaml BEFORE importing lerobot.envs.libero, which
+    # transitively imports libero.libero whose module-level first-run input()
+    # prompt crashes under captured/non-interactive stdin (see the helper).
+    _seed_libero_config_if_absent()
 
     try:
         from lerobot.envs.libero import LiberoEnv, _get_suite

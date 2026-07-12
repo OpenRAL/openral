@@ -3,7 +3,7 @@
 A :class:`TeeManager` owns the named ``tee`` of a *running* camera pipeline
 (:data:`~openral_runner.backends.gstreamer.pipeline.TEE_NAME`) and attaches /
 detaches consumer branches on the live pipeline via dynamic pad add / remove.
-This is the mechanism the S2 reasoner drives through ``ExecuteSkill``: activating
+This is the mechanism the S2 reasoner drives through ``ExecuteRskill``: activating
 a detector rSkill attaches a branch; deactivating it detaches the branch.
 
 Each branch is built as ``<leaky queue> ! <caller elements>`` so a stalled or

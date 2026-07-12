@@ -65,6 +65,16 @@ isolate_globs = [
   # absent in most local checkouts so it skips there, which is why this only ever
   # bit on CI. Run alone in a fresh interpreter it passes clean.
   "tests/sim/test_dataset_emission.py",
+  # Each spins up a real LIBERO / robosuite-MJCF (openarm) OffScreenRenderEnv.
+  # robosuite/MuJoCo EGL contexts do not survive a sibling env's teardown in the
+  # same interpreter: once one file's openarm env is GC'd, the next file's LIBERO
+  # env dies at reset with "<...RethinkMount> is not a MujocoXML instance" — even
+  # on the correct robosuite 1.4 (issue #24 class, NOT a 1.4-vs-1.5 conflict).
+  # Each file passes cleanly run alone, so isolate them per-process. The libero
+  # lane is a no-ROS host, so idle_step's one rclpy-gated test legitimately skips
+  # there — the isolated runner tolerates that (see test-selective.yml run_lane).
+  "python/hal/tests/test_sim_attached_action_dim.py",
+  "python/hal/tests/test_sim_attached_idle_step.py",
 ]
 
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`

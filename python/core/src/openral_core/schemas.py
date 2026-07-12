@@ -962,7 +962,7 @@ class RSkillAction(str, Enum):
       ``PLAN`` (playbook decision procedure). These verbs are
       registry/discovery metadata only — their skills are reached via
       read-only reasoner tools or system-prompt injection, never an
-      ``ExecuteSkill`` dispatch.
+      ``ExecuteRskill`` dispatch.
     """
 
     PICK = "pick"
@@ -4582,7 +4582,7 @@ RSkillKind: TypeAlias = Literal[
   frames and a natural-language query; returns a text answer. Emits no
   actions or bounding boxes. Runs at S2 rate (``role: "s2"``), so it is
   surfaced to the reasoner as a read-only scene-query tool, never as an
-  ``ExecuteSkill`` policy. ``weights_uri`` REQUIRED; ``actuators_required``
+  ``ExecuteRskill`` policy. ``weights_uri`` REQUIRED; ``actuators_required``
   MUST be empty; ``action_contract``, ``state_contract``, ``detector``,
   ``ros_integration``, ``processors``, ``image_preprocessing``,
   ``n_action_steps``, and ``starting_pose`` are FORBIDDEN. ``model_family``
@@ -4599,7 +4599,7 @@ RSkillKind: TypeAlias = Literal[
   ``action_contract``, ``state_contract``, ``n_action_steps``, ``starting_pose``
   are FORBIDDEN. Surfaced to the reasoner by injecting its ``PLAYBOOK.md`` body
   into the system prompt (or via a retrieval tool at scale), never as an
-  ``ExecuteSkill`` policy.
+  ``ExecuteRskill`` policy.
 """
 
 _ROS_WRAPPER_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
@@ -4647,7 +4647,7 @@ class RosIntegration(BaseModel):
         default_goal_json: JSON dict literal used to construct the goal
             message. v1 hard-codes the target here — the structured-prompt
             path that lowers LLM-emitted JSON into
-            ``ExecuteSkill.Goal.prompt_metadata_json`` is a follow-up.
+            ``ExecuteRskill.Goal.prompt_metadata_json`` is a follow-up.
             REQUIRED so that a wrapped skill is always invocable end-to-end
             without per-call schema work.
         ros_dependencies: Apt / colcon packages the operator must have
@@ -4772,7 +4772,7 @@ class DetectorMode(str, Enum):
             every frame and streams ``ObjectsMetadata`` into
             ``WorldState.detected_objects``; the reasoner reads it **passively**
             (via world state / ``recall_object``) and never prompts it. It is
-            **not** an ExecuteSkill-dispatchable tool and carries no actuation
+            **not** an ExecuteRskill-dispatchable tool and carries no actuation
             authority. RT-DETR (closed vocab) and OmDet-Turbo (frozen open
             vocab) are continuous. The reasoner may still toggle it via
             ``LifecycleTransitionTool`` to free VRAM.
@@ -8014,8 +8014,8 @@ class _ReasonerToolBase(BaseModel):
 class ExecuteRskillTool(_ReasonerToolBase):
     """Tool variant — invoke an installed, capability-matched rSkill.
 
-    Dispatch: action goal on ``/openral/execute_skill`` (the
-    ``openral_msgs/action/ExecuteSkill`` action server in F1's
+    Dispatch: action goal on ``/openral/execute_rskill`` (the
+    ``openral_msgs/action/ExecuteRskill`` action server in F1's
     ``rskill_runner_node``). The chunk path that follows is
     ``Skill → /openral/candidate_action → safety_node →
     /openral/safe_action → HAL``.
@@ -8027,7 +8027,7 @@ class ExecuteRskillTool(_ReasonerToolBase):
             palette-build time; an unknown id raises
             :class:`ROSReasonerInvalidPlan`.
         prompt: Natural-language prompt forwarded to the skill's
-            ``ExecuteSkill`` goal alongside the rskill_id. For VLA
+            ``ExecuteRskill`` goal alongside the rskill_id. For VLA
             skills this is the policy's task-conditioning signal
             (SmolVLA writes it into ``observation["task"]``); for
             wrapped-ROS skills it's carried for trace / log context
@@ -8116,7 +8116,7 @@ class EmitPromptTool(_ReasonerToolBase):
     for self-cascading, but any ``PromptStamped`` topic is valid).
     Lets the reasoner stage multi-step plans, talk to a peer reasoner,
     or feed a downstream prompt-aware skill without going through an
-    ExecuteSkill goal.
+    ExecuteRskill goal.
 
     Attributes:
         tool: Discriminator (always ``"emit_prompt"``).
