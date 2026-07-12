@@ -142,7 +142,7 @@ class TestSmolVLALiberoManifest:
 
     def test_manifest_loads_and_declares_libero(self, skill_manifest) -> None:
         m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-smolvla-libero"
+        assert m.name == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
         # V1 manifest carries the canonical robot id, not the scene name.
         assert "franka_panda" in m.embodiment_tags
         assert m.role == "s1"

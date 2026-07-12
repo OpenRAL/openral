@@ -4,7 +4,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-metaworld"
+name: "OpenRAL/rskill-smolvla-sawyer-metaworld-bf16"
 evaluated_tasks: ["metaworld"]  # Task-data gate. A *family* entry: the
 # matcher (openral_sim.benchmark._task_matches) covers every "metaworld/<task>-v3"
 # task id and the bare "metaworld" scene id, so this multi-task MT50 checkpoint is

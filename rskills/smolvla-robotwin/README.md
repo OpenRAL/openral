@@ -20,7 +20,7 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-robotwin
+# rskill-smolvla-aloha_agilex-robotwin-bf16
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on the **RoboTwin 2.0** unified
 > dual-arm dataset (50 bimanual SAPIEN tasks, aloha-agilex embodiment), packaged for
@@ -69,7 +69,7 @@ position commands.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-smolvla-robotwin` |
+| `name` | `OpenRAL/rskill-smolvla-aloha_agilex-robotwin-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

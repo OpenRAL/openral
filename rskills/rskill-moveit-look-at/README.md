@@ -19,13 +19,13 @@ tags:
 inference: false
 ---
 
-# rskill-moveit-look-at
+# rskill-moveit-multi-look_at
 
 Aim a robot-mounted camera at a 3-D point (renamed from
 `openral/rskill-look-at` as part of the MoveIt goal-builder rename).
 
 A `kind: ros_action` rSkill wrapping `moveit_msgs/action/MoveGroup` — like
-[`rskill-moveit-joints`](../rskill-moveit-joints/), but the goal is a
+[`rskill-moveit-multi-joints`](../rskill-moveit-joints/), but the goal is a
 `look_at` block instead of raw constraints, and `ros_integration.goal_builder:
 look_at` selects the `LookAtRskill` adapter that lowers it into MoveGroup
 pose constraints.
@@ -141,7 +141,7 @@ exist in TF (declared in the robot manifest + published by
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-moveit-look-at` |
+| `name` | `OpenRAL/rskill-moveit-multi-look_at` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `kind` | `ros_action` |
@@ -175,7 +175,7 @@ ros2 launch moveit_resources_panda_moveit_config demo.launch.py
 
 # 2. Dispatch a look-at goal (aim the wrist camera at a tabletop point):
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-    "{rskill_id: 'OpenRAL/rskill-moveit-look-at', deadline_s: 30.0, prompt: 'look at the mug',
+    "{rskill_id: 'OpenRAL/rskill-moveit-multi-look_at', deadline_s: 30.0, prompt: 'look at the mug',
       goal_params_json: '{\"look_at\": {\"target_xyz\": [0.5, 0.0, 0.2], \"camera\": \"wrist\"}}'}"
 ```
 
@@ -188,7 +188,7 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
 - **Single-camera aim.** One camera per dispatch; multi-camera coverage is a
   reasoner-level concern.
 - **No velocity / jerk bound at the supervisor.** Same posture as
-  `rskill-moveit-joints`: the per-joint position envelope runs per
+  `rskill-moveit-multi-joints`: the per-joint position envelope runs per
   waypoint; richer bounds are tracked separately.
 
 ## License

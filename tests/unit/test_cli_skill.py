@@ -159,8 +159,8 @@ class TestSkillInstall:
     exercised against real in-tree ``rskills/`` fixtures.
     """
 
-    APACHE_REPO = "OpenRAL/rskill-act-libero"
-    NONCOMMERCIAL_REPO = "OpenRAL/rskill-locateanything-3b-nf4"
+    APACHE_REPO = "OpenRAL/rskill-act-franka_panda-libero-fp32"
+    NONCOMMERCIAL_REPO = "OpenRAL/rskill-locateanything_3b-any-general-nf4"
 
     def _invoke(
         self,
@@ -244,10 +244,10 @@ class TestSkillInstall:
     def test_bare_name_suggests_org_without_network(self, tmp_path: Path) -> None:
         """An org-less id must fail fast with an OpenRAL/ suggestion and never hit HF."""
         hub = _FakeHub({}, error=AssertionError("must not download"))
-        result = self._invoke(hub, tmp_path, "rskill-qwen35-4b-nf4")
+        result = self._invoke(hub, tmp_path, "rskill-qwen35_4b-any-general-nf4")
         assert result.exit_code != 0
         # Suggests the canonical org-qualified id …
-        assert "OpenRAL/rskill-qwen35-4b-nf4" in result.output
+        assert "OpenRAL/rskill-qwen35_4b-any-general-nf4" in result.output
         # … and points at the discovery command.
         assert "rskill search" in result.output
         # The org-less guard short-circuits before any network call.
@@ -272,13 +272,13 @@ class TestSkillSearch:
     # Recorded OpenRAL org listing — mirrors real in-tree skills. The third repo
     # has no rskill.yaml on the Hub and must be excluded from results.
     _RECORDED_IDS: ClassVar[list[str]] = [
-        "OpenRAL/rskill-act-aloha",
-        "OpenRAL/rskill-omdet-turbo-locator",
+        "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32",
+        "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
         "OpenRAL/rskill-broken-no-manifest",
     ]
     _MANIFEST_FIXTURES: ClassVar[dict[str, str]] = {
-        "OpenRAL/rskill-act-aloha": "rskills/act-aloha/rskill.yaml",
-        "OpenRAL/rskill-omdet-turbo-locator": "rskills/omdet-turbo-locator/rskill.yaml",
+        "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32": "rskills/act-aloha/rskill.yaml",
+        "OpenRAL/rskill-omdet_turbo-any-locator-fp16": "rskills/omdet-turbo-locator/rskill.yaml",
     }
 
     def _run_search(
@@ -328,8 +328,8 @@ class TestSkillSearch:
     def test_lists_valid_skills_with_install_hint(self) -> None:
         result = self._run_search("aloha")
         assert result.exit_code == 0
-        assert "rskill-act-aloha" in result.output
-        assert "rskill-omdet-turbo-locator" in result.output
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" in result.output
         assert "rskill install" in result.output
 
     def test_searches_openral_org(self) -> None:
@@ -348,14 +348,14 @@ class TestSkillSearch:
     def test_kind_filter_narrows_results(self) -> None:
         result = self._run_search("--kind", "detector")
         assert result.exit_code == 0
-        assert "rskill-omdet-turbo-locator" in result.output
-        assert "rskill-act-aloha" not in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" in result.output
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" not in result.output
 
     def test_license_filter_narrows_results(self) -> None:
         result = self._run_search("--license", "mit")
         assert result.exit_code == 0
-        assert "rskill-act-aloha" in result.output
-        assert "rskill-omdet-turbo-locator" not in result.output
+        assert "rskill-act-aloha-aloha_transfer_cube-fp32" in result.output
+        assert "rskill-omdet_turbo-any-locator-fp16" not in result.output
 
     def test_no_results_is_friendly(self) -> None:
         result = self._run_search("nonesuch", recorded_ids=[])
@@ -367,6 +367,9 @@ class TestSkillSearch:
         assert result.exit_code == 0
         payload = json.loads(result.output)
         ids = {row["repo_id"] for row in payload}
-        assert ids == {"OpenRAL/rskill-act-aloha", "OpenRAL/rskill-omdet-turbo-locator"}
+        assert ids == {
+            "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32",
+            "OpenRAL/rskill-omdet_turbo-any-locator-fp16",
+        }
         for row in payload:
             assert {"repo_id", "kind", "role", "license"} <= row.keys()

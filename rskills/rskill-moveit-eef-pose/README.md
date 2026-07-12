@@ -19,7 +19,7 @@ tags:
 inference: false
 ---
 
-# rskill-moveit-eef-pose
+# rskill-moveit-multi-eef_pose
 
 > **OpenRAL rSkill** — wraps the upstream `moveit_msgs/action/MoveGroup`
 > action server so the Reasoner can dispatch a collision-free Cartesian
@@ -35,8 +35,8 @@ on `RSkillManifest.kind` that selects the
 engine at resolve time, with `ros_integration.goal_builder: pose` selecting
 the [`PoseGoalRskill`](../../python/rskill/src/openral_rskill/pose_goal_rskill.py)
 goal-lowering adapter. It is the generic Cartesian sibling of
-[`rskill-moveit-look-at`](../rskill-moveit-look-at/) (gaze is a computed-pose
-specialisation) and of [`rskill-moveit-joints`](../rskill-moveit-joints/)
+[`rskill-moveit-multi-look_at`](../rskill-moveit-look-at/) (gaze is a computed-pose
+specialisation) and of [`rskill-moveit-multi-joints`](../rskill-moveit-joints/)
 (joint-space). The engine constructs an `rclpy.action.ActionClient` on the
 host `RskillRunnerNode`, sends one goal built from the lowered `pose` block,
 awaits the result, and replays the returned `trajectory_msgs/JointTrajectory`
@@ -177,7 +177,7 @@ reads the `link_name ← tool_frame` offset from TF:
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-moveit-eef-pose` |
+| `name` | `OpenRAL/rskill-moveit-multi-eef_pose` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `kind` | `ros_action` |
@@ -211,7 +211,7 @@ ros2 launch moveit_resources_panda_moveit_config demo.launch.py
 
 # 2. Dispatch a Cartesian end-effector pose goal:
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-    "{rskill_id: 'OpenRAL/rskill-moveit-eef-pose', deadline_s: 30.0, prompt: 'move to pre-grasp',
+    "{rskill_id: 'OpenRAL/rskill-moveit-multi-eef_pose', deadline_s: 30.0, prompt: 'move to pre-grasp',
       goal_params_json: '{\"pose\": {\"position\": [0.4, 0.0, 0.5], \"orientation\": [0.0, 0.0, 0.0, 1.0]}}'}"
 ```
 
@@ -224,7 +224,7 @@ ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill 
   MoveIt's internal FCL pass; the per-joint envelope check still runs per
   waypoint. Kernel-side collision checking is a separate ADR + multi-PR effort.
 - **No velocity / jerk bound at the supervisor.** Same posture as
-  `rskill-moveit-joints`: the per-joint position envelope runs per
+  `rskill-moveit-multi-joints`: the per-joint position envelope runs per
   waypoint; richer bounds are tracked separately.
 
 ## License

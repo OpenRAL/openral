@@ -144,7 +144,7 @@ def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
         # weights_uri (the prequantized NF4 mirror this rSkill ships) wins over
         # source_repo (upstream provenance): the sidecar loads the mirror directly
         # via the prequantized path (see _locateanything_server._load).
-        assert weights_source_from_manifest(m) == "OpenRAL/rskill-locateanything-3b-nf4"
+        assert weights_source_from_manifest(m) == "OpenRAL/rskill-locateanything_3b-any-general-nf4"
         # The factory threads the manifest's max_side into the backend so the
         # sidecar boots with --max-side 512 (lower grounding VRAM peak).
         assert det._max_side == 512
@@ -258,7 +258,7 @@ def test_e2e_detect_cats_on_coco_sample() -> None:
 
     det = LocateAnythingDetector(
         labels=["cat"],
-        model_id="OpenRAL/rskill-locateanything-3b-nf4",
+        model_id="OpenRAL/rskill-locateanything_3b-any-general-nf4",
         port=5759,
         boot_timeout_s=1800,
     )

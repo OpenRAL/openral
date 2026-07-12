@@ -16,6 +16,34 @@ Usage
     # Pin upstream weights to a specific commit SHA and then publish:
     uv run python tools/rskill_publisher.py rskills/smolvla-libero/ --bump-revision --publish
 
+    # Rewrite a non-compliant manifest name to the canonical convention:
+    uv run python tools/rskill_publisher.py rskills/smolvla-libero/ --fix-name
+
+Naming convention (CLAUDE.md §3 — rSkill packaging)
+---------------------------------------------------
+Every rSkill's HF repo name is enforced to one of two shapes (hyphens are ONLY
+the segment separators; every token uses underscores internally, so a name
+parses by a plain ``split("-")``):
+
+- ``<owner>/rskill-<model>-<robot>-<task>-<quantization>`` — weight-bearing
+  kinds. ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` (a versioned checkpoint token,
+  e.g. ``smolvla`` / ``gr00t_n17`` / ``omdet_turbo``; for a VLA it must also be
+  consistent with ``model_family``); ``<robot>`` ∈ the ``EmbodimentTag`` values
+  (incl. ``any`` / ``multi``); ``<task>`` is AUTHOR-CHOSEN (validated by shape
+  ``^[a-z0-9][a-z0-9_]*$`` only); ``<quantization>`` ∈
+  ``{fp32, fp16, bf16, int8, nf4}`` (schema ``int4`` → ``nf4``).
+- ``<owner>/rskill-<model>-<robot>-<task>`` — ``ros_action`` / ``ros_service``:
+  a ROS wrapper carries no weights, so it omits the ``<quantization>`` segment.
+- ``<owner>/rskill-playbook-<name>`` — ``kind: playbook``.
+
+Validation is :func:`openral_core.schemas.repo_name_is_canonical` (vocab +
+shape); the suggested compliant name (printed on a mismatch, written by
+``--fix-name``) comes from :func:`openral_core.schemas.expected_repo_name`,
+which derives ``<model>`` / ``<robot>`` / ``<quant>`` from the manifest and
+*suggests* a ``<task>`` default. Publish and dry-run both hard-fail on a
+non-canonical name. Weight-mirror repos without an ``rskill.yaml`` are out of
+scope (see the naming docs for their recommended non-enforced shape).
+
 Design constraints (CLAUDE.md §7.2, §9, §12)
 --------------------------------------------
 - Private by default. ``--public`` opts into a public repo, but ONLY for skills
@@ -42,6 +70,7 @@ Design constraints (CLAUDE.md §7.2, §9, §12)
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -172,6 +201,123 @@ def _validate_manifest(skill_dir: Path) -> RSkillManifest:  # type: ignore[name-
         embodiment_tags=manifest.embodiment_tags,
     )
     return manifest
+
+
+def _rewrite_manifest_name(manifest_path: Path, old_name: str, new_name: str) -> None:
+    """Rewrite the top-level ``name:`` value of ``rskill.yaml`` in place.
+
+    Targets only the top-level key (a line starting at column 0) so nested
+    ``name:`` keys — sensor / joint / end-effector entries — are never touched.
+    Preserves any surrounding quotes and trailing comment.
+
+    Args:
+        manifest_path: Path to ``rskill.yaml``.
+        old_name: The current manifest name (``<owner>/<repo>``).
+        new_name: The canonical name to write.
+
+    Raises:
+        SystemExit: If the top-level ``name:`` line cannot be located exactly once.
+    """
+    text = manifest_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'^(name:[ \t]*)(["\']?)' + re.escape(old_name) + r"\2([ \t]*(?:#.*)?)$",
+        re.MULTILINE,
+    )
+    new_text, n = pattern.subn(
+        lambda m: f"{m.group(1)}{m.group(2)}{new_name}{m.group(2)}{m.group(3)}", text
+    )
+    if n != 1:
+        log.error(
+            "rskill_publisher.fix_name_failed",
+            path=str(manifest_path),
+            old_name=old_name,
+            matches=n,
+            hint="Could not locate a single top-level `name:` line to rewrite.",
+        )
+        sys.exit(1)
+    manifest_path.write_text(new_text, encoding="utf-8")
+    log.info("rskill_publisher.name_rewritten", old_name=old_name, new_name=new_name)
+
+
+def _enforce_repo_name(
+    skill_dir: Path,
+    manifest: RSkillManifest,  # type: ignore[name-defined]  # noqa: F821
+    *,
+    fix_name: bool,
+) -> RSkillManifest:  # type: ignore[name-defined]  # noqa: F821
+    """Enforce the ratified rSkill repo-naming grammar.
+
+    Validates ``manifest.name`` with
+    :func:`openral_core.schemas.repo_name_is_canonical` for the manifest's
+    ``kind`` (passing ``model_family`` so a VLA's ``<model>`` token must be
+    family-consistent): playbooks must be ``rskill-playbook-<name>``; the ROS
+    wrappers (``ros_action`` / ``ros_service``) must be
+    ``rskill-<model>-<robot>-<task>`` (no ``<quant>`` — they carry no weights);
+    every other kind must be ``rskill-<model>-<robot>-<task>-<quant>`` with each
+    segment in its canonical vocabulary and ``<task>`` an author-chosen,
+    shape-valid slug. No kind is exempt.
+
+    When the name is not canonical:
+
+    * ``fix_name=True`` — rewrite ``rskill.yaml`` in place to the suggested name
+      from :func:`openral_core.schemas.expected_repo_name`, reload, and return
+      the corrected manifest (one-command migration).
+    * ``fix_name=False`` — hard-fail (``sys.exit(1)``) printing the suggested
+      name. Runs in both dry-run and ``--publish`` paths.
+
+    Note the suggested ``<task>`` slug is a *default* — it is author-owned, so an
+    author may pick a different (still shape-valid) task and the name stays
+    canonical without ``--fix-name`` re-running.
+
+    Args:
+        skill_dir: The local ``rskills/<name>`` directory.
+        manifest: The validated manifest.
+        fix_name: When ``True``, rewrite a non-canonical name instead of failing.
+
+    Returns:
+        The canonical manifest (reloaded if it was rewritten).
+
+    Raises:
+        SystemExit: On a non-canonical name without ``--fix-name`` (or when no
+            canonical name can be suggested).
+    """
+    from openral_core.schemas import expected_repo_name, repo_name_is_canonical
+
+    if repo_name_is_canonical(
+        manifest.name, kind=manifest.kind, model_family=manifest.model_family
+    ):
+        log.info("rskill_publisher.name_ok", name=manifest.name)
+        return manifest
+
+    try:
+        suggested = expected_repo_name(manifest)
+    except ValueError as exc:
+        log.error("rskill_publisher.name_undeterminable", name=manifest.name, error=str(exc))
+        print(
+            f"\nrSkill name {manifest.name!r} is not canonical and no compliant name "
+            f"could be suggested:\n  {exc}"
+        )
+        sys.exit(1)
+
+    if fix_name:
+        _rewrite_manifest_name(skill_dir / "rskill.yaml", manifest.name, suggested)
+        return _validate_manifest(skill_dir)
+
+    log.error(
+        "rskill_publisher.name_noncompliant",
+        name=manifest.name,
+        suggested=suggested,
+        hint="Rename to a canonical name, or pass --fix-name to rewrite rskill.yaml in place.",
+    )
+    print(
+        f"\nrSkill name {manifest.name!r} does not match the required convention "
+        f"rskill-<model>-<robot>-<task>-<quantization> (or rskill-playbook-<name>).\n"
+        f"  suggested: {suggested}\n"
+        f"The <task> segment is author-chosen (shape ^[a-z0-9][a-z0-9_]*$); the other "
+        f"segments must use canonical tokens. Fix the `name:` field (or run with "
+        f"--fix-name to apply the suggestion)."
+    )
+    sys.exit(1)
 
 
 def _validate_task_space(manifest: RSkillManifest, skill_dir: Path) -> None:  # type: ignore[name-defined]  # noqa: F821
@@ -461,6 +607,16 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--fix-name",
+        action="store_true",
+        default=False,
+        help=(
+            "Rewrite the manifest `name:` in place to the canonical "
+            "rskill-<model>-<robot>-<task>-<quantization> convention instead of "
+            "failing on a mismatch (one-command migration; VLA skills only)."
+        ),
+    )
+    parser.add_argument(
         "--token",
         default=None,
         help="HF token with repo.write scope. Defaults to $HF_TOKEN env var.",
@@ -474,6 +630,13 @@ def main() -> None:
 
     # ── Validate manifest ──────────────────────────────────────────────────────
     manifest = _validate_manifest(skill_dir)
+
+    # ── Enforce the HF-repo naming convention (CLAUDE.md §3 rSkill packaging) ───
+    # rskill-<model>-<robot>-<task>-<quantization>. Runs in both dry-run and
+    # --publish paths so authors see the check without an upload attempt;
+    # --fix-name rewrites a non-compliant name in place. VLA skills only —
+    # perception / playbook kinds are exempt (no <model> axis).
+    manifest = _enforce_repo_name(skill_dir, manifest, fix_name=args.fix_name)
 
     # ── Cross-layer task-space check (TaskSpace-contract Phase 2, warn-only) ────
     _validate_task_space(manifest, skill_dir)

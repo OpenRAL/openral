@@ -94,12 +94,13 @@ def test_mission_complete_when_all_terminal_mixed() -> None:
 
 
 def test_record_attempt_increments_and_tracks_ids() -> None:
+    skill_id = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
     m = MissionState(["a", "b"])
-    m.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero", trace_id="abc123")
-    m.record_attempt(rskill_id="OpenRAL/rskill-smolvla-libero")
+    m.record_attempt(rskill_id=skill_id, trace_id="abc123")
+    m.record_attempt(rskill_id=skill_id)
     t1 = m.active()
     assert t1.attempts == 2
-    assert t1.last_rskill_id == "OpenRAL/rskill-smolvla-libero"
+    assert t1.last_rskill_id == "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
     assert t1.last_trace_id == "abc123"  # preserved; second call passed no trace
 
 

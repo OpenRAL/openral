@@ -328,6 +328,17 @@ rlbench = [
     # that is externally provisioned.
     { include-group = "sidecar-wire" },
 ]
+lingbot = [
+    # Opt-in Robbyant LingBot-VLA 2.0 dual-arm policy adapter.
+    #
+    # Same shape as the `rldx` / `robotwin` groups: the 6.38 B LingBot-VLA 2.0
+    # server (`tools/lingbot_vla2_sidecar.py`, wrapping the upstream `lingbotvla`
+    # package) runs in its OWN auto-provisioned Python 3.12 + torch-2.8 venv that
+    # this group does NOT touch — `lingbotvla` pins torch==2.8.0 /
+    # transformers==4.57.3 + custom Triton MoE kernels, incompatible with this
+    # repo's torch>=2.9 / transformers>=5 (CLAUDE.md §3). Apache-2.0 code + weights.
+    { include-group = "sidecar-wire" },
+]
 locateanything = [
     # Opt-in LocateAnything-3B open-vocab VLM detector.
     #

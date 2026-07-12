@@ -38,7 +38,7 @@ def test_smolvla_manifest_declares_its_reward_pairing_and_size() -> None:
     """The VLA manifest names its reward model and declares bf16 VRAM."""
     vla = _vla()
     assert vla.kind == "vla"
-    assert vla.reward_rskill_name == "OpenRAL/rskill-robometer-4b-nf4"
+    assert vla.reward_rskill_name == "OpenRAL/rskill-robometer_4b-any-general-nf4"
     assert vla.active_min_vram_gb() == pytest.approx(1.2)
 
 

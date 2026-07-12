@@ -5,7 +5,7 @@ description: >-
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-pi05-libero-int8
+  rskill_id: OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8
   manifest: ./rskill.yaml
   role: s1
   kind: vla
@@ -68,7 +68,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-pi05-libero-int8")
+skill = rSkill.from_pretrained("OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

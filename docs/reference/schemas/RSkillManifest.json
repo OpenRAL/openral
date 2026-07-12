@@ -1308,7 +1308,9 @@
             "molmoact2",
             "gr00t",
             "diffuser_actor",
-            "openvla"
+            "openvla",
+            "lingbot_vla2",
+            "lingbot_vla"
           ],
           "type": "string"
         },
@@ -1332,6 +1334,7 @@
           "gr1",
           "h1",
           "mobile_base",
+          "multi",
           "openarm",
           "panda_mobile",
           "pusht",

@@ -2190,7 +2190,7 @@ def deploy_sim_command(
         "--enable-nav2/--no-enable-nav2",
         help=(
             "bring up the Nav2 navigation stack so the "
-            "``OpenRAL/rskill-nav2-navigate-to-pose`` wrapped-action "
+            "``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose`` wrapped-action "
             "rSkill has a ``/navigate_to_pose`` server to dispatch to. "
             "**Auto by default**: tracks ``--enable-slam`` (lidar-"
             "equipped robots need a planner to consume the map). "
@@ -2492,7 +2492,7 @@ def deploy_sim_command(
         "  nav2:          "
         + (
             "[green]enabled[/green] (Nav2 advertises /navigate_to_pose; "
-            "Reasoner dispatches OpenRAL/rskill-nav2-navigate-to-pose)"
+            "Reasoner dispatches OpenRAL/rskill-nav2-mobile_base-navigate_to_pose)"
             if invocation.enable_nav2
             else "[dim]disabled[/dim] (tracks --enable-slam; pass --enable-nav2 to force on)"
         )

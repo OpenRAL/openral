@@ -3,7 +3,7 @@
 Pins the pure lowering of a ``joint`` goal block into a MoveGroup
 ``joint_constraints`` entry — the clean, LLM-facing replacement for the
 hand-written constraints JSON the earlier `openral-moveit-plan-arm`
-(now `rskill-moveit-joints`) used to ship.
+(now `rskill-moveit-multi-joints`) used to ship.
 """
 
 from __future__ import annotations

@@ -215,7 +215,11 @@ def build_topreward_monitor(manifest: RSkillManifest, *, device: str = "cuda") -
         raise ROSConfigError(
             f"build_topreward_monitor requires a reward manifest, got {manifest.name!r}"
         )
-    raw = manifest.weights_uri or manifest.source_repo or "OpenRAL/rskill-topreward-qwen3vl-4b-nf4"
+    raw = (
+        manifest.weights_uri
+        or manifest.source_repo
+        or "OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4"
+    )
     weights_source = (
         raw.removeprefix("local://")
         if raw.startswith("local://")

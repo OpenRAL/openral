@@ -22,7 +22,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-pi05-libero-int8"
+name: "OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8"
 evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # trained on the full LIBERO set (all 4 suites, 40 tasks)
 version: "0.1.0"
 license: "permissive_research"   # non-standard; weights are NOT apache-2.0
@@ -82,8 +82,8 @@ weights_uri: "hf://lerobot/pi05_libero_finetuned_v044"
 # source checkpoint's processors), so the rSkill does not depend on the upstream
 # lerobot/pi05_libero_finetuned_v044 repo to resolve them.
 processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-int8/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-pi05-libero-int8/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8/policy_postprocessor.json"
 # The pi05 LIBERO finetune wants the default LIBERO image preprocessing
 # (180° rotation + camera1/2 alias remap to image/image2) and the canonical
 # LIBERO 8-D proprio state.

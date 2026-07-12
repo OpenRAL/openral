@@ -20,7 +20,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-3d-diffuser-actor-rlbench"
+name: "OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32"
 # The benchmark tasks this checkpoint is validated for (gate). The
 # released PerAct checkpoint covers all 18 PerAct tasks; we ship + declare the
 # three live-verified starter tasks here (the rest are a follow-up).

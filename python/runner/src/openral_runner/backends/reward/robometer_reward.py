@@ -159,7 +159,7 @@ class RobometerInProcessReward:
         self,
         *,
         model_id: str,
-        weights_source: str = "OpenRAL/rskill-robometer-4b-nf4",
+        weights_source: str = "OpenRAL/rskill-robometer_4b-any-general-nf4",
         num_bins: int = 100,
         success_threshold: float = 0.5,
         max_frames: int = 8,
@@ -247,7 +247,11 @@ def build_reward_monitor(
         )
 
         return build_topreward_monitor(manifest)
-    raw = manifest.weights_uri or manifest.source_repo or "OpenRAL/rskill-robometer-4b-nf4"
+    raw = (
+        manifest.weights_uri
+        or manifest.source_repo
+        or "OpenRAL/rskill-robometer_4b-any-general-nf4"
+    )
     # hf://org/repo[@rev] -> "org/repo"; local:///path
     # -> "/path" (a pre-quantized checkpoint dir loaded directly as 4-bit).
     if raw.startswith("local://"):

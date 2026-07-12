@@ -17,7 +17,7 @@ tags:
 inference: false
 ---
 
-# rskill-smolvla-vlabench
+# rskill-smolvla-franka_panda-vlabench-bf16
 
 > **OpenRAL rSkill — VLABench integration baseline (NOT a passing policy).**
 > SmolVLA (~0.5 B) finetuned on [VLABench](https://github.com/OpenMOSS/VLABench)

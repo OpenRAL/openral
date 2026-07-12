@@ -21,7 +21,7 @@ base_model_relation: finetune
 inference: false
 ---
 
-# rskill-gr00t-n17-libero
+# rskill-gr00t_n17-franka_panda-libero_spatial-bf16
 
 > **OpenRAL rSkill** — NVIDIA Isaac **GR00T N1.7** (3B) finetuned on the
 > [LIBERO](https://libero-project.github.io/) benchmark, packaged for the
@@ -84,7 +84,7 @@ processor pipeline — hence no `processors` block in the manifest.
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-gr00t-n17-libero` |
+| `name` | `OpenRAL/rskill-gr00t_n17-franka_panda-libero_spatial-bf16` |
 | `version` | `0.1.0` |
 | `license` | `nvidia_open_model` (commercial OK) |
 | `role` | `s1` |

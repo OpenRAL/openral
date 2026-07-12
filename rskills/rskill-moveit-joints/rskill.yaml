@@ -15,7 +15,7 @@
 # its own controllers. `chunk_size: 1` so the supervisor sees every waypoint.
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-moveit-joints"
+name: "OpenRAL/rskill-moveit-multi-joints"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -57,7 +57,7 @@ description: >
   target angle per planning-group joint. Defaults target the Franka Panda home
   pose; override the manifest to retarget. Use when you have a joint-space goal
   (e.g. a policy's in-distribution starting pose); for a Cartesian end-effector
-  target use rskill-moveit-eef-pose instead.
+  target use rskill-moveit-multi-eef_pose instead.
 actions:
   - "reach"
 objects: []

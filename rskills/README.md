@@ -70,8 +70,8 @@ embodiment-agnostic.**
 | `rtdetr-coco-r18` | detector (ONNX, `local://`) |
 | `qwen35-4b-nf4` | vlm |
 | `robometer-4b` / `topreward-qwen3vl-4b-nf4` | reward |
-| `rskill-moveit-eef-pose` / `rskill-moveit-joints` / `rskill-moveit-look-at` | ros_action (MoveIt) |
-| `rskill-nav2-navigate-to-pose` | ros_action (Nav2) |
+| `rskill-moveit-multi-eef_pose` / `rskill-moveit-multi-joints` / `rskill-moveit-multi-look_at` | ros_action (MoveIt) |
+| `rskill-nav2-mobile_base-navigate_to_pose` | ros_action (Nav2) |
 
 > The full, verified scene↔rSkill compatibility matrix lives in the team's
 > `sim_rskill_matches.xlsx` tracker.

@@ -46,7 +46,10 @@ def test_non_search_actions_reset_the_cascade() -> None:
     # Anything that actually makes progress (or asks the scene VLM) ends the
     # search episode so the next streak starts fresh.
     assert _resets_search_episode(
-        ExecuteRskillTool(rskill_id="OpenRAL/rskill-smolvla-libero", prompt="pick the milk")
+        ExecuteRskillTool(
+            rskill_id="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
+            prompt="pick the milk",
+        )
     )
     assert _resets_search_episode(
         EmitPromptTool(target_topic="/openral/prompt", text="handing off")

@@ -752,8 +752,8 @@ def _skill_id_to_tool_name(rskill_id: str) -> str:
     Long ids get an 8-char sha1 suffix so the slug stays unique after
     truncation.
 
-    >>> _skill_id_to_tool_name("OpenRAL/rskill-act-aloha")
-    'execute_rskill__OpenRAL__rskill-act-aloha'
+    >>> _skill_id_to_tool_name("OpenRAL/rskill-qwen35_4b-any-general-nf4")
+    'execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-nf4'
     """
     import hashlib  # noqa: PLC0415  # reason: stdlib, only used on the slow palette-build path
 

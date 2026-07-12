@@ -24,7 +24,7 @@ Unlike slam_toolbox (which idles until the Reasoner activates it),
 Nav2 is always-on: each Nav2 sub-node is a LifecycleNode driven by
 the in-stack ``lifecycle_manager_navigation`` (autostart=true). The
 Reasoner triggers Nav2 by dispatching the
-``OpenRAL/rskill-nav2-navigate-to-pose`` wrapped-action rSkill —
+``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none`` wrapped-action rSkill —
 which sends a ``NavigateToPose`` action goal to ``/navigate_to_pose``
 — rather than by lifecycle-transitioning the planner.
 

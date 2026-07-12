@@ -90,6 +90,12 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
         "policy + the CoppeliaSim/PyRep RLBench env run in tools/rlbench_*"
         "_sidecar.py's own externally-provisioned Python 3.10 venv."
     ),
+    "lingbot_vla2": (
+        "Install the lingbot extras: `just sync --all-packages --group lingbot` "
+        "(adds pyzmq + msgpack for the LingBot-VLA 2.0 sidecar client). The policy "
+        "runs in tools/lingbot_vla2_sidecar.py's own auto-provisioned Python 3.12 "
+        "+ torch-2.8 venv."
+    ),
     # `mock` has no external deps — included so a smoke that mentions a
     # mock-family rSkill never gets filtered out.
     "mock": "No extras required.",
@@ -110,6 +116,7 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
     "rldx": ("rldx",),
     "gr00t": ("sim", "gr00t"),
     "diffuser_actor": ("rlbench",),
+    "lingbot_vla2": ("lingbot",),
     "mock": (),
 }
 
@@ -135,6 +142,11 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     # CoppeliaSim/PyRep RLBench env live in the sidecar's own py3.10 venv).
     # See openral_sim.policies.rlbench_3dda.
     "diffuser_actor": ("zmq", "msgpack"),
+    # LingBot-VLA 2.0 shares the out-of-process sidecar contract; the openral
+    # side only needs the ZMQ + msgpack wire (the 6.38 B model runs in the
+    # sidecar's own auto-provisioned py3.12 + torch-2.8 venv). See
+    # openral_sim.policies.lingbot_vla2.
+    "lingbot_vla2": ("zmq", "msgpack"),
     "mock": (),
 }
 

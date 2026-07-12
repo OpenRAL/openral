@@ -136,7 +136,7 @@ _VALID_REWARD: dict = {
     "sensors_required": [{"modality": "rgb", "min_width": 224, "min_height": 224}],
     "actuators_required": [],
     "runtime": "pytorch",
-    "weights_uri": "hf://OpenRAL/rskill-robometer-4b-nf4",
+    "weights_uri": "hf://OpenRAL/rskill-robometer_4b-any-general-nf4",
     "chunk_size": 1,
     "latency_budget": {"per_chunk_ms": 3000.0},
     "description": "Test reward monitor for unit tests.",

@@ -10,7 +10,7 @@ Public surface:
   ``ResolvePlaceQuery``.
 - ``compute_approach_viewpoint``: camera-facing standoff-pose helper.
 - ``look_at_quat_wxyz`` / ``compute_gaze_pose``: shared gaze geometry
-  (look-at rotations per camera convention; the ``rskill-moveit-look-at`` goal pose).
+  (look-at rotations per camera convention; the ``rskill-moveit-multi-look_at`` goal pose).
 - ``OccupancyGridIndex`` / ``refine_approach_pose``: occupancy-grid
   queries + approach-pose snapping (free cell + line-of-sight; planning-layer,
   not a safety surface).

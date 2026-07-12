@@ -20,7 +20,7 @@ tags:
 inference: false
 ---
 
-# rskill-openvla-oft-simpler-widowx-nf4
+# rskill-openvla_oft-widowx-simpler_env-nf4
 
 > OpenVLA-OFT bridge policy (RLinf, PPO-tuned on ManiSkill3 PutOnPlateInScene25),
 > packaged for OpenRAL and locally verified on SimplerEnv WidowX carrot-on-plate.

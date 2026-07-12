@@ -1034,7 +1034,7 @@ class TestValidateSkillRef:
         assert _validate_skill_ref("rskills/smolvla-libero") == "rskills/smolvla-libero"
 
     def test_hf_repo_id_passes_through(self) -> None:
-        ref = "OpenRAL/rskill-smolvla-libero"
+        ref = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
         assert _validate_skill_ref(ref) == ref
 
     def test_surrounding_whitespace_is_stripped(self) -> None:

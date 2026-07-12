@@ -8,7 +8,7 @@
 # chunk → C++ safety kernel).
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-verify-outcome"
+name: "OpenRAL/rskill-playbook-verify_outcome"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s2"

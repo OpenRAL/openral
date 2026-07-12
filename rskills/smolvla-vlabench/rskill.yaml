@@ -9,7 +9,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-vlabench"
+name: "OpenRAL/rskill-smolvla-franka_panda-vlabench-bf16"
 evaluated_tasks: ["vlabench"]  # Family gate: covers "vlabench/<task>" ids.
 version: "0.1.0"
 license: "apache-2.0"

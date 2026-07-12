@@ -871,7 +871,7 @@ def resolve_rskill_local_dir(uri: str) -> Path | None:
     """Return the on-disk directory of an in-tree rSkill, or ``None``.
 
     The argument is a bare rSkill reference (``smolvla-libero``,
-    ``rskills/smolvla-libero``, ``OpenRAL/rskill-smolvla-libero``, …).
+    ``rskills/smolvla-libero``, ``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``, …).
     Walks the same candidate forms :func:`_candidate_local_paths` produces
     and returns the first one that is a directory containing an
     ``rskill.yaml``. Resolves to an absolute path when found.
@@ -893,7 +893,7 @@ def _candidate_local_paths(uri: str) -> list[Path]:
 
     The argument may be a path-like string (``rskills/smolvla-libero``,
     ``rskills/smolvla-libero/rskill.yaml``) or an HF Hub repo id
-    (``OpenRAL/rskill-smolvla-libero``). For each form we generate the
+    (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). For each form we generate the
     file/dir paths to probe, both as-given (cwd-relative) and re-rooted at
     the OpenRAL repo so configs work regardless of the caller's cwd.
     """
@@ -972,7 +972,7 @@ def _validate_skill_ref(raw: str) -> str:
 
     Accepts any non-empty string that does not carry an explicit URI scheme:
     a bare name (``"smolvla-libero"``), a path (``"rskills/smolvla-libero"``),
-    or an HF repo id (``"OpenRAL/rskill-smolvla-libero"``). Rejects inputs
+    or an HF repo id (``"OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"``). Rejects inputs
     that carry a known scheme (``hf://``, ``local://``, ``file://``, etc.)
     so callers are never silently handed a non-rSkill URI.
 
@@ -1027,7 +1027,7 @@ def load_rskill_manifest(uri: str) -> RSkillManifest:
 
     Args:
         uri: The reference, e.g. ``"rskills/smolvla-libero"`` or
-            ``"OpenRAL/rskill-smolvla-libero"``.
+            ``"OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"``.
 
     Returns:
         The parsed and validated :class:`~openral_core.RSkillManifest`.

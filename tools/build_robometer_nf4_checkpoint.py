@@ -15,7 +15,7 @@ Run with Robometer build dependencies installed:
   .venv/bin/python \
       tools/build_robometer_nf4_checkpoint.py --out /tmp/robometer-nf4-ckpt
 
-Then upload the directory to ``OpenRAL/rskill-robometer-4b-nf4`` (see README).
+Then upload the directory to ``OpenRAL/rskill-robometer_4b-any-general-nf4`` (see README).
 """
 
 from __future__ import annotations

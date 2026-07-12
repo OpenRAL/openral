@@ -19,7 +19,7 @@ datasets:
 inference: false
 ---
 
-# rskill-smolvla-metaworld
+# rskill-smolvla-sawyer-metaworld-bf16
 
 > **OpenRAL rSkill** — SmolVLA (0.45 B) finetuned on the
 > [MetaWorld MT50](https://meta-world.github.io/) benchmark
@@ -78,7 +78,7 @@ verified against the lerobot checkpoint — see `docs/reference/vla_compatibilit
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-smolvla-metaworld` |
+| `name` | `OpenRAL/rskill-smolvla-sawyer-metaworld-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

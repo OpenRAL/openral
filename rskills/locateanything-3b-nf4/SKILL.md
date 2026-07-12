@@ -5,7 +5,7 @@ description: >-
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-locateanything-3b-nf4
+  rskill_id: OpenRAL/rskill-locateanything_3b-any-general-nf4
   manifest: ./rskill.yaml
   role: s1
   kind: detector
@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1000.0}
   license_code: Apache-2.0
   license_weights: nvidia_non_commercial   # NOT permissive — see License section
-  weights_uri: hf://OpenRAL/rskill-locateanything-3b-nf4
+  weights_uri: hf://OpenRAL/rskill-locateanything_3b-any-general-nf4
   source_repo: hf://nvidia/LocateAnything-3B@7a81d810571dc5f244b2f0b6868128f24b1cbd85
   paper_url: https://arxiv.org/abs/2605.27365
 ---
@@ -63,7 +63,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-locateanything-3b-nf4")
+skill = rSkill.from_pretrained("OpenRAL/rskill-locateanything_3b-any-general-nf4")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

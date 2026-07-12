@@ -64,7 +64,7 @@ def _load(model_id: str) -> tuple[object, object]:
 
     Two load paths, auto-selected by whether ``model_id`` is already quantized:
 
-    * **Pre-quantized** (e.g. ``OpenRAL/rskill-qwen35-4b-nf4``, whose config
+    * **Pre-quantized** (e.g. ``OpenRAL/rskill-qwen35_4b-any-general-nf4``, whose config
       embeds a bitsandbytes ``quantization_config``): the 4-bit weights load
       directly (~3.3 GB) with no bf16 spike — the clean path for an 8 GB GPU.
     * **Raw upstream** (e.g. ``Qwen/Qwen3.5-4B``): quantize NF4 at load.

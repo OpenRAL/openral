@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     lttng-tools python3-lttngust babeltrace2 \
     # wrapped-ROS rSkills + lifecycle-peer
     # services. moveit + moveit-resources-panda back the in-tree
-    # `rskill-moveit-joints` rSkill and its integration test
+    # `rskill-moveit-multi-joints-none` rSkill and its integration test
     # (`tests/integration/test_moveit_joints_franka.py`). nav2 +
     # nav2-msgs back the `openral-nav2-navigate-to-pose` rSkill.
     # slam-toolbox is the first concrete reasoner-managed background service

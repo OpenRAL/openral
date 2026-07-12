@@ -107,7 +107,7 @@ class TestACTAlohaManifest:
 
     def test_manifest_loads_and_declares_aloha(self, skill_manifest) -> None:
         m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-act-aloha"
+        assert m.name == "OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32"
         assert "aloha" in m.embodiment_tags
         assert m.role == "s1"
 

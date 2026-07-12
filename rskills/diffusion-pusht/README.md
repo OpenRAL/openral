@@ -16,7 +16,7 @@ tags:
 inference: false
 ---
 
-# rskill-diffusion-pusht
+# rskill-diffusion-pusht-pusht-fp32
 
 > **OpenRAL rSkill** — Diffusion Policy (Chi et al., 2023) trained on
 > the PushT 2-D pushing benchmark, packaged for `OpenRAL`.
@@ -59,7 +59,7 @@ exposes the raw key `observation.image`.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-diffusion-pusht` |
+| `name` | `OpenRAL/rskill-diffusion-pusht-pusht-fp32` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

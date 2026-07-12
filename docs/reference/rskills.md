@@ -7,12 +7,12 @@ rSkills are HuggingFace-Hub-shaped packages — manifest + weights + reproducibl
 ```bash
 openral rskill search aloha                    # discover skills on the OpenRAL Hub org
 openral rskill search --kind detector          # …filter by kind/role/embodiment/license
-openral rskill install OpenRAL/rskill-smolvla-libero
+openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 openral rskill list                # list installed rSkills
 openral rskill check               # which installed rSkills run on this host?
 ```
 
-`rskill install` expects an `org/name` Hub id. A bare name (e.g. `rskill-smolvla-libero`)
+`rskill install` expects an `org/name` Hub id. A bare name (e.g. `rskill-smolvla-franka_panda-libero_spatial-bf16`)
 fails fast with the canonical `OpenRAL/…` suggestion rather than a raw Hub 404 — use
 `rskill search` if you don't know the id. `rskill search` queries the OpenRAL HF Hub org
 (`HfApi.list_models`), validates each candidate's `rskill.yaml`, and prints a paste-able
@@ -107,7 +107,7 @@ Like the LocateAnything detector, the Qwen scene VLM runs in an **isolated sidec
 
 | rSkill | Backbone | Notes |
 |---|---|---|
-| [`robometer-4b`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer-4b-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runtime is in-process inside `openral_perception_ros.reward_monitor_node` via `RobometerInProcessReward`; served on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool. |
+| [`robometer-4b`](https://github.com/OpenRAL/openral/tree/master/rskills/robometer-4b/) | Robometer-4B (Qwen3-VL-4B reward foundation model, arXiv 2603.02115) | **Apache-2.0**; pre-quantized NF4 at `hf://OpenRAL/rskill-robometer_4b-any-general-nf4`, meta-loaded directly as 4-bit (~3.3 GB resident, fits 8 GB alongside a small VLA); runtime is in-process inside `openral_perception_ros.reward_monitor_node` via `RobometerInProcessReward`; served on `/openral/perception/query_task_progress`; drives the reasoner's read-only `query_task_progress` tool. |
 | [`topreward-qwen3vl-4b-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/topreward-qwen3vl-4b-nf4/) | TOPReward (arXiv 2602.19313) — **zero-shot** reward on `Qwen/Qwen3-VL-4B-Instruct` via lerobot 0.6.0's first-party `lerobot.rewards.topreward` | **Apache-2.0** packaging (method MIT; Qwen3-VL weights keep the Qwen license). Zero-shot: no fine-tuned checkpoint — the model reads `log P("True" \| video, instruction)`; **per-frame progress (0–1)** comes from lerobot's native prefix sweep + per-episode min-max normalization. NF4 (bitsandbytes) on the base VLM to fit 8 GB — **measured 3.13 GB peak** on RTX 4070 Laptop, live-validated on LIBERO `libero_object` ep0 (first-20% 0.41 → last-20% 0.92). Runtime backend still to land as a follow-up |
 
 Robometer runs **in-process inside the reward-monitor ROS node**. That still keeps it out of the VLA runner, reasoner, and HAL processes used by `deploy-sim` / `deploy-run`, but avoids an extra ZMQ process boundary now that lerobot 0.6.0 ships `lerobot.rewards.robometer.RobometerRewardModel` directly. There is **no** pinned `robometer` package, **no** `transformers==4.57.1` force-pin, and **no** dedicated venv requirement. The rolling frame buffer (`RollingFrameBuffer`, fed by the selected `sensor_msgs/Image` topic) lives node-side; `deploy-sim` selects the first RGB camera from `robot.yaml` and falls back to `agentview_left`. `weights_uri` accepts the published pre-quantized OpenRAL repo or `local:///abs/dir`. The pre-quantized path (built by `tools/build_robometer_nf4_checkpoint.py`) loads the packed NF4 weights DIRECTLY on the `meta` device — no bf16 materialization, no requantize (~25 s process→ready vs ~110 s + a 19 GB CPU spike), bit-identical to the bf16+quantize path with determinism pinned (math SDP + `use_deterministic_algorithms` + `CUBLAS_WORKSPACE_CONFIG`). The forward's activation memory scales with frame count × resolution, so the backend evenly subsamples the window to `max_frames` (8) to stay co-resident with the sim (and a small NF4 VLA) on 8 GB. In `deploy-sim`, `openral deploy sim --enable-reward-monitor` brings the monitor up parallel to the VLA and sets `task_progress_available:=true` so the reasoner is offered `query_task_progress` (validated live on LIBERO deploy-sim with SmolVLA). The reward model is lerobot's own first-party module (Apache-2.0), so no untrusted third-party package is executed.
@@ -142,7 +142,7 @@ The reasoner also maintains a self-written **`MEMORY.md`** — a persistent sema
 
 ```yaml
 # rskills/smolvla-libero/rskill.yaml (excerpt)
-name: "OpenRAL/rskill-smolvla-libero"
+name: "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

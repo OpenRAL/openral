@@ -19,7 +19,7 @@ which ``from_pretrained`` auto-detects. Same quantizer (bitsandbytes nf4),
 different serialization for a different loader.
 
 This is the reproducible recipe behind the published
-``OpenRAL/rskill-qwen35-4b-nf4`` weights. Run it INSIDE the sidecar venv (it
+``OpenRAL/rskill-qwen35_4b-any-general-nf4`` weights. Run it INSIDE the sidecar venv (it
 needs the same transformers / bitsandbytes / qwen-vl-utils stack as
 ``tools/_qwen_vlm_server.py``)::
 

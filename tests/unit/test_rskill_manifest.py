@@ -916,7 +916,7 @@ def _vlm_manifest_dict() -> dict[str, object]:
     """Minimal valid manifest dict for kind='vlm'."""
     return {
         "schema_version": "0.1",
-        "name": "OpenRAL/rskill-qwen35-4b-nf4",
+        "name": "OpenRAL/rskill-qwen35_4b-any-general-nf4",
         "version": "0.1.0",
         "license": "apache-2.0",
         "role": "s2",
@@ -954,7 +954,7 @@ class TestVlmKind:
         assert m.role == "s2"
         # weights_uri is the deployable pre-quantized NF4 checkpoint; source_repo
         # is the SHA-pinned upstream it was quantized from (provenance).
-        assert m.weights_uri == "hf://OpenRAL/rskill-qwen35-4b-nf4"
+        assert m.weights_uri == "hf://OpenRAL/rskill-qwen35_4b-any-general-nf4"
         assert m.source_repo is not None and m.source_repo.startswith("hf://Qwen/Qwen3.5-4B@")
 
     def test_vlm_missing_weights_uri_raises(self) -> None:
@@ -1003,3 +1003,243 @@ class TestVlmKind:
 
         m = RSkillManifest.model_validate(_vlm_manifest_dict())
         assert RSkillAction.QUERY in m.actions
+
+
+# ── HF-repo naming convention ────────────────────────────────────────────────
+
+
+def _naming_fixture(name: str) -> RSkillManifest:
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    return RSkillManifest.from_yaml(str(repo_root / "rskills" / name / "rskill.yaml"))
+
+
+class TestRepoNameIsCanonical:
+    """``repo_name_is_canonical`` — grammar + vocab parse (kind-aware).
+
+    Hyphens are only the segment separators; tokens use underscores. A
+    non-playbook name must split into exactly 5 parts with canonical
+    model/robot/quant tokens and a shape-valid task; a playbook must be
+    ``rskill-playbook-<name>``.
+    """
+
+    def test_valid_five_segment_name(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
+        )
+
+    def test_valid_playbook_name(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
+
+    def test_ros_action_is_four_part_no_quant(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # ROS wrappers carry no weights → no <quant> segment (4 parts).
+        assert repo_name_is_canonical("OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action")
+
+    def test_ros_action_rejects_a_quant_segment(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A weightless wrapper may not carry any 5th (quant) segment.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
+        )
+        assert repo_name_is_canonical("OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action")
+
+    def test_weight_bearing_kind_requires_a_quant_segment(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A VLA needs the 5th (quant) segment; the 4-part ROS shape is rejected.
+        assert not repo_name_is_canonical("OpenRAL/rskill-smolvla-franka_panda-libero", kind="vla")
+        # ...and `none` is not a valid quant token for a weight-bearing kind.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero-none", kind="vla"
+        )
+
+    def test_model_family_consistency_enforced(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A valid token for the WRONG family is rejected when model_family is given.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-pi05-franka_panda-libero-bf16", kind="vla", model_family="smolvla"
+        )
+        # openvla family allows both the base and the OFT checkpoint token.
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-openvla_oft-widowx-simpler-nf4", kind="vla", model_family="openvla"
+        )
+
+    def test_hyphen_inside_token_is_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # A hyphenated robot/model token over-splits (6 parts) → not canonical.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka-panda-libero_spatial-bf16", kind="vla"
+        )
+
+    def test_unknown_model_token_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-notamodel-franka_panda-libero-bf16", kind="vla"
+        )
+
+    def test_noncanonical_quant_rejected(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        # int4 is the schema dtype, not the name token (nf4).
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-franka_panda-libero-int4", kind="vla"
+        )
+
+    def test_playbook_grammar_not_accepted_for_vla(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert not repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="vla")
+
+    def test_owner_prefix_optional(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical("rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla")
+
+
+class TestCanonicalTokenSets:
+    def test_model_tokens_use_underscores_not_hyphens(self) -> None:
+        from openral_core import CANONICAL_MODEL_TOKENS
+
+        assert "lingbot_vla" in CANONICAL_MODEL_TOKENS
+        assert "lingbot_vla2" in CANONICAL_MODEL_TOKENS
+        assert "gr00t_n17" in CANONICAL_MODEL_TOKENS
+        assert "3d_diffuser_actor" in CANONICAL_MODEL_TOKENS
+        assert "omdet_turbo" in CANONICAL_MODEL_TOKENS
+        # No hyphenated variant leaks in.
+        assert "lingbot-vla" not in CANONICAL_MODEL_TOKENS
+
+    def test_robot_tokens_include_embodiment_plus_multi(self) -> None:
+        from openral_core import CANONICAL_ROBOT_NAME_TOKENS
+
+        assert "franka_panda" in CANONICAL_ROBOT_NAME_TOKENS
+        assert "any" in CANONICAL_ROBOT_NAME_TOKENS
+        assert "multi" in CANONICAL_ROBOT_NAME_TOKENS
+
+    def test_quant_tokens_exact_set(self) -> None:
+        from openral_core import CANONICAL_QUANT_TOKENS
+
+        # Weight-bearing dtype tokens only; ROS wrappers omit the quant segment.
+        assert set(CANONICAL_QUANT_TOKENS) == {"fp32", "fp16", "bf16", "int8", "nf4"}
+
+
+class TestExpectedRepoName:
+    """``expected_repo_name`` — the canonical SUGGESTION (always valid).
+
+    Exact-value cases use SYNTHETIC manifests (``model_validate`` with a
+    controlled ``name`` + ``evaluated_tasks``) so they don't depend on the
+    in-tree fixture names, which the migration agent rewrites concurrently. Real
+    fixtures are only swept for canonicality of the suggestion.
+    """
+
+    @staticmethod
+    def _vla(name: str, **over: object) -> RSkillManifest:
+        d = _minimal_manifest_dict()
+        d["name"] = name
+        d.update(over)
+        return RSkillManifest.model_validate(d)
+
+    def test_task_from_evaluated_tasks_is_name_independent(self) -> None:
+        from openral_core import expected_repo_name
+
+        # evaluated_tasks drives <task>, so the suggestion is stable regardless
+        # of the current (arbitrary) name.
+        m = self._vla(
+            "openral/rskill-anything",
+            embodiment_tags=["franka_panda"],
+            evaluated_tasks=["libero_spatial/3"],
+        )
+        assert expected_repo_name(m) == "openral/rskill-smolvla-franka_panda-libero_spatial-fp32"
+
+    def test_preserves_owner_prefix(self) -> None:
+        from openral_core import expected_repo_name
+
+        m = self._vla("weird_owner/rskill-x", evaluated_tasks=["libero_object"])
+        assert expected_repo_name(m).startswith("weird_owner/rskill-")
+
+    def test_versioned_model_token_from_family(self) -> None:
+        from openral_core import expected_repo_name
+
+        m = self._vla(
+            "openral/rskill-x",
+            model_family="lingbot_vla2",
+            embodiment_tags=["franka_panda"],
+            evaluated_tasks=["robotwin"],
+        )
+        assert expected_repo_name(m) == "openral/rskill-lingbot_vla2-franka_panda-robotwin-fp32"
+
+    def test_int4_maps_to_nf4_token(self) -> None:
+        from openral_core import expected_repo_name
+
+        m = self._vla(
+            "openral/rskill-x",
+            embodiment_tags=["so100_follower"],
+            evaluated_tasks=["libero_object"],
+            quantization={"dtype": "int4", "backend": "pytorch"},
+        )
+        assert expected_repo_name(m) == "openral/rskill-smolvla-so100-libero_object-nf4"
+
+    def test_multi_robot_token(self) -> None:
+        from openral_core import expected_repo_name
+
+        m = self._vla(
+            "openral/rskill-x",
+            embodiment_tags=["so100_follower", "so101_follower"],
+            evaluated_tasks=["libero_object"],
+        )
+        assert "-multi-" in expected_repo_name(m)
+
+    def test_name_tail_author_slug_distinguishes_pen_skills(self) -> None:
+        from openral_core import expected_repo_name
+
+        # No evaluated_tasks/benchmarks → the name-tail author slug is recovered,
+        # keeping two otherwise-identical skills distinct.
+        pen = self._vla(
+            "openral/rskill-smolvla-so101-pen-bf16",
+            embodiment_tags=["so101_follower"],
+            quantization={"dtype": "bf16", "backend": "pytorch"},
+        )
+        pick = self._vla(
+            "openral/rskill-smolvla-so101-pick_place_pen-bf16",
+            embodiment_tags=["so101_follower"],
+            quantization={"dtype": "bf16", "backend": "pytorch"},
+        )
+        assert expected_repo_name(pen).endswith("-pen-bf16")
+        assert expected_repo_name(pick).endswith("-pick_place_pen-bf16")
+
+    def test_ros_action_suggestion_has_no_quant_segment(self) -> None:
+        from openral_core import expected_repo_name, repo_name_is_canonical
+
+        m = _naming_fixture("rskill-moveit-eef-pose")
+        got = expected_repo_name(m)
+        # 4 hyphen-parts: rskill-<model>-<robot>-<task> (no quant).
+        assert got.split("/", 1)[1].count("-") == 3, got
+        assert got.endswith("-moveit-multi-eef_pose"), got
+        assert repo_name_is_canonical(got, kind=m.kind)
+
+    def test_all_in_tree_suggestions_are_canonical(self) -> None:
+        """For every shipped rskill.yaml, the suggestion validates for its kind.
+
+        Real-fixture sweep (CLAUDE.md §1.11) that does NOT assert exact names —
+        it only requires ``expected_repo_name`` to produce a name
+        ``repo_name_is_canonical`` accepts (model-family-consistent when set).
+        """
+        from openral_core import expected_repo_name, repo_name_is_canonical
+
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        for p in sorted(repo_root.glob("rskills/*/rskill.yaml")):
+            if p.parent.name == "template":
+                continue
+            m = RSkillManifest.from_yaml(str(p))
+            got = expected_repo_name(m)
+            assert repo_name_is_canonical(got, kind=m.kind, model_family=m.model_family), (
+                f"{p.parent.name}: {got}"
+            )

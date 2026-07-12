@@ -50,7 +50,7 @@ def test_warning_when_gate_disagrees_with_legacy() -> None:
     skill = _rskill("act-libero")
     msg = task_space_disagreement(skill, robot, "sim", legacy_ok=False)
     assert msg is not None
-    assert "act-libero" in msg
+    assert "OpenRAL/rskill-act-franka_panda-libero-fp32" in msg
     assert "franka_panda" in msg
     assert "Warn-only" in msg
 

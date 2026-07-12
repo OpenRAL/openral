@@ -34,10 +34,11 @@ def test_franka_panda_palette_surfaces_wrapped_moveit_skill() -> None:
     caps = RobotCapabilities(embodiment_tags=["franka_panda"])
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
     ids = {s.rskill_id for s in palette.skills}
-    assert "OpenRAL/rskill-moveit-joints" in ids, (
+    assert "OpenRAL/rskill-moveit-multi-joints" in ids, (
         f"expected wrapped-MoveIt rSkill in Franka palette, got {sorted(ids)!r}"
     )
-    moveit = next(s for s in palette.skills if s.rskill_id == "OpenRAL/rskill-moveit-joints")
+    moveit_id = "OpenRAL/rskill-moveit-multi-joints"
+    moveit = next(s for s in palette.skills if s.rskill_id == moveit_id)
     assert moveit.actions == (RSkillAction.REACH,)
     assert "MoveIt" in moveit.description
 
@@ -50,10 +51,11 @@ def test_mobile_base_palette_surfaces_wrapped_nav2_skill() -> None:
     caps = RobotCapabilities(embodiment_tags=["mobile_base"])
     palette = build_tool_palette(installed_skills=_load_intree(), robot_capabilities=caps)
     ids = {s.rskill_id for s in palette.skills}
-    assert "OpenRAL/rskill-nav2-navigate-to-pose" in ids, (
+    assert "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose" in ids, (
         f"expected wrapped-Nav2 rSkill in mobile_base palette, got {sorted(ids)!r}"
     )
-    nav2 = next(s for s in palette.skills if s.rskill_id == "OpenRAL/rskill-nav2-navigate-to-pose")
+    nav2_id = "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose"
+    nav2 = next(s for s in palette.skills if s.rskill_id == nav2_id)
     assert nav2.actions == (RSkillAction.NAVIGATE,)
 
 
@@ -73,7 +75,7 @@ def test_panda_mobile_robot_yaml_surfaces_wrapped_nav2_skill() -> None:
         robot_capabilities=description.capabilities,
     )
     ids = {s.rskill_id for s in palette.skills}
-    assert "OpenRAL/rskill-nav2-navigate-to-pose" in ids, (
+    assert "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose" in ids, (
         f"panda_mobile robot.yaml must declare 'mobile_base' so Nav2 surfaces; got {sorted(ids)!r}"
     )
 
@@ -91,8 +93,11 @@ def test_palette_does_not_distinguish_vla_from_ros_wrapper() -> None:
     # MoveIt wrapper (kind: ros_action) AND any Franka VLA must both
     # appear. We don't pin which VLA — just that at least one VLA
     # surfaces alongside the wrapper.
-    assert "OpenRAL/rskill-moveit-joints" in ids
-    vla_ids = ids - {"OpenRAL/rskill-moveit-joints", "OpenRAL/rskill-nav2-navigate-to-pose"}
+    assert "OpenRAL/rskill-moveit-multi-joints" in ids
+    vla_ids = ids - {
+        "OpenRAL/rskill-moveit-multi-joints",
+        "OpenRAL/rskill-nav2-mobile_base-navigate_to_pose",
+    }
     assert vla_ids, (
         "expected at least one VLA in the Franka palette alongside the MoveIt wrapper; "
         f"got only wrapped skills: {sorted(ids)!r}"

@@ -8,7 +8,7 @@
 # chunk → C++ safety kernel).
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-decompose-mission"
+name: "OpenRAL/rskill-playbook-decompose_mission"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s2"

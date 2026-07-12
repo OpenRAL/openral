@@ -35,7 +35,7 @@ openral deploy sim --config scenes/deploy/robocasa_baguette.yaml --no-enable-oct
 # Do NOT type in the dashboard prompt box (that hands control to the autonomous reasoner).
 tools/record_demo.sh clip1_robocasa_rldx 300
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-  "{rskill_id: 'OpenRAL/rskill-rldx1-ft-rc365-nf4', \
+  "{rskill_id: 'OpenRAL/rskill-rldx1_ft-panda_mobile-robocasa-nf4', \
     prompt: 'Pick the baguette from the counter and place it in the cabinet.', \
     deadline_s: 180.0}"
 ```
@@ -87,7 +87,7 @@ openral deploy sim --config scenes/deploy/isaac_franka_bowl.yaml
 chromium --new-window --app=http://127.0.0.1:4318/ &
 tools/record_demo.sh clip3_isaac_franka 300
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-  "{rskill_id: 'OpenRAL/rskill-act-libero', prompt: 'put the bowl on the plate', deadline_s: 120.0}"
+  "{rskill_id: 'OpenRAL/rskill-act-franka_panda-libero-fp32', prompt: 'put the bowl on the plate', deadline_s: 120.0}"
 ```
 
 ### 3b. sim-run path (NO dashboard, but VERIFIED during the Isaac backend integration) — fallback

@@ -22,7 +22,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-openvla-oft-simpler-widowx-nf4"
+name: "OpenRAL/rskill-openvla_oft-widowx-simpler_env-nf4"
 version: "0.1.0"
 license: "mit"
 role: "s1"

@@ -68,8 +68,8 @@ def _real_aloha_palette() -> ToolPalette:
 
 def test_skill_id_to_tool_name_short_id_round_trip() -> None:
     """Short HF-Hub ids slug 1:1 and stay under the 64-char limit."""
-    name = _skill_id_to_tool_name("OpenRAL/rskill-act-aloha")
-    assert name == "execute_rskill__OpenRAL__rskill-act-aloha"
+    name = _skill_id_to_tool_name("OpenRAL/rskill-qwen35_4b-any-general-nf4")
+    assert name == "execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-nf4"
     assert len(name) <= 64
     assert name.startswith(_PER_SKILL_TOOL_PREFIX)
 
@@ -92,7 +92,9 @@ def test_skill_id_to_tool_name_collision_resistant() -> None:
 def test_format_skill_tool_description_includes_structured_tags() -> None:
     """The LLM description carries actions / objects / scenes verbatim."""
     palette = _real_aloha_palette()
-    entry = next(e for e in palette.skills if e.rskill_id.endswith("act-aloha-insertion"))
+    entry = next(
+        e for e in palette.skills if e.rskill_id.endswith("act-aloha-aloha_insertion-fp32")
+    )
     text = _format_skill_tool_description(entry)
     assert entry.rskill_id in text
     assert entry.description.strip() in text

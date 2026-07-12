@@ -19,7 +19,7 @@ base_model:
 - omlab/omdet-turbo-swin-tiny-hf
 ---
 
-# rskill-omdet-turbo-locator
+# rskill-omdet_turbo-any-locator-fp16
 
 > **OpenRAL rSkill** — OmDet-Turbo (Swin-tiny) packaged as an Apache-2.0,
 > **on-demand** open-vocabulary locator (`mode: on_demand`). The
@@ -109,7 +109,7 @@ Mirrors `rskill.yaml::sensors_required`.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-omdet-turbo-locator` |
+| `name` | `OpenRAL/rskill-omdet_turbo-any-locator-fp16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` / `kind` | `s1` / `detector` |

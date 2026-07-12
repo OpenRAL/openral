@@ -103,7 +103,7 @@ class TestDiffusionPushTManifest:
 
     def test_manifest_loads_and_declares_pusht(self, skill_manifest) -> None:
         m = skill_manifest.manifest
-        assert m.name == "OpenRAL/rskill-diffusion-pusht"
+        assert m.name == "OpenRAL/rskill-diffusion-pusht-pusht-fp32"
         assert "pusht" in m.embodiment_tags
         assert m.role == "s1"
 

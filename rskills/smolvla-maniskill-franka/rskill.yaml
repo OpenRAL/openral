@@ -40,7 +40,7 @@
 # `dataset_uri`'s `meta/episodes_stats.jsonl`), the processor pair was
 # rebuilt once via `make_pre_post_processors(policy.config,
 # dataset_stats=...)` and uploaded to THIS rSkill's own HF repo
-# (OpenRAL/rskill-smolvla-maniskill-franka). The rebuilt normalizer
+# (OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16). The rebuilt normalizer
 # stats match the checkpoint's baked `normalize_inputs` /
 # `normalize_targets` buffers exactly, so the processors are faithful to
 # how the model was trained. The fallback path still exists for any
@@ -48,7 +48,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-maniskill-franka"
+name: "OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -101,8 +101,8 @@ weights_uri: "hf://Calvert0921/smolvla_franka_liftcube_1000"
 # downloads exactly these files (and their `state_file` siblings) — no 404,
 # no dataset-stats recompute at load time.
 processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-maniskill-franka/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16/policy_postprocessor.json"
 # Per-checkpoint knobs the processor JSONs don't encode. The model was
 # trained on raw SAPIEN renders (no 180° flip); cameras need an alias
 # remap from the in-tree scene-side keys (camera1 / camera2) to the

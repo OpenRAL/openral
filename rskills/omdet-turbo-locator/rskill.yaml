@@ -15,7 +15,7 @@
 # reasoner overrides it per call via locate_in_view / the detector_query topic.
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-omdet-turbo-locator"
+name: "OpenRAL/rskill-omdet_turbo-any-locator-fp16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

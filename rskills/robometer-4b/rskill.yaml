@@ -1,5 +1,5 @@
 schema_version: "0.1"
-name: "OpenRAL/rskill-robometer-4b-nf4"
+name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s2"
@@ -56,7 +56,7 @@ min_vram_gb:
 # materialization, no requantize (~25 s to ready vs ~110 s + a 19 GB CPU spike).
 # Bit-identical to the bf16+quantize path. Built by
 # tools/build_robometer_nf4_checkpoint.py from the SHA-pinned upstream below.
-weights_uri: "hf://OpenRAL/rskill-robometer-4b-nf4"
+weights_uri: "hf://OpenRAL/rskill-robometer_4b-any-general-nf4"
 
 chunk_size: 1
 latency_budget:

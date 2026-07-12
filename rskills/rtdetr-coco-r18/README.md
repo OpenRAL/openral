@@ -18,7 +18,7 @@ base_model_relation: finetune
 inference: false
 ---
 
-# rskill-rtdetr-coco-r18
+# rskill-rtdetr_coco_r18-any-coco-fp32
 
 > **OpenRAL rSkill** — RT-DETR (Real-Time DEtection TRansformer) with a
 > ResNet-18vd backbone (r18vd), trained on COCO and exported to ONNX. Runs
@@ -137,7 +137,7 @@ The detector emits **no** `Action` chunks and has no proprioception
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-rtdetr-coco-r18` |
+| `name` | `OpenRAL/rskill-rtdetr_coco_r18-any-coco-fp32` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |

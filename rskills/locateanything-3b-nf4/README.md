@@ -23,7 +23,7 @@ inference: false
 license_link: https://huggingface.co/nvidia/LocateAnything-3B/blob/main/LICENSE
 ---
 
-# rskill-locateanything-3b-nf4
+# rskill-locateanything_3b-any-general-nf4
 
 > **OpenRAL rSkill** - NVIDIA LocateAnything-3B packaged as an NF4
 > bitsandbytes PyTorch detector rSkill. It localizes queried objects, text,
@@ -34,7 +34,7 @@ license_link: https://huggingface.co/nvidia/LocateAnything-3B/blob/main/LICENSE
 ## Quick Start
 
 ```bash
-OPENRAL_ALLOW_NONCOMMERCIAL=1 ral skill install hf://OpenRAL/rskill-locateanything-3b-nf4
+OPENRAL_ALLOW_NONCOMMERCIAL=1 ral skill install hf://OpenRAL/rskill-locateanything_3b-any-general-nf4
 ```
 
 ```python
@@ -131,14 +131,14 @@ The model emits no action chunks and has no proprioception contract.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-locateanything-3b-nf4` |
+| `name` | `OpenRAL/rskill-locateanything_3b-any-general-nf4` |
 | `version` | `0.1.0` |
 | `license` | `nvidia_non_commercial` |
 | `role` / `kind` | `s1` / `detector` |
 | `runtime` | `pytorch` |
 | `quantization.dtype` | `int4` |
 | `quantization.extra.scheme` | `nf4` |
-| `weights_uri` | `hf://OpenRAL/rskill-locateanything-3b-nf4` |
+| `weights_uri` | `hf://OpenRAL/rskill-locateanything_3b-any-general-nf4` |
 | `source_repo` | `hf://nvidia/LocateAnything-3B@7a81d810571dc5f244b2f0b6868128f24b1cbd85` |
 | `latency_budget.per_chunk_ms` | 1000 ms |
 | `actions` | `detect` |
@@ -163,7 +163,7 @@ cd <path/to/openral-checkout>
 OPENRAL_TRUSTED_REMOTE_CODE_ORGS=nvidia \
   uv run python tools/quantize_rskill.py \
   --source nvidia/LocateAnything-3B \
-  --target OpenRAL/rskill-locateanything-3b-nf4 \
+  --target OpenRAL/rskill-locateanything_3b-any-general-nf4 \
   --loader transformers \
   --transformers-auto-class AutoModel \
   --trust-remote-code \

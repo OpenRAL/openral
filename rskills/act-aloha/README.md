@@ -16,7 +16,7 @@ tags:
 inference: false
 ---
 
-# rskill-act-aloha
+# rskill-act-aloha-aloha_transfer_cube-fp32
 
 > **OpenRAL rSkill** — ACT (Action Chunking Transformer) finetuned on
 > the ALOHA bimanual cube-transfer task, packaged for `OpenRAL`.
@@ -62,7 +62,7 @@ wrist or third-person view.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-act-aloha` |
+| `name` | `OpenRAL/rskill-act-aloha-aloha_transfer_cube-fp32` |
 | `version` | `0.1.0` |
 | `license` | `mit` |
 | `role` | `s1` |

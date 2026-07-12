@@ -4,7 +4,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-diffusion-pusht"
+name: "OpenRAL/rskill-diffusion-pusht-pusht-fp32"
 evaluated_tasks: ["pusht"]  # benchmark task this checkpoint is validated for (gate)
 version: "0.1.0"
 license: "apache-2.0"

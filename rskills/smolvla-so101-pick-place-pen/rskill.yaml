@@ -25,7 +25,7 @@
 # runner converts deg<->rad at the HAL boundary; declared explicitly below so
 # it does not rely on the stats-magnitude heuristic.
 #
-# PROVENANCE — weights are the OpenRAL mirror `OpenRAL/rskill-smolvla-so101-pick-place-pen`
+# PROVENANCE — weights are the OpenRAL mirror `OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16`
 # (byte-identical to upstream `nota-gmbh/so101_pick_place_pen_smolvla`, Apache-2.0).
 # The upstream config.json carried a stray `pretrained_revision` key that lerobot
 # 0.5.1's draccus `SmolVLAConfig` rejects — and which forced an offline-breaking
@@ -35,7 +35,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-so101-pick-place-pen"
+name: "OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
@@ -83,7 +83,7 @@ quantization:
   dtype: "bf16"
   backend: "pytorch"
 # VRAM footprint for the VLA↔reward co-residency preflight. Same
-# SmolVLA base (~0.45B, SmolVLM2-500M backbone) as rskill-smolvla-so101-pen, so
+# SmolVLA base (~0.45B, SmolVLM2-500M backbone) as rskill-smolvla-so101-pen-bf16, so
 # mirror its measured 1.2 GB + 0.3 GB TRT-engine margin. Without this the reward
 # preflight refuses the skill while a reward model is active. Re-measure on the
 # reference host if the 8 GB budget gets tight (1.5 + Robometer NF4 3.6 + 0.5
@@ -92,13 +92,13 @@ min_vram_gb:
   bf16: 1.5
 # Pair this VLA with its task-progress reward monitor so a
 # reward-enabled deploy auto-resolves the Robometer NF4 manifest.
-reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
-weights_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen"
+reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
+weights_uri: "hf://OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:
-  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen/policy_preprocessor.json"
-  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick-place-pen/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-pick_place_pen-bf16/policy_postprocessor.json"
 # Real SO-101 teleop recorded upright — no rotation. The checkpoint's input
 # keys are already camera1/camera2, matching the robot's vla_feature_key slots,
 # so no rename aliases.

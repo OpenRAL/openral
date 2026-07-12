@@ -21,7 +21,7 @@ base_model_relation: quantized
 inference: false
 ---
 
-# rskill-qwen35-4b-nf4
+# rskill-qwen35_4b-any-general-nf4
 
 > **OpenRAL rSkill** — Qwen3.5-4B natively-multimodal video-language model
 > packaged as an NF4 bitsandbytes `vlm` rSkill. Accepts RGB
@@ -31,7 +31,7 @@ inference: false
 ## Quick Start
 
 ```bash
-ral skill install hf://OpenRAL/rskill-qwen35-4b-nf4
+ral skill install hf://OpenRAL/rskill-qwen35_4b-any-general-nf4
 ```
 
 ```python
@@ -95,7 +95,7 @@ Qwen3-VL. Key features:
 ## Runtime
 
 This rSkill ships a **pre-quantized NF4 checkpoint** as `weights_uri`
-(`hf://OpenRAL/rskill-qwen35-4b-nf4`): `model.safetensors` with an embedded
+(`hf://OpenRAL/rskill-qwen35_4b-any-general-nf4`): `model.safetensors` with an embedded
 bitsandbytes `quantization_config` (nf4, double-quant, bf16 compute). The
 sidecar loads it **directly as 4-bit** (~3.3 GB resident, no bf16 load spike),
 so it fits an 8 GB GPU with no loader workaround. `source_repo` records the
@@ -198,14 +198,14 @@ The model emits no action chunks and has no proprioception contract.
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-qwen35-4b-nf4` |
+| `name` | `OpenRAL/rskill-qwen35_4b-any-general-nf4` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` / `kind` | `s2` / `vlm` |
 | `runtime` | `pytorch` |
 | `quantization.dtype` | `int4` |
 | `quantization.extra.scheme` | `nf4` |
-| `weights_uri` | `hf://OpenRAL/rskill-qwen35-4b-nf4` (pre-quantized NF4) |
+| `weights_uri` | `hf://OpenRAL/rskill-qwen35_4b-any-general-nf4` (pre-quantized NF4) |
 | `min_vram_gb.bf16` | 8.0 GB |
 | `min_vram_gb.int4` | 2.5 GB |
 | `latency_budget.per_chunk_ms` | 3000 ms |

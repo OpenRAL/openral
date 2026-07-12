@@ -13,7 +13,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-smolvla-libero"
+name: "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
 evaluated_tasks: ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # trained on the full LIBERO set (all 4 suites, 40 tasks)
 version: "0.1.0"
 license: "apache-2.0"
@@ -65,7 +65,7 @@ min_vram_gb:
 # progress monitor resident alongside it as the model's completion signal.
 # Robometer (NF4, 3.6 GB) is the default; 1.2 + 3.6 = 4.8 GB fits an 8 GB
 # card with room to spare.
-reward_rskill_name: "OpenRAL/rskill-robometer-4b-nf4"
+reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 # Update by re-running: tools/rskill_publisher.py --bump-revision
 weights_uri: "hf://lerobot/smolvla_libero"

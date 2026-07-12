@@ -12,7 +12,7 @@
 # LICENSE: weights are Apache-2.0 (PaddlePaddle RT-DETR public release).
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-rtdetr-coco-r18"
+name: "OpenRAL/rskill-rtdetr_coco_r18-any-coco-fp32"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"

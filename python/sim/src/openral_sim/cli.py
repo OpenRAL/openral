@@ -92,7 +92,8 @@ def _sim_run_callback(
         help=(
             "rSkill reference — a bare name ('smolvla-libero'), a "
             "path ('rskills/smolvla-libero'), or an HF Hub repo id "
-            "('OpenRAL/rskill-smolvla-libero'). Required. Resolves to the "
+            "('OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16'). "
+            "Required. Resolves to the "
             "policy manifest; the policy adapter is selected from the "
             "manifest's model_family field. Run `openral sim list` for "
             "paste-able strings."
@@ -355,7 +356,7 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
     # Now load the manifest -- robot guard above already rejected the
     # cheap-to-detect error cases, so any failure here is genuinely
     # about the manifest itself. Bare names (e.g. `smolvla-libero` or
-    # `OpenRAL/rskill-smolvla-libero`) are accepted directly.
+    # `OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`) are accepted directly.
     from openral_rskill.loader import _validate_skill_ref, load_rskill_manifest
 
     rskill_uri = _validate_skill_ref(args.rskill)

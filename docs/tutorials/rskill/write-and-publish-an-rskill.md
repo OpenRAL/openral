@@ -55,7 +55,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 
 | Field | What it does |
 | --- | --- |
-| `name` | `<owner>/rskill-<id>` — the Hub repo id. |
+| `name` | `<owner>/rskill-<model>-<robot>-<task>-<quant>` — the Hub repo id (enforced; see [Naming convention](#naming-convention)). |
 | `license` | License **posture**; drives `commercial_use_allowed`. |
 | `role` | `s1` (fast policy), `s2` (reasoner), or `s0` (cerebellar). |
 | `kind` | `vla` for a learnable policy; detector kinds also exist. |
@@ -73,6 +73,49 @@ The full schema is
 Strip the pi0.5-shaped knobs (`image_preprocessing`, `state_contract`,
 `processors`) if your policy is a simpler ACT/Diffusion model that doesn't
 need them.
+
+### Naming convention
+
+The `name` is **enforced** at publish time. Hyphens are ONLY the segment
+separators; every token uses underscores internally, so a name parses by a
+plain `split("-")`. Two shapes:
+
+```
+<owner>/rskill-<model>-<robot>-<task>-<quantization>   # weight-bearing kinds
+<owner>/rskill-<model>-<robot>-<task>                  # ros_action / ros_service
+<owner>/rskill-playbook-<name>                          # kind: playbook
+```
+
+| Axis | Vocabulary | Example |
+| --- | --- | --- |
+| `<model>` | `CANONICAL_MODEL_TOKENS` — a versioned checkpoint token | `smolvla`, `gr00t_n17`, `lingbot_vla2`, `omdet_turbo` |
+| `<robot>` | `EmbodimentTag` values incl. `any` + `multi` (>1 concrete robot) | `franka_panda`, `aloha_agilex`, `any`, `multi` |
+| `<task>` | **author-chosen**, validated by shape `^[a-z0-9][a-z0-9_]*$` only | `libero_spatial`, `pen`, `pick_place_pen`, `locator` |
+| `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` (schema `int4` → `nf4`); **omitted** for weightless ROS wrappers | `bf16`, `int8`, `nf4` |
+
+For a VLA the `<model>` token must be consistent with `model_family` (e.g. a
+`smolvla` checkpoint can't be named `pi05`). A ROS-wrapper skill
+(`ros_action`/`ros_service`) has no weights, so it drops the quant segment
+entirely, e.g. `OpenRAL/rskill-moveit-multi-eef_pose`.
+
+The `<task>` segment is **yours to choose** — it is validated by shape, not by
+equality against `evaluated_tasks`, so two skills that share a benchmark can
+still carry distinct task slugs (e.g. `pen` vs `pick_place_pen`). The other
+segments must use canonical tokens. Example:
+`OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
+
+Validation is `openral_core.schemas.repo_name_is_canonical`; the publisher
+prints a suggested name (from `expected_repo_name`) on a mismatch. To migrate an
+existing manifest in one step, let the tool rewrite it — then refine the
+suggested `<task>` slug if you want a better one:
+
+```bash
+uv run python tools/rskill_publisher.py rskills/<id>/ --fix-name
+```
+
+**Weight-mirror repos** (an HF repo holding only weights, with no `rskill.yaml`)
+are out of publisher scope. Recommended non-enforced shape:
+`<model>-<benchmark>-<quantization>` (e.g. `lingbot_vla-robotwin-nf4`).
 
 ## 3. Write the README
 

@@ -22,7 +22,7 @@ base_model:
 base_model_relation: finetune
 ---
 
-# rskill-gr00t-n17-so101-fruit
+# rskill-gr00t_n17-so101-fruit-bf16
 
 > **OpenRAL rSkill** — NVIDIA Isaac **GR00T N1.7** (3B) community-finetuned to
 > pick fruit and place it on a tray with the **SO-101** follower arm, packaged
@@ -97,7 +97,7 @@ manifest. SO-101 frames are recorded upright, so no 180° flip is applied
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-gr00t-n17-so101-fruit` |
+| `name` | `OpenRAL/rskill-gr00t_n17-so101-fruit-bf16` |
 | `version` | `0.1.0` |
 | `license` | `nvidia_open_model` (commercial OK) |
 | `role` | `s1` |

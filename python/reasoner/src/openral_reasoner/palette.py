@@ -141,9 +141,10 @@ def detector_alias(rskill_name: str) -> str:
     """Short, LLM- and operator-facing id for a detector rSkill.
 
     Strips the ``OpenRAL/`` org prefix and the ``rskill-`` kind prefix, so
-    ``"OpenRAL/rskill-omdet-turbo-locator"`` → ``"omdet-turbo-locator"``. This is
-    the value the reasoner passes in ``LocateInViewTool.detector`` and the basis
-    for the per-detector service namespace (see :func:`detector_service_segment`).
+    ``"OpenRAL/rskill-omdet_turbo-any-locator-fp16"`` → ``"omdet_turbo-any-locator-fp16"``.
+    This is the value the reasoner passes in ``LocateInViewTool.detector`` and
+    the basis for the per-detector service namespace (see
+    :func:`detector_service_segment`).
     """
     short = rskill_name.rsplit("/", 1)[-1]
     return short[len("rskill-") :] if short.startswith("rskill-") else short

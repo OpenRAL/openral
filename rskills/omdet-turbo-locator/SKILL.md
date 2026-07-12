@@ -5,7 +5,7 @@ description: >-
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
-  rskill_id: OpenRAL/rskill-omdet-turbo-locator
+  rskill_id: OpenRAL/rskill-omdet_turbo-any-locator-fp16
   manifest: ./rskill.yaml
   role: s1
   kind: detector
@@ -63,7 +63,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ```python
 from openral_rskill import rSkill
 
-skill = rSkill.from_pretrained("OpenRAL/rskill-omdet-turbo-locator")
+skill = rSkill.from_pretrained("OpenRAL/rskill-omdet_turbo-any-locator-fp16")
 # the loader validates embodiment / sensors / runtime / quantization against the target
 # RobotDescription and enforces the weight-license gate before any weights load.
 ```

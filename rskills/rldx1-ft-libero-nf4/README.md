@@ -22,7 +22,7 @@ inference: false
 license_link: https://huggingface.co/RLWRLD/RLDX-1-PT
 ---
 
-# rskill-rldx1-ft-libero-nf4
+# rskill-rldx1_ft-franka_panda-libero_spatial-nf4
 
 > **openral rSkill** — RLWRLD's [RLDX-1-FT-LIBERO](https://huggingface.co/RLWRLD/RLDX-1-FT-LIBERO) (Qwen3-VL-8B backbone + Multi-Stream Action Transformer, ~6.9 B params), packaged for the [openral](https://github.com/OpenRAL/openral) robot agent framework.
 
@@ -69,7 +69,7 @@ Two RGB streams + an 8-D proprio state. The sidecar's `observation` adapter (`op
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-rldx1-ft-libero-nf4` |
+| `name` | `OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4` |
 | `version` | `0.1.0` |
 | `license` | `rlwrld_non_commercial` (non-commercial, attribution-required; see [License](#license--read-this-first) above) |
 | `role` | `s1` |
@@ -168,7 +168,7 @@ import os
 os.environ["OPENRAL_ALLOW_NONCOMMERCIAL"] = "1"
 
 from openral_rskill.loader import rSkill
-pkg = rSkill.from_pretrained("OpenRAL/rskill-rldx1-ft-libero-nf4")
+pkg = rSkill.from_pretrained("OpenRAL/rskill-rldx1_ft-franka_panda-libero_spatial-nf4")
 
 # Or offline:
 pkg = rSkill.from_yaml("rskills/rldx1-ft-libero-nf4/rskill.yaml")

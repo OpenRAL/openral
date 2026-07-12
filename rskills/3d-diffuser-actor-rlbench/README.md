@@ -24,7 +24,7 @@ inference: false
   Discovery + provenance card; mirrors rskill.yaml.
 -->
 
-# rskill-3d-diffuser-actor-rlbench
+# rskill-3d_diffuser_actor-franka_panda-rlbench-fp32
 
 3D Diffuser Actor — a diffusion policy over end-effector **keyposes** for RLBench,
 running on the CoppeliaSim/PyRep RLBench benchmark backend.
@@ -98,7 +98,7 @@ supervision).
 
 | Field | Value |
 |---|---|
-| `name` | `OpenRAL/rskill-3d-diffuser-actor-rlbench` |
+| `name` | `OpenRAL/rskill-3d_diffuser_actor-franka_panda-rlbench-fp32` |
 | `version` | `0.1.0` |
 | `license` | `mit` |
 | `role` | `s1` |

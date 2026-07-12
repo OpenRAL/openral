@@ -12,7 +12,7 @@ import binascii
 import math
 import re
 from enum import Enum
-from typing import Any, Literal, Self, TypeAlias, TypeVar
+from typing import Any, Literal, Self, TypeAlias, TypeVar, get_args
 
 from pydantic import (
     AliasChoices,
@@ -4312,6 +4312,7 @@ EmbodimentTag: TypeAlias = Literal[
     "gr1",
     "h1",
     "mobile_base",
+    "multi",
     "openarm",
     "panda_mobile",
     "pusht",
@@ -4326,6 +4327,12 @@ EmbodimentTag: TypeAlias = Literal[
 """Canonical embodiment tags — one per ``robots/<id>/robot.yaml`` shipped in tree,
 plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
 ``"any"`` as the explicit **embodiment-agnostic wildcard**.
+
+``"multi"`` is a repo-name aggregate token (CLAUDE.md §3 rSkill packaging): the
+``<robot>`` segment a skill declaring >1 concrete robot uses (e.g. the
+``moveit-*`` ROS wrappers). It is a member of the Literal so the name validator
+can accept it; a manifest normally lists the specific robots in
+``embodiment_tags`` rather than the aggregate.
 
 ``"any"`` is the *declared* way to say "this rSkill runs on every embodiment":
 perception kinds (``detector`` / ``vlm`` / ``reward``) and ``playbook``
@@ -4390,6 +4397,8 @@ ModelFamily: TypeAlias = Literal[
     "gr00t",
     "diffuser_actor",
     "openvla",
+    "lingbot_vla2",
+    "lingbot_vla",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -4401,6 +4410,21 @@ matching adapter under ``python/sim/src/openral_sim/adapters/``.
 ``gr00t`` (NVIDIA Isaac GR00T N1.x / N2) runs out-of-process via a ZMQ
 sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 ``rldx`` adapter (RLDX-1 is itself a GR00T-N1.5 finetune).
+
+``lingbot_vla2`` (Robbyant LingBot-VLA 2.0, Qwen3-VL-4B backbone + sparse-MoE
+flow-matching action expert, Apache-2.0 code + weights) runs out-of-process
+via a ZMQ sidecar in its own Python 3.12 + torch-2.8 venv — the upstream
+``lingbotvla`` package pins ``torch==2.8.0`` / ``transformers==4.57.3`` +
+custom Triton MoE kernels, incompatible with the workspace torch>=2.9 /
+transformers>=5 (adapter: ``openral_sim.policies.lingbot_vla2``).
+
+``lingbot_vla`` (Robbyant LingBot-VLA 1.0, 4B Qwen2.5-VL-3B backbone + a *dense*
+Qwen2 flow-matching action expert; paper "A Pragmatic VLA Foundation Model",
+arXiv 2601.18692) is the RoboTwin post-train checkpoint. It shares the v2
+sidecar transport + adapter but loads from the separate V1 upstream repo
+(``github.com/robbyant/lingbot-vla``) in its own ``transformers==4.51.3`` /
+``lerobot==0.4.2`` venv, driven by ``tools/_lingbot_vla2_server.py --variant v1``
+(adapter: ``openral_sim.policies.lingbot_vla2`` id ``lingbot_vla``).
 
 ``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
 loaded in-process (``trust_remote_code``, gated by
@@ -4439,7 +4463,7 @@ def contains_rskill_template_sentinel(text: str | None) -> bool:
     Example:
         >>> contains_rskill_template_sentinel("TEMPLATE_ORG/rskill-TEMPLATE_ID")
         True
-        >>> contains_rskill_template_sentinel("OpenRAL/rskill-smolvla-libero")
+        >>> contains_rskill_template_sentinel("OpenRAL/rskill-qwen35_4b-any-general-nf4")
         False
         >>> contains_rskill_template_sentinel(None)
         False
@@ -5457,7 +5481,7 @@ class RSkillManifest(BaseModel):
     reward: RewardContract | None = None
 
     # The reward/progress-monitor rSkill this VLA pairs with (an rSkill
-    # ``name``, e.g. ``"OpenRAL/rskill-robometer-4b-nf4"``). A VLA emits no success
+    # ``name``, e.g. ``"OpenRAL/rskill-robometer_4b-any-general-nf4"``). A VLA emits no success
     # signal of its own, so the reasoner needs a reward model resident alongside it
     # to know whether the policy is progressing / has finished. Allowed
     # ONLY for ``kind == "vla"`` (forbidden otherwise — it is a reference FROM a VLA,
@@ -5865,6 +5889,411 @@ class RSkillManifest(BaseModel):
             pydantic.ValidationError: If the YAML fails schema validation.
         """
         return _load_yaml_model(cls, path)
+
+
+# ── rSkill HF-repo naming convention ────────────────────────────────────────
+# Enforced published-repo shape (CLAUDE.md §3 rSkill packaging), ratified by the
+# org naming audit:
+#
+#   <owner>/rskill-<model>-<robot>-<task>-<quant>       (weight-bearing kinds)
+#   <owner>/rskill-<model>-<robot>-<task>               (ros_action / ros_service)
+#   <owner>/rskill-playbook-<name>                      (kind == "playbook")
+#
+# Grammar rules:
+# - Hyphens are ONLY the segment separators; every token uses underscores
+#   internally. So a name parses by a plain ``split("-")`` into exactly 5 parts
+#   (``rskill`` + 4 segments) — no anchored vocab matching needed.
+# - Each segment matches ``^[a-z0-9][a-z0-9_]*$``.
+# - ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS` (a versioned checkpoint token,
+#   NOT the bare :data:`ModelFamily`, so future gr00t_n2 / rldx2 don't collide).
+# - ``<robot>`` ∈ :data:`CANONICAL_ROBOT_NAME_TOKENS` (the :data:`EmbodimentTag`
+#   values — includes ``"any"`` and ``"multi"`` for skills that declare >1
+#   concrete robot).
+# - ``<task>`` is AUTHOR-CHOSEN — validated by shape only, never by equality
+#   against ``evaluated_tasks`` (that collapses e.g. so101 "pen" vs
+#   "pick_place_pen", or omdet "indoor" vs "locator"). :func:`expected_repo_name`
+#   only *suggests* a default task slug.
+# - ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`. ``int4`` weights ship as
+#   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``.
+#   Weightless wrappers (``ros_action`` / ``ros_service``) OMIT ``<quant>``.
+# - When ``model_family`` is set (VLA skills), the ``<model>`` token must also be
+#   family-consistent — in :data:`_MODEL_FAMILY_ALLOWED_TOKENS` for that family —
+#   so a smolvla checkpoint can't be mislabelled ``pi05``.
+
+_DEFAULT_RSKILL_OWNER = "OpenRAL"
+"""Owner used when a manifest ``name`` carries no ``<owner>/`` prefix."""
+
+_RSKILL_NAME_SEGMENT_RE = re.compile(r"^[a-z0-9][a-z0-9_]*$")
+"""Every name segment (model / robot / task / quant / playbook name) shape."""
+
+# Split-on-hyphen part counts (the leading ``rskill`` counts as one):
+#   5 → ``rskill-<model>-<robot>-<task>-<quant>``  (weight-bearing kinds)
+#   4 → ``rskill-<model>-<robot>-<task>``          (ROS wrappers, no quant)
+#   3 → ``rskill-playbook-<name>``                 (playbooks)
+_RSKILL_NAME_PARTS = 5
+_RSKILL_ROS_NAME_PARTS = 4
+_RSKILL_PLAYBOOK_NAME_PARTS = 3
+
+CANONICAL_QUANT_TOKENS: frozenset[str] = frozenset({"fp32", "fp16", "bf16", "int8", "nf4"})
+"""Canonical ``<quant>`` name tokens for weight-bearing kinds. ``int4`` → ``nf4``
+(bitsandbytes NF4). The ROS wrappers (:data:`_WEIGHTLESS_KINDS`) carry no
+weights and OMIT the ``<quant>`` segment entirely (a 4-part name)."""
+
+_WEIGHTLESS_KINDS: frozenset[str] = frozenset({"ros_action", "ros_service"})
+"""Kinds that wrap an existing ROS interface — no weights, so their name has no
+``<quant>`` segment: ``rskill-<model>-<robot>-<task>``."""
+
+_NAME_TAIL_QUANT_LIKE: frozenset[str] = CANONICAL_QUANT_TOKENS | {"none"}
+"""Trailing tokens the author-slug fallback drops from a name tail — the quant
+tokens plus the legacy ``none`` some pre-convention names carried."""
+
+_QUANT_DTYPE_TO_TOKEN: dict[QuantizationDtype, str] = {
+    QuantizationDtype.FP32: "fp32",
+    QuantizationDtype.FP16: "fp16",
+    QuantizationDtype.BF16: "bf16",
+    QuantizationDtype.INT8: "int8",
+    # 4-bit checkpoints ship as bitsandbytes NF4 (see the ``*-nf4`` in-tree
+    # rSkills and OpenRAL org repos, e.g. rskill-molmoact2-...-nf4): the token
+    # says ``nf4``, not the schema's ``int4`` dtype. ``fp4_nvfp4`` has no
+    # canonical token yet (unused in tree) and is intentionally absent.
+    QuantizationDtype.INT4: "nf4",
+}
+"""Map a :class:`QuantizationDtype` to its name token. Every manifest has a
+``quantization.dtype`` (default ``fp32``), so ``<quant>`` is always derivable."""
+
+CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
+    {
+        # VLA / policy checkpoint tokens. Where a ModelFamily exists the token
+        # matches it verbatim; versioned families use a versioned token.
+        "smolvla",  # family smolvla
+        "pi05",  # family pi05
+        "xvla",  # family xvla
+        "act",  # family act
+        "diffusion",  # family diffusion
+        "molmoact2",  # family molmoact2
+        "openvla",  # family openvla (bare)
+        "openvla_oft",  # family openvla, OFT checkpoint
+        "gr00t_n17",  # family gr00t, N1.7 checkpoint
+        "rldx1_ft",  # family rldx, RLDX-1 finetune
+        "3d_diffuser_actor",  # family diffuser_actor
+        "lingbot_vla",  # family lingbot_vla
+        "lingbot_vla2",  # family lingbot_vla2
+        # Non-VLA tool-model tokens (detector / vlm / reward).
+        "omdet_turbo",
+        "rtdetr_coco_r18",
+        "rtdetr_v2_r50vd",
+        "robometer_4b",
+        "topreward_qwen3vl_4b",
+        "locateanything_3b",
+        "qwen35_4b",
+        # ROS wrapped-action tool tokens (ros_action / ros_service).
+        "moveit",
+        "nav2",
+    }
+)
+"""Canonical ``<model>`` name tokens — the versioned checkpoint vocabulary the
+repo-naming convention allows. Distinct from :data:`ModelFamily` (a runner
+dispatch key): several tokens can share one family (openvla / openvla_oft) and
+non-VLA tool models (omdet_turbo, robometer_4b, moveit, …) have no family at
+all. Adding a checkpoint token here lets a new rSkill publish under it."""
+
+_MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
+    "smolvla": "smolvla",
+    "pi05": "pi05",
+    "xvla": "xvla",
+    "act": "act",
+    "diffusion": "diffusion",
+    "molmoact2": "molmoact2",
+    "rldx": "rldx1_ft",
+    "gr00t": "gr00t_n17",
+    "diffuser_actor": "3d_diffuser_actor",
+    "openvla": "openvla_oft",
+    "lingbot_vla": "lingbot_vla",
+    "lingbot_vla2": "lingbot_vla2",
+}
+"""VLA :data:`ModelFamily` → its canonical ``<model>`` *suggestion* token
+(the single token :func:`expected_repo_name` proposes)."""
+
+_MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
+    "smolvla": frozenset({"smolvla"}),
+    "pi05": frozenset({"pi05"}),
+    "xvla": frozenset({"xvla"}),
+    "act": frozenset({"act"}),
+    "diffusion": frozenset({"diffusion"}),
+    "molmoact2": frozenset({"molmoact2"}),
+    "rldx": frozenset({"rldx1_ft"}),
+    "gr00t": frozenset({"gr00t_n17"}),
+    "diffuser_actor": frozenset({"3d_diffuser_actor"}),
+    # A manifest family ``openvla`` may carry the base or the OFT checkpoint.
+    "openvla": frozenset({"openvla", "openvla_oft"}),
+    "lingbot_vla": frozenset({"lingbot_vla"}),
+    "lingbot_vla2": frozenset({"lingbot_vla2"}),
+}
+"""The documented **family → allowed ``<model>`` tokens** map: when a manifest
+declares ``model_family``, the name's ``<model>`` segment must be one of these
+(a per-family allowlist rather than a bare ``startswith`` stem, so
+``lingbot_vla`` and ``lingbot_vla2`` — where one string prefixes the other —
+stay distinct). Keyed by every :data:`ModelFamily` value."""
+
+_EMBODIMENT_TO_ROBOT_TOKEN: dict[str, str] = {
+    "so100_follower": "so100",
+    "so101_follower": "so101",
+}
+"""EmbodimentTag values whose ``<robot>`` name token is shortened: the
+``_follower`` suffix carries no information in a repo name (there is no other
+so100/so101 embodiment), so names use the bare robot id."""
+
+CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(
+    _EMBODIMENT_TO_ROBOT_TOKEN.get(t, t) for t in get_args(EmbodimentTag)
+)
+"""Canonical ``<robot>`` name tokens: the :data:`EmbodimentTag` values —
+including the ``"any"`` wildcard and the ``"multi"`` aggregate (a skill
+declaring >1 concrete robot) — with the ``so10x_follower`` tags shortened to
+``so100``/``so101`` via :data:`_EMBODIMENT_TO_ROBOT_TOKEN`."""
+
+
+def _quant_token_for_dtype(dtype: QuantizationDtype) -> str:
+    """Return the canonical ``<quant>`` token for a dtype (raises if unmapped)."""
+    token = _QUANT_DTYPE_TO_TOKEN.get(dtype)
+    if token is None:
+        raise ValueError(
+            f"quantization dtype {dtype.value!r} has no canonical name token yet; "
+            f"extend CANONICAL_QUANT_TOKENS + _QUANT_DTYPE_TO_TOKEN."
+        )
+    return token
+
+
+def _robot_token_for_manifest(manifest: RSkillManifest) -> str:
+    """Suggest the ``<robot>`` token: ``multi`` for >1 concrete tag, else the first.
+
+    Concrete = any tag other than the ``"any"`` wildcard. A skill declaring
+    several concrete robots (the ``moveit-*`` case) collapses to ``"multi"``.
+    An empty / wildcard-only tag list yields ``"any"``.
+    """
+    concrete = [t for t in manifest.embodiment_tags if t != "any"]
+    if len(concrete) > 1:
+        return "multi"
+    if len(concrete) == 1:
+        return _EMBODIMENT_TO_ROBOT_TOKEN.get(concrete[0], concrete[0])
+    return "any"
+
+
+def _model_token_for_manifest(manifest: RSkillManifest) -> str:
+    """Suggest the ``<model>`` token.
+
+    VLA skills map their :attr:`model_family` through
+    :data:`_MODEL_FAMILY_TO_TOKEN`. Non-VLA skills (no ``model_family``) match
+    the current repo tail against :data:`CANONICAL_MODEL_TOKENS` by longest
+    prefix (e.g. ``omdet-turbo-locator`` → ``omdet_turbo``).
+
+    Raises:
+        ValueError: If no canonical token can be determined.
+    """
+    if manifest.model_family is not None:
+        token = _MODEL_FAMILY_TO_TOKEN.get(manifest.model_family)
+        if token is None:
+            raise ValueError(
+                f"RSkillManifest({manifest.name!r}): model_family "
+                f"{manifest.model_family!r} has no canonical <model> token; "
+                "extend _MODEL_FAMILY_TO_TOKEN."
+            )
+        return token
+    tail = _repo_tail_slug(manifest.name)
+    candidates = [t for t in CANONICAL_MODEL_TOKENS if tail == t or tail.startswith(f"{t}_")]
+    if not candidates:
+        raise ValueError(
+            f"RSkillManifest({manifest.name!r}): cannot determine a canonical "
+            f"<model> token for a {manifest.kind!r} skill — no CANONICAL_MODEL_TOKENS "
+            f"entry is a prefix of {tail!r}. Add one or rename the skill."
+        )
+    return max(candidates, key=len)
+
+
+def _repo_tail_slug(name: str) -> str:
+    """Return the ``rskill-``-stripped repo tail as an underscore slug.
+
+    ``"OpenRAL/rskill-omdet_turbo-any-locator-fp16"`` → ``"omdet_turbo_any_locator_fp16"``.
+    """
+    repo = name.split("/", 1)[1] if "/" in name else name
+    tail = repo.removeprefix("rskill-")
+    return tail.lower().replace("-", "_")
+
+
+def _task_slug_for_manifest(manifest: RSkillManifest, model_token: str, robot_token: str) -> str:
+    """Suggest the AUTHOR-OWNED ``<task>`` slug (a default only — never enforced).
+
+    Priority:
+
+    1. :attr:`evaluated_tasks` — first entry's :func:`scene_family`.
+    2. :attr:`benchmarks` — lexicographically first suite key.
+    3. The current repo tail with the ``<model>`` / ``<robot>`` prefixes and a
+       trailing quant-like token removed — recovers an author's discriminator
+       that lives only in the name (``omdet-turbo-locator`` → ``locator``; the
+       two so101 pen skills → ``pen`` vs ``pick_place_pen``), which the benchmark
+       fields cannot distinguish. Idempotent on an already-canonical name and
+       drops a stale/legacy trailing quant token (``fp32`` / ``none``).
+    4. :attr:`scenes` — first scene keyword.
+    5. ``"main"`` — shape-valid placeholder when nothing else is available.
+    """
+    if manifest.evaluated_tasks:
+        return scene_family(manifest.evaluated_tasks[0]).lower().replace("-", "_")
+    if manifest.benchmarks:
+        return sorted(manifest.benchmarks)[0].lower().replace("-", "_")
+    tail = _repo_tail_slug(manifest.name)
+    for prefix in (model_token, robot_token):
+        if tail == prefix:
+            tail = ""
+        elif tail.startswith(f"{prefix}_"):
+            tail = tail[len(prefix) + 1 :]
+    segments = tail.split("_")
+    if len(segments) > 1 and segments[-1] in _NAME_TAIL_QUANT_LIKE:
+        tail = "_".join(segments[:-1])
+    elif tail in _NAME_TAIL_QUANT_LIKE:
+        tail = ""
+    tail = tail.strip("_")
+    if tail and tail != robot_token and _RSKILL_NAME_SEGMENT_RE.match(tail):
+        return tail
+    if manifest.scenes:
+        return manifest.scenes[0].lower().replace("-", "_")
+    return "main"
+
+
+def repo_name_is_canonical(name: str, *, kind: RSkillKind, model_family: str | None = None) -> bool:
+    """Return ``True`` when ``name`` obeys the repo-naming grammar for ``kind``.
+
+    Three shapes, chosen by ``kind``:
+
+    * ``playbook`` → ``rskill-playbook-<name>`` (3 parts).
+    * ``ros_action`` / ``ros_service`` (:data:`_WEIGHTLESS_KINDS`) →
+      ``rskill-<model>-<robot>-<task>`` (4 parts) — no ``<quant>`` segment, since
+      a ROS wrapper carries no weights.
+    * every other kind → ``rskill-<model>-<robot>-<task>-<quant>`` (5 parts) with
+      ``<quant>`` ∈ :data:`CANONICAL_QUANT_TOKENS`.
+
+    In all cases ``<model>`` ∈ :data:`CANONICAL_MODEL_TOKENS`, ``<robot>`` ∈
+    :data:`CANONICAL_ROBOT_NAME_TOKENS`, and ``<task>`` matches the segment
+    shape. The owner prefix (``<owner>/``) is ignored.
+
+    When ``model_family`` is given (a VLA skill), the ``<model>`` segment must
+    additionally be family-consistent — one of
+    :data:`_MODEL_FAMILY_ALLOWED_TOKENS` for that family — so a checkpoint can't
+    be mislabelled with another family's token. When ``model_family`` is ``None``
+    (tool / ROS skills, or a pure name check) only vocab membership is required.
+
+    Example:
+        >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
+        ... )
+        True
+        >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
+        ... )  # ROS wrapper: no quant segment
+        True
+        >>> repo_name_is_canonical(
+        ...     "OpenRAL/rskill-pi05-franka_panda-libero-bf16",
+        ...     kind="vla",
+        ...     model_family="smolvla",
+        ... )  # wrong family token
+        False
+        >>> repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")
+        True
+        >>> repo_name_is_canonical("OpenRAL/rskill-smolvla-libero", kind="vla")  # old 3-part name
+        False
+    """
+    repo = name.split("/", 1)[1] if "/" in name else name
+    parts = repo.split("-")
+    if parts[0] != "rskill":
+        return False
+    if kind == "playbook":
+        return (
+            len(parts) == _RSKILL_PLAYBOOK_NAME_PARTS
+            and parts[1] == "playbook"
+            and bool(_RSKILL_NAME_SEGMENT_RE.match(parts[2]))
+        )
+    if kind in _WEIGHTLESS_KINDS:
+        if len(parts) != _RSKILL_ROS_NAME_PARTS:
+            return False
+        _, model, robot, task = parts
+        quant_ok = True
+    else:
+        if len(parts) != _RSKILL_NAME_PARTS:
+            return False
+        _, model, robot, task, quant = parts
+        quant_ok = quant in CANONICAL_QUANT_TOKENS
+    ok = (
+        model in CANONICAL_MODEL_TOKENS
+        and robot in CANONICAL_ROBOT_NAME_TOKENS
+        and bool(_RSKILL_NAME_SEGMENT_RE.match(task))
+        and quant_ok
+    )
+    if ok and model_family is not None:
+        ok = model in _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset())
+    return ok
+
+
+def expected_repo_name(manifest: RSkillManifest) -> str:
+    """Suggest the canonical HF-repo name for an rSkill manifest.
+
+    Returns a name that satisfies :func:`repo_name_is_canonical` for the
+    manifest's ``kind`` — the value the publisher prints on a mismatch and
+    ``--fix-name`` writes back. The ``<task>`` segment is a *suggested default*
+    (see :func:`_task_slug_for_manifest`); it is author-owned and the migration
+    agent may refine it. The owner prefix is preserved from
+    :attr:`RSkillManifest.name` (default :data:`_DEFAULT_RSKILL_OWNER`).
+
+    Playbooks map to ``<owner>/rskill-playbook-<name>``; ROS wrappers
+    (``ros_action`` / ``ros_service``) to ``<owner>/rskill-<model>-<robot>-<task>``
+    (no ``<quant>``); every other kind to
+    ``<owner>/rskill-<model>-<robot>-<task>-<quant>``.
+
+    Raises:
+        ValueError: If no canonical ``<model>`` token can be determined (see
+            :func:`_model_token_for_manifest`).
+
+    Example:
+        >>> m = RSkillManifest(
+        ...     name="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16",
+        ...     version="0.1.0",
+        ...     license=RSkillLicensePosture.APACHE_2_0,
+        ...     role="s1",
+        ...     kind="vla",
+        ...     model_family="smolvla",
+        ...     embodiment_tags=["franka_panda"],
+        ...     runtime=RSkillRuntime.PYTORCH,
+        ...     weights_uri="hf://lerobot/smolvla_base",
+        ...     chunk_size=16,
+        ...     latency_budget=RSkillLatencyBudget(per_chunk_ms=100.0),
+        ...     quantization=QuantizationConfig(dtype=QuantizationDtype.BF16),
+        ...     evaluated_tasks=["libero_spatial"],
+        ...     description="SmolVLA on LIBERO.",
+        ...     actions=[RSkillAction.GENERALIST],
+        ...     actuators_required=[
+        ...         ActuatorRequirement(
+        ...             kind=ControlMode.JOINT_POSITION,
+        ...             control_mode_semantics=ControlModeSemantics(mode="absolute"),
+        ...         ),
+        ...     ],
+        ...     processors=RSkillProcessors(
+        ...         preprocessor_uri="hf://lerobot/smolvla_base/policy_preprocessor.json",
+        ...         postprocessor_uri="hf://lerobot/smolvla_base/policy_postprocessor.json",
+        ...     ),
+        ... )
+        >>> expected_repo_name(m)
+        'OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16'
+    """
+    owner = manifest.name.split("/", 1)[0] if "/" in manifest.name else _DEFAULT_RSKILL_OWNER
+    if manifest.kind == "playbook":
+        tail = _repo_tail_slug(manifest.name).removeprefix("playbook_").strip("_")
+        name = tail if tail and _RSKILL_NAME_SEGMENT_RE.match(tail) else "main"
+        return f"{owner}/rskill-playbook-{name}"
+    model = _model_token_for_manifest(manifest)
+    robot = _robot_token_for_manifest(manifest)
+    task = _task_slug_for_manifest(manifest, model, robot)
+    # Weightless wrappers (ros_action / ros_service) omit the <quant> segment.
+    if manifest.kind in _WEIGHTLESS_KINDS:
+        return f"{owner}/rskill-{model}-{robot}-{task}"
+    quant = _quant_token_for_dtype(manifest.quantization.dtype)
+    return f"{owner}/rskill-{model}-{robot}-{task}-{quant}"
 
 
 def assert_vla_reward_fits(
@@ -6390,7 +6819,7 @@ class VLASpec(BaseModel):
             ``"xvla"``, ``"random"``, ``"zero"``. Picks the loader.
         weights_uri: Where to fetch weights from. Pass a bare rSkill
             reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),
-            or a bare HF repo ID (``OpenRAL/rskill-smolvla-libero``). The
+            or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The
             :class:`openral_sim.SimRunner` requires a locally-resolvable
             reference — raw ``"hf://"`` URIs are rejected. Other URI shapes
             (e.g. ``"mock://"``) are still parsed by the schema so unit tests
@@ -7780,8 +8209,9 @@ class LocateInViewTool(_ReasonerToolBase):
         detector: Optional on-demand locator selector. Empty (default)
             uses the deployment's default locator; otherwise an rSkill id / short
             alias of one of the on-demand locators in the graph (e.g.
-            ``"omdet-turbo-locator"`` for fast simple "find X",
-            ``"locateanything-3b"`` for complex referring expressions). The
+            ``"omdet_turbo-any-locator-fp16"`` for fast simple "find X",
+            ``"locateanything_3b-any-general-nf4"`` for complex referring
+            expressions). The
             reasoner routes to ``/openral/perception/<detector>/locate_in_view``.
             Still **read-only** — choosing a model does not grant actuation.
     """

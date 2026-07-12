@@ -10,7 +10,7 @@ tags:
 inference: false
 ---
 
-# rskill-find-object
+# rskill-playbook-find_object
 
 A `kind: playbook` rSkill: a symbolic S2 **decision procedure** the
 Reasoner reads, not a neural policy. It carries no weights — the authored

@@ -7,7 +7,7 @@
 # downstream ExecuteRskill → Action chunk → C++ safety kernel).
 
 schema_version: "0.1"
-name: "OpenRAL/rskill-clarify-ambiguity"
+name: "OpenRAL/rskill-playbook-clarify_ambiguity"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s2"

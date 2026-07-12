@@ -145,7 +145,7 @@ def test_query_empty_question_raises_before_connect() -> None:
     """An empty question fails fast without touching the sidecar."""
     from openral_runner.backends.gstreamer.qwen_scene_vlm import QwenSceneVlm
 
-    vlm = QwenSceneVlm(model_id="OpenRAL/rskill-qwen35-4b-nf4", auto_spawn=False)
+    vlm = QwenSceneVlm(model_id="OpenRAL/rskill-qwen35_4b-any-general-nf4", auto_spawn=False)
     with pytest.raises(ROSConfigError, match="non-empty"):
         vlm.query(b"\x00" * 12, 2, 2, "   ")
 
@@ -175,7 +175,7 @@ def test_e2e_query_coco_sample() -> None:
     bgr = np.asarray(img)[:, :, ::-1].tobytes()  # RGB -> BGR bytes
 
     vlm = QwenSceneVlm(
-        model_id="OpenRAL/rskill-qwen35-4b-nf4",
+        model_id="OpenRAL/rskill-qwen35_4b-any-general-nf4",
         port=5760,
         boot_timeout_s=1800,
     )

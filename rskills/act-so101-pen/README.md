@@ -16,7 +16,7 @@ datasets:
 inference: false
 ---
 
-# rskill-act-so101-pen
+# rskill-act-so101-pen-fp32
 
 > **OpenRAL rSkill** — [ACT](https://arxiv.org/abs/2304.13705) (Action Chunking
 > with Transformers) finetuned for **"pass the pen"** pick-and-place on a **real
@@ -102,7 +102,7 @@ or collect a short teleop set on your own rig and fine-tune.
 
 This VLA emits no success signal of its own, so it runs paired
 with a reward / progress monitor: `reward_rskill_name:
-OpenRAL/rskill-robometer-4b-nf4` (Robometer-4B, NF4). Robometer's **measured**
+OpenRAL/rskill-robometer_4b-any-general-nf4` (Robometer-4B, NF4). Robometer's **measured**
 resident footprint is ~5.5 GB (weights + CUDA context + VLM-scoring
 activations), not the ~3.6 GB packed-weight size — its manifest `min_vram_gb`
 declares the measured value so the co-residency preflight budgets it honestly. ACT
@@ -137,7 +137,7 @@ plain CNN+transformer and exports **whole-model** to one ONNX graph:
 | `role` | `s1` |
 | `chunk_size` | 100 (per-step replay; `temporal_ensemble_coeff=null`) |
 | `action_contract` | 6-D `joint_positions`, `joint_units: degrees` |
-| `reward_rskill_name` | `OpenRAL/rskill-robometer-4b-nf4` |
+| `reward_rskill_name` | `OpenRAL/rskill-robometer_4b-any-general-nf4` |
 | `latency_budget` | 100 ms/chunk |
 | Actions | pick · place · pick_and_place · transfer (object: pen) |
 

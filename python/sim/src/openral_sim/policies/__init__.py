@@ -19,6 +19,7 @@ def _register_policies() -> None:
         act,
         diffusion,
         gr00t,
+        lingbot_vla2,
         mock,
         molmoact2,
         openvla,
