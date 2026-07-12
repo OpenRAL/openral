@@ -54,10 +54,35 @@ def test_default_params_file_exists_and_parses() -> None:
     # PyCuVSLAM fills the same map→odom edge as the other SLAM backends.
     assert params["map_frame"] == "map"
     assert params["odom_frame"] == "odom"
-    # Rectified stereo pair from the OpenRAL camera bus.
-    assert params["left_image_topic"].startswith("/openral/cameras/")
-    assert params["right_image_topic"].startswith("/openral/cameras/")
     assert params["sync_slop_s"] > 0.0
+    # The four stereo topics are owned by the launch args (so a scene's
+    # slam_stereo_cameras can retarget them), NOT pinned in the YAML.
+    assert "left_image_topic" not in params
+    assert "right_image_topic" not in params
+
+
+def test_launch_declares_stereo_camera_topic_args() -> None:
+    """The launch owns the four rectified-stereo topics as overridable args."""
+    mod = _import_launch_module()
+    desc = None
+    try:
+        from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
+
+        get_package_share_directory("openral_slam_bringup")
+        desc = mod.generate_launch_description()
+    except PackageNotFoundError:
+        pytest.skip("openral_slam_bringup not built (run `just ros2-build`).")
+    from launch.actions import DeclareLaunchArgument
+
+    defaults = {
+        a.name: a.default_value[0].text  # single TextSubstitution
+        for a in desc.describe_sub_entities()
+        if isinstance(a, DeclareLaunchArgument)
+    }
+    assert defaults["left_image_topic"] == "/openral/cameras/left/image"
+    assert defaults["left_camera_info_topic"] == "/openral/cameras/left/camera_info"
+    assert defaults["right_image_topic"] == "/openral/cameras/right/image"
+    assert defaults["right_camera_info_topic"] == "/openral/cameras/right/camera_info"
 
 
 def test_launch_module_pins_node_package_and_executable() -> None:

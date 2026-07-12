@@ -324,6 +324,56 @@ def test_deploy_sim_no_reward_monitor_emits_no_empty_launch_args() -> None:
     assert "reward_monitor_task:=" not in joined
 
 
+def test_deploy_sim_default_slam_visual_impl_is_isaac_ros() -> None:
+    """With no scene runtime override, the visual SLAM impl defaults to isaac_ros.
+
+    The impl arg is always forwarded (harmlessly ignored unless slam_backend is
+    ``visual``); with no scene stereo rig pinned, no blank ``slam_stereo_cameras:=``
+    reaches ros2 launch.
+    """
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_visual_impl == "isaac_ros"
+    assert invocation.slam_stereo_cameras is None
+    joined = " ".join(invocation.argv_template)
+    assert "slam_visual_impl:=isaac_ros" in joined
+    assert "slam_stereo_cameras:=" not in joined
+
+
+def test_deploy_sim_scene_pins_pycuvslam_and_stereo_rig(tmp_path: Path) -> None:
+    """A scene runtime pinning pycuvslam + a stereo rig forwards both into the argv."""
+    config = tmp_path / "vision_slam.yaml"
+    config.write_text(
+        'robot_id: "widowx"\n'
+        "scene:\n"
+        "  id: widowx/deploy_noop\n"
+        "  backend: sapien\n"
+        "  observation_height: 128\n"
+        "  observation_width: 128\n"
+        "  cameras: []\n"
+        "runtime:\n"
+        "  slam_visual_impl: pycuvslam\n"
+        "  slam_stereo_cameras: [front_left, front_right]\n"
+    )
+    invocation = resolve_launch_invocation(
+        config=config,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_visual_impl == "pycuvslam"
+    assert invocation.slam_stereo_cameras == ("front_left", "front_right")
+    joined = " ".join(invocation.argv_template)
+    assert "slam_visual_impl:=pycuvslam" in joined
+    assert "slam_stereo_cameras:=front_left,front_right" in joined
+
+
 def test_deploy_sim_no_detector_emits_no_empty_launch_args(tmp_path: Path) -> None:
     """With no usable backend, the leg downgrades off and emits no empty args.
 

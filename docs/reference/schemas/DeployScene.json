@@ -278,6 +278,44 @@
           ],
           "default": null,
           "title": "Approach Skill Id"
+        },
+        "slam_visual_impl": {
+          "anyOf": [
+            {
+              "enum": [
+                "isaac_ros",
+                "pycuvslam"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Slam Visual Impl"
+        },
+        "slam_stereo_cameras": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Slam Stereo Cameras"
         }
       },
       "title": "DeployRuntime",
