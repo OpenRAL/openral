@@ -121,6 +121,8 @@ openral install sim             # opt-in: CPU sim physics
 openral install ros             # opt-in: ROS 2 + apt (needs sudo)
 ```
 
+The base install is **CPU-only** (~1.6 GB — torch `+cpu`, no NVIDIA wheels), matching Tier-0's CPU harness. On an NVIDIA GPU host, pull CUDA torch into the base venv instead by prepending `OPENRAL_TORCH_BACKEND=auto` (uv auto-detects the driver) — or a specific `cu130` — to the install line. `openral doctor` reports the GPU either way.
+
 Heavy extras (LIBERO, RoboCasa, MetaWorld, ManiSkill3, SimplerEnv, ROS 2) are installed on demand via `openral install <group>` or automatically on first `openral sim run` against a scene that needs them. See `openral install list` for the full menu.
 
 > **Pre-PyPI gap.** `openral-cli` is not yet on PyPI. Until then:
