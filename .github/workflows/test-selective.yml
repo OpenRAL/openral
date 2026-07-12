@@ -277,6 +277,20 @@ jobs:
             log=$(mktemp)
             rc=0
             python3 scripts/repair_hf_libero_install.py || true
+            # robocasa + robocasa-gr1 both need robosuite 1.5.2 from the git pin
+            # (232ce7d4). The libero lane runs first and leaves robosuite 1.4.0
+            # installed; a bare `uv run --group robocasa` group switch does not
+            # reliably reinstall the git package (uv evicts master for a wheel —
+            # see python/sim/src/openral_sim/_deps.py), leaving a partial/1.4
+            # robosuite: SO100 absent from REGISTERED_ROBOTS, NullMount not a
+            # MountModel. Reinstall from the lock so every uv run below lands on
+            # the pinned tree deterministically.
+            # ponytail: reinstalls once per robocasa lane; if robocasa +
+            # robocasa-gr1 are both selected it rebuilds twice (rare, correctness
+            # over one extra git build).
+            if [ "$dependency_group" = "robocasa" ]; then
+              uv sync --frozen --all-packages --group robocasa --reinstall-package robosuite
+            fi
             if [ "$group" = "onnx-export" ]; then
               uv run --all-packages --group onnx-export python tools/export_rtdetr_onnx.py \
                 --out rskills/rtdetr-coco-r18/model.onnx || rc=$?
