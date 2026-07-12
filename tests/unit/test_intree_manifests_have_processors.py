@@ -25,16 +25,18 @@ from openral_rskill.loader import discover_intree_rskills
 #   - act-aloha / act-aloha-insertion: norm stats live inside
 #     model.safetensors; the ACT adapter dispatches on
 #     `manifest.processors is None` and uses the snapshot_download path.
-#   - gr00t-n17-libero: GR00T checkpoints carry norm stats in their own
-#     `experiment_cfg/` metadata, not lerobot processor JSONs, and run
-#     out-of-process via the GR00T sidecar. `gr00t` is
+#   - gr00t-n17-libero / gr00t-n17-so101-fruit: GR00T checkpoints carry norm
+#     stats in their own `experiment_cfg/` metadata, not lerobot processor
+#     JSONs (the in-process `gr00t` adapter reads them via
+#     `make_groot_pre_post_processors_from_pretrained`). `gr00t` is
 #     deliberately excluded from `_MODERN_PROCESSOR_FAMILIES` for the same
-#     reason.
+#     reason, so every `model_family: gr00t` skill belongs here.
 _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
     {
         "act-aloha",
         "act-aloha-insertion",
         "gr00t-n17-libero",
+        "gr00t-n17-so101-fruit",
         # Non-lerobot VLAs: 3D Diffuser Actor (RLBench — own point-cloud/pose
         # pipeline) and OpenVLA-OFT (own HF-transformers processor) carry no
         # lerobot PolicyProcessorPipeline, so `processors is None` is correct.
