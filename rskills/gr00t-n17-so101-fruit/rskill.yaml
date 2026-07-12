@@ -24,7 +24,7 @@
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
-name: "OpenRAL/rskill-gr00t-n17-so101-fruit"
+name: "OpenRAL/rskill-gr00t_n17-so101-fruit-bf16"
 version: "0.1.0"
 license: "nvidia_open_model"
 role: "s1"
