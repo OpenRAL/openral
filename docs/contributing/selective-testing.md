@@ -71,17 +71,32 @@ suite.
 8. **Unattributed source ⇒ full run.** A changed `.py`/`.cpp`/… that maps to no
    known package is treated conservatively as a full run.
 9. **Fork-isolated tests run in their own process.** A handful of tests
-   (`isolate_globs` in the toml) drive lerobot's dataset `compute_stats`, which
-   forks a multiprocessing pool. Folded into the broad CLI partition — which has
-   already spun up numpy/pyarrow/torch threadpools — the fork happens in a
-   multi-threaded interpreter and a forked child / C-extension `atexit` handler
-   crashes during Python finalization: the process exits non-zero **after** an
-   all-pass summary, turning green tests into red CI ([issue #24](https://github.com/OpenRAL/openral/issues/24)).
+   (`isolate_globs` in the toml) cannot share an interpreter with a sibling test.
+   Two failure modes live here:
+   - **Dataset forkers** drive lerobot's `compute_stats`, which forks a
+     multiprocessing pool. Folded into the broad CLI partition — which has
+     already spun up numpy/pyarrow/torch threadpools — the fork happens in a
+     multi-threaded interpreter and a forked child / C-extension `atexit` handler
+     crashes during Python finalization: the process exits non-zero **after** an
+     all-pass summary, turning green tests into red CI
+     ([issue #24](https://github.com/OpenRAL/openral/issues/24)).
+   - **EGL/robosuite env creators** (`test_sim_attached_action_dim.py`,
+     `test_sim_attached_idle_step.py`) each spin up a real LIBERO /
+     robosuite-MJCF `OffScreenRenderEnv`. A robosuite/MuJoCo EGL context does not
+     survive a sibling env's teardown in the same process: once one file's env is
+     GC'd, the next file's LIBERO env dies at `reset` with
+     `<...RethinkMount> is not a MujocoXML instance` — even on the correct
+     robosuite 1.4 (so it reads like a 1.4-vs-1.5 conflict but is not). Each file
+     passes cleanly run alone.
+
    `select_tests.py` peels any in-scope match out of `targets` into
-   `isolated_targets`; the runner `--ignore`s them from every partition and runs
-   each in its own `pytest` invocation (the same per-process treatment EGL/MuJoCo
-   sim tests already get). Run alone, the fork lands in a not-yet-threaded
-   process and they pass clean.
+   `isolated_targets`; the full-run path `--ignore`s them from every partition
+   and runs each in its own `pytest` invocation, and each opt-in dependency lane
+   (`run_lane`) likewise splits its isolated targets out of the batched run and
+   runs them one-per-process (still under that lane's `--group`). An isolated
+   file may legitimately `importorskip` an optional dep it does not need in that
+   lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
+   exit code — a real failure fails the lane; an all-/partial-skip does not.
 
 Every selected target carries a human-readable reason.
 
