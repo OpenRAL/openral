@@ -834,7 +834,9 @@ class _LingBotV1Policy:
         images = obs["images"]
         raw = {
             "observation.images.cam_high": np.asarray(images["cam_high"], dtype=np.uint8),
-            "observation.images.cam_left_wrist": np.asarray(images["cam_left_wrist"], dtype=np.uint8),
+            "observation.images.cam_left_wrist": np.asarray(
+                images["cam_left_wrist"], dtype=np.uint8
+            ),
             "observation.images.cam_right_wrist": np.asarray(
                 images["cam_right_wrist"], dtype=np.uint8
             ),

@@ -220,7 +220,7 @@ def _rewrite_manifest_name(manifest_path: Path, old_name: str, new_name: str) ->
     """
     text = manifest_path.read_text(encoding="utf-8")
     pattern = re.compile(
-        r'^(name:[ \t]*)(["\']?)' + re.escape(old_name) + r'\2([ \t]*(?:#.*)?)$',
+        r'^(name:[ \t]*)(["\']?)' + re.escape(old_name) + r"\2([ \t]*(?:#.*)?)$",
         re.MULTILINE,
     )
     new_text, n = pattern.subn(

@@ -6158,9 +6158,7 @@ def _task_slug_for_manifest(manifest: RSkillManifest, model_token: str, robot_to
     return "main"
 
 
-def repo_name_is_canonical(
-    name: str, *, kind: RSkillKind, model_family: str | None = None
-) -> bool:
+def repo_name_is_canonical(name: str, *, kind: RSkillKind, model_family: str | None = None) -> bool:
     """Return ``True`` when ``name`` obeys the repo-naming grammar for ``kind``.
 
     Three shapes, chosen by ``kind``:
@@ -6193,7 +6191,8 @@ def repo_name_is_canonical(
         True
         >>> repo_name_is_canonical(
         ...     "OpenRAL/rskill-pi05-franka_panda-libero-bf16",
-        ...     kind="vla", model_family="smolvla",
+        ...     kind="vla",
+        ...     model_family="smolvla",
         ... )  # wrong family token
         False
         >>> repo_name_is_canonical("OpenRAL/rskill-playbook-find_object", kind="playbook")

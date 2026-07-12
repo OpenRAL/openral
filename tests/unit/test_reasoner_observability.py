@@ -262,7 +262,9 @@ def test_skill_failure_event_log_title_carries_reason() -> None:
             ),
             KeyValue(
                 key="reasoner.rskill_id",
-                value=AnyValue(string_value="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"),
+                value=AnyValue(
+                    string_value="OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
+                ),
             ),
         ],
     )

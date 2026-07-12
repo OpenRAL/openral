@@ -1038,9 +1038,7 @@ class TestRepoNameIsCanonical:
         from openral_core import repo_name_is_canonical
 
         # ROS wrappers carry no weights → no <quant> segment (4 parts).
-        assert repo_name_is_canonical(
-            "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
-        )
+        assert repo_name_is_canonical("OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action")
 
     def test_ros_action_rejects_a_quant_segment(self) -> None:
         from openral_core import repo_name_is_canonical
@@ -1049,17 +1047,13 @@ class TestRepoNameIsCanonical:
         assert not repo_name_is_canonical(
             "OpenRAL/rskill-moveit-multi-eef_pose-fp32", kind="ros_action"
         )
-        assert repo_name_is_canonical(
-            "OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action"
-        )
+        assert repo_name_is_canonical("OpenRAL/rskill-moveit-multi-eef_pose", kind="ros_action")
 
     def test_weight_bearing_kind_requires_a_quant_segment(self) -> None:
         from openral_core import repo_name_is_canonical
 
         # A VLA needs the 5th (quant) segment; the 4-part ROS shape is rejected.
-        assert not repo_name_is_canonical(
-            "OpenRAL/rskill-smolvla-franka_panda-libero", kind="vla"
-        )
+        assert not repo_name_is_canonical("OpenRAL/rskill-smolvla-franka_panda-libero", kind="vla")
         # ...and `none` is not a valid quant token for a weight-bearing kind.
         assert not repo_name_is_canonical(
             "OpenRAL/rskill-smolvla-franka_panda-libero-none", kind="vla"
@@ -1108,9 +1102,7 @@ class TestRepoNameIsCanonical:
     def test_owner_prefix_optional(self) -> None:
         from openral_core import repo_name_is_canonical
 
-        assert repo_name_is_canonical(
-            "rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla"
-        )
+        assert repo_name_is_canonical("rskill-smolvla-franka_panda-libero_spatial-bf16", kind="vla")
 
 
 class TestCanonicalTokenSets:
@@ -1161,13 +1153,11 @@ class TestExpectedRepoName:
         # evaluated_tasks drives <task>, so the suggestion is stable regardless
         # of the current (arbitrary) name.
         m = self._vla(
-            "openral/rskill-anything", embodiment_tags=["franka_panda"],
+            "openral/rskill-anything",
+            embodiment_tags=["franka_panda"],
             evaluated_tasks=["libero_spatial/3"],
         )
-        assert (
-            expected_repo_name(m)
-            == "openral/rskill-smolvla-franka_panda-libero_spatial-fp32"
-        )
+        assert expected_repo_name(m) == "openral/rskill-smolvla-franka_panda-libero_spatial-fp32"
 
     def test_preserves_owner_prefix(self) -> None:
         from openral_core import expected_repo_name
@@ -1179,8 +1169,10 @@ class TestExpectedRepoName:
         from openral_core import expected_repo_name
 
         m = self._vla(
-            "openral/rskill-x", model_family="lingbot_vla2",
-            embodiment_tags=["franka_panda"], evaluated_tasks=["robotwin"],
+            "openral/rskill-x",
+            model_family="lingbot_vla2",
+            embodiment_tags=["franka_panda"],
+            evaluated_tasks=["robotwin"],
         )
         assert expected_repo_name(m) == "openral/rskill-lingbot_vla2-franka_panda-robotwin-fp32"
 
@@ -1188,7 +1180,8 @@ class TestExpectedRepoName:
         from openral_core import expected_repo_name
 
         m = self._vla(
-            "openral/rskill-x", embodiment_tags=["so100_follower"],
+            "openral/rskill-x",
+            embodiment_tags=["so100_follower"],
             evaluated_tasks=["libero_object"],
             quantization={"dtype": "int4", "backend": "pytorch"},
         )
@@ -1198,7 +1191,8 @@ class TestExpectedRepoName:
         from openral_core import expected_repo_name
 
         m = self._vla(
-            "openral/rskill-x", embodiment_tags=["so100_follower", "so101_follower"],
+            "openral/rskill-x",
+            embodiment_tags=["so100_follower", "so101_follower"],
             evaluated_tasks=["libero_object"],
         )
         assert "-multi-" in expected_repo_name(m)
@@ -1246,6 +1240,6 @@ class TestExpectedRepoName:
                 continue
             m = RSkillManifest.from_yaml(str(p))
             got = expected_repo_name(m)
-            assert repo_name_is_canonical(
-                got, kind=m.kind, model_family=m.model_family
-            ), f"{p.parent.name}: {got}"
+            assert repo_name_is_canonical(got, kind=m.kind, model_family=m.model_family), (
+                f"{p.parent.name}: {got}"
+            )

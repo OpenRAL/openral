@@ -77,7 +77,9 @@ _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 _SERVER = Path(__file__).resolve().parent / "_lingbot_vla2_server.py"
 
 
-def _ensure_source(home: Path, *, url: str = _REPO_URL, sha: str = _PINNED_SHA, repo_env: str = _REPO_ENV) -> Path:
+def _ensure_source(
+    home: Path, *, url: str = _REPO_URL, sha: str = _PINNED_SHA, repo_env: str = _REPO_ENV
+) -> Path:
     """Clone the upstream lingbotvla repo at the pinned commit into ``<home>/source``.
 
     ``$<repo_env>`` overrides with an existing checkout (dev escape hatch). Unlike
@@ -115,13 +117,61 @@ def _install_v1(uv: str, py: Path) -> None:
     the pinned ``transformers==4.51.3``. flash-attn is deliberately NOT installed —
     the server coerces the upstream flash_attention_2 hardcode to eager.
     """
-    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "torch==2.8.0", "torchvision==0.23.0"])
+    run_cmd(
+        _LABEL,
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(py),
+            "--torch-backend=cu128",
+            "torch==2.8.0",
+            "torchvision==0.23.0",
+        ],
+    )
     run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "lerobot==0.4.2"])
-    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), "transformers==4.51.3", "numpy==1.26.4", "torchcodec==0.6.0", "datasets==3.6.0"])
-    run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py),
-                     "pyzmq", "msgpack", "bitsandbytes", "accelerate", "einops", "matplotlib",
-                     "pillow", "safetensors", "pyyaml", "opencv-python-headless", "h5py",
-                     "ipdb", "websockets", "torchdata", "blobfile", "tensorboard", "numpydantic"])
+    run_cmd(
+        _LABEL,
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(py),
+            "transformers==4.51.3",
+            "numpy==1.26.4",
+            "torchcodec==0.6.0",
+            "datasets==3.6.0",
+        ],
+    )
+    run_cmd(
+        _LABEL,
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(py),
+            "pyzmq",
+            "msgpack",
+            "bitsandbytes",
+            "accelerate",
+            "einops",
+            "matplotlib",
+            "pillow",
+            "safetensors",
+            "pyyaml",
+            "opencv-python-headless",
+            "h5py",
+            "ipdb",
+            "websockets",
+            "torchdata",
+            "blobfile",
+            "tensorboard",
+            "numpydantic",
+        ],
+    )
 
 
 def _ensure_venv(
@@ -209,13 +259,21 @@ def main() -> int:
     if args.variant == "v1":
         default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME_V1))
         url, sha, repo_env, venv_env, install = (
-            _REPO_URL_V1, _PINNED_SHA_V1, _REPO_ENV_V1, _VENV_ENV_V1, _install_v1,
+            _REPO_URL_V1,
+            _PINNED_SHA_V1,
+            _REPO_ENV_V1,
+            _VENV_ENV_V1,
+            _install_v1,
         )
         qwen_envs = ("OPENRAL_QWEN25VL_PATH", "QWEN25_PATH")
     else:
         default_home = Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME))
         url, sha, repo_env, venv_env, install = (
-            _REPO_URL, _PINNED_SHA, _REPO_ENV, _VENV_ENV, None,
+            _REPO_URL,
+            _PINNED_SHA,
+            _REPO_ENV,
+            _VENV_ENV,
+            None,
         )
         qwen_envs = ("OPENRAL_QWEN3VL_PATH", "QWEN3VL_PATH")
     home = args.home or default_home
