@@ -211,7 +211,15 @@ class _LiberoSim:
         robosuite's ``OffScreenRenderEnv`` on its private ``_env`` attr — so we
         walk the same wrapper chain ``mujoco_handles`` uses to find the env that
         carries ``robots``, robust to robosuite's cross-release re-layering.
+
+        lerobot 0.6.0's ``LiberoEnv`` builds that ``OffScreenRenderEnv`` lazily
+        (``_ensure_env`` on first reset/step), so ``self._env._env`` is ``None``
+        until the env is materialized. The HAL probes ``action_dim`` at
+        ``connect`` *before* the first reset, so trigger materialization here.
         """
+        ensure = getattr(self._env, "_ensure_env", None)
+        if callable(ensure):
+            ensure()
         candidates = (
             getattr(self._env, "_env", None),
             self._env,
