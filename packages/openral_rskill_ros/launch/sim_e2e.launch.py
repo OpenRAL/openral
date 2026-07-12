@@ -281,6 +281,10 @@ def _build_visual_slam_includes(
 
     sim_time_arg = "true" if use_sim_time else "false"
     stereo = _stereo_camera_topics(stereo_cameras_csv)
+    # PyCuVSLAM gets robot_yaml so the node derives the rig frame from the
+    # manifest base_frame → cuVSLAM multi-camera mode (per-camera extrinsics from
+    # TF), which handles the sim's arbitrary (toed-in) camera rigs. The Isaac ROS
+    # composable node has no such arg, so it is passed only for pycuvslam.
     if visual_impl == "pycuvslam":
         launch_file = "pycuvslam.launch.py"
         cam_arg_names = (
@@ -289,6 +293,7 @@ def _build_visual_slam_includes(
             "right_image_topic",
             "right_camera_info_topic",
         )
+        extra_args = {"robot_yaml": robot_yaml}
     else:
         launch_file = "cuvslam.launch.py"
         cam_arg_names = (
@@ -297,12 +302,13 @@ def _build_visual_slam_includes(
             "image_1_topic",
             "camera_info_1_topic",
         )
+        extra_args = {}
     cam_args = dict(zip(cam_arg_names, stereo, strict=True)) if stereo is not None else {}
 
     includes: list[object] = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(slam_share, "launch", launch_file)),
-            launch_arguments={"use_sim_time": sim_time_arg, **cam_args}.items(),
+            launch_arguments={"use_sim_time": sim_time_arg, **cam_args, **extra_args}.items(),
         )
     ]
     # When navigating, fuse depth + cuVSLAM pose into the ESDF cost map Nav2

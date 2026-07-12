@@ -120,6 +120,18 @@ remapped onto that impl's camera args (Isaac ROS `image_0/1_topic`, PyCuVSLAM
 `left/right_image_topic`). Omitting `slam_stereo_cameras` keeps the impl's
 default `left`/`right` topics.
 
+**Multi-camera mode (sim rigs).** For pycuvslam, `sim_e2e.launch.py` also passes
+`robot_yaml`, so `pycuvslam_node.py` derives the rig frame from the manifest
+`base_frame` and reads each camera's `rig_from_camera` extrinsic from TF — cuVSLAM's
+default multi-camera mode. This handles arbitrary base-mounted rigs (e.g. a
+toed-in pair) without a rectified stereo image, so a sim robot's existing cameras
+work as-is. The first shipped example is the lidar-less **`panda_mobile_vslam`**
+robot (`has_lidar: false`, `has_vision_slam: true`) whose two `shoulder_left` /
+`shoulder_right` cameras (RoboCasa `agentview_left`/`right`, a 0.70 m base rig)
+localise the mobile base — run `scenes/deploy/robocasa_vslam.yaml` and watch
+`/openral/visual_slam/odometry` as it drives. A standalone rectified RealSense
+pair (no `robot_yaml`/`rig_frame`) keeps the baseline path.
+
 For **mono-only** robots, also start the metric-depth sidecar that feeds nvblox:
 
 ```bash

@@ -10,14 +10,20 @@ pip wheel with a Python API, supporting this workspace's Python 3.12 on
 Ubuntu 24.04 x86_64/aarch64 (CUDA 12/13).
 
 This node runs that engine in-process: it subscribes a synchronized
-rectified stereo pair from the OpenRAL camera bus, tracks with
-``cuvslam.Tracker``, and fills the same ``map → odom`` TF edge the other
-SLAM backends fill (composing the tracker's ``map ← rig`` pose with the
-live ``odom ← rig`` TF). The rig frame is the **left camera optical
-frame**; images must be rectified (pinhole) with the stereo baseline
-encoded in the right camera's projection matrix ``P`` (standard ROS
-rectified-stereo convention, as produced by ``stereo_image_proc``,
-RealSense rectified streams, and the OpenRAL sim camera bus).
+image pair from the OpenRAL camera bus, tracks with ``cuvslam.Tracker``,
+and fills the same ``map → odom`` TF edge the other SLAM backends fill
+(composing the tracker's ``map ← rig`` pose with the live ``odom ← rig``
+TF). Two rig modes:
+
+* **Multi-camera** (``rig_frame`` set, or derived from ``robot_yaml``'s
+  ``base_frame``): each camera's ``rig_from_camera`` extrinsic is read
+  from TF, so an arbitrary base-mounted rig — e.g. the toed-in sim
+  cameras of a mobile robot — works without a rectified pair. This is
+  cuVSLAM's default mode (``odometry_mode=Multicamera``).
+* **Rectified baseline** (neither set): the rig is the left camera
+  optical frame and the right camera sits at a pure x-baseline read from
+  its projection matrix ``P`` — a standalone RealSense-style rectified
+  pair.
 
 License posture: the cuVSLAM engine is NVIDIA-proprietary (NVIDIA
 Community License — commercial use OK, NVIDIA hardware only). OpenRAL
@@ -36,6 +42,7 @@ __all__ = [
     "main",
     "map_from_odom",
     "stereo_baseline_m",
+    "transform_to_pose",
 ]
 
 # A pose is ((qx, qy, qz, qw), (tx, ty, tz)) — the cuVSLAM convention
@@ -132,6 +139,32 @@ def map_from_odom(map_from_rig: _Pose, odom_from_rig: _Pose) -> _Pose:
     return compose_pose(map_from_rig, invert_pose(odom_from_rig))
 
 
+def transform_to_pose(transform: Any) -> _Pose:
+    """Convert a ``geometry_msgs/Transform`` to the node's ``(quat, translation)`` pose.
+
+    ``lookup_transform(rig, camera)`` returns the pose of ``camera`` expressed in
+    ``rig`` — i.e. cuVSLAM's ``rig_from_camera`` — so this is how a multi-camera
+    rig's per-camera extrinsics are read straight from TF (no rectified-baseline
+    assumption). Both use the xyzw quaternion convention.
+
+    Example:
+        >>> class _T:  # minimal geometry_msgs/Transform stand-in
+        ...     class rotation:
+        ...         x, y, z, w = 0.0, 0.0, 0.0, 1.0
+        ...
+        ...     class translation:
+        ...         x, y, z = 0.06, 0.0, 0.0
+        >>> transform_to_pose(_T())
+        ((0.0, 0.0, 0.0, 1.0), (0.06, 0.0, 0.0))
+    """
+    q = transform.rotation
+    t = transform.translation
+    return (
+        (float(q.x), float(q.y), float(q.z), float(q.w)),
+        (float(t.x), float(t.y), float(t.z)),
+    )
+
+
 def _image_to_array(msg: Any) -> Any:
     """Convert a ``sensor_msgs/Image`` to the ``HxW``/``HxWx3`` uint8 array cuVSLAM eats."""
     import numpy as np
@@ -182,6 +215,14 @@ def main(args: Any = None) -> None:
             self.declare_parameter("sync_slop_s", 0.01)
             self.declare_parameter("tf_timeout_ms", 50)
             self.declare_parameter("enable_slam", True)
+            # Multi-camera rig frame. When set (or derived from robot_yaml's
+            # base_frame), the rig is built from each camera's real
+            # rig_from_camera extrinsic looked up from TF — cuVSLAM's default
+            # multi-camera mode, which handles arbitrary (e.g. toed-in) rigs, not
+            # just a rectified stereo pair. Empty → the standalone rectified path
+            # (rig ≡ left camera, baseline from the right CameraInfo P matrix).
+            self.declare_parameter("rig_frame", "")
+            self.declare_parameter("robot_yaml", "")
 
             try:
                 import cuvslam
@@ -203,6 +244,19 @@ def main(args: Any = None) -> None:
                 seconds=gp("tf_timeout_ms").get_parameter_value().integer_value / 1000.0
             )
             self._enable_slam = gp("enable_slam").get_parameter_value().bool_value
+            # Resolve the rig frame: explicit param wins; else the robot
+            # manifest's base_frame (the natural rig for a mobile robot whose
+            # cameras are mounted on its base). Empty → rectified-baseline path.
+            self._rig_frame = gp("rig_frame").get_parameter_value().string_value
+            robot_yaml = gp("robot_yaml").get_parameter_value().string_value
+            if not self._rig_frame and robot_yaml:
+                from openral_core import RobotDescription
+
+                self._rig_frame = RobotDescription.from_yaml(robot_yaml).base_frame
+            # The frame the tracked pose is expressed in (for the odom lookup +
+            # odometry child frame): the rig frame in multi-camera mode, else the
+            # left camera optical frame — set when the tracker is built.
+            self._rig_child_frame = self._rig_frame
             self._tracker: Any = None
             self._infos: dict[str, Any] = {}
             self._lost_warned = False
@@ -258,26 +312,55 @@ def main(args: Any = None) -> None:
                 f"{gp('right_image_topic').get_parameter_value().string_value}"
             )
 
-        def _build_tracker(self, left_info: Any, right_info: Any) -> Any:
+        def _intrinsics_camera(self, info: Any, rig_from_camera: Any) -> Any:
             cuvslam = self._cuvslam
-            baseline = stereo_baseline_m(right_info.p)
+            return cuvslam.Camera(
+                size=[int(info.width), int(info.height)],
+                principal=[float(info.k[2]), float(info.k[5])],
+                focal=[float(info.k[0]), float(info.k[4])],
+                rig_from_camera=rig_from_camera,
+            )
 
-            def camera(info: Any, tx: float) -> Any:
-                return cuvslam.Camera(
-                    size=[int(info.width), int(info.height)],
-                    principal=[float(info.k[2]), float(info.k[5])],
-                    focal=[float(info.k[0]), float(info.k[4])],
-                    rig_from_camera=cuvslam.Pose(rotation=[0, 0, 0, 1], translation=[tx, 0, 0]),
-                )
+        def _build_tracker(self, left_info: Any, right_info: Any, stamp: Any) -> Any:
+            cuvslam = self._cuvslam
+            if self._rig_frame:
+                # Multi-camera mode: each camera's rig_from_camera is its real
+                # pose in the rig frame, read from TF — handles the arbitrary
+                # (toed-in, wide-baseline) rigs sim robots expose, not just a
+                # rectified pair. Raises TransformException if TF isn't ready yet
+                # (caller retries on the next frame).
+                cameras = []
+                for info in (left_info, right_info):
+                    tf = self._tf_buffer.lookup_transform(
+                        self._rig_frame, info.header.frame_id, stamp, timeout=self._tf_timeout
+                    )
+                    q, t = transform_to_pose(tf.transform)
+                    pose = cuvslam.Pose(rotation=list(q), translation=list(t))
+                    cameras.append(self._intrinsics_camera(info, pose))
+                self._rig_child_frame = self._rig_frame
+                mode = f"multicamera rig={self._rig_frame}"
+            else:
+                # Standalone rectified path: rig ≡ left camera; the right camera
+                # sits at a pure x-baseline read from its CameraInfo P matrix.
+                baseline = stereo_baseline_m(right_info.p)
+                cameras = [
+                    self._intrinsics_camera(
+                        left_info, cuvslam.Pose(rotation=[0, 0, 0, 1], translation=[0, 0, 0])
+                    ),
+                    self._intrinsics_camera(
+                        right_info,
+                        cuvslam.Pose(rotation=[0, 0, 0, 1], translation=[baseline, 0, 0]),
+                    ),
+                ]
+                self._rig_child_frame = left_info.header.frame_id
+                mode = f"rectified baseline={baseline:.4f}m"
 
             rig = cuvslam.Rig()
-            # Rig frame ≡ left camera optical frame; rectified pair → pure
-            # x-baseline extrinsic, distortion left at the pinhole default.
-            rig.cameras = [camera(left_info, 0.0), camera(right_info, baseline)]
+            rig.cameras = cameras
             slam_config = cuvslam.Tracker.SlamConfig() if self._enable_slam else None
             self.get_logger().info(
-                f"pycuvslam: stereo rig {left_info.width}x{left_info.height}, "
-                f"baseline {baseline:.4f} m, slam={'on' if self._enable_slam else 'off'}"
+                f"pycuvslam: {left_info.width}x{left_info.height} {mode}, "
+                f"slam={'on' if self._enable_slam else 'off'}"
             )
             return cuvslam.Tracker(rig, slam_config=slam_config)
 
@@ -286,7 +369,14 @@ def main(args: Any = None) -> None:
                 if "left" not in self._infos or "right" not in self._infos:
                     return  # camera_info not seen yet — RELIABLE, arrives promptly
                 try:
-                    self._tracker = self._build_tracker(self._infos["left"], self._infos["right"])
+                    self._tracker = self._build_tracker(
+                        self._infos["left"], self._infos["right"], Time.from_msg(left.header.stamp)
+                    )
+                except TransformException as exc:
+                    # Multi-camera rig needs the cameras' TF; it may not have
+                    # buffered on the first frame — retry on the next one.
+                    self.get_logger().warning(f"pycuvslam: rig TF not ready, retrying: {exc}")
+                    return
                 except ValueError as exc:
                     # Bad calibration is fatal, not per-frame noise.
                     self.get_logger().error(f"pycuvslam: cannot build rig: {exc}")
@@ -316,7 +406,7 @@ def main(args: Any = None) -> None:
             try:
                 odom_tf = self._tf_buffer.lookup_transform(
                     self._odom_frame,
-                    left.header.frame_id,
+                    self._rig_child_frame,
                     Time.from_msg(left.header.stamp),
                     timeout=self._tf_timeout,
                 )
@@ -347,7 +437,7 @@ def main(args: Any = None) -> None:
             msg = Odometry()
             msg.header.stamp = left.header.stamp
             msg.header.frame_id = self._map_frame
-            msg.child_frame_id = left.header.frame_id
+            msg.child_frame_id = self._rig_child_frame
             (
                 msg.pose.pose.orientation.x,
                 msg.pose.pose.orientation.y,

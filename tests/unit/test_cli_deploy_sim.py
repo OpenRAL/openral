@@ -345,6 +345,47 @@ def test_deploy_sim_default_slam_visual_impl_is_isaac_ros() -> None:
     assert "slam_stereo_cameras:=" not in joined
 
 
+def test_deploy_sim_robocasa_vslam_scene_routes_to_pycuvslam_multicam() -> None:
+    """The shipped robocasa_vslam scene resolves to the visual pycuvslam rig.
+
+    End-to-end packaging check: the lidar-less panda_mobile_vslam manifest routes
+    `_resolve_slam_backend` to ``visual``, the scene pins the PyCuVSLAM impl and
+    the two shoulder cameras, and the manifest is forwarded (so the node derives
+    the rig frame for multi-camera mode).
+    """
+    scene = _REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam.yaml"
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_backend == "visual"
+    assert invocation.slam_visual_impl == "pycuvslam"
+    assert invocation.slam_stereo_cameras == ("shoulder_left", "shoulder_right")
+    joined = " ".join(invocation.argv_template)
+    assert "enable_slam:=true" in joined
+    assert "slam_backend:=visual" in joined
+    assert "slam_visual_impl:=pycuvslam" in joined
+    assert "slam_stereo_cameras:=shoulder_left,shoulder_right" in joined
+    # robot_yaml is forwarded so the node derives the rig frame (base_frame).
+    assert f"robot_yaml:={invocation.robot_yaml}" in joined
+
+
+def test_panda_mobile_vslam_manifest_is_lidarless_vision_slam() -> None:
+    """The shipped variant is the lidar-less visual-SLAM twin of panda_mobile."""
+    rd = RobotDescription.from_yaml(
+        str(_REPO_ROOT / "robots" / "panda_mobile_vslam" / "robot.yaml")
+    )
+    assert rd.name == "panda_mobile_vslam"
+    assert rd.capabilities.has_lidar is False
+    assert rd.capabilities.has_vision_slam is True
+    names = {s.name for s in rd.sensors}
+    assert {"shoulder_left", "shoulder_right"} <= names  # the cuVSLAM rig
+    assert "base_scan" not in names  # lidar dropped
+
+
 def test_deploy_sim_scene_pins_pycuvslam_and_stereo_rig(tmp_path: Path) -> None:
     """A scene runtime pinning pycuvslam + a stereo rig forwards both into the argv."""
     config = tmp_path / "vision_slam.yaml"

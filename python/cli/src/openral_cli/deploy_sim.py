@@ -51,7 +51,7 @@ import sys
 import sysconfig
 import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -207,6 +207,11 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         manifest_driven=True,
         supports_sim_env_yaml=True,
     ),
+    # Lidar-less visual-SLAM twin of panda_mobile: same HAL node + sim
+    # composition, a different manifest (has_lidar false, has_vision_slam true).
+    # The HAL is manifest-driven so it reads the panda_mobile_vslam manifest's
+    # sensors/capabilities; robosuite still builds a PandaMobile from the scene's
+    # backend_options. Registered explicitly below (after the dict) to stay DRY.
     "franka_panda": _HalSpec(
         package="openral_hal_franka",
         executable="lifecycle_node.py",
@@ -288,6 +293,14 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         manifest_driven=True,
     ),
 }
+
+# The lidar-less visual-SLAM twin reuses panda_mobile's HAL verbatim (same node,
+# same sim composition, manifest-driven) — only the manifest name differs. Derive
+# it so the two never drift; see robots/panda_mobile_vslam/robot.yaml.
+_ROBOT_HAL_REGISTRY["panda_mobile_vslam"] = replace(
+    _ROBOT_HAL_REGISTRY["panda_mobile"],
+    supported_robot_names=frozenset({"panda_mobile_vslam"}),
+)
 
 
 @dataclass(frozen=True)

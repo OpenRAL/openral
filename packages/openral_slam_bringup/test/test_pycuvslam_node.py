@@ -80,6 +80,29 @@ def test_map_from_odom_recovers_pure_odom_drift() -> None:
     assert correction[1][0] == pytest.approx(1.0, abs=1e-12)
 
 
+class _StubTransform:
+    """Minimal geometry_msgs/Transform stand-in for transform_to_pose."""
+
+    def __init__(self, quat: tuple[float, float, float, float], t: tuple[float, float, float]):
+        self.rotation = type("R", (), dict(zip("xyzw", quat, strict=True)))
+        self.translation = type("T", (), dict(zip("xyz", t, strict=True)))
+
+
+def test_transform_to_pose_reads_a_multicam_extrinsic() -> None:
+    """rig_from_camera is read straight from a TF transform (xyzw quat + xyz)."""
+    # panda_mobile's agentview_left extrinsic (toed-in, off-centre) — the kind of
+    # arbitrary rig cuVSLAM multi-camera mode consumes, not a rectified baseline.
+    quat = (0.55623853, 0.29935253, -0.37678665, -0.6775092)
+    t = (-0.5, 0.35, 1.05)
+    pose = pycuvslam_node.transform_to_pose(_StubTransform(quat, t))
+    assert pose[0] == pytest.approx(quat)
+    assert pose[1] == pytest.approx(t)
+    # Composing with its inverse round-trips to identity (valid rigid pose).
+    rt = pycuvslam_node.compose_pose(pose, pycuvslam_node.invert_pose(pose))
+    assert rt[0][3] == pytest.approx(1.0, abs=1e-6)
+    assert all(abs(v) < 1e-6 for v in (*rt[0][:3], *rt[1]))
+
+
 def test_tracks_synthetic_stereo_to_ground_truth() -> None:
     """Real cuVSLAM engine on GPU: track a laterally translating stereo rig."""
     cuvslam = pytest.importorskip(

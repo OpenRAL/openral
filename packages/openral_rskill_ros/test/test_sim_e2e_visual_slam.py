@@ -97,6 +97,8 @@ def test_visual_includes_pycuvslam_with_stereo_rig() -> None:
     assert rendered["left_image_topic"] == "/openral/cameras/cam_l/image"
     assert rendered["right_image_topic"] == "/openral/cameras/cam_r/image"
     assert rendered["left_camera_info_topic"] == "/openral/cameras/cam_l/camera_info"
+    # robot_yaml is threaded so the node derives the rig frame (multi-camera mode).
+    assert rendered["robot_yaml"] == "/robots/x/robot.yaml"
 
 
 def test_visual_includes_isaac_ros_default_and_nvblox_on_nav2() -> None:

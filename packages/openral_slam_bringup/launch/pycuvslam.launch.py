@@ -73,6 +73,21 @@ def generate_launch_description() -> LaunchDescription:
             default_value="/openral/cameras/right/camera_info",
             description="Calibration for the right image.",
         ),
+        # Multi-camera rig frame. ``robot_yaml`` lets the node derive the rig
+        # frame from the manifest's base_frame (the natural rig for a mobile
+        # robot with base-mounted cameras); ``rig_frame`` overrides it directly.
+        # Either non-empty selects cuVSLAM's multi-camera mode (per-camera
+        # extrinsics from TF) over the rectified-baseline path.
+        DeclareLaunchArgument(
+            "robot_yaml",
+            default_value="",
+            description="Robot manifest; the node derives the rig frame from its base_frame.",
+        ),
+        DeclareLaunchArgument(
+            "rig_frame",
+            default_value="",
+            description="Explicit rig frame (overrides robot_yaml's base_frame).",
+        ),
     ]
 
     node = Node(
@@ -88,6 +103,8 @@ def generate_launch_description() -> LaunchDescription:
                 "left_camera_info_topic": LaunchConfiguration("left_camera_info_topic"),
                 "right_image_topic": LaunchConfiguration("right_image_topic"),
                 "right_camera_info_topic": LaunchConfiguration("right_camera_info_topic"),
+                "robot_yaml": LaunchConfiguration("robot_yaml"),
+                "rig_frame": LaunchConfiguration("rig_frame"),
             },
         ],
         output="screen",
