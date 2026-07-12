@@ -98,6 +98,16 @@ suite.
    lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
    exit code — a real failure fails the lane; an all-/partial-skip does not.
 
+   The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from the git pin
+   (`232ce7d4`). The `libero` lane runs first and leaves robosuite 1.4.0
+   installed, and a bare `uv run --group robocasa` group switch does not reliably
+   reinstall the git package (uv evicts master for a wheel — see
+   `python/sim/src/openral_sim/_deps.py`), which surfaces as SO100 missing from
+   `REGISTERED_ROBOTS` or `NullMount` not being a `MountModel`. `run_lane` guards
+   this with an explicit `uv sync --frozen --all-packages --group robocasa
+   --reinstall-package robosuite` before the lane's `uv run`s, so the env lands
+   on the pinned tree deterministically.
+
 Every selected target carries a human-readable reason.
 
 ### Usage
