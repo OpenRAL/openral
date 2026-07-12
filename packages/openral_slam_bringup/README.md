@@ -103,6 +103,23 @@ ros2 launch openral_slam_bringup pycuvslam.launch.py
 > The wheel resolves CUDA runtime libs from the host (`/usr/local/cuda`);
 > pick the `cu12`/`cu13` wheel matching the installed toolkit.
 
+**Selecting the impl from a deploy scene.** `openral deploy sim/run` composes
+the visual backend when the robot declares `has_vision_slam`; which engine
+(and which stereo cameras) is a committed **workcell** choice on
+`DeployScene.runtime`:
+
+```yaml
+runtime:
+  slam_visual_impl: pycuvslam        # default: isaac_ros (the composable node)
+  slam_stereo_cameras: [left, right] # camera names → /openral/cameras/<name>/…
+```
+
+`deploy_sim.py` forwards these as `slam_visual_impl:=` / `slam_stereo_cameras:=`,
+and `sim_e2e.launch.py` composes the matching launch file with the rig's topics
+remapped onto that impl's camera args (Isaac ROS `image_0/1_topic`, PyCuVSLAM
+`left/right_image_topic`). Omitting `slam_stereo_cameras` keeps the impl's
+default `left`/`right` topics.
+
 For **mono-only** robots, also start the metric-depth sidecar that feeds nvblox:
 
 ```bash

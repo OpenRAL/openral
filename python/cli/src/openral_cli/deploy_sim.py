@@ -330,6 +330,19 @@ class LaunchInvocation:
     selects ``lidar`` (it wins when both flags are set, needing no AI depth
     model); else ``has_vision_slam`` selects ``visual``. Forwarded as
     ``slam_backend:=…``."""
+    slam_visual_impl: str
+    """Which cuVSLAM engine the ``visual`` backend composes:
+    ``"isaac_ros"`` (composable ``isaac_ros_visual_slam`` C++ node, needs the
+    Isaac ROS apt stack) or ``"pycuvslam"`` (in-process PyCuVSLAM wheel, stereo
+    only). From ``DeployRuntime.slam_visual_impl``; defaults to ``"isaac_ros"``.
+    Forwarded as ``slam_visual_impl:=…``; only consumed when ``slam_backend`` is
+    ``"visual"``."""
+    slam_stereo_cameras: tuple[str, str] | None
+    """The ``(left, right)`` camera names for the visual SLAM stereo rig, from
+    ``DeployRuntime.slam_stereo_cameras``. Each maps to
+    ``/openral/cameras/<name>/image`` (+ ``/camera_info``). Forwarded as
+    ``slam_stereo_cameras:=<left>,<right>`` only when set, so the launch overrides
+    the visual impl's default ``left``/``right`` topics."""
     enable_nav2: bool
     """Opt-in for the Nav2 navigation stack. Set by
     ``openral deploy sim --enable-nav2``; forwarded into the launch as
@@ -957,6 +970,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # that is `sim run`'s job (deploy ≠ benchmark).
     _resolved_initial_prompt: str = initial_task_prompt or ""
 
+    # Visual-SLAM impl + stereo rig are scene-committed only (no CLI flag):
+    # which cuVSLAM binary the host has and which cameras form the rig are
+    # workcell properties. Seeded None so the scene runtime can pin them below.
+    slam_visual_impl: str | None = None
+    slam_stereo_cameras: tuple[str, str] | None = None
+
     # DeployScene.runtime — the committed deploy posture. Field-by-field
     # precedence: explicit CLI flag > scene runtime > auto/built-in default
     # (the per-feature autos below). None on both = auto, as before.
@@ -998,6 +1017,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if spatial_memory_ingest is None:
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
+        if slam_visual_impl is None:
+            slam_visual_impl = rt.slam_visual_impl
+        if slam_stereo_cameras is None:
+            slam_stereo_cameras = rt.slam_stereo_cameras
     # Built-in defaults for the tri-state flags nothing pinned.
     if enable_octomap_kernel_check is None:
         enable_octomap_kernel_check = True
@@ -1005,6 +1028,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         enable_reward_monitor = False
     if enable_critic is None:
         enable_critic = False
+    # Established default: the Isaac ROS composable node. Do NOT auto-pick
+    # pycuvslam just because its wheel is importable (§1.4 — explicit).
+    if slam_visual_impl is None:
+        slam_visual_impl = "isaac_ros"
 
     # a --robot override that differs from the scene's declared robot
     # composes a different arm than the scene was authored for. The scene's cameras
@@ -1274,6 +1301,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         f"hal_mode:={hal_mode}",
         f"enable_slam:={'true' if enable_slam else 'false'}",
         f"slam_backend:={slam_backend}",
+        f"slam_visual_impl:={slam_visual_impl}",
         f"enable_nav2:={'true' if enable_nav2 else 'false'}",
         f"enable_octomap:={'true' if enable_octomap else 'false'}",
         f"enable_octomap_kernel_check:={'true' if enable_octomap_kernel_check else 'false'}",
@@ -1346,6 +1374,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # defaults ``approach_skill_id`` to "").
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
+    # only forward the stereo rig when the scene pins it (empty default; the
+    # launch file defaults the visual impl's own left/right topics otherwise).
+    if slam_stereo_cameras is not None:
+        argv_template.append(f"slam_stereo_cameras:={','.join(slam_stereo_cameras)}")
 
     # only forward the dataset args when recording is opted in
     # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
@@ -1392,6 +1424,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         hal=hal,
         enable_slam=enable_slam,
         slam_backend=slam_backend,
+        slam_visual_impl=slam_visual_impl,
+        slam_stereo_cameras=slam_stereo_cameras,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
         clock_origin=clock_origin,

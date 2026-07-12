@@ -48,6 +48,31 @@ def generate_launch_description() -> LaunchDescription:
             default_value="true",
             description="Pass-through to the node's `use_sim_time`.",
         ),
+        # Stereo camera topics. Like the sibling ``cuvslam.launch.py`` (which
+        # owns its ``image_0/1_topic`` remaps), this launch owns the topic
+        # defaults so a scene's ``slam_stereo_cameras`` can retarget the rig
+        # via ``sim_e2e.launch.py`` without editing a params file. Passed as
+        # parameter overrides above ``params_file``.
+        DeclareLaunchArgument(
+            "left_image_topic",
+            default_value="/openral/cameras/left/image",
+            description="Rectified stereo-left image topic.",
+        ),
+        DeclareLaunchArgument(
+            "left_camera_info_topic",
+            default_value="/openral/cameras/left/camera_info",
+            description="Calibration for the left image.",
+        ),
+        DeclareLaunchArgument(
+            "right_image_topic",
+            default_value="/openral/cameras/right/image",
+            description="Rectified stereo-right image topic.",
+        ),
+        DeclareLaunchArgument(
+            "right_camera_info_topic",
+            default_value="/openral/cameras/right/camera_info",
+            description="Calibration for the right image.",
+        ),
     ]
 
     node = Node(
@@ -57,7 +82,13 @@ def generate_launch_description() -> LaunchDescription:
         namespace="",
         parameters=[
             LaunchConfiguration("params_file"),
-            {"use_sim_time": LaunchConfiguration("use_sim_time")},
+            {
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "left_image_topic": LaunchConfiguration("left_image_topic"),
+                "left_camera_info_topic": LaunchConfiguration("left_camera_info_topic"),
+                "right_image_topic": LaunchConfiguration("right_image_topic"),
+                "right_camera_info_topic": LaunchConfiguration("right_camera_info_topic"),
+            },
         ],
         output="screen",
     )

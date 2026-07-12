@@ -327,6 +327,10 @@ _deploy_runtime_st = st.builds(
     enable_critic=_opt_bool,
     spatial_memory_ingest=_opt_bool,
     approach_skill_id=st.none() | _name,
+    slam_visual_impl=st.none() | st.sampled_from(["isaac_ros", "pycuvslam"]),
+    # distinct pair — the model_validator rejects two equal names.
+    slam_stereo_cameras=st.none()
+    | st.lists(_name, min_size=2, max_size=2, unique=True).map(tuple),
 )
 
 _collision_evidence_st = st.builds(

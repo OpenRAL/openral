@@ -21,10 +21,9 @@
     odom_frame: odom
 
     # ── Camera bus (rectified stereo) ───────────────────────────────
-    left_image_topic: /openral/cameras/left/image
-    left_camera_info_topic: /openral/cameras/left/camera_info
-    right_image_topic: /openral/cameras/right/image
-    right_camera_info_topic: /openral/cameras/right/camera_info
+    # The four stereo topics are owned by pycuvslam.launch.py's launch args
+    # (default /openral/cameras/left|right/…) so a scene's slam_stereo_cameras
+    # can retarget the rig; the node's own param defaults cover `ros2 run`.
     # Stereo pairs are matched within this window; hardware-synced or
     # sim cameras share stamps, so keep it tight.
     sync_slop_s: 0.01
