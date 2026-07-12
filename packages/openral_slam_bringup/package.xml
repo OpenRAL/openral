@@ -26,6 +26,11 @@
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- PyCuVSLAM stereo node (pycuvslam_node.py). The cuvslam wheel itself is
+       NVIDIA-licensed and operator-installed — deliberately NOT declared. -->
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>

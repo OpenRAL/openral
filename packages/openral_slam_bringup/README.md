@@ -76,6 +76,33 @@ sudo apt-get install -y ros-jazzy-isaac-ros-visual-slam ros-jazzy-isaac-ros-nvbl
 # verify: ros2 pkg prefix isaac_ros_visual_slam && ros2 pkg prefix nvblox_ros
 ```
 
+### PyCuVSLAM: the same engine without the Isaac ROS apt stack
+
+NVIDIA also ships the cuVSLAM engine as a pip wheel with a Python API —
+[PyCuVSLAM](https://github.com/nvidia-isaac/cuVSLAM) (NVIDIA Community
+License: commercial OK, NVIDIA hardware only; still **not bundled**).
+`pycuvslam_node.py` runs it in-process under the workspace's Python 3.12:
+it synchronizes a **rectified stereo pair** from the camera bus, tracks with
+`cuvslam.Tracker`, and fills the same `map → odom` TF edge (rig ≡ left camera
+optical frame; the right `CameraInfo.p` must carry `-fx·baseline`, the
+standard rectified-stereo convention). Use it when the Isaac ROS apt install
+is unavailable or too heavy (e.g. sim hosts); it has no NITROS zero-copy
+path and no raw-image undistortion — for those, use `cuvslam.launch.py`.
+
+```bash
+# operator installs the wheel matching the host (Py3.12 / CUDA 12 or 13):
+#   https://github.com/nvidia-isaac/cuVSLAM/releases  (v16.0.0+)
+uv pip install ./cuvslam-16.0.0+cu13-cp312-abi3-manylinux_2_39_x86_64.whl
+
+ros2 launch openral_slam_bringup pycuvslam.launch.py
+```
+
+> If the host also has the apt Isaac ROS stack installed, make sure the
+> wheel's bundled `libcuvslam.so` wins over `/opt/ros/<distro>/lib`'s older
+> copy on `LD_LIBRARY_PATH`, or imports fail with an `undefined symbol`.
+> The wheel resolves CUDA runtime libs from the host (`/usr/local/cuda`);
+> pick the `cu12`/`cu13` wheel matching the installed toolkit.
+
 For **mono-only** robots, also start the metric-depth sidecar that feeds nvblox:
 
 ```bash
