@@ -8,6 +8,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   openral_slam_bringup/depth_height_filter_node.py
+  openral_slam_bringup/pycuvslam_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -29,6 +30,12 @@ if(BUILD_TESTING)
   )
   ament_add_pytest_test(test_depth_height_filter test/test_depth_height_filter.py
     TIMEOUT 30
+  )
+  ament_add_pytest_test(test_pycuvslam_launch test/test_pycuvslam_launch.py
+    TIMEOUT 30
+  )
+  ament_add_pytest_test(test_pycuvslam_node test/test_pycuvslam_node.py
+    TIMEOUT 120
   )
 endif()
 
