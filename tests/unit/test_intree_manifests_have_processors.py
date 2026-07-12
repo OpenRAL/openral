@@ -26,11 +26,9 @@ from openral_rskill.loader import discover_intree_rskills
 #     model.safetensors; the ACT adapter dispatches on
 #     `manifest.processors is None` and uses the snapshot_download path.
 #   - gr00t-n17-libero / gr00t-n17-so101-fruit: GR00T checkpoints carry norm
-#     stats in their own `experiment_cfg/` metadata, not lerobot processor
-#     JSONs (the in-process `gr00t` adapter reads them via
-#     `make_groot_pre_post_processors_from_pretrained`). `gr00t` is
-#     deliberately excluded from `_MODERN_PROCESSOR_FAMILIES` for the same
-#     reason, so every `model_family: gr00t` skill belongs here.
+#     stats in their own `experiment_cfg/` + statistics.json metadata (read
+#     directly, not via lerobot processor JSONs). `gr00t` is deliberately
+#     excluded from `_MODERN_PROCESSOR_FAMILIES` for the same reason.
 _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
     {
         "act-aloha",
