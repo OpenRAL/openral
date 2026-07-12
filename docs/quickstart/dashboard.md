@@ -28,7 +28,7 @@ default** — you opt in via the env vars below; an unconfigured
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
-  openral sim run --config scenes/benchmark/libero_spatial.yaml --rskill smolvla-libero
+  openral sim run --config scenes/sim/libero_spatial.yaml --rskill smolvla-libero
 ```
 
 Open `http://localhost:4318` in a browser. The connection indicator
@@ -57,7 +57,7 @@ openral sim run --dashboard \
   --config scenes/benchmark/pusht.yaml \
   --rskill diffusion-pusht
 
-openral deploy run --dashboard --config scenes/deploy/so100.yaml
+openral deploy run --dashboard --config scenes/deploy/so101_bench.yaml
 
 openral benchmark run --dashboard \
   --suite libero_spatial \

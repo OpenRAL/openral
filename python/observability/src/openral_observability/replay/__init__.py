@@ -11,7 +11,7 @@ Three pieces:
   ``.mcap`` file and yield :class:`BagMessage` records, surfacing the
   ``trace_id`` field that lives on every typed ROS message
   (``ActionChunk``, ``FailureTrigger``, ``WorldStateStamped``,
-  ``PromptStamped`` and the ``ExecuteSkill`` action goal/feedback/result).
+  ``PromptStamped`` and the ``ExecuteRskill`` action goal/feedback/result).
 * :class:`DashboardTraceClient` — HTTP client over the receiver's
   ``/api/traces`` + ``/api/spans/{trace_id}`` endpoints.
 * :func:`build_timeline` — merge bag messages with spans for the given

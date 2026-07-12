@@ -1,7 +1,7 @@
 """Typed tool-call dispatch — typed LLM tool-use client + concrete provider implementations.
 
 Every reasoner tick the LLM picks exactly one of the four
-:data:`~openral_core.ReasonerToolCall` variants (ExecuteSkill,
+:data:`~openral_core.ReasonerToolCall` variants (ExecuteRskill,
 ReloadGstPipeline, LifecycleTransition, EmitPrompt) and the reasoner
 node routes it onto the ROS graph.
 

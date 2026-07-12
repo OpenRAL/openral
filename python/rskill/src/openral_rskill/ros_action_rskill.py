@@ -305,7 +305,7 @@ class ROSActionRskill(rSkillBase):
     make_default_skill_resolver``) when ``manifest.kind in
     {"ros_action", "ros_service"}``. The adapter is owned by the
     ``RskillRunnerNode``'s ``execute_cb`` worker thread; ``ros_node`` is
-    the same lifecycle node that hosts the ``ExecuteSkill`` action
+    the same lifecycle node that hosts the ``ExecuteRskill`` action
     server, so the wrapped action client lives in the same rclpy
     executor and its futures are serviced by the node's existing spin.
 
@@ -323,10 +323,10 @@ class ROSActionRskill(rSkillBase):
             ``RskillRunnerNode`` was constructed with. Used to align
             the wrapped server's joint order with the supervisor's
             envelope index.
-        prompt: The ``ExecuteSkill`` goal's free-form prompt. Logged
+        prompt: The ``ExecuteRskill`` goal's free-form prompt. Logged
             with the request but not consumed by v1 — the goal payload
             comes from ``ros_integration.default_goal_json``.
-        prompt_metadata_json: The ``ExecuteSkill`` goal's structured
+        prompt_metadata_json: The ``ExecuteRskill`` goal's structured
             payload. Reserved for the follow-up structured-prompt path;
             currently logged but not consumed.
     """

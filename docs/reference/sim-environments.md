@@ -56,6 +56,14 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 | [`openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml) | `openarm` *(free-axis)* | `openarm_tabletop_pnp` | Custom MJCF | OpenArm bimanual tabletop sandbox; default top camera matches the mddoai dataset POV |
 | [`robocasa_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_pnp.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | RoboCasa (MuJoCo) | Mobile-base kitchen pick-and-place sandbox; reasoner-driven |
 | [`so101_box.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/so101_box.yaml) | `so101_follower` *(scene-fixed)* | `so101_box` | Custom MJCF | 100×61.5×75 cm box arena + OAK-D Pro overhead + wrist camera; deploy sandbox |
+| [`so101_bench.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/so101_bench.yaml) | `so101_follower` *(scene-fixed)* | `so101_bench` | Custom MJCF | SO-101 bench-arena deploy sandbox |
+| [`libero_object.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/libero_object.yaml) | `franka_panda` *(scene-fixed)* | `libero_object` | LIBERO (robosuite + MuJoCo) | Boot LIBERO-Object in deploy mode; reasoner-driven pick-and-place |
+| [`robocasa_baguette.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_baguette.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | RoboCasa (MuJoCo) | Baguette pick-and-place kitchen sandbox |
+| [`robocasa_navigate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_navigate.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/NavigateKitchen` | RoboCasa (MuJoCo) | Mobile-base kitchen navigation sandbox (Nav2 graph compatible) |
+| [`isaac_franka.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka tabletop sandbox on the Isaac Sim backend (requires Isaac Sim license) |
+| [`isaac_franka_bowl.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka_bowl.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka bowl-manipulation sandbox (Isaac Sim) |
+| [`isaac_franka_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka_urdf.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka sandbox loaded from URDF (Isaac Sim) |
+| [`isaac_panda_mobile_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_panda_mobile_urdf.yaml) | `panda_mobile` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Mobile-base Panda loaded from URDF (Isaac Sim) |
 
 ## SimScene catalogue (`scenes/sim/`)
 
@@ -74,6 +82,10 @@ Consumed by `openral sim run`.
 | [`so101_tube_insertion.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/so101_tube_insertion.yaml) | `so101_follower` *(scene-fixed)* | `so101_box` | `so101_box/tube_insertion` | Box-arena tube-insertion smoke; geometry/sensors/spawn ranges configurable via `BoxSceneOptions` |
 | [`tabletop_cube_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/tabletop_cube_push.yaml) | `so101_follower` *(free-axis default; pass `--robot` to override)* | `tabletop_push` | `tabletop_push/push_to_goal` | Robot-agnostic cube push-to-goal |
 | [`widowx_carrot_on_plate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/widowx_carrot_on_plate.yaml) | `widowx` *(scene-fixed)* | `simpler_env` | `simpler_env/widowx_carrot_on_plate` | SimScene sibling of the SimplerEnv WidowX carrot benchmark; used by the OpenVLA-OFT issue #55 reproduction path |
+| [`aloha_transfer_cube.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/aloha_transfer_cube.yaml) | `aloha_bimanual` *(scene-fixed)* | `aloha_transfer_cube` | `aloha_transfer_cube/0` | gym-aloha bimanual cube-transfer smoke |
+| [`franka_tabletop_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_tabletop_push.yaml) | `franka_panda` *(scene-fixed)* | `tabletop_push` | `tabletop_push/push_to_goal` | Franka variant of the robot-agnostic cube push-to-goal |
+| [`pusht.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/pusht.yaml) | `pusht_2d` *(scene-fixed; 2-D pymunk)* | `pusht` | `pusht/0` | gym-pusht 2-D push smoke |
+| [`isaac_franka_bowl_plate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/isaac_franka_bowl_plate.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | `isaac_sim/put_the_bowl_on_the_plate` | Isaac Sim bowl-on-plate; two-camera layout used by `gr00t-n17-libero` |
 
 ## BenchmarkScene catalogue (`scenes/benchmark/`)
 
@@ -102,6 +114,16 @@ YAML root) under
 | [`rlbench_meat_off_grill.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/rlbench_meat_off_grill.yaml) | `franka_panda` *(scene-fixed)* | `rlbench` | `rlbench/meat_off_grill` | 25 | [RLBench](https://arxiv.org/abs/1909.12271) / [3D Diffuser Actor](https://arxiv.org/abs/2402.10885) |
 | [`rlbench_close_jar.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/rlbench_close_jar.yaml) | `franka_panda` *(scene-fixed)* | `rlbench` | `rlbench/close_jar` | 25 | [RLBench](https://arxiv.org/abs/1909.12271) / [3D Diffuser Actor](https://arxiv.org/abs/2402.10885) |
 | [`widowx_carrot_on_plate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/widowx_carrot_on_plate.yaml) | `widowx` *(scene-fixed)* | `simpler_env` | `simpler_env/widowx_carrot_on_plate` | 24 | [SimplerEnv](https://arxiv.org/abs/2405.05941) |
+| [`libero_object.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/libero_object.yaml) | `franka_panda` *(scene-fixed)* | `libero_object` | `libero_object/0` | 50 | [LIBERO](https://arxiv.org/abs/2306.03310) |
+| [`libero_goal.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/libero_goal.yaml) | `franka_panda` *(scene-fixed)* | `libero_goal` | `libero_goal/0` | 50 | [LIBERO](https://arxiv.org/abs/2306.03310) |
+| [`libero_10.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/libero_10.yaml) | `franka_panda` *(scene-fixed)* | `libero_10` | `libero_10/0` | 50 | [LIBERO](https://arxiv.org/abs/2306.03310) (= LIBERO-Long) |
+| [`robocasa_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robocasa_pnp.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | `robocasa/PickPlaceCounterToCabinet/0` | 50 | [RoboCasa](https://arxiv.org/abs/2406.02523) |
+| [`robotwin_beat_block_hammer.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_beat_block_hammer.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/beat_block_hammer` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
+| [`robotwin_handover_block.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_handover_block.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/handover_block` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
+| [`robotwin_lift_pot.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_lift_pot.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/lift_pot` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
+| [`robotwin_place_empty_cup.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_place_empty_cup.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/place_empty_cup` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
+| [`robotwin_stack_blocks_two.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/robotwin_stack_blocks_two.yaml) | `aloha_agilex` *(scene-fixed)* | `robotwin` | `robotwin/stack_blocks_two` | 100 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) |
+| [`vlabench_select_fruit.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/benchmark/vlabench_select_fruit.yaml) | `franka_panda` *(scene-fixed)* | `vlabench` | `vlabench/select_fruit` | 50 | [VLABench](https://arxiv.org/abs/2412.18194) |
 
 The `n_episodes` and `seed` columns ship in the file at the paper-canonical
 value. Overriding `--n-episodes` on `openral benchmark scene` is allowed

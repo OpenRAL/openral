@@ -1,6 +1,6 @@
 # Selective testing & the test audit
 
-OpenRAL carries **~2.9k test functions across ~300 files**. Two tools keep that
+OpenRAL carries **~3.3k test functions across ~360 files**. Two tools keep that
 suite fast *and* meaningful:
 
 | Tool | Question it answers | Entry point |
@@ -98,6 +98,16 @@ suite.
    lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
    exit code — a real failure fails the lane; an all-/partial-skip does not.
 
+   The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from the git pin
+   (`232ce7d4`). The `libero` lane runs first and leaves robosuite 1.4.0
+   installed, and a bare `uv run --group robocasa` group switch does not reliably
+   reinstall the git package (uv evicts master for a wheel — see
+   `python/sim/src/openral_sim/_deps.py`), which surfaces as SO100 missing from
+   `REGISTERED_ROBOTS` or `NullMount` not being a `MountModel`. `run_lane` guards
+   this with an explicit `uv sync --frozen --all-packages --group robocasa
+   --reinstall-package robosuite` before the lane's `uv run`s, so the env lands
+   on the pinned tree deterministically.
+
 Every selected target carries a human-readable reason.
 
 ### Usage
@@ -192,10 +202,10 @@ classifies:
 
 As of the last run the suite is **disciplined**: **0 trivial** and **0 shadowed**
 tests — there is nothing obviously dead to prune. The real redundancy signal is
-the **36 duplicate-body groups**, dominated by per-robot HAL-contract tests that
+the **29 duplicate-body groups**, dominated by per-robot HAL-contract tests that
 are prime candidates for consolidation into a single parametrized contract
 module (a reviewed refactor, since each currently asserts on a distinct robot).
-The **105 no-assertion** entries are flagged for human review.
+The **111 no-assertion** entries are flagged for human review.
 
 > Pruning is never bundled into this tooling. Per CLAUDE.md §1.7/§1.11 tests are
 > part of the contract; per §1.15 any deletion is its own reviewed commit.

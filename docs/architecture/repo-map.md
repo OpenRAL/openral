@@ -33,7 +33,7 @@ openral/                      ← THIS monorepo
 │  ├─ openral_hal_scene_attached/ ← scene-attached sim HAL node (`deploy sim`) ✓
 │  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓
-│  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteSkill action server ✓
+│  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓
 │  ├─ openral_safety/         ← safety_node (geometric collision checking) ✓
 │  ├─ openral_safety_watchdog/ · openral_human_estop/ ← deadman watchdog + human E-stop forwarders ✓
 │  ├─ openral_perception_ros/ ← RosImageObjectDetectorNode (Image → ObjectsMetadata → 2D→3D lift) ✓

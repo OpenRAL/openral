@@ -141,7 +141,7 @@ just sim-eval scenes/<name>.yaml   # canonical entry point
 just sim-libero                              # SmolVLA × LIBERO
 just sim-xvla-libero                         # xVLA × LIBERO
 just sim-pi05-libero                         # π0.5 × LIBERO (≥8 GB VRAM)
-just sim-metaworld --task reach-v3           # SmolVLA × MetaWorld MT50
+just sim-metaworld --task metaworld/reach-v3 # SmolVLA × MetaWorld MT50
 just sim-act-aloha                           # ACT × gym-aloha bimanual cube
 just sim-diffusion-pusht                     # Diffusion Policy × gym-pusht (CPU)
 ```
