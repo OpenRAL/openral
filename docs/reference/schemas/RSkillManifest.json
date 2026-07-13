@@ -652,6 +652,7 @@
         "nvidia_non_commercial",
         "nvidia_open_model",
         "rlwrld_non_commercial",
+        "cc-by-nc-sa-4.0",
         "proprietary",
         "unknown"
       ],
@@ -1310,7 +1311,8 @@
             "diffuser_actor",
             "openvla",
             "lingbot_vla2",
-            "lingbot_vla"
+            "lingbot_vla",
+            "internvla_n1"
           ],
           "type": "string"
         },

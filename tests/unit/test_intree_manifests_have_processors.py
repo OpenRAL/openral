@@ -50,6 +50,10 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         # applied server-side by the model's FeatureTransform, not a lerobot
         # PolicyProcessorPipeline, so `processors is None` is correct.
         "lingbot-vla-4b-robotwin",
+        # InternVLA-N1: runs its own AutoProcessor + NavDP pipeline inside the
+        # py3.11 sidecar; no lerobot PolicyProcessorPipeline. `internvla_n1` is
+        # excluded from `_MODERN_PROCESSOR_FAMILIES` for the same reason.
+        "rskill-internvla_n1-mobile_base-vln-nf4",
     }
 )
 

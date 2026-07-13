@@ -1,0 +1,133 @@
+# rSkill manifest — InternVLA-N1 / DualVLN (kind: vla, model_family: internvla_n1)
+# Wraps: InternRobotics/InternVLA-N1-DualVLN  (weights CC-BY-NC-SA-4.0)
+# Paper: "Ground Slow, Move Fast: A Dual-System Foundation Model for
+#         Generalizable Vision-and-Language Navigation" (arXiv:2512.08186)
+# Code:  https://github.com/InternRobotics/InternNav  (MIT)
+#
+# WHY THIS MODEL
+# --------------
+# Vision-Language Navigation foundation model. Highest R2R val-unseen
+# success rate (64.3) among policies with PUBLICLY RELEASED weights as of
+# 2026-07 (Qwen-RobotNav 64.x and CorrectNav 65.1 score higher but ship no
+# weights). Dual-system: a Qwen2.5-VL-7B System-2 plans a pixel-goal waypoint
+# from RGB history + instruction; a NavDP diffusion-transformer System-1
+# turns that goal into a metric trajectory using depth. See README.md.
+#
+# OUT-OF-PROCESS
+# --------------
+# Upstream InternNav pins transformers==4.51.0, incompatible with the
+# workspace's transformers 5.x. Like the rldx / diffuser_actor families, the
+# model runs in an isolated py3.11 venv sidecar
+# (tools/internvla_n1_sidecar.py boots tools/_internvla_n1_server.py); the
+# openral-side adapter (openral_sim.policies.internvla_n1) talks to it over
+# ZMQ. The adapter emits a 6-D BODY_TWIST velocity command for the base.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-internvla_n1-mobile_base-vln-nf4"
+version: "0.1.0"
+license: "cc-by-nc-sa-4.0"   # InternVLA-N1 weights are non-commercial (guard: OPENRAL_ALLOW_NONCOMMERCIAL=1)
+# `role: s1` = an ExecuteSkill-dispatchable closed-loop policy (like smolvla /
+# pi05). InternVLA-N1 is internally dual-system, but OpenRAL dispatches it as ONE
+# executable policy (RGB + instruction → base velocity), so it is s1 from the
+# reasoner's palette/dispatch perspective. (The reasoner's own S2 planning is the
+# LLM, not this skill.) A `role: s2` here would exclude it from the palette.
+role: "s1"
+kind: "vla"
+model_family: "internvla_n1"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+# Embodiment-agnostic navigation: the paper deploys the SAME weights on Go2,
+# H1, and wheeled bases zero-shot. `mobile_base` is the canonical CLASS tag
+# for any planar base + body_twist actuator (matches rskill-nav2-navigate-to-pose).
+embodiment_tags:
+  - "mobile_base"
+
+# Egocentric RGB only. The robot needs to provide just one forward RGB camera.
+# Metric DEPTH is NOT a robot-sensor requirement here: the adapter derives it
+# monocularly from the SAME RGB frame via the DA3 sidecar
+# (depth-anything/DA3-SMALL — the model the SLAM/nvblox stack already runs),
+# so it works on a sim-rendered frame and a real camera alike. (DualVLN's
+# `nextdit` System-1 is in fact RGB+latent conditioned and ignores depth; a
+# `navdp` checkpoint would consume the DA3 depth. See README.)
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+
+# Output side: a single 6-D base twist. The action_contract below maps it to a
+# BODY_TWIST Action; the robot must advertise the body_twist control mode.
+actuators_required:
+  - kind: "body_twist"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "int4"        # NF4 on the Qwen2.5-VL-7B backbone; NavDP S1 head stays bf16
+  backend: "pytorch"
+# NF4 backbone (~5.0 GB) + bf16 NavDP head (~0.6 GB) measured peak on an 8 GB
+# card; declared with render/activation headroom for the co-resident sim EGL
+# context. The full bf16 checkpoint (~16.6 GB) needs a 24 GB card — set
+# quantization override "none" there.
+min_vram_gb:
+  int4: 7.0
+  bf16: 16.6
+weights_uri: "hf://InternRobotics/InternVLA-N1-DualVLN"
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# One BODY_TWIST command per step (closed-loop base velocity control); the
+# sidecar internally replans System-2 every plan_step_gap frames and runs
+# System-1 in between (asynchronous dual-system inference).
+chunk_size: 1
+latency_budget:
+  # A System-2 replan is a full 7B-VLM generate: ~1.5-2.5 s at NF4 on an 8 GB
+  # card; the cheaper System-1-only steps run at ~5-8 Hz. Budget the worst case.
+  per_chunk_ms: 2500.0
+  # A VLN episode is long-horizon (drive across a kitchen). 300 s ceiling; the
+  # model self-terminates by emitting STOP (the adapter then latches zero twist).
+  max_execution_s: 300.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+# Paper numbers (NOT reproduced on this hardware — see eval/*.json). These are
+# the model's own reported VLN-CE success rates, cited for skill discovery.
+benchmarks: {}   # no in-tree benchmark suite matches VLN-CE yet; see eval/vln_ce_r2r.json
+
+paper_url: "https://arxiv.org/abs/2512.08186"
+source_repo: "hf://InternRobotics/InternVLA-N1-DualVLN"
+
+description: >
+  InternVLA-N1 / DualVLN — a dual-system Vision-Language Navigation foundation
+  model (Qwen2.5-VL-7B waypoint planner + NavDP diffusion controller). Takes
+  egocentric RGB-D plus a natural-language navigation instruction and drives a
+  mobile base with body-twist velocity commands, emitting STOP on arrival.
+  Zero-shot across wheeled and legged bases (paper: Unitree Go2 / H1).
+
+# Reasoner tool-palette vocabulary. `actions` is a controlled enum; `navigate`
+# is the sole navigation verb it defines (`reach`/`look` are arm/head verbs).
+actions:
+  - "navigate"
+  - "reach"
+objects:
+  - "room"
+  - "hallway"
+  - "door"
+  - "kitchen"
+  - "landmark"
+scenes:
+  - "indoor"
+  - "kitchen"
+  - "home"
+
+# Per-checkpoint action contract. 6-D base twist [vx, vy, vz, wx, wy, wz] in
+# the base frame; only vx (forward) + wz (yaw) are non-zero (planar base).
+# The slot routes the whole vector to a single BODY_TWIST Action so the deploy
+# skill_runner dispatches base velocity instead of defaulting to JOINT_POSITION.
+action_contract:
+  dim: 6
+  slots:
+    - range: [0, 5]
+      control_mode: "body_twist"
+      frame: "base_link"
