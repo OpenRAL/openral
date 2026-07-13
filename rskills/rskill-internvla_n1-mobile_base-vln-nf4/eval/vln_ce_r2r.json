@@ -1,0 +1,36 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "Ground Slow, Move Fast: A Dual-System Foundation Model for Generalizable Vision-and-Language Navigation",
+    "arxiv": "https://arxiv.org/abs/2512.08186",
+    "model_variant": "InternVLA-N1 / DualVLN (8.3B, Qwen2.5-VL-7B S2 + NextDiT S1)",
+    "evaluated_by": "upstream authors",
+    "reproduced_locally": false,
+    "reproduction_planned": "VLN-CE requires the Habitat simulator, which is not an in-tree sim backend; local closed-loop verification is instead in the robocasa/NavigateKitchen deploy scene (not VLN-CE).",
+    "reproduction_cli": "See https://github.com/InternRobotics/InternNav (Habitat VLN-CE eval harness). Not reproduced on the OpenRAL reference host.",
+    "table": "Table 1 (InternVLA-N1 / DualVLN, R2R val-unseen)",
+    "status": "deferred"
+  },
+  "benchmark": {
+    "name": "VLN-CE",
+    "dataset": null,
+    "protocol": "R2R val-unseen, continuous-environment vision-language navigation; success within 3 m of the goal",
+    "robot": "mobile_base",
+    "simulator": "Habitat (VLN-CE)"
+  },
+  "eval_config": {
+    "split": "r2r_val_unseen",
+    "vla_id": "internvla_n1",
+    "weights_uri": "rskills/rskill-internvla_n1-mobile_base-vln-nf4",
+    "note": "Paper full-precision numbers; the NF4-quantized backbone shipped here is expected to trail these."
+  },
+  "results": {
+    "success_rate": 0.643,
+    "spl": 0.57
+  },
+  "baselines": {
+    "StreamVLN": { "success_rate": 0.569 },
+    "NaVILA": { "success_rate": 0.54 },
+    "Uni-NaVid": { "success_rate": 0.47 }
+  }
+}

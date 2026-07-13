@@ -2767,6 +2767,7 @@ class RSkillLicensePosture(str, Enum):
     NVIDIA_NON_COMMERCIAL = "nvidia_non_commercial"  # GR00T N1 / N1.5 / N1.6 weights
     NVIDIA_OPEN_MODEL = "nvidia_open_model"  # GR00T N1.7+ — Open Model License, commercial OK
     RLWRLD_NON_COMMERCIAL = "rlwrld_non_commercial"  # RLDX-1 weights
+    CC_BY_NC_SA_4_0 = "cc-by-nc-sa-4.0"  # InternVLA-N1 weights (InternRobotics)
     PROPRIETARY = "proprietary"  # Helix, Skild, Gemini Robotics
     UNKNOWN = "unknown"
 
@@ -4399,6 +4400,7 @@ ModelFamily: TypeAlias = Literal[
     "openvla",
     "lingbot_vla2",
     "lingbot_vla",
+    "internvla_n1",
 ]
 """VLA / policy family the skill belongs to.
 
@@ -4431,6 +4433,13 @@ loaded in-process (``trust_remote_code``, gated by
 ``OPENRAL_ALLOW_REMOTE_CODE=1``); the adapter de-normalizes the policy's
 discrete action tokens with the checkpoint's embedded ``unnorm_key`` stats
 and replays the action chunk closed-loop.
+
+``internvla_n1`` (InternRobotics InternVLA-N1 / DualVLN, arXiv:2512.08186) is
+a dual-system vision-language NAVIGATION policy (Qwen2.5-VL-7B System-2 +
+NavDP DiT System-1). Upstream InternNav pins ``transformers==4.51.0`` —
+incompatible with the workspace — so it runs out-of-process via the same ZMQ
+sidecar architecture as ``rldx``. The adapter consumes RGB-D + instruction
+and emits a 6-D ``BODY_TWIST`` velocity command for a mobile base.
 """
 
 # Regexes pinned at module scope so error messages stay consistent and
@@ -5978,6 +5987,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "3d_diffuser_actor",  # family diffuser_actor
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
+        "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         # Non-VLA tool-model tokens (detector / vlm / reward).
         "omdet_turbo",
         "rtdetr_coco_r18",
@@ -6010,6 +6020,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "openvla": "openvla_oft",
     "lingbot_vla": "lingbot_vla",
     "lingbot_vla2": "lingbot_vla2",
+    "internvla_n1": "internvla_n1",
 }
 """VLA :data:`ModelFamily` → its canonical ``<model>`` *suggestion* token
 (the single token :func:`expected_repo_name` proposes)."""
@@ -6028,6 +6039,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "openvla": frozenset({"openvla", "openvla_oft"}),
     "lingbot_vla": frozenset({"lingbot_vla"}),
     "lingbot_vla2": frozenset({"lingbot_vla2"}),
+    "internvla_n1": frozenset({"internvla_n1"}),
 }
 """The documented **family → allowed ``<model>`` tokens** map: when a manifest
 declares ``model_family``, the name's ``<model>`` segment must be one of these
