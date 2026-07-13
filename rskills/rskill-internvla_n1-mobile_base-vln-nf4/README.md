@@ -26,10 +26,17 @@ registry integration. It does **not** copy model weights.
 
 ## Preview
 
-<!-- Add media/frame_{start,mid,end}.png from a robocasa NavigateKitchen run
-     once a GPU closed-loop capture exists (see "Verification status"). -->
+Third-person capture of a real `openral deploy sim` closed-loop run in the
+RoboCasa `NavigateKitchen` scene: the skill is dispatched via
+`/openral/execute_rskill`, the NF4 model runs inference in the deploy loop, and
+`SimAttachedHAL` drives the panda_mobile base from the emitted `BODY_TWIST`
+commands.
 
-_No local capture yet — see **Verification status** below._
+| Start | Middle | End |
+| :---: | :---: | :---: |
+| ![start](media/frame_start.png) | ![mid](media/frame_mid.png) | ![end](media/frame_end.png) |
+
+Full clip: [media/demo.mp4](media/demo.mp4).
 
 ## What this skill does
 
