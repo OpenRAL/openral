@@ -52,7 +52,10 @@ embodiment_tags:
 # `navdp` checkpoint would consume the DA3 depth. See README.)
 sensors_required:
   - modality: "rgb"
-    vla_feature_key: "observation.images.camera1"
+    # Forward egocentric navigation view (NOT an arm-mounted manipulation
+    # camera). On panda_mobile this is the synthetic `head` sensor the
+    # robocasa backend renders down the base's travel direction.
+    vla_feature_key: "observation.images.head"
     min_width: 224
     min_height: 224
 

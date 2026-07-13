@@ -25,6 +25,8 @@ first use via :func:`openral_sim._assets.ensure_robocasa_assets`.
 
 from __future__ import annotations
 
+import math
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -223,6 +225,13 @@ class _RoboCasaSim:
     # velocity, synthetic 2D laser) without affecting GR1 / Panda /
     # other compositions. See `_emit_panda_mobile_extras`.
     _robots: tuple[str, ...] = ()
+    # Cached MuJoCo renderer for the synthetic forward "head" camera
+    # (built lazily on first `_wrap_obs` when `OPENRAL_ROBOCASA_HEAD_CAM=1`).
+    # RoboCasa rebuilds a fresh `MjModel` on every `reset` (new kitchen
+    # style), so the renderer is rebuilt whenever the model identity
+    # changes — reusing one bound to a freed model renders garbage.
+    _head_renderer: Any = None
+    _head_render_model: Any = None
 
     def reset(self, seed: int | None = None) -> Observation:
         if seed is not None and hasattr(self._env, "rng"):
@@ -240,6 +249,13 @@ class _RoboCasaSim:
             else result
         )
         self._debug_step = 0
+        # Nudge the base to face the most open direction so the synthetic
+        # forward head camera starts on a navigable view instead of a wall
+        # (RoboCasa randomises the spawn orientation each reset).
+        if head_cam_enabled() and self._has_mobile_base_robot():
+            handles = self.mujoco_handles()
+            if handles is not None:
+                face_open_space(handles[0], handles[1], self._resolve_base_joint_names())
         self._log_eef_distance(raw, step=0, action=None)
         return self._wrap_obs(raw)
 
@@ -573,6 +589,28 @@ class _RoboCasaSim:
         if not images:
             fallback = scene_cams[0] if scene_cams else "camera1"
             images[fallback] = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Synthetic forward "head" navigation camera (see module-level
+        # `render_head_view`). Added under `observation.images.head` so the
+        # VLN nav rSkill sees where the base is driving, not the arm's
+        # counter workspace. Env-gated + mobile-base-only.
+        if head_cam_enabled() and self._has_mobile_base_robot():
+            handles = self.mujoco_handles()
+            if handles is not None:
+                model, data = handles
+                if self._head_renderer is None or self._head_render_model is not model:
+                    import mujoco  # reason: defer optional dep
+
+                    if self._head_renderer is not None:
+                        self._head_renderer.close()
+                    self._head_renderer = mujoco.Renderer(model, h, w)
+                    self._head_render_model = model
+                head_img = render_head_view(
+                    self._head_renderer, model, data, self._resolve_base_joint_names()
+                )
+                if head_img is not None:
+                    images["head"] = head_img
+                    self._last_image = head_img
 
         # 9-D smolvla layout: eef_pos(3) + eef_quat(4) + gripper_qpos(2).
         # The older pre-mg_300 single-arm shape; also the graceful
@@ -920,6 +958,127 @@ _OMRON_BASE_JOINT_NAMES_FALLBACK: tuple[str, str, str] = (
     "joint_mobile_side",
     "joint_mobile_yaw",
 )
+
+
+# ── Forward-facing "head" navigation camera ────────────────────────────────
+#
+# The robot-mounted robosuite cameras (agentview / frontview / eye_in_hand)
+# all point at the arm's manipulation workspace — useless for a VLN policy,
+# which needs an egocentric view down the base's travel direction. There is
+# no such camera in the MJCF, so we synthesize one with a MuJoCo free camera
+# placed just ahead of the mobile base, looking forward + slightly down. It
+# is surfaced as ``observation.images.head`` (and drives the
+# ``rskill-internvla_n1-...`` nav skill). Off by default; the deploy path
+# sets ``OPENRAL_ROBOCASA_HEAD_CAM=1``.
+_HEAD_CAM_ENV = "OPENRAL_ROBOCASA_HEAD_CAM"
+_HEAD_CAM_HEIGHT_M = 1.30
+_HEAD_CAM_FWD_OFFSET_M = 0.42
+_HEAD_FACE_RAYS = 24  # yaw candidates over the full circle for face-open
+_HEAD_MIN_FWD_NORM = 1e-6  # degenerate base orientation guard
+
+
+def head_cam_enabled() -> bool:
+    """True iff the synthetic forward head camera is requested via env."""
+    return os.environ.get(_HEAD_CAM_ENV, "0") not in ("", "0")
+
+
+def _resolve_base_body_and_yaw(
+    model: Any, base_joint_names: tuple[str, str, str] | None
+) -> tuple[int, int] | None:
+    """Return ``(base_body_id, yaw_qpos_addr)`` for the mobile base, or None."""
+    import mujoco  # reason: defer optional dep
+
+    yaw_primary = (base_joint_names or _OMRON_BASE_JOINT_NAMES)[2]
+    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, yaw_primary)
+    if jid < 0:
+        jid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_JOINT, _OMRON_BASE_JOINT_NAMES_FALLBACK[2]
+        )
+    if jid < 0:
+        return None
+    return int(model.jnt_bodyid[jid]), int(model.jnt_qposadr[jid])
+
+
+def _base_forward_xy(model: Any, data: Any, base_body_id: int) -> NDArray[np.float64] | None:
+    """Unit horizontal forward vector (base local +x projected to the floor)."""
+    xmat = np.asarray(data.xmat[base_body_id], dtype=np.float64).reshape(3, 3)
+    fwd = xmat[:, 0].copy()
+    fwd[2] = 0.0
+    n = float(np.linalg.norm(fwd))
+    if n < _HEAD_MIN_FWD_NORM:
+        return None
+    return fwd / n
+
+
+def face_open_space(model: Any, data: Any, base_joint_names: tuple[str, str, str] | None) -> None:
+    """Rotate the mobile base in place to face the most open direction.
+
+    Casts rays over a camera-height band at ``_HEAD_FACE_RAYS`` candidate
+    yaws and picks the one with the largest *minimum* clearance, so a
+    direction that is open at head height but blocked by a counter lower
+    down is rejected. Mutates ``data.qpos[yaw]`` and re-forwards. A pure
+    starting-orientation nudge for the nav demo — physics picks up the new
+    yaw on the next ``env.step``.
+    """
+    import mujoco  # reason: defer optional dep
+
+    res = _resolve_base_body_and_yaw(model, base_joint_names)
+    if res is None:
+        return
+    bid, yaw_adr = res
+    mujoco.mj_forward(model, data)
+    bpos = np.asarray(data.xpos[bid], dtype=np.float64)
+    xmat = np.asarray(data.xmat[bid], dtype=np.float64).reshape(3, 3)
+    base_fwd = math.atan2(xmat[1, 0], xmat[0, 0])
+    best_ang, best_clr = base_fwd, -1.0
+    geomid = np.zeros(1, dtype=np.int32)
+    for k in range(_HEAD_FACE_RAYS):
+        ang = base_fwd + (k - _HEAD_FACE_RAYS // 2) * (2.0 * math.pi / _HEAD_FACE_RAYS)
+        vec = np.array([math.cos(ang), math.sin(ang), 0.0])
+        clr = 1e3
+        for hz in (1.10, _HEAD_CAM_HEIGHT_M, 1.50):
+            pnt = bpos + np.array([0.0, 0.0, hz]) + vec * 0.45
+            dist = mujoco.mj_ray(model, data, pnt, vec, None, 1, -1, geomid)
+            clr = min(clr, dist if dist >= 0 else 1e3)
+        if clr > best_clr:
+            best_clr, best_ang = clr, ang
+    data.qpos[yaw_adr] += best_ang - base_fwd
+    mujoco.mj_forward(model, data)
+
+
+def render_head_view(
+    renderer: Any, model: Any, data: Any, base_joint_names: tuple[str, str, str] | None
+) -> NDArray[np.uint8] | None:
+    """Render the forward egocentric head view, or None if no mobile base.
+
+    Free camera ``_HEAD_CAM_FWD_OFFSET_M`` ahead of the base body at
+    ``_HEAD_CAM_HEIGHT_M``, looking 3 m forward and 0.5 m down. Returns a
+    top-down HxWx3 uint8 frame (``mujoco.Renderer`` already emits rows
+    top-first, so — unlike the raw robosuite offscreen cameras in
+    ``_wrap_obs`` — it needs no vertical flip).
+    """
+    import mujoco  # reason: defer optional dep
+
+    res = _resolve_base_body_and_yaw(model, base_joint_names)
+    if res is None:
+        return None
+    bid, _ = res
+    fwd = _base_forward_xy(model, data, bid)
+    if fwd is None:
+        return None
+    bpos = np.asarray(data.xpos[bid], dtype=np.float64)
+    head = bpos + fwd * _HEAD_CAM_FWD_OFFSET_M + np.array([0.0, 0.0, _HEAD_CAM_HEIGHT_M])
+    look = head + fwd * 3.0 - np.array([0.0, 0.0, 0.5])
+    d = head - look
+    dist = float(np.linalg.norm(d))
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = look
+    cam.distance = dist
+    cam.azimuth = math.degrees(math.atan2(d[1], d[0]))
+    cam.elevation = math.degrees(math.asin(d[2] / dist))
+    renderer.update_scene(data, camera=cam)
+    return np.ascontiguousarray(renderer.render().astype(np.uint8))
 
 
 def _resolve_base_joint_qvel_addrs(

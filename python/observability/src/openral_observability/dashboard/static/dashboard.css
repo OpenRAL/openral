@@ -475,7 +475,11 @@
   /* ------------------- CAMERAS (primary viewports) -------------------
      Auto-fills the hero column: 1 feed spans wide, 2+ tile. Scrolls inside the
      framed #cameras well when more feeds arrive than fit the band height. */
-  .cameras { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-content: start; }
+  /* Fit the robot's feeds in a single row when there are only a few (the
+     common 2-3 case: e.g. panda_mobile shoulder_left/right/wrist), so all
+     cameras stay visible side-by-side rather than wrapping 2-over-1. The
+     144px floor keeps 3 across a ~540px cell; more feeds wrap gracefully. */
+  .cameras { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; align-content: start; }
   .camera {
     background:
       linear-gradient(180deg, rgba(255,255,255,0.018) 0%, transparent 22%),
@@ -485,6 +489,10 @@
     padding: 13px;
     display: flex; flex-direction: column; gap: 11px;
     overflow: hidden;
+    /* Let the card shrink below its footer's intrinsic text width so the grid
+       can pack the common 3-feed case (shoulder_left/right/wrist) side-by-side
+       instead of wrapping 2-over-1; the name truncates with an ellipsis. */
+    min-width: 0;
     box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 34px -28px #000;
   }
   .camera .image-wrap {
@@ -538,8 +546,12 @@
   .camera .footer {
     display: grid; grid-template-columns: 1fr max-content; align-items: baseline;
     gap: 4px 14px; font-family: var(--mono); font-size: 11px;
+    min-width: 0;
   }
-  .camera .footer .name { color: var(--fg); font-weight: 600; font-size: 12px; letter-spacing: 0.04em; }
+  .camera .footer .name {
+    color: var(--fg); font-weight: 600; font-size: 12px; letter-spacing: 0.04em;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .camera .footer .lat { color: var(--ok); text-align: right; font-weight: 600; }
   .camera .footer .meta-sub { color: var(--fg-mute); font-size: 10px; }
   .camera .footer .meta-sub.right { color: var(--fg-mute); text-align: right; }
@@ -917,7 +929,7 @@
     .scroll-y, .grow { min-height: 0; flex: none; }
     .scroll-y { overflow: visible; }
     #cameras { overflow: visible; }
-    .cameras { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    .cameras { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
     .event-log { max-height: 320px; overflow-y: auto; }
     #metrics.panel { max-height: 460px; }
     .idbar { flex-wrap: wrap; }
