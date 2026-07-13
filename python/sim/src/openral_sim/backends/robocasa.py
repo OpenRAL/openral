@@ -744,14 +744,18 @@ class _RoboCasaSim:
     def _has_mobile_base_robot(self) -> bool:
         """True iff one of the loaded robosuite robots is a mobile base.
 
-        Detection is structural (composition-name suffix `"Mobile"`)
-        rather than a literal `"PandaMobile"` check — so a future
-        ``GR1Mobile`` / ``SpotMobile`` etc. light up the extras path
-        automatically. The historical `"PandaMobile"` literal stays as
-        an OR-arm so existing fixtures and policies that key on the
-        exact name continue to work.
+        Detection is structural (composition-name suffix `"Mobile"` or
+        the ``"Omron"`` mobile-base family) rather than a literal
+        `"PandaMobile"` check — so a future ``GR1Mobile`` / ``SpotMobile``
+        etc. light up the extras path automatically. RoboCasa's
+        ``RoboCasaBackendOptions`` canonicalises the scene's
+        ``PandaMobile`` request to the robosuite composition **``PandaOmron``**
+        (the OmronMobileBase-mounted Panda), so ``self._robots`` holds
+        ``"PandaOmron"`` at runtime — the ``"Omron"`` arm is what actually
+        matches on the deploy path; the ``"PandaMobile"`` literal stays as
+        an OR-arm so existing fixtures that key on the exact name work.
         """
-        return any(name.endswith("Mobile") for name in self._robots) or (
+        return any(name.endswith("Mobile") or "Omron" in name for name in self._robots) or (
             "PandaMobile" in self._robots
         )
 
