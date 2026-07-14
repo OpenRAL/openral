@@ -356,6 +356,18 @@ class LaunchInvocation:
     ``/openral/cameras/<name>/image`` (+ ``/camera_info``). Forwarded as
     ``slam_stereo_cameras:=<left>,<right>`` only when set, so the launch overrides
     the visual impl's default ``left``/``right`` topics."""
+    slam_mono_camera: str | None
+    """The single RGB camera for the visual SLAM **mono RGBD** path, from
+    ``DeployRuntime.slam_mono_camera`` (pycuvslam only). Auto-composes the DA3
+    depth provider + nvblox so one camera yields pose + occupancy grid + voxels.
+    Forwarded as ``slam_mono_camera:=<name>`` only when set; mutually exclusive
+    with ``slam_stereo_cameras``."""
+    slam_depth_sidecar_autostart: bool
+    """Whether the launch spawns the DA3 depth sidecar for the mono RGBD path,
+    from ``DeployRuntime.slam_depth_sidecar_autostart`` (default ``True``).
+    Forwarded as ``slam_depth_sidecar_autostart:=false`` only when
+    ``slam_mono_camera`` is set and the scene opts out (operator-run /
+    shared sidecar)."""
     enable_nav2: bool
     """Opt-in for the Nav2 navigation stack. Set by
     ``openral deploy sim --enable-nav2``; forwarded into the launch as
@@ -988,6 +1000,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # workcell properties. Seeded None so the scene runtime can pin them below.
     slam_visual_impl: str | None = None
     slam_stereo_cameras: tuple[str, str] | None = None
+    slam_mono_camera: str | None = None
+    slam_depth_sidecar_autostart: bool = True
 
     # DeployScene.runtime — the committed deploy posture. Field-by-field
     # precedence: explicit CLI flag > scene runtime > auto/built-in default
@@ -1034,6 +1048,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             slam_visual_impl = rt.slam_visual_impl
         if slam_stereo_cameras is None:
             slam_stereo_cameras = rt.slam_stereo_cameras
+        if slam_mono_camera is None:
+            slam_mono_camera = rt.slam_mono_camera
+        slam_depth_sidecar_autostart = rt.slam_depth_sidecar_autostart
     # Built-in defaults for the tri-state flags nothing pinned.
     if enable_octomap_kernel_check is None:
         enable_octomap_kernel_check = True
@@ -1391,6 +1408,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # launch file defaults the visual impl's own left/right topics otherwise).
     if slam_stereo_cameras is not None:
         argv_template.append(f"slam_stereo_cameras:={','.join(slam_stereo_cameras)}")
+    if slam_mono_camera:
+        argv_template.append(f"slam_mono_camera:={slam_mono_camera}")
+        if not slam_depth_sidecar_autostart:
+            argv_template.append("slam_depth_sidecar_autostart:=false")
 
     # only forward the dataset args when recording is opted in
     # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
@@ -1439,6 +1460,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         slam_backend=slam_backend,
         slam_visual_impl=slam_visual_impl,
         slam_stereo_cameras=slam_stereo_cameras,
+        slam_mono_camera=slam_mono_camera,
+        slam_depth_sidecar_autostart=slam_depth_sidecar_autostart,
         enable_nav2=enable_nav2,
         enable_octomap=enable_octomap,
         clock_origin=clock_origin,

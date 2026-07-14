@@ -170,6 +170,32 @@ def test_deploy_runtime_rejects_duplicate_stereo_cameras():
         DeployRuntime(slam_stereo_cameras=("front", "front"))
 
 
+def test_deploy_runtime_accepts_mono_camera():
+    """Mono RGBD path: one named camera, sidecar autostart defaults on."""
+    from openral_core import DeployRuntime
+
+    rt = DeployRuntime(slam_visual_impl="pycuvslam", slam_mono_camera="shoulder_left")
+    assert rt.slam_mono_camera == "shoulder_left"
+    assert rt.slam_depth_sidecar_autostart is True
+
+
+def test_deploy_runtime_rejects_empty_mono_camera():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError, match="non-empty camera name"):
+        DeployRuntime(slam_mono_camera="")
+
+
+def test_deploy_runtime_rejects_mono_and_stereo_together():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        DeployRuntime(
+            slam_mono_camera="shoulder_left",
+            slam_stereo_cameras=("shoulder_left", "shoulder_right"),
+        )
+
+
 # ── SimScene ─────────────────────────────────────────────────────────────
 
 

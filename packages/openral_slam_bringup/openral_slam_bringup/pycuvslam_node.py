@@ -38,6 +38,7 @@ from typing import Any
 
 __all__ = [
     "compose_pose",
+    "depth_to_uint16_mm",
     "invert_pose",
     "main",
     "map_from_odom",
@@ -165,6 +166,47 @@ def transform_to_pose(transform: Any) -> _Pose:
     )
 
 
+def depth_to_uint16_mm(msg: Any, width: int, height: int, scale: float) -> Any:
+    """Convert a ``32FC1`` metric-depth ``Image`` to the ``uint16`` cuVSLAM RGBD eats.
+
+    cuVSLAM's RGBD odometry expects depth as ``uint16`` aligned pixel-for-pixel
+    with camera-0 (the RGB image), and divides each raw value by
+    ``depth_scale_factor`` to recover metres. The metric-depth provider (DA3)
+    publishes ``32FC1`` metres at the model's own resolution, so this resizes to
+    the RGB ``width``/``height`` (bilinear) and encodes ``metres * scale`` — the
+    inverse of cuVSLAM's divide, so ``scale`` (e.g. ``1000`` for millimetres) is
+    the single knob shared by both sides. Values are clipped to the ``uint16``
+    range; the RealSense reference example uses the same ``1/depth_scale``
+    convention.
+
+    Example:
+        >>> import numpy as np
+        >>> class _D:  # minimal 32FC1 sensor_msgs/Image stand-in, 2x2 metres
+        ...     encoding = "32FC1"
+        ...     height, width = 2, 2
+        ...     data = np.array([[0.5, 1.0], [1.5, 2.0]], np.float32).tobytes()
+        >>> depth_to_uint16_mm(_D(), 2, 2, 1000.0).tolist()
+        [[500, 1000], [1500, 2000]]
+    """
+    import numpy as np
+
+    if msg.encoding != "32FC1":
+        raise ValueError(f"depth must be 32FC1 metres, got encoding {msg.encoding!r}")
+    depth = np.frombuffer(bytes(msg.data), dtype=np.float32).reshape(
+        int(msg.height), int(msg.width)
+    )
+    if (int(msg.height), int(msg.width)) != (height, width):
+        # Register DA3's native-resolution depth onto the RGB grid so cuVSLAM's
+        # per-pixel depth_camera_id=0 alignment holds. PIL "F" = float32 bilinear.
+        from PIL import Image as _PILImage
+
+        depth = np.asarray(
+            _PILImage.fromarray(depth, mode="F").resize((width, height), _PILImage.BILINEAR),
+            dtype=np.float32,
+        )
+    return np.clip(depth * scale, 0, 65535).astype(np.uint16)
+
+
 def _image_to_array(msg: Any) -> Any:
     """Convert a ``sensor_msgs/Image`` to the ``HxW``/``HxWx3`` uint8 array cuVSLAM eats."""
     import numpy as np
@@ -223,6 +265,15 @@ def main(args: Any = None) -> None:
             # (rig ≡ left camera, baseline from the right CameraInfo P matrix).
             self.declare_parameter("rig_frame", "")
             self.declare_parameter("robot_yaml", "")
+            # Mono RGBD mode: when depth_image_topic is set, the node tracks a
+            # SINGLE RGB camera (left_image_topic) fused with a metric-depth
+            # stream (the DA3 depth provider) via cuVSLAM's RGBD odometry — the
+            # one-camera path for lidar-less robots without a stereo rig. Empty →
+            # the stereo/multi-camera path above. depth_scale_factor is the
+            # shared metres↔uint16 knob (1000 = millimetres); see
+            # depth_to_uint16_mm.
+            self.declare_parameter("depth_image_topic", "")
+            self.declare_parameter("depth_scale_factor", 1000.0)
 
             try:
                 import cuvslam
@@ -244,6 +295,8 @@ def main(args: Any = None) -> None:
                 seconds=gp("tf_timeout_ms").get_parameter_value().integer_value / 1000.0
             )
             self._enable_slam = gp("enable_slam").get_parameter_value().bool_value
+            self._depth_topic = gp("depth_image_topic").get_parameter_value().string_value
+            self._depth_scale = gp("depth_scale_factor").get_parameter_value().double_value
             # Resolve the rig frame: explicit param wins; else the robot
             # manifest's base_frame (the natural rig for a mobile robot whose
             # cameras are mounted on its base). Empty → rectified-baseline path.
@@ -280,37 +333,61 @@ def main(args: Any = None) -> None:
             self._odom_pub = self.create_publisher(
                 Odometry, gp("odometry_topic").get_parameter_value().string_value, sensor_qos
             )
-            for side in ("left", "right"):
+            self._setup_inputs(sensor_qos, info_qos)
+
+        def _setup_inputs(self, sensor_qos: Any, info_qos: Any) -> None:
+            """Subscribe camera_info + the synced image pair (mono RGBD or stereo)."""
+            cuvslam = self._cuvslam
+            gp = self.get_parameter
+            left_image = gp("left_image_topic").get_parameter_value().string_value
+            self.create_subscription(
+                CameraInfo,
+                gp("left_camera_info_topic").get_parameter_value().string_value,
+                lambda msg: self._infos.setdefault("left", msg),
+                info_qos,
+            )
+            if self._depth_topic:
+                # Mono RGBD: one RGB camera (left) + a metric-depth stream. Sync
+                # the RGB frame with its depth image; cuVSLAM fuses them for scale.
+                self._sync = ApproximateTimeSynchronizer(
+                    [
+                        Subscriber(self, Image, left_image, qos_profile=sensor_qos),
+                        Subscriber(self, Image, self._depth_topic, qos_profile=sensor_qos),
+                    ],
+                    queue_size=5,
+                    slop=gp("sync_slop_s").get_parameter_value().double_value,
+                )
+                self._sync.registerCallback(self._on_rgbd)
+                self.get_logger().info(
+                    f"pycuvslam: engine {cuvslam.get_version()[0]}, mono RGBD, waiting for "
+                    f"{left_image} + depth {self._depth_topic}"
+                )
+            else:
                 self.create_subscription(
                     CameraInfo,
-                    gp(f"{side}_camera_info_topic").get_parameter_value().string_value,
-                    lambda msg, side=side: self._infos.setdefault(side, msg),
+                    gp("right_camera_info_topic").get_parameter_value().string_value,
+                    lambda msg: self._infos.setdefault("right", msg),
                     info_qos,
                 )
-            self._sync = ApproximateTimeSynchronizer(
-                [
-                    Subscriber(
-                        self,
-                        Image,
-                        gp("left_image_topic").get_parameter_value().string_value,
-                        qos_profile=sensor_qos,
-                    ),
-                    Subscriber(
-                        self,
-                        Image,
-                        gp("right_image_topic").get_parameter_value().string_value,
-                        qos_profile=sensor_qos,
-                    ),
-                ],
-                queue_size=5,
-                slop=gp("sync_slop_s").get_parameter_value().double_value,
-            )
-            self._sync.registerCallback(self._on_stereo_pair)
-            self.get_logger().info(
-                f"pycuvslam: engine {cuvslam.get_version()[0]}, waiting for stereo pair on "
-                f"{gp('left_image_topic').get_parameter_value().string_value} + "
-                f"{gp('right_image_topic').get_parameter_value().string_value}"
-            )
+                self._sync = ApproximateTimeSynchronizer(
+                    [
+                        Subscriber(self, Image, left_image, qos_profile=sensor_qos),
+                        Subscriber(
+                            self,
+                            Image,
+                            gp("right_image_topic").get_parameter_value().string_value,
+                            qos_profile=sensor_qos,
+                        ),
+                    ],
+                    queue_size=5,
+                    slop=gp("sync_slop_s").get_parameter_value().double_value,
+                )
+                self._sync.registerCallback(self._on_stereo_pair)
+                self.get_logger().info(
+                    f"pycuvslam: engine {cuvslam.get_version()[0]}, waiting for stereo pair on "
+                    f"{left_image} + "
+                    f"{gp('right_image_topic').get_parameter_value().string_value}"
+                )
 
         def _intrinsics_camera(self, info: Any, rig_from_camera: Any) -> Any:
             cuvslam = self._cuvslam
@@ -402,12 +479,69 @@ def main(args: Any = None) -> None:
                 (float(rot[0]), float(rot[1]), float(rot[2]), float(rot[3])),
                 (float(tr[0]), float(tr[1]), float(tr[2])),
             )
-            self._publish_odometry(left, map_from_rig)
+            self._emit(left.header.stamp, map_from_rig)
+
+        def _build_mono_tracker(self, rgb_info: Any) -> Any:
+            """Single-camera RGBD tracker: rig ≡ the RGB camera, depth gives scale."""
+            cuvslam = self._cuvslam
+            rig = cuvslam.Rig()
+            rig.cameras = [
+                self._intrinsics_camera(
+                    rgb_info, cuvslam.Pose(rotation=[0, 0, 0, 1], translation=[0, 0, 0])
+                )
+            ]
+            self._rig_child_frame = rgb_info.header.frame_id
+            # ponytail: odometry-only (no SlamConfig loop closure). Add slam_config
+            # if mono drift over a long run matters — nvblox only needs the pose.
+            odom_config = cuvslam.Tracker.OdometryConfig(
+                odometry_mode=cuvslam.Tracker.OdometryMode.RGBD,
+                rgbd_settings=cuvslam.Tracker.OdometryRGBDSettings(
+                    depth_camera_id=0, depth_scale_factor=self._depth_scale
+                ),
+            )
+            self.get_logger().info(
+                f"pycuvslam: {rgb_info.width}x{rgb_info.height} mono RGBD "
+                f"(depth scale={self._depth_scale:g})"
+            )
+            return cuvslam.Tracker(rig, odom_config=odom_config)
+
+        def _on_rgbd(self, rgb: Any, depth: Any) -> None:
+            if self._tracker is None:
+                if "left" not in self._infos:
+                    return  # camera_info not seen yet — RELIABLE, arrives promptly
+                self._tracker = self._build_mono_tracker(self._infos["left"])
+            try:
+                rgb_arr = _image_to_array(rgb)
+                depth_mm = depth_to_uint16_mm(
+                    depth, int(rgb.width), int(rgb.height), self._depth_scale
+                )
+            except ValueError as exc:
+                self.get_logger().warning(f"skip rgbd frame: {exc}")
+                return
+            stamp_ns = int(rgb.header.stamp.sec) * 1_000_000_000 + int(rgb.header.stamp.nanosec)
+            pose_est, _ = self._tracker.track(stamp_ns, [rgb_arr], depths=[depth_mm])
+            if pose_est.world_from_rig is None:
+                if not self._lost_warned:
+                    self.get_logger().warning("pycuvslam: tracker lost — no pose this frame")
+                    self._lost_warned = True
+                return
+            self._lost_warned = False
+            tracked = pose_est.world_from_rig.pose
+            rot, tr = tracked.rotation, tracked.translation
+            map_from_rig: _Pose = (
+                (float(rot[0]), float(rot[1]), float(rot[2]), float(rot[3])),
+                (float(tr[0]), float(tr[1]), float(tr[2])),
+            )
+            self._emit(rgb.header.stamp, map_from_rig)
+
+        def _emit(self, stamp: Any, map_from_rig: _Pose) -> None:
+            """Publish odometry and broadcast the ``map → odom`` TF for a tracked pose."""
+            self._publish_odometry(stamp, map_from_rig)
             try:
                 odom_tf = self._tf_buffer.lookup_transform(
                     self._odom_frame,
                     self._rig_child_frame,
-                    Time.from_msg(left.header.stamp),
+                    Time.from_msg(stamp),
                     timeout=self._tf_timeout,
                 )
             except TransformException as exc:
@@ -417,7 +551,7 @@ def main(args: Any = None) -> None:
             ot = odom_tf.transform.translation
             correction = map_from_odom(map_from_rig, ((oq.x, oq.y, oq.z, oq.w), (ot.x, ot.y, ot.z)))
             out = TransformStamped()
-            out.header.stamp = left.header.stamp
+            out.header.stamp = stamp
             out.header.frame_id = self._map_frame
             out.child_frame_id = self._odom_frame
             (
@@ -433,9 +567,9 @@ def main(args: Any = None) -> None:
             ) = correction[1]
             self._tf_broadcaster.sendTransform(out)
 
-        def _publish_odometry(self, left: Any, map_from_rig: _Pose) -> None:
+        def _publish_odometry(self, stamp: Any, map_from_rig: _Pose) -> None:
             msg = Odometry()
-            msg.header.stamp = left.header.stamp
+            msg.header.stamp = stamp
             msg.header.frame_id = self._map_frame
             msg.child_frame_id = self._rig_child_frame
             (

@@ -1,0 +1,51 @@
+# RoboCasa kitchen — MONO visual-SLAM digital twin (one RGB camera, no depth sensor).
+#
+# The single-camera counterpart of robocasa_vslam.yaml: instead of a stereo rig,
+# the base localises from ONE RGB camera (shoulder_left → RoboCasa
+# agentview_left) fused with DepthAnything-3 metric depth via cuVSLAM's RGBD
+# odometry. The DA3 depth also feeds nvblox, so the same one camera yields the
+# robot's pose AND a dense 2-D occupancy grid (`/map`) + 3-D voxel map — the
+# lidar-less, stereo-less path for a camera-only mobile robot.
+#
+# `slam_mono_camera: shoulder_left` drives the wiring: sim_e2e auto-composes the
+# DA3 depth provider (RGB → 32FC1 metric depth, framed at the camera's optical
+# frame) and nvblox (cuVSLAM pose + depth → occupancy grid + voxels). The
+# dashboard's SLAM card (slam.occupancy_grid) and pointcloud card
+# (world.pointcloud) then show the maps building as the base drives.
+#
+# Run (needs the robocasa group + the operator-installed PyCuVSLAM wheel + GPU;
+# the DA3 depth sidecar autostarts — first boot provisions its venv, which can
+# take minutes; set `slam_depth_sidecar_autostart: false` to run it yourself):
+#   just sync --all-packages --group robocasa
+#   openral deploy sim --config scenes/deploy/robocasa_vslam_mono.yaml
+#
+# Watch: /map (nvblox OccupancyGrid), the nvblox voxel/mesh cloud, and
+# /openral/visual_slam/odometry (map←shoulder_left_optical_frame). No task/success
+# criterion — a mono localization + mapping playground.
+
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+
+robot_id: panda_mobile_vslam
+
+# Committed deploy posture. SLAM on, auto-resolving to the visual backend
+# (the manifest is lidar-less); PyCuVSLAM impl, MONO RGBD from one camera.
+# nvblox is auto-composed by the mono path (not gated on nav2), so the
+# occupancy grid + voxels populate without the full nav stack. Detector/reward
+# off — this scene exercises the mono visual-SLAM + mapping leg.
+runtime:
+  enable_slam: true
+  slam_visual_impl: pycuvslam
+  slam_mono_camera: shoulder_left
+  enable_nav2: false
+  enable_octomap: false
+  enable_object_detector: false
+  enable_reward_monitor: false

@@ -88,6 +88,20 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description="Explicit rig frame (overrides robot_yaml's base_frame).",
         ),
+        # Mono RGBD path. When ``depth_image_topic`` is set, the node tracks a
+        # single RGB camera (``left_image_topic``) fused with this metric-depth
+        # stream (the DA3 depth provider) — the one-camera path for lidar-less
+        # robots without a stereo rig. Empty → the stereo/multi-camera path.
+        DeclareLaunchArgument(
+            "depth_image_topic",
+            default_value="",
+            description="Metric depth (32FC1, metres) for mono RGBD; empty → stereo mode.",
+        ),
+        DeclareLaunchArgument(
+            "depth_scale_factor",
+            default_value="1000.0",
+            description="Shared metres↔uint16 knob for RGBD depth (1000 = millimetres).",
+        ),
     ]
 
     node = Node(
@@ -105,6 +119,8 @@ def generate_launch_description() -> LaunchDescription:
                 "right_camera_info_topic": LaunchConfiguration("right_camera_info_topic"),
                 "robot_yaml": LaunchConfiguration("robot_yaml"),
                 "rig_frame": LaunchConfiguration("rig_frame"),
+                "depth_image_topic": LaunchConfiguration("depth_image_topic"),
+                "depth_scale_factor": LaunchConfiguration("depth_scale_factor"),
             },
         ],
         output="screen",
