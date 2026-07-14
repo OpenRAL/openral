@@ -357,6 +357,9 @@ sensors:
   # consumes (`observation.images.head`). Listed first so it is the base's
   # primary camera on the dashboard. No `metadata.mjcf_camera` (there is no
   # MJCF camera to look up) and `base_link` frame (no optical-TF lift).
+  # `metadata.height_m` / `metadata.forward_offset_m` are the camera mount
+  # geometry the sim backend places the free camera at — tune per robot here,
+  # not in code.
   - name: "head"
     modality: "rgb"
     frame_id: "base_link"
@@ -372,6 +375,9 @@ sensors:
     vla_feature_key: "observation.images.head"
     vendor: "sim"
     model: "robocasa_synthetic_head"
+    metadata:
+      height_m: 1.30
+      forward_offset_m: 0.42
   - name: "shoulder_left"
     modality: "rgb"
     # Per the cross-frame object-lift convention — a dedicated optical frame (NOT the
