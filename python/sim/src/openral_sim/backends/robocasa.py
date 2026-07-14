@@ -999,17 +999,6 @@ def _resolve_base_body_and_yaw(
     return int(model.jnt_bodyid[jid]), int(model.jnt_qposadr[jid])
 
 
-def _base_forward_xy(model: Any, data: Any, base_body_id: int) -> NDArray[np.float64] | None:
-    """Unit horizontal forward vector (base local +x projected to the floor)."""
-    xmat = np.asarray(data.xmat[base_body_id], dtype=np.float64).reshape(3, 3)
-    fwd = xmat[:, 0].copy()
-    fwd[2] = 0.0
-    n = float(np.linalg.norm(fwd))
-    if n < _HEAD_MIN_FWD_NORM:
-        return None
-    return fwd / n
-
-
 def face_open_space(model: Any, data: Any, base_joint_names: tuple[str, str, str] | None) -> None:
     """Rotate the mobile base in place to face the most open direction.
 
@@ -1063,9 +1052,14 @@ def render_head_view(
     if res is None:
         return None
     bid, _ = res
-    fwd = _base_forward_xy(model, data, bid)
-    if fwd is None:
+    # Unit horizontal forward vector: base local +x projected to the floor.
+    xmat = np.asarray(data.xmat[bid], dtype=np.float64).reshape(3, 3)
+    fwd = xmat[:, 0].copy()
+    fwd[2] = 0.0
+    n = float(np.linalg.norm(fwd))
+    if n < _HEAD_MIN_FWD_NORM:  # degenerate orientation (base tipped vertical)
         return None
+    fwd /= n
     bpos = np.asarray(data.xpos[bid], dtype=np.float64)
     head = bpos + fwd * _HEAD_CAM_FWD_OFFSET_M + np.array([0.0, 0.0, _HEAD_CAM_HEIGHT_M])
     look = head + fwd * 3.0 - np.array([0.0, 0.0, 0.5])
@@ -1078,7 +1072,8 @@ def render_head_view(
     cam.azimuth = math.degrees(math.atan2(d[1], d[0]))
     cam.elevation = math.degrees(math.asin(d[2] / dist))
     renderer.update_scene(data, camera=cam)
-    return np.ascontiguousarray(renderer.render().astype(np.uint8))
+    # mujoco.Renderer.render() already returns HxWx3 uint8.
+    return np.ascontiguousarray(renderer.render())
 
 
 def _resolve_base_joint_qvel_addrs(
