@@ -410,6 +410,24 @@ def main(args: Any = None) -> None:
         def _on_camera_info(self, msg: CameraInfo) -> None:
             self._latest_info = msg
 
+        def _lookup_or_latest(self, source_frame: str, stamp: Any) -> Any:
+            """``global_frame`` ← ``source_frame`` at ``stamp``, else the latest.
+
+            Visual odometry (cuVSLAM) publishes ``map → odom`` slightly behind the
+            camera stamp, so an exact-stamp lookup extrapolates into the future and
+            drops the frame — starving nvblox. Fall back to the latest available
+            transform (``Time()``); a sub-100 ms-stale pose is negligible at the
+            map's voxel size and keeps the occupancy grid building.
+            """
+            try:
+                return self._tf_buffer.lookup_transform(
+                    self._global_frame, source_frame, Time.from_msg(stamp), timeout=self._tf_timeout
+                )
+            except TransformException:
+                return self._tf_buffer.lookup_transform(
+                    self._global_frame, source_frame, Time(), timeout=self._tf_timeout
+                )
+
         def _on_depth(self, msg: Image) -> None:
             if self._latest_info is None:
                 if not self._warned_no_info:
@@ -425,12 +443,7 @@ def main(args: Any = None) -> None:
                 return
 
             try:
-                transform = self._tf_buffer.lookup_transform(
-                    self._global_frame,
-                    msg.header.frame_id,
-                    Time.from_msg(msg.header.stamp),
-                    timeout=self._tf_timeout,
-                )
+                transform = self._lookup_or_latest(msg.header.frame_id, msg.header.stamp)
             except TransformException as exc:
                 self.get_logger().warning(f"skip depth frame: TF lookup failed: {exc}")
                 return
@@ -441,12 +454,7 @@ def main(args: Any = None) -> None:
                 min_height_m = self._override_min_height
                 max_height_m = self._override_max_height
                 if not math.isfinite(min_height_m):
-                    base_transform = self._tf_buffer.lookup_transform(
-                        self._global_frame,
-                        self._base_frame,
-                        Time.from_msg(msg.header.stamp),
-                        timeout=self._tf_timeout,
-                    )
+                    base_transform = self._lookup_or_latest(self._base_frame, msg.header.stamp)
                     base_z = float(base_transform.transform.translation.z)
                     if self._relative_band is not None:
                         min_height_m = base_z + self._relative_band.min_z_m
