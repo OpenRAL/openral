@@ -18,7 +18,12 @@ guarantees every camera ends up on the WorldState subscription topic
   directly from the pipeline (``pipeline._build_ros_tee_branch``).
 * ``opencv_thread`` (and any backend without a native tee) — the open
   reader is wrapped in a polling
-  :class:`~openral_sensors.ros_publisher.SensorRosPublisher`.
+  :class:`~openral_sensors.ros_publisher.SensorRosPublisher`. When the
+  spec carries calibrated ``intrinsics``, a companion ``CameraInfo`` is
+  published on ``<topic_prefix>/<name>/camera_info`` (the same layout the
+  sim HAL uses) so mono visual SLAM works on real hardware. The GStreamer
+  tee does not publish CameraInfo yet — mono SLAM on a gstreamer-bound
+  camera needs the opencv_thread binding for now.
 
 Publishers use the CLAUDE.md §2 sensor-stream QoS (BEST_EFFORT); the
 WorldState image subscription requests BEST_EFFORT so both match.
@@ -327,10 +332,18 @@ def open_deploy_sensor_readers(
                 reader = SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
                 reader.open()
                 leg.readers.append(reader)
+                # Manifest-calibrated intrinsics → companion CameraInfo on the
+                # same sibling topic layout the sim HAL uses, stamped with the
+                # manifest's TF frame — this is what lets mono visual SLAM
+                # (cuVSLAM rig build + nvblox depth framing) run on real
+                # hardware. Specs without ``intrinsics`` publish images only.
                 publisher = SensorRosPublisher(
                     reader=reader,
                     topic=topic,
                     rate_hz=_publish_rate_hz(spec),
+                    frame_id=spec.frame_id,
+                    camera_info=spec.intrinsics,
+                    info_topic=f"{topic_prefix}/{spec.name}/camera_info",
                 )
                 publisher.start()
                 leg.publishers.append(publisher)

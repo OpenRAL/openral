@@ -102,10 +102,16 @@ class SensorRosPublisher:
             streams; defaults to 5).
         camera_info: Optional :class:`IntrinsicsPinhole`. When
             provided, a companion ``CameraInfo`` topic is published at
-            ``<topic>/camera_info`` with ``RELIABLE`` QoS — matches
+            ``info_topic`` with ``RELIABLE`` QoS — matches
             the ROS 2 ``camera_info_manager`` convention. The
             publisher rebuilds the message once and re-publishes at
             the same cadence as the image stream.
+        info_topic: Companion ``CameraInfo`` topic. ``None`` derives
+            ``<topic>/camera_info`` (camera_info_manager convention);
+            the deploy sensor leg overrides it to the OpenRAL sibling
+            layout ``/openral/cameras/<name>/camera_info`` so real
+            cameras match the sim HAL's topics (mono visual SLAM
+            subscribes there).
 
     Example:
         >>> # End-to-end exercised in tests/unit/test_sensor_ros_publisher.py
@@ -122,6 +128,7 @@ class SensorRosPublisher:
         frame_id: str | None = None,
         qos_depth: int = _DEFAULT_QOS_DEPTH,
         camera_info: IntrinsicsPinhole | None = None,
+        info_topic: str | None = None,
     ) -> None:
         """Stash configuration; no ROS I/O until :meth:`start`."""
         if not topic.startswith("/"):
@@ -135,7 +142,7 @@ class SensorRosPublisher:
 
         self._reader = reader
         self._topic = topic
-        self._info_topic = f"{topic}/camera_info"
+        self._info_topic = info_topic or f"{topic}/camera_info"
         self._rate_hz = float(rate_hz)
         self._node_name = node_name or f"openral_sensor_publisher_{reader.sensor_id}"
         self._frame_id = frame_id or reader.sensor_id
