@@ -21,9 +21,7 @@ guarantees every camera ends up on the WorldState subscription topic
   :class:`~openral_sensors.ros_publisher.SensorRosPublisher`. When the
   spec carries calibrated ``intrinsics``, a companion ``CameraInfo`` is
   published on ``<topic_prefix>/<name>/camera_info`` (the same layout the
-  sim HAL uses) so mono visual SLAM works on real hardware. The GStreamer
-  tee does not publish CameraInfo yet — mono SLAM on a gstreamer-bound
-  camera needs the opencv_thread binding for now.
+  sim HAL uses) so mono visual SLAM works on real hardware.
 
 Publishers use the CLAUDE.md §2 sensor-stream QoS (BEST_EFFORT); the
 WorldState image subscription requests BEST_EFFORT so both match.
