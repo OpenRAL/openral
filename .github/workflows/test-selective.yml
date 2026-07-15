@@ -223,6 +223,84 @@ jobs:
           done
           exit $rc
 
+      # NOTE: this step must run BEFORE the opt-in dependency lanes. Lane-owned
+      # tests are deliberately included here too — in the pristine "cheap env"
+      # they skip (importorskip on the missing optional stack), which catches
+      # import-time breakage for free. The lanes then mutate this job's shared
+      # venv (e.g. the robocasa lane force-reinstalls the robosuite fork and
+      # later exact-match `uv sync --group` calls strip it partial); running the
+      # cheap-env suite after the lanes made tests/sim/test_so100_robosuite_lift.py
+      # import that stale half-installed robosuite and FAIL instead of skip.
+      - name: Run selected targets
+        if: steps.select.outputs.full_run != 'true' && steps.select.outputs.any == 'true'
+        run: |
+          # Partition targets by their nearest `test`/`tests` directory and run
+          # each partition in its OWN pytest process. Two directories named
+          # `tests` (e.g. root `tests/` and `python/observability/tests/`) both
+          # register their conftest.py under the plugin name `tests.conftest`,
+          # so collecting them in a single session aborts with
+          # "Plugin already registered under a different name". One invocation
+          # per test-root keeps every session collision-free. (--import-mode is
+          # already importlib via pyproject addopts; consider_namespace_packages
+          # is NOT usable here — it breaks the `from tests.integration...`
+          # imports several unit tests rely on.)
+          declare -A groups
+          for t in ${{ steps.select.outputs.targets }}; do
+            root=$(printf '%s\n' "$t" | grep -oE '^.*/tests?(/|$)|^tests?(/|$)' | head -1 | sed 's#/$##')
+            [ -z "$root" ] && root="$t"  # no test-root segment → its own group
+            groups["$root"]="${groups["$root"]} $t"
+          done
+          # `isolated_targets` (issue #24) are already excluded from `targets`,
+          # but a directory target may still *collect* them — --ignore each from
+          # every partition, then run them one-per-process below.
+          ignore=""
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            ignore="$ignore --ignore=$t"
+          done
+
+          # Launch every test-root partition as a background job so they run
+          # concurrently. Each group writes to its own temp log; we stream the
+          # output only after all have finished (preserving GitHub log ordering).
+          declare -A pids
+          declare -A logs
+          for root in "${!groups[@]}"; do
+            tmplog=$(mktemp)
+            logs["$root"]="$tmplog"
+            # shellcheck disable=SC2086 -- intentional word-splitting of the
+            # space-separated per-group target list and $ignore flags.
+            uv run pytest ${groups["$root"]} $ignore \
+              -q -p no:launch_testing -p no:launch_ros >"$tmplog" 2>&1 &
+            pids["$root"]=$!
+          done
+
+          rc=0
+          for root in "${!pids[@]}"; do
+            group_rc=0
+            wait "${pids[$root]}" || group_rc=$?
+            echo "::group::pytest ${root}"
+            cat "${logs[$root]}"
+            echo "::endgroup::"
+            # pytest exit 5 == "no tests collected": a selected partition whose
+            # every test is module-level importorskip'd is all-skipped, not failed.
+            if [ "$group_rc" -ne 0 ] && [ "$group_rc" -ne 5 ]; then rc=1; fi
+          done
+
+          # isolated_targets run one-per-process (issue #24/#25): running each
+          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
+          # actually prevents the finalization crash. Thread-pinning (job-level
+          # `env:`) is only defense-in-depth, so no inline env prefix is needed
+          # here anymore.
+          for t in ${{ steps.select.outputs.isolated_targets }}; do
+            echo "::group::pytest (isolated) ${t}"
+            iso_rc=0
+            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
+            echo "::endgroup::"
+            # pytest exit 5 == "no tests collected" (whole module importorskip'd
+            # because an optional extra is absent) is a legitimate all-skipped
+            # outcome, not a failure. See the full-run step for the rationale.
+            if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
+          done
+          exit $rc
       - name: Run selected opt-in dependency lanes
         if: steps.select.outputs.any == 'true'
         env:
@@ -367,73 +445,3 @@ jobs:
           run_lane lowering "$LOWERING_TARGETS" || rc=1
           exit $rc
 
-      - name: Run selected targets
-        if: steps.select.outputs.full_run != 'true' && steps.select.outputs.any == 'true'
-        run: |
-          # Partition targets by their nearest `test`/`tests` directory and run
-          # each partition in its OWN pytest process. Two directories named
-          # `tests` (e.g. root `tests/` and `python/observability/tests/`) both
-          # register their conftest.py under the plugin name `tests.conftest`,
-          # so collecting them in a single session aborts with
-          # "Plugin already registered under a different name". One invocation
-          # per test-root keeps every session collision-free. (--import-mode is
-          # already importlib via pyproject addopts; consider_namespace_packages
-          # is NOT usable here — it breaks the `from tests.integration...`
-          # imports several unit tests rely on.)
-          declare -A groups
-          for t in ${{ steps.select.outputs.targets }}; do
-            root=$(printf '%s\n' "$t" | grep -oE '^.*/tests?(/|$)|^tests?(/|$)' | head -1 | sed 's#/$##')
-            [ -z "$root" ] && root="$t"  # no test-root segment → its own group
-            groups["$root"]="${groups["$root"]} $t"
-          done
-          # `isolated_targets` (issue #24) are already excluded from `targets`,
-          # but a directory target may still *collect* them — --ignore each from
-          # every partition, then run them one-per-process below.
-          ignore=""
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
-            ignore="$ignore --ignore=$t"
-          done
-
-          # Launch every test-root partition as a background job so they run
-          # concurrently. Each group writes to its own temp log; we stream the
-          # output only after all have finished (preserving GitHub log ordering).
-          declare -A pids
-          declare -A logs
-          for root in "${!groups[@]}"; do
-            tmplog=$(mktemp)
-            logs["$root"]="$tmplog"
-            # shellcheck disable=SC2086 -- intentional word-splitting of the
-            # space-separated per-group target list and $ignore flags.
-            uv run pytest ${groups["$root"]} $ignore \
-              -q -p no:launch_testing -p no:launch_ros >"$tmplog" 2>&1 &
-            pids["$root"]=$!
-          done
-
-          rc=0
-          for root in "${!pids[@]}"; do
-            group_rc=0
-            wait "${pids[$root]}" || group_rc=$?
-            echo "::group::pytest ${root}"
-            cat "${logs[$root]}"
-            echo "::endgroup::"
-            # pytest exit 5 == "no tests collected": a selected partition whose
-            # every test is module-level importorskip'd is all-skipped, not failed.
-            if [ "$group_rc" -ne 0 ] && [ "$group_rc" -ne 5 ]; then rc=1; fi
-          done
-
-          # isolated_targets run one-per-process (issue #24/#25): running each
-          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
-          # actually prevents the finalization crash. Thread-pinning (job-level
-          # `env:`) is only defense-in-depth, so no inline env prefix is needed
-          # here anymore.
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
-            echo "::group::pytest (isolated) ${t}"
-            iso_rc=0
-            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
-            echo "::endgroup::"
-            # pytest exit 5 == "no tests collected" (whole module importorskip'd
-            # because an optional extra is absent) is a legitimate all-skipped
-            # outcome, not a failure. See the full-run step for the rationale.
-            if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
-          done
-          exit $rc
