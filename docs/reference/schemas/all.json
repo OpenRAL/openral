@@ -8897,6 +8897,61 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "slam_visual_impl": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "isaac_ros",
+                    "pycuvslam"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Visual Impl"
+            },
+            "slam_stereo_cameras": {
+              "anyOf": [
+                {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",
@@ -10150,6 +10205,61 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "slam_visual_impl": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "isaac_ros",
+                    "pycuvslam"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Visual Impl"
+            },
+            "slam_stereo_cameras": {
+              "anyOf": [
+                {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",
@@ -11547,6 +11657,61 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "slam_visual_impl": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "isaac_ros",
+                    "pycuvslam"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Visual Impl"
+            },
+            "slam_stereo_cameras": {
+              "anyOf": [
+                {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",

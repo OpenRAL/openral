@@ -139,6 +139,63 @@ def test_deploy_scene_rejects_vla_block():
         )
 
 
+def test_deploy_runtime_visual_slam_defaults_are_none():
+    """Unset visual-SLAM keys default to None (auto = isaac_ros, impl's own rig)."""
+    from openral_core import DeployRuntime
+
+    rt = DeployRuntime()
+    assert rt.slam_visual_impl is None
+    assert rt.slam_stereo_cameras is None
+
+
+def test_deploy_runtime_accepts_pycuvslam_and_stereo_rig():
+    from openral_core import DeployRuntime
+
+    rt = DeployRuntime(slam_visual_impl="pycuvslam", slam_stereo_cameras=("left", "right"))
+    assert rt.slam_visual_impl == "pycuvslam"
+    assert rt.slam_stereo_cameras == ("left", "right")
+
+
+def test_deploy_runtime_rejects_unknown_visual_impl():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError):
+        DeployRuntime(slam_visual_impl="orbslam")
+
+
+def test_deploy_runtime_rejects_duplicate_stereo_cameras():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError, match="two distinct cameras"):
+        DeployRuntime(slam_stereo_cameras=("front", "front"))
+
+
+def test_deploy_runtime_accepts_mono_camera():
+    """Mono RGBD path: one named camera, sidecar autostart defaults on."""
+    from openral_core import DeployRuntime
+
+    rt = DeployRuntime(slam_visual_impl="pycuvslam", slam_mono_camera="shoulder_left")
+    assert rt.slam_mono_camera == "shoulder_left"
+    assert rt.slam_depth_sidecar_autostart is True
+
+
+def test_deploy_runtime_rejects_empty_mono_camera():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError, match="non-empty camera name"):
+        DeployRuntime(slam_mono_camera="")
+
+
+def test_deploy_runtime_rejects_mono_and_stereo_together():
+    from openral_core import DeployRuntime
+
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        DeployRuntime(
+            slam_mono_camera="shoulder_left",
+            slam_stereo_cameras=("shoulder_left", "shoulder_right"),
+        )
+
+
 # ── SimScene ─────────────────────────────────────────────────────────────
 
 

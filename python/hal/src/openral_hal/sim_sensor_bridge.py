@@ -209,6 +209,10 @@ class SimSensorBridge:
         self._depth_max_range_m = depth_max_range_m
         self._depth_pixel_stride = depth_pixel_stride
         self._image_pubs: dict[str, Any] = {}
+        # RGB CameraInfo per camera: cuVSLAM/nvblox need the pinhole intrinsics
+        # + a TF-valid frame, which plain RGB streams don't otherwise carry.
+        self._camera_info_pubs: dict[str, Any] = {}
+        self._camera_info_specs: dict[str, Any] = {}
         self._image_obs_key: dict[str, str] = {}
         # Per-camera last thumbnail emit timestamp (ns). Throttles the OTel
         # ``sensors.read_latest`` span to ~1 Hz while the ROS topic publishes
@@ -309,9 +313,11 @@ class SimSensorBridge:
             with contextlib.suppress(Exception):  # reason: renderer GL ctx may be gone
                 self._cinecam_renderer.close()
             self._cinecam_renderer = None
-        for pub in self._image_pubs.values():
+        for pub in (*self._image_pubs.values(), *self._camera_info_pubs.values()):
             self._node.destroy_publisher(pub)
         self._image_pubs.clear()
+        self._camera_info_pubs.clear()
+        self._camera_info_specs.clear()
         self._image_obs_key.clear()
         self._last_thumb_ns.clear()
         self._image_missing_warned.clear()
@@ -348,6 +354,7 @@ class SimSensorBridge:
         if not rgb:
             return
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+        from sensor_msgs.msg import CameraInfo
         from sensor_msgs.msg import Image as RosImage
 
         qos = QoSProfile(
@@ -355,11 +362,21 @@ class SimSensorBridge:
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=1,
         )
+        # Publish CameraInfo alongside every RGB stream so any manifest camera
+        # can serve a pinhole consumer (cuVSLAM rig build, nvblox mono-depth
+        # framing) — link-framed cameras get TF from robot_state_publisher,
+        # optical-frame cameras from _publish_camera_optical_tfs. Published
+        # per-frame (VOLATILE) so a late-joining subscriber never misses a
+        # latched-once message.
         for s in rgb:
             self._image_pubs[s.name] = self._node.create_publisher(
                 RosImage, f"/openral/cameras/{s.name}/image", qos
             )
             self._image_obs_key[s.name] = _obs_key_for_sensor(s)
+            self._camera_info_pubs[s.name] = self._node.create_publisher(
+                CameraInfo, f"/openral/cameras/{s.name}/camera_info", qos
+            )
+            self._camera_info_specs[s.name] = s
         self._image_timer = self._node.create_timer(
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_images
         )
@@ -438,6 +455,11 @@ class SimSensorBridge:
             msg.step = int(w * c)
             msg.data = bytes(arr.astype("uint8").tobytes())
             pub.publish(msg)
+            info_pub = self._camera_info_pubs.get(name)
+            if info_pub is not None:
+                info = self._rgb_camera_info(name, int(w), int(h), stamp)
+                if info is not None:
+                    info_pub.publish(info)
             # Emit a ``sensors.read_latest`` span at most once per second per
             # camera (dashboard polls at ~1 Hz; higher rate would balloon OTLP
             # payload with redundant thumbnails).
@@ -464,6 +486,45 @@ class SimSensorBridge:
                     age_ms=0.0,
                     thumbnail_bytes=thumb,
                 )
+
+    def _rgb_camera_info(self, name: str, width: int, height: int, stamp: Any) -> Any:
+        """Pinhole ``CameraInfo`` for an RGB camera, from its MJCF ``fovy``.
+
+        cuVSLAM builds its rig from these intrinsics and nvblox frames the mono
+        depth against the camera's ``*_optical_frame``. MuJoCo cameras are square-
+        pixel with a vertical ``fovy``, so ``fy = (h/2)/tan(fovy/2)``, ``fx = fy``,
+        principal point at the image centre. No-op for non-MuJoCo backends or an
+        unresolvable MJCF camera (warned once by the TF path).
+        """
+        import math
+
+        spec = self._camera_info_specs.get(name)
+        if spec is None:
+            return None
+        handle = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handle is None:
+            return None
+        model, _ = handle
+
+        import mujoco
+
+        from openral_hal.depth_cloud import camera_info_from_intrinsics, mjcf_camera_name
+
+        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, mjcf_camera_name(spec))
+        if cam_id < 0:
+            return None
+        fovy = float(model.cam_fovy[cam_id])
+        fy = (height / 2.0) / math.tan(math.radians(fovy) / 2.0)
+        return camera_info_from_intrinsics(
+            width=width,
+            height=height,
+            fx=fy,
+            fy=fy,
+            cx=width / 2.0,
+            cy=height / 2.0,
+            frame_id=spec.frame_id,
+            stamp=stamp,
+        )
 
     def _publish_camera_optical_tfs(self) -> None:
         """Broadcast ``base_frame -> <camera>_optical_frame`` for every RGB camera.

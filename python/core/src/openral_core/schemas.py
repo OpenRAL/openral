@@ -6994,6 +6994,68 @@ class DeployRuntime(BaseModel):
     enable_critic: bool | None = None
     spatial_memory_ingest: bool | None = None
     approach_skill_id: str | None = None
+    slam_visual_impl: Literal["isaac_ros", "pycuvslam"] | None = None
+    """Which cuVSLAM implementation the visual SLAM backend composes when
+    ``slam_backend`` resolves to ``"visual"`` (``capabilities.has_vision_slam``,
+    no lidar). Orthogonal to the backend choice: the backend is *what* sensing
+    modality localises the robot (lidar vs camera), this is *which engine binary*
+    the host has installed.
+
+    * ``"isaac_ros"`` — the composable ``isaac_ros_visual_slam`` C++ node
+      (``cuvslam.launch.py``). NITROS zero-copy + raw-image undistortion +
+      mono/IMU/RGB-D modes, but needs the operator's full Isaac ROS apt stack.
+    * ``"pycuvslam"`` — the same cuVSLAM engine run in-process from NVIDIA's
+      PyCuVSLAM pip wheel (``pycuvslam.launch.py``); rectified stereo only, no
+      apt stack. For sim hosts / GPU boxes without the Isaac ROS install.
+
+    ``None`` = ``"isaac_ros"`` (the established default — do not silently pick
+    ``pycuvslam`` just because the wheel is present; §1.4). Ignored unless the
+    resolved backend is ``"visual"``."""
+    slam_stereo_cameras: tuple[str, str] | None = None
+    """The ``(left, right)`` camera *names* forming the rectified stereo rig the
+    visual SLAM backend tracks, e.g. ``["left", "right"]`` or
+    ``["front_left", "front_right"]``. Each name maps by the OpenRAL convention
+    to ``/openral/cameras/<name>/image`` (+ ``/camera_info``); the launch
+    forwards those topics to whichever visual impl is composed (Isaac ROS
+    ``image_0/1_topic`` or PyCuVSLAM ``left/right_image_topic``). ``None`` =
+    the impl's built-in ``left``/``right`` default. The two names must differ."""
+    slam_mono_camera: str | None = None
+    """The single camera *name* the visual SLAM backend tracks in **mono RGBD**
+    mode — one RGB camera fused with the DA3 metric-depth provider for scale,
+    the lidar-less path for robots without a stereo rig. When set, the launch
+    points PyCuVSLAM at ``/openral/cameras/<name>/image`` (+ ``/camera_info``),
+    auto-composes the depth provider (so cuVSLAM *and* nvblox get depth), and
+    runs cuVSLAM's ``OdometryMode.RGBD``. ``pycuvslam``-only (the Isaac ROS
+    impl has its own RGB-D wiring). Mutually exclusive with
+    ``slam_stereo_cameras``; ``None`` = stereo/multi-camera."""
+    slam_depth_sidecar_autostart: bool = True
+    """Whether the deploy launch spawns the DA3 metric-depth sidecar
+    (``tools/da3_depth_sidecar.py``, ZMQ port 5771) alongside the mono visual
+    SLAM graph. Only meaningful when ``slam_mono_camera`` is set. ``False`` =
+    the sidecar is operator-run / shared (e.g. one sidecar serving several
+    deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
+    autostart provisions the sidecar venv, which can take minutes; the depth
+    provider retries until it answers."""
+
+    @model_validator(mode="after")
+    def _check_stereo_cameras(self) -> Self:
+        if self.slam_stereo_cameras is not None:
+            left, right = self.slam_stereo_cameras
+            if not left or not right:
+                raise ValueError("slam_stereo_cameras names must be non-empty")
+            if left == right:
+                raise ValueError(
+                    f"slam_stereo_cameras must name two distinct cameras, got {left!r} twice"
+                )
+        if self.slam_mono_camera is not None:
+            if not self.slam_mono_camera:
+                raise ValueError("slam_mono_camera must be a non-empty camera name")
+            if self.slam_stereo_cameras is not None:
+                raise ValueError(
+                    "slam_mono_camera and slam_stereo_cameras are mutually exclusive "
+                    "(mono RGBD tracks one camera; stereo tracks a pair)"
+                )
+        return self
 
 
 class DeployScene(BaseModel):

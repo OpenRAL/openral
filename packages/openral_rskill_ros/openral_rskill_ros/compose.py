@@ -93,6 +93,8 @@ def compose_runtime(
     skill_resolver: SkillResolver | None = None,
     skill_resolver_factory: Callable[[Any], SkillResolver] | None = None,
     enable_world_cloud_bridge: bool = False,
+    world_cloud_topic: str = "",
+    slam_source_node: str = "",
     dataset_out: str | pathlib.Path | None = None,
     dataset_repo_id: str | None = None,
     dataset_license: str = "CC-BY-4.0",
@@ -126,6 +128,14 @@ def compose_runtime(
             into the dashboard via the ``world.pointcloud`` OTel span
             family. Defaults to ``False`` so deployments without octomap
             don't pay the subscription cost.
+        world_cloud_topic: PointCloud2 topic the world-cloud bridge
+            renders. Empty keeps octomap's latched centers default; the
+            mono visual-SLAM launch points it at nvblox's (VOLATILE)
+            ESDF voxel cloud.
+        slam_source_node: node name stamped on the dashboard SLAM
+            card's ``openral.slam.source_node`` attribute. Empty keeps
+            the ``openral_slam_toolbox`` default; the visual-SLAM
+            launch sets ``openral_nvblox`` when nvblox builds ``/map``.
         dataset_out: when set, attach a
             :class:`~openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`
             that records the deploy session (proprio + action + camera
@@ -199,6 +209,9 @@ def compose_runtime(
         base_frame=description.base_frame,
         footprint_radius_m=description.footprint_radius,
         footprint_polygon=description.footprint_polygon,
+        # Label the dashboard card with the node that actually built /map
+        # (nvblox on the visual backend); empty keeps the slam_toolbox default.
+        **({"source_node_name": slam_source_node} if slam_source_node else {}),
     )
     world_cloud_bridge: object | None = None
     if enable_world_cloud_bridge:
@@ -207,7 +220,18 @@ def compose_runtime(
         # alongside the existing runner subscriptions, no second rclpy spin.
         from openral_runner.world_cloud_bridge import WorldCloudBridge
 
-        world_cloud_bridge = WorldCloudBridge(skill_runner_node)
+        # Default topic = octomap's occupied-voxel centers; a visual-SLAM deploy
+        # points this at nvblox's ESDF voxel cloud so the same dashboard card
+        # shows the vision-built voxels.
+        if world_cloud_topic:
+            world_cloud_bridge = WorldCloudBridge(
+                skill_runner_node,
+                topic=world_cloud_topic,
+                source_node_name="openral_nvblox",
+                latched=False,  # nvblox publishes its ESDF cloud VOLATILE
+            )
+        else:
+            world_cloud_bridge = WorldCloudBridge(skill_runner_node)
     dataset_recorder_bridge: object | None = None
     if dataset_out is not None:
         # Attach a bus recorder sharing the runner's executor +

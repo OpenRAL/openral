@@ -51,6 +51,7 @@ _ROBOT_IDS: list[str] = [
     "h1",
     "openarm",
     "panda_mobile",
+    "panda_mobile_vslam",
     "pusht_2d",
     "rizon4",
     "sawyer",
@@ -114,6 +115,8 @@ _DEPLOY_STEMS: list[str] = [
     "robocasa_baguette",
     "robocasa_navigate",
     "robocasa_pnp",
+    "robocasa_vslam",
+    "robocasa_vslam_mono",
     "so101_bench",
     "so101_box",
 ]

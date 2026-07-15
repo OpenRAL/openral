@@ -1,0 +1,36 @@
+# Default parameter set for the PyCuVSLAM stereo node
+# (`pycuvslam_node.py`) running as `/openral_pycuvslam` — the in-process
+# alternative to the Isaac ROS composable cuVSLAM node for hosts without
+# the Isaac ROS apt stack. The engine comes from the operator-installed
+# NVIDIA PyCuVSLAM wheel (never bundled — NVIDIA Community License).
+#
+# Frame contract matches the other SLAM backends: the node broadcasts
+# `map → odom`, composing the tracker's map←rig pose (rig ≡ left camera
+# optical frame) with the live odom←rig TF at the image stamp.
+#
+# Inputs must be a RECTIFIED stereo pair (pinhole; the right
+# CameraInfo's P[0][3] carries -fx*baseline). Raw/distorted streams need
+# the Isaac ROS backend (`cuvslam.launch.py`, rectified_images:=false).
+
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+    # ── Frame contract ──────────────────────────────────────────────
+    map_frame: map
+    odom_frame: odom
+
+    # ── Camera bus (rectified stereo) ───────────────────────────────
+    # The four stereo topics are owned by pycuvslam.launch.py's launch args
+    # (default /openral/cameras/left|right/…) so a scene's slam_stereo_cameras
+    # can retarget the rig; the node's own param defaults cover `ros2 run`.
+    # Stereo pairs are matched within this window; hardware-synced or
+    # sim cameras share stamps, so keep it tight.
+    sync_slop_s: 0.01
+
+    # ── Outputs ─────────────────────────────────────────────────────
+    odometry_topic: /openral/visual_slam/odometry
+    tf_timeout_ms: 50
+    # Loop closure + pose-graph SLAM on top of visual odometry. Off →
+    # pure VO (lower VRAM; map→odom drifts like odom does).
+    enable_slam: true

@@ -90,6 +90,14 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # ``sim_e2e.launch.py`` flips this on when ``enable_octomap:=true``
     # so the robot-view pointcloud card populates as octomap_server runs.
     bootstrap.declare_parameter("enable_world_cloud_bridge", False)
+    # PointCloud2 topic the world-cloud bridge renders into world.pointcloud.
+    # Empty → octomap's /octomap_point_cloud_centers default; a visual-SLAM
+    # deploy sets it to nvblox's ESDF voxel cloud.
+    bootstrap.declare_parameter("world_cloud_topic", "")
+    # Node name the dashboard SLAM card credits for /map. Empty → the
+    # openral_slam_toolbox default; the visual-SLAM launch sets
+    # openral_nvblox when nvblox builds the map.
+    bootstrap.declare_parameter("slam_source_node", "")
     # Record the deploy session (proprio + action + camera frames
     # + episode markers) to a rosbag2 mcap. Empty disables recording; the
     # ``openral deploy sim/run --dataset-out`` flag sets it via the launch.
@@ -125,6 +133,12 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     )
     enable_world_cloud_bridge: bool = (
         bootstrap.get_parameter("enable_world_cloud_bridge").get_parameter_value().bool_value
+    )
+    world_cloud_topic: str = (
+        bootstrap.get_parameter("world_cloud_topic").get_parameter_value().string_value
+    )
+    slam_source_node: str = (
+        bootstrap.get_parameter("slam_source_node").get_parameter_value().string_value
     )
     dataset_out: str = bootstrap.get_parameter("dataset_out").get_parameter_value().string_value
     dataset_repo_id: str = (
@@ -189,6 +203,8 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             robot_yaml,
             skill_resolver_factory=_build_resolver,
             enable_world_cloud_bridge=enable_world_cloud_bridge,
+            world_cloud_topic=world_cloud_topic,
+            slam_source_node=slam_source_node,
             dataset_out=dataset_out or None,
             dataset_repo_id=dataset_repo_id or None,
             dataset_license=dataset_license or "CC-BY-4.0",

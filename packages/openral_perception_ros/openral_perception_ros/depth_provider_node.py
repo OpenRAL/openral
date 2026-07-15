@@ -60,13 +60,11 @@ def main(args: Any = None) -> None:
             import zmq
 
             self._zmq = zmq.Context.instance()
-            self._sock = self._zmq.socket(zmq.REQ)
-            timeout_ms = gp("request_timeout_ms").get_parameter_value().integer_value
-            self._sock.setsockopt(zmq.RCVTIMEO, timeout_ms)
-            self._sock.setsockopt(zmq.LINGER, 0)
+            self._timeout_ms = gp("request_timeout_ms").get_parameter_value().integer_value
             host = gp("sidecar_host").get_parameter_value().string_value
             port = gp("sidecar_port").get_parameter_value().integer_value
-            self._sock.connect(f"tcp://{host}:{port}")
+            self._endpoint = f"tcp://{host}:{port}"
+            self._sock = self._make_socket()
 
             sensor_qos = QoSProfile(
                 history=QoSHistoryPolicy.KEEP_LAST,
@@ -98,6 +96,16 @@ def main(args: Any = None) -> None:
                 f"(sidecar {host}:{port}, frame {self._depth_frame!r})"
             )
 
+        def _make_socket(self) -> Any:
+            """Fresh REQ socket connected to the sidecar endpoint."""
+            import zmq
+
+            sock = self._zmq.socket(zmq.REQ)
+            sock.setsockopt(zmq.RCVTIMEO, self._timeout_ms)
+            sock.setsockopt(zmq.LINGER, 0)
+            sock.connect(self._endpoint)
+            return sock
+
         def _on_image(self, msg: Any) -> None:
             import msgpack
 
@@ -119,7 +127,13 @@ def main(args: Any = None) -> None:
                 )
                 rep = msgpack.unpackb(self._sock.recv(), raw=False)
             except Exception as exc:  # a sidecar hiccup must not kill the node
-                self.get_logger().warning(f"sidecar request failed: {exc}")
+                # A REQ socket is a strict send/recv state machine: after a
+                # timed-out recv it refuses every further send (EFSM), so one
+                # slow reply — e.g. the autostarted sidecar still provisioning
+                # its venv — would otherwise wedge depth forever. Rebuild it.
+                self._sock.close(linger=0)
+                self._sock = self._make_socket()
+                self.get_logger().warning(f"sidecar request failed (socket reset): {exc}")
                 return
             if not rep.get("ok"):
                 self.get_logger().warning(f"sidecar error: {rep.get('error')}")
