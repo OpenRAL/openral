@@ -32,7 +32,7 @@ _rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (`/octomap_poi
 - `distance_to_rgb(dist_m, *, range_max_m) -> tuple[int,int,int]` — near=warm→far=cool color ramp. (L94)
 - `encode_world_cloud_png(points_base, *, range_max_m=4.0, image_w=480, image_h=360, xy_m=2.0, z_min=-0.2, z_max=2.0) -> str` — crop→oblique-pinhole project→rasterize→base64 PNG. Pure; PIL-only. (L141)
 - `world_cloud_span_attributes(*, points_base, frame_id, source_node, range_max_m, xy_m, z_min, z_max) -> dict[str,Any]` — assemble the `openral.world_cloud.*` span attributes. (L214)
-- `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the centers cloud (TRANSIENT_LOCAL), TF2-transforms to `base_link`, throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `destroy()` releases the subscription. (L260)
+- `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the voxel cloud, TF2-transforms to `base_link`, throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `latched: bool = True` picks the subscription durability: `True` mirrors octomap's TRANSIENT_LOCAL centers topic; `False` (the mono visual-SLAM deploy) is VOLATILE for nvblox's un-latched ESDF cloud — a TRANSIENT_LOCAL sub is incompatible with a VOLATILE pub and receives nothing. An unreadable frame (empty/field-less cloud → `read_points_numpy` asserts) is warned + skipped, never crashing the shared executor. `destroy()` releases the subscription. (L260)
 
 ### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
 _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._

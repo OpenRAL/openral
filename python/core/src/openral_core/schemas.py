@@ -6578,6 +6578,23 @@ class DeployRuntime(BaseModel):
     forwards those topics to whichever visual impl is composed (Isaac ROS
     ``image_0/1_topic`` or PyCuVSLAM ``left/right_image_topic``). ``None`` =
     the impl's built-in ``left``/``right`` default. The two names must differ."""
+    slam_mono_camera: str | None = None
+    """The single camera *name* the visual SLAM backend tracks in **mono RGBD**
+    mode — one RGB camera fused with the DA3 metric-depth provider for scale,
+    the lidar-less path for robots without a stereo rig. When set, the launch
+    points PyCuVSLAM at ``/openral/cameras/<name>/image`` (+ ``/camera_info``),
+    auto-composes the depth provider (so cuVSLAM *and* nvblox get depth), and
+    runs cuVSLAM's ``OdometryMode.RGBD``. ``pycuvslam``-only (the Isaac ROS
+    impl has its own RGB-D wiring). Mutually exclusive with
+    ``slam_stereo_cameras``; ``None`` = stereo/multi-camera."""
+    slam_depth_sidecar_autostart: bool = True
+    """Whether the deploy launch spawns the DA3 metric-depth sidecar
+    (``tools/da3_depth_sidecar.py``, ZMQ port 5771) alongside the mono visual
+    SLAM graph. Only meaningful when ``slam_mono_camera`` is set. ``False`` =
+    the sidecar is operator-run / shared (e.g. one sidecar serving several
+    deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
+    autostart provisions the sidecar venv, which can take minutes; the depth
+    provider retries until it answers."""
 
     @model_validator(mode="after")
     def _check_stereo_cameras(self) -> Self:
@@ -6588,6 +6605,14 @@ class DeployRuntime(BaseModel):
             if left == right:
                 raise ValueError(
                     f"slam_stereo_cameras must name two distinct cameras, got {left!r} twice"
+                )
+        if self.slam_mono_camera is not None:
+            if not self.slam_mono_camera:
+                raise ValueError("slam_mono_camera must be a non-empty camera name")
+            if self.slam_stereo_cameras is not None:
+                raise ValueError(
+                    "slam_mono_camera and slam_stereo_cameras are mutually exclusive "
+                    "(mono RGBD tracks one camera; stereo tracks a pair)"
                 )
         return self
 

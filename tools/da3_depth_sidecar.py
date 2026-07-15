@@ -26,11 +26,26 @@ CLAUDE.md compliance:
 from __future__ import annotations
 
 import argparse
+
+# Load the (pure-stdlib) sidecar helpers by file path instead of
+# `from openral_sim._sidecar_common import …`: the package import executes
+# `openral_sim.__init__` → full backend registration → the whole sim stack,
+# which the deploy launch's autostart interpreter (`slam_depth_sidecar_autostart`
+# spawns this under plain python3) does not have. This launcher stays runnable
+# by ANY python3 — its only non-stdlib need is `uv` on PATH for provisioning.
+import importlib.util as _importlib_util
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+_common_path = Path(__file__).parent.parent / "python/sim/src/openral_sim/_sidecar_common.py"
+_spec = _importlib_util.spec_from_file_location("_sidecar_common", _common_path)
+assert _spec is not None and _spec.loader is not None  # stdlib file ships with the repo
+_common = _importlib_util.module_from_spec(_spec)
+_spec.loader.exec_module(_common)
+ensure_pip_venv: Callable[..., Path] = _common.ensure_pip_venv
+run_cmd: Callable[..., None] = _common.run_cmd
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "da3-depth-sidecar"
 _VENV_ENV = "OPENRAL_DA3_DEPTH_SIDECAR_VENV"

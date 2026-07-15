@@ -73,6 +73,35 @@ def generate_launch_description() -> LaunchDescription:
             default_value="/openral/cameras/right/camera_info",
             description="Calibration for the right image.",
         ),
+        # Multi-camera rig frame. ``robot_yaml`` lets the node derive the rig
+        # frame from the manifest's base_frame (the natural rig for a mobile
+        # robot with base-mounted cameras); ``rig_frame`` overrides it directly.
+        # Either non-empty selects cuVSLAM's multi-camera mode (per-camera
+        # extrinsics from TF) over the rectified-baseline path.
+        DeclareLaunchArgument(
+            "robot_yaml",
+            default_value="",
+            description="Robot manifest; the node derives the rig frame from its base_frame.",
+        ),
+        DeclareLaunchArgument(
+            "rig_frame",
+            default_value="",
+            description="Explicit rig frame (overrides robot_yaml's base_frame).",
+        ),
+        # Mono RGBD path. When ``depth_image_topic`` is set, the node tracks a
+        # single RGB camera (``left_image_topic``) fused with this metric-depth
+        # stream (the DA3 depth provider) — the one-camera path for lidar-less
+        # robots without a stereo rig. Empty → the stereo/multi-camera path.
+        DeclareLaunchArgument(
+            "depth_image_topic",
+            default_value="",
+            description="Metric depth (32FC1, metres) for mono RGBD; empty → stereo mode.",
+        ),
+        DeclareLaunchArgument(
+            "depth_scale_factor",
+            default_value="1000.0",
+            description="Shared metres↔uint16 knob for RGBD depth (1000 = millimetres).",
+        ),
     ]
 
     node = Node(
@@ -88,6 +117,10 @@ def generate_launch_description() -> LaunchDescription:
                 "left_camera_info_topic": LaunchConfiguration("left_camera_info_topic"),
                 "right_image_topic": LaunchConfiguration("right_image_topic"),
                 "right_camera_info_topic": LaunchConfiguration("right_camera_info_topic"),
+                "robot_yaml": LaunchConfiguration("robot_yaml"),
+                "rig_frame": LaunchConfiguration("rig_frame"),
+                "depth_image_topic": LaunchConfiguration("depth_image_topic"),
+                "depth_scale_factor": LaunchConfiguration("depth_scale_factor"),
             },
         ],
         output="screen",

@@ -261,6 +261,9 @@ def _build_visual_slam_includes(
     stereo_cameras_csv: str,
     enable_nav2: bool,
     robot_yaml: str,
+    mono_camera: str = "",
+    mono_depth_frame: str = "",
+    depth_sidecar_autostart: bool = True,
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
 
@@ -275,12 +278,101 @@ def _build_visual_slam_includes(
     scene rig) overrides the impl's default left/right topics, keyed to each
     impl's own arg names. When ``enable_nav2`` is set, nvblox is composed too
     (cuVSLAM gives pose, not an occupancy grid).
+
+    ``mono_camera`` (pycuvslam only) selects the **mono RGBD** path: one RGB
+    camera + the DA3 metric-depth provider. It auto-composes ``depth_provider_node``
+    (RGB → 32FC1 depth, framed at ``mono_depth_frame`` so nvblox can place it via
+    the HAL's ``base → <camera>_optical_frame`` TF) and nvblox — cuVSLAM gets the
+    depth for scale, nvblox for the occupancy grid + voxels. The DA3 sidecar
+    (``tools/da3_depth_sidecar.py``) is spawned alongside by default
+    (``depth_sidecar_autostart``); the depth provider retries until it answers
+    (first boot provisions the sidecar venv). ``False`` = operator-run/shared.
     """
-    from launch.actions import IncludeLaunchDescription
+    from launch.actions import ExecuteProcess, IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
+    from launch_ros.actions import Node
 
     sim_time_arg = "true" if use_sim_time else "false"
+    mono_camera = mono_camera.strip()
+    if visual_impl == "pycuvslam" and mono_camera:
+        rgb_image = f"/openral/cameras/{mono_camera}/image"
+        rgb_info = f"/openral/cameras/{mono_camera}/camera_info"
+        depth_image = f"/openral/cameras/{mono_camera}/depth/image"
+        depth_info = f"/openral/cameras/{mono_camera}/depth/camera_info"
+        depth_frame = mono_depth_frame or f"{mono_camera}_optical_frame"
+        actions: list[object] = []
+        if depth_sidecar_autostart:
+            # DA3 metric-depth sidecar (ZMQ :5771). The launcher is stdlib-only
+            # (any python3 runs it) and provisions its own venv on first boot —
+            # which can take minutes; the depth provider retries until it
+            # answers. If an operator-run sidecar already holds the port, this
+            # one fails to bind and exits; ExecuteProcess death does not tear
+            # down the launch, so the external sidecar keeps serving.
+            actions.append(
+                ExecuteProcess(
+                    cmd=[
+                        sys.executable,
+                        str(_REPO_ROOT / "tools" / "da3_depth_sidecar.py"),
+                        "--port",
+                        "5771",
+                    ],
+                    name="da3_depth_sidecar",
+                    output="screen",
+                )
+            )
+        return [
+            *actions,
+            # cuVSLAM in RGBD mode: track the single RGB camera fused with DA3 depth.
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(slam_share, "launch", "pycuvslam.launch.py")
+                ),
+                launch_arguments={
+                    "use_sim_time": sim_time_arg,
+                    "left_image_topic": rgb_image,
+                    "left_camera_info_topic": rgb_info,
+                    "depth_image_topic": depth_image,
+                }.items(),
+            ),
+            # DA3 metric-depth provider: RGB → 32FC1 depth for BOTH cuVSLAM (scale)
+            # and nvblox (dense map). Depth is framed at the RGB camera's optical
+            # frame so nvblox locates it via the HAL's live camera TF.
+            Node(
+                package="openral_perception_ros",
+                executable="depth_provider_node.py",
+                name="openral_depth_provider",
+                namespace="",
+                parameters=[
+                    {
+                        "use_sim_time": use_sim_time,
+                        "image_topic": rgb_image,
+                        "depth_topic": depth_image,
+                        "camera_info_topic": depth_info,
+                        "depth_frame_id": depth_frame,
+                    }
+                ],
+                output="screen",
+            ),
+            # nvblox: cuVSLAM pose + DA3 depth → /map occupancy grid + voxels.
+            # Always composed in mono mode (the map IS the point), not gated on nav2.
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(slam_share, "launch", "nvblox.launch.py")
+                ),
+                launch_arguments={
+                    "use_sim_time": sim_time_arg,
+                    "robot_yaml": robot_yaml,
+                    "depth_image_topic": depth_image,
+                    "depth_camera_info_topic": depth_info,
+                }.items(),
+            ),
+        ]
+
     stereo = _stereo_camera_topics(stereo_cameras_csv)
+    # PyCuVSLAM gets robot_yaml so the node derives the rig frame from the
+    # manifest base_frame → cuVSLAM multi-camera mode (per-camera extrinsics from
+    # TF), which handles the sim's arbitrary (toed-in) camera rigs. The Isaac ROS
+    # composable node has no such arg, so it is passed only for pycuvslam.
     if visual_impl == "pycuvslam":
         launch_file = "pycuvslam.launch.py"
         cam_arg_names = (
@@ -289,6 +381,7 @@ def _build_visual_slam_includes(
             "right_image_topic",
             "right_camera_info_topic",
         )
+        extra_args = {"robot_yaml": robot_yaml}
     else:
         launch_file = "cuvslam.launch.py"
         cam_arg_names = (
@@ -297,12 +390,13 @@ def _build_visual_slam_includes(
             "image_1_topic",
             "camera_info_1_topic",
         )
+        extra_args = {}
     cam_args = dict(zip(cam_arg_names, stereo, strict=True)) if stereo is not None else {}
 
     includes: list[object] = [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(slam_share, "launch", launch_file)),
-            launch_arguments={"use_sim_time": sim_time_arg, **cam_args}.items(),
+            launch_arguments={"use_sim_time": sim_time_arg, **cam_args, **extra_args}.items(),
         )
     ]
     # When navigating, fuse depth + cuVSLAM pose into the ESDF cost map Nav2
@@ -420,6 +514,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # impl's default left/right topics (workcell rig binding from the scene).
     slam_visual_impl = LaunchConfiguration("slam_visual_impl").perform(context).strip().lower()
     slam_stereo_cameras = LaunchConfiguration("slam_stereo_cameras").perform(context).strip()
+    slam_mono_camera = LaunchConfiguration("slam_mono_camera").perform(context).strip()
+    slam_depth_sidecar_autostart = LaunchConfiguration("slam_depth_sidecar_autostart").perform(
+        context
+    ).strip().lower() in ("1", "true")
     enable_nav2 = LaunchConfiguration("enable_nav2").perform(context).lower() in (
         "1",
         "true",
@@ -870,9 +968,24 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
-                # When octomap is on the centers topic exists, so
-                # attach the WorldCloudBridge → dashboard world.pointcloud.
-                "enable_world_cloud_bridge": enable_octomap,
+                # Attach the WorldCloudBridge → dashboard world.pointcloud when a
+                # voxel cloud exists: octomap's centers, or (mono visual SLAM)
+                # nvblox's ESDF cloud so the card shows the vision-built voxels.
+                "enable_world_cloud_bridge": enable_octomap or bool(slam_mono_camera),
+                "world_cloud_topic": (
+                    "/openral_nvblox/static_esdf_pointcloud"
+                    if (slam_mono_camera and not enable_octomap)
+                    else ""
+                ),
+                # Credit the dashboard SLAM card to the node that builds /map:
+                # nvblox on the visual backend (composed for mono RGBD always,
+                # and for stereo when nav2 needs a cost map); empty keeps the
+                # slam_toolbox default of the lidar backend.
+                "slam_source_node": (
+                    "openral_nvblox"
+                    if (slam_backend == "visual" and (slam_mono_camera or enable_nav2))
+                    else ""
+                ),
                 # The runtime node (WorldState aggregator +
                 # the GStreamer/runner sensor readers + skill_runner) must share
                 # the graph-wide clock domain. Under a simulation clock origin the HAL
@@ -1095,6 +1208,20 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # from the openral_slam_bringup launch files; see
             # :func:`_build_visual_slam_includes`.
             slam_share = get_package_share_directory("openral_slam_bringup")
+            # Mono RGBD frames its DA3 depth at the camera's TF frame so nvblox
+            # can place it via the HAL's live camera TF; resolve that frame from
+            # the already-loaded manifest sensor (fallback to the
+            # <name>_optical_frame convention if the sensor is unlisted).
+            mono_depth_frame = ""
+            if slam_mono_camera:
+                mono_depth_frame = next(
+                    (
+                        str(s.frame_id)
+                        for s in description.sensors
+                        if s.name == slam_mono_camera and s.frame_id
+                    ),
+                    f"{slam_mono_camera}_optical_frame",
+                )
             extra_nodes.extend(
                 _build_visual_slam_includes(
                     slam_share,
@@ -1103,6 +1230,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     stereo_cameras_csv=slam_stereo_cameras,
                     enable_nav2=enable_nav2,
                     robot_yaml=robot_yaml,
+                    mono_camera=slam_mono_camera,
+                    mono_depth_frame=mono_depth_frame,
+                    depth_sidecar_autostart=slam_depth_sidecar_autostart,
                 )
             )
         else:
@@ -1831,6 +1961,27 @@ def generate_launch_description() -> LaunchDescription:
                 "stereo rig; each maps to /openral/cameras/<name>/image "
                 "(+ /camera_info) and overrides the visual impl's default "
                 "left/right topics. Empty keeps the impl defaults."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "slam_mono_camera",
+            default_value="",
+            description=(
+                "Optional single RGB camera name for the visual SLAM **mono "
+                "RGBD** path (pycuvslam only): auto-composes the DA3 depth "
+                "provider + nvblox so one camera yields pose + occupancy grid + "
+                "voxels. From DeployRuntime.slam_mono_camera; mutually exclusive "
+                "with slam_stereo_cameras. Empty → stereo/multi-camera."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "slam_depth_sidecar_autostart",
+            default_value="true",
+            description=(
+                "Spawn tools/da3_depth_sidecar.py (ZMQ :5771) alongside the mono "
+                "RGBD graph. From DeployRuntime.slam_depth_sidecar_autostart; "
+                "false = operator-run/shared sidecar. Ignored without "
+                "slam_mono_camera."
             ),
         ),
         DeclareLaunchArgument(

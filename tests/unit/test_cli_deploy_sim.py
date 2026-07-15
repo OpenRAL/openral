@@ -345,6 +345,101 @@ def test_deploy_sim_default_slam_visual_impl_is_isaac_ros() -> None:
     assert "slam_stereo_cameras:=" not in joined
 
 
+def test_deploy_sim_robocasa_vslam_scene_routes_to_pycuvslam_multicam() -> None:
+    """The shipped robocasa_vslam scene resolves to the visual pycuvslam rig.
+
+    End-to-end packaging check: the lidar-less panda_mobile_vslam manifest routes
+    `_resolve_slam_backend` to ``visual``, the scene pins the PyCuVSLAM impl and
+    the two shoulder cameras, and the manifest is forwarded (so the node derives
+    the rig frame for multi-camera mode).
+    """
+    scene = _REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam.yaml"
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_backend == "visual"
+    assert invocation.slam_visual_impl == "pycuvslam"
+    assert invocation.slam_stereo_cameras == ("shoulder_left", "shoulder_right")
+    joined = " ".join(invocation.argv_template)
+    assert "enable_slam:=true" in joined
+    assert "slam_backend:=visual" in joined
+    assert "slam_visual_impl:=pycuvslam" in joined
+    assert "slam_stereo_cameras:=shoulder_left,shoulder_right" in joined
+    # robot_yaml is forwarded so the node derives the rig frame (base_frame).
+    assert f"robot_yaml:={invocation.robot_yaml}" in joined
+
+
+def test_deploy_sim_robocasa_vslam_mono_scene_routes_to_mono_rgbd() -> None:
+    """The shipped robocasa_vslam_mono scene resolves to the mono RGBD rig.
+
+    One RGB camera (shoulder_left) drives the mono path: the scene pins the
+    PyCuVSLAM impl and a single ``slam_mono_camera`` (no stereo pair), which the
+    launch turns into cuVSLAM RGBD + the DA3 depth provider + nvblox. Forwarded
+    as ``slam_mono_camera:=<name>`` with no ``slam_stereo_cameras:=``.
+    """
+    scene = _REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam_mono.yaml"
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_backend == "visual"
+    assert invocation.slam_visual_impl == "pycuvslam"
+    assert invocation.slam_mono_camera == "shoulder_left"
+    assert invocation.slam_stereo_cameras is None
+    joined = " ".join(invocation.argv_template)
+    assert "slam_visual_impl:=pycuvslam" in joined
+    assert "slam_mono_camera:=shoulder_left" in joined
+    assert "slam_stereo_cameras:=" not in joined
+    # DA3 sidecar autostart is the default posture — the launch-side default is
+    # true, so the arg is only forwarded on opt-out.
+    assert invocation.slam_depth_sidecar_autostart is True
+    assert "slam_depth_sidecar_autostart:=" not in joined
+
+
+def test_deploy_sim_mono_scene_sidecar_optout_forwards_false(tmp_path: Path) -> None:
+    """A scene with ``slam_depth_sidecar_autostart: false`` opts out via argv."""
+    scene_yaml = (_REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam_mono.yaml").read_text(
+        encoding="utf-8"
+    )
+    # Anchor on the indented runtime key (the same phrase also appears in the
+    # scene's comment header, which must stay untouched).
+    scene_yaml = scene_yaml.replace(
+        "\n  slam_mono_camera: shoulder_left\n",
+        "\n  slam_mono_camera: shoulder_left\n  slam_depth_sidecar_autostart: false\n",
+    )
+    scene = tmp_path / "mono_optout.yaml"
+    scene.write_text(scene_yaml, encoding="utf-8")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.slam_depth_sidecar_autostart is False
+    assert "slam_depth_sidecar_autostart:=false" in " ".join(invocation.argv_template)
+
+
+def test_panda_mobile_vslam_manifest_is_lidarless_vision_slam() -> None:
+    """The shipped variant is the lidar-less visual-SLAM twin of panda_mobile."""
+    rd = RobotDescription.from_yaml(
+        str(_REPO_ROOT / "robots" / "panda_mobile_vslam" / "robot.yaml")
+    )
+    assert rd.name == "panda_mobile_vslam"
+    assert rd.capabilities.has_lidar is False
+    assert rd.capabilities.has_vision_slam is True
+    names = {s.name for s in rd.sensors}
+    assert {"shoulder_left", "shoulder_right"} <= names  # the cuVSLAM rig
+    assert "base_scan" not in names  # lidar dropped
+
+
 def test_deploy_sim_scene_pins_pycuvslam_and_stereo_rig(tmp_path: Path) -> None:
     """A scene runtime pinning pycuvslam + a stereo rig forwards both into the argv."""
     config = tmp_path / "vision_slam.yaml"

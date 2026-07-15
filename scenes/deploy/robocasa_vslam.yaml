@@ -1,0 +1,45 @@
+# RoboCasa kitchen — visual-SLAM digital twin (lidar-less).
+#
+# The lidar-less counterpart of robocasa_pnp.yaml: the mobile base localises
+# from its two base-mounted RGB cameras (shoulder_left/right → RoboCasa
+# agentview_left/right, a 0.70 m base-mounted rig) via in-process PyCuVSLAM,
+# NOT a 2-D LaserScan. `robot_id: panda_mobile_vslam` selects the lidar-less
+# manifest (has_lidar false, has_vision_slam true), so `_resolve_slam_backend`
+# routes to the visual backend; the runtime block pins the PyCuVSLAM impl and
+# names the stereo rig. cuVSLAM runs in multi-camera mode — each camera's
+# extrinsic is read from the HAL's live `base_link -> <optical_frame>` TF, so
+# the toed-in agentview rig works without a rectified pair.
+#
+# Run (needs the robocasa group + the operator-installed PyCuVSLAM wheel + GPU):
+#   just sync --all-packages --group robocasa
+#   openral deploy sim --config scenes/deploy/robocasa_vslam.yaml
+#
+# Watch: /openral/visual_slam/odometry (map←base_link) and the map→odom TF as
+# the base drives. This is the visual-SLAM analogue of the lidar robocasa_pnp
+# scene; no task/success criterion — a localization/mapping playground.
+
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+
+robot_id: panda_mobile_vslam
+
+# Committed deploy posture. SLAM on, auto-resolving to the visual backend
+# (the manifest is lidar-less); PyCuVSLAM impl with the two shoulder cameras as
+# the rig. Nav2/octomap/detector/reward off — this scene exercises the visual
+# odometry leg, not manipulation or navigation.
+runtime:
+  enable_slam: true
+  slam_visual_impl: pycuvslam
+  slam_stereo_cameras: [shoulder_left, shoulder_right]
+  enable_nav2: false
+  enable_octomap: false
+  enable_object_detector: false
+  enable_reward_monitor: false

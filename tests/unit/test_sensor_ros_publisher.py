@@ -196,3 +196,61 @@ def test_publisher_round_trip_via_real_subscriber() -> None:
         assert pub.n_published >= 1
     finally:
         pub.stop()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / sensor_msgs not on PYTHONPATH; source a ROS 2 install to run live tests",
+)
+def test_publisher_camera_info_companion_round_trip() -> None:
+    """Manifest intrinsics → companion ``CameraInfo`` on the OpenRAL sibling topic.
+
+    This is exactly the surface the deploy sensor leg drives for real-hardware
+    mono visual SLAM: ``camera_info=spec.intrinsics`` from a REAL robot manifest
+    (so101_follower's calibrated wrist camera), ``frame_id=spec.frame_id`` (the
+    TF frame cuVSLAM adopts as its rig), and the ``/openral/cameras/<name>/
+    camera_info`` layout (NOT the ``<topic>/camera_info`` default) matching the
+    sim HAL.
+    """
+    import rclpy
+    from openral_core import RobotDescription
+    from openral_sensors.ros_publisher import SensorRosPublisher
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import CameraInfo
+
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    spec = next(s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None)
+
+    reader = _FakeReader(sensor_id=spec.name, frame=_make_frame())
+    pub = SensorRosPublisher(
+        reader=reader,
+        topic=f"/openral/cameras/{spec.name}/image",
+        rate_hz=60.0,
+        frame_id=spec.frame_id,
+        camera_info=spec.intrinsics,
+        info_topic=f"/openral/cameras/{spec.name}/camera_info",
+    )
+    assert pub.info_topic == f"/openral/cameras/{spec.name}/camera_info"
+    pub.start()
+    try:
+        sub_node = rclpy.create_node("sensor_ros_publisher_info_test_subscriber")
+        # CameraInfo is RELIABLE (camera_info_manager convention).
+        info_qos = QoSProfile(depth=5, reliability=QoSReliabilityPolicy.RELIABLE)
+        received: list[CameraInfo] = []
+        sub_node.create_subscription(CameraInfo, pub.info_topic, received.append, info_qos)
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not received:
+            rclpy.spin_once(sub_node, timeout_sec=0.05)
+        sub_node.destroy_node()
+
+        assert received, "no CameraInfo messages received within 2 s"
+        info = received[0]
+        assert info.header.frame_id == spec.frame_id
+        k = list(info.k)
+        assert k[0] == spec.intrinsics.fx
+        assert k[4] == spec.intrinsics.fy
+        assert k[2] == spec.intrinsics.cx
+        assert k[5] == spec.intrinsics.cy
+    finally:
+        pub.stop()

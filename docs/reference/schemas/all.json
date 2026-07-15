@@ -8930,6 +8930,23 @@
               ],
               "default": null,
               "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",
@@ -10221,6 +10238,23 @@
               ],
               "default": null,
               "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",
@@ -11656,6 +11690,23 @@
               ],
               "default": null,
               "title": "Slam Stereo Cameras"
+            },
+            "slam_mono_camera": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Slam Mono Camera"
+            },
+            "slam_depth_sidecar_autostart": {
+              "default": true,
+              "title": "Slam Depth Sidecar Autostart",
+              "type": "boolean"
             }
           },
           "title": "DeployRuntime",

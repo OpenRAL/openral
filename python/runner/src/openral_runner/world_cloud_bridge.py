@@ -287,6 +287,7 @@ class WorldCloudBridge:
         topic: str = WORLD_CLOUD_TOPIC_DEFAULT,
         base_frame: str = "base_link",
         source_node_name: str = "openral_octomap_server",
+        latched: bool = True,
         publish_interval_s: float = _DEFAULT_PUBLISH_INTERVAL_S,
         max_points: int = 200_000,
         xy_m: float = 2.0,
@@ -305,10 +306,15 @@ class WorldCloudBridge:
         from sensor_msgs.msg import PointCloud2  # noqa: PLC0415
 
         # octomap_server latches its centers topic; mirror TRANSIENT_LOCAL so
-        # a late-joining bridge still gets the latest map.
+        # a late-joining bridge still gets the latest map. nvblox publishes its
+        # ESDF cloud VOLATILE, so ``latched=False`` matches that (a
+        # TRANSIENT_LOCAL sub is incompatible with a VOLATILE pub and gets
+        # nothing).
         cloud_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            durability=(
+                QoSDurabilityPolicy.TRANSIENT_LOCAL if latched else QoSDurabilityPolicy.VOLATILE
+            ),
             depth=1,
         )
         self._node = node
@@ -380,7 +386,16 @@ class WorldCloudBridge:
         import tf2_ros  # noqa: PLC0415
         from sensor_msgs_py import point_cloud2  # noqa: PLC0415
 
-        raw = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"))
+        # An empty nvblox voxel cloud (or one lacking x/y/z) makes
+        # read_points_numpy assert; a callback must never crash the shared
+        # executor (it hosts the SLAM bridge too), so skip such a frame.
+        try:
+            raw = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"))
+        except (AssertionError, KeyError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "WorldCloudBridge: unreadable cloud on this frame (%s); skipping", exc
+            )
+            return None
         pts = np.ascontiguousarray(raw, dtype=np.float32).reshape(-1, 3)
         if pts.shape[0] == 0:
             return pts

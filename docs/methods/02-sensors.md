@@ -54,10 +54,10 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 ### `python/sensors/src/openral_sensors/ros_publisher.py`
 _Generalised sensor → ROS 2 image publisher; non-GStreamer fallback to `RosImagePublisher`._
 
-- `class SensorRosPublisher(*, reader, topic, rate_hz, node_name=None, frame_id=None, qos_depth=5, camera_info=None)` — Background-thread publisher that polls any `SensorReader.read_latest()` and republishes as `sensor_msgs/Image`. Lazy-imports rclpy; raises `RuntimeError` at `start()` with install hint when ROS 2 isn't sourced. Optional `CameraInfo` companion topic at `<topic>/camera_info` with RELIABLE QoS. Reader lifecycle (open/close) is owned by the caller. (L79)
-  - `start() -> None` — Init rclpy if needed, create publishers, spawn the pump thread. (L183)
-  - `stop() -> None` — Signal the pump thread, tear down publishers + node; idempotent. (L252)
-  - prop `is_started`, `n_published`, `n_stale_skipped`, `topic`, `info_topic` — Diagnostics surface consumed by the `openral_sensors_ros` lifecycle node. (L159)
+- `class SensorRosPublisher(*, reader, topic, rate_hz, node_name=None, frame_id=None, qos_depth=5, camera_info=None, info_topic=None)` — Background-thread publisher that polls any `SensorReader.read_latest()` and republishes as `sensor_msgs/Image`. Lazy-imports rclpy; raises `RuntimeError` at `start()` with install hint when ROS 2 isn't sourced. Optional `CameraInfo` companion (from an `IntrinsicsPinhole`) with RELIABLE QoS on `info_topic` — `None` derives `<topic>/camera_info` (camera_info_manager convention); the deploy sensor leg overrides it to the OpenRAL sibling layout `/openral/cameras/<name>/camera_info` so real cameras match the sim HAL (mono visual SLAM subscribes there). Reader lifecycle (open/close) is owned by the caller. (L79)
+  - `start() -> None` — Init rclpy if needed, create publishers, spawn the pump thread. (L190)
+  - `stop() -> None` — Signal the pump thread, tear down publishers + node; idempotent. (L259)
+  - prop `is_started`, `n_published`, `n_stale_skipped`, `topic`, `info_topic` — Diagnostics surface consumed by the `openral_sensors_ros` lifecycle node. (L166)
 
 ### `python/sensors/src/openral_sensors/_reader_protocol.py`
 _Internal Protocol shim mirroring `openral_runner.SensorReader` to avoid a sensors↔runner import cycle._
