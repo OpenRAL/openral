@@ -26,10 +26,29 @@ registry integration. It does **not** copy model weights.
 
 ## Preview
 
-<!-- Add media/frame_{start,mid,end}.png from a robocasa NavigateKitchen run
-     once a GPU closed-loop capture exists (see "Verification status"). -->
+Third-person capture of a real `openral deploy sim` closed-loop run in the
+RoboCasa `NavigateKitchen` scene, instruction *"navigate through the kitchen to
+reach the sink"*: the skill is dispatched via `/openral/execute_rskill`, the NF4
+model runs inference in the deploy loop reading the forward **head** camera, and
+`SimAttachedHAL` drives the panda_mobile base from the emitted `BODY_TWIST`
+commands. The base spawns by an appliance and navigates across the kitchen to
+the sink counter.
 
-_No local capture yet — see **Verification status** below._
+| Start | Middle | End |
+| :---: | :---: | :---: |
+| ![start](media/frame_start.png) | ![mid](media/frame_mid.png) | ![end](media/frame_end.png) |
+
+Full third-person clip: [media/demo.mp4](media/demo.mp4).
+
+**Model's-eye view.** The forward `head` camera the policy actually consumes —
+a MuJoCo free camera ahead of the mobile base looking down its travel direction
+(synthesized by the robocasa sim backend; on real hardware it is the robot's
+forward nav camera). This is the egocentric RGB the System-2 grounder sees, not
+the arm-mounted manipulation cameras:
+
+![head camera](media/head_view.png)
+
+Full head-camera clip: [media/head_camera_view.mp4](media/head_camera_view.mp4).
 
 ## What this skill does
 
@@ -74,8 +93,15 @@ on Unitree Go2 / H1 / Booster T1 with per-robot locomotion policies downstream.
 
 | Input | Key | Notes |
 | --- | --- | --- |
-| RGB | `observation.images.camera1` | egocentric, ≥ 224×224, resized to 384² |
+| RGB | `observation.images.head` | forward egocentric nav view, ≥ 224×224, resized to 384² |
 | Instruction | task string | natural-language navigation goal |
+
+The `head` camera is a **forward-facing egocentric** view down the base's
+travel direction — not an arm-mounted manipulation camera. On `panda_mobile`
+in RoboCasa it is synthesized by the sim backend as a MuJoCo free camera just
+ahead of the mobile base (`OPENRAL_ROBOCASA_HEAD_CAM=1`); on real hardware it
+is the robot's forward nav camera. The arm-workspace cameras
+(`agentview` / `eye_in_hand`) are useless for VLN and are not consumed.
 
 **Output:** one 6-D `BODY_TWIST` action `[vx, vy, vz, wx, wy, wz]` per step in
 `base_link` (only forward `vx` + yaw `wz` are non-zero for a planar base).

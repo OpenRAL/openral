@@ -189,12 +189,17 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
     camera_keys = env_cfg.vla.extra.get("camera_keys")
     if isinstance(camera_keys, (list, tuple)) and camera_keys:
         camera_key = str(camera_keys[0])
-    elif env_cfg.scene.cameras:
-        camera_key = str(env_cfg.scene.cameras[0])
     else:
-        # Deploy world_state keys RGB frames by VLA slot (camera1/camera2/…);
-        # camera1 is the first forward view (panda_mobile shoulder_left).
-        camera_key = "camera1"
+        # InternVLA-N1 is a VLN *navigation* policy: it needs a forward
+        # egocentric view down the base's travel direction, which the
+        # robocasa backend synthesizes as `observation.images.head`
+        # (see robots/panda_mobile/robot.yaml `head` sensor +
+        # `openral_sim.backends.robocasa.render_head_view`, gated on
+        # OPENRAL_ROBOCASA_HEAD_CAM=1). The scene's camera1/2/3 are the
+        # arm-mounted agentview / eye_in_hand streams that stare at the
+        # counter manipulation workspace — useless for navigation. Set
+        # `vla.extra.camera_keys` to override.
+        camera_key = "head"
 
     port_env = os.environ.get(_PORT_ENV)
     port = int(port_env) if port_env else _derive_port(repo, quantization)

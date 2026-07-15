@@ -347,6 +347,37 @@ safety:
 # enable the MuJoCo passive viewer via the HAL's ``viewer_enabled``
 # ROS parameter (auto-on for ``openral deploy sim`` on panda_mobile).
 sensors:
+  # Forward-facing egocentric navigation camera. NOT a robosuite MJCF
+  # camera — synthesized by the robocasa backend as a MuJoCo free camera
+  # placed just ahead of the mobile base looking down its travel direction
+  # (see `openral_sim.backends.robocasa.render_head_view`, gated on
+  # `OPENRAL_ROBOCASA_HEAD_CAM=1`). The arm-mounted agentview / eye_in_hand
+  # cameras below all stare at the counter manipulation workspace, which is
+  # useless for a VLN policy; `head` is the view the InternVLA-N1 nav rSkill
+  # consumes (`observation.images.head`). Listed first so it is the base's
+  # primary camera on the dashboard. No `metadata.mjcf_camera` (there is no
+  # MJCF camera to look up) and `base_link` frame (no optical-TF lift).
+  # `metadata.height_m` / `metadata.forward_offset_m` are the camera mount
+  # geometry the sim backend places the free camera at — tune per robot here,
+  # not in code.
+  - name: "head"
+    modality: "rgb"
+    frame_id: "base_link"
+    rate_hz: 20.0
+    intrinsics:
+      width: 256
+      height: 256
+      fx: 256.0
+      fy: 256.0
+      cx: 128.0
+      cy: 128.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.head"
+    vendor: "sim"
+    model: "robocasa_synthetic_head"
+    metadata:
+      height_m: 1.30
+      forward_offset_m: 0.42
   - name: "shoulder_left"
     modality: "rgb"
     # Per the cross-frame object-lift convention — a dedicated optical frame (NOT the

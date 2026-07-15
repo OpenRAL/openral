@@ -14,7 +14,7 @@ metadata:
   actions: [navigate, reach]
   objects: [room, hallway, door, kitchen, landmark]
   scenes: [indoor, kitchen, home]
-  sensors_required: ['rgb:observation.images.camera1']
+  sensors_required: ['rgb:observation.images.head']
   action_dim: 6
   runtime: pytorch
   quantization: int4/pytorch
