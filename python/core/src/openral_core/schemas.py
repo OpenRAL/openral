@@ -8569,11 +8569,33 @@ class DecomposeMissionTool(_ReasonerToolBase):
         return [s.render() for s in self.subtasks]
 
 
+class WaitTool(_ReasonerToolBase):
+    """Tool variant — deliberate no-op: observe and wait for the next tick.
+
+    The reasoner's tool choice is forced (``tool_choice="any"`` /
+    ``"required"``), so without this variant the LLM MUST act every tick even
+    when the correct decision is "nothing to do yet" — e.g. a skill is mid-
+    execution and progress is nominal, or the mission is finished and no new
+    goal has arrived. Forcing an action in those states produces spurious
+    read-only queries or operator-prompt spam. ``wait`` makes "do nothing this
+    tick" an explicit, logged, traceable decision instead of a side effect.
+
+    Dispatch: none. The node records the call (rationale included) on the
+    reasoner span and returns — no ROS traffic, no actuation, no state change.
+
+    Attributes:
+        tool: Discriminator (always ``"wait"``).
+    """
+
+    tool: Literal["wait"] = "wait"
+
+
 ReasonerToolCall: TypeAlias = (
     ExecuteRskillTool
     | ReloadGstPipelineTool
     | LifecycleTransitionTool
     | EmitPromptTool
+    | WaitTool
     | RecallObjectTool
     | ResolvePlaceTool
     | LocateInViewTool
