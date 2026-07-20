@@ -274,13 +274,21 @@ uv add openai --package openral-reasoner      # one-time (client SDK only)
 ```
 
 Requires an NVIDIA GPU (Ampere+; BF16 is the only officially-tested
-precision). Pre-warm the server outside the reasoner with
-`python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself (vLLM ≥0.23
-or the Cosmos 3 Reasoner NIM) and set `OPENRAL_REASONER_LLM_BASE_URL`.
-Tool-calling reliability of the 4B Edge tier is not yet benchmarked in-tree —
-see the [assessment page](../../docs/reference/cosmos3-edge-reasoner.md) for
-what has and hasn't been validated; the cloud baselines above remain the
-conservative default for collective-goal decomposition.
+precision; **≥12 GB recommended** — 8 GB is the tight floor, needs
+`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95`). Pre-warm the server outside the reasoner
+with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
+`OPENRAL_REASONER_LLM_BASE_URL`.
+
+> ⚠️ **Live status (2026-07-20): boots but does not yet serve inference.**
+> The sidecar boots `nvidia/Cosmos3-Edge` to "startup complete" on an 8 GB
+> 4070 (validated), but the *first forward pass* hits an **upstream
+> vLLM×transformers bug** in the 5-day-old `cosmos3_edge` model
+> (`get_rope_index` `IndexError`). The model itself is sound (runs at ~46 tok/s
+> under plain `transformers`); only vLLM serving is blocked, until the
+> integration is fixed upstream. Full findings + the exact reproduction are in
+> the [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
+> cloud/local baseline above as the working reasoner today**; `cosmos` is
+> wired, tested, and ready to flip on the moment the upstream fix lands.
 
 ## Synopsis
 

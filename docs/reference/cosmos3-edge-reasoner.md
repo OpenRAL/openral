@@ -56,28 +56,46 @@ completion-adjudication gate (`describe_image`). Against that contract:
 - `tools/cosmos3_reasoner_sidecar.py` — uv-provisions an isolated Python
   3.12 venv from the hash-pinned pure-PyPI
   `tools/sidecar_requirements/cosmos3_reasoner.lock` (vllm 0.24.0 at lock
-  time), then execs
-  `vllm serve nvidia/Cosmos3-Edge --enable-auto-tool-choice
-  --tool-call-parser hermes --max-model-len 32768` on port **8901**.
+  time) **plus a SHA-pinned transformers overlay** for `cosmos3_edge`
+  (`_TRANSFORMERS_EDGE_SHA`, no released transformers has it yet), then —
+  for the Edge diffusers layout — **downloads the checkpoint and builds a
+  flattened reasoner view** (`resolve_served_model` / `materialize_reasoner_view`)
+  and execs `vllm serve <view> --served-model-name nvidia/Cosmos3-Edge
+  --enable-auto-tool-choice --tool-call-parser hermes --max-model-len 8192
+  --gpu-memory-utilization 0.90 --enforce-eager` on port **8901**. Every one
+  of those non-obvious flags was forced by a real failure on the 8 GB 4070
+  (see the validation ledger).
 - Config surface: `OPENRAL_REASONER_LLM_{MODEL,BASE_URL,API_KEY,TIMEOUT_S,MAX_TOKENS}`
   as usual, plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
-  / `OPENRAL_COSMOS3_SIDECAR`. Self-managed serving (your own `vllm serve`,
-  or the Cosmos 3 Reasoner NIM container) is a `BASE_URL` away.
+  / `OPENRAL_COSMOS3_SIDECAR` / `OPENRAL_COSMOS3_GPU_MEM_UTIL`. Self-managed
+  serving (your own `vllm serve`, or the Cosmos 3 Reasoner NIM container) is a
+  `BASE_URL` away.
 - `openral doctor` knows the provider (default base URL, no-key, no-model
   requirements; `Cosmos 3` probe row that reports `info` — not `warn` —
   when the endpoint is down, because autostart is the normal cold state).
 
 ## Expected footprint
 
-4B parameters, BF16-only officially tested → ~8 GB weights + KV cache.
-Comfortable on RTX-class (≥12 GB) and Jetson Thor (T3000 32 GB; T2000
-16 GB is tight with a co-resident S1 VLA — budget VRAM deliberately, or
-serve Cosmos 3 on a second GPU / box and point `BASE_URL` at it).
-`--max-model-len 32768` (default) keeps the KV cache bounded; a reasoner
-tick's context is a few thousand tokens.
+The reasoner tower is ~3B params; at BF16 (the only officially-tested
+precision) it loaded at **~6.4 GB resident on the 8 GB RTX 4070** with an
+8192-token KV cache — a genuine fit, not a projection, but a *tight* one.
+`--enforce-eager` (skip CUDA-graph capture) is load-bearing on 8 GB, and the
+8192 window needs `OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` on this card. Note the
+reasoner's own system prompt + tool schemas already run ~7.7K tokens, so a
+sub-8192 window rejects a real tick — which puts **8 GB at the practical
+floor**: it works, but with no room for a co-resident S1 VLA and little KV
+headroom. A **≥12 GB card is the comfortable minimum**; Jetson Thor T3000
+(32 GB) / T2000 (16 GB) — Edge's actual targets — have ample room, and the
+sidecar's 0.90 default suits them. The model supports up to 131K context,
+KV-VRAM permitting.
 
 ## Risks and open questions
 
+0. **BLOCKER (live-confirmed): vLLM cannot yet run a forward pass on
+   `cosmos3_edge`.** See the validation ledger — the served engine boots but
+   500s on the first request via an upstream `get_rope_index` shape bug. This
+   is the one thing standing between "boots" and "works", and it is not
+   OpenRAL's to fix. Everything below assumes that clears.
 1. **Tool-calling reliability of a 4B world model is unproven.** Cosmos 3's
    reasoner is trained for physical reasoning and grounding, not
    function-calling agent traces. The palette's `execute_rskill__*` /
@@ -85,18 +103,19 @@ tick's context is a few thousand tokens.
    degrade at 4B. Mitigations already in place: `tool_choice="required"`,
    Pydantic union validation with `ROSReasonerInvalidPlan` feedback into the
    next prompt, and the per-kind retry cap. Escalation path: same provider,
-   `MODEL=nvidia/Cosmos3-Nano`.
+   `MODEL=nvidia/Cosmos3-Nano`. (Not yet measurable — see risk 0.)
 2. **Tool-call parser.** Edge's reasoner is Nemotron-backbone (Nano/Super
    are Qwen3-VL-based); the family documents Qwen3-VL-compatible message
-   conventions, so the sidecar defaults to vLLM's `hermes` parser. If Edge's
-   emission format diverges in practice, override `--tool-call-parser`
-   (the boot helper exposes it) — and if vLLM ships a dedicated `cosmos3`
-   parser, switch the default.
-3. **Serving-stack freshness.** Nano/Super reasoner serving is documented
-   for vLLM ≥0.23; the Edge tier's dedicated vLLM integration is newer than
-   the lock may assume. If `vllm serve nvidia/Cosmos3-Edge` rejects the
-   architecture, bump the lock (`uv pip compile …/cosmos3_reasoner.in`) —
-   Nano on a workstation is the fallback that is known-documented.
+   conventions, so the sidecar defaults to vLLM's `hermes` parser. The grammar
+   builds correctly from our palette (confirmed live); whether Edge *emits* in
+   that format is unmeasured (risk 0). Override `--tool-call-parser` if it
+   diverges, or switch the default if vLLM ships a dedicated `cosmos3` parser.
+3. **Serving-stack freshness — CONFIRMED, and handled.** No released
+   transformers recognises `cosmos3_edge`; the sidecar pins the `main`-branch
+   SHA that does. When a release ships it, drop the overlay (see
+   `_TRANSFORMERS_EDGE_SHA`) and add `transformers>=<version>` to the `.in`.
+   Nano/Super (standard layout, no view needed) are the known-documented
+   fallback and are served by repo id directly.
 4. **Reasoning-trace latency.** Cosmos 3 supports explicit `<think>`
    reasoning; long traces would eat the 120 s call timeout on small GPUs.
    The reasoner does not request the explicit-reasoning format; if the model
@@ -108,18 +127,41 @@ tick's context is a few thousand tokens.
 
 ## Validation status
 
-Honesty ledger (CLAUDE.md §1.2) — this container has no NVIDIA GPU, so
-everything model-side is pending a GPU host:
+Honesty ledger (CLAUDE.md §1.2). Validated live on an **RTX 4070 Laptop
+(8 GB, CUDA 13.0)** on 2026-07-20 — the day the Edge weights shipped.
 
 | Item | Status |
 |---|---|
 | Factory / client / autostart lifecycle / doctor rows | ✅ unit-tested (`tests/unit/test_reasoner_cosmos3.py`, `tests/unit/test_doctor.py`) |
 | Tool-call wire path through `Cosmos3ToolUseClient` | ✅ unit-tested against the openai-SDK network-boundary double |
+| Sidecar view/argv/layout helpers | ✅ unit-tested (`tests/unit/test_cosmos3_sidecar.py`) |
 | Lock resolves (vllm 0.24.0, torch 2.11.0, py3.12) | ✅ compiled + hash-pinned |
-| `vllm serve nvidia/Cosmos3-Edge` boots and loads the reasoner tower | ⬜ pending GPU host |
-| Live `select_tool` tick + `describe_image` gate against the served model | ⬜ pending GPU host |
-| Tool-call reliability vs. the deploy-sim baseline (collective-goal decomposition) | ⬜ pending eval run |
-| Tick latency / VRAM on Jetson Thor + RTX reference hosts | ⬜ pending hardware |
+| `cosmos3_edge` arch recognised by the serving stack | ✅ **via SHA-pinned transformers overlay** — no *released* transformers knows `cosmos3_edge` yet (5.14.1 rejects it); `main`@`cbf4d720` accepts it. Codified in the sidecar. |
+| Weights loadable by vLLM (diffusers subfolder layout) | ✅ **via the flattened reasoner view** (`materialize_reasoner_view`) — vLLM's loader can't follow the subfolder `weight_map`; the symlink view fixes it. |
+| `vllm serve nvidia/Cosmos3-Edge` boots on 8 GB | ✅ "Application startup complete"; ~6.4 GB resident at BF16, 8192-token KV, `--enforce-eager`. On this 8 GB card the 8192 window needs `OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` (the default 0.90 leaves only ~0.54 GiB for KV, short of the ~0.88 GiB the window needs — 0.90 suits the ≥12 GB cards Edge targets). All knobs codified in the sidecar. |
+| Reasoner prompt reaches the model | ✅ real request tokenised (7,707 tokens) and the xgrammar tool-call grammar built from the full OpenRAL palette (`execute_rskill__*`, `decompose_mission`, …). |
+| **Live `select_tool` tick end-to-end** | ❌ **blocked upstream** — the first forward pass crashes in `transformers…cosmos3_edge.get_rope_index` (`IndexError: too many indices for tensor of dimension 1`): vLLM's Transformers-multimodal backend passes a 1-D `input_ids` where the 5-day-old modeling code expects 2-D. Hits **every** request (text-only *and* vision+text). Not an OpenRAL bug. |
+| Model itself is sound | ✅ under plain `transformers.generate` on the same 4070 the reasoner loaded in 9.5 s and produced coherent physical-reasoning text at **~46 tok/s** (BF16). The blocker is purely vLLM's serving integration. |
+| Tool-call reliability vs. the deploy-sim baseline | ⬜ blocked on the upstream fix above |
+| Tick latency / VRAM on Jetson Thor | ⬜ pending hardware (Q1 2027 modules) |
+
+### Reproducing the upstream blocker
+
+```
+python tools/cosmos3_reasoner_sidecar.py --port 8901      # boots to "Application startup complete"
+export OPENRAL_REASONER_LLM_PROVIDER=cosmos
+# any real reasoner tick -> HTTP 500; server log shows:
+#   transformers/models/cosmos3_edge/modeling_cosmos3_edge.py:893 in get_rope_index
+#   IndexError: too many indices for tensor of dimension 1
+```
+
+**When it clears.** The fix is upstream (vLLM's `get_mrope_input_positions`
+passing a 2-D `input_ids`, or the model's `get_rope_index` tolerating 1-D). Once
+a transformers release ships `cosmos3_edge`, drop the SHA overlay (see
+`_TRANSFORMERS_EDGE_SHA` in the sidecar) and re-run the tick — the rest of the
+integration (view, VRAM knobs, tool grammar, client) is already proven. Until
+then `provider=cosmos` boots a server that 500s on inference; the cloud/local
+baselines in the reasoner README remain the working default.
 
 ## Layer-boundary notes
 
