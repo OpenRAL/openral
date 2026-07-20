@@ -55,6 +55,7 @@ def test_provider_unset_raises_with_message() -> None:
     assert "xai" in msg
     assert "deepseek" in msg
     assert "huggingface" in msg
+    assert "cosmos" in msg
 
 
 def test_provider_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:

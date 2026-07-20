@@ -650,6 +650,7 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "xai": "https://api.x.ai/v1",
     "deepseek": "https://api.deepseek.com",
     "huggingface": "https://router.huggingface.co/v1",
+    "cosmos": "http://127.0.0.1:8901/v1",
 }
 
 
@@ -725,12 +726,16 @@ def _check_reasoner_llm() -> list[CheckResult]:
     summary = " ".join(parts)
 
     incomplete: list[CheckResult] = []
-    if not model:
+    # ``cosmos`` is the one provider with a canonical default checkpoint
+    # (nvidia/Cosmos3-Edge, applied by build_tool_use_client_from_env), so an
+    # unset MODEL is complete config there, not a gap.
+    if not model and provider != "cosmos":
         incomplete.append(
             CheckResult(
                 "Reasoner MODEL",
                 "missing",
-                "OPENRAL_REASONER_LLM_MODEL unset — required for every provider.",
+                "OPENRAL_REASONER_LLM_MODEL unset — required for every provider "
+                "except cosmos (defaults to nvidia/Cosmos3-Edge).",
             )
         )
     if key_required and not api_key:
@@ -760,6 +765,13 @@ def _check_reasoner_llm() -> list[CheckResult]:
             probe_label = "vLLM"
             default_port = 8000
             hint = "start the server with `vllm serve <model>`"
+        elif provider == "cosmos":
+            probe_label = "Cosmos 3"
+            default_port = 8901
+            hint = (
+                "auto-starts on the first reasoner tick (managed vLLM sidecar); "
+                "pre-warm with `python tools/cosmos3_reasoner_sidecar.py`"
+            )
         else:
             probe_label = "Ollama"
             default_port = 11434
@@ -774,10 +786,12 @@ def _check_reasoner_llm() -> list[CheckResult]:
                 )
             )
         else:
+            # A down endpoint is normal pre-first-tick for `cosmos` (the client
+            # spawns the managed server on demand) — report info, not warn.
             rows.append(
                 CheckResult(
                     probe_label,
-                    "warn",
+                    "info" if provider == "cosmos" else "warn",
                     f"endpoint unreachable at {host}:{port} — {hint}.",
                 )
             )

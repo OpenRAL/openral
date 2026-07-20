@@ -361,6 +361,27 @@ def test_check_reasoner_llm_ollama_default_base_url_no_key(
     assert any(r.check == "Ollama" for r in rows)
 
 
+def test_check_reasoner_llm_cosmos_no_model_needed(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """`provider=cosmos` is complete with just the PROVIDER var: the model
+    defaults to nvidia/Cosmos3-Edge, no API key is required, and the loopback
+    probe row is labelled `Cosmos 3` — `info` (not `warn`) when down, because
+    the managed vLLM sidecar auto-starts on the first reasoner tick."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "ok"
+    assert "provider=cosmos" in summary.details
+    assert "127.0.0.1:8901/v1" in summary.details
+    assert not any(r.check == "Reasoner MODEL" for r in rows)
+    probe = next(r for r in rows if r.check == "Cosmos 3")
+    # No server running in the test env; the row must be informational.
+    assert probe.status in {"ok", "info"}
+    if probe.status == "info":
+        assert "auto-starts" in probe.details
+
+
 @pytest.mark.parametrize(
     ("provider", "model", "base_url_fragment"),
     [
