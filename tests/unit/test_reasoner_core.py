@@ -540,3 +540,47 @@ def test_tick_selected_log_includes_active_prompt(log_cap: _CaptureProcessor) ->
     active = ev.get("active_prompt", "")
     assert isinstance(active, str)
     assert active.startswith(prompt_text[:30])
+
+
+def test_search_tools_are_transparent_to_the_retry_cap() -> None:
+    """Identical read-only search calls are never capped — their own budgets
+    (SearchProgress miss budget, TaskLocateBudget) bound those loops and must
+    reach the explicit human-handoff, which the cap's silent hold would preempt
+    (the live regression: the recall cascade stalled in retry_cap_hold before
+    the search budget could hand off)."""
+    from openral_core import RecallObjectTool
+
+    palette = _palette()
+    client = FakeToolUseClient(responses=[RecallObjectTool(query="milk") for _ in range(6)])
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(6):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert all(r.tool_call is not None for r in results)
+
+
+def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
+    """Transparency, not reset: an alternating <same-call> / <search> pattern
+    still accumulates toward the cap — a genuine loop cannot launder its streak
+    through a read-only recall between repeats."""
+    from openral_core import RecallObjectTool
+
+    palette = _palette()
+    same = EmitPromptTool(target_topic="/openral/prompt", text="same")
+    responses: list = []
+    for _ in range(4):
+        responses.append(same)
+        responses.append(RecallObjectTool(query="milk"))
+    client = FakeToolUseClient(responses=responses)
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(8):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    # The 4th identical emit_prompt (tick index 6) trips the cap even though
+    # recall_object calls were interleaved between the repeats.
+    suppressed = [r.suppressed_reason for r in results]
+    assert "retry_cap" in suppressed

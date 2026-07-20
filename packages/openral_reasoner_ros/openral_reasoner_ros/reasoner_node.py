@@ -490,9 +490,13 @@ def _resets_search_episode(call: Any) -> bool:
     (remembered objects) and ``locate_in_view`` (live detector) — the latter is
     the regression this guards: if a directly-emitted ``locate_in_view`` reset
     the budget, a ``recall → locate → recall`` loop against an undetectable
-    object would zero the counter every cycle and never hand off.
+    object would zero the counter every cycle and never hand off. ``wait`` is
+    exempt for the same reason: a deliberate no-op makes no progress on the
+    search, so a ``locate → wait → locate`` alternation must keep charging the
+    budget rather than zeroing it every other tick (caught live by
+    ``test_cascade_reprompt_does_not_reset_search_budget``).
     """
-    return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool)
+    return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool | WaitTool)
 
 
 def _should_offer_subdivision(

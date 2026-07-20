@@ -52,6 +52,20 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
 
 
+# Read-only search tools are TRANSPARENT to the retry cap — neither counted
+# nor streak-resetting. Each search loop already has its own dedicated,
+# operator-facing bound (SearchProgress's miss budget and the per-task
+# TaskLocateBudget, both terminating in an explicit human-handoff); letting
+# the identity cap fire first would stop the loop in a silent retry_cap_hold
+# BEFORE the search budget can hand off (caught live by
+# test_active_search_cascade_is_bounded_and_hands_off). Transparency (rather
+# than resetting) also keeps an alternating <same-call> / <search> loop
+# accumulating toward the cap.
+_RETRY_CAP_EXEMPT_TOOLS: frozenset[str] = frozenset(
+    {"recall_object", "resolve_place", "locate_in_view"}
+)
+
+
 def _call_identity(call: ReasonerToolCall) -> str:
     """Canonical identity of a tool call for the retry-cap streak.
 
@@ -119,7 +133,11 @@ class ReasonerCore:
             healthy sequence of *different* skills — navigate → pick →
             place, all ``execute_rskill`` — never trips the cap, while a
             genuine loop re-issuing the same call against unchanged
-            context still does.
+            context still does. The read-only search tools
+            (:data:`_RETRY_CAP_EXEMPT_TOOLS`) are transparent to the cap:
+            their own budgets (``SearchProgress``, ``TaskLocateBudget``)
+            bound them and terminate in an explicit human-handoff, which
+            the cap's silent hold must never preempt.
         system_prompt: Override the
             :data:`~openral_reasoner.tool_use.DEFAULT_SYSTEM_PROMPT`.
             ``None`` keeps the default.
@@ -348,11 +366,17 @@ class ReasonerCore:
             # retry-cap ("bounded retry counter per failure kind") — keyed
             # on the full call identity (tool + args minus rationale), so
             # only a *verbatim* repeat accumulates; a different skill /
-            # different params is progress, not a retry.
-            identity = _call_identity(call)
-            _prev_tool, prev_identity, streak = self._call_streak
-            streak = streak + 1 if identity == prev_identity else 1
-            self._call_streak = (call.tool, identity, streak)
+            # different params is progress, not a retry. Read-only search
+            # tools are transparent to the cap (see _RETRY_CAP_EXEMPT_TOOLS):
+            # their own budgets bound them and must reach the explicit
+            # human-handoff, never a silent hold.
+            if call.tool not in _RETRY_CAP_EXEMPT_TOOLS:
+                identity = _call_identity(call)
+                _prev_tool, prev_identity, streak = self._call_streak
+                streak = streak + 1 if identity == prev_identity else 1
+                self._call_streak = (call.tool, identity, streak)
+            else:
+                streak = 0  # transparent: streak untouched, never capped
             if streak > self._retry_cap:
                 # Arm the pre-call hold at the seq this cap fired against so
                 # subsequent unchanged-context ticks skip the LLM entirely.
