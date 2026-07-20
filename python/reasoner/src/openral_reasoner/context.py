@@ -993,7 +993,9 @@ class ContextRenderer:
         """
         return self._seq
 
-    def drain_prompts(self) -> tuple[PromptRecord, ...]:
+    def drain_prompts(
+        self, *, seen: tuple[PromptRecord, ...] | None = None
+    ) -> tuple[PromptRecord, ...]:
         """Return and clear the prompt buffer.
 
         Prompts are pull-once events — once the reasoner has seen one
@@ -1001,9 +1003,23 @@ class ContextRenderer:
         reasoner_node calls :meth:`drain_prompts` after each
         successful :meth:`render`. Records come back ordered by
         priority descending (then arrival ascending).
+
+        Args:
+            seen: When given, drain **only** these records (matched by
+                identity) and keep the rest. Used by the phased tick
+                (:meth:`~openral_reasoner.ReasonerCore.finish_tick`): a
+                prompt that arrived while the LLM call was in flight was
+                never rendered into the model's context, so it must
+                survive for the next tick. ``None`` (default) drains
+                everything — the pre-async behavior.
         """
-        drained = tuple(self._prompts)
-        self._prompts.clear()
+        if seen is None:
+            drained = tuple(self._prompts)
+            self._prompts.clear()
+            return drained
+        seen_ids = {id(rec) for rec in seen}
+        drained = tuple(rec for rec in self._prompts if id(rec) in seen_ids)
+        self._prompts = [rec for rec in self._prompts if id(rec) not in seen_ids]
         return drained
 
 

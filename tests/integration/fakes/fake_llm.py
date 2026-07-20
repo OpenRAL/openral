@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 
@@ -69,6 +70,10 @@ class FakeToolUseClient:
         raise_on_call: If not ``None``, every ``select_tool`` call
             raises this exception (used to test
             :class:`ROSPlanningError` propagation).
+        delay_s: Sleep this long inside every ``select_tool`` call —
+            models the real provider round-trip so the async-LLM tests
+            (issue #21) can assert the executor is NOT starved while a
+            call is in flight.
     """
 
     def __init__(
@@ -78,6 +83,7 @@ class FakeToolUseClient:
         responses: list[ReasonerToolCall] | None = None,
         selector: SelectorFn | None = None,
         raise_on_call: BaseException | None = None,
+        delay_s: float = 0.0,
     ) -> None:
         """Validate exactly one configuration knob is set."""
         if responses is None and selector is None and raise_on_call is None:
@@ -94,6 +100,7 @@ class FakeToolUseClient:
         self._responses: deque[ReasonerToolCall] = deque(responses or [])
         self._selector = selector
         self._raise = raise_on_call
+        self._delay_s = delay_s
         self._traces: list[ToolCallTrace] = []
         self._lock = threading.Lock()
 
@@ -105,6 +112,8 @@ class FakeToolUseClient:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> ReasonerToolCall:
         """Return the next canned tool call (or raise / run selector)."""
+        if self._delay_s > 0:
+            time.sleep(self._delay_s)  # outside the lock: a slow call must not block tracing
         with self._lock:
             self._traces.append(
                 ToolCallTrace(

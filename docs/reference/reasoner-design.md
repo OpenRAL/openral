@@ -50,6 +50,20 @@ is **event-driven with a slow heartbeat**:
   `EmitPrompt`, plus the read-only query/memory tools below) — Pydantic-validated
   structured output, never free-form JSON.
 
+**Execution model (#21).** The blocking LLM round-trip (`select_tool`, and the
+VLM gate's `describe_image`) runs on a dedicated single worker thread, never on
+the rclpy executor. A tick is phased: `ReasonerCore.prepare_tick` (gates +
+context render, executor thread) → `run_prepared_llm` (worker) →
+`finish_tick` (bookkeeping + dispatch, marshaled back via a guard condition).
+One worker = one outstanding LLM call; ticks requested mid-flight coalesce and
+replay (the single-flight trampoline). This is what makes "event-driven
+preemption" real: while the LLM thinks for 10–60 s, goal results, patience
+timers, and Tier-A preemptions still run on time (pre-#21, a 10 s patience
+timer was observed firing at 76 s because the timer callback queued behind the
+LLM call). Events that arrive mid-flight were not in the model's context, so
+`finish_tick` marks seen/drains only the prepare-time snapshot — a mid-flight
+operator prompt survives for the next tick.
+
 **Authority boundary.** The reasoner holds **no actuation authority**: it never
 publishes `ActionChunk`. Only `rskill_runner_node` does, and every action passes
 the C++ safety kernel before it
