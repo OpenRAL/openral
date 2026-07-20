@@ -454,7 +454,7 @@ class ContextRenderer:
         # of double-dispatching into a busy runner. Also read by
         # ReasonerCore's heartbeat-idle gate: while a skill is in flight the
         # heartbeat stays live so the reasoner can poll the reward monitor.
-        self._inflight: tuple[str, int] | None = None
+        self._inflight: tuple[str, int, str] | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -523,23 +523,35 @@ class ContextRenderer:
         if self._render_in_view() != before:
             self._seq += 1
 
-    def set_inflight_skill(self, rskill_id: str | None, *, stamp_ns: int = 0) -> None:
-        """Record (or clear) the ``execute_rskill`` goal currently running.
+    def set_inflight_skill(
+        self, rskill_id: str | None, *, stamp_ns: int = 0, state: str = "running"
+    ) -> None:
+        """Record (or clear) the ``execute_rskill`` goal currently in flight.
 
-        Called by the node on goal accept (``rskill_id`` + dispatch stamp) and
-        on the terminal result (``None``). Both transitions are **events** —
-        the LLM's next decision changes materially in each direction — so a
-        state change bumps :attr:`seq`. Re-asserting the same state is a no-op.
+        Called by the node at dispatch (``state="dispatching"`` — the goal is
+        sent but not yet accepted; policy weights may be cold-loading), on
+        goal accept (``state="running"``), and on the terminal result
+        (``None``). Surfacing the *phase* matters: during a long cold load the
+        LLM used to read an unchanged snapshot and escalate "task is blocked"
+        to the operator while the goal was in fact accepted and loading
+        (observed live, 2026-07-20). Every transition is an **event** — the
+        LLM's next decision changes materially — so a state change bumps
+        :attr:`seq`. Re-asserting the same state is a no-op.
         """
-        new = None if rskill_id is None else (rskill_id, stamp_ns)
+        new = None if rskill_id is None else (rskill_id, stamp_ns, state)
         if new != self._inflight:
             self._inflight = new
             self._seq += 1
 
     @property
     def inflight_skill(self) -> str | None:
-        """rskill_id of the goal currently running on the action server, or None."""
+        """rskill_id of the goal currently in flight on the action server, or None."""
         return self._inflight[0] if self._inflight is not None else None
+
+    @property
+    def inflight_state(self) -> str | None:
+        """Phase of the in-flight goal (``"dispatching"`` / ``"running"``), or None."""
+        return self._inflight[2] if self._inflight is not None else None
 
     #: Max distinct labels retained in the sticky ``located`` store.
     _LOCATED_CAP = 12
@@ -907,11 +919,19 @@ class ContextRenderer:
         """
         lines: list[str] = []
         if self._inflight is not None:
-            rskill_id, stamp_ns = self._inflight
+            rskill_id, stamp_ns, state = self._inflight
+            phase = (
+                "was just dispatched and is being accepted / loading its policy "
+                "(cold weight loads can take tens of seconds)"
+                if state == "dispatching"
+                else "is RUNNING right now"
+            )
             lines.append(
-                f"in_flight: skill={rskill_id} is RUNNING right now "
-                f"(dispatched at stamp_ns={stamp_ns}). Do not dispatch another "
-                "execute_rskill until it returns; poll query_task_progress or wait."
+                f"in_flight: skill={rskill_id} {phase} "
+                f"(state={state}, dispatched at stamp_ns={stamp_ns}). Do not dispatch "
+                "another execute_rskill until it returns, and do not escalate to the "
+                "operator just because it has not finished; poll query_task_progress "
+                "or wait."
             )
         for rec in self._executions:
             line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"

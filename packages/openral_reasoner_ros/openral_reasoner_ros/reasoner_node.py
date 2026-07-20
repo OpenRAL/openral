@@ -381,18 +381,17 @@ from openral_core import WRAPPED_TASK_SPACE_LAYOUTS as _WRAPPED_TASK_SPACE_LAYOU
 # no packer executes would boot-pass and then E-stop mid-run.
 
 
-def _detect_gpu_total_vram_gb() -> float:
-    """Total VRAM (GB) of GPU 0 via ``nvidia-smi``, or ``0.0`` when unavailable.
+def _query_gpu_gb(field: str) -> float:
+    """One ``nvidia-smi --query-gpu=<field>`` value for GPU 0 in GB, or ``0.0``.
 
     Deliberately torch-free (the reasoner_node stays cheap to import — torch is
-    only pulled lazily for the skill loader). Used by the VLA/reward VRAM-fit pre-dispatch
-    pair check when the ``gpu_total_vram_gb`` param is unset. Any failure (no
-    nvidia-smi, no GPU, parse error) returns ``0.0`` → the caller skips the check
-    rather than blocking dispatch on a host where the budget can't be read.
+    only pulled lazily for the skill loader). Any failure (no nvidia-smi, no
+    GPU, parse error) returns ``0.0`` → callers skip their check rather than
+    blocking dispatch on a host where the value can't be read.
     """
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=5.0,
@@ -407,6 +406,28 @@ def _detect_gpu_total_vram_gb() -> float:
         return float(first[0].strip()) / 1024.0  # MiB → GiB
     except ValueError:
         return 0.0
+
+
+def _detect_gpu_total_vram_gb() -> float:
+    """Total VRAM (GB) of GPU 0, or ``0.0`` when unavailable.
+
+    Used by the VLA/reward VRAM-fit pre-dispatch pair check when the
+    ``gpu_total_vram_gb`` param is unset.
+    """
+    return _query_gpu_gb("memory.total")
+
+
+def _detect_gpu_free_vram_gb() -> float:
+    """*Free* VRAM (GB) on GPU 0 right now, or ``0.0`` when unavailable.
+
+    The static pair check above budgets against the card's TOTAL, which is
+    blind to what other processes hold at dispatch time — observed live
+    (2026-07-20): an external vLLM server held 4.7 GB of an 8 GB card, the
+    palette's molmoact2 (declared 4.0 GB) passed every static gate, and the
+    dispatch burned ~30 s in a CUDA OOM abort. Probed per dispatch (the
+    dispatch path is slow-path; one nvidia-smi call is ~100 ms).
+    """
+    return _query_gpu_gb("memory.free")
 
 
 def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]:
@@ -478,6 +499,29 @@ def _action_executable(
     else:
         executable = {ControlMode(m) for m in description.capabilities.supported_control_modes}
     return {ControlMode(m) for m in required} <= executable
+
+
+# Minimum seconds between operator-visible (WARNING) execute_rskill feedback
+# log lines; the raw per-chunk stream continues at DEBUG.
+_FEEDBACK_LOG_PERIOD_S: float = 1.0
+
+
+def _feedback_log_due(*, now_s: float, last_s: float, period_s: float) -> bool:
+    """Whether the next feedback line goes to the operator (WARNING) channel.
+
+    Pure throttle predicate: due when at least ``period_s`` has elapsed since
+    the last operator-visible line (``last_s`` starts at ``-inf`` so the first
+    message always shows).
+
+    Example:
+        >>> _feedback_log_due(now_s=10.0, last_s=float("-inf"), period_s=1.0)
+        True
+        >>> _feedback_log_due(now_s=10.5, last_s=10.0, period_s=1.0)
+        False
+        >>> _feedback_log_due(now_s=11.0, last_s=10.0, period_s=1.0)
+        True
+    """
+    return now_s - last_s >= period_s
 
 
 def _resets_search_episode(call: Any) -> bool:
@@ -894,6 +938,8 @@ class ReasonerNode(LifecycleNode):
         # dispatch — the runner serves one goal at a time, and a forced tick
         # mid-execution used to double-dispatch blind.
         self._rskill_inflight: bool = False
+        # monotonic() of the last operator-visible feedback WARNING (throttle).
+        self._last_feedback_warn_s: float = -float("inf")
         # Crash-safe ladder persistence (`ladder_state_path` param): the
         # snapshot file, or None when persistence is disabled.
         self._ladder_state_path: pathlib.Path | None = None
@@ -3608,23 +3654,58 @@ class ReasonerNode(LifecycleNode):
         *,
         traceparent: str | None,
     ) -> bool:
-        """VLA/reward VRAM-fit pre-dispatch gate: refuse a VLA that can't co-reside with its reward.
+        """VRAM pre-dispatch gate: refuse a VLA that cannot fit the GPU.
 
-        A VLA emits no success signal of its own, so it must run with its reward
-        model resident alongside it (VLM-adjudicated completion). When a reward model is active and
-        the GPU budget is known, verify the pair fits *before* dispatch: on a miss
-        we refuse + publish a ``FailureTrigger`` (the reasoner sees it and bounds
-        retries → handoff) rather than OOM mid-run or run the VLA blind. Returns
-        ``True`` when the dispatch was refused (caller must not send the goal).
+        On a miss we refuse + publish a ``FailureTrigger`` (the reasoner sees
+        it and bounds retries → handoff) rather than OOM mid-run or run the
+        VLA blind. Returns ``True`` when the dispatch was refused (caller must
+        not send the goal). Two tiers, both refusing with the same
+        ``vram_insufficient`` evidence:
 
-        Skipped — dispatch proceeds — when no reward model is active (reward
-        monitoring off is a deliberate deploy choice), the GPU total is unreadable,
-        or the dispatched skill is not a VLA / not installed.
+        1. **Live free-VRAM probe** (needs only the VLA's declared
+           ``active_min_vram_gb`` + a readable ``nvidia-smi``): the static pair
+           check budgets against the card's TOTAL, which is blind to what
+           *other* processes hold right now — observed live (2026-07-20): an
+           external vLLM server held 4.7 GB of an 8 GB card, molmoact2
+           (declared 4.0 GB) passed the static gates and burned ~30 s in a
+           CUDA OOM abort. Skipped when ``vram_lifecycle_peers`` are
+           configured (their eviction frees VRAM the pre-eviction probe
+           cannot see — a false refusal would block a dispatch eviction
+           would have enabled), when the manifest declares no size, or when
+           free VRAM is unreadable.
+        2. **Static VLA+reward pair fit** (unchanged): when a reward model is
+           active and the GPU total is known, the pair must fit the card.
+
+        Skipped entirely — dispatch proceeds — when the dispatched skill is
+        not a VLA / not installed.
         """
-        if self._reward_manifest is None or self._gpu_total_vram_gb <= 0.0:
-            return False
         vla = self._manifest_for_rskill(call.rskill_id)
         if vla is None or vla.kind != "vla":
+            return False
+        vla_min_gb = vla.active_min_vram_gb()
+        if vla_min_gb is not None and vla_min_gb > 0.0 and not self._vram_lifecycle_peers:
+            free_gb = _detect_gpu_free_vram_gb()
+            if 0.0 < free_gb < vla_min_gb:
+                detail = (
+                    f"VLA {call.rskill_id!r} declares {vla_min_gb:.1f} GB at its active "
+                    f"quantization but only {free_gb:.1f} GB of GPU VRAM is free right now "
+                    f"(total {self._gpu_total_vram_gb:.1f} GB) — another process is likely "
+                    "holding the difference. Refusing before dispatch instead of OOMing "
+                    "mid-load; free VRAM or pick a smaller skill."
+                )
+                self.get_logger().error(f"dispatch: refusing execute_rskill — {detail}")
+                self._publish_skill_failure(
+                    kind=_KIND_CONTROLLER,
+                    rskill_id=call.rskill_id,
+                    evidence=ControllerEvidence(
+                        controller_name=call.rskill_id,
+                        state="vram_insufficient",
+                        detail=detail[:480],
+                    ),
+                    traceparent=traceparent,
+                )
+                return True
+        if self._reward_manifest is None or self._gpu_total_vram_gb <= 0.0:
             return False
         if vla.reward_rskill_name and vla.reward_rskill_name != self._reward_manifest.name:
             self.get_logger().warning(
@@ -3694,7 +3775,7 @@ class ReasonerNode(LifecycleNode):
         # (the in_flight context line plus this feedback), and let it wait or
         # poll instead.
         if self._rskill_inflight:
-            inflight = self._renderer.inflight_skill or "(accepting)"
+            inflight = self._renderer.inflight_skill or "(dispatching)"
             self.get_logger().info(
                 f"dispatch: refusing execute_rskill {call.rskill_id!r} — "
                 f"goal {inflight!r} is already in flight",
@@ -3760,8 +3841,16 @@ class ReasonerNode(LifecycleNode):
 
         # Latch the busy gate for the whole send→terminal window (the
         # accepted-goal handle alone leaves the send→accept gap unguarded).
-        # Cleared on rejection / send failure / terminal result.
+        # Cleared on rejection / send failure / terminal result. The renderer
+        # mirrors the phase ("dispatching" now, "running" on accept) so the
+        # LLM can tell a cold-loading goal from a stalled one instead of
+        # escalating to the operator mid-load.
         self._rskill_inflight = True
+        self._renderer.set_inflight_skill(
+            call.rskill_id,
+            stamp_ns=self.get_clock().now().nanoseconds,
+            state="dispatching",
+        )
 
         # Single-resident-skill VRAM eviction — free GPU lifecycle peers (the object detector)
         # before the policy loads, then reactivate when the skill finishes. Sequenced so the peer's
@@ -3972,17 +4061,28 @@ class ReasonerNode(LifecycleNode):
     # ── ExecuteSkill action callbacks ───────────────────────────────────────
 
     def _on_execute_rskill_feedback(self, rskill_id: str, feedback_msg: Any) -> None:
-        """Forward action feedback to the operator log at warning level.
+        """Forward action feedback to the operator log, throttled to ~1 Hz.
 
-        Feedback is rare (chunk_index advances) so a warning-channel
-        log is fine — the operator wants visibility, and structlog/
-        OTel will route this to the dashboard.
+        Feedback is NOT rare in practice — a VLA goal streams one message per
+        action chunk (600+ per goal observed live, 2026-07-20), and logging
+        each at WARNING drowned the operator log. Keep the operator-visible
+        warning but emit at most one per :data:`_FEEDBACK_LOG_PERIOD_S`
+        (suppressed messages go to DEBUG so a trace-level investigation still
+        has every chunk).
         """
         fb = feedback_msg.feedback
-        self.get_logger().warning(
+        line = (
             f"execute_rskill feedback rskill_id={rskill_id!r} state={fb.state!r} "
-            f"progress={fb.progress:.2f} chunk={fb.chunk_index}/{fb.chunks_total}",
+            f"progress={fb.progress:.2f} chunk={fb.chunk_index}/{fb.chunks_total}"
         )
+        now_s = time.monotonic()
+        if _feedback_log_due(
+            now_s=now_s, last_s=self._last_feedback_warn_s, period_s=_FEEDBACK_LOG_PERIOD_S
+        ):
+            self._last_feedback_warn_s = now_s
+            self.get_logger().warning(line)
+        else:
+            self.get_logger().debug(line)
 
     def _on_execute_rskill_goal_response(
         self,
@@ -4017,6 +4117,7 @@ class ReasonerNode(LifecycleNode):
             # Single-resident-skill VRAM eviction — the goal never reached the runner; restore the
             # GPU peers we froze for it so perception resumes.
             self._rskill_inflight = False
+            self._renderer.set_inflight_skill(None)
             self._reactivate_vram_peers()
             return
         if not goal_handle.accepted:
@@ -4036,6 +4137,7 @@ class ReasonerNode(LifecycleNode):
             # Single-resident-skill VRAM eviction — goal rejected (skill won't run); restore the GPU
             # peers.
             self._rskill_inflight = False
+            self._renderer.set_inflight_skill(None)
             self._reactivate_vram_peers()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
@@ -4048,7 +4150,7 @@ class ReasonerNode(LifecycleNode):
         # line in ## EXECUTION) and keep the heartbeat live for mid-run
         # reward polling (ReasonerCore's heartbeat-idle gate reads it).
         self._renderer.set_inflight_skill(
-            call.rskill_id, stamp_ns=self.get_clock().now().nanoseconds
+            call.rskill_id, stamp_ns=self.get_clock().now().nanoseconds, state="running"
         )
         # VLM-adjudicated completion §2/§3 — arm the reasoner-side backstop at the resolved patience
         # (matches the goal's deadline_s sent to the runner). 0 → the runner owns

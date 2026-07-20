@@ -144,3 +144,41 @@ def test_clear_located_drops_the_sticky_grounding_and_bumps_seq() -> None:
     seq = r.seq
     r.clear_located()
     assert r.seq == seq
+
+
+# ── in-flight phase (dispatching vs running) ─────────────────────────────────
+
+
+def test_dispatching_phase_renders_loading_guidance() -> None:
+    """During send→accept (cold policy loads take tens of seconds) the LLM must
+    see that the goal is being accepted/loading — it used to read an unchanged
+    snapshot and escalate "task is blocked" to the operator mid-load."""
+    r = ContextRenderer()
+    r.set_inflight_skill("openral/rskill-vla", stamp_ns=5, state="dispatching")
+    assert r.inflight_state == "dispatching"
+    rendered = r.render(world_state=None)
+    assert "state=dispatching" in rendered
+    assert "loading its policy" in rendered
+    assert "do not escalate to the operator" in rendered
+
+
+def test_dispatch_to_running_transition_bumps_seq_once() -> None:
+    r = ContextRenderer()
+    r.set_inflight_skill("openral/rskill-vla", stamp_ns=5, state="dispatching")
+    seq = r.seq
+    r.set_inflight_skill("openral/rskill-vla", stamp_ns=5, state="running")
+    assert r.seq == seq + 1
+    assert r.inflight_state == "running"
+    assert "state=running" in r.render(world_state=None)
+    # Re-asserting the same phase is a no-op.
+    seq = r.seq
+    r.set_inflight_skill("openral/rskill-vla", stamp_ns=5, state="running")
+    assert r.seq == seq
+
+
+def test_inflight_state_none_when_idle() -> None:
+    r = ContextRenderer()
+    assert r.inflight_state is None
+    r.set_inflight_skill("x", stamp_ns=1, state="dispatching")
+    r.set_inflight_skill(None)
+    assert r.inflight_state is None
