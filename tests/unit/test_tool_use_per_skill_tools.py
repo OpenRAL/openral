@@ -167,6 +167,7 @@ def test_empty_palette_omits_execute_skill_entirely() -> None:
     # The always-present scaffold: three plumbing tools plus the (#123)
     # decompose_mission ledger editor (a core S2 capability, no resident-resource dep).
     assert names == {
+        "wait",
         "reload_gst_pipeline",
         "lifecycle_transition",
         "emit_prompt",

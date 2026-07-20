@@ -11,8 +11,8 @@ The reasoner:
 
 * Holds **no** authority over actuation (never publishes
   ``ActionChunk``).
-* Picks exactly one of four typed tool calls per tick.
-* Enforces a bounded retry counter per failure kind to prevent storms.
+* Picks exactly one typed :data:`~openral_core.ReasonerToolCall` per tick.
+* Enforces a bounded retry counter per identical call to prevent storms.
 """
 
 from __future__ import annotations
@@ -52,6 +52,18 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
         span.set_attribute(semconv.REASONER_MISSION_JSON, json.dumps(mission.to_summary()))
 
 
+def _call_identity(call: ReasonerToolCall) -> str:
+    """Canonical identity of a tool call for the retry-cap streak.
+
+    The full argument payload minus ``rationale`` (the model rephrases its
+    rationale freely between identical retries, so including it would let a
+    genuine loop dodge the cap), JSON-serialised with sorted keys so the
+    identity is byte-stable.
+    """
+    payload = {k: v for k, v in call.model_dump(mode="json").items() if k != "rationale"}
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReasonerTickResult:
     """Outcome of a single :meth:`ReasonerCore.tick` invocation.
@@ -66,7 +78,8 @@ class ReasonerTickResult:
         suppressed_reason: When ``tool_call is None and error is None``,
             a short string explaining why the tick was suppressed
             (e.g. ``"min_interval"``, ``"retry_cap"``,
-            ``"palette_empty"``, ``"heartbeat_idle"``).
+            ``"retry_cap_hold"``, ``"palette_empty"``,
+            ``"heartbeat_idle"``).
     """
 
     tool_call: ReasonerToolCall | None
@@ -98,9 +111,15 @@ class ReasonerCore:
         min_interval_s: Hard lower bound between consecutive ticks, in
             seconds. Mandated as 100 ms (0.1 s).
         retry_cap_per_kind: Maximum number of consecutive ticks the
-            reasoner may select the same tool kind before being
-            suppressed by ``retry_cap`` for one tick. Defaults to 3 —
-            matches the replanning ladder guidance in CLAUDE.md §7.6.
+            reasoner may select the **identical tool call** (same tool +
+            same arguments, ``rationale`` excluded) before being
+            suppressed by ``retry_cap``. Defaults to 3 — matches the
+            replanning ladder guidance in CLAUDE.md §7.6. Keying on the
+            full call identity (rather than the bare tool kind) means a
+            healthy sequence of *different* skills — navigate → pick →
+            place, all ``execute_rskill`` — never trips the cap, while a
+            genuine loop re-issuing the same call against unchanged
+            context still does.
         system_prompt: Override the
             :data:`~openral_reasoner.tool_use.DEFAULT_SYSTEM_PROMPT`.
             ``None`` keeps the default.
@@ -137,7 +156,18 @@ class ReasonerCore:
         self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self._clock = clock
         self._last_tick_s: float = -float("inf")
-        self._kind_streak: tuple[str, int] = ("", 0)
+        # (tool kind, call identity JSON, consecutive count). Identity is
+        # the call's full argument payload minus ``rationale`` — see
+        # ``retry_cap_per_kind`` in the class docstring.
+        self._call_streak: tuple[str, str, int] = ("", "", 0)
+        # ``renderer.seq`` at the moment of the last ``retry_cap``
+        # suppression, or ``None``. While the context has not moved past
+        # that seq, a non-forced tick is held *before* the LLM call
+        # (``retry_cap_hold``) — the model would see byte-identical context
+        # and re-emit the same capped call, so the call is pure waste. The
+        # node's reflection feedback (and any real event) bumps ``seq`` and
+        # releases the hold.
+        self._retry_cap_hold_seq: int | None = None
         self._tick_idx: int = 0
         # Tracks ``ContextRenderer.seq`` at the time of the last
         # successful (or non-idle-suppressed) tick. A heartbeat tick
@@ -147,20 +177,31 @@ class ReasonerCore:
         # the same (or no) tool call.
         self._last_seen_seq: int = -1
 
+    @property
+    def retry_cap(self) -> int:
+        """The configured consecutive-identical-call cap (read-only)."""
+        return self._retry_cap
+
+    @property
+    def streak_tool(self) -> str:
+        """Tool kind of the current consecutive-call streak (``""`` when none)."""
+        return self._call_streak[0]
+
     def reset_kind_streak(self) -> None:
-        """Reset the consecutive-tool counter used by the retry-cap gate.
+        """Reset the consecutive-call counter used by the retry-cap gate.
 
         Called by the reasoner_node whenever the situation changes
-        materially (new operator prompt, palette refresh, etc.). The
-        retry-cap exists to prevent the model from looping on the same
+        materially (new operator prompt, mission advance, decompose, etc.).
+        The retry-cap exists to prevent the model from looping on the same
         failure mode against a static context; once the context shifts
         (e.g. an operator types a new task), the previous streak
         carries no information and would otherwise silently swallow
-        the next tool call.
+        the next tool call. Also releases the pre-call ``retry_cap_hold``.
         """
-        self._kind_streak = ("", 0)
+        self._call_streak = ("", "", 0)
+        self._retry_cap_hold_seq = None
 
-    def tick(
+    def tick(  # noqa: PLR0911, PLR0915  # reason: one return per suppression gate — the linear gate ladder (min_interval / retry_cap_hold / heartbeat_idle / palette_empty / error / retry_cap / success) reads best flat
         self,
         *,
         world_state: WorldState | None,
@@ -206,14 +247,37 @@ class ReasonerCore:
                 elapsed_s=0.0,
                 suppressed_reason="min_interval",
             )
+        # retry-cap hold — gate BEFORE the LLM call (and the OTel span).
+        # After a ``retry_cap`` suppression the model would see the same
+        # context and re-emit the same capped call, so paying for the LLM
+        # round-trip just to discard the result is pure waste. Held until
+        # the context moves past the seq the cap fired at (the node's
+        # reflection feedback bumps it) or a reset/forced tick.
+        if (
+            not force
+            and self._retry_cap_hold_seq is not None
+            and renderer.seq == self._retry_cap_hold_seq
+        ):
+            self._last_tick_s = started
+            return ReasonerTickResult(
+                tool_call=None,
+                error=None,
+                elapsed_s=0.0,
+                suppressed_reason="retry_cap_hold",
+            )
         # heartbeat-idle gate — gate
         # BEFORE the OTel span for the same reason. A non-forced tick
         # whose ContextRenderer has not received any new failure /
         # perception / prompt event since the last tick is suppressed:
         # the LLM would see byte-identical context and the call is
         # wasted. Forced ticks (event preemption) bypass this gate by
-        # the ``force`` flag itself.
-        if not force and renderer.seq == self._last_seen_seq:
+        # the ``force`` flag itself. Exception: while a skill is IN
+        # FLIGHT the heartbeat stays live even on an unchanged seq —
+        # the tick is the reasoner's only opportunity to poll
+        # ``query_task_progress`` mid-execution (the system prompt
+        # instructs exactly that), and "nothing new arrived" is not
+        # the same as "nothing to supervise".
+        if not force and renderer.seq == self._last_seen_seq and renderer.inflight_skill is None:
             self._last_tick_s = started
             return ReasonerTickResult(
                 tool_call=None,
@@ -281,14 +345,18 @@ class ReasonerCore:
                     error=exc,
                     elapsed_s=self._clock() - started,
                 )
-            # retry-cap ("bounded retry counter per failure kind")
-            prev_kind, streak = self._kind_streak
-            if call.tool == prev_kind:
-                streak += 1
-            else:
-                streak = 1
+            # retry-cap ("bounded retry counter per failure kind") — keyed
+            # on the full call identity (tool + args minus rationale), so
+            # only a *verbatim* repeat accumulates; a different skill /
+            # different params is progress, not a retry.
+            identity = _call_identity(call)
+            _prev_tool, prev_identity, streak = self._call_streak
+            streak = streak + 1 if identity == prev_identity else 1
+            self._call_streak = (call.tool, identity, streak)
             if streak > self._retry_cap:
-                self._kind_streak = (call.tool, streak)
+                # Arm the pre-call hold at the seq this cap fired against so
+                # subsequent unchanged-context ticks skip the LLM entirely.
+                self._retry_cap_hold_seq = renderer.seq
                 self._last_tick_s = started
                 self._last_seen_seq = renderer.seq
                 span.set_attribute(semconv.REASONER_TOOL, call.tool)
@@ -299,7 +367,7 @@ class ReasonerCore:
                     elapsed_s=self._clock() - started,
                     suppressed_reason="retry_cap",
                 )
-            self._kind_streak = (call.tool, streak)
+            self._retry_cap_hold_seq = None
             self._last_tick_s = started
             self._last_seen_seq = renderer.seq
             span.set_attribute(semconv.REASONER_TOOL, call.tool)

@@ -186,12 +186,17 @@ _AFFIRMATIVES: tuple[str, ...] = ("yes", "complete", "done", "success", "finishe
 def parse_yes_no(answer: str) -> bool:
     """Parse a VLM yes/no answer to a boolean.
 
-    Returns ``True`` iff the answer contains a clear affirmative
+    Returns ``True`` iff the answer contains a clear affirmative token
     (``"yes"``, ``"complete"``, ``"done"``, ``"success"``, or
-    ``"finished"``) without an obvious negation prefix (``"no"`` /
-    ``"not"`` / ``"cannot"`` / ``"isn't"`` / ``"wasn't"`` / ``"hasn't"``
-    / ``"haven't"`` / ``"doesn't"``).  Returns ``False`` on any ambiguous
+    ``"finished"``) without an obvious negation (``"no"`` / ``"not"`` /
+    ``"cannot"`` / ``"isn't"`` / …).  Returns ``False`` on any ambiguous
     or empty input — the default is *not complete* (never a false positive).
+
+    Matching is **token-based over punctuation-normalised text**: substring
+    matching produced false completions on exactly the answers that matter
+    (``"No. It is done."`` — the ``"No."`` never matched the space-delimited
+    negation; ``"The task was abandoned"`` — ``"abandoned"`` contains
+    ``"done"``).
 
     Args:
         answer: Raw text returned by the VLM.
@@ -204,6 +209,10 @@ def parse_yes_no(answer: str) -> bool:
         True
         >>> parse_yes_no("No, the cup is still on the table.")
         False
+        >>> parse_yes_no("No. It is done.")
+        False
+        >>> parse_yes_no("The task was abandoned.")
+        False
         >>> parse_yes_no("")
         False
         >>> parse_yes_no("Not done yet.")
@@ -214,12 +223,13 @@ def parse_yes_no(answer: str) -> bool:
     lowered = answer.strip().lower()
     if not lowered:
         return False
-    for neg in _NEGATIONS:
-        # Match at word boundary (space-prefixed or at start) to avoid
-        # triggering on "not" inside a word like "annotation".
-        if lowered == neg or lowered.startswith(neg + " ") or (" " + neg + " ") in lowered:
-            return False
-    return any(aff in lowered for aff in _AFFIRMATIVES)
+    # Normalise punctuation to spaces so "no," / "no." / "done!" tokenize
+    # cleanly; keep the apostrophe so contractions ("isn't") stay one token.
+    normalised = "".join(c if c.isalnum() or c == "'" else " " for c in lowered)
+    padded = f" {' '.join(normalised.split())} "
+    if any(f" {neg} " in padded for neg in _NEGATIONS):
+        return False
+    return any(f" {aff} " in padded for aff in _AFFIRMATIVES)
 
 
 def image_msg_to_jpeg(

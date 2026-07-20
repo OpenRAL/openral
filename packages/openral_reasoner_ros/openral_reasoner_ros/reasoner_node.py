@@ -83,6 +83,7 @@ from openral_core import (
     RobotDescription,
     RSkillManifest,
     TimeoutEvidence,
+    WaitTool,
     assert_vla_reward_fits,
     control_modes_for_representation,
     is_collective_target,
@@ -134,11 +135,21 @@ from openral_reasoner.mission import (
     TaskState,
     evaluate_task_verdict,
 )
+from openral_reasoner.node_policy import (
+    CASCADE_PROMPT_SOURCES,
+    is_cascade_source,
+    should_rebuild_mission,
+)
 from openral_reasoner.palette import (
     ToolPalette,
     build_tool_palette,
     locate_in_view_service,
     task_space_disagreement,
+)
+from openral_reasoner.persistence import (
+    ReasonerLadderState,
+    load_ladder_state,
+    save_ladder_state,
 )
 from openral_reasoner.spatial_query import SpatialMemoryQuerier, run_spatial_query_detailed
 from openral_reasoner.tool_use import (
@@ -270,12 +281,11 @@ _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change"
 
 # Reward-gated task verification (§1) — prompt frame_ids the reasoner re-publishes onto
 # /openral/prompt for its OWN cascade (advisory query responses + spatial-memory re-prompts). These
-# are not new operator goals, so they must NOT (re)build the mission queue — only a genuine
-# operator/cli/dashboard prompt does. Self-emits (frame_id == the node name) are already dropped
-# earlier in `_on_prompt`.
-_CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
-    {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
-)
+# are not new operator goals, so they must NOT (re)build the mission queue NOR reset the
+# active-search / retry-cap bounds — only a genuine operator/cli/dashboard prompt does. Self-emits
+# (frame_id == the node name) are already dropped earlier in `_on_prompt`. Single-sourced in the
+# pure `openral_reasoner.node_policy` module so it is unit-testable without rclpy.
+_CASCADE_PROMPT_SOURCES: frozenset[str] = CASCADE_PROMPT_SOURCES
 
 # Reward-gated task verification §2 / VLM-adjudicated completion amendment — reward window (s) for
 # the automatic post-skill task verification. Robometer scores a trajectory from its START, so the
@@ -672,6 +682,13 @@ class ReasonerNode(LifecycleNode):
         # most this many memory entries in the always-on `## MEMORY` block (top by importance then
         # recency; the tail stays searchable via memory_search). 0 = no cap.
         self.declare_parameter("memory_context_cap", 0)
+        # Crash-safe ladder resume — absolute path where the mission ledger +
+        # every replanning-ladder bound (subdivision offers, decompose nudges,
+        # the per-task locate budget) is snapshotted after each mutation and
+        # reloaded at configure, so a reasoner restart RESUMES the ladder
+        # instead of resetting every cap mid-mission (CLAUDE.md §1.8
+        # replayability). Empty disables persistence (previous behaviour).
+        self.declare_parameter("ladder_state_path", "")
         # Persistent spatial memory, live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -855,7 +872,27 @@ class ReasonerNode(LifecycleNode):
             self._palette = self._palette.model_copy(update={"spatial_memory_available": True})
         self._tick_timer: Any = None
         self._prompt_pub: Any = None
+        # EmitPromptTool publishers keyed by target topic (beyond the standing
+        # /openral/prompt cascade publisher), created lazily per topic.
+        self._emit_prompt_pubs: dict[str, Any] = {}
         self._failure_pub: Any = None  # /openral/failure/rskill
+        # Single-flight tick trampoline — several dispatch/verify handlers
+        # force a follow-up tick synchronously; running it *nested* inside the
+        # in-flight tick stacks blocking LLM calls on the executor thread and
+        # recurses _on_tick → _dispatch → _on_tick. The trampoline queues the
+        # strongest requested (force, tier) instead and replays it after the
+        # outer tick returns — same semantics, flat stack, one LLM call at a
+        # time.
+        self._tick_in_flight: bool = False
+        self._queued_tick: tuple[bool, str] | None = None
+        # An execute_rskill goal is being dispatched or is running (covers the
+        # send→accept window `_active_rskill_goal` cannot). Gates a second
+        # dispatch — the runner serves one goal at a time, and a forced tick
+        # mid-execution used to double-dispatch blind.
+        self._rskill_inflight: bool = False
+        # Crash-safe ladder persistence (`ladder_state_path` param): the
+        # snapshot file, or None when persistence is disabled.
+        self._ladder_state_path: pathlib.Path | None = None
         self._execute_rskill_client: Any = None  # rclpy_action.ActionClient
         # Lifecycle clients are cached per target node — one
         # ``<node>/change_state`` client per peer.
@@ -1092,6 +1129,7 @@ class ReasonerNode(LifecycleNode):
         # tools when a map is preloaded.
         self._maybe_load_spatial_memory()
         self._maybe_load_memory()
+        self._maybe_restore_ladder_state()
 
         # Single-resident-skill VRAM eviction — GPU lifecycle peers to deactivate before a VLA
         # dispatch and reactivate after (the object detector is the canonical one). Read
@@ -1169,6 +1207,15 @@ class ReasonerNode(LifecycleNode):
             self._execute_rskill_client.destroy()
             self._execute_rskill_client = None
         self._lifecycle_clients.clear()
+        self._emit_prompt_pubs.clear()
+        self._locate_in_view_clients.clear()
+        self._query_scene_client = None
+        self._query_task_progress_client = None
+        self._active_rskill_goal = None
+        self._rskill_cancel_reason = None
+        self._rskill_inflight = False
+        self._tick_in_flight = False
+        self._queued_tick = None
         self.get_logger().info("on_cleanup: state cleared")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1293,6 +1340,7 @@ class ReasonerNode(LifecycleNode):
         if mission is None:
             return
         nxt = self._renderer.advance_mission(done=True, verdict=verdict)
+        self._persist_ladder_state()
         if nxt is not None:
             if self._core is not None:
                 self._core.reset_kind_streak()
@@ -1437,12 +1485,12 @@ class ReasonerNode(LifecycleNode):
         ``openral_reasoner`` on every outbound EmitPrompt; we drop
         inputs that carry that tag.
 
-        Resets the core's consecutive-tool streak before forcing the
-        tick. The retry-cap gate exists to prevent the model from
-        looping on the same failure mode against a static context;
-        a fresh operator prompt is a new situation, so the previous
-        streak carries no information — without the reset it would
-        silently suppress the very tick this prompt triggered.
+        For a genuine external prompt (not one of the reasoner's own
+        cascade sources) this also resets the core's consecutive-call
+        streak and the active-search bounds before forcing the tick: a
+        fresh operator prompt is a new situation, so the previous streak
+        carries no information. Cascade re-prompts reset **nothing** —
+        they are responses the bounds are counting.
         """
         # frame_id is the canonical "who sent this"; the prompt_router
         # rewrites it to the source name (cli / dashboard / auto) for
@@ -1464,24 +1512,37 @@ class ReasonerNode(LifecycleNode):
         # the operator goal seeds one task so the reasoner sequences and the
         # goal survives the pull-once prompt drain. Cascade re-prompts
         # (advisory query responses, spatial-memory) are NOT new goals and must
-        # not reset the mission. The operator goal seeds one task; the
-        # `decompose-mission` playbook decomposes/repopulates the queue.
-        if source not in _CASCADE_PROMPT_SOURCES:
+        # not reset the mission — and while a mission is IN PROGRESS an
+        # external prompt only replaces it when its metadata carries
+        # `"new_goal": true` (an operator *reply* to a reasoner question must
+        # not silently discard the in-flight queue; it reaches the LLM via
+        # the PROMPTS section). Policy is pure + single-sourced in
+        # `openral_reasoner.node_policy` (unit-tested without rclpy).
+        if should_rebuild_mission(source, msg.metadata_json, self._renderer.mission):
             mission = MissionState.from_prompt(msg.text)
             if not mission.is_empty():
                 self._renderer.set_mission(mission)
                 self._subdivide_offered.clear()  # #123 — fresh goal, fresh offers
                 self._reset_task_locate_budget()  # fresh goal, fresh budget
                 self._collective_decompose_nudges.clear()  # fresh goal, fresh nudge cap
+                # Sticky open-vocab grounding from the previous goal is stale
+                # authority for a new one (objects may have been moved).
+                self._renderer.clear_located()
+                self._persist_ladder_state()
                 self.get_logger().info(
                     f"mission: {len(mission)} task(s) — active={mission.active().text[:80]!r}",
                 )
-        if self._core is not None:
-            self._core.reset_kind_streak()
-        # A fresh *operator* prompt is a new goal — reset the active-search bound.
-        # The cascade's own "spatial_memory" re-prompts must NOT reset it, or the
-        # bound never accumulates.
-        if str(getattr(msg.header, "frame_id", "") or "") != "spatial_memory":
+        # A fresh *operator* prompt is a new situation — reset the retry-cap
+        # call streak and the active-search bounds. The reasoner's own cascade
+        # re-prompts (detector / spatial_memory / reward_monitor / mission /
+        # memory / scene_vlm) must reset NEITHER: a locate-miss re-prompt that
+        # reset the search budget it had just charged could never exhaust it
+        # (the pre-fix bug: only "spatial_memory" was excluded here), and a
+        # cascade response resetting the call streak disabled the retry cap
+        # for every query loop.
+        if not is_cascade_source(source):
+            if self._core is not None:
+                self._core.reset_kind_streak()
             self._spatial_search.reset()
             self._locate_escalated.clear()
         self._on_tick(force=True, tier="D")
@@ -1600,7 +1661,66 @@ class ReasonerNode(LifecycleNode):
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
             task_progress_available=self._task_progress_available,
+            # A rebuild must not silently drop the memory tools a wired
+            # MEMORY.md enabled (the pre-fix bug: this flag was omitted, so
+            # every registry refresh removed memory_write / memory_search).
+            memory_available=self._memory_store is not None,
         )
+
+    def _persist_ladder_state(self) -> None:
+        """Snapshot the mission ledger + ladder bounds to ``ladder_state_path``.
+
+        Called after every ledger mutation (mission set/advance/subdivide,
+        attempt recorded, subdivision offered, nudge charged). Best-effort:
+        a write failure logs and never disturbs the loop. No-op when the
+        param is unset.
+        """
+        if self._ladder_state_path is None:
+            return
+        try:
+            save_ladder_state(
+                self._ladder_state_path,
+                ReasonerLadderState(
+                    mission=self._renderer.mission,
+                    subdivide_offered=set(self._subdivide_offered),
+                    collective_nudges=dict(self._collective_decompose_nudges),
+                    locate_task_id=self._task_locate_budget.task_id,
+                    locate_count=self._task_locate_budget.count,
+                ),
+            )
+        except OSError as exc:
+            self.get_logger().warning(
+                f"ladder persistence: failed to write {self._ladder_state_path}: {exc}",
+            )
+
+    def _maybe_restore_ladder_state(self) -> None:
+        """Restore a persisted mission + ladder bounds at configure (crash resume).
+
+        A missing/corrupt/finished snapshot starts fresh (logged). Restoring
+        sets the mission on the renderer — the next tick resumes on the
+        restored active task instead of idling for a new operator goal.
+        """
+        path = self.get_parameter("ladder_state_path").get_parameter_value().string_value
+        if not path:
+            return
+        self._ladder_state_path = pathlib.Path(path)
+        restored = load_ladder_state(self._ladder_state_path)
+        if restored is None:
+            self.get_logger().info(
+                f"ladder persistence: no usable snapshot at {path!r}; starting fresh",
+            )
+            return
+        self._subdivide_offered = set(restored.subdivide_offered)
+        self._collective_decompose_nudges = dict(restored.collective_nudges)
+        self._task_locate_budget.restore(restored.locate_task_id, restored.locate_count)
+        if restored.mission is not None and not restored.mission.is_empty():
+            self._renderer.set_mission(restored.mission)
+            active = restored.mission.active()
+            active_txt = active.text[:60] if active is not None else "(finished)"
+            self.get_logger().info(
+                f"ladder persistence: restored mission ({len(restored.mission)} task(s), "
+                f"active={active_txt!r})",
+            )
 
     def _maybe_load_memory(self) -> None:
         """Load the self-maintained ``MEMORY.md`` into the ``## MEMORY`` block (§3).
@@ -2105,6 +2225,11 @@ class ReasonerNode(LifecycleNode):
             detector_available=self._detector_available,
             scene_query_available=self._scene_query_available,
             task_progress_available=self._task_progress_available,
+            # Same preservation for the memory tools: `_maybe_load_memory`
+            # runs before this seed, and a rebuild omitting the flag silently
+            # dropped memory_write / memory_search in every deploy that set
+            # both `memory_md_path` and `rskill_search_paths`.
+            memory_available=self._memory_store is not None,
         )
         self._palette = new_palette
         self.get_logger().info(
@@ -2129,31 +2254,35 @@ class ReasonerNode(LifecycleNode):
         operationally important — `retry_cap` in particular used to be silent
         and left operators wondering why their prompt did nothing.
         """
-        if result.suppressed_reason in ("min_interval", "heartbeat_idle"):
+        if result.suppressed_reason in ("min_interval", "heartbeat_idle", "retry_cap_hold"):
+            # retry_cap_hold is the steady-state after a capped streak whose
+            # context has not moved (the LLM call is skipped entirely) —
+            # debug-level like the other quiet suppressions.
             self.get_logger().debug(f"tick suppressed: {result.suppressed_reason}")
         elif result.suppressed_reason == "retry_cap":
             # Warn once per streak, not every heartbeat — otherwise this
-            # floods the log while the model keeps re-picking the same tool.
+            # floods the log while the model keeps re-picking the same call.
             if not self._retry_cap_warned:
                 self._retry_cap_warned = True
-                cap = self._core._retry_cap if self._core is not None else "N"
+                cap = self._core.retry_cap if self._core is not None else "N"
                 self.get_logger().warning(
-                    f"tick suppressed: retry_cap — same tool kind {cap}+ ticks in a row. "
-                    "A new operator prompt resets the streak; otherwise it self-clears "
-                    "when the model picks a different tool. (Repeats logged at debug.)",
+                    f"tick suppressed: retry_cap — the identical tool call {cap}+ ticks in "
+                    "a row. A new operator prompt resets the streak; otherwise it "
+                    "self-clears when the model changes its call. (Repeats logged at debug.)",
                 )
                 # Reasoner playbooks §2.3 — inject a Reflexion strategy hint into context
                 # (once per streak) so the NEXT tick changes approach instead of
                 # looping. Appending bumps `seq`, so the next heartbeat runs
-                # rather than being suppressed as idle.
+                # rather than being suppressed as idle (and releases the
+                # pre-call retry_cap_hold, which holds on the capped seq).
                 if self._core is not None:
-                    tool = self._core._kind_streak[0]
+                    tool = self._core.streak_tool
                     self._renderer.append_execution(
                         ExecutionEventRecord(
                             rskill_id="(ladder)",
                             outcome="failed",
                             summary=f"retry ladder exhausted for {tool!r}",
-                            reflection=reflect_on_retry_cap(tool, self._core._retry_cap),
+                            reflection=reflect_on_retry_cap(tool, self._core.retry_cap),
                             stamp_ns=self.get_clock().now().nanoseconds,
                         )
                     )
@@ -2167,8 +2296,22 @@ class ReasonerNode(LifecycleNode):
         # one-shot latch so the next streak warns again.
         self._retry_cap_warned = False
 
+    #: Max queued-tick replays one trampoline entry will run. The caps
+    #: (retry-cap identity streak, invite/nudge bounds) terminate the
+    #: dispatch→tick ping-pong well before this; the constant is a backstop
+    #: so a future bug degrades to a logged skip, not an unbounded loop.
+    _MAX_TICK_REPLAYS: int = 4
+
     def _on_tick(self, *, force: bool = False, tier: str = "heartbeat") -> None:
-        """Run one orchestrator pass and dispatch the selected tool call.
+        """Run one orchestrator pass (single-flight, queued-replay trampoline).
+
+        Several dispatch/verify handlers force a follow-up tick synchronously
+        from *inside* a tick's own dispatch. Running it nested stacked
+        blocking LLM calls on the executor thread and recursed
+        ``_on_tick → _dispatch → _on_tick``; instead, a request that arrives
+        while a tick is in flight is coalesced (``force`` wins) and replayed
+        after the outer pass returns — same semantics, flat stack, one LLM
+        call at a time.
 
         Args:
             force: Bypasses :class:`ReasonerCore`'s ``min_interval`` and
@@ -2180,6 +2323,32 @@ class ReasonerNode(LifecycleNode):
                 with no preempting callback. Recorded on the OTel span
                 as ``reasoner.tier`` for trace-filtering.
         """
+        if self._tick_in_flight:
+            prev = self._queued_tick
+            if prev is None or (force and not prev[0]):
+                self._queued_tick = (force, tier)
+            return
+        self._tick_in_flight = True
+        try:
+            self._run_tick(force=force, tier=tier)
+            replays = 0
+            while self._queued_tick is not None:
+                queued_force, queued_tier = self._queued_tick
+                self._queued_tick = None
+                replays += 1
+                if replays > self._MAX_TICK_REPLAYS:
+                    self.get_logger().warning(
+                        f"tick trampoline: dropped a queued tick after "
+                        f"{self._MAX_TICK_REPLAYS} replays (tier={queued_tier})",
+                    )
+                    break
+                self._run_tick(force=queued_force, tier=queued_tier)
+        finally:
+            self._tick_in_flight = False
+            self._queued_tick = None
+
+    def _run_tick(self, *, force: bool, tier: str) -> None:
+        """One orchestrator pass: render context → LLM → dispatch (see :meth:`_on_tick`)."""
         # Decode the latest /openral/world_state_slow IDL message into a
         # Pydantic `WorldState` once — used both for live spatial-memory ingest
         # (below) and, when the core is ready, the LLM context. Without it the
@@ -2245,7 +2414,7 @@ class ReasonerNode(LifecycleNode):
         self._dispatched_calls.append(result.tool_call)
         self._dispatch(result.tool_call, traceparent=result.traceparent)
 
-    def _dispatch(self, call: Any, *, traceparent: str | None = None) -> None:  # noqa: PLR0911  # reason: one return per tool variant — a flat dispatch table is clearer than collapsing the isinstance branches
+    def _dispatch(self, call: Any, *, traceparent: str | None = None) -> None:  # noqa: PLR0911, PLR0912  # reason: one return/branch per tool variant — a flat dispatch table is clearer than collapsing the isinstance branches
         """Route a typed tool call onto the ROS graph.
 
         :class:`EmitPromptTool` publishes inline. :class:`ExecuteRskillTool`
@@ -2291,6 +2460,12 @@ class ReasonerNode(LifecycleNode):
         if isinstance(call, DecomposeMissionTool):
             self._dispatch_decompose_mission(call)
             return
+        if isinstance(call, WaitTool):
+            # Deliberate no-op: the LLM chose to observe. The rationale is
+            # already on the reasoner span (ReasonerCore logs it); nothing to
+            # dispatch, no state change, no re-prompt.
+            self.get_logger().debug(f"dispatch: wait — {call.rationale or 'no rationale'}")
+            return
         if isinstance(call, ReloadGstPipelineTool):
             # F6 sensor-package service IDL (e.g.
             # openral_sensor_msgs/srv/ReloadGstPipeline) is not yet on
@@ -2305,13 +2480,31 @@ class ReasonerNode(LifecycleNode):
             return
         self.get_logger().warning(f"dispatch: unhandled tool call {type(call).__name__}")
 
+    def _emit_prompt_publisher(self, target_topic: str) -> Any:
+        """The ``PromptStamped`` publisher for ``target_topic`` (cached per topic).
+
+        ``/openral/prompt`` reuses the standing cascade publisher; any other
+        topic the LLM targets gets its own publisher created on first use and
+        cached — the schema and system prompt document emit_prompt as
+        "publish onto another topic", and silently rerouting every call to
+        ``/openral/prompt`` (the pre-fix behaviour) dropped cross-topic
+        cascades on the floor while the log claimed delivery.
+        """
+        if target_topic == "/openral/prompt":
+            return self._prompt_pub
+        pub = self._emit_prompt_pubs.get(target_topic)
+        if pub is None:
+            pub = self.create_publisher(IDLPromptStamped, target_topic, _QOS_PROMPT)
+            self._emit_prompt_pubs[target_topic] = pub
+        return pub
+
     def _dispatch_emit_prompt(
         self,
         call: EmitPromptTool,
         *,
         traceparent: str | None,
     ) -> None:
-        """Publish a :class:`PromptStamped` on the target topic.
+        """Publish a :class:`PromptStamped` on ``call.target_topic``.
 
         The active OTel traceparent (captured by
         :meth:`ReasonerCore.tick` while the ``reasoner.tick`` span is
@@ -2335,7 +2528,15 @@ class ReasonerNode(LifecycleNode):
         if traceparent is not None:
             base_metadata["traceparent"] = traceparent
         msg.metadata_json = json.dumps(base_metadata, sort_keys=True)
-        self._prompt_pub.publish(msg)
+        try:
+            publisher = self._emit_prompt_publisher(call.target_topic)
+        except Exception as exc:  # reason: an invalid LLM-supplied topic must not kill the tick
+            self.get_logger().warning(
+                f"dispatch: emit_prompt target_topic={call.target_topic!r} rejected "
+                f"({type(exc).__name__}: {exc}); dropping the prompt",
+            )
+            return
+        publisher.publish(msg)
         self.get_logger().info(
             f"dispatch: emit_prompt → {call.target_topic} text={call.text!r}",
         )
@@ -2485,14 +2686,17 @@ class ReasonerNode(LifecycleNode):
             nudges = self._collective_decompose_nudges.get(active.task_id, 0)
             if nudges < self._max_collective_decompose_nudges:
                 self._collective_decompose_nudges[active.task_id] = nudges + 1
+                self._persist_ladder_state()
                 self.get_logger().info(
                     f"mission: locate budget hit on collective task {active.task_id} — "
                     f"nudging decompose ({nudges + 1}/{self._max_collective_decompose_nudges}) "
                     "instead of abandoning; resetting locate budget",
                 )
                 self._reset_task_locate_budget()
+                # The invite prompt forces its own tick when it arrives via
+                # _on_prompt — forcing one HERE raced the DDS delivery and ran
+                # the LLM against a context that did not contain the invite yet.
                 self._emit_enumeration_invite(active, traceparent=traceparent)
-                self._on_tick(force=True, tier="C")
                 return True  # skip this locate; the next tick should decompose
             self.get_logger().warning(
                 f"mission: collective task {active.task_id} could not be decomposed after "
@@ -2518,6 +2722,7 @@ class ReasonerNode(LifecycleNode):
         )
         nxt = self._renderer.advance_mission(done=False, verdict=reason)
         self._reset_task_locate_budget()
+        self._persist_ladder_state()
         if self._core is not None:
             self._core.reset_kind_streak()
         if nxt is not None:
@@ -2897,8 +3102,14 @@ class ReasonerNode(LifecycleNode):
         )
         req.task = active.text
         future = client.call_async(req)
+        # Carry BOTH the task id and text into the response guard: two tasks
+        # frequently share text after a decompose ("pick up the milk…" twice),
+        # so a text-only staleness check could apply an old verdict to the
+        # wrong task instance.
         future.add_done_callback(
-            lambda fut: self._on_mission_verify_response(active.text, fut, traceparent=traceparent),
+            lambda fut: self._on_mission_verify_response(
+                active.task_id, active.text, fut, traceparent=traceparent
+            ),
         )
         self.get_logger().info(
             f"mission verify: querying reward for active task {active.text[:60]!r} "
@@ -2906,7 +3117,7 @@ class ReasonerNode(LifecycleNode):
         )
 
     def _on_mission_verify_response(  # noqa: PLR0911, PLR0912  # reason: one return per verdict branch — a flat dispatch table is clearer than collapsing the branches
-        self, task_text: str, future: Any, *, traceparent: str | None
+        self, task_id: str, task_text: str, future: Any, *, traceparent: str | None
     ) -> None:
         """Apply the reward gate (§2): complete / abandon / retry.
 
@@ -2925,7 +3136,7 @@ class ReasonerNode(LifecycleNode):
         if mission is None:
             return
         active = mission.active()
-        if active is None or active.text != task_text:
+        if active is None or active.task_id != task_id or active.text != task_text:
             return  # the mission advanced or changed under us; stale verdict
         # VLM-adjudicated completion §1/§5 — band edges from the active reward model's calibration
         # (or the system fallback when none is wired).
@@ -3044,11 +3255,14 @@ class ReasonerNode(LifecycleNode):
                 f"mission: task {active.task_id} blocked ({verdict}); offering subdivision "
                 f"(depth {active.depth} < {DEFAULT_MAX_SUBDIVIDE_DEPTH})",
             )
+            # No inline forced tick: the invite's own arrival forces one with
+            # the invite actually present in context (see _on_prompt).
             self._emit_subdivision_invite(active, verdict, traceparent=traceparent)
-            self._on_tick(force=True, tier="C")
+            self._persist_ladder_state()
             return
         # action == "abandon" (no subdivision offer): advance with done=False.
         nxt = self._renderer.advance_mission(done=False, verdict=verdict)
+        self._persist_ladder_state()
         if nxt is not None:
             # A new active task is a fresh goal — clear the per-kind tick streak so
             # the next task isn't suppressed by `retry_cap` for re-using the same
@@ -3139,6 +3353,7 @@ class ReasonerNode(LifecycleNode):
                 )
                 return
             self._renderer.set_mission(mission)  # bump seq so the new active task wakes a tick
+            self._persist_ladder_state()
             self.get_logger().info(
                 f"decompose_mission: subdivided {call.target_task_id!r} into "
                 f"{len(call.subtasks)} subtask(s) → active {child.task_id}={child.text[:60]!r}",
@@ -3155,6 +3370,7 @@ class ReasonerNode(LifecycleNode):
                 return
             self._renderer.set_mission(new_mission)
             self._subdivide_offered.clear()
+            self._persist_ladder_state()
             self.get_logger().info(
                 f"decompose_mission: populated mission with {len(new_mission)} task(s) — "
                 f"active={new_mission.active().text[:60]!r}",
@@ -3463,8 +3679,34 @@ class ReasonerNode(LifecycleNode):
                 f"execute gate: refusing execute_rskill on collective task "
                 f"{active.task_id} ({active.text[:60]!r}) — inviting per-object decomposition",
             )
+            # No inline forced tick: the invite's own arrival forces one with
+            # the invite actually present in context (see _on_prompt).
             self._emit_enumeration_invite(active, traceparent=traceparent)
-            self._on_tick(force=True, tier="C")
+            return
+        # Busy gate: the runner serves ONE goal at a time, and a forced tick
+        # mid-execution (failure event, operator prompt) used to double-
+        # dispatch blind — silently overwriting the in-flight goal handle and
+        # orphaning the VRAM peers frozen for it. Refuse, tell the LLM why
+        # (the in_flight context line plus this feedback), and let it wait or
+        # poll instead.
+        if self._rskill_inflight:
+            inflight = self._renderer.inflight_skill or "(accepting)"
+            self.get_logger().info(
+                f"dispatch: refusing execute_rskill {call.rskill_id!r} — "
+                f"goal {inflight!r} is already in flight",
+            )
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="failed",
+                    summary=f"refused: skill {inflight} is already in flight",
+                    reflection=(
+                        "a skill goal is already running — do NOT dispatch another; "
+                        "wait for its result or poll query_task_progress."
+                    ),
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                )
+            )
             return
         assert self._execute_rskill_client is not None
         # Non-blocking single probe: ActionClient.wait_for_server
@@ -3510,6 +3752,12 @@ class ReasonerNode(LifecycleNode):
             # active task, so the per-task locate budget resets (locate cycles only
             # count toward abandonment while no skill has been dispatched).
             self._reset_task_locate_budget()
+            self._persist_ladder_state()
+
+        # Latch the busy gate for the whole send→terminal window (the
+        # accepted-goal handle alone leaves the send→accept gap unguarded).
+        # Cleared on rejection / send failure / terminal result.
+        self._rskill_inflight = True
 
         # Single-resident-skill VRAM eviction — free GPU lifecycle peers (the object detector)
         # before the policy loads, then reactivate when the skill finishes. Sequenced so the peer's
@@ -3596,7 +3844,16 @@ class ReasonerNode(LifecycleNode):
         on the graph are skipped (best-effort — the dispatch still proceeds).
         The deactivated subset is recorded for reactivation on the skill result.
         """
-        self._deactivated_vram_peers = []
+        if self._deactivated_vram_peers:
+            # Defensive: never clobber a peer set another dispatch deactivated
+            # and has not yet reactivated (the busy gate should prevent this;
+            # losing the record would leave perception peers off for good).
+            self.get_logger().warning(
+                f"vram: {len(self._deactivated_vram_peers)} peer(s) still deactivated "
+                "from a prior dispatch — keeping them tracked",
+            )
+        else:
+            self._deactivated_vram_peers = []
         futures: list[tuple[str, Any]] = []
         for peer in peers:
             future = self._change_state_async(peer, "deactivate")
@@ -3755,6 +4012,7 @@ class ReasonerNode(LifecycleNode):
             )
             # Single-resident-skill VRAM eviction — the goal never reached the runner; restore the
             # GPU peers we froze for it so perception resumes.
+            self._rskill_inflight = False
             self._reactivate_vram_peers()
             return
         if not goal_handle.accepted:
@@ -3773,14 +4031,21 @@ class ReasonerNode(LifecycleNode):
             )
             # Single-resident-skill VRAM eviction — goal rejected (skill won't run); restore the GPU
             # peers.
+            self._rskill_inflight = False
             self._reactivate_vram_peers()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
         # VLM-adjudicated completion §2 — remember the in-flight goal so a reward-watcher wake can
-        # cancel it. Cleared on the terminal result. A new dispatch overwrites a
-        # stale handle (the runner serves one goal at a time).
+        # cancel it. Cleared on the terminal result. The busy gate in
+        # _dispatch_execute_rskill prevents a second dispatch overwriting it.
         self._active_rskill_goal = (goal_handle, call, traceparent)
         self._rskill_cancel_reason = None
+        # Surface "a skill is running" to the LLM's context (the in_flight
+        # line in ## EXECUTION) and keep the heartbeat live for mid-run
+        # reward polling (ReasonerCore's heartbeat-idle gate reads it).
+        self._renderer.set_inflight_skill(
+            call.rskill_id, stamp_ns=self.get_clock().now().nanoseconds
+        )
         # VLM-adjudicated completion §2/§3 — arm the reasoner-side backstop at the resolved patience
         # (matches the goal's deadline_s sent to the runner). 0 → the runner owns
         # the ceiling (manifest latency budget); no reasoner-side timer.
@@ -3818,6 +4083,8 @@ class ReasonerNode(LifecycleNode):
         # (then clear) the cancel reason so a reward-driven cancel verifies below
         # while an operator/estop cancel stays a no-op.
         self._active_rskill_goal = None
+        self._rskill_inflight = False
+        self._renderer.set_inflight_skill(None)
         cancel_reason = self._rskill_cancel_reason
         self._rskill_cancel_reason = None
         timer = self._pending_skill_deadlines.pop(goal_id, None)
@@ -3869,14 +4136,18 @@ class ReasonerNode(LifecycleNode):
             # mission task against the reward signal before advancing.
             self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
-        # VLM-adjudicated completion §2 — a reward-driven cancel (status 5, reason "reward") is an
-        # intentional stop, not a controller fault: the reward-watcher decided
-        # the attempt was over (success/plateau/patience). Verify on the reward
-        # signal — the three-tier / VLM gate completes or advances the ladder —
-        # and skip the KIND_CONTROLLER failure path (no fault to report).
-        if status == 5 and cancel_reason == "reward":
+        # VLM-adjudicated completion §2 — a reasoner-driven cancel (status 5, reason "reward" from
+        # the reward-watcher wake, or "patience" from the patience-ceiling
+        # timer) is an intentional end-of-attempt, not a controller fault: the
+        # policy DID run, so the attempt must be verified — the three-tier /
+        # VLM gate completes or advances the ladder — and the KIND_CONTROLLER
+        # failure path is skipped (no fault to report; the patience path
+        # already emitted its KIND_TIMEOUT). Only an operator/e-stop cancel
+        # (reason None) is not an attempt.
+        if status == 5 and cancel_reason in ("reward", "patience"):
             self.get_logger().info(
-                f"execute_rskill reward-cancelled rskill_id={call.rskill_id!r} — verifying",
+                f"execute_rskill {cancel_reason}-cancelled rskill_id={call.rskill_id!r} "
+                "— verifying",
             )
             self._maybe_verify_active_mission_task(call, traceparent=traceparent)
             return
@@ -3939,6 +4210,11 @@ class ReasonerNode(LifecycleNode):
             f"execute_rskill patience ceiling patience_s={patience_s:.0f} "
             f"elapsed_s={elapsed:.3f} — emitting KIND_TIMEOUT FailureTrigger and cancelling goal",
         )
+        # A patience-expired attempt is a REAL attempt: latch the cancel
+        # reason so the canceled result runs the reward verify gate exactly
+        # like a reward-watcher stop, instead of being misread as an
+        # operator cancel and skipping verification.
+        self._rskill_cancel_reason = "patience"
         try:
             goal_handle.cancel_goal_async()
         except Exception as exc:  # reason: cancel is best-effort

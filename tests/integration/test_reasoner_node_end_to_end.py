@@ -2153,3 +2153,275 @@ def test_deploy_map_bundle_seeds_reasoner_occupancy_grid(tmp_path: Any) -> None:
             map_server.wait(timeout=5)
         except subprocess.TimeoutExpired:
             os.killpg(pgid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_emit_prompt_honours_target_topic() -> None:
+    """EmitPromptTool.target_topic routes to that topic, not always /openral/prompt.
+
+    Regression: the dispatcher used to publish every emit_prompt on the fixed
+    /openral/prompt publisher while logging the requested target — cross-topic
+    cascades were silently dropped.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    target_topic = "/openral/prompt_out/cascade_test"
+    rclpy.init()
+    on_target: list[PromptStamped] = []
+    on_default: list[PromptStamped] = []
+    target_event = threading.Event()
+    try:
+        client = FakeToolUseClient(
+            responses=[
+                EmitPromptTool(
+                    target_topic=target_topic,
+                    text="cascade payload",
+                    rationale="route to the cascade topic",
+                ),
+            ],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        sub_node = rclpy.create_node("openral_test_subscriber_target_topic")
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+
+        def cb_target(msg: PromptStamped) -> None:
+            on_target.append(msg)
+            target_event.set()
+
+        def cb_default(msg: PromptStamped) -> None:
+            if msg.header.frame_id == "openral_reasoner":
+                on_default.append(msg)
+
+        sub_node.create_subscription(PromptStamped, target_topic, cb_target, qos)
+        sub_node.create_subscription(PromptStamped, "/openral/prompt", cb_default, qos)
+
+        pub_node = rclpy.create_node("openral_test_publisher_target_topic")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(sub_node)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_test_publisher_target_topic"
+        msg.text = "pick the cube"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not target_event.is_set():
+            executor.spin_once(timeout_sec=0.1)
+        # A short grace spin so a mis-routed /openral/prompt copy would surface.
+        grace = time.monotonic() + 0.5
+        while time.monotonic() < grace:
+            executor.spin_once(timeout_sec=0.1)
+
+        executor.remove_node(reasoner)
+        executor.remove_node(sub_node)
+        sub_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert on_target, f"emit_prompt did not reach {target_topic} within 5 s"
+    assert on_target[-1].text == "cascade payload"
+    assert not on_default, "emit_prompt to another topic must not also land on /openral/prompt"
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_cascade_reprompt_does_not_reset_search_budget() -> None:
+    """A 'detector'-framed cascade re-prompt keeps the search budget accumulating.
+
+    Regression: the reset guard in _on_prompt excluded only "spatial_memory",
+    so every detector / reward_monitor / mission re-prompt reset the very
+    budget its dispatch had just charged — the locate-miss budget could never
+    exceed 1 and an undetectable object looped forever.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import WaitTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    try:
+        client = FakeToolUseClient(responses=[WaitTool() for _ in range(8)])
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        # Charge two search attempts, as a locate-miss handler would.
+        assert reasoner._spatial_search.record_attempt() is True
+        assert reasoner._spatial_search.record_attempt() is True
+        assert reasoner._spatial_search.attempts == 2
+
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        pub_node = rclpy.create_node("openral_test_publisher_cascade_budget")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+
+        def _publish(frame_id: str, text: str) -> None:
+            msg = PromptStamped()
+            msg.header.stamp = pub_node.get_clock().now().to_msg()
+            msg.header.frame_id = frame_id
+            msg.text = text
+            msg.metadata_json = "{}"
+            pub.publish(msg)
+
+        # Cascade re-prompt (detector) → budget must NOT reset.
+        _publish("detector", "locate_in_view: 'milk' is NOT visible right now.")
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(client.traces) < 1:
+            executor.spin_once(timeout_sec=0.1)
+        assert reasoner._spatial_search.attempts == 2, (
+            "a detector cascade re-prompt reset the search budget"
+        )
+
+        # Genuine operator prompt → new goal → budget resets.
+        _publish("openral_test_publisher_cascade_budget", "pick the milk")
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and len(client.traces) < 2:
+            executor.spin_once(timeout_sec=0.1)
+        assert reasoner._spatial_search.attempts == 0, (
+            "an operator prompt must reset the search budget"
+        )
+
+        executor.remove_node(reasoner)
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_ladder_state_param_persists_and_restores(tmp_path: Any) -> None:
+    """ladder_state_path — a restarted reasoner resumes the persisted mission.
+
+    Node A receives an operator goal (mission seeded + snapshotted); node B is
+    constructed fresh with the same param and must restore the mission at
+    configure instead of idling for a new goal.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import WaitTool
+    from openral_msgs.msg import PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    state_path = tmp_path / "ladder.json"
+    rclpy.init()
+    try:
+        client_a = FakeToolUseClient(responses=[WaitTool() for _ in range(8)])
+        node_a = ReasonerNode(
+            node_name="openral_reasoner_a",
+            client=client_a,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+        )
+        node_a.set_parameters(
+            [Parameter("ladder_state_path", Parameter.Type.STRING, str(state_path))]
+        )
+        node_a.trigger_configure()
+        node_a.trigger_activate()
+
+        qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        pub_node = rclpy.create_node("openral_test_publisher_ladder_state")
+        pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(node_a)
+
+        msg = PromptStamped()
+        msg.header.stamp = pub_node.get_clock().now().to_msg()
+        msg.header.frame_id = "openral_test_publisher_ladder_state"
+        msg.text = "pick the milk and put it in the basket"
+        msg.metadata_json = "{}"
+        pub.publish(msg)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and node_a.renderer.mission is None:
+            executor.spin_once(timeout_sec=0.1)
+        assert node_a.renderer.mission is not None, "operator goal did not seed a mission"
+        assert state_path.exists(), "mission seed did not persist a ladder snapshot"
+
+        executor.remove_node(node_a)
+        pub_node.destroy_node()
+        node_a.destroy_node()
+
+        # "Restart": a fresh node with the same param restores the mission.
+        client_b = FakeToolUseClient(responses=[WaitTool() for _ in range(8)])
+        node_b = ReasonerNode(
+            node_name="openral_reasoner_b",
+            client=client_b,
+            palette=ToolPalette(execute_rskill_ids=frozenset()),
+        )
+        node_b.set_parameters(
+            [Parameter("ladder_state_path", Parameter.Type.STRING, str(state_path))]
+        )
+        node_b.trigger_configure()
+        restored = node_b.renderer.mission
+        assert restored is not None, "restart did not restore the persisted mission"
+        active = restored.active()
+        assert active is not None
+        assert active.text == "pick the milk and put it in the basket"
+        node_b.destroy_node()
+    finally:
+        rclpy.shutdown()
