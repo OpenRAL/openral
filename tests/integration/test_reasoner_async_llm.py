@@ -515,3 +515,80 @@ def test_async_llm_soak_dispatch_abort_cycles() -> None:
         "the async tick loop is stalling"
     )
     assert tick_released, "single-flight tick window never released after the soak"
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_tick_llm_call_not_queued_behind_vlm_adjudication() -> None:
+    """A forced tick's select_tool starts < 1 s in, even mid-``describe_image``.
+
+    The VLM completion gate runs on its own worker: with a shared single
+    worker a Tier-A tick's LLM call queued behind an in-flight (up to
+    60 s) adjudication call — the same starvation shape #21 fixes, one
+    layer down (found in review).
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import WaitTool
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.executors import MultiThreadedExecutor
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    select_started_at: list[float] = []
+
+    def _selector(_context: str, _palette: Any) -> Any:
+        select_started_at.append(time.monotonic())
+        return WaitTool(rationale="fast selection")
+
+    rclpy.init()
+    try:
+        client = FakeToolUseClient(selector=_selector, describe_delay_s=_SLOW_LLM_S)
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset({"openral/skill-async-d"})),
+            tick_hz=5.0,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        # Minimal frame cache so _adjudicate_completion reaches describe_image
+        # (None frame time disables the freshness branch, as in the
+        # completion-adjudication thin-harness tests).
+        reasoner._latest_completion_frame = b"\xff\xd8\xff\xe0fakejpeg"
+        reasoner._latest_completion_frame_time = None
+
+        verdicts: list[bool | None] = []
+        adjudication_submitted_at = time.monotonic()
+        reasoner._adjudicate_completion_async("pick the cup", verdicts.append)
+
+        from openral_msgs.msg import PromptStamped
+
+        pub_node = rclpy.create_node("openral_test_async_pub_d")
+        prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", _prompt_qos())
+
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(reasoner)
+
+        _publish_prompt(pub_node, prompt_pub, "safety demands attention now")
+
+        deadline = time.monotonic() + _SLOW_LLM_S + 5.0
+        while time.monotonic() < deadline and not (select_started_at and verdicts):
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    assert client.describe_calls == 1, "describe_image never ran — the gate never adjudicated"
+    assert select_started_at, "forced tick's select_tool never ran"
+    tick_wait = select_started_at[0] - adjudication_submitted_at
+    assert tick_wait < 1.0, (
+        f"select_tool started {tick_wait:.2f}s after the VLM adjudication was submitted — "
+        "the tick queued behind describe_image (shared-worker priority inversion)"
+    )
+    assert verdicts == [False], (
+        f"expected the delayed canned 'no' adjudication to deliver False; got {verdicts!r}"
+    )

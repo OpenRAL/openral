@@ -924,6 +924,10 @@ class ReasonerNode(LifecycleNode):
         # single-flight semantics. Built in on_configure, torn down in
         # on_cleanup.
         self._llm_pool: ThreadPoolExecutor | None = None
+        # Separate single worker for the VLM completion gate (describe_image)
+        # so a Tier-A tick's select_tool is never queued behind an in-flight
+        # adjudication call (both can run for the full LLM timeout budget).
+        self._vlm_pool: ThreadPoolExecutor | None = None
         # Marshals worker completions back onto the executor thread: the
         # worker appends a callable and triggers the guard condition, whose
         # callback drains the inbox on the next executor spin.
@@ -1028,6 +1032,7 @@ class ReasonerNode(LifecycleNode):
         # round-trips + guard condition to marshal completions back onto the
         # executor thread.
         self._llm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-llm")
+        self._vlm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-vlm")
         self._inbox_guard = self.create_guard_condition(self._drain_executor_inbox)
 
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
@@ -1316,6 +1321,9 @@ class ReasonerNode(LifecycleNode):
         if self._llm_pool is not None:
             self._llm_pool.shutdown(wait=False, cancel_futures=True)
             self._llm_pool = None
+        if self._vlm_pool is not None:
+            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
+            self._vlm_pool = None
         if self._inbox_guard is not None:
             self.destroy_guard_condition(self._inbox_guard)
             self._inbox_guard = None
@@ -1436,9 +1444,11 @@ class ReasonerNode(LifecycleNode):
         client handle) and the network call. ``done(verdict)`` runs on the
         executor thread; it is dropped when a lifecycle transition landed
         first (generation mismatch). With no pool (pre-configure), degrades
-        to the synchronous call.
+        to the synchronous call. Runs on its OWN single worker (not the tick
+        pool) so a Tier-A tick's select_tool is never queued behind an
+        in-flight adjudication call.
         """
-        if self._llm_pool is None:
+        if self._vlm_pool is None:
             done(self._adjudicate_completion(task_text))
             return
         generation = self._llm_generation
@@ -1457,7 +1467,7 @@ class ReasonerNode(LifecycleNode):
 
             self._post_to_executor(_deliver)
 
-        self._llm_pool.submit(_worker)
+        self._vlm_pool.submit(_worker)
 
     def _complete_active_and_advance(
         self,

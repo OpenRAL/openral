@@ -51,8 +51,9 @@ is **event-driven with a slow heartbeat**:
   structured output, never free-form JSON.
 
 **Execution model (#21).** The blocking LLM round-trip (`select_tool`, and the
-VLM gate's `describe_image`) runs on a dedicated single worker thread, never on
-the rclpy executor. A tick is phased: `ReasonerCore.prepare_tick` (gates +
+VLM gate's `describe_image` — each on its own dedicated single worker, so a
+safety tick never queues behind an adjudication call) runs off the rclpy
+executor. A tick is phased: `ReasonerCore.prepare_tick` (gates +
 context render, executor thread) → `run_prepared_llm` (worker) →
 `finish_tick` (bookkeeping + dispatch, marshaled back via a guard condition).
 One worker = one outstanding LLM call; ticks requested mid-flight coalesce and
