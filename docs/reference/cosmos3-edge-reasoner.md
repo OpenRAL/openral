@@ -128,7 +128,9 @@ KV-VRAM permitting.
 ## Validation status
 
 Honesty ledger (CLAUDE.md §1.2). Validated live on an **RTX 4070 Laptop
-(8 GB, CUDA 13.0)** on 2026-07-20 — the day the Edge weights shipped.
+(8 GB, CUDA 13.0)**: 2026-07-20 (day the Edge weights shipped — pinned
+stable stack) and 2026-07-21 (vLLM `main` nightly — first working
+end-to-end tick).
 
 | Item | Status |
 |---|---|
@@ -140,28 +142,23 @@ Honesty ledger (CLAUDE.md §1.2). Validated live on an **RTX 4070 Laptop
 | Weights loadable by vLLM (diffusers subfolder layout) | ✅ **via the flattened reasoner view** (`materialize_reasoner_view`) — vLLM's loader can't follow the subfolder `weight_map`; the symlink view fixes it. |
 | `vllm serve nvidia/Cosmos3-Edge` boots on 8 GB | ✅ "Application startup complete"; ~6.4 GB resident at BF16, 8192-token KV, `--enforce-eager`. On this 8 GB card the 8192 window needs `OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` (the default 0.90 leaves only ~0.54 GiB for KV, short of the ~0.88 GiB the window needs — 0.90 suits the ≥12 GB cards Edge targets). All knobs codified in the sidecar. |
 | Reasoner prompt reaches the model | ✅ real request tokenised (7,707 tokens) and the xgrammar tool-call grammar built from the full OpenRAL palette (`execute_rskill__*`, `decompose_mission`, …). |
-| **Live `select_tool` tick end-to-end** | ❌ **blocked upstream** — the first forward pass crashes in `transformers…cosmos3_edge.get_rope_index` (`IndexError: too many indices for tensor of dimension 1`): vLLM's Transformers-multimodal backend passes a 1-D `input_ids` where the 5-day-old modeling code expects 2-D. Hits **every** request (text-only *and* vision+text). Not an OpenRAL bug. |
-| Model itself is sound | ✅ under plain `transformers.generate` on the same 4070 the reasoner loaded in 9.5 s and produced coherent physical-reasoning text at **~46 tok/s** (BF16). The blocker is purely vLLM's serving integration. |
-| Tool-call reliability vs. the deploy-sim baseline | ⬜ blocked on the upstream fix above |
+| Live `select_tool` tick end-to-end (pinned stable vLLM 0.24.0) | ❌ **blocked** — the first forward pass crashes in `transformers…cosmos3_edge.get_rope_index` (`IndexError`): vLLM's Transformers-multimodal fallback passes a 1-D `input_ids` where the modeling code expects 2-D. Hits every request. Not an OpenRAL bug. |
+| Model itself is sound | ✅ under plain `transformers.generate` on the same 4070 the reasoner loaded in 9.5 s and produced coherent physical-reasoning text at **~46 tok/s** (BF16). |
+| **Live `select_tool` tick end-to-end (vLLM `main`, 2026-07-21)** | ✅ **WORKS** — vLLM nightly (`0.23.1rc1.dev1329+g616c9bd0f`, contains the native `Cosmos3EdgeForConditionalGeneration` from [#48291](https://github.com/vllm-project/vllm/pull/48291)) + the one-line `k_norm_und_for_gen` weight-filter from still-open [#49190](https://github.com/vllm-project/vllm/pull/49190): a real `select_tool` tick through `Cosmos3ToolUseClient` returned a **validated `DecomposeMissionTool`** (correctly grounded subtask) in **1.49 s warm**; `describe_image` answered correctly in 0.65 s. The native impl also reads the diffusers layout **by repo id** — no flattened view needed on `main`. |
+| Tool-call reliability (first look) | ⚠️ 1/3 ticks validated first-shot; the misses were exactly the designed retry-ladder cases (grounding-validator rejection → `ROSReasonerInvalidPlan` feedback; one prose reply). Real reliability eval vs. the deploy-sim baseline still pending. |
+| 8 GB fit with the native impl | ✅ needs `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (now set by the sidecar) **and** `--kv-cache-dtype fp8` for the 8192-token window (flag added); ~6.75 GB resident, 15,392-token fp8 KV. |
+| Tick latency | ✅ 1.5–2 s warm per tool-call tick on the 4070 — far inside the 0.2 Hz S2 budget. |
+| Tool-call reliability vs. the deploy-sim baseline | ⬜ pending eval run (unblocked once the sidecar's pinned vLLM contains #48291) |
 | Tick latency / VRAM on Jetson Thor | ⬜ pending hardware (Q1 2027 modules) |
 
-### Reproducing the upstream blocker
+### Upstream timeline & what unblocks the pinned sidecar
 
-```
-python tools/cosmos3_reasoner_sidecar.py --port 8901      # boots to "Application startup complete"
-export OPENRAL_REASONER_LLM_PROVIDER=cosmos
-# any real reasoner tick -> HTTP 500; server log shows:
-#   transformers/models/cosmos3_edge/modeling_cosmos3_edge.py:893 in get_rope_index
-#   IndexError: too many indices for tensor of dimension 1
-```
+* **vLLM [#48291](https://github.com/vllm-project/vllm/pull/48291)** (merged 2026-07-14, **in no release** — v0.25.1 was cut 40 min after the merge without it): native Edge reasoner; bypasses the buggy fallback and loads the diffusers layout directly.
+* **vLLM [#49190](https://github.com/vllm-project/vllm/pull/49190)** (open): skips the generator-tower `k_norm_und_for_gen` tensors (without it the native loader errors on weight mapping) + video-processing fixes. The weight-filter half is required for Edge; validated here as a one-line local patch.
+* **transformers**: `cosmos3_edge` still release-less (5.14.1 lacks it); the SHA-pinned overlay remains required for config parsing on every path.
+* **Nightly caveat**: the current vLLM nightly wheel's metadata carries a self-contradictory `torchcodec` constraint on x86 Linux (resolver-breaking); it installs only with `--no-deps` over an existing 0.24.0 dep tree — fine for validation, not lockable.
 
-**When it clears.** The fix is upstream (vLLM's `get_mrope_input_positions`
-passing a 2-D `input_ids`, or the model's `get_rope_index` tolerating 1-D). Once
-a transformers release ships `cosmos3_edge`, drop the SHA overlay (see
-`_TRANSFORMERS_EDGE_SHA` in the sidecar) and re-run the tick — the rest of the
-integration (view, VRAM knobs, tool grammar, client) is already proven. Until
-then `provider=cosmos` boots a server that 500s on inference; the cloud/local
-baselines in the reasoner README remain the working default.
+**Action when a vLLM release ships #48291 + #49190**: bump `cosmos3_reasoner.in`/`.lock`, drop the Edge branch of `materialize_reasoner_view` (native impl reads the repo layout), keep the transformers overlay until a transformers release lands, and re-run the reliability eval. Until then `provider=cosmos` on the pinned stable boots but 500s on inference; the cloud/local baselines in the reasoner README remain the working default.
 
 ## Layer-boundary notes
 

@@ -42,16 +42,22 @@ matches. Verified live on an RTX 4070 (8 GB): with the view + the transformers
 overlay below, vLLM loads the reasoner (~6.4 GB resident at BF16, 8192-token KV)
 and reports "Application startup complete".
 
-KNOWN UPSTREAM BLOCKER (2026-07-20). Once loaded, the *first forward pass*
-crashes in ``transformers.models.cosmos3_edge.modeling_cosmos3_edge.get_rope_index``
-(``IndexError: too many indices for tensor of dimension 1``): vLLM's
-Transformers-multimodal backend calls the model's mRoPE ``get_rope_index`` with a
-1-D ``input_ids`` where the 5-day-old modeling code expects 2-D ``(batch, seq)``.
-This affects **every** request (text-only and vision+text), so end-to-end serving
-is blocked until the vLLM×transformers cosmos3_edge integration is fixed
-upstream. The model itself is sound: under plain ``transformers.generate`` on the
-same 4070 it produced coherent physical-reasoning text at ~46 tok/s. Full
-findings + reproduction in ``docs/reference/cosmos3-edge-reasoner.md``.
+UPSTREAM STATUS (2026-07-21). With the *pinned stable* vLLM (0.24.0, this
+lock), serving loads but the first forward pass crashes in transformers'
+``cosmos3_edge.get_rope_index`` (1-D vs 2-D ``input_ids`` — a bug in vLLM's
+Transformers-multimodal fallback path; the model itself is sound at ~46 tok/s
+under plain ``transformers.generate``). **Fixed on vLLM ``main``**: the native
+``Cosmos3EdgeForConditionalGeneration`` (vllm-project/vllm#48291, merged
+2026-07-14, in no release yet) bypasses that path, reads the diffusers
+subfolder layout by repo id (no flat view needed), and — with the one-line
+``k_norm_und_for_gen`` weight-filter from the still-open #49190 — served a
+**validated end-to-end reasoner tool call live on the 8 GB RTX 4070**
+(1.5–2 s/tick warm; ``--kv-cache-dtype fp8`` required for the 8192 window on
+8 GB). Bump this lock to the first vLLM release containing #48291 + #49190 and
+retire :func:`materialize_reasoner_view` for Edge; until then the pinned stable
+serve remains blocked and the cloud/local reasoner baselines are the working
+default. Full findings + reproduction in
+``docs/reference/cosmos3-edge-reasoner.md``.
 
 Usage::
 
@@ -250,6 +256,7 @@ def build_serve_argv(
     gpu_memory_utilization: float,
     enforce_eager: bool,
     served_model_name: str | None = None,
+    kv_cache_dtype: str = "auto",
 ) -> list[str]:
     """Build the ``vllm serve`` argv (split out for unit-testability).
 
@@ -287,6 +294,8 @@ def build_serve_argv(
         argv.append("--enforce-eager")
     if served_model_name is not None:
         argv += ["--served-model-name", served_model_name]
+    if kv_cache_dtype != "auto":
+        argv += ["--kv-cache-dtype", kv_cache_dtype]
     return argv
 
 
@@ -316,6 +325,13 @@ def main() -> int:
     )
     p.set_defaults(enforce_eager=True)
     p.add_argument(
+        "--kv-cache-dtype",
+        default="auto",
+        help="vLLM KV-cache dtype (default auto = model dtype). On an 8 GB card pass "
+        "'fp8' — halves the KV footprint; with the native Edge impl (vLLM main) the "
+        "8192-token window only fits 8 GB with fp8 KV (verified live on RTX 4070).",
+    )
+    p.add_argument(
         "--home",
         type=Path,
         default=Path(os.environ.get(_HOME_ENV, _DEFAULT_HOME)),
@@ -332,6 +348,10 @@ def main() -> int:
     # wheels, which would shadow the sidecar's pinned deps.
     env.pop("PYTHONPATH", None)
     env.pop("PYTHONHOME", None)
+    # Fragmentation fix, verified live on the 8 GB RTX 4070: without it the
+    # Edge load OOMs with ~670 MiB "reserved but unallocated". Must be set
+    # before the first CUDA allocation, which exec-ing the server guarantees.
+    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     # Download + (for the Edge diffusers layout) build the flat reasoner view
     # vLLM can load; served_name keeps the public model id stable.
@@ -347,6 +367,7 @@ def main() -> int:
         gpu_memory_utilization=args.gpu_memory_utilization,
         enforce_eager=args.enforce_eager,
         served_model_name=served_name,
+        kv_cache_dtype=args.kv_cache_dtype,
     )
     print(
         f"[cosmos3-sidecar] launching vllm serve: model={args.model} "

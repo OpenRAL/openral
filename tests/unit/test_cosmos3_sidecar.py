@@ -67,6 +67,23 @@ def test_build_serve_argv_no_enforce_eager_omits_flag() -> None:
     assert "--served-model-name" not in argv
 
 
+def test_build_serve_argv_kv_cache_dtype() -> None:
+    """auto (default) sends no flag; fp8 (the 8 GB fit) sends it."""
+    common = dict(
+        vllm_bin=Path("/venv/bin/vllm"),
+        model="/local/view",
+        host="127.0.0.1",
+        port=8901,
+        tool_call_parser="hermes",
+        max_model_len=8192,
+        gpu_memory_utilization=0.95,
+        enforce_eager=True,
+    )
+    assert "--kv-cache-dtype" not in sidecar.build_serve_argv(**common)
+    argv = sidecar.build_serve_argv(**common, kv_cache_dtype="fp8")
+    assert argv[argv.index("--kv-cache-dtype") + 1] == "fp8"
+
+
 def test_build_serve_argv_served_model_name() -> None:
     argv = sidecar.build_serve_argv(
         vllm_bin=Path("/venv/bin/vllm"),

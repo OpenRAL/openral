@@ -279,16 +279,18 @@ precision; **≥12 GB recommended** — 8 GB is the tight floor, needs
 with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
 `OPENRAL_REASONER_LLM_BASE_URL`.
 
-> ⚠️ **Live status (2026-07-20): boots but does not yet serve inference.**
-> The sidecar boots `nvidia/Cosmos3-Edge` to "startup complete" on an 8 GB
-> 4070 (validated), but the *first forward pass* hits an **upstream
-> vLLM×transformers bug** in the 5-day-old `cosmos3_edge` model
-> (`get_rope_index` `IndexError`). The model itself is sound (runs at ~46 tok/s
-> under plain `transformers`); only vLLM serving is blocked, until the
-> integration is fixed upstream. Full findings + the exact reproduction are in
-> the [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
-> cloud/local baseline above as the working reasoner today**; `cosmos` is
-> wired, tested, and ready to flip on the moment the upstream fix lands.
+> ⚠️ **Live status (2026-07-21): works end-to-end on vLLM `main`; blocked on
+> the pinned stable release.** On vLLM nightly (native Edge model from
+> [vllm#48291](https://github.com/vllm-project/vllm/pull/48291) + the one-line
+> weight-filter from open [vllm#49190](https://github.com/vllm-project/vllm/pull/49190))
+> a real reasoner tick returned a **validated typed tool call in ~1.5 s** and
+> `describe_image` answered correctly, live on an 8 GB 4070 (`--kv-cache-dtype
+> fp8` needed there). The sidecar's hash-locked stable vLLM (0.24.0) predates
+> the native model and still crashes on inference via the Transformers-fallback
+> `get_rope_index` bug — the lock is bumped the moment a vLLM release contains
+> #48291 + #49190. Full findings in the
+> [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
+> cloud/local baseline above as the working reasoner today.**
 
 ## Synopsis
 
