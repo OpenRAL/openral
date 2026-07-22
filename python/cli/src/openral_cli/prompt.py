@@ -11,7 +11,9 @@ Wire shape:
 * QoS: ``RELIABLE + VOLATILE + KEEP_LAST=10`` (matches the router's
   subscription so the message survives a one-shot publish-and-exit
   even if the router was a hair late to subscribe).
-* ``metadata_json``: ``{"source_cli": true}`` — minimal; the router
+* ``metadata_json``: ``{"source_cli": true}`` (plus ``"new_goal": true``
+  under ``--new-goal`` — the reasoner's mission-replacement escape hatch,
+  see ``openral_reasoner.node_policy.should_rebuild_mission``); the router
   appends the canonical ``source`` / ``priority`` fields.
 
 ``rclpy`` is imported lazily inside the typer command so ``openral --help``
@@ -25,7 +27,28 @@ import time
 
 import typer
 
-__all__ = ["prompt_command"]
+__all__ = ["build_prompt_metadata", "prompt_command"]
+
+
+def build_prompt_metadata(*, new_goal: bool) -> str:
+    """Build the CLI prompt's ``metadata_json`` payload.
+
+    ``"new_goal": true`` is the reasoner's mission-replacement escape hatch:
+    :func:`openral_reasoner.node_policy.should_rebuild_mission` requires it to
+    replace a STARTED mission (without it a mid-mission prompt is
+    conversational context, never a queue rebuild). The prompt-router
+    preserves inbound keys when stamping ``source`` / ``priority``.
+
+    Example:
+        >>> build_prompt_metadata(new_goal=False)
+        '{"source_cli": true}'
+        >>> build_prompt_metadata(new_goal=True)
+        '{"new_goal": true, "source_cli": true}'
+    """
+    metadata: dict[str, bool] = {"source_cli": True}
+    if new_goal:
+        metadata["new_goal"] = True
+    return json.dumps(metadata, sort_keys=True)
 
 
 def prompt_command(
@@ -48,6 +71,16 @@ def prompt_command(
             "before giving up and publishing anyway. Cold-boot deploys with stale "
             "Fast-DDS shared-memory remnants need 10-15 s; the default 5 s matches "
             "the interactive use case where the launch has been up for a while."
+        ),
+    ),
+    new_goal: bool = typer.Option(
+        False,
+        "--new-goal",
+        help=(
+            "Mark this prompt as a NEW goal that replaces the reasoner's current "
+            "mission. Without it, a prompt sent while a mission is in progress is "
+            "treated as conversational context (an answer to a reasoner question, "
+            "a hint) and does NOT rebuild the task queue."
         ),
     ),
 ) -> None:
@@ -95,7 +128,7 @@ def prompt_command(
         msg.header.stamp = node.get_clock().now().to_msg()
         msg.header.frame_id = "openral_cli_prompt"
         msg.text = text
-        msg.metadata_json = json.dumps({"source_cli": True}, sort_keys=True)
+        msg.metadata_json = build_prompt_metadata(new_goal=new_goal)
 
         # Spin until a subscriber matches so the one-shot publish is
         # not delivered into the void. 0.5 s was too tight on hosts

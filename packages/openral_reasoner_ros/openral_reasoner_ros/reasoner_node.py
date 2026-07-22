@@ -728,6 +728,11 @@ class ReasonerNode(LifecycleNode):
         # instead of resetting every cap mid-mission (CLAUDE.md §1.8
         # replayability). Empty disables persistence (previous behaviour).
         self.declare_parameter("ladder_state_path", "")
+        # Dispatch-phase watchdog ceiling (s) for the send→goal-response
+        # window (see `_dispatch_watchdog`). Generous vs. the ~1 s accept
+        # latency observed live so executor starvation (issue #21) cannot
+        # produce false wedge verdicts; <= 0 disables the watchdog.
+        self.declare_parameter("dispatch_watchdog_s", 30.0)
         # Persistent spatial memory, live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -929,6 +934,25 @@ class ReasonerNode(LifecycleNode):
         # dispatch — the runner serves one goal at a time, and a forced tick
         # mid-execution used to double-dispatch blind.
         self._rskill_inflight: bool = False
+        # Dispatch-phase watchdog: bounds the send→goal-response window the
+        # busy latch opens. rclpy futures never time out on their own, so a
+        # runner (or VRAM peer) that dies AFTER the readiness probe but before
+        # its response leaves the latch set forever — wedging all future
+        # dispatches. One-shot timer armed with the latch, cancelled when the
+        # goal response arrives (any outcome); its callback releases the latch
+        # and emits a KIND_CONTROLLER FailureTrigger so the ladder handles it.
+        self._dispatch_watchdog: Any = None  # rclpy Timer
+        # The send_goal_async future of the current dispatch (None during the
+        # peer-eviction phase / when idle). The watchdog checks .done() before
+        # declaring a wedge so a merely-starved executor (issue #21: callbacks
+        # observed ~70 s late) is not misread as a dead runner.
+        self._dispatch_send_future: Any = None
+        # rskill_id of the VLA the runner most recently ACCEPTED (and keeps
+        # warm after the goal ends). The live free-VRAM probe skips a
+        # re-dispatch of this exact skill: the resident policy's own VRAM is
+        # why free is low, and re-dispatching it needs ~0 new VRAM — probing
+        # would falsely refuse every large-VLA dispatch after the first.
+        self._resident_vla_id: str | None = None
         # monotonic() of the last operator-visible feedback WARNING (throttle).
         self._last_feedback_warn_s: float = -float("inf")
         # Crash-safe ladder persistence (`ladder_state_path` param): the
@@ -1255,6 +1279,8 @@ class ReasonerNode(LifecycleNode):
         self._active_rskill_goal = None
         self._rskill_cancel_reason = None
         self._rskill_inflight = False
+        self._cancel_dispatch_watchdog()
+        self._resident_vla_id = None
         self._tick_in_flight = False
         self._queued_tick = None
         self.get_logger().info("on_cleanup: state cleared")
@@ -3676,11 +3702,13 @@ class ReasonerNode(LifecycleNode):
            *other* processes hold right now — observed live (2026-07-20): an
            external vLLM server held 4.7 GB of an 8 GB card, molmoact2
            (declared 4.0 GB) passed the static gates and burned ~30 s in a
-           CUDA OOM abort. Skipped when ``vram_lifecycle_peers`` are
-           configured (their eviction frees VRAM the pre-eviction probe
-           cannot see — a false refusal would block a dispatch eviction
-           would have enabled), when the manifest declares no size, or when
-           free VRAM is unreadable.
+           CUDA OOM abort. Skipped when the dispatched skill is already
+           resident in the runner (``_resident_vla_id`` — its own residency
+           is why free is low; re-dispatch needs ~0 new VRAM), when
+           ``vram_lifecycle_peers`` are configured (their eviction frees VRAM
+           the pre-eviction probe cannot see — a false refusal would block a
+           dispatch eviction would have enabled), when the manifest declares
+           no size, or when free VRAM is unreadable.
         2. **Static VLA+reward pair fit** (unchanged): when a reward model is
            active and the GPU total is known, the pair must fit the card.
 
@@ -3691,7 +3719,16 @@ class ReasonerNode(LifecycleNode):
         if vla is None or vla.kind != "vla":
             return False
         vla_min_gb = vla.active_min_vram_gb()
-        if vla_min_gb is not None and vla_min_gb > 0.0 and not self._vram_lifecycle_peers:
+        if call.rskill_id == self._resident_vla_id:
+            # Re-dispatch of the skill the runner already holds warm: its own
+            # residency is why free VRAM is low, and re-running it needs ~0
+            # new VRAM — the live probe would falsely refuse every large-VLA
+            # dispatch after the first. Tier-2 (static pair fit) still applies.
+            self.get_logger().info(
+                f"dispatch: skill {call.rskill_id!r} already resident in the runner; "
+                "skipping the live free-VRAM probe",
+            )
+        elif vla_min_gb is not None and vla_min_gb > 0.0 and not self._vram_lifecycle_peers:
             free_gb = _detect_gpu_free_vram_gb()
             if 0.0 < free_gb < vla_min_gb:
                 detail = (
@@ -3859,6 +3896,17 @@ class ReasonerNode(LifecycleNode):
             stamp_ns=self.get_clock().now().nanoseconds,
             state="dispatching",
         )
+        # Arm the dispatch-phase watchdog with the latch: if neither the peer
+        # eviction nor the goal response resolves within the ceiling, the
+        # runner/peer died post-probe and nothing else would ever release the
+        # latch (the deadline timer only arms on ACCEPT).
+        self._dispatch_send_future = None
+        watchdog_s = self.get_parameter("dispatch_watchdog_s").get_parameter_value().double_value
+        if watchdog_s > 0:
+            self._dispatch_watchdog = self.create_timer(
+                watchdog_s,
+                lambda: self._on_dispatch_watchdog(call, traceparent),
+            )
 
         # Single-resident-skill VRAM eviction — free GPU lifecycle peers (the object detector)
         # before the policy loads, then reactivate when the skill finishes. Sequenced so the peer's
@@ -3922,6 +3970,9 @@ class ReasonerNode(LifecycleNode):
             goal,
             feedback_callback=lambda fb: self._on_execute_rskill_feedback(call.rskill_id, fb),
         )
+        # Visible to the dispatch watchdog: .done() distinguishes "response
+        # arrived but its callback is starved" from a genuinely dead server.
+        self._dispatch_send_future = send_future
         send_future.add_done_callback(
             lambda fut: self._on_execute_rskill_goal_response(call, sent_at, fut, traceparent),
         )
@@ -4092,6 +4143,61 @@ class ReasonerNode(LifecycleNode):
         else:
             self.get_logger().debug(line)
 
+    def _cancel_dispatch_watchdog(self) -> None:
+        """Disarm the dispatch-phase watchdog (goal response arrived / cleanup)."""
+        timer = self._dispatch_watchdog
+        self._dispatch_watchdog = None
+        self._dispatch_send_future = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+    def _on_dispatch_watchdog(
+        self,
+        call: ExecuteRskillTool,
+        traceparent: str | None,
+    ) -> None:
+        """Dispatch-phase watchdog expiry — release a wedged busy latch.
+
+        Fires only when the send→goal-response window never closed: a VRAM
+        peer's ``change_state`` future or ``send_goal_async``'s goal-response
+        future that never resolves (server died AFTER the readiness probe —
+        rclpy futures have no timeout of their own) would otherwise leave
+        ``_rskill_inflight`` latched forever, wedging every future dispatch
+        while the context tells the LLM not to dispatch. A completed-but-
+        starved response future (issue #21) is NOT a wedge — its callback is
+        already queued on this same executor and runs next.
+        """
+        send_future = self._dispatch_send_future
+        self._cancel_dispatch_watchdog()
+        if not self._rskill_inflight or self._active_rskill_goal is not None:
+            return  # dispatch resolved normally; stale timer
+        if send_future is not None and send_future.done():
+            # Response arrived; the goal-response callback is queued behind
+            # this one on the executor — let it handle accept/reject.
+            return
+        phase = "goal response" if send_future is not None else "VRAM peer eviction"
+        detail = (
+            f"dispatch watchdog: no {phase} for execute_rskill {call.rskill_id!r} "
+            "within the ceiling — the runner or a VRAM peer likely died after "
+            "the readiness probe. Releasing the busy latch."
+        )
+        self.get_logger().error(detail)
+        self._rskill_inflight = False
+        self._renderer.set_inflight_skill(None)
+        self._reactivate_vram_peers()
+        self._set_reward_task("")
+        self._publish_skill_failure(
+            kind=_KIND_CONTROLLER,
+            rskill_id=call.rskill_id,
+            evidence=ControllerEvidence(
+                controller_name=call.rskill_id,
+                state="dispatch_timeout",
+                detail=detail,
+            ),
+            traceparent=traceparent,
+        )
+
     def _on_execute_rskill_goal_response(
         self,
         call: ExecuteRskillTool,
@@ -4105,6 +4211,8 @@ class ReasonerNode(LifecycleNode):
         acceptance attaches a result-future callback and arms the
         deadline timer (if ``call.deadline_s > 0``).
         """
+        # The dispatch window is over regardless of outcome below.
+        self._cancel_dispatch_watchdog()
         try:
             goal_handle = future.result()
         except Exception as exc:  # reason: surface any rclpy error path
@@ -4149,6 +4257,15 @@ class ReasonerNode(LifecycleNode):
             self._reactivate_vram_peers()
             return
         goal_id = bytes(goal_handle.goal_id.uuid)
+        # Re-assert the busy latch: normally already True, but a goal response
+        # that arrives AFTER the dispatch watchdog released the latch (server
+        # alive yet slower than the ceiling) must re-close the gate — the goal
+        # IS running from here on.
+        self._rskill_inflight = True
+        # The runner will load (or already holds) this policy; remember it so
+        # the live free-VRAM probe never falsely refuses re-dispatching the
+        # skill whose own residency is why free VRAM is low.
+        self._resident_vla_id = call.rskill_id
         # VLM-adjudicated completion §2 — remember the in-flight goal so a reward-watcher wake can
         # cancel it. Cleared on the terminal result. The busy gate in
         # _dispatch_execute_rskill prevents a second dispatch overwriting it.

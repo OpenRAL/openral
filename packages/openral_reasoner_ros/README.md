@@ -52,8 +52,9 @@ The effect/actuation variants:
 finished, or not yet started — a pre-work resend still replaces). While
 a mission is mid-flight, a prompt is treated as *guidance* (it reaches
 the LLM via the PROMPTS context section) unless its `metadata_json`
-carries `{"new_goal": true}` — so an operator answer to a reasoner
-question can never silently discard the task queue. The reasoner's own
+carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps
+it) — so an operator answer to a reasoner question can never silently
+discard the task queue. The reasoner's own
 cascade re-prompts (`spatial_memory` / `detector` / `scene_vlm` /
 `reward_monitor` / `memory` / `mission` frame_ids) never rebuild the
 mission and never reset the search budgets or the retry-cap streak.
@@ -65,6 +66,16 @@ locate budget) is snapshotted after each mutation and restored at
 `on_configure` — a restarted reasoner resumes the mission where it
 stopped instead of resetting every cap. Empty (default) disables
 persistence.
+
+**Dispatch-phase watchdog:** `_rskill_inflight` (the one-goal-at-a-time
+busy latch) is bounded by the `dispatch_watchdog_s` ROS parameter
+(default 30 s; `<= 0` disables): if neither the VRAM-peer eviction nor
+the goal response resolves within the ceiling — a runner or peer that
+died *after* the readiness probe; rclpy futures never time out on their
+own — the watchdog releases the latch, reactivates the peers, and emits
+a `KIND_CONTROLLER` FailureTrigger (`state="dispatch_timeout"`) so the
+ladder handles it instead of every future dispatch being refused as
+busy forever.
 
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary
