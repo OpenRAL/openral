@@ -26,7 +26,7 @@ from openral_reasoner.context import (
     PerceptionEventRecord,
     PromptRecord,
 )
-from openral_reasoner.core import ReasonerCore, ReasonerTickResult
+from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
 from openral_reasoner.critic_watchdog import CriticWatchdog, CriticWatchdogGroup
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
@@ -84,6 +84,7 @@ __all__ = [
     "MissionState",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
+    "PreparedTick",
     "PromptRecord",
     "ReasonerCore",
     "ReasonerLadderState",

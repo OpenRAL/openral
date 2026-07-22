@@ -7,6 +7,7 @@ Public API:
     rskill_span             — span for Skill lifecycle (configure / activate / execute).
     inference_span          — span for one VLA chunk inference (foreground or prefetch).
     reasoner_span           — span for one ReasonerCore.tick.
+    start_reasoner_span     — non-attaching tick span for phased (async) ticks.
     safety_span             — span for one safety check.
     cli_command_span        — root span for one ``openral`` CLI invocation.
     traced                  — decorator equivalent of the above context managers.
@@ -49,6 +50,7 @@ from openral_observability.tracing import (
     reasoner_span,
     rskill_span,
     safety_span,
+    start_reasoner_span,
     traced,
 )
 
@@ -71,6 +73,7 @@ __all__ = [
     "safety_span",
     "semconv",
     "shutdown_observability",
+    "start_reasoner_span",
     "system_metrics",
     "traced",
 ]

@@ -98,6 +98,7 @@ try:
     from openral_observability import log_lifecycle_errors
     from rclpy.action import ActionServer, CancelResponse, GoalResponse
     from rclpy.action.server import ServerGoalHandle
+    from rclpy.callback_groups import ReentrantCallbackGroup
     from rclpy.executors import ExternalShutdownException
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
@@ -191,6 +192,15 @@ if _ROS2_AVAILABLE:
             self._chunks_published: int = 0
             self._estop_latched: bool = False
             self._cancel_requested: bool = False
+            # Serializes ``_execute_cb`` bodies now that the action server
+            # lives in a reentrant callback group: goals still execute one
+            # at a time (single-resident-skill invariant), only the action
+            # protocol services run concurrently.
+            # ponytail: queued goals each hold an executor thread while
+            # waiting; bounded by the reasoner's busy gate (one goal in
+            # flight) — switch to reject-when-busy in _goal_cb if external
+            # clients ever stack goals.
+            self._execute_serial = threading.Lock()
 
         # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -258,7 +268,17 @@ if _ROS2_AVAILABLE:
                 self.get_logger().error(f"ROSPublishingHAL.connect failed: {exc}")
                 return TransitionCallbackReturn.FAILURE
 
-            # ExecuteRskill action server.
+            # ExecuteRskill action server. Reentrant group so goal accept /
+            # cancel / result delivery / the estop subscription stay
+            # responsive on the MultiThreadedExecutor while a long
+            # ``_execute_cb`` (model load + rollout) is running — with the
+            # node-default mutually-exclusive group they queued behind it
+            # for up to the whole rollout, which the reasoner observed as
+            # 50–100 s goal-accept/result latency under model-load thrash
+            # (#21 deploy validation). Actual skill execution stays
+            # single-flight via ``_execute_serial`` (single-resident GPU
+            # invariant).
+            self._action_cb_group = ReentrantCallbackGroup()
             self._action_server = ActionServer(
                 self,
                 ExecuteRskill,
@@ -266,6 +286,7 @@ if _ROS2_AVAILABLE:
                 execute_callback=self._execute_cb,
                 goal_callback=self._goal_cb,
                 cancel_callback=self._cancel_cb,
+                callback_group=self._action_cb_group,
             )
 
             # /openral/estop defense in depth (CLAUDE.md §1.5). Subscribe
@@ -474,11 +495,27 @@ if _ROS2_AVAILABLE:
             resolves + caches. Resolve failures propagate to the caller's abort
             path unchanged.
             """
+            from openral_core.schemas import RSkillState
+
             req_key = (rskill_id, revision, prompt)
             if self._resident_skill is not None and self._resident_key != req_key:
                 self._evict_resident_skill()
             if self._resident_skill is not None and self._resident_key == req_key:
-                return cast("rSkillBase", self._resident_skill)
+                resident = cast("rSkillBase", self._resident_skill)
+                if resident.info.state is RSkillState.ACTIVE:
+                    return resident
+                # A key-matching resident that is no longer steppable
+                # (finalized by a lifecycle deactivate / estop teardown,
+                # error from a crashed rollout) must never be handed to a
+                # new goal — its next step() would raise "must be 'active'".
+                # Evict and re-resolve fresh. Surfaced by #21's faster
+                # re-dispatch cadence; the pre-async ~76 s reaction gap
+                # masked it.
+                self.get_logger().warning(
+                    f"rskill_runner.stale_resident: {rskill_id!r} cached in state "
+                    f"'{resident.info.state.value}' — evicting and reloading"
+                )
+                self._evict_resident_skill()
             skill = self._resolve_and_check_skill(
                 rskill_id=rskill_id,
                 revision=revision,
@@ -531,7 +568,18 @@ if _ROS2_AVAILABLE:
                 self._cancel_requested = True
             return CancelResponse.ACCEPT
 
-        def _execute_cb(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0915, PLR0911  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_cb(self, goal_handle: ServerGoalHandle) -> Any:
+            """Serialize goal execution; see ``_execute_serial``.
+
+            The reentrant action-server group lets a second goal's execute
+            start while the first is still running — the lock makes it wait
+            (accept/cancel/result stay live meanwhile), so exactly one goal
+            ever touches the resident skill at a time.
+            """
+            with self._execute_serial:
+                return self._execute_locked(goal_handle)
+
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0915, PLR0911  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,

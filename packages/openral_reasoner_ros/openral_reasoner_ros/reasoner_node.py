@@ -55,6 +55,9 @@ import pathlib
 import subprocess
 import sys
 import time
+from collections import deque
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -126,7 +129,7 @@ from openral_reasoner.context import (
     render_playbooks_block,
     render_robot_self_model,
 )
-from openral_reasoner.core import ReasonerCore
+from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
@@ -911,6 +914,29 @@ class ReasonerNode(LifecycleNode):
         # time.
         self._tick_in_flight: bool = False
         self._queued_tick: tuple[bool, str] | None = None
+        # Consecutive queued-tick replays (backstop counter for the
+        # trampoline; reset whenever a tick finishes with nothing queued).
+        self._tick_replays: int = 0
+        # Async LLM phase (#21): the blocking select_tool / describe_image
+        # round-trips run on this single worker so the rclpy executor stays
+        # free for goal results, patience timers, and Tier-A preemptions.
+        # One worker = one outstanding LLM call, preserving the trampoline's
+        # single-flight semantics. Built in on_configure, torn down in
+        # on_cleanup.
+        self._llm_pool: ThreadPoolExecutor | None = None
+        # Separate single worker for the VLM completion gate (describe_image)
+        # so a Tier-A tick's select_tool is never queued behind an in-flight
+        # adjudication call (both can run for the full LLM timeout budget).
+        self._vlm_pool: ThreadPoolExecutor | None = None
+        # Marshals worker completions back onto the executor thread: the
+        # worker appends a callable and triggers the guard condition, whose
+        # callback drains the inbox on the next executor spin.
+        self._executor_inbox: deque[Callable[[], None]] = deque()
+        self._inbox_guard: Any = None
+        # Bumped on deactivate/cleanup so an LLM round-trip that lands after
+        # a lifecycle transition is dropped instead of dispatching onto a
+        # stopped node.
+        self._llm_generation: int = 0
         # An execute_rskill goal is being dispatched or is running (covers the
         # send→accept window `_active_rskill_goal` cannot). Gates a second
         # dispatch — the runner serves one goal at a time, and a forced tick
@@ -1001,6 +1027,13 @@ class ReasonerNode(LifecycleNode):
         # VLM-adjudicated completion §5 — hold the client on the node so the VLM adjudication gate
         # can call describe_image without reaching into ReasonerCore internals.
         self._tool_use_client = client
+
+        # Async LLM phase (#21) — single worker for the blocking LLM/VLM
+        # round-trips + guard condition to marshal completions back onto the
+        # executor thread.
+        self._llm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-llm")
+        self._vlm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-vlm")
+        self._inbox_guard = self.create_guard_condition(self._drain_executor_inbox)
 
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
         # robot-context system prompt (option B) reflects the capabilities
@@ -1238,6 +1271,14 @@ class ReasonerNode(LifecycleNode):
         if self._tick_timer is not None:
             self._tick_timer.cancel()
             self._tick_timer = None
+        # Drop any in-flight async LLM round-trip: its completion callback
+        # compares generations and discards itself instead of dispatching
+        # onto a deactivated node (the pre-async design could not be
+        # mid-tick across a lifecycle transition; this preserves that).
+        self._llm_generation += 1
+        self._tick_in_flight = False
+        self._queued_tick = None
+        self._tick_replays = 0
         self.get_logger().info("on_deactivate: stopped")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1272,6 +1313,21 @@ class ReasonerNode(LifecycleNode):
         self._resident_vla_id = None
         self._tick_in_flight = False
         self._queued_tick = None
+        self._tick_replays = 0
+        # Async LLM phase (#21) teardown — a still-running worker call is not
+        # interruptible (provider SDKs have their own timeouts); shutdown
+        # without waiting and let the generation bump drop its completion.
+        self._llm_generation += 1
+        if self._llm_pool is not None:
+            self._llm_pool.shutdown(wait=False, cancel_futures=True)
+            self._llm_pool = None
+        if self._vlm_pool is not None:
+            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
+            self._vlm_pool = None
+        if self._inbox_guard is not None:
+            self.destroy_guard_condition(self._inbox_guard)
+            self._inbox_guard = None
+        self._executor_inbox.clear()
         self.get_logger().info("on_cleanup: state cleared")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1375,6 +1431,43 @@ class ReasonerNode(LifecycleNode):
             f"adjudicate_completion: answer={answer!r} → {'yes' if result else 'no'}"
         )
         return result
+
+    def _adjudicate_completion_async(
+        self, task_text: str, done: Callable[[bool | None], None]
+    ) -> None:
+        """Run :meth:`_adjudicate_completion` off-executor; deliver the verdict back (#21).
+
+        ``describe_image`` shares the LLM timeout budget (10 s cloud / 60 s
+        local) and used to run inside a service done-callback, starving the
+        executor exactly like ``select_tool``. The whole sync helper is safe
+        on the worker: it only reads immutable snapshot refs (frame bytes,
+        client handle) and the network call. ``done(verdict)`` runs on the
+        executor thread; it is dropped when a lifecycle transition landed
+        first (generation mismatch). With no pool (pre-configure), degrades
+        to the synchronous call. Runs on its OWN single worker (not the tick
+        pool) so a Tier-A tick's select_tool is never queued behind an
+        in-flight adjudication call.
+        """
+        if self._vlm_pool is None:
+            done(self._adjudicate_completion(task_text))
+            return
+        generation = self._llm_generation
+
+        def _worker() -> None:
+            try:
+                verdict = self._adjudicate_completion(task_text)
+            except Exception as exc:  # reason: a worker crash must not vanish silently
+                self.get_logger().warning(f"adjudicate_completion (async) raised: {exc}")
+                verdict = None
+
+            def _deliver() -> None:
+                if generation != self._llm_generation:
+                    return  # lifecycle transitioned mid-flight — stale verdict
+                done(verdict)
+
+            self._post_to_executor(_deliver)
+
+        self._vlm_pool.submit(_worker)
 
     def _complete_active_and_advance(
         self,
@@ -2376,15 +2469,22 @@ class ReasonerNode(LifecycleNode):
     _MAX_TICK_REPLAYS: int = 4
 
     def _on_tick(self, *, force: bool = False, tier: str = "heartbeat") -> None:
-        """Run one orchestrator pass (single-flight, queued-replay trampoline).
+        """Start one orchestrator pass (single-flight, queued-replay trampoline).
 
         Several dispatch/verify handlers force a follow-up tick synchronously
         from *inside* a tick's own dispatch. Running it nested stacked
         blocking LLM calls on the executor thread and recursed
         ``_on_tick → _dispatch → _on_tick``; instead, a request that arrives
         while a tick is in flight is coalesced (``force`` wins) and replayed
-        after the outer pass returns — same semantics, flat stack, one LLM
-        call at a time.
+        after the in-flight pass finishes — same semantics, flat stack, one
+        LLM call at a time.
+
+        Since #21 the blocking LLM phase runs on a worker thread:
+        ``_tick_in_flight`` now spans prepare → worker round-trip →
+        :meth:`_finish_llm_tick`, and the executor stays free in between —
+        goal results, patience timers, and Tier-A preemptions run instead of
+        queueing behind the LLM call (their forced ticks coalesce here
+        exactly as before).
 
         Args:
             force: Bypasses :class:`ReasonerCore`'s ``min_interval`` and
@@ -2403,25 +2503,76 @@ class ReasonerNode(LifecycleNode):
             return
         self._tick_in_flight = True
         try:
-            self._run_tick(force=force, tier=tier)
-            replays = 0
-            while self._queued_tick is not None:
-                queued_force, queued_tier = self._queued_tick
-                self._queued_tick = None
-                replays += 1
-                if replays > self._MAX_TICK_REPLAYS:
-                    self.get_logger().warning(
-                        f"tick trampoline: dropped a queued tick after "
-                        f"{self._MAX_TICK_REPLAYS} replays (tier={queued_tier})",
-                    )
-                    break
-                self._run_tick(force=queued_force, tier=queued_tier)
-        finally:
+            llm_in_flight = self._start_tick(force=force, tier=tier)
+        except BaseException:
             self._tick_in_flight = False
             self._queued_tick = None
+            self._tick_replays = 0
+            raise
+        if not llm_in_flight:
+            self._release_tick_and_maybe_replay()
 
-    def _run_tick(self, *, force: bool, tier: str) -> None:
-        """One orchestrator pass: render context → LLM → dispatch (see :meth:`_on_tick`)."""
+    def _release_tick_and_maybe_replay(self) -> None:
+        """End the single-flight window; replay the coalesced queued tick, bounded.
+
+        The replay counter accumulates across *consecutive* chained replays
+        (the async analog of the old in-loop counter) and resets whenever a
+        tick finishes with nothing queued, so the ``_MAX_TICK_REPLAYS``
+        backstop still degrades a future ping-pong bug to a logged skip.
+        """
+        self._tick_in_flight = False
+        queued = self._queued_tick
+        self._queued_tick = None
+        if queued is None:
+            self._tick_replays = 0
+            return
+        self._tick_replays += 1
+        if self._tick_replays > self._MAX_TICK_REPLAYS:
+            self.get_logger().warning(
+                f"tick trampoline: dropped a queued tick after "
+                f"{self._MAX_TICK_REPLAYS} replays (tier={queued[1]})",
+            )
+            self._tick_replays = 0
+            return
+        self._on_tick(force=queued[0], tier=queued[1])
+
+    def _post_to_executor(self, fn: Callable[[], None]) -> None:
+        """Marshal ``fn`` onto the rclpy executor thread. Thread-safe.
+
+        Appends to the inbox and wakes the executor via the guard
+        condition; :meth:`_drain_executor_inbox` runs ``fn`` on the next
+        spin. After cleanup (guard destroyed) the callable is dropped —
+        the generation check in the callables makes that safe.
+        """
+        self._executor_inbox.append(fn)
+        guard = self._inbox_guard
+        if guard is not None:
+            guard.trigger()
+
+    def _drain_executor_inbox(self) -> None:
+        """Guard-condition callback: run every marshaled callable in order."""
+        while True:
+            try:
+                fn = self._executor_inbox.popleft()
+            except IndexError:
+                return
+            try:
+                fn()
+            except BaseException:
+                # Preserve crash semantics (an unexpected error still raises
+                # into the executor) but don't strand the remaining inbox.
+                if self._executor_inbox and self._inbox_guard is not None:
+                    self._inbox_guard.trigger()
+                raise
+
+    def _start_tick(self, *, force: bool, tier: str) -> bool:
+        """One orchestrator pass: render context → hand the LLM phase to the worker.
+
+        Returns ``True`` when the blocking LLM phase went to the worker
+        thread (finish + single-flight release deferred to
+        :meth:`_finish_llm_tick`); ``False`` when the tick completed
+        synchronously (suppressed by a gate, or no core yet).
+        """
         # Decode the latest /openral/world_state_slow IDL message into a
         # Pydantic `WorldState` once — used both for live spatial-memory ingest
         # (below) and, when the core is ready, the LLM context. Without it the
@@ -2447,14 +2598,73 @@ class ReasonerNode(LifecycleNode):
         self._ingest_detected_objects(world_state)
         self._emit_scene_objects_span()
         if self._core is None:
-            return
-        result = self._core.tick(
+            return False
+        prep = self._core.prepare_tick(
             world_state=world_state,
             renderer=self._renderer,
             palette=self._palette,
             force=force,
             tier=tier,
         )
+        if isinstance(prep, ReasonerTickResult):
+            # A suppression gate fired — no LLM call, finish synchronously.
+            self._handle_tick_result(prep)
+            return False
+        if self._llm_pool is None:  # unreachable: pool is built with _core in on_configure
+            raise ROSConfigError("reasoner tick with no LLM worker pool — configure first")
+        core = self._core
+        generation = self._llm_generation
+
+        def _llm_worker() -> None:
+            # Worker thread: ONLY the blocking client round-trip. Everything
+            # stateful (retry-cap, renderer drain, dispatch) is marshaled
+            # back onto the executor thread.
+            call: Any = None
+            error: BaseException | None = None
+            try:
+                call = core.run_prepared_llm(prep)
+            except Exception as exc:  # reason: marshaled to finish_tick, the single handler
+                error = exc
+            self._post_to_executor(
+                lambda: self._finish_llm_tick(prep, call=call, error=error, generation=generation)
+            )
+
+        self._llm_pool.submit(_llm_worker)
+        return True
+
+    def _finish_llm_tick(
+        self,
+        prep: PreparedTick,
+        *,
+        call: Any,
+        error: BaseException | None,
+        generation: int,
+    ) -> None:
+        """Executor-thread continuation of :meth:`_start_tick` (worker done).
+
+        Runs :meth:`ReasonerCore.finish_tick` (bookkeeping + span close),
+        handles the result exactly as the synchronous path did, then
+        releases the single-flight window and replays the coalesced queued
+        tick, if any. A round-trip that lands after deactivate/cleanup
+        (generation mismatch) is dropped — the span is closed, nothing
+        dispatches.
+        """
+        if generation != self._llm_generation or self._core is None:
+            prep.span.end()
+            self.get_logger().info("tick: dropping stale LLM result (lifecycle transitioned)")
+            return
+        try:
+            result = self._core.finish_tick(prep, call=call, error=error)
+            self._handle_tick_result(result)
+        except BaseException:
+            self._tick_in_flight = False
+            self._queued_tick = None
+            self._tick_replays = 0
+            raise
+        self._release_tick_and_maybe_replay()
+
+    def _handle_tick_result(self, result: ReasonerTickResult) -> None:
+        """Shared post-tick handling: suppression, error feedback, dispatch."""
         if result.suppressed_reason:
             self._handle_suppressed_tick(result)
             return
@@ -3191,7 +3401,7 @@ class ReasonerNode(LifecycleNode):
             f"(attempt {active.attempts})",
         )
 
-    def _on_mission_verify_response(  # noqa: PLR0911, PLR0912  # reason: one return per verdict branch — a flat dispatch table is clearer than collapsing the branches
+    def _on_mission_verify_response(
         self, task_id: str, task_text: str, future: Any, *, traceparent: str | None
     ) -> None:
         """Apply the reward gate (§2): complete / abandon / retry.
@@ -3252,39 +3462,115 @@ class ReasonerNode(LifecycleNode):
             # None (no frame / no client) is treated as "not done". The VLM is the
             # primary adjudicator here; the success head (``success_now``) is the
             # secondary corroborating cue already folded into ``verdict``.
-            verdict_vlm = self._adjudicate_completion(active.text)
-            if verdict_vlm is True:
-                self.get_logger().info(
-                    "mission verify: VLM confirmed complete "
-                    f"(progress={progress_now:.2f}, success={success_now:.2f})"
-                )
-                self._complete_active_and_advance(active, verdict, traceparent=traceparent)
-                return
-            if verdict_vlm is False:
-                self.get_logger().info(
-                    f"mission verify: VLM says not complete ({verdict}) — falling to ladder"
-                )
-            else:
-                self.get_logger().info(
-                    f"mission verify: could not adjudicate ({verdict}) — falling to ladder"
-                )
-            # Degrade to the attempts ladder. A reward stuck in the ambiguous band
-            # that the VLM cannot confirm complete must still be *bounded*: re-run
-            # the verdict with ok=False to skip tiers 1/2 and apply the attempts
-            # ladder (abandon once attempts >= max), then fall through to the
-            # retry / abandon handlers below. Without this an ambiguous-band task
-            # retries forever — never abandons, never hands off (CLAUDE.md §3
-            # bounded ladder). ``attempts`` is monotonic thanks to the subdivide
-            # guard, so this terminates.
-            action, verdict = evaluate_task_verdict(
-                ok=False,
-                progress_now=progress_now,
-                success_now=success_now,
-                success_threshold=success_threshold,
-                check_floor=check_floor,
-                attempts=active.attempts,
+            # The describe_image round-trip runs off-executor (#21); the
+            # continuation re-checks staleness before acting.
+            self._adjudicate_completion_async(
+                active.text,
+                lambda verdict_vlm: self._on_vlm_completion_verdict(
+                    task_id=task_id,
+                    task_text=task_text,
+                    verdict=verdict,
+                    verdict_vlm=verdict_vlm,
+                    progress_now=progress_now,
+                    success_now=success_now,
+                    success_threshold=success_threshold,
+                    check_floor=check_floor,
+                    traceparent=traceparent,
+                ),
             )
-            # fall through — no return; the action == "retry" / "abandon" blocks below apply
+            return
+        self._apply_mission_verdict(
+            action,
+            verdict,
+            mission=mission,
+            active=active,
+            progress_now=progress_now,
+            success_now=success_now,
+            traceparent=traceparent,
+        )
+
+    def _on_vlm_completion_verdict(
+        self,
+        *,
+        task_id: str,
+        task_text: str,
+        verdict: str,
+        verdict_vlm: bool | None,
+        progress_now: float,
+        success_now: float,
+        success_threshold: float,
+        check_floor: float,
+        traceparent: str | None,
+    ) -> None:
+        """Executor-thread continuation of the ``vlm_check`` branch (#21).
+
+        Re-fetches the active task (the mission may have advanced while the
+        VLM call was in flight — same stale-verdict guard as the verify
+        response itself), then applies the pre-async semantics: True →
+        complete; False/None → degrade to the attempts ladder.
+        """
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None or active.task_id != task_id or active.text != task_text:
+            return  # the mission advanced or changed under us; stale verdict
+        if verdict_vlm is True:
+            self.get_logger().info(
+                "mission verify: VLM confirmed complete "
+                f"(progress={progress_now:.2f}, success={success_now:.2f})"
+            )
+            self._complete_active_and_advance(active, verdict, traceparent=traceparent)
+            return
+        if verdict_vlm is False:
+            self.get_logger().info(
+                f"mission verify: VLM says not complete ({verdict}) — falling to ladder"
+            )
+        else:
+            self.get_logger().info(
+                f"mission verify: could not adjudicate ({verdict}) — falling to ladder"
+            )
+        # Degrade to the attempts ladder. A reward stuck in the ambiguous band
+        # that the VLM cannot confirm complete must still be *bounded*: re-run
+        # the verdict with ok=False to skip tiers 1/2 and apply the attempts
+        # ladder (abandon once attempts >= max). Without this an ambiguous-band
+        # task retries forever — never abandons, never hands off (CLAUDE.md §3
+        # bounded ladder). ``attempts`` is monotonic thanks to the subdivide
+        # guard, so this terminates.
+        action, verdict = evaluate_task_verdict(
+            ok=False,
+            progress_now=progress_now,
+            success_now=success_now,
+            success_threshold=success_threshold,
+            check_floor=check_floor,
+            attempts=active.attempts,
+        )
+        self._apply_mission_verdict(
+            action,
+            verdict,
+            mission=mission,
+            active=active,
+            progress_now=progress_now,
+            success_now=success_now,
+            traceparent=traceparent,
+        )
+
+    def _apply_mission_verdict(
+        self,
+        action: str,
+        verdict: str,
+        *,
+        mission: MissionState,
+        active: TaskState,
+        progress_now: float,
+        success_now: float,
+        traceparent: str | None,
+    ) -> None:
+        """Apply a resolved verify verdict: retry / complete / abandon (±subdivision).
+
+        Shared tail of :meth:`_on_mission_verify_response` and its async VLM
+        continuation :meth:`_on_vlm_completion_verdict`.
+        """
         if action == "retry":
             self.get_logger().info(f"mission verify: {verdict} — retrying active task")
             # VLM-adjudicated completion — surface the reward-plateau FAILURE to the LLM. The reward
