@@ -163,15 +163,61 @@ def test_anthropic_describe_image_sends_base64_image_and_question(
     assert text_blocks[0]["text"] == "Is the task done?"
 
 
-def test_anthropic_describe_image_reasoning_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ``content`` is empty, the ``reasoning`` field is returned instead."""
+def test_anthropic_describe_image_skips_leading_thinking_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thinking-enabled response leads with a ``thinking`` block; the text
+    answer lives in a later ``text`` block and must still be returned (the old
+    code read only ``content[0].text`` and returned ``""`` here)."""
     jpeg = _make_jpeg_bytes()
-    _install_fake_anthropic(monkeypatch, answer="", reasoning=_CANNED_REASONING)
+    captured = _install_fake_anthropic(monkeypatch, answer="")
 
+    def _create(**kwargs: object) -> SimpleNamespace:
+        captured.append(dict(kwargs))
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="hmm"),
+                SimpleNamespace(type="text", text=f"  {_CANNED_ANSWER}  "),
+            ],
+        )
+
+    import anthropic  # reason: network-boundary double per §1.11
+
+    class _FakeAnthropic:
+        def __init__(self, **_kwargs: object) -> None:
+            self.messages = SimpleNamespace(create=_create)
+
+    monkeypatch.setattr(anthropic, "Anthropic", _FakeAnthropic)
     client = AnthropicToolUseClient(model_id="claude-haiku-4-5", api_key="sk-ant-test")
     result = client.describe_image(image_jpeg=jpeg, question="Done?")
 
-    assert result == _CANNED_REASONING
+    assert result == _CANNED_ANSWER
+
+
+def test_anthropic_client_is_constructed_once_and_reused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK client is built on first use and reused across calls — a
+    per-call construction throws away the HTTP connection pool every tick."""
+    jpeg = _make_jpeg_bytes()
+    _install_fake_anthropic(monkeypatch, answer=_CANNED_ANSWER)
+
+    import anthropic  # reason: network-boundary double per §1.11
+
+    constructions = {"n": 0}
+    original = anthropic.Anthropic
+
+    class _Counting(original):  # type: ignore[misc, valid-type]  # reason: subclass the installed fake
+        def __init__(self, **kwargs: object) -> None:
+            constructions["n"] += 1
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", _Counting)
+    client = AnthropicToolUseClient(model_id="claude-haiku-4-5", api_key="sk-ant-test")
+    client.describe_image(image_jpeg=jpeg, question="Done?")
+    client.describe_image(image_jpeg=jpeg, question="Done now?")
+
+    assert constructions["n"] == 1
 
 
 # ---------------------------------------------------------------------------

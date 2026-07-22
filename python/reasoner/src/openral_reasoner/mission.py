@@ -121,6 +121,25 @@ class TaskLocateBudget:
         self._task_id = None
         self._count = 0
 
+    def restore(self, task_id: str | None, count: int) -> None:
+        """Restore a persisted counter (reasoner restart resume).
+
+        Example:
+            >>> b = TaskLocateBudget(max_attempts=3)
+            >>> b.restore("t1", 2)
+            >>> b.charge("t1")  # third cycle — still within budget
+            False
+            >>> b.charge("t1")  # fourth — exhausted
+            True
+        """
+        self._task_id = task_id
+        self._count = max(0, int(count))
+
+    @property
+    def task_id(self) -> str | None:
+        """The task the budget is currently tracking (for persistence)."""
+        return self._task_id
+
     def charge(self, task_id: str) -> bool:
         """Charge one locate cycle for ``task_id``; return ``True`` once exhausted.
 
@@ -484,6 +503,65 @@ class MissionState:
         return nxt
 
     # ── serialization / rendering ──────────────────────────────────────────────
+
+    def to_state_dict(self) -> dict[str, object]:
+        """Full round-trippable snapshot of the queue (statuses, attempts, depth).
+
+        Unlike :meth:`to_summary` (a lossy telemetry view), this carries every
+        :class:`TaskState` field so a crashed/restarted reasoner can resume the
+        mission exactly where it stopped instead of resetting every ladder
+        bound (see :mod:`openral_reasoner.persistence`).
+
+        Example:
+            >>> m = MissionState(["pick the bowl", "place the butter"])
+            >>> m.record_attempt(rskill_id="x")
+            >>> m2 = MissionState.from_state_dict(m.to_state_dict())
+            >>> [(t.task_id, t.status, t.attempts) for t in m2.tasks]
+            [('t1', 'active', 1), ('t2', 'pending', 0)]
+        """
+        return {
+            "tasks": [
+                {
+                    "task_id": t.task_id,
+                    "text": t.text,
+                    "status": t.status,
+                    "attempts": t.attempts,
+                    "last_rskill_id": t.last_rskill_id,
+                    "last_trace_id": t.last_trace_id,
+                    "last_verdict": t.last_verdict,
+                    "depth": t.depth,
+                }
+                for t in self._tasks
+            ],
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, object]) -> MissionState:
+        """Rebuild a mission from :meth:`to_state_dict` output (exact resume)."""
+        mission = cls([])
+        raw_tasks = state.get("tasks")
+        if not isinstance(raw_tasks, list):
+            raise ValueError(f"MissionState.from_state_dict: 'tasks' must be a list, got {state!r}")
+        for raw in raw_tasks:
+            if not isinstance(raw, dict):
+                raise ValueError(f"MissionState.from_state_dict: task entry not a dict: {raw!r}")
+            mission._tasks.append(
+                TaskState(
+                    task_id=str(raw["task_id"]),
+                    text=str(raw["text"]),
+                    status=raw["status"],  # validated against the Literal set below
+                    attempts=int(raw.get("attempts", 0)),
+                    last_rskill_id=raw.get("last_rskill_id"),
+                    last_trace_id=raw.get("last_trace_id"),
+                    last_verdict=raw.get("last_verdict"),
+                    depth=int(raw.get("depth", 0)),
+                )
+            )
+        valid_statuses = {"pending", "active", "verifying", "done", "abandoned"}
+        for t in mission._tasks:
+            if t.status not in valid_statuses:
+                raise ValueError(f"MissionState.from_state_dict: bad status {t.status!r}")
+        return mission
 
     def to_summary(self) -> dict[str, object]:
         """JSON-able snapshot of the queue for telemetry / the dashboard card.

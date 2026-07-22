@@ -11,7 +11,9 @@ Wire shape:
 * QoS: ``RELIABLE + VOLATILE + KEEP_LAST=10`` (matches the router's
   subscription so the message survives a one-shot publish-and-exit
   even if the router was a hair late to subscribe).
-* ``metadata_json``: ``{"source_cli": true}`` — minimal; the router
+* ``metadata_json``: ``{"source_cli": true}`` (plus ``"new_goal": true``
+  under ``--new-goal`` — the reasoner's mission-replacement escape hatch,
+  see ``openral_reasoner.node_policy.should_rebuild_mission``); the router
   appends the canonical ``source`` / ``priority`` fields.
 
 ``rclpy`` is imported lazily inside the typer command so ``openral --help``
@@ -48,6 +50,16 @@ def prompt_command(
             "before giving up and publishing anyway. Cold-boot deploys with stale "
             "Fast-DDS shared-memory remnants need 10-15 s; the default 5 s matches "
             "the interactive use case where the launch has been up for a while."
+        ),
+    ),
+    new_goal: bool = typer.Option(
+        False,
+        "--new-goal",
+        help=(
+            "Mark this prompt as a NEW goal that replaces the reasoner's current "
+            "mission. Without it, a prompt sent while a mission is in progress is "
+            "treated as conversational context (an answer to a reasoner question, "
+            "a hint) and does NOT rebuild the task queue."
         ),
     ),
 ) -> None:
@@ -95,7 +107,8 @@ def prompt_command(
         msg.header.stamp = node.get_clock().now().to_msg()
         msg.header.frame_id = "openral_cli_prompt"
         msg.text = text
-        msg.metadata_json = json.dumps({"source_cli": True}, sort_keys=True)
+        metadata = {"source_cli": True} | ({"new_goal": True} if new_goal else {})
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
 
         # Spin until a subscriber matches so the one-shot publish is
         # not delivered into the void. 0.5 s was too tight on hosts

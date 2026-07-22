@@ -26,17 +26,58 @@ Event preemption is the primary trigger:
 All preemptions are subject to the 100 ms min-interval.
 Heartbeat ticks that see no new event since the last successful tick
 are short-circuited inside `ReasonerCore` with
-`suppressed_reason="heartbeat_idle"`.
+`suppressed_reason="heartbeat_idle"` — **except while an
+`execute_rskill` goal is in flight**, when the heartbeat stays live so
+the reasoner can poll `query_task_progress` mid-execution. The retry
+cap is keyed on the **identical tool call** (same tool + same
+arguments): a healthy navigate → pick → place sequence never trips it,
+a verbatim repeat does, and after a capped streak further
+unchanged-context ticks are held *before* the LLM call
+(`suppressed_reason="retry_cap_hold"`) until new context arrives.
 
-Each tick the LLM picks one of four typed tool calls
-([`openral_core.ReasonerToolCall`](../../python/core/src/openral_core/schemas.py)):
+Each tick the LLM picks one typed tool call
+([`openral_core.ReasonerToolCall`](../../python/core/src/openral_core/schemas.py)).
+The effect/actuation variants:
 
 | Tool | Dispatch target | What's wired today |
 |---|---|---|
-| `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy_action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired) |
+| `ExecuteRskillTool` | action goal on `/openral/execute_rskill` (F1) | ✅ `rclpy_action.ActionClient` — sends a goal with `deadline_s`, streams feedback to the warning log, emits a `FailureTrigger` on `/openral/failure/rskill` with `KIND_CONTROLLER` (rejection / abort / server-unavailable) or `KIND_TIMEOUT` (deadline_s expired). One goal at a time: while a goal is in flight a second dispatch is refused with feedback and the context carries an `in_flight:` line |
 | `LifecycleTransitionTool` | service call on `<node>/change_state` | ✅ generic `lifecycle_msgs/srv/ChangeState` client — `configure` / `activate` / `deactivate` / `cleanup` only (`shutdown` reserved for the safety supervisor, CLAUDE.md §6 Layer 6) |
-| `EmitPromptTool` | publish on the target `PromptStamped` topic | ✅ one-line publish; stamps the active OTel `traceparent` into `metadata_json` |
+| `EmitPromptTool` | publish on `target_topic` | ✅ publishes on the call's `target_topic` (per-topic publisher cache; `/openral/prompt` reuses the cascade publisher); stamps the active OTel `traceparent` into `metadata_json` |
+| `WaitTool` | none (deliberate no-op) | ✅ the forced tool choice needs an explicit "observe and wait" option — logged with its rationale, no ROS traffic |
 | `ReloadGstPipelineTool` | service call on `/openral/sensors/<id>/reload_pipeline` | ⚠️ log-and-acknowledge stub — F6 sensor-package service IDL is not yet on disk (tracked in [GH-126](https://github.com/OpenRAL/openral/issues/126)) |
+
+**Mission handling on `/openral/prompt`:** a genuine operator prompt
+(re)builds the mission queue only when no mission is in progress (none,
+finished, or not yet started — a pre-work resend still replaces). While
+a mission is mid-flight, a prompt is treated as *guidance* (it reaches
+the LLM via the PROMPTS context section) unless its `metadata_json`
+carries `{"new_goal": true}` (`openral prompt --new-goal "..."` stamps
+it) — so an operator answer to a reasoner question can never silently
+discard the task queue. The reasoner's own
+cascade re-prompts (`spatial_memory` / `detector` / `scene_vlm` /
+`reward_monitor` / `memory` / `mission` frame_ids) never rebuild the
+mission and never reset the search budgets or the retry-cap streak.
+
+**Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter
+to a writable JSON path and the mission ledger + every replanning-ladder
+bound (attempts, subdivision offers, decompose nudges, the per-task
+locate budget) is snapshotted after each mutation and restored at
+`on_configure` — a restarted reasoner resumes the mission where it
+stopped instead of resetting every cap. Empty (default) disables
+persistence.
+
+**Dispatch-phase watchdog:** `_rskill_inflight` (the one-goal-at-a-time
+busy latch) is bounded by the `dispatch_watchdog_s` ROS parameter
+(default 30 s; `<= 0` disables): if neither the VRAM-peer eviction nor
+the goal response resolves within the ceiling — a runner or peer that
+died *after* the readiness probe; rclpy futures never time out on their
+own — the watchdog releases the latch, reactivates the peers, and emits
+a `KIND_CONTROLLER` FailureTrigger (`state="dispatch_timeout"`) so the
+ladder handles it instead of every future dispatch being refused as
+busy forever. The expired dispatch generation invalidates its remaining
+callbacks; a late accepted goal is canceled and cannot overwrite a newer
+dispatch.
 
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary

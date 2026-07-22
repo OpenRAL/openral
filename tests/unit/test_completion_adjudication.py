@@ -83,6 +83,15 @@ _ROS_SKIP = pytest.mark.skipif(not _HAS_ROS, reason="requires rclpy + openral_ms
         ("haven't finished", False),
         ("doesn't look done", False),
         ("incomplete", False),
+        # Punctuation-adjacent negations (the pre-fix substring matcher
+        # missed "No." / "No," and then matched an affirmative later in
+        # the sentence → false completion)
+        ("No. It is done.", False),
+        ("No, it is complete now? I disagree.", False),
+        ("no.", False),
+        # Affirmative-as-substring traps ("abandoned" contains "done")
+        ("The task was abandoned.", False),
+        ("abandoned", False),
         # Ambiguous / empty → False (default-to-not-complete)
         ("", False),
         ("   ", False),

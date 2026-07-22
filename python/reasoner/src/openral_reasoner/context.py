@@ -12,8 +12,9 @@ digest of
 * any pending operator prompts.
 
 Output is deterministic, byte-stable for a given input, and bounded in
-size — small enough for a 4k context window even when every buffer is
-full.
+size — every section is capped (rolling buffers, the memory context cap,
+the located store cap) so a long-running robot's context cannot grow
+without bound.
 """
 
 from __future__ import annotations
@@ -446,6 +447,14 @@ class ContextRenderer:
         # it. Kept as a single latest snapshot (not a buffer): the reward is a
         # current-state readout, not an event stream.
         self._reward_state: RewardStateRecord | None = None
+        # The execute_rskill goal currently running on the action server
+        # (rskill_id, dispatch stamp_ns), or None. Set/cleared by the node on
+        # goal accept / terminal result; rendered as the first ## EXECUTION
+        # line so the LLM KNOWS a skill is running (and since when) instead
+        # of double-dispatching into a busy runner. Also read by
+        # ReasonerCore's heartbeat-idle gate: while a skill is in flight the
+        # heartbeat stays live so the reasoner can poll the reward monitor.
+        self._inflight: tuple[str, int, str] | None = None
         self._failures: deque[FailureEventRecord] = deque(maxlen=buffer_size)
         self._executions: deque[ExecutionEventRecord] = deque(maxlen=buffer_size)
         self._perception: deque[PerceptionEventRecord] = deque(maxlen=buffer_size)
@@ -499,13 +508,50 @@ class ContextRenderer:
 
         The latest continuous-detector :class:`ObjectsMetadata` — 2D detections
         with stable ``det_id``s — rendered as the ``in_view[<camera>]`` line in
-        WORLD_STATE. A new perception snapshot is an **event**, so this bumps
-        :attr:`seq` to wake an otherwise-idle heartbeat. Depth-free: it grounds
-        a goal noun onto a concrete object even when the 3D ``scene_objects`` line
-        is empty (RGB-only / no lift).
+        WORLD_STATE. Depth-free: it grounds a goal noun onto a concrete object
+        even when the 3D ``scene_objects`` line is empty (RGB-only / no lift).
+
+        :attr:`seq` bumps only when the *rendered enumeration changes* (an
+        object appears, disappears, changes label, or its pixel centre moves).
+        A continuous detector republishes every frame; bumping unconditionally
+        made the heartbeat-idle gate permanently ineffective — the LLM was
+        woken every heartbeat forever just because frames kept arriving with
+        the same content.
         """
+        before = self._render_in_view()
         self._in_view = objects
-        self._seq += 1
+        if self._render_in_view() != before:
+            self._seq += 1
+
+    def set_inflight_skill(
+        self, rskill_id: str | None, *, stamp_ns: int = 0, state: str = "running"
+    ) -> None:
+        """Record (or clear) the ``execute_rskill`` goal currently in flight.
+
+        Called by the node at dispatch (``state="dispatching"`` — the goal is
+        sent but not yet accepted; policy weights may be cold-loading), on
+        goal accept (``state="running"``), and on the terminal result
+        (``None``). Surfacing the *phase* matters: during a long cold load the
+        LLM used to read an unchanged snapshot and escalate "task is blocked"
+        to the operator while the goal was in fact accepted and loading
+        (observed live, 2026-07-20). Every transition is an **event** — the
+        LLM's next decision changes materially — so a state change bumps
+        :attr:`seq`. Re-asserting the same state is a no-op.
+        """
+        new = None if rskill_id is None else (rskill_id, stamp_ns, state)
+        if new != self._inflight:
+            self._inflight = new
+            self._seq += 1
+
+    @property
+    def inflight_skill(self) -> str | None:
+        """rskill_id of the goal currently in flight on the action server, or None."""
+        return self._inflight[0] if self._inflight is not None else None
+
+    @property
+    def inflight_state(self) -> str | None:
+        """Phase of the in-flight goal (``"dispatching"`` / ``"running"``), or None."""
+        return self._inflight[2] if self._inflight is not None else None
 
     #: Max distinct labels retained in the sticky ``located`` store.
     _LOCATED_CAP = 12
@@ -555,6 +601,20 @@ class ContextRenderer:
         while len(self._located) > self._LOCATED_CAP:
             self._located.pop(next(iter(self._located)))  # evict oldest
         self._seq += 1
+
+    def clear_located(self) -> None:
+        """Drop the sticky open-vocab ``located`` store (new operator goal).
+
+        The ``located`` line is documented to the LLM as the *authoritative*
+        grounding, but its hits describe where objects were when they were
+        confirmed — a fresh operator goal (often after the robot has moved
+        things) must not inherit stale authority. Bumps :attr:`seq` when
+        anything was actually dropped.
+        """
+        if self._located:
+            self._located.clear()
+            self._located_sensor = None
+            self._seq += 1
 
     def set_reward_state(self, reward: RewardStateRecord | None) -> None:
         """Set (or clear) the latest reward assessment rendered as ``## REWARD``.
@@ -852,18 +912,33 @@ class ContextRenderer:
     def _render_executions(self) -> str:
         """Render the execution-feedback buffer; one line per outcome, oldest first.
 
+        A leading ``in_flight:`` line (when a skill is currently running) so
+        the LLM never double-dispatches into a busy runner blind. Then
         ``[ok] skill=<id>: <summary>`` for successes; failures append the
         Reflexion strategy hint: ``[failed] skill=<id>: <summary> — reflect: <hint>``.
         """
-        if not self._executions:
-            return "(none)"
         lines: list[str] = []
+        if self._inflight is not None:
+            rskill_id, stamp_ns, state = self._inflight
+            phase = (
+                "was just dispatched and is being accepted / loading its policy "
+                "(cold weight loads can take tens of seconds)"
+                if state == "dispatching"
+                else "is RUNNING right now"
+            )
+            lines.append(
+                f"in_flight: skill={rskill_id} {phase} "
+                f"(state={state}, dispatched at stamp_ns={stamp_ns}). Do not dispatch "
+                "another execute_rskill until it returns, and do not escalate to the "
+                "operator just because it has not finished; poll query_task_progress "
+                "or wait."
+            )
         for rec in self._executions:
             line = f"[{rec.outcome}] skill={rec.rskill_id or '-'}: {rec.summary}"
             if rec.reflection:
                 line += f" — reflect: {rec.reflection}"
             lines.append(line)
-        return "\n".join(lines)
+        return "\n".join(lines) if lines else "(none)"
 
     def _render_perception(self) -> str:
         """Render the perception buffer; one line per event, oldest first."""
@@ -872,7 +947,11 @@ class ContextRenderer:
         return "\n".join(f"[{rec.kind}] {rec.text}" for rec in self._perception)
 
     def _render_prompts(self) -> str:
-        """Render the pending-prompt buffer; one line per prompt, oldest first."""
+        """Render the pending-prompt buffer; one line per prompt.
+
+        The buffer is kept ordered by priority descending (then arrival
+        ascending), so high-priority operator prompts render first.
+        """
         if not self._prompts:
             return "(none)"
         return "\n".join(rec.text for rec in self._prompts)

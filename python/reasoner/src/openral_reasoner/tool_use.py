@@ -30,6 +30,7 @@ exclusively in tests.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -273,8 +274,14 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "The palette always also includes: reload_gst_pipeline (swap a "
     "sensor's GStreamer pipeline at runtime), lifecycle_transition "
     "(drive a peer ROS node through configure / activate / deactivate / "
-    "cleanup), and emit_prompt (publish a PromptStamped onto another "
-    "topic — used to message the operator or trigger a cascade). "
+    "cleanup), emit_prompt (publish a PromptStamped onto another "
+    "topic — used to message the operator or trigger a cascade), and "
+    "wait (deliberately do nothing this tick). "
+    # ── When the right action is no action ────────────────────────────
+    "When the snapshot shows a dispatched skill still in flight and "
+    "progressing normally, or the mission is finished and no new goal has "
+    "arrived, pick wait — do not invent busywork, re-query what you "
+    "already know, or message the operator without new information. "
     # ── When nothing fits ─────────────────────────────────────────────
     "If no skill tool is appropriate — the task is ambiguous, the "
     "target cannot be found, a search budget is exhausted, or you are "
@@ -745,23 +752,17 @@ _LLM_TOOL_NAME_MAX_LEN: int = 64
 
 
 def _skill_id_to_tool_name(rskill_id: str) -> str:
-    """Slugify a HF Hub skill id into a 64-char-max LLM tool name.
+    """Map a HF Hub skill id to a collision-resistant LLM tool name.
 
     HF Hub ids are ``<owner>/<repo>``; ``/`` and ``.`` are the only chars
-    outside the Anthropic / OpenAI tool-name regex in canonical ids.
-    Long ids get an 8-char sha1 suffix so the slug stays unique after
-    truncation.
+    outside the Anthropic / OpenAI tool-name regex in canonical ids. Every
+    name gets an 8-char sha1 suffix because the readable character mapping is
+    not injective (``a.b`` and ``a_b`` both slug to ``a_b``).
 
     >>> _skill_id_to_tool_name("OpenRAL/rskill-qwen35_4b-any-general-nf4")
-    'execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-nf4'
+    'execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-n_9bf15b4a'
     """
-    import hashlib  # noqa: PLC0415  # reason: stdlib, only used on the slow palette-build path
-
     slug = rskill_id.replace("/", "__").replace(".", "_")
-    candidate = f"{_PER_SKILL_TOOL_PREFIX}{slug}"
-    if len(candidate) <= _LLM_TOOL_NAME_MAX_LEN:
-        return candidate
-    # Reserve 9 chars for "_" + 8-char sha1 suffix to disambiguate post-truncation.
     h = hashlib.sha1(rskill_id.encode("utf-8")).hexdigest()[:8]
     max_slug = _LLM_TOOL_NAME_MAX_LEN - len(_PER_SKILL_TOOL_PREFIX) - 9
     return f"{_PER_SKILL_TOOL_PREFIX}{slug[:max_slug]}_{h}"
@@ -807,6 +808,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
         ExecuteRskillTool,
         LifecycleTransitionTool,
         ReloadGstPipelineTool,
+        WaitTool,
     )
 
     tools: list[dict[str, object]] = []
@@ -871,6 +873,15 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
             "emit_prompt",
             EmitPromptTool,
             "Publish a PromptStamped onto another topic for cascades / operator messaging.",
+        ),
+        (
+            "wait",
+            WaitTool,
+            "Do nothing this tick — deliberately observe and wait. Pick this when no "
+            "action is warranted right now: a dispatched skill is mid-execution and "
+            "progress is nominal, the mission is finished and no new goal has arrived, "
+            "or acting would just repeat a call whose outcome has not changed. Never "
+            "pick it to avoid a decision the snapshot clearly demands.",
         ),
     ):
         tools.append(
@@ -1073,6 +1084,36 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
     return tools
 
 
+def _tool_palette_to_openai_tools(palette: ToolPalette) -> list[dict[str, object]]:
+    """Render the palette as OpenAI ``tools`` function schemas.
+
+    Same tool surface as :func:`_tool_palette_to_anthropic_tools`, re-keyed to
+    the OpenAI wire shape: Anthropic's ``input_schema`` becomes the function's
+    ``parameters`` and MUST NOT also ride along under its original key —
+    strict endpoints 400 on the unknown field and lenient ones silently
+    double every tool schema's token cost per call.
+
+    >>> from openral_reasoner.palette import ToolPalette
+    >>> palette = ToolPalette(execute_rskill_ids=frozenset())
+    >>> specs = _tool_palette_to_openai_tools(palette)
+    >>> all(set(t["function"]) == {"name", "description", "parameters"} for t in specs)
+    True
+    """
+    tools: list[dict[str, object]] = []
+    for spec in _tool_palette_to_anthropic_tools(palette):
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "parameters": spec["input_schema"],
+                },
+            }
+        )
+    return tools
+
+
 def _drop_property(schema: dict[str, object], name: str) -> dict[str, object]:
     """Return a copy of a JSON Schema dict with ``name`` removed from properties + required."""
     out: dict[str, object] = dict(schema)
@@ -1127,7 +1168,9 @@ def _decode_tool_payload(
     resolved_name = tool_name
     resolved_args = dict(arguments)
     if tool_name.startswith(_PER_SKILL_TOOL_PREFIX) and palette.skills:
-        slug_lookup = {_skill_id_to_tool_name(s.rskill_id): s.rskill_id for s in palette.skills}
+        slug_lookup = {
+            _skill_id_to_tool_name(entry.rskill_id): entry.rskill_id for entry in palette.skills
+        }
         if tool_name not in slug_lookup:
             raise ROSReasonerInvalidPlan(
                 f"LLM returned per-skill tool {tool_name!r} but no matching skill "
@@ -1162,6 +1205,29 @@ def _decode_tool_payload(
             f"(allowed: {sorted(palette.execute_rskill_ids)!r})",
         )
     return call
+
+
+def _anthropic_response_text(response: Any) -> str:  # noqa: ANN401  # reason: provider SDK boundary — anthropic Message object, duck-typed
+    """Concatenated text of every ``text`` content block, stripped.
+
+    A thinking-enabled model leads with a ``thinking`` block, so reading only
+    ``content[0].text`` returns ``""`` on exactly the responses that carry an
+    answer later in the list — scan all blocks and keep the ``text`` ones.
+
+    >>> class _Block:
+    ...     def __init__(self, type_: str, text: str = "") -> None:
+    ...         self.type, self.text = type_, text
+    >>> class _Resp:
+    ...     content = [_Block("thinking"), _Block("text", "Yes, it is done. ")]
+    >>> _anthropic_response_text(_Resp())
+    'Yes, it is done.'
+    """
+    parts = [
+        getattr(block, "text", "") or ""
+        for block in getattr(response, "content", None) or []
+        if getattr(block, "type", None) == "text"
+    ]
+    return "\n".join(p for p in parts if p).strip()
 
 
 class AnthropicToolUseClient:
@@ -1201,6 +1267,24 @@ class AnthropicToolUseClient:
         self._api_key = api_key
         self._max_tokens = max_tokens
         self._timeout_s = timeout_s
+        # SDK client built once on first use and reused across ticks —
+        # rebuilding per call throws away the HTTP connection pool and pays
+        # a fresh TLS handshake on every reasoner tick.
+        self._sdk_client: Any = None
+
+    def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — anthropic.Anthropic, lazy-imported
+        """The cached ``anthropic.Anthropic`` instance (lazy import + construct)."""
+        if self._sdk_client is None:
+            try:
+                import anthropic  # noqa: PLC0415  # reason: optional cloud dep
+            except ImportError as exc:
+                raise ROSConfigError(
+                    "AnthropicToolUseClient requires the `anthropic` SDK; "
+                    "install with `uv add anthropic --package openral-reasoner` "
+                    "or pick OPENRAL_REASONER_LLM_PROVIDER=openai-compatible.",
+                ) from exc
+            self._sdk_client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        return self._sdk_client
 
     def select_tool(
         self,
@@ -1210,20 +1294,26 @@ class AnthropicToolUseClient:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> ReasonerToolCall:
         """Call Anthropic and decode the resulting tool payload."""
-        try:
-            import anthropic  # noqa: PLC0415  # reason: optional cloud dep
-        except ImportError as exc:
-            raise ROSConfigError(
-                "AnthropicToolUseClient requires the `anthropic` SDK; "
-                "install with `uv add anthropic --package openral-reasoner` "
-                "or pick OPENRAL_REASONER_LLM_PROVIDER=openai-compatible.",
-            ) from exc
-        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        client = self._client()
         tools = _tool_palette_to_anthropic_tools(palette)
+        # Prompt caching: the tool schemas + system brief are large and
+        # static between ticks (the palette only changes on a registry
+        # refresh); a cache breakpoint after each lets Anthropic reuse the
+        # prefix across the 0.2 Hz tick stream instead of re-ingesting it
+        # every call. Only the per-tick context_text stays uncached.
+        if tools:
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
+        system_blocks = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
         try:
-            response = client.messages.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages/tool_choice are heterogeneous TypedDicts that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
+            response = client.messages.create(
                 model=self.model_id,
-                system=system_prompt,
+                system=system_blocks,
                 max_tokens=self._max_tokens,
                 tools=tools,
                 tool_choice={"type": "any"},  # force exactly one tool call
@@ -1261,14 +1351,7 @@ class AnthropicToolUseClient:
             ROSConfigError: When the ``anthropic`` SDK is not installed.
             ROSPlanningError: On transport / provider failure.
         """
-        try:
-            import anthropic  # noqa: PLC0415  # reason: optional cloud dep
-        except ImportError as exc:
-            raise ROSConfigError(
-                "AnthropicToolUseClient requires the `anthropic` SDK; "
-                "install with `uv add anthropic --package openral-reasoner`.",
-            ) from exc
-        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        client = self._client()
         b64 = base64.b64encode(image_jpeg).decode()
         try:
             response = client.messages.create(
@@ -1293,13 +1376,7 @@ class AnthropicToolUseClient:
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"Anthropic describe_image failed: {exc!s}") from exc
-        # Extract text; fall back to reasoning field for thinking/reasoning models.
-        text: str = ""
-        if response.content:
-            text = getattr(response.content[0], "text", "") or ""
-        if not text:
-            text = getattr(response, "reasoning", "") or ""
-        return text.strip()
+        return _anthropic_response_text(response)
 
 
 class OpenAICompatibleToolUseClient:
@@ -1353,6 +1430,26 @@ class OpenAICompatibleToolUseClient:
         self._timeout_s = timeout_s
         self._tool_choice = tool_choice
         self._max_tokens = max_tokens
+        # SDK client built once on first use and reused across ticks (see
+        # AnthropicToolUseClient._client for the rationale).
+        self._sdk_client: Any = None
+
+    def _client(self) -> Any:  # noqa: ANN401  # reason: provider SDK boundary — openai.OpenAI, lazy-imported
+        """The cached ``openai.OpenAI`` instance (lazy import + construct)."""
+        if self._sdk_client is None:
+            try:
+                from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
+            except ImportError as exc:
+                raise ROSConfigError(
+                    "OpenAICompatibleToolUseClient requires the `openai` SDK; "
+                    "install with `uv add openai --package openral-reasoner`.",
+                ) from exc
+            self._sdk_client = OpenAI(
+                api_key=self._api_key or "local",
+                base_url=self._base_url,
+                timeout=self._timeout_s,
+            )
+        return self._sdk_client
 
     def select_tool(
         self,
@@ -1362,22 +1459,8 @@ class OpenAICompatibleToolUseClient:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     ) -> ReasonerToolCall:
         """Call the OpenAI-compatible endpoint and decode the tool call."""
-        try:
-            from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
-        except ImportError as exc:
-            raise ROSConfigError(
-                "OpenAICompatibleToolUseClient requires the `openai` SDK; "
-                "install with `uv add openai --package openral-reasoner`.",
-            ) from exc
-        client = OpenAI(
-            api_key=self._api_key or "local",
-            base_url=self._base_url,
-            timeout=self._timeout_s,
-        )
-        tools = [
-            {"type": "function", "function": {**spec, "parameters": spec.pop("input_schema")}}
-            for spec in _tool_palette_to_anthropic_tools(palette)
-        ]
+        client = self._client()
+        tools = _tool_palette_to_openai_tools(palette)
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": context_text},
@@ -1387,7 +1470,7 @@ class OpenAICompatibleToolUseClient:
         # up-front token reservation — see __init__).
         cap: dict[str, int] = {} if self._max_tokens is None else {"max_tokens": self._max_tokens}
         try:
-            response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages are heterogeneous TypedDicts (ChatCompletionMessageParam, ChatCompletionToolParam) that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
+            response = client.chat.completions.create(
                 model=self.model_id,
                 messages=messages,
                 tools=tools,
@@ -1402,7 +1485,7 @@ class OpenAICompatibleToolUseClient:
                 messages.append(
                     {"role": "user", "content": "You must respond with exactly one tool call now."},
                 )
-                response = client.chat.completions.create(  # type: ignore[call-overload]  # reason: provider SDK boundary (see above)
+                response = client.chat.completions.create(
                     model=self.model_id,
                     messages=messages,
                     tools=tools,
@@ -1462,18 +1545,7 @@ class OpenAICompatibleToolUseClient:
             ROSConfigError: When the ``openai`` SDK is not installed.
             ROSPlanningError: On transport / provider failure.
         """
-        try:
-            from openai import OpenAI  # noqa: PLC0415  # reason: optional cloud dep
-        except ImportError as exc:
-            raise ROSConfigError(
-                "OpenAICompatibleToolUseClient requires the `openai` SDK; "
-                "install with `uv add openai --package openral-reasoner`.",
-            ) from exc
-        client = OpenAI(
-            api_key=self._api_key or "local",
-            base_url=self._base_url,
-            timeout=self._timeout_s,
-        )
+        client = self._client()
         b64 = base64.b64encode(image_jpeg).decode()
         messages: list[dict[str, object]] = [
             {
@@ -1490,7 +1562,7 @@ class OpenAICompatibleToolUseClient:
         try:
             response = client.chat.completions.create(
                 model=self.model_id,
-                messages=messages,  # type: ignore[arg-type]  # reason: provider SDK boundary — image_url content blocks use heterogeneous TypedDicts that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
+                messages=messages,
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc

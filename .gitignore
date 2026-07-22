@@ -154,6 +154,7 @@ docs/architecture/rskills-strategy.html
 # Local colcon build artifacts (non-standard base dirs)
 build_py312/
 install_py312/
+.colcon-build/
 
 # Impeccable copy-edit hook scratch cache (scattered wherever it edits)
 .impeccable/

@@ -71,8 +71,13 @@ def test_enable_continuous_never_terminates_or_resets_past_horizon() -> None:
     # step 3; continuous must keep going and keep the arm in place.
     sim = _build(max_steps=3)
     try:
-        sim.reset(seed=0)
+        # Production order (SimAttachedHAL): enable_continuous at __init__,
+        # BEFORE connect()'s first reset. LiberoEnv builds its robosuite env
+        # lazily inside reset, so an eager-only ignore_done lands on nothing and
+        # the horizon `done` still hard-raises mid-goal — the live deploy-sim
+        # mid-episode auto-reset. reset() must re-apply it.
         sim.enable_continuous()
+        sim.reset(seed=0)
         # Regression: ignore_done must land on the env that actually latches `done`
         # (Libero_*_Manipulation), NOT the OffScreenRenderEnv wrapper — otherwise
         # the horizon/success `done` still hard-raises and the HAL re-randomises.
