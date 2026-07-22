@@ -1,6 +1,7 @@
 """OpenRAL S2 reasoner — typed LLM tool dispatch.
 
-The reasoner is the slow planning loop (CLAUDE.md §6.2 — S2, 5-10 Hz)
+The reasoner is the slow planning loop (CLAUDE.md §6.2 — S2;
+event-driven with a 0.2 Hz heartbeat since the 2026-05-25 amendment)
 that consumes a :class:`~openral_core.WorldState` snapshot, a rolling
 buffer of :class:`FailureEventRecord` / :class:`PerceptionEventRecord`
 / :class:`PromptRecord`, and emits **exactly one** typed
@@ -40,7 +41,16 @@ from openral_reasoner.mission import (
     TaskState,
     evaluate_task_verdict,
 )
+from openral_reasoner.node_policy import (
+    CASCADE_PROMPT_SOURCES,
+    should_rebuild_mission,
+)
 from openral_reasoner.palette import ToolPalette, build_tool_palette
+from openral_reasoner.persistence import (
+    ReasonerLadderState,
+    load_ladder_state,
+    save_ladder_state,
+)
 from openral_reasoner.spatial_query import (
     SpatialMemoryQuerier,
     SpatialQueryOutcome,
@@ -65,6 +75,7 @@ from openral_reasoner.tool_use import (
 )
 
 __all__ = [
+    "CASCADE_PROMPT_SOURCES",
     "COSMOS3_BASE_URL",
     "DEFAULT_COSMOS3_MODEL",
     "DEFAULT_MAX_ATTEMPTS",
@@ -84,6 +95,7 @@ __all__ = [
     "PerceptionEventRecord",
     "PromptRecord",
     "ReasonerCore",
+    "ReasonerLadderState",
     "ReasonerTickResult",
     "SearchBudget",
     "SearchCandidate",
@@ -101,6 +113,7 @@ __all__ = [
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",
+    "load_ladder_state",
     "plan_active_search",
     "recall_object_tool_to_query",
     "render_robot_context_prompt",
@@ -108,5 +121,7 @@ __all__ = [
     "resolve_reasoner_system_prompt",
     "run_spatial_query",
     "run_spatial_query_detailed",
+    "save_ladder_state",
+    "should_rebuild_mission",
 ]
 __version__ = "0.1.0"

@@ -176,8 +176,8 @@ def test_force_bypasses_min_interval() -> None:
     assert r.tool_call is not None
 
 
-def test_retry_cap_suppresses_after_n_identical_kinds() -> None:
-    """Same tool kind picked >retry_cap times in a row is suppressed once."""
+def test_retry_cap_suppresses_after_n_identical_calls() -> None:
+    """The identical call (same tool + same args) picked >retry_cap times is suppressed."""
     palette = _palette()
     clock_value = 0.0
 
@@ -186,9 +186,9 @@ def test_retry_cap_suppresses_after_n_identical_kinds() -> None:
         clock_value += 1.0  # always past min_interval
         return clock_value
 
-    # 4 identical EmitPromptTool — cap is 3 by default → 4th tick suppressed.
+    # 4 byte-identical EmitPromptTool — cap is 3 by default → 4th tick suppressed.
     client = FakeToolUseClient(
-        responses=[EmitPromptTool(target_topic="/openral/prompt", text=f"m{i}") for i in range(4)],
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text="same") for _ in range(4)],
     )
     core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3, clock=clock)
     # Reuse one renderer and push a fresh prompt before each tick so
@@ -202,6 +202,75 @@ def test_retry_cap_suppresses_after_n_identical_kinds() -> None:
         results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
     assert [r.tool_call is not None for r in results] == [True, True, True, False]
     assert results[-1].suppressed_reason == "retry_cap"
+
+
+def test_retry_cap_ignores_rationale_rephrasing() -> None:
+    """A loop that only rephrases its ``rationale`` between retries is still capped."""
+    palette = _palette()
+    client = FakeToolUseClient(
+        responses=[
+            EmitPromptTool(target_topic="/openral/prompt", text="same", rationale=f"why {i}")
+            for i in range(4)
+        ],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(4):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert results[-1].suppressed_reason == "retry_cap"
+
+
+def test_same_kind_different_args_never_trips_the_cap() -> None:
+    """A healthy sequence of *different* calls of the same kind is not a retry storm.
+
+    The pre-fix cap keyed on the bare tool kind, so navigate → pick → place
+    (all ``execute_rskill``) tripped it exactly like a genuine loop. Identity
+    keying (tool + args) lets legitimate sequential work through.
+    """
+    palette = _palette()
+    client = FakeToolUseClient(
+        responses=[
+            EmitPromptTool(target_topic="/openral/prompt", text=f"step {i}") for i in range(6)
+        ],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(6):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert all(r.tool_call is not None for r in results)
+
+
+def test_retry_cap_hold_skips_the_llm_call_until_context_moves() -> None:
+    """After a retry_cap suppression, an unchanged-context tick is held BEFORE the LLM.
+
+    The pre-fix flow paid for a full LLM round-trip on every capped tick just
+    to discard the result. The hold releases the moment ``seq`` moves (the
+    node's reflection feedback bumps it).
+    """
+    palette = _palette()
+    same = EmitPromptTool(target_topic="/openral/prompt", text="same")
+    client = FakeToolUseClient(responses=[same] * 10)
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=2)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(3):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert results[-1].suppressed_reason == "retry_cap"
+    calls_after_cap = client.calls
+    # Context unchanged → held before the LLM; no new client call.
+    held = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert held.suppressed_reason == "retry_cap_hold"
+    assert client.calls == calls_after_cap
+    # Context moves (e.g. the node appended a reflection) → the LLM runs again.
+    renderer.append_prompt(PromptRecord(text="new info", metadata_json="", stamp_ns=99))
+    resumed = core.tick(world_state=None, renderer=renderer, palette=palette)
+    assert resumed.suppressed_reason != "retry_cap_hold"
+    assert client.calls == calls_after_cap + 1
 
 
 def test_reset_kind_streak_lets_the_next_same_kind_tick_through() -> None:
@@ -471,3 +540,68 @@ def test_tick_selected_log_includes_active_prompt(log_cap: _CaptureProcessor) ->
     active = ev.get("active_prompt", "")
     assert isinstance(active, str)
     assert active.startswith(prompt_text[:30])
+
+
+def test_search_tools_are_transparent_to_the_retry_cap() -> None:
+    """Identical read-only search calls are never capped — their own budgets
+    (SearchProgress miss budget, TaskLocateBudget) bound those loops and must
+    reach the explicit human-handoff, which the cap's silent hold would preempt
+    (the live regression: the recall cascade stalled in retry_cap_hold before
+    the search budget could hand off)."""
+    from openral_core import RecallObjectTool
+
+    palette = _palette()
+    client = FakeToolUseClient(responses=[RecallObjectTool(query="milk") for _ in range(6)])
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(6):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert all(r.tool_call is not None for r in results)
+
+
+def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
+    """Transparency, not reset: an alternating <same-call> / <search> pattern
+    still accumulates toward the cap — a genuine loop cannot launder its streak
+    through a read-only recall between repeats."""
+    from openral_core import RecallObjectTool
+
+    palette = _palette()
+    same = EmitPromptTool(target_topic="/openral/prompt", text="same")
+    responses: list = []
+    for _ in range(4):
+        responses.append(same)
+        responses.append(RecallObjectTool(query="milk"))
+    client = FakeToolUseClient(responses=responses)
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(8):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    # The 4th identical emit_prompt (tick index 6) trips the cap even though
+    # recall_object calls were interleaved between the repeats.
+    suppressed = [r.suppressed_reason for r in results]
+    assert "retry_cap" in suppressed
+
+
+def test_wait_is_transparent_to_the_retry_cap() -> None:
+    """Consecutive waits are never capped — the system prompt INSTRUCTS the
+    model to keep picking wait during a nominal long skill execution, and every
+    wait is byte-identical (rationale is stripped from the call identity), so a
+    counted wait would trip the cap after retry_cap heartbeats of prescribed
+    behavior and inject a fabricated "retry ladder exhausted" failure into
+    context mid-run."""
+    from openral_core import WaitTool
+
+    palette = _palette()
+    client = FakeToolUseClient(responses=[WaitTool() for _ in range(6)])
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(6):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert all(r.tool_call is not None for r in results)
+    assert all(not r.suppressed_reason for r in results)

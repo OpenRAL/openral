@@ -58,7 +58,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
-    from openral_core import ExecuteRskillTool, RSkillManifest
+    from openral_core import EmitPromptTool, ExecuteRskillTool, RSkillManifest
     from openral_msgs.action import ExecuteRskill
     from openral_msgs.msg import FailureTrigger, PromptStamped
     from openral_reasoner import ToolPalette
@@ -90,6 +90,12 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     span_exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(span_exporter))
+    # OTel's global provider is set-once per process; when another live test in
+    # the same pytest invocation installed one first, this call would silently
+    # no-op and the exporter would never see a span. Same test-only reset as
+    # tests/unit/test_reasoner_observability.py / the e2e file.
+    ot_trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    ot_trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
     ot_trace.set_tracer_provider(provider)
 
     rclpy.init()
@@ -103,9 +109,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
                 ),
                 # Absorb post-refusal tick(s) without erroring.
                 *[
-                    __import__("openral_core", fromlist=["EmitPromptTool"]).EmitPromptTool(
-                        target_topic="/openral/prompt", text="standing by"
-                    )
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
                     for _ in range(4)
                 ],
             ],
@@ -122,7 +126,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         # params, so set the attributes the guard reads directly):
         reasoner._reward_manifest = reward_manifest
         reasoner._gpu_total_vram_gb = 4.0  # < 4.8 GB pair → must refuse
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
 
         # Real ExecuteRskill server — records if a goal ever reaches execute.
         server_node = rclpy.create_node("openral_test_vla_server")
@@ -238,3 +242,154 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         and ev.attributes.get("openral.event.skill_failure.state") == "vram_insufficient"
         for ev in skill_failure_events
     ), "skill_failure event fired but carried no vram_insufficient state for the dashboard."
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tier-1 gate: a VLA whose declared footprint exceeds *currently free* VRAM
+    is refused before dispatch, even with NO reward model wired.
+
+    The static pair check budgets against the card's TOTAL and is blind to
+    other processes — observed live (2026-07-20): an external vLLM server held
+    4.7 GB of an 8 GB card, molmoact2 (declared 4.0 GB) passed every static
+    gate and burned ~30 s in a CUDA OOM abort. Here the probe is pinned to
+    0.5 GB free vs smolvla's 1.2 GB declaration: the goal must never reach the
+    action server and a ``vram_insufficient`` FailureTrigger must fire.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import EmitPromptTool, ExecuteRskillTool, RSkillManifest
+    from openral_msgs.action import ExecuteRskill
+    from openral_msgs.msg import FailureTrigger, PromptStamped
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from openral_reasoner_ros import reasoner_node as rn_module
+    from rclpy.action import ActionServer
+    from rclpy.action.server import GoalResponse
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    vla_manifest = RSkillManifest.from_yaml(_SMOLVLA)
+    assert (vla_manifest.active_min_vram_gb() or 0.0) > 0.5, "fixture must declare > 0.5 GB"
+
+    # Pin the live probe: only 0.5 GB free right now.
+    monkeypatch.setattr(rn_module, "_detect_gpu_free_vram_gb", lambda: 0.5)
+
+    executed: list[float] = []
+    failures: list[Any] = []
+
+    rclpy.init()
+    try:
+        client = FakeToolUseClient(
+            responses=[
+                ExecuteRskillTool(
+                    rskill_id=_VLA_ID,
+                    prompt="pick up the teapot and put it in the basket",
+                    deadline_s=0.0,
+                ),
+                *[
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
+                    for _ in range(4)
+                ],
+            ],
+        )
+        reasoner = ReasonerNode(
+            client=client,
+            palette=ToolPalette(execute_rskill_ids=frozenset({_VLA_ID})),
+            tick_hz=2.0,
+        )
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+        # NO reward manifest — the free-VRAM tier must fire on its own.
+        assert reasoner._reward_manifest is None
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
+
+        server_node = rclpy.create_node("openral_test_vla_server_free_vram")
+
+        def _execute(goal_handle: Any) -> Any:
+            executed.append(time.monotonic())
+            result = ExecuteRskill.Result()
+            result.success = True
+            result.failure_reason = ""
+            result.trace_id = "00-trace-vla"
+            goal_handle.succeed()
+            return result
+
+        ActionServer(
+            server_node,
+            ExecuteRskill,
+            "/openral/execute_rskill",
+            execute_callback=_execute,
+            goal_callback=lambda _g: GoalResponse.ACCEPT,
+        )
+
+        sub_node = rclpy.create_node("openral_test_failure_sub_free_vram")
+        fail_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        sub_node.create_subscription(
+            FailureTrigger, "/openral/failure/rskill", failures.append, fail_qos
+        )
+
+        prompt_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        pub_node = rclpy.create_node("openral_test_free_vram_prompt_pub")
+        prompt_pub = pub_node.create_publisher(PromptStamped, "/openral/prompt", prompt_qos)
+
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(server_node)
+        executor.add_node(sub_node)
+
+        discover = time.monotonic() + 2.0
+        while time.monotonic() < discover:
+            executor.spin_once(timeout_sec=0.05)
+
+        prompt = PromptStamped()
+        prompt.header.stamp = pub_node.get_clock().now().to_msg()
+        prompt.header.frame_id = "openral_test_free_vram_prompt_pub"
+        prompt.text = "pick up the teapot and put it in the basket"
+        prompt.metadata_json = "{}"
+        prompt_pub.publish(prompt)
+
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.05)
+            if failures:
+                break
+        drain = time.monotonic() + 1.5
+        while time.monotonic() < drain:
+            executor.spin_once(timeout_sec=0.05)
+
+        executor.remove_node(reasoner)
+        executor.remove_node(server_node)
+        executor.remove_node(sub_node)
+        server_node.destroy_node()
+        sub_node.destroy_node()
+        pub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+    vram_failures = [m for m in failures if "vram_insufficient" in m.evidence_json]
+    assert vram_failures, (
+        f"no vram_insufficient FailureTrigger; the live free-VRAM gate did not refuse "
+        f"(failures={[m.evidence_json for m in failures]})"
+    )
+    assert "free right now" in vram_failures[0].evidence_json
+    assert not executed, "the goal reached the action server despite the free-VRAM refusal"

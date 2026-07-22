@@ -27,6 +27,7 @@ from openral_core import (
     QuerySceneTool,
     RecallObjectTool,
     ResolvePlaceTool,
+    WaitTool,
 )
 from openral_reasoner.active_search import SearchBudget, SearchProgress
 from openral_reasoner_ros.reasoner_node import _resets_search_episode
@@ -40,6 +41,10 @@ def test_search_actions_do_not_reset_the_cascade() -> None:
     assert not _resets_search_episode(
         LocateInViewTool(query="milk", detector="omdet-turbo-locator")
     )
+    # The wait no-op makes no progress on the search: if it reset the budget,
+    # a locate -> wait -> locate alternation would zero the counter every
+    # other tick and the cascade could never exhaust.
+    assert not _resets_search_episode(WaitTool(rationale="observing"))
 
 
 def test_non_search_actions_reset_the_cascade() -> None:

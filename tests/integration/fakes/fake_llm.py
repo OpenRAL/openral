@@ -139,6 +139,11 @@ class FakeToolUseClient:
         return tuple(self._traces)
 
     @property
+    def calls(self) -> int:
+        """Number of ``select_tool`` invocations so far (len of :attr:`traces`)."""
+        return len(self._traces)
+
+    @property
     def remaining_responses(self) -> int:
         """Number of unconsumed canned responses (queued mode only)."""
         return len(self._responses)
