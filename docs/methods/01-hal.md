@@ -3,23 +3,15 @@
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
 ### `python/hal/src/openral_hal/protocol.py`
-_Normative HAL protocol plus explicit optional lifecycle extensions._
+_HAL Protocol — the normative interface every HAL adapter must satisfy._
 
-- `class HAL(Protocol)` — Structural protocol every HAL adapter must satisfy.
+- `class HAL(Protocol)` — Structural protocol every HAL adapter must satisfy. (L26)
   - attr `description: RobotDescription`
-  - `connect() -> None` — Open connection to robot/sim.
-  - `disconnect() -> None` — Close connection (idempotent).
-  - `read_state() -> JointState` — Latest joint state snapshot (hot path).
-  - `send_action(action: Action) -> None` — Forward action chunk to controller (hot path).
-  - `estop() -> None` — Trigger emergency stop, always raises `ROSEStopRequested`.
-- `class LifecycleEStopHAL(Protocol)` — Opt-in propagation of the generic
-  lifecycle e-stop to downstream hardware or owned processes.
-- `class ResettableLifecycleEStopHAL(LifecycleEStopHAL, Protocol)` — Opt-in
-  in-process recovery contract.
-- `class EStopRecovery(StrEnum)` — Declares whether recovery is resettable or
-  requires a full lifecycle restart.
-- `class HALHealthProvider(Protocol)` / `class HALHealthReport` — Cached,
-  I/O-free diagnostics consumed by the generic lifecycle heartbeat.
+  - `connect() -> None` — Open connection to robot/sim. (L43)
+  - `disconnect() -> None` — Close connection (idempotent). (L53)
+  - `read_state() -> JointState` — Latest joint state snapshot (hot path). (L61)
+  - `send_action(action: Action) -> None` — Forward action chunk to controller (hot path). (L75)
+  - `estop() -> None` — Trigger emergency stop, always raises `ROSEStopRequested`. (L91)
 
 ### `python/hal/src/openral_hal/_mujoco_arm.py`
 _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 / H1 / Rizon-4 / OpenArm / ALOHA adapters. Reads its wiring from `RobotDescription.sim`._
@@ -177,249 +169,6 @@ _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 - `_rad_to_deg(rad) -> float` (L238)
 - const `SO100_DESCRIPTION = RobotDescription(...)` (L88)
 
-### `python/hal/src/openral_hal/galaxea_a1.py`
-_Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
-official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
-JSON-lines sidecar. No vendor source, binary, or message package is distributed._
-
-- `class GalaxeaA1HAL(HALBase)` — six-axis joint-position + normalized
-  gripper adapter. `read_state` and `send_action` use a cached snapshot/latest
-  target so network I/O stays off the HAL hot path. Commands fail closed on
-  stale state/status, unaccepted motor bits, non-finite values, initial target
-  misalignment, or an excessive feedback-relative target step. Command limits
-  remain exact; a separately tracked 0.01 rad feedback-only endpoint tolerance
-  absorbs encoder zero/quantization at a nominal URDF boundary. `estop` asks
-  the sidecar to stop its owned ROS 1 stack and always raises
-  `ROSEStopRequested`.
-- const `GALAXEA_A1_DESCRIPTION` — real-only `RobotDescription`, mirrored by
-  `robots/galaxea_a1/robot.yaml`; official A1 URDF joint names/limits, explicit
-  sidecar deadlines, motor masks, 0..104 mm normalized gripper mapping, and
-  the calibrated D455 front / D405 wrist RGB observation contracts. The six
-  joint origins, orientations, and axes are transcribed from the official A1
-  URDF; collision primitives remain absent until their redistribution and
-  lowering provenance is cleared.
-- `tools/galaxea_a1_ros1_sidecar.py` — Python-3.8-compatible ROS 1 process that
-  owns `roscore`, `signal_arm/single_arm_node.launch`, and the official
-  `mobiman/jointTracker_demo_node` binary. The tracker publishes to
-  `/openral/arm_joint_command_staged`; a sidecar-owned relay is the sole
-  publisher to `/arm_joint_command_host`. The relay stays `LOCKED` until the
-  first target, then `ARMING` until a fresh, valid tracker command is aligned
-  with both that target and measured joint feedback. Only `ACTIVE` forwards
-  unchanged tracker commands, and gripper setpoints are gated on the same
-  machine — a gripper command while the relay is `LOCKED`/`ARMING` is refused
-  fail-closed (the gripper bypasses the tracker's staged-hold interpolation,
-  so it must never actuate before alignment). Repeated identical joint and gripper setpoints
-  refresh the command lease without restarting the official tracker. A command
-  lease, alignment timeout, malformed command, stale feedback, motor fault,
-  client disconnect, or e-stop stops the complete owned process group.
-- `tools/run_galaxea_a1_sidecar.sh` — Docker launcher. Requires an explicit
-  operator-provided image and SDK path; mounts both read-only and claims only the
-  selected serial device. The SDK remains read-only; the official tracker's
-  generated CppAD files go to
-  `$XDG_CACHE_HOME/openral/galaxea-a1/x1_robot` (or the equivalent path below
-  `~/.cache`). `--check-only` verifies the local image, required SDK files,
-  cache parent, serial ownership, loopback port, container name, and process
-  lock without opening the serial device or starting a container.
-
-#### Galaxea A1 hardware bring-up
-
-The first session is observation-only until the HAL graph is healthy. Ensure no
-other process/container owns the serial device, the arm workspace is clear, and
-the physical e-stop is reachable.
-
-```bash
-# One-time: build OpenRAL's vendor-free Noetic runtime image. The official SDK
-# is mounted at run time and is never copied into the image.
-docker build \
-  -t openral/galaxea-a1-sidecar:noetic \
-  docker/galaxea_a1_sidecar
-
-# One-time: build OpenRAL's standard public x86 deploy image (Jazzy/Python 3.12).
-just docker-build-x86
-
-# Read-only gate — checks the image, SDK, serial ownership, port, and lock.
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1 \
-  --check-only
-
-# Terminal 1 — isolated ROS 1 bridge network; only TCP 46011 reaches loopback.
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1
-
-# Terminal 2 — OpenRAL's standard real-hardware path. The OpenRAL container uses
-# host networking only for ROS 2 DDS and the sidecar's loopback TCP port; it owns
-# no Galaxea serial device and cannot see the ROS 1 master inside the sidecar.
-docker run --rm --name openral-galaxea-a1 --network host \
-  --volume "$(pwd)/robots:/workspace/robots:ro" \
-  --volume "$(pwd)/scenes:/workspace/scenes:ro" \
-  --volume "$(pwd)/tests:/workspace/tests:ro" \
-  openral:x86 \
-  --config scenes/deploy/galaxea_a1_bench.yaml
-
-# Terminal 3 — observation gate: six named joints update; diagnostics are clean.
-docker exec openral-galaxea-a1 bash -lc \
-  'source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && \
-   ros2 topic echo /joint_states --once && ros2 topic echo /diagnostics --once'
-```
-
-An optional HAL-level HIL gate can run between Terminal 1 and the full deploy.
-It opens one sidecar session, validates three fresh finite named-joint samples
-plus cached motor health, and ends by verifying that downstream e-stop stops the
-owned ROS 1 stack. Restart Terminal 1 afterwards:
-
-```bash
-GALAXEA_A1_HIL=1 just hil galaxea_a1
-```
-
-Only after that observation-only run passes, opt into a measured-current-pose
-hold. Feedback within the tracked 0.01 rad endpoint tolerance is projected to
-the exact command limit; any larger projection fails before publication. The
-test also waits for the sidecar relay to report `ACTIVE`, proving the official
-tracker has converged from its compiled `task.info` initial pose before any
-host motor command is forwarded:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_HOLD=1 just hil galaxea_a1
-```
-
-After the hold passes, a separate lab opt-in moves `arm_joint1` by +0.01 rad,
-requires it to settle within 0.008 rad (covering the measured 0.007 rad
-small-command residual), continuously bounds all six joint excursions, returns
-to the measured start, and then performs the same downstream e-stop:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_NUDGE=1 just hil galaxea_a1
-```
-
-The G2 gripper has its own opt-in. It uses the vendor example's 10 mm step,
-mapped through the normalized `0..1` contract over the configured 104 mm
-stroke, chooses the direction away from the nearest endpoint, verifies feedback
-within the measured 2.5 mm steady-state tolerance, and returns to the measured
-opening even when the outbound-leg assertion fails:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_GRIPPER=1 just hil galaxea_a1
-```
-
-After the HAL-level gates pass, the full-graph HIL runs inside the deploy
-container. It captures the current named-joint feedback itself, requires the
-C++ kernel and real HAL to be active while the relay is still `LOCKED`, then
-publishes only that measured hold through `candidate_action`. It verifies the
-matching `safe_action`, exact staged/forwarded targets, zero kernel drops, and
-less than one degree of drift. Its `finally` path publishes `/openral/estop`
-three times and requires the HAL diagnostics to confirm the latch:
-
-```bash
-docker exec \
-  --env GALAXEA_A1_DEPLOY_HIL=1 \
-  --env GALAXEA_A1_ALLOW_HOLD=1 \
-  openral-galaxea-a1 \
-  bash -lc 'source /opt/ros/jazzy/setup.bash && \
-    source /workspace/install/setup.bash && \
-    pytest -q /workspace/tests/hil/test_galaxea_a1_deploy.py'
-```
-
-After the current-pose full-graph gate passes, the same fixture has a separate
-motion opt-in. It moves `arm_joint1` by +0.01 rad through
-`candidate_action -> C++ safety kernel -> safe_action`, bounds all six joint
-excursions, and returns to the measured start before the downstream e-stop:
-
-```bash
-docker exec \
-  --env GALAXEA_A1_DEPLOY_HIL=1 \
-  --env GALAXEA_A1_ALLOW_HOLD=1 \
-  --env GALAXEA_A1_ALLOW_NUDGE=1 \
-  openral-galaxea-a1 \
-  bash -lc 'source /opt/ros/jazzy/setup.bash && \
-    source /workspace/install/setup.bash && \
-    pytest -q /workspace/tests/hil/test_galaxea_a1_deploy.py'
-```
-
-This test intentionally ends the hardware session. Restart both the sidecar
-and deploy container before any later motion test.
-
-Do not start a policy on the first pass. Stop both commands and investigate if
-feedback/status becomes stale, a motor code other than the manifest's explicit
-idle/gripper masks appears, joint order differs, the sidecar exits, or the arm
-moves before an approved safe action. Motion validation then proceeds with a
-current-pose hold and a single <=0.01 rad joint increment through OpenRAL's
-standard candidate-action → C++ kernel → safe-action path, then return-to-start;
-only afterwards run an A1-specific rSkill.
-
-#### LingBot-VA rSkill through the complete OpenRAL path
-
-`rskills/lingbot-va-galaxea-a1-fruit-placement/rskill.yaml` is the first
-checkpoint-specific A1 rSkill. The dependency direction is deliberate:
-
-```text
-A1 Camera Bridge -> OpenRAL WorldState -> LingBot-VA rSkill
-  -> A1 Runtime policy gateway (model contract + EEF/cache + IK)
-  -> OpenRAL candidate_action -> C++ safety kernel -> safe_action
-  -> GalaxeaA1HAL -> isolated ROS 1 sidecar -> official A1 driver
-```
-
-The A1 Runtime is a public capability provider, not a second controller:
-start only its persistent camera owner, LingBot policy server, and OpenRAL
-policy gateway. The gateway has no ROS imports or command publisher. Do not
-start its LingBot ROS execution bridge or A1 joint runtime while OpenRAL owns
-the deployment. The rSkill owns its `policy_extras.max_joint_substep_rad` replay
-setting and reads the independent `max_target_step_rad` ceiling from the same
-`RobotDescription` used to construct the HAL. Startup rejects a policy bound
-that exceeds either the HAL's live target-step ceiling or locked-relay
-alignment tolerance. The policy bound is 0.045 rad, below the 0.05 rad
-locked-relay alignment threshold; the independent HAL/sidecar live limit is
-0.08 rad. The gateway constructs Runtime's IK implementation with the active
-OpenRAL `RobotDescription`'s ordered command limits after verifying they are no
-wider than Runtime's envelope. Runtime calibration margins therefore cannot
-widen the typed OpenRAL, safety-kernel, or official sidecar command envelope.
-
-The gateway emits one bounded target per 30 Hz control tick. When its IK
-solution is farther than 0.045 rad from fresh feedback, it keeps advancing
-toward that same solved target on subsequent ticks and only consumes the next
-model action after the solved target has been dispatched. The FK of the actual
-dispatched target is written into the KV cache, so the policy state reflects
-what OpenRAL commanded rather than an unreachable ideal. The official tracker's
-steady-state error cannot widen the command envelope or bypass the bounded
-step. The A1 Runtime's 1.70 rad IK-solution validation remains an upstream
-reachability check, not a motor-command step limit.
-
-```bash
-# Terminal A — A1 Runtime capability providers only (no ROS command publisher).
-cd /absolute/path/to/A1-Research
-just cameras start
-scripts/apps/lingbot/a1_lingbot_runtime.sh server
-uv run galaxea-a1-openral-policy \
-  --config configs/deployments/lingbot/fruit_placement_eef.toml \
-  --repo-root .
-
-# Terminal B — official ROS 1 sidecar, as in the bring-up section above.
-cd /absolute/path/to/OpenRAL
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1
-
-# Terminal C — the complete OpenRAL real deployment.
-cd /absolute/path/to/OpenRAL
-uv run --group lingbot openral deploy run \
-  --config scenes/deploy/galaxea_a1_bench.yaml
-```
-
-Submit the exact trained prompt (for example, `put the red mango into the blue
-plate`) through the dashboard. Before allowing a task motion, first repeat the
-observation, hold, joint-nudge, gripper, and full-graph gates above. Stop the
-LingBot server afterwards with
-`scripts/apps/lingbot/a1_lingbot_runtime.sh server-stop`.
-
-The A1 opts into hardware-downstream e-stop: `/openral/estop` stops the
-sidecar-owned tracker and driver immediately. The generic
-`/openral/estop_cleared` broadcast cannot re-arm this HAL; restart the lifecycle
-and sidecar, re-read motor health, and repeat initial alignment instead.
-
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum; gravity must be disabled in closed-loop tests (CLAUDE.md §6.2). Unlike the G1 / UR / Franka / SO-100 MJCFs, the H1 menagerie ships ``motor`` (torque) actuators, so this HAL runs a software PD position loop every physics step._
 
@@ -542,20 +291,20 @@ _SimTransport — in-memory simulated `ros2_control` transport._
 ### `python/hal/src/openral_hal/lifecycle.py`
 _Generic ROS 2 managed lifecycle node wrapper for every HAL adapter — UR5e / UR10e / Franka / SO-100 / OpenArm / H1 / future HALs all share the same publish / subscribe / heartbeat / OTel-span wiring._
 
-- `class HALLifecycleNodeBase(LifecycleNode)` — Public base class. Owns the standard `/joint_states` + `~/joint_states` publishers, the `/openral/safe_action` + `/openral/estop` subscribers, the 1 Hz `DiagnosticsHeartbeat`, the per-tick `hal.read_state` + `hal.send_action` OTel spans, the estop latch, and the full configure → activate → deactivate → cleanup → shutdown transition wiring. The formerly used `~/command` (`trajectory_msgs/JointTrajectory`) subscriber + its `_on_command` callback + the `_subscriber` field were removed; `_send_action_traced` is now driven only by `_on_safe_action`. (L322)
-  - `_create_hal(self) -> HAL` — **Subclass hook (required)**: construct and return a HAL instance. Reads ROS-parameter-driven constructor args via `self.get_parameter(...)`. (L381)
-  - `_heartbeat_extra_fields(self) -> dict[str, str]` — Subclass hook (optional): extra key/values for the `/diagnostics` payload (e.g. `{"port": "/dev/ttyUSB0"}` for SO-100, `{"mjcf": "..."}` for OpenArm). Default: `{}`. (L393)
-  - `on_configure_post_hal(self) -> TransitionCallbackReturn` — Subclass hook (optional): robot-specific setup after the HAL connects (e.g. opening a camera renderer on OpenArm). Default: `SUCCESS`. (L445)
-  - `on_activate_post_subs(self) -> TransitionCallbackReturn` — Subclass hook (optional): robot-specific timers/publishers after the base wires its subs (e.g. the OpenArm camera-render timer). Default: `SUCCESS`. (L454)
-  - `on_deactivate_pre_teardown(self) -> None` — Subclass hook (optional): stop robot-specific timers before base teardown. Default: no-op. (L462)
-  - `on_cleanup_pre_disconnect(self) -> None` — Subclass hook (optional): tear down robot-specific resources (viewers, renderers) before HAL.disconnect(). Default: no-op. (L469)
-  - `_publish_joint_state(self) -> None` — Timer callback. Wraps `self._hal.read_state()` in a `hal.read_state` span (identity attrs + `producer.record_joint_state`) and publishes the standard `/joint_states` + `~/joint_states` messages. Subclasses may override + call `super()._publish_joint_state()` to extend (OpenArm does this for viewer-sync). (L775)
-  - `_on_safe_action(self, msg) -> None` — `/openral/safe_action` callback. Decodes the `openral_msgs/ActionChunk` into an `openral_core.Action` and forwards through `_send_action_traced(action, source="safe_action")`. (L846)
-  - `_send_action_traced(self, action, *, source) -> None` — Forward `action` to `self._hal.send_action` inside a `hal.send_action` span. The `source` attribute disambiguates the origin on the dashboard's Commands card (kept on the span so future subscriber additions can fan in without changing the span shape). (L866)
-- `make_lifecycle_main(node_name, hal_factory) -> Callable[[], None]` — Build a `main()` entry point for a zero-parameter HAL adapter. Internally constructs a `_FactoryHALLifecycleNode(HALLifecycleNodeBase)` whose `_create_hal()` returns `hal_factory()`. Superseded for the standard arms by `make_lifecycle_main_from_manifest`; retained for bespoke nodes. (L194)
-- `class ManifestHALLifecycleNode(HALLifecycleNodeBase)` — Public generic manifest-driven lifecycle node (promoted from the private `_ManifestHALLifecycleNode` under issue #191). Reads `robot_yaml` + `hal_mode` + sensor knobs as ROS params and builds its HAL via `openral_hal.build_hal`, so a robot's construction kwargs come from the manifest's `hal.parameters.defaults` — no bespoke `_create_hal` subclass. Attaches `SimSensorBridge` (cameras / depth / scan / viewer) in `on_activate_post_subs`. In `on_configure_post_hal`, **reflects** on the built HAL and opens `/openral/<robot>/reset_to_pose` (`openral_msgs/srv/ResetToPose`) iff it exposes `reset_to_pose` — generalising the openarm-only service to every `MujocoArmHAL` sim arm (issue #191 Phase 2); HALs without the method (panda_mobile, scene-attached twins) get no service. In `_create_hal`, when a scene composition is declared (and not scene-attaching), calls the named composer and threads the composed MJCF in as the HAL's `mjcf_path` (issue #191 Phase 3b — openarm tabletop); the composition is read from the `scene_composition_json` ROS param (the DeployScene's own `composition`) which **takes precedence** over the robot manifest's `scene_defaults.composition` (back-compat fallback) — so the scene owns its arena, the robot manifest describes the robot. Bare-twin camera robots (so100/so101) need no composition: their cameras are spliced by the generic camera rig at HAL connect from `sensors[].sim_placement`. In `on_activate_post_subs`, when the manifest declares a planar base (`base_joints`), also attaches a `MobileBaseBridge` (`/odom` + `odom->base_link` TF + `/cmd_vel`→BODY_TWIST) — so panda_mobile runs on this node with no subclass (issue #191 Phase 3a). The per-robot lifecycle packages collapse into this node (issue #191 Phases 2-3). A back-compat alias `_ManifestHALLifecycleNode` is retained. (L1028)
-- `make_lifecycle_main_from_manifest(node_name) -> Callable[[], None]` — Build a `main()` that spins up `ManifestHALLifecycleNode`. The node reads `robot_yaml` + `hal_mode` ("sim"|"real") ROS params and constructs its HAL via `openral_hal.build_hal(description, mode=hal_mode)` — one node class serves both modes for every robot. Used by franka / ur5e / ur10e / aloha / g1 / h1 / rizon4 / so100 / so101 (issue #191 Phase 2 migrated so100/so101 off their bespoke node); `openral deploy sim` injects `hal_mode="sim"`, `openral deploy run` injects `hal_mode="real"`. A robot lacking the requested mode raises `ROSCapabilityMismatch`. (L252)
-- `decode_action_chunk(msg) -> Action | None` — Inverse of `ros_publishing_hal._flatten_action_payload`. Decodes the `ActionChunk` wire shape (`flat` + `n_dof` + `horizon` + `control_mode`) back into a typed `openral_core.Action` with the per-mode payload field populated (`cartesian_delta` / `gripper` / `body_twist` / `joint_*`). Returns `None` for degenerate chunks (`flat=[]`, `n_dof≤0`) and for modes the F1/F5 publisher doesn't encode (`CARTESIAN_POSE`, `FOOT_PLACEMENT`, `DEX_HAND_JOINT`). Used by `HALLifecycleNodeBase._on_safe_action`; lives at module scope so unit tests in `tests/unit/test_lifecycle_action_chunk_decoder.py` exercise it without a ROS 2 install. (L103)
+- `class HALLifecycleNodeBase(LifecycleNode)` — Public base class. Owns the standard `/joint_states` + `~/joint_states` publishers, the `/openral/safe_action` + `/openral/estop` subscribers, the 1 Hz `DiagnosticsHeartbeat`, the per-tick `hal.read_state` + `hal.send_action` OTel spans, the estop latch, and the full configure → activate → deactivate → cleanup → shutdown transition wiring. The formerly used `~/command` (`trajectory_msgs/JointTrajectory`) subscriber + its `_on_command` callback + the `_subscriber` field were removed; `_send_action_traced` is now driven only by `_on_safe_action`. (L326)
+  - `_create_hal(self) -> HAL` — **Subclass hook (required)**: construct and return a HAL instance. Reads ROS-parameter-driven constructor args via `self.get_parameter(...)`. (L386)
+  - `_heartbeat_extra_fields(self) -> dict[str, str]` — Subclass hook (optional): extra key/values for the `/diagnostics` payload (e.g. `{"port": "/dev/ttyUSB0"}` for SO-100, `{"mjcf": "..."}` for OpenArm). Default: `{}`. (L398)
+  - `on_configure_post_hal(self) -> TransitionCallbackReturn` — Subclass hook (optional): robot-specific setup after the HAL connects (e.g. opening a camera renderer on OpenArm). Default: `SUCCESS`. (L410)
+  - `on_activate_post_subs(self) -> TransitionCallbackReturn` — Subclass hook (optional): robot-specific timers/publishers after the base wires its subs (e.g. the OpenArm camera-render timer). Default: `SUCCESS`. (L419)
+  - `on_deactivate_pre_teardown(self) -> None` — Subclass hook (optional): stop robot-specific timers before base teardown. Default: no-op. (L427)
+  - `on_cleanup_pre_disconnect(self) -> None` — Subclass hook (optional): tear down robot-specific resources (viewers, renderers) before HAL.disconnect(). Default: no-op. (L434)
+  - `_publish_joint_state(self) -> None` — Timer callback. Wraps `self._hal.read_state()` in a `hal.read_state` span (identity attrs + `producer.record_joint_state`) and publishes the standard `/joint_states` + `~/joint_states` messages. Subclasses may override + call `super()._publish_joint_state()` to extend (OpenArm does this for viewer-sync). (L765)
+  - `_on_safe_action(self, msg) -> None` — `/openral/safe_action` callback. Decodes the `openral_msgs/ActionChunk` into an `openral_core.Action` and forwards through `_send_action_traced(action, source="safe_action")`. (L837)
+  - `_send_action_traced(self, action, *, source) -> None` — Forward `action` to `self._hal.send_action` inside a `hal.send_action` span. The `source` attribute disambiguates the origin on the dashboard's Commands card (kept on the span so future subscriber additions can fan in without changing the span shape). (L857)
+- `make_lifecycle_main(node_name, hal_factory) -> Callable[[], None]` — Build a `main()` entry point for a zero-parameter HAL adapter. Internally constructs a `_FactoryHALLifecycleNode(HALLifecycleNodeBase)` whose `_create_hal()` returns `hal_factory()`. Superseded for the standard arms by `make_lifecycle_main_from_manifest`; retained for bespoke nodes. (L198)
+- `class ManifestHALLifecycleNode(HALLifecycleNodeBase)` — Public generic manifest-driven lifecycle node (promoted from the private `_ManifestHALLifecycleNode` under issue #191). Reads `robot_yaml` + `hal_mode` + sensor knobs as ROS params and builds its HAL via `openral_hal.build_hal`, so a robot's construction kwargs come from the manifest's `hal.parameters.defaults` — no bespoke `_create_hal` subclass. Attaches `SimSensorBridge` (cameras / depth / scan / viewer) in `on_activate_post_subs`. In `on_configure_post_hal`, **reflects** on the built HAL and opens `/openral/<robot>/reset_to_pose` (`openral_msgs/srv/ResetToPose`) iff it exposes `reset_to_pose` — generalising the openarm-only service to every `MujocoArmHAL` sim arm (issue #191 Phase 2); HALs without the method (panda_mobile, scene-attached twins) get no service. In `_create_hal`, when a scene composition is declared (and not scene-attaching), calls the named composer and threads the composed MJCF in as the HAL's `mjcf_path` (issue #191 Phase 3b — openarm tabletop); the composition is read from the `scene_composition_json` ROS param (the DeployScene's own `composition`) which **takes precedence** over the robot manifest's `scene_defaults.composition` (back-compat fallback) — so the scene owns its arena, the robot manifest describes the robot. Bare-twin camera robots (so100/so101) need no composition: their cameras are spliced by the generic camera rig at HAL connect from `sensors[].sim_placement`. In `on_activate_post_subs`, when the manifest declares a planar base (`base_joints`), also attaches a `MobileBaseBridge` (`/odom` + `odom->base_link` TF + `/cmd_vel`→BODY_TWIST) — so panda_mobile runs on this node with no subclass (issue #191 Phase 3a). The per-robot lifecycle packages collapse into this node (issue #191 Phases 2-3). A back-compat alias `_ManifestHALLifecycleNode` is retained. (L969)
+- `make_lifecycle_main_from_manifest(node_name) -> Callable[[], None]` — Build a `main()` that spins up `ManifestHALLifecycleNode`. The node reads `robot_yaml` + `hal_mode` ("sim"|"real") ROS params and constructs its HAL via `openral_hal.build_hal(description, mode=hal_mode)` — one node class serves both modes for every robot. Used by franka / ur5e / ur10e / aloha / g1 / h1 / rizon4 / so100 / so101 (issue #191 Phase 2 migrated so100/so101 off their bespoke node); `openral deploy sim` injects `hal_mode="sim"`, `openral deploy run` injects `hal_mode="real"`. A robot lacking the requested mode raises `ROSCapabilityMismatch`. (L256)
+- `decode_action_chunk(msg) -> Action | None` — Inverse of `ros_publishing_hal._flatten_action_payload`. Decodes the typed payload and preserves `ee_name`, `frame_id`, `confidence`, and the shared inference `tick_index` after the safety kernel. Returns `None` for degenerate or unwired modes. (L103)
 
 ### `python/hal/src/openral_hal/sim_bringup.py`
 _Resolve a `SimScene` or `BenchmarkScene` YAML path to a live `SimRollout`. Used by `build_hal`, which every manifest-driven node (incl. panda_mobile, issue #191 Phase 3) routes through._
@@ -571,23 +320,25 @@ _`SimAttachedHAL` — generic HAL Protocol adapter that wraps any in-process `Si
 - `pack_action_for_env(action: Action, description: RobotDescription, env_action_dim: int, prev: np.ndarray | None = None) -> np.ndarray` — Default `ActionPacker`. Translates `JOINT_POSITION` (arm-only or full base+arm), `BODY_TWIST` (vx/vy/wz → slots 0-2), `CARTESIAN_DELTA` (6-vec → arm slots `[base_dim:]`), and `GRIPPER_POSITION` (→ last slot) into the env's flat action vector. Raises `ROSConfigError` for unsupported modes or mismatched row widths. A single VLA policy step on a non-composite env (LIBERO OSC_POSE, SimplerEnv widowx — every `delta_ee_6d_plus_gripper` rSkill) splits into a CARTESIAN_DELTA then a GRIPPER_POSITION Action, each `env.step`-ed; `prev` (threaded from `SimAttachedHAL._last_env_action`) carries the last commanded gripper through the arm step and holds the arm on the gripper step, so the arm advances once per policy step with the gripper always commanded — mirroring `_pack_with_composite_split`. Without it each Action zeroed the other's slots and the arm barely moved. (L191)
 - `class SimAttachedHAL` — HAL Protocol adapter wrapping an in-process `SimRollout`. Reads live joint state via `normalized_joint_index` + `mj_name2id`; sends actions via `pack_action_for_env` (or a caller-supplied `ActionPacker`) into `env.step()`. Exposes `read_images()`, `mujoco_handles()`, `sim_time_ns()`, `base_pose`, `base_twist`, `base_pose_6dof()` for the ROS lifecycle node's camera publisher, viewer, sim-clock, and odom wiring. (L375)
   - `__init__(env: SimRollout, description: RobotDescription, *, action_packer: ActionPacker | None = None, env_reset_seed: int | None = None, env_action_dim: int | None = None, body_twist_dt_s: float = 0.05) -> None` (L404)
-  - `connect() -> None` — Reset the env at `env_reset_seed`; probe `env_action_dim` (via `_probe_env_action_dim`, which raises `ROSConfigError` naming the backend when no `action_dim` is introspectable and no override was given — never a silent fallback); invalidate joint-index cache. Idempotent. (L511)
-  - `disconnect() -> None` — Release env handle (idempotent). (L583)
-  - `read_state() -> JointState` — Walk `description.joints`, resolve each joint via `normalized_joint_index`, read live `qpos`/`qvel` from MJCF. (L587)
-  - `send_action(action: Action) -> None` — Pack action via composite-split or `ActionPacker`; call `env.step`. `BODY_TWIST` takes a direct-qpos Euler-integration path on a MuJoCo backend (`_apply_body_twist_to_qpos`, skips `env.step` so the arm doesn't churn); on a non-MuJoCo backend (Isaac kinematic base) it routes through `_apply_body_twist_via_env_step` instead — the scene integrates the base inside `env.step`. Stamps `last_action_ns` at the top (the single choke point both `_on_safe_action` and `_on_cmd_vel` reach) so the idle stepper yields to it. Routes the step through `_step_and_cache`, which auto-resets on episode termination — both the *returned* terminal (`StepResult.terminated/truncated` latched as `_episode_done`) and a *raised* terminal (raw-robosuite `ignore_done=False` backends throwing `is_terminated_episode_error`); the raised path resets once and re-steps so deploy-sim never freezes with the "env.step failed: executing action in terminated episode" spam. (L661)
-  - `idle_step() -> bool` — **Sim-only** free-running stepper (2026-06-04 amendment). Advances the wrapped `SimRollout` one tick with `np.zeros(env_action_dim)` (HOLD) so cameras keep rendering when no skill is executing — without it an idle deploy-sim scene freezes and the perception bus sees a dead scene. Returns `False` (suppressed) when not connected, estop-latched, `env_action_dim is None`, or no live MuJoCo handles; else steps and returns `True`. Mirrors `send_action`'s deferred-reset branch and `_last_obs` re-cache; does NOT touch `_last_env_action` / `_last_body_twist`. **Defined ONLY on `SimAttachedHAL`** — real HALs never define it; this method-only exclusion (not "zero is harmless") is the primary real-hardware guard, since a zero vector is a HOLD in sim but "drive to 0 rad" on a real position arm. (L892)
-  - `read_images() -> dict[str, Any]` — Return latest rendered camera frames keyed by camera name from the cached `_last_obs`. (L1452)
+  - `connect() -> None` — Reset the env at `env_reset_seed`; probe `env_action_dim` (via `_probe_env_action_dim`, which raises `ROSConfigError` naming the backend when no `action_dim` is introspectable and no override was given — never a silent fallback); invalidate joint-index cache. Idempotent. (L517)
+  - `disconnect() -> None` — Release env handle (idempotent). (L591)
+  - `read_state() -> JointState` — Walk `description.joints`, resolve each joint via `normalized_joint_index`, read live `qpos`/`qvel` from MJCF. (L595)
+  - `send_action(action: Action) -> None` — Pack action via composite-split or `ActionPacker`; call `env.step`. `BODY_TWIST` takes a direct-qpos Euler-integration path on a MuJoCo backend (`_apply_body_twist_to_qpos`, skips `env.step` so the arm doesn't churn); on a non-MuJoCo backend (Isaac kinematic base) it routes through `_apply_body_twist_via_env_step` instead — the scene integrates the base inside `env.step`. Stamps `last_action_ns` at the top (the single choke point both `_on_safe_action` and `_on_cmd_vel` reach) so the idle stepper yields to it. Routes the step through `_step_and_cache`, which auto-resets on episode termination — both the *returned* terminal (`StepResult.terminated/truncated` latched as `_episode_done`) and a *raised* terminal (raw-robosuite `ignore_done=False` backends throwing `is_terminated_episode_error`); the raised path resets once and re-steps so deploy-sim never freezes with the "env.step failed: executing action in terminated episode" spam. (L669)
+  - `_stage_action_group(action, group_step) -> None` — For backends exposing `action_group_size` + `step_action_group`, stage each safety-approved slot by `Action.tick_index` and commit exactly one simulator step only when the complete tick is present. Rejected/missing slots never actuate; incomplete prior ticks are visibly dropped.
+  - `idle_step() -> bool` — **Sim-only** free-running stepper (2026-06-04 amendment). Advances the wrapped `SimRollout` one tick with `np.zeros(env_action_dim)` (HOLD) so cameras keep rendering when no skill is executing — without it an idle deploy-sim scene freezes and the perception bus sees a dead scene. Returns `False` (suppressed) when not connected, estop-latched, `env_action_dim is None`, or no live MuJoCo handles; else steps and returns `True`. Mirrors `send_action`'s deferred-reset branch and `_last_obs` re-cache; does NOT touch `_last_env_action` / `_last_body_twist`. **Defined ONLY on `SimAttachedHAL`** — real HALs never define it; this method-only exclusion (not "zero is harmless") is the primary real-hardware guard, since a zero vector is a HOLD in sim but "drive to 0 rad" on a real position arm. (L959)
+  - `read_images() -> dict[str, Any]` — Return latest rendered camera frames keyed by camera name from the cached `_last_obs`. (L1533)
+  - `read_policy_state() -> list[float] | None` — Return cached simulator-native checkpoint proprioception for `/openral/policy_state`.
   - `read_depth_clouds() -> dict[str, NDArray]` — Per-depth-sensor `(N,3)` `base_link` point clouds from `_last_obs["depth_points"]` (a non-MuJoCo backend, e.g. the Isaac scene, deprojects via `Camera.get_pointcloud` so the HAL never re-derives geometry); `{}` when the backend renders no depth. `SimSensorBridge` publishes them as `PointCloud2` for octomap.
   - `read_scan() -> NDArray | None` — The 2-D LaserScan range fan (`base_link`, `angle_min=-π`→`+π`) from `_last_obs["scan"]` when a non-MuJoCo backend ray-casts a lidar (the Isaac scene); `None` when it renders no lidar. `SimSensorBridge._compute_scan_ranges` reads it for `/scan`.
-  - `mujoco_handles() -> tuple[Any, Any] | None` — Forward the env's `(model, data)` MJCF handles. (L1332)
+  - `mujoco_handles() -> tuple[Any, Any] | None` — Forward the env's `(model, data)` MJCF handles. (L1413)
   - `sim_time_ns() -> int | None` — Cross-reset-monotonic elapsed sim time in ns — the seam a sim `/clock` publisher reads. Returns the wrapped `SimRollout.sim_time_ns()` (per-episode) plus an accumulated offset: `connect` and the auto-resets fold each finished episode's elapsed sim-time into the offset (`_accumulate_sim_time_before_reset`) BEFORE the backend rewinds its clock, so the value is monotonic non-decreasing across `env.reset` (robocasa rewinds `MjData.time` to 0). `None` when the wrapped rollout has no sim clock (clock-less backend / sidecar) — the consumer then falls back to wall time.
   - `clock_authority() -> ClockAuthority` — Return the timestamp authority this HAL contributes to the graph: `ClockAuthority.simulation(<backend>, timestep_s=body_twist_dt_s)` when `sim_time_ns()` is live, otherwise `ClockAuthority.host_wall()` so launch keeps the graph on the host-wall authority.
-  - `estop() -> None` — Latch e-stop; subsequent `send_action` calls are dropped. (L1326)
-  - `base_pose -> tuple[float, float, float]` [@property] — Current `(x, y, yaw)`: from MJCF qpos on a MuJoCo backend, else from `obs["base_pose"]` the SimRollout surfaces (Isaac kinematic base); `(0,0,0)` when the backend reports neither. Feeds the `/odom` publisher. (L1516)
-  - `base_twist -> tuple[float, float, float, float, float, float]` [@property] — Last commanded body twist `(vx, vy, vz, wx, wy, wz)`. (L1569)
+  - `estop() -> None` — Latch e-stop; subsequent `send_action` calls are dropped. (L1405)
+  - `base_pose -> tuple[float, float, float]` [@property] — Current `(x, y, yaw)`: from MJCF qpos on a MuJoCo backend, else from `obs["base_pose"]` the SimRollout surfaces (Isaac kinematic base); `(0,0,0)` when the backend reports neither. Feeds the `/odom` publisher. (L1597)
+  - `base_twist -> tuple[float, float, float, float, float, float]` [@property] — Last commanded body twist `(vx, vy, vz, wx, wy, wz)`. (L1650)
   - `_apply_body_twist_via_env_step(row: list[float]) -> None` — Non-MuJoCo `BODY_TWIST`: validate the planar twist, latch it for `/odom`, pack `(vx, vy, wz)` into the FINAL three env-action slots (the manifest scene's `[arm…, gripper, base-twist]` layout), zero the arm/gripper so a pure base move holds the arm, and `_step_and_cache`.
-  - `base_pose_6dof() -> tuple[...] | None` — Full 6-DoF `(xyz, quat_xyzw)` from robocasa `raw_proprio`; falls back to `None` for non-robocasa backends. (L1579)
-  - `last_action_ns -> int` [@property] — Monotonic ns of the last real action through `send_action`; `0` until the first one. The idle stepper reads it (via `should_idle_step`) to yield to an active skill. (L1442)
+  - `base_pose_6dof() -> tuple[...] | None` — Full 6-DoF `(xyz, quat_xyzw)` from robocasa `raw_proprio`; falls back to `None` for non-robocasa backends. (L1660)
+  - `last_action_ns -> int` [@property] — Monotonic ns of the last real action through `send_action`; `0` until the first one. The idle stepper reads it (via `should_idle_step`) to yield to an active skill. (L1523)
 
 ### `python/hal/src/openral_hal/sim_sensor_bridge.py`
 _Shared sim-sensor + viewer bridge for scene-attached HAL lifecycle nodes. Republishes RGB camera frames and a live MuJoCo viewer for any manifest-driven node, and runs the sim-only idle stepper. Phase 2 adds `/scan` + depth `PointCloud2`. Depth comes from the MuJoCo ray-cast (`_publish_depth_clouds`) OR, for a non-MuJoCo backend that surfaces ready `base_link` clouds in obs (the Isaac scene), `_publish_depth_clouds_from_obs` — which wraps `hal.read_depth_clouds()` into a `base_link` `PointCloud2` (no ray-cast, no per-camera optical TF); `_setup_depth` creates the publishers when either source is present. rclpy imported lazily._

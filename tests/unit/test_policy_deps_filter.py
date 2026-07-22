@@ -23,7 +23,10 @@ from openral_sim.policy_deps import (
     _FAMILY_INSTALL_HINTS,
     _FAMILY_REQUIRED_IMPORTS,
     can_import_policy_family,
+    can_import_policy_manifest,
     filter_importable_manifests,
+    manifest_install_groups,
+    manifest_install_hint,
     model_family_install_groups,
     model_family_required_imports,
     purge_partial_imports,
@@ -36,6 +39,7 @@ class _StubManifest:
 
     name: str
     model_family: str
+    policy_extras: dict[str, object] | None = None
 
 
 def test_install_hints_and_required_imports_cover_the_same_families() -> None:
@@ -165,6 +169,19 @@ def test_filter_importable_manifests_keeps_unknown_families() -> None:
         [_StubManifest(name="exotic", model_family="some_new_family")]
     )
     assert len(kept) == 1
+
+
+def test_behavior_groot_manifest_uses_sidecar_wire_profile() -> None:
+    manifest = _StubManifest(
+        name="behavior",
+        model_family="gr00t",
+        policy_extras={"implementation": "behavior_b1k_sidecar"},
+    )
+    ok, reason = can_import_policy_manifest(manifest)
+    assert ok is True
+    assert reason is None
+    assert manifest_install_groups(manifest) == ("behavior-groot",)
+    assert "behavior-groot" in manifest_install_hint(manifest)
 
 
 def test_purge_partial_imports_drops_only_matching_prefixes() -> None:

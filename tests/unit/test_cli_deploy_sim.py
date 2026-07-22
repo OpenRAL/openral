@@ -44,6 +44,7 @@ _OPENARM_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "openarm_tabletop.yaml"
 _PANDA_MOBILE_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "robocasa_pnp.yaml"
 _SO101_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "so101_box.yaml"
 _LIBERO_PNP_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "libero_pnp.yaml"
+_BEHAVIOR_CONFIG = _REPO_ROOT / "scenes" / "deploy" / "behavior_r1pro.yaml"
 
 
 def test_bh_deploy_sim_help_renders() -> None:
@@ -240,6 +241,20 @@ def test_deploy_sim_scene_attached_sapien_registry_uses_generic_hal(tmp_path: Pa
         joined = " ".join(invocation.argv_template)
         assert "hal_package:=openral_hal_scene_attached" in joined
         assert "clock_origin:=simulation" in joined
+
+
+def test_deploy_sim_behavior_r1pro_uses_generic_scene_hal() -> None:
+    invocation = resolve_launch_invocation(
+        config=_BEHAVIOR_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "r1pro"
+    assert invocation.hal.package == "openral_hal_scene_attached"
+    assert invocation.hal_params["sim_env_yaml"] == str(_BEHAVIOR_CONFIG.resolve())
+    assert invocation.clock_origin == "simulation"
 
 
 def test_deploy_sim_real_mode_uses_host_wall_clock_origin() -> None:

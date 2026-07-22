@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription
+from openral_core import Action, ControlMode, RobotDescription
 from openral_hal.sim_attached import SimAttachedHAL
 from openral_sim.rollout import StepResult
 
@@ -71,6 +71,24 @@ class _FakeSim:
 
     def close(self) -> None:
         return None
+
+
+class _GroupedSim(_FakeSim):
+    action_group_size = 2
+
+    def __init__(self, joint_positions: list[float]) -> None:
+        super().__init__(joint_positions)
+        self.groups: list[list[Action]] = []
+
+    def step(self, action: np.ndarray) -> StepResult:
+        raise AssertionError(f"flat step must not run for grouped backend: {action}")
+
+    def step_action_group(self, actions: list[Action]) -> StepResult:
+        self.groups.append(actions)
+        self.steps += 1
+        obs = self._obs()
+        obs["policy_state"] = np.arange(8, dtype=np.float32)
+        return StepResult(obs, 0.0, False, False, {})
 
 
 def test_read_state_uses_obs_joint_positions() -> None:
@@ -150,3 +168,31 @@ def test_read_state_tolerates_length_mismatch(jp_len: int) -> None:
         assert len(state.position) == len(description.joints)
     finally:
         hal.disconnect()
+
+
+def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
+    description = _franka_description()
+    env = _GroupedSim([0.0] * len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    first = Action(
+        control_mode=ControlMode.BODY_TWIST,
+        body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.0)],
+        tick_index=7,
+    )
+    second = Action(
+        control_mode=ControlMode.GRIPPER_POSITION,
+        gripper=[1.0],
+        ee_name="panda_hand",
+        tick_index=7,
+    )
+
+    hal.send_action(first)
+    assert env.steps == 0
+    assert hal.idle_step() is False
+    hal.send_action(second)
+
+    assert env.steps == 1
+    assert len(env.groups) == 1
+    assert [action.tick_index for action in env.groups[0]] == [7, 7]
+    assert hal.read_policy_state() == list(np.arange(8, dtype=np.float32))

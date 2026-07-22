@@ -35,13 +35,13 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   `JOINT_POSITIONS, JOINT_VELOCITIES, DELTA_EE_6D_PLUS_GRIPPER, DELTA_EE_6D, CARTESIAN_POSE`
 - `class RSkillAction(str, Enum)` — Closed vocabulary of high-level action verbs an rSkill can perform; declared on `RSkillManifest.actions` and surfaced to the reasoner LLM tool palette so it can pick a skill by what it does. (L937)
   Manipulation primitives: `PICK, PLACE, PICK_AND_PLACE, TRANSFER, GRASP, RELEASE`; articulated / contact-rich: `OPEN, CLOSE, PUSH, PULL, SLIDE, INSERT, POUR, WIPE, ROTATE`; motion: `REACH`; mobile: `NAVIGATE`; social/expressive: `WAVE, SHAKE`; generalist marker (foundation / multi-task checkpoints): `GENERALIST`; perception producer: `DETECT` (for `kind: "detector"` rSkills); scene VLM: `QUERY` (for `kind: "vlm"` rSkills); reward monitor: `MONITOR` (for `kind: "reward"` rSkills); playbook decision procedure: `PLAN` (for `kind: "playbook"` rSkills). New entries are additive.
-- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2584)
+- `class QuantizationDtype(str, Enum)` — Weight numeric format. (L2592)
   `FP32, FP16, BF16, INT8, INT4, FP4_NVFP4`
-- `class QuantizationBackend(str, Enum)` — Inference backend. (L2608)
+- `class QuantizationBackend(str, Enum)` — Inference backend. (L2616)
   `PYTORCH, ONNX, TENSORRT, GGUF, MLX`
-- `class RSkillState(str, Enum)` — Skill lifecycle. (L2680)
+- `class RSkillState(str, Enum)` — Skill lifecycle. (L2688)
   `UNCONFIGURED, INACTIVE, ACTIVE, FINALIZED, ERROR`
-- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2760)
+- `class RSkillLicensePosture(str, Enum)` — License posture (CLAUDE §7.4). (L2768)
   `APACHE_2_0, MIT, BSD, PERMISSIVE_RESEARCH, NVIDIA_NON_COMMERCIAL, NVIDIA_OPEN_MODEL, RLWRLD_NON_COMMERCIAL, PROPRIETARY, UNKNOWN` (NVIDIA_OPEN_MODEL = GR00T N1.7+, commercial OK)
 - `class RSkillRuntime(str, Enum)` — Manifest runtime hint. (L2775)
   `PYTORCH, ONNX, TENSORRT, TRT_LLM, VLLM, GGUF, MLX, JAX`
@@ -126,7 +126,7 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   fields: `label, confidence, pose, bbox_3d, track_id`
 - `class WorldCollisionPrimitive(BaseModel)` — A placed convex obstacle in the world (world-frame analogue of `LinkCollisionGeometry`); fields `shape: CollisionShape, pose: Pose6D, object_id: str | None`. (L2027)
 - `class OccupancyGridRef(BaseModel)` — Reference to a 2D occupancy grid for mobile-base world-collision (mirrors `nav_msgs/OccupancyGrid` metadata); fields `frame_id, resolution_m (>0), width (>=0), height (>=0), origin: Pose6D, data_topic`. (L2051)
-- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills. (L2196)
+- `class WorldState(BaseModel)` — Snapshot consumed by Reasoner and Skills; optional `policy_state` carries a typed simulator-native checkpoint proprio vector when joint state alone cannot represent the trained observation. (L2196)
   fields: `stamp_ns, joint_state, base_pose, base_twist, ee_poses, contact_forces, images, image_frames, point_clouds, tactile, detected_objects, battery_pct, diagnostics, collision_primitives, occupancy_grid`
   - **collision_primitives / occupancy_grid** — `list[WorldCollisionPrimitive]` (default empty) + `OccupancyGridRef | None` (default `None`): the bounded world surface the kernel's world-collision phase checks robot links against; an absent/stale world is treated as unavailable (fail-closed).
   - **image_frames** — `dict[str, SensorFrame] | None`. Optional in-process frame carrier for no-ROS deployments; default `None` keeps the existing `images: dict[str, str]` topic-ref path unchanged.
@@ -146,7 +146,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall wher
 - `class RecallObjectResult(BaseModel)` — `matches: list[RecallObjectMatch]` (empty = unknown → caller raises `ROSObjectNotInMemory`).
 - `class ResolvePlaceQuery(BaseModel)` — Resolve a place/room/agent reference; fields `reference, kind: SpatialNodeKind | None`.
 - `class ResolvePlaceResult(BaseModel)` — fields `node_id, goal: Pose6D, path_node_ids: list[str]` (a `traversable_to` path).
-- `class Action(BaseModel)` — Action step or chunk produced by a Skill. (L551)
+- `class Action(BaseModel)` — Action step or chunk produced by a Skill. `tick_index` preserves the shared inference-tick identity of multi-slot actions across the safety wire for atomic sim commit. (L551)
   fields: `control_mode, horizon, joint_targets, joint_velocities, joint_torques, cartesian_pose, cartesian_delta, cartesian_twist, body_twist, foot_placements, gripper, dex_hand_joints, confidence, stamp_ns, ee_name, frame_id, safety_overrides`
 - `class QuantizationConfig(BaseModel)` — Quantization recipe. (L644)
   fields: `dtype, backend, per_channel, calibration_dataset, extra`

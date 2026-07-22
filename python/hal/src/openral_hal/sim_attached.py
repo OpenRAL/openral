@@ -473,6 +473,12 @@ class SimAttachedHAL:
         # arm's OSC-delta slot is RE-ZEROED right before each step so
         # the policy's per-step delta is applied once, not accumulated.
         self._last_env_action: NDArray[np.float32] | None = None
+        # Optional atomic multi-surface action staging. Backends that expose
+        # ``step_action_group(actions)`` receive every safety-approved slot from
+        # one ActionChunk.tick_index and step exactly once when their declared
+        # ``action_group_size`` is complete.
+        self._pending_action_tick: int | None = None
+        self._pending_actions: list[Action] = []
         # Latched when the last env.step reported terminal
         # (terminated/truncated). The next send_action resets the env
         # before stepping so episodic backends (LIBERO) never step a
@@ -529,6 +535,8 @@ class SimAttachedHAL:
         self._last_state_ns = time.time_ns()
         self._connected = True
         self._episode_done = False  # fresh episode after (re)connect
+        self._pending_action_tick = None
+        self._pending_actions.clear()
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
@@ -687,6 +695,10 @@ class SimAttachedHAL:
                 "SimAttachedHAL.send_action: env_action_dim resolved to None; "
                 "re-connect or pass it explicitly to the constructor."
             )
+        group_step = getattr(self._env, "step_action_group", None)
+        if callable(group_step):
+            self._stage_action_group(action, group_step)
+            return
         # BODY_TWIST direct-qpos path. The default ``pack_action_for_env``
         # packs ``[vx, vy, wz]`` into slots 0-2 of robocasa's composite-
         # controller action vector, but robocasa's BASIC controller
@@ -772,6 +784,57 @@ class SimAttachedHAL:
             self._last_env_action = None  # stale: belongs to the prior episode
         self._step_and_cache(env_action, source="send_action")
 
+    def _stage_action_group(
+        self,
+        action: Action,
+        group_step: Callable[[list[Action]], Any],
+    ) -> None:
+        """Commit one simulator step after every slot in an inference tick is safe."""
+        group_size = int(getattr(self._env, "action_group_size", 0) or 0)
+        if group_size <= 0:
+            raise ROSConfigError(
+                "SimAttachedHAL: backend exposes step_action_group() without a positive "
+                "action_group_size."
+            )
+        tick = int(action.tick_index)
+        if tick <= 0:
+            raise ROSConfigError(
+                "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
+            )
+        if self._pending_action_tick is not None and tick != self._pending_action_tick:
+            print(
+                f"[sim_attached.send_action] dropping incomplete safe action group "
+                f"tick={self._pending_action_tick} "
+                f"slots={len(self._pending_actions)}/{group_size}; "
+                f"starting tick={tick}",
+                flush=True,
+            )
+            self._pending_actions.clear()
+            self._pending_action_tick = None
+        if self._pending_action_tick is None:
+            self._pending_action_tick = tick
+        self._pending_actions.append(action)
+        if len(self._pending_actions) < group_size:
+            return
+        if len(self._pending_actions) > group_size:
+            self._pending_actions.clear()
+            self._pending_action_tick = None
+            raise ROSRuntimeError(
+                f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
+            )
+        if self._episode_done:
+            self._reset_terminated_episode("send_action_group", trigger="returned-terminal")
+        actions = list(self._pending_actions)
+        self._pending_actions.clear()
+        self._pending_action_tick = None
+        try:
+            step_result = group_step(actions)
+        except Exception as exc:
+            raise ROSRuntimeError(
+                f"SimAttachedHAL.send_action_group: env step failed: {exc}"
+            ) from exc
+        self._cache_step_result(step_result)
+
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
         """Deferred-reset → ``env.step`` → re-cache ``_last_obs`` → re-latch terminal.
 
@@ -837,6 +900,11 @@ class SimAttachedHAL:
         # re-stepping the simulator. A dict-shaped Protocol fallback
         # ``getattr(..., 'observation', None)`` is enough because every
         # in-tree backend returns a ``StepResult`` with this attribute.
+        self._cache_step_result(step_result)
+        return True
+
+    def _cache_step_result(self, step_result: object) -> None:
+        """Cache one backend transition and latch its terminal state."""
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
@@ -844,7 +912,6 @@ class SimAttachedHAL:
         self._episode_done = bool(
             getattr(step_result, "terminated", False) or getattr(step_result, "truncated", False)
         )
-        return True
 
     def _reset_terminated_episode(self, source: str, *, trigger: str) -> None:
         """Reset the env after an episode terminal and clear the terminal latch.
@@ -943,6 +1010,8 @@ class SimAttachedHAL:
             return False
         if self._env_action_dim is None:
             return False
+        if self._pending_actions:
+            return False
         # No MuJoCo-handle gate: idle-stepping is valid for ANY wrapped
         # SimRollout — a zero action is a HOLD for the sim's velocity / OSC-delta
         # controllers, and the method-only-on-SimAttachedHAL exclusion (real HALs
@@ -956,8 +1025,18 @@ class SimAttachedHAL:
         # this path cannot drift from send_action. Never build a non-zero
         # vector here. ``_step_and_cache`` deliberately leaves
         # ``_last_env_action`` / ``_last_body_twist`` untouched.
-        zero_action = np.zeros(self._env_action_dim, dtype=np.float32)
-        return self._step_and_cache(zero_action, source="idle_step")
+        idle_action_getter = getattr(self._env, "idle_action", None)
+        idle_action = (
+            np.asarray(idle_action_getter(), dtype=np.float32).reshape(-1)
+            if callable(idle_action_getter)
+            else np.zeros(self._env_action_dim, dtype=np.float32)
+        )
+        if idle_action.shape != (self._env_action_dim,):
+            raise ROSRuntimeError(
+                f"SimAttachedHAL.idle_step: backend idle_action width "
+                f"{idle_action.shape[0]} != env_action_dim {self._env_action_dim}."
+            )
+        return self._step_and_cache(idle_action, source="idle_step")
 
     # ── Per-mode → composite-controller slot mapping ──────────
     def _composite_controller(self) -> Any:  # noqa: ANN401  # reason: robosuite composite controller is an untyped third-party object
@@ -1326,6 +1405,8 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
+        self._pending_action_tick = None
+        self._pending_actions.clear()
 
     # ── Helpers exposed to the lifecycle node ──────────────────────────
 
@@ -1645,3 +1726,12 @@ class SimAttachedHAL:
     def reset_estop(self) -> None:
         """Clear the estop latch. Caller asserts the cause has been resolved."""
         self._estop_latched = False
+
+    def read_policy_state(self) -> list[float] | None:
+        """Return the cached simulator-native policy state, when exposed."""
+        if self._last_obs is None:
+            return None
+        raw = self._last_obs.get("policy_state", self._last_obs.get("state"))
+        if raw is None:
+            return None
+        return [float(value) for value in np.asarray(raw, dtype=np.float32).reshape(-1)]

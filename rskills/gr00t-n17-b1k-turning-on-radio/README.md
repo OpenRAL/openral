@@ -8,9 +8,8 @@ tags:
 - rskill
 - gr00t
 - vision-language-action
-- custom
-- behavior-1k
 - r1pro
+- behavior-1k
 datasets:
 - behavior-1k/2026-challenge-demos
 inference: false
@@ -46,7 +45,7 @@ to turn it on. It is task-specific to `turning_on_radio`.
 | Actions | rotate, push |
 | Objects | radio, dial, button |
 | Scenes | household living room |
-| Embodiment | BEHAVIOR R1 Pro (`custom` until an OpenRAL deploy manifest lands) |
+| Embodiment | BEHAVIOR R1 Pro (`r1pro`) |
 
 ## How it works
 
@@ -85,12 +84,12 @@ temporally-ensembled 23-D action per evaluator step.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Simulated Galaxea R1 Pro | `custom` | evaluator bridge | Official BEHAVIOR observation/action contract |
+| Simulated Galaxea R1 Pro | `r1pro` | evaluator + deploy sim | Official BEHAVIOR observation/action contract |
 
-`openral deploy sim` is not claimed yet. Its safety path needs an R1Pro
-`RobotDescription`, a 61-D world-state bridge, and atomic routing for the mixed
-23-D action. Splitting those bytes into independent HAL steps would change the
-policy semantics and is therefore intentionally refused.
+`openral deploy sim` uses `robots/r1pro/robot.yaml`, publishes the simulator's
+native 61-D policy state through WorldState, validates every typed action slot
+through the safety kernel, then atomically commits all six slots as one 23-D
+OmniGibson step.
 
 ## Sensors required
 
@@ -134,6 +133,14 @@ just sync --group behavior-groot
 openral behavior serve \
   --rskill rskills/gr00t-n17-b1k-turning-on-radio \
   --task turning_on_radio
+```
+
+Full deploy graph:
+
+```bash
+openral deploy sim \
+  --config scenes/deploy/behavior_r1pro.yaml \
+  --initial-task "turn on the radio"
 ```
 
 In the BEHAVIOR environment:

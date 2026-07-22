@@ -133,6 +133,10 @@ def decode_action_chunk(msg: object) -> object | None:
 
     rows: list[list[float]] = [flat[s * n_dof : (s + 1) * n_dof] for s in range(horizon)]
     kwargs: dict[str, Any] = {"control_mode": mode, "horizon": horizon}
+    kwargs["ee_name"] = str(getattr(msg, "ee_name", "") or "") or None
+    kwargs["frame_id"] = str(getattr(msg, "frame_id", "") or "") or None
+    kwargs["confidence"] = float(getattr(msg, "confidence", 1.0) or 1.0)
+    kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     if mode in (ControlMode.JOINT_POSITION, ControlMode.JOINT_TRAJECTORY):
         kwargs["joint_targets"] = rows
     elif mode is ControlMode.JOINT_VELOCITY:
@@ -339,6 +343,7 @@ if _ROS2_AVAILABLE:
             self._timer: Any = None
             self._publisher: Any = None
             self._joint_state_pub: Any = None
+            self._policy_state_pub: Any = None
             self._safe_action_sub: Any = None
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
@@ -515,7 +520,7 @@ if _ROS2_AVAILABLE:
                 QoSReliabilityPolicy,
             )
             from sensor_msgs.msg import JointState as RosJointState
-            from std_msgs.msg import Empty
+            from std_msgs.msg import Empty, Float32MultiArray
 
             control_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
@@ -531,6 +536,11 @@ if _ROS2_AVAILABLE:
                 RosJointState, "/joint_states", control_qos
             )
             self._publisher = self.create_publisher(RosJointState, "~/joint_states", control_qos)
+            self._policy_state_pub = self.create_publisher(
+                Float32MultiArray,
+                "/openral/policy_state",
+                control_qos,
+            )
             # Sim-attached HALs (those exposing ``idle_step``) read
             # MjData; publish odom/joint_state off a dedicated thread (below)
             # from a plain-data snapshot, so they aren't starved by env.step.
@@ -664,6 +674,9 @@ if _ROS2_AVAILABLE:
             if self._joint_state_pub is not None:
                 self.destroy_publisher(self._joint_state_pub)
                 self._joint_state_pub = None
+            if self._policy_state_pub is not None:
+                self.destroy_publisher(self._policy_state_pub)
+                self._policy_state_pub = None
             return TransitionCallbackReturn.SUCCESS
 
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
@@ -762,6 +775,13 @@ if _ROS2_AVAILABLE:
             # env.step. ``None`` for clock-less / sidecar HALs → no /clock.
             sim_time_getter = getattr(self._hal, "sim_time_ns", None)
             sim_time_ns = sim_time_getter() if sim_time_getter is not None else None
+            policy_state_getter = getattr(self._hal, "read_policy_state", None)
+            policy_state_raw = policy_state_getter() if policy_state_getter is not None else None
+            policy_state = (
+                tuple(float(value) for value in policy_state_raw)
+                if policy_state_raw is not None
+                else None
+            )
             self._proprio.set(
                 ProprioFrame(
                     state=state,
@@ -769,6 +789,7 @@ if _ROS2_AVAILABLE:
                     base_pose_6dof=pose_6dof,
                     base_twist=tuple(float(v) for v in twist),
                     sim_time_ns=sim_time_ns,
+                    policy_state=policy_state,
                 )
             )
 
@@ -842,6 +863,14 @@ if _ROS2_AVAILABLE:
             self._publisher.publish(msg)
             if self._joint_state_pub is not None:
                 self._joint_state_pub.publish(msg)
+            if self._policy_state_pub is not None:
+                frame = self._proprio.latest() if self._proprio is not None else None
+                if frame is not None and frame.policy_state is not None:
+                    from std_msgs.msg import Float32MultiArray
+
+                    policy_msg = Float32MultiArray()
+                    policy_msg.data = list(frame.policy_state)
+                    self._policy_state_pub.publish(policy_msg)
 
         def _on_safe_action(self, msg: object) -> None:
             """``/openral/safe_action`` callback.

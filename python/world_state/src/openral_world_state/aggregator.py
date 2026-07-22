@@ -188,6 +188,8 @@ class WorldStateAggregator:
         self._base_pose: Pose6D | None = None
         self._base_pose_stamp_ns: int = 0
         self._base_twist: tuple[float, float, float, float, float, float] | None = None
+        self._policy_state: list[float] | None = None
+        self._policy_state_stamp_ns: int = 0
         # battery
         self._battery_pct: float | None = None
         # latest object-memory snapshot (already deduped/evicted by
@@ -254,6 +256,17 @@ class WorldStateAggregator:
         with self._lock:
             self._images[sensor_name] = (topic, self._clock_fn())
         log.debug("world_state.image.updated", sensor=sensor_name)
+
+    def update_policy_state(self, values: list[float]) -> None:
+        """Record the simulator-native policy proprioception vector."""
+        with self._lock:
+            self._policy_state = [float(value) for value in values]
+            self._policy_state_stamp_ns = self._clock_fn()
+        log.debug(
+            "world_state.policy_state.updated",
+            robot=self.description.name,
+            dim=len(values),
+        )
 
     def update_image_frame(self, sensor_name: str, frame: SensorFrame) -> None:
         """Record an inline pixel payload for a named sensor.
@@ -431,6 +444,13 @@ class WorldStateAggregator:
                 diag["joint_state"] = "ok" if age_ns <= self._staleness_limit_ns else "stale"
                 ages_ms["joint_state"] = age_ns / 1e6
 
+            if self._policy_state is not None:
+                policy_age_ns = now_ns - self._policy_state_stamp_ns
+                diag["policy_state"] = (
+                    "ok" if policy_age_ns <= self._staleness_limit_ns else "stale"
+                )
+                ages_ms["policy_state"] = policy_age_ns / 1e6
+
             # Images — topic refs from last received frames
             images: dict[str, str] = {}
             for sensor_name in self._sensor_names:
@@ -490,6 +510,7 @@ class WorldStateAggregator:
                 joint_state=js,
                 base_pose=self._base_pose,
                 base_twist=self._base_twist,
+                policy_state=list(self._policy_state) if self._policy_state is not None else None,
                 ee_poses=ee_poses,
                 images=images,
                 image_frames=image_frames,

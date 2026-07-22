@@ -45,6 +45,7 @@ def _register_backends() -> None:
     """
     from openral_sim.backends import (
         aloha,
+        behavior,
         isaac_sim,
         libero,
         maniskill3,

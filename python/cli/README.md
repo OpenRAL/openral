@@ -33,3 +33,10 @@ conda run -n behavior python -m omnigibson.eval.eval \
 
 The bridge defaults to the official R1Pro contract: three RGB cameras, 61-D
 proprioception, and a 23-D action.
+
+The same contract can run through the full deploy graph:
+
+```bash
+openral deploy sim --config scenes/deploy/behavior_r1pro.yaml \
+  --initial-task "turn on the radio"
+```

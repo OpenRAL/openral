@@ -55,6 +55,7 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 | [`libero_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/libero_pnp.yaml) | `franka_panda` *(scene-fixed)* | `libero_spatial` | LIBERO (robosuite + MuJoCo) | Boot LIBERO in deploy mode so a reasoner can issue arbitrary pick-and-place commands |
 | [`openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml) | `openarm` *(free-axis)* | `openarm_tabletop_pnp` | Custom MJCF | OpenArm bimanual tabletop sandbox; default top camera matches the mddoai dataset POV |
 | [`robocasa_pnp.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/robocasa_pnp.yaml) | `panda_mobile` *(scene-fixed)* | `robocasa/PickPlaceCounterToCabinet` | RoboCasa (MuJoCo) | Mobile-base kitchen pick-and-place sandbox; reasoner-driven |
+| [`behavior_r1pro.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/behavior_r1pro.yaml) | `r1pro` *(scene-fixed)* | `behavior` | BEHAVIOR-1K / OmniGibson (Isaac Sim sidecar) | Full deploy graph on public `turning_on_radio` instance 0 |
 | [`so101_box.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/so101_box.yaml) | `so101_follower` *(scene-fixed)* | `so101_box` | Custom MJCF | 100×61.5×75 cm box arena + OAK-D Pro overhead + wrist camera; deploy sandbox |
 | [`so101_bench.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/so101_bench.yaml) | `so101_follower` *(scene-fixed)* | `so101_bench` | Custom MJCF | SO-101 bench-arena deploy sandbox |
 | [`libero_object.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/libero_object.yaml) | `franka_panda` *(scene-fixed)* | `libero_object` | LIBERO (robosuite + MuJoCo) | Boot LIBERO-Object in deploy mode; reasoner-driven pick-and-place |
@@ -86,6 +87,7 @@ Consumed by `openral sim run`.
 | [`franka_tabletop_push.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/franka_tabletop_push.yaml) | `franka_panda` *(scene-fixed)* | `tabletop_push` | `tabletop_push/push_to_goal` | Franka variant of the robot-agnostic cube push-to-goal |
 | [`pusht.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/pusht.yaml) | `pusht_2d` *(scene-fixed; 2-D pymunk)* | `pusht` | `pusht/0` | gym-pusht 2-D push smoke |
 | [`isaac_franka_bowl_plate.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/isaac_franka_bowl_plate.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | `isaac_sim/put_the_bowl_on_the_plate` | Isaac Sim bowl-on-plate; two-camera layout used by `gr00t-n17-libero` |
+| [`behavior_turning_on_radio.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/behavior_turning_on_radio.yaml) | `r1pro` *(scene-fixed)* | `behavior` | `behavior/turning_on_radio` | Official public-test instance 0 through the OmniGibson evaluator sidecar |
 
 ## BenchmarkScene catalogue (`scenes/benchmark/`)
 

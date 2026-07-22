@@ -208,6 +208,7 @@ if _ROS2_AVAILABLE:
             self._pub_fast = None
             self._pub_slow = None
             self._joint_sub = None
+            self._policy_state_sub = None
             self._camera_subs: dict[str, object] = {}
             self._slow_divider = 1
             self._tick_count = 0
@@ -240,7 +241,9 @@ if _ROS2_AVAILABLE:
             self._voxel_staleness_ns = 0
 
         @log_lifecycle_errors
-        def on_configure(self, state: object) -> TransitionCallbackReturn:
+        def on_configure(  # noqa: PLR0915  # reason: linear ROS subscription/publisher wiring
+            self, state: object
+        ) -> TransitionCallbackReturn:
             """Initialise the aggregator (if owned) and topic plumbing."""
             from openral_msgs.msg import (  # type: ignore[import-untyped]
                 WorldStateStamped,
@@ -304,6 +307,14 @@ if _ROS2_AVAILABLE:
                 RosJointState,
                 joint_states_topic,
                 self._on_joint_state,
+                sensor_qos,
+            )
+            from std_msgs.msg import Float32MultiArray
+
+            self._policy_state_sub = self.create_subscription(
+                Float32MultiArray,
+                "/openral/policy_state",
+                self._on_policy_state,
                 sensor_qos,
             )
 
@@ -503,6 +514,9 @@ if _ROS2_AVAILABLE:
             if self._joint_sub is not None:
                 self.destroy_subscription(self._joint_sub)
                 self._joint_sub = None
+            if self._policy_state_sub is not None:
+                self.destroy_subscription(self._policy_state_sub)
+                self._policy_state_sub = None
             for sub in self._camera_subs.values():
                 self.destroy_subscription(sub)  # type: ignore[arg-type]
             self._camera_subs.clear()
@@ -681,6 +695,14 @@ if _ROS2_AVAILABLE:
                 stamp_ns=time.time_ns(),
             )
             self._aggregator.update_joint_state(js)
+
+        def _on_policy_state(self, msg: object) -> None:
+            """Store a simulator-native policy state vector."""
+            if self._aggregator is None:
+                return
+            self._aggregator.update_policy_state(
+                [float(value) for value in (getattr(msg, "data", []) or [])]
+            )
 
         def _on_voxels(self, msg: object) -> None:  # OccupancyVoxels
             """Store the latest occupancy voxel grid (best-effort; cheap)."""

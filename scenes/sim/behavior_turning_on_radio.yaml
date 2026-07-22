@@ -1,0 +1,24 @@
+scene:
+  id: "behavior"
+  backend: "isaacsim"
+  observation_height: 720
+  observation_width: 720
+  cameras: ["head", "left_wrist", "right_wrist"]
+  backend_options:
+    task: "turning_on_radio"
+    instance_index: 0
+    mode: "public_test"
+    env_wrapper: "omnigibson.eval.wrappers.RGBDFullResWrapper"
+    boot_timeout_s: 1200
+    timeout_ms: 120000
+
+task:
+  id: "behavior/turning_on_radio"
+  scene_id: "behavior"
+  instruction: "turn on the radio"
+  max_steps: 1000
+  success_key: "is_success"
+
+seed: 0
+n_episodes: 1
+record_video: false

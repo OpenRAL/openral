@@ -223,6 +223,13 @@ class TestJointStateUpdates:
         ws = agg.snapshot()
         assert ws.joint_state.position[0] == pytest.approx(2.0)
 
+    def test_policy_state_round_trips(self) -> None:
+        agg = _make_agg()
+        agg.update_policy_state([1.0, 2.0, 3.0])
+        snapshot = agg.snapshot()
+        assert snapshot.policy_state == [1.0, 2.0, 3.0]
+        assert snapshot.diagnostics["policy_state"] == "ok"
+
     def test_stale_joint_state_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Advance the clock past staleness_limit_s and verify 'stale'."""
         now_ns = time.time_ns()

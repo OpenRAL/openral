@@ -38,6 +38,7 @@ Embodiment tags are short strings that appear in `rskill.yaml` under `embodiment
 | `libero` | Franka Panda on LIBERO benchmark | 7 + gripper | LIBERO (Yuke Zhu et al., NeurIPS 2023) | Simulation-only tag for LIBERO benchmark training |
 | `franka_panda` | Franka Panda (real + sim) | 7 + gripper | Standard industry robot; widespread in BridgeData / Open X | Broader tag; use `libero` when targeting LIBERO-specific checkpoints |
 | `widowx` | WidowX 250s | 6 | [BridgeData V2](https://rail-berkeley.github.io/bridgedata/) | Low-cost research arm; common in Open X-Embodiment |
+| `r1pro` | Galaxea R1 Pro (BEHAVIOR simulation) | 22 articulated joints + holonomic base | [BEHAVIOR-1K 2026](https://behavior.stanford.edu/challenge/) | Sim-only OpenRAL manifest; 61-D policy state and mixed 23-D action |
 | `gr1` | Unitree GR1 humanoid | 23 | [NVIDIA Arena dataset](https://huggingface.co/nvidia) | Full humanoid; requires S0 cerebellar layer |
 | `aloha` | Aloha bimanual teleoperation setup | 2 × 7 | [ACT paper](https://arxiv.org/abs/2304.13705) (Stanford / Toyota) | Bimanual; two Viperx arms with overhead + wrist cameras |
 | `aloha_agilex` | ALOHA-AgileX dual-arm (RoboTwin 2.0) | 2 × 7 | [RoboTwin 2.0](https://arxiv.org/abs/2506.18088) | Bimanual SAPIEN benchmark embodiment; targeted by `smolvla-robotwin` |
@@ -159,6 +160,12 @@ Columns:
 |---|---|---|---|---|---|---|---|---|
 | ACT (transfer cube) | gym-aloha | `aloha_bimanual` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha/` | MIT | Bimanual cube-transfer; `scenes/benchmark/aloha_transfer_cube.yaml` |
 | ACT (insertion) | gym-aloha | `aloha_bimanual` | 2 × 7 | overhead + wrist | Yes (in ckpt) | `rskills/act-aloha-insertion/` | MIT | Custom-example insertion checkpoint; `scenes/benchmark/aloha_insertion.yaml` |
+
+### 3.11 BEHAVIOR-1K 2026 Challenge (Galaxea R1 Pro)
+
+| VLA / source | Sim env | Robot tag | State dim | Cameras | Action | rSkill | License | Notes |
+|---|---|---|---|---|---|---|---|---|
+| Organizer GR00T N1.7 `turning_on_radio` checkpoint ([baseline](https://behavior.stanford.edu/challenge/baselines.html)) | OmniGibson / Isaac Sim | `r1pro` | **61-D** official R1Pro proprio order | head 720² + wrist 480² under `RGBDFullResWrapper` (adapter resizes to 224²) | **23-D** base velocity (3) + torso (4) + arms (7+7) + symmetric grippers (1+1) | `rskills/gr00t-n17-b1k-turning-on-radio` | **Unknown** for the organizer Drive artifact | Runs through `openral behavior serve`, `openral sim run`, or the full `openral deploy sim` graph. Deploy preserves the 61-D state and commits all six safety-approved typed slots as one simulator step. |
 
 ---
 

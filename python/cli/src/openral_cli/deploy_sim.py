@@ -268,6 +268,15 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         manifest_driven=True,
         supports_sim_env_yaml=True,
     ),
+    "r1pro": _HalSpec(
+        package="openral_hal_scene_attached",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_scene_attached",
+        supported_robot_names=frozenset({"r1pro"}),
+        default_params={},
+        manifest_driven=True,
+        supports_sim_env_yaml=True,
+    ),
     "g1": _HalSpec(
         package="openral_hal_g1",
         executable="lifecycle_node.py",
@@ -2015,9 +2024,9 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
     from openral_core import RobotDescription, RSkillManifest
     from openral_reasoner.palette import build_tool_palette
     from openral_sim.policy_deps import (
-        can_import_policy_family,
-        model_family_install_groups,
-        model_family_install_hint,
+        can_import_policy_manifest,
+        manifest_install_groups,
+        manifest_install_hint,
     )
 
     rskills_dir = repo_root / "rskills"
@@ -2056,11 +2065,11 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
         if m.name not in matching_ids:
             continue
         family = getattr(m, "model_family", None) or ""
-        ok, _ = can_import_policy_family(family)
+        ok, _ = can_import_policy_manifest(m)
         if ok:
             continue
         blocked.append((m.name, family))
-        install_groups.update(model_family_install_groups(family))
+        install_groups.update(manifest_install_groups(m))
 
     if not blocked:
         return
@@ -2073,7 +2082,8 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
     )
     for name, family in blocked:
         _console.print(f"  â€¢ {name}  (model_family={family!r})")
-        _console.print(f"      {model_family_install_hint(family)}")
+        manifest = next(item for item in manifests if item.name == name)
+        _console.print(f"      {manifest_install_hint(manifest)}")
 
     install_cmd: list[str] | None = None
     if install_groups:
@@ -2151,7 +2161,13 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow â€
         # process runs from; new files on disk need an invalidate to
         # show up via PathFinder), then recompute the blocked set.
         importlib.invalidate_caches()
-        blocked = [(n, f) for n, f in blocked if not can_import_policy_family(f)[0]]
+        blocked = [
+            (name, family)
+            for name, family in blocked
+            if not can_import_policy_manifest(
+                next(manifest for manifest in manifests if manifest.name == name)
+            )[0]
+        ]
         if not blocked:
             _console.print("[green]preflight:[/green] extras installed; continuing launch.")
             return

@@ -2201,6 +2201,9 @@ class WorldState(BaseModel):
         joint_state: Current joint state.
         base_pose: Base link pose (mobile robots).
         base_twist: Base link twist (vx, vy, vz, wx, wy, wz).
+        policy_state: Optional simulator-native proprioception vector for a
+            checkpoint whose state includes more than joint positions/velocities.
+            Populated through a typed HAL -> WorldState topic; never inferred.
         ee_poses: End-effector poses keyed by EE name.
         contact_forces: Contact forces keyed by contact name.
         images: Sensor name → ROS 2 topic reference (not the raw image).
@@ -2224,6 +2227,7 @@ class WorldState(BaseModel):
     joint_state: JointState
     base_pose: Pose6D | None = None
     base_twist: tuple[float, float, float, float, float, float] | None = None
+    policy_state: list[float] | None = None
     ee_poses: dict[str, Pose6D] = Field(default_factory=dict)
     contact_forces: dict[str, tuple[float, ...]] = Field(default_factory=dict)
     images: dict[str, str] = Field(default_factory=dict)
@@ -2551,6 +2555,9 @@ class Action(BaseModel):
         stamp_ns: Action timestamp in nanoseconds.
         ee_name: Target end-effector name.
         frame_id: Reference frame for Cartesian actions.
+        tick_index: Shared 1-based inference tick for every slot emitted by one
+            policy step. Preserved across the ROS safety wire so a simulation HAL
+            can commit a multi-surface action atomically after every slot passes.
         safety_overrides: Operator-approved safety override tokens.
     """
 
@@ -2575,6 +2582,7 @@ class Action(BaseModel):
     stamp_ns: int = 0
     ee_name: str | None = None
     frame_id: str | None = None
+    tick_index: int = Field(default=0, ge=0)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
 
 
@@ -4319,6 +4327,7 @@ EmbodimentTag: TypeAlias = Literal[
     "panda_mobile",
     "pusht",
     "rizon4",
+    "r1pro",
     "sawyer",
     "so100_follower",
     "so101_follower",

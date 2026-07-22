@@ -10,7 +10,7 @@ metadata:
   role: s1
   kind: vla
   model_family: gr00t
-  embodiment_tags: [custom]
+  embodiment_tags: [r1pro]
   actions: [rotate, push]
   objects: [radio, dial, button]
   scenes: [household, living_room]
@@ -45,7 +45,7 @@ An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). GR00T N1
 - **Verbs:** rotate · push
 - **Objects:** radio · dial · button
 - **Scenes:** household · living_room
-- **Embodiments:** custom
+- **Embodiments:** r1pro
 
 ## Why this is discovery-only
 

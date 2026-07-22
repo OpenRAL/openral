@@ -54,6 +54,7 @@ _ROBOT_IDS: list[str] = [
     "panda_mobile",
     "panda_mobile_vslam",
     "pusht_2d",
+    "r1pro",
     "rizon4",
     "sawyer",
     "so100_follower",
@@ -92,6 +93,7 @@ _BENCHMARK_STEMS: list[str] = [
 
 _SIM_STEMS: list[str] = [
     "aloha_transfer_cube",
+    "behavior_turning_on_radio",
     "franka_tabletop_push",
     "isaac_franka_bowl_plate",
     "libero_spatial",
@@ -106,6 +108,7 @@ _SIM_STEMS: list[str] = [
 ]
 
 _DEPLOY_STEMS: list[str] = [
+    "behavior_r1pro",
     "g1_vln",
     "galaxea_a1_bench",
     "isaac_franka",

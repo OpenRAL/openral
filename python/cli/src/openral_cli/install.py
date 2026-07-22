@@ -116,6 +116,10 @@ _GROUPS: Final[dict[str, list[str]]] = {
         "pyzmq>=25",
         "msgpack>=1",
     ],
+    "behavior-groot": [
+        "pyzmq>=25",
+        "msgpack>=1",
+    ],
 }
 
 # Mutually exclusive groups — mirrors ``[tool.uv].conflicts`` in the workspace

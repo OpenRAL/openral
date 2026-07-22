@@ -46,6 +46,10 @@ sibling is **not** valid for paper claims; the loader-strictness gate
 # DeployScene — env-only playground (reasoner picks the rSkill at runtime).
 openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
 
+# BEHAVIOR-1K R1 Pro — official OmniGibson evaluator environment.
+openral deploy sim --config scenes/deploy/behavior_r1pro.yaml \
+  --initial-task "turn on the radio"
+
 # SimScene — single rollout with an explicit rSkill (and any override flag).
 MUJOCO_GL=egl uv run --group libero \
     openral sim run --config scenes/sim/libero_spatial.yaml \
@@ -137,6 +141,7 @@ supplied at the CLI via `--rskill <name>`.
 | gym-aloha           | `aloha_transfer_cube`, `aloha_insertion`                                                                                                                                                                                                                                                    | `python/sim/.../backends/aloha.py`        |
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
 | RLBench (CoppeliaSim/PyRep) | `rlbench` (scene-fixed Franka Panda; task selected by `backend_options.rlbench_task`) | `python/sim/.../backends/rlbench.py` |
+| BEHAVIOR-1K (OmniGibson / Isaac Sim) | `behavior` (scene-fixed R1 Pro; task/instance selected by `backend_options`) | `python/sim/.../backends/behavior.py` |
 | RoboCasa (MuJoCo)   | `robocasa` (procedural) + ~19 curated kitchen tasks (e.g. `robocasa/PickPlaceCounterToCabinet`) + 24 GR1 tabletop tasks (e.g. `robocasa/gr1/PnPCupToDrawerClose`)                                                                                                                            | `python/sim/.../backends/robocasa.py`     |
 | ManiSkill3 (SAPIEN) | `maniskill3` (free-axis; passes `<env_id>` to `gym.make`)                                                                                                                                                                                                                                   | `python/sim/.../backends/maniskill3.py`   |
 | SimplerEnv (SAPIEN) | `simpler_env` (Bridge V2 digital twin: 4 WidowX tasks on MS3 v3.0.x)                                                                                                                                                                                                                        | `python/sim/.../backends/simpler_env.py`  |
@@ -161,6 +166,7 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 | `so101_box`                                      | `so101_follower`    |
 | `robocasa/*` (kitchen)                           | `panda_mobile`      |
 | `robocasa/gr1/*` (humanoid tabletop)             | `gr1`               |
+| `behavior`                                       | `r1pro`              |
 
 Passing `--robot` (or authoring `robot_id:` in a YAML) with a value that
 disagrees with the scene's `fixed_robot` raises `ROSConfigError` at

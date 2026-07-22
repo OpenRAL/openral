@@ -81,7 +81,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | rSkill (S1) runtime | `Skill` ABC, `rSkill` loader (HF Hub), PyTorch / ONNX adapters (engine cache), async action chunks; Pro runtimes attach through entry-point hooks | `python/rskill/`, `rskills/` |
 | Inference runtimes | One `InferenceRunner` Protocol shared by `openral sim run`, `openral benchmark run`, and `openral deploy`; open-core runners are PyTorch / ONNX | `python/runner/`, `python/rskill/`, `python/sim/` |
 | Sim rollouts | One YAML → reproducible sim rollout; video + metrics + `SkillEvalResult` JSON out | `python/sim/`, `scenes/benchmark/` |
-| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, RLBench/CoppeliaSim (PyRep, py3.10 sidecar) | `python/sim/`, `docs/reference/sim-environments.md` |
+| Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, BEHAVIOR-1K/OmniGibson, RLBench/CoppeliaSim | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `behavior`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
 | Schemas | Pydantic v2 + JSON Schema export; manifests at `schema_version: "0.1"` | `python/core/`, `tools/schema_export.py` |
@@ -315,7 +315,7 @@ Full toolchain: [docs/contributing/toolchain.md](docs/contributing/toolchain.md)
 
 → **Full table:** [docs/reference/robots.md](docs/reference/robots.md)
 
-Quick examples: SO-100/SO-101 (HW + sim), Franka Panda, UR5e/UR10e, ALOHA bimanual/AgileX, OpenArm v2, Anvil OpenARM 2.0, Google Robot, Rizon4, Unitree H1/G1, Rethink Sawyer, Fourier GR1.
+Quick examples: SO-100/SO-101 (HW + sim), Franka Panda, UR5e/UR10e, ALOHA bimanual/AgileX, OpenArm v2, Anvil OpenARM 2.0, Galaxea R1 Pro (BEHAVIOR sim), Google Robot, Rizon4, Unitree H1/G1, Rethink Sawyer, Fourier GR1.
 
 ---
 

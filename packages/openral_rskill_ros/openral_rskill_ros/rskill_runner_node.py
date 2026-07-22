@@ -2264,6 +2264,7 @@ def _make_policy_adapter_skill(
             joint-space path (every VLA shipped before the state-contract bindings design).
     """
     import numpy as np
+    from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSRuntimeError
     from openral_core.schemas import Action, ControlMode
     from openral_rskill.base import rSkillBase
 
@@ -2293,7 +2294,6 @@ def _make_policy_adapter_skill(
             str(getattr(_declared_units, "value", _declared_units)) == "degrees"
         )
     else:
-        from openral_core.exceptions import ROSConfigError
         from openral_core.schemas import ActionRepresentation
 
         if (
@@ -2483,7 +2483,9 @@ def _make_policy_adapter_skill(
                     flush=True,
                 )
 
-        def _step_impl(self, world_state: Any) -> Action | list[Action]:
+        def _step_impl(  # noqa: PLR0912, PLR0915  # reason: linear policy observation/action boundary with one branch per supported state/action contract
+            self, world_state: Any
+        ) -> Action | list[Action]:
             obs: dict[str, object] = {"task": self._prompt}
             js = world_state.joint_state
             robot_state = np.asarray(list(js.position), dtype=np.float32)
@@ -2498,6 +2500,29 @@ def _make_policy_adapter_skill(
             sc = getattr(self.manifest, "state_contract", None)
             layout = getattr(sc, "layout", None) if sc is not None else None
             bindings = getattr(sc, "bindings", None) if sc is not None else None
+            use_policy_state = bool(
+                getattr(self.manifest, "policy_extras", {}).get("use_world_state_policy_state")
+            )
+            if use_policy_state:
+                raw_policy_state = getattr(world_state, "policy_state", None)
+                if raw_policy_state is None:
+                    raise ROSRuntimeError(
+                        f"rSkill {self.manifest.name!r} requires WorldState.policy_state, "
+                        "but no /openral/policy_state sample has arrived."
+                    )
+                if getattr(world_state, "diagnostics", {}).get("policy_state") != "ok":
+                    raise ROSPerceptionStale(
+                        f"rSkill {self.manifest.name!r} requires fresh policy_state."
+                    )
+                policy_state = np.asarray(raw_policy_state, dtype=np.float32).reshape(-1)
+                expected_dim = getattr(sc, "dim", None) if sc is not None else None
+                if expected_dim is not None and policy_state.shape != (int(expected_dim),):
+                    raise ROSRuntimeError(
+                        f"rSkill {self.manifest.name!r} requires policy_state dim "
+                        f"{expected_dim}, got {policy_state.shape[0]}."
+                    )
+                obs["state"] = policy_state
+                state_assembled = True
             if self._tf_lookup is not None and layout is not None and bindings is not None:
                 # Deferred import keeps the runner module load light
                 # (openral_state_adapter pulls numpy + the layout

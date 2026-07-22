@@ -19,16 +19,17 @@ _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
 - `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L107)
   - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, clock_fn=None)` (L160)
-  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L235)
-  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L246)
-  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L302)
-  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L316)
-  - `update_battery(pct) -> None` — Record battery %. (L333)
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L357)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L373)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition, records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L384)
-  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L342)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L501)
+  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L237)
+  - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`.
+  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L248)
+  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L315)
+  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L329)
+  - `update_battery(pct) -> None` — Record battery %. (L346)
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L370)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L386)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition, records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L397)
+  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L355)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L522)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
