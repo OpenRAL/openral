@@ -136,7 +136,6 @@ from openral_reasoner.mission import (
     evaluate_task_verdict,
 )
 from openral_reasoner.node_policy import (
-    CASCADE_PROMPT_SOURCES,
     is_cascade_source,
     should_rebuild_mission,
 )
@@ -278,14 +277,6 @@ _QOS_COMPLETION_CAMERA = QoSProfile(
 # for consistency with the carried `rskill_id` field.
 _FAILURE_SOURCES: tuple[str, ...] = ("hal", "sensor", "rskill", "safety", "wam", "critic")
 _PERCEPTION_KINDS: tuple[str, ...] = ("motion", "objects", "ocr", "scene_change")
-
-# Reward-gated task verification (§1) — prompt frame_ids the reasoner re-publishes onto
-# /openral/prompt for its OWN cascade (advisory query responses + spatial-memory re-prompts). These
-# are not new operator goals, so they must NOT (re)build the mission queue NOR reset the
-# active-search / retry-cap bounds — only a genuine operator/cli/dashboard prompt does. Self-emits
-# (frame_id == the node name) are already dropped earlier in `_on_prompt`. Single-sourced in the
-# pure `openral_reasoner.node_policy` module so it is unit-testable without rclpy.
-_CASCADE_PROMPT_SOURCES: frozenset[str] = CASCADE_PROMPT_SOURCES
 
 # Reward-gated task verification §2 / VLM-adjudicated completion amendment — reward window (s) for
 # the automatic post-skill task verification. Robometer scores a trajectory from its START, so the
@@ -1763,13 +1754,23 @@ class ReasonerNode(LifecycleNode):
         self._subdivide_offered = set(restored.subdivide_offered)
         self._collective_decompose_nudges = dict(restored.collective_nudges)
         self._task_locate_budget.restore(restored.locate_task_id, restored.locate_count)
-        if restored.mission is not None and not restored.mission.is_empty():
+        if (
+            restored.mission is not None
+            and not restored.mission.is_empty()
+            and not restored.mission.is_complete()
+        ):
             self._renderer.set_mission(restored.mission)
             active = restored.mission.active()
-            active_txt = active.text[:60] if active is not None else "(finished)"
+            active_txt = active.text[:60] if active is not None else "(no active task)"
             self.get_logger().info(
                 f"ladder persistence: restored mission ({len(restored.mission)} task(s), "
                 f"active={active_txt!r})",
+            )
+        elif restored.mission is not None and restored.mission.is_complete():
+            # A finished mission restarts fresh (per the docstring contract) —
+            # restoring it would idle the reasoner on a completed queue.
+            self.get_logger().info(
+                "ladder persistence: snapshot mission is complete; starting fresh",
             )
 
     def _maybe_load_memory(self) -> None:
@@ -2307,8 +2308,13 @@ class ReasonerNode(LifecycleNode):
         if result.suppressed_reason in ("min_interval", "heartbeat_idle", "retry_cap_hold"):
             # retry_cap_hold is the steady-state after a capped streak whose
             # context has not moved (the LLM call is skipped entirely) —
-            # debug-level like the other quiet suppressions.
+            # debug-level like the other quiet suppressions. None of these
+            # three touch the streak (no LLM call ran), so the one-shot
+            # retry_cap warn latch must survive them: falling through to the
+            # clear below re-warned (and re-appended a duplicate ladder
+            # reflection) for the SAME unbroken streak after every hold.
             self.get_logger().debug(f"tick suppressed: {result.suppressed_reason}")
+            return
         elif result.suppressed_reason == "retry_cap":
             # Warn once per streak, not every heartbeat — otherwise this
             # floods the log while the model keeps re-picking the same call.
@@ -2342,8 +2348,10 @@ class ReasonerNode(LifecycleNode):
             return
         else:
             self.get_logger().info(f"tick suppressed: {result.suppressed_reason}")
-        # Any suppression other than an ongoing retry_cap streak clears the
-        # one-shot latch so the next streak warns again.
+        # Loud suppressions (palette_empty, …) reach the LLM-facing flow, so a
+        # later cap is a fresh event worth re-warning about. Quiet suppressions
+        # return above with the latch intact — the streak they interleave with
+        # is unbroken. Unsuppressed ticks clear it at the _on_tick call site.
         self._retry_cap_warned = False
 
     #: Max queued-tick replays one trampoline entry will run. The caps

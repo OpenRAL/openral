@@ -58,7 +58,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
-    from openral_core import ExecuteRskillTool, RSkillManifest
+    from openral_core import EmitPromptTool, ExecuteRskillTool, RSkillManifest
     from openral_msgs.action import ExecuteRskill
     from openral_msgs.msg import FailureTrigger, PromptStamped
     from openral_reasoner import ToolPalette
@@ -109,9 +109,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
                 ),
                 # Absorb post-refusal tick(s) without erroring.
                 *[
-                    __import__("openral_core", fromlist=["EmitPromptTool"]).EmitPromptTool(
-                        target_topic="/openral/prompt", text="standing by"
-                    )
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
                     for _ in range(4)
                 ],
             ],
@@ -128,7 +126,7 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         # params, so set the attributes the guard reads directly):
         reasoner._reward_manifest = reward_manifest
         reasoner._gpu_total_vram_gb = 4.0  # < 4.8 GB pair → must refuse
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
 
         # Real ExecuteRskill server — records if a goal ever reaches execute.
         server_node = rclpy.create_node("openral_test_vla_server")
@@ -262,7 +260,7 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
-    from openral_core import ExecuteRskillTool, RSkillManifest
+    from openral_core import EmitPromptTool, ExecuteRskillTool, RSkillManifest
     from openral_msgs.action import ExecuteRskill
     from openral_msgs.msg import FailureTrigger, PromptStamped
     from openral_reasoner import ToolPalette
@@ -298,9 +296,7 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
                     deadline_s=0.0,
                 ),
                 *[
-                    __import__("openral_core", fromlist=["EmitPromptTool"]).EmitPromptTool(
-                        target_topic="/openral/prompt", text="standing by"
-                    )
+                    EmitPromptTool(target_topic="/openral/prompt", text="standing by")
                     for _ in range(4)
                 ],
             ],
@@ -314,7 +310,7 @@ def test_execute_rskill_refused_when_live_free_vram_is_below_vla_min(
         reasoner.trigger_activate()
         # NO reward manifest — the free-VRAM tier must fire on its own.
         assert reasoner._reward_manifest is None
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]
+        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
 
         server_node = rclpy.create_node("openral_test_vla_server_free_vram")
 

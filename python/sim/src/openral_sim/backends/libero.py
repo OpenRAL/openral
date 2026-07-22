@@ -167,23 +167,34 @@ class _LiberoSim:
         only covers an already-built env.
         """
         self._continuous = True
-        self._apply_ignore_done()
+        self._apply_ignore_done(warn_if_missing=False)
 
-    def _apply_ignore_done(self) -> None:
+    def _apply_ignore_done(self, *, warn_if_missing: bool = True) -> None:
         """Set ``ignore_done`` on the robosuite env so ``done`` never latches.
 
         Without this, robosuite latches ``done`` at the horizon and the *next*
         step hard-raises "executing action in terminated episode", which the
         deploy-sim HAL recovers from by resetting — re-randomising the scene
         under a running policy (the exact mid-goal reset this suppresses).
-        Warns instead of silently no-opping when the walk finds nothing.
+
+        Args:
+            warn_if_missing: Warn when the walk finds no robosuite env. The
+                post-reset caller keeps the default (there the env MUST exist —
+                silence would re-hide the original bug); the eager
+                ``enable_continuous`` call passes ``False`` because it always
+                runs before the lazily-built env exists and would otherwise
+                warn on every normal deploy-sim startup.
         """
         rs = self._robosuite_env()
         if rs is None:
-            _log.warning(
-                "libero.enable_continuous.no_robosuite_env",
-                hint="ignore_done not applied; a post-horizon step will raise and reset the scene",
-            )
+            if warn_if_missing:
+                _log.warning(
+                    "libero.enable_continuous.no_robosuite_env",
+                    hint=(
+                        "ignore_done not applied; a post-horizon step will raise "
+                        "and reset the scene"
+                    ),
+                )
             return
         rs.ignore_done = True
 

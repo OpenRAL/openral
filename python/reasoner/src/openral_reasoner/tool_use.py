@@ -858,6 +858,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
         ExecuteRskillTool,
         LifecycleTransitionTool,
         ReloadGstPipelineTool,
+        WaitTool,
     )
 
     tools: list[dict[str, object]] = []
@@ -906,9 +907,6 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 "input_schema": ExecuteRskillTool.model_json_schema(),
             },
         )
-
-    # Lazy import alongside the other tool classes above.
-    from openral_core import WaitTool  # noqa: PLC0415
 
     for kind, cls, description in (
         (

@@ -584,3 +584,24 @@ def test_interleaved_search_calls_do_not_reset_a_capped_streak() -> None:
     # recall_object calls were interleaved between the repeats.
     suppressed = [r.suppressed_reason for r in results]
     assert "retry_cap" in suppressed
+
+
+def test_wait_is_transparent_to_the_retry_cap() -> None:
+    """Consecutive waits are never capped — the system prompt INSTRUCTS the
+    model to keep picking wait during a nominal long skill execution, and every
+    wait is byte-identical (rationale is stripped from the call identity), so a
+    counted wait would trip the cap after retry_cap heartbeats of prescribed
+    behavior and inject a fabricated "retry ladder exhausted" failure into
+    context mid-run."""
+    from openral_core import WaitTool
+
+    palette = _palette()
+    client = FakeToolUseClient(responses=[WaitTool() for _ in range(6)])
+    core = ReasonerCore(client=client, min_interval_s=0.0, retry_cap_per_kind=3)
+    renderer = ContextRenderer()
+    results = []
+    for i in range(6):
+        renderer.append_prompt(PromptRecord(text=f"p{i}", metadata_json="", stamp_ns=i))
+        results.append(core.tick(world_state=None, renderer=renderer, palette=palette))
+    assert all(r.tool_call is not None for r in results)
+    assert all(not r.suppressed_reason for r in results)

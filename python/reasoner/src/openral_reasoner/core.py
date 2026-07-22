@@ -61,8 +61,16 @@ def _stamp_mission(span: Span, renderer: ContextRenderer) -> None:
 # test_active_search_cascade_is_bounded_and_hands_off). Transparency (rather
 # than resetting) also keeps an alternating <same-call> / <search> loop
 # accumulating toward the cap.
+#
+# "wait" is exempt for a different reason: the system prompt and the in_flight
+# context line INSTRUCT the model to keep picking wait during a nominal long
+# skill execution, and _call_identity strips rationale so every wait is
+# byte-identical — counting it would trip the cap after retry_cap heartbeats
+# of exactly the prescribed behavior and inject a fabricated "retry ladder
+# exhausted" failure into context mid-run. Waiting is already bounded by the
+# skill's own deadline/patience machinery, not the identity cap.
 _RETRY_CAP_EXEMPT_TOOLS: frozenset[str] = frozenset(
-    {"recall_object", "resolve_place", "locate_in_view"}
+    {"recall_object", "resolve_place", "locate_in_view", "wait"}
 )
 
 

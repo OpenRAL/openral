@@ -89,6 +89,7 @@ from openral_core.schemas import (
     TaskSpec,
     TickResult,
     VLASpec,
+    WaitTool,
     WorldCollisionPrimitive,
     WorldState,
 )
@@ -1205,6 +1206,19 @@ def test_fuzz_recall_object_tool(instance: RecallObjectTool) -> None:
 def test_fuzz_resolve_place_tool(instance: ResolvePlaceTool) -> None:
     """ResolvePlaceTool round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(ResolvePlaceTool, instance)
+
+
+_wait_tool_st = st.builds(
+    WaitTool,
+    rationale=st.text(max_size=24),
+)
+
+
+@_FUZZ_SETTINGS
+@given(_wait_tool_st)
+def test_fuzz_wait_tool(instance: WaitTool) -> None:
+    """WaitTool round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(WaitTool, instance)
 
 
 @_FUZZ_SETTINGS
