@@ -82,7 +82,9 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
     "gr00t": (
         "Install the gr00t extras: `just sync --all-packages --group gr00t` "
         "(adds lerobot[groot]). GR00T-N1.7 now runs in-process on lerobot 0.6.0 "
-        "under this repo's Python 3.12 — no sidecar."
+        "under this repo's Python 3.12. The official BEHAVIOR-1K organizer "
+        "checkpoint is a manifest-selected exception and uses the "
+        "`behavior-groot` sidecar-wire group."
     ),
     "diffuser_actor": (
         "Install the rlbench extras: `just sync --all-packages --group rlbench` "

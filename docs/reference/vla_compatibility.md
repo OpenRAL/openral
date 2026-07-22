@@ -174,6 +174,7 @@ Columns:
 | SO-101 Box (`so101_box`) | MuJoCo (raw, `python/sim/src/openral_sim/backends/so101_box/`) | `uv sync --group sim` | SO-101 | tube-insertion (geometric success: tube vertical + lower tip ≥ 10 mm below the slotted-block hole top) — both block and tube spawn at random (x, y, yaw) on the floor each `reset()` | OAK-D Pro overhead (RGB + depth, default 640×480) + wrist RGB parented to the gripper body |
 | SimplerEnv WidowX | ManiSkill3/SAPIEN via `simpler_env` | `uv sync --group simpler-env` + `uv pip install "simpler-env @ git+https://github.com/simpler-env/SimplerEnv.git@maniskill3"` | WidowX 250s | carrot-on-plate (`simpler_env/widowx_carrot_on_plate`) | 3rd-view RGB surfaced as `top` |
 | NVIDIA Arena | Isaac Sim | Requires NVIDIA Isaac Sim license | GR1 | microwave | TBD |
+| BEHAVIOR-1K 2026 | OmniGibson / Isaac Sim | Official `behavior` environment plus `just sync --group behavior-groot` for the OpenRAL-side wire | Galaxea R1 Pro | 100 household tasks; packaged starter is `turning_on_radio` | head + dual wrist RGB; official full wrapper also exposes depth |
 | ManiSkill3 | SAPIEN via `mani_skill` | `uv sync --group maniskill3` | Franka Panda | `PickCube-v1` (+ more) | single RGB `camera1` |
 | RoboTwin 2.0 | SAPIEN (py3.10 sidecar) | py3.10 SAPIEN sidecar (auto-provisioned) | ALOHA-AgileX | 50 dual-arm tasks (`robotwin/*`) | dual-arm camera set |
 | VLABench | MuJoCo | `uv sync --group vlabench` | Franka Panda | 97 tasks (`vlabench/*`) | TBD |

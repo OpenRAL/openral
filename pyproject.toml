@@ -296,6 +296,12 @@ gr00t = [
     # in-process solves LIBERO-spatial 5/5 at ~19 ms/step on an 8 GiB card.
     "lerobot[groot]",
 ]
+behavior-groot = [
+    # OpenRAL-side wire for the official BEHAVIOR-1K Isaac-GR00T runtime.
+    # The pinned wensi-ai/Isaac-GR00T behavior checkout + checkpoint stay in
+    # their own externally-provisioned Python 3.10 venv.
+    { include-group = "sidecar-wire" },
+]
 isaacsim = [
     # Opt-in NVIDIA Isaac Sim scene backend.
     #

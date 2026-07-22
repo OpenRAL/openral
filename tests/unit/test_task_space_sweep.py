@@ -176,13 +176,16 @@ def test_rc365_sim_executable_after_fix() -> None:
     assert match.ok is True, match.reasons
 
 
-def test_every_actuating_skill_has_a_matching_robot() -> None:
-    """No actuating rSkill ships pointing at an embodiment no robot provides."""
+def test_every_actuating_skill_has_a_matching_robot_or_custom_contract() -> None:
+    """Every actuating rSkill names a robot or carries the explicit custom contract."""
     robots = _robots()
     orphans = []
     for path in RSKILL_YAMLS:
         skill = RSkillManifest.from_yaml(path)
         if skill.action_contract is None:
+            continue
+        if "custom" in skill.embodiment_tags:
+            assert skill.embodiment_extra is not None
             continue
         if not _matching_robot_names(skill, robots):
             orphans.append((_name(path), skill.embodiment_tags))

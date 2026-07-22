@@ -14,6 +14,7 @@ Sub-commands
 doctor              Diagnose the host environment (Python, OS, ROS 2, GPU, USB).
 detect              Probe hardware and write a full RobotDescription robot.yaml.
 connect             Open a HAL connection to a robot and verify it responds.
+behavior serve      Serve an rSkill to the official BEHAVIOR evaluator.
 calibrate camera    Calibrate a camera sensor using ros2 camera_calibration.
 install             Install opt-in dependency groups (sim, ros, libero, …).
 rskill search       Find installable rSkills on the OpenRAL HF Hub org.
@@ -368,6 +369,7 @@ def _run_repl() -> None:
 
 _RUN_MODE_BY_SUBCOMMAND: dict[str, str] = {
     "sim": semconv.RUN_MODE_SIM,
+    "behavior": semconv.RUN_MODE_SIM,
     "benchmark": semconv.RUN_MODE_BENCHMARK,
     "deploy": semconv.RUN_MODE_HARDWARE,
     "connect": semconv.RUN_MODE_HARDWARE,
@@ -3573,6 +3575,79 @@ def _summarize_results(results: dict[str, object]) -> str:
 # `openral_sim.policies/backends`, which `_run()` imports lazily.
 # `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light` guards this.
 app.add_typer(sim_app, name="sim")
+
+# `openral behavior serve` — expose an rSkill through the official BEHAVIOR
+# Challenge WebSocket policy protocol. OmniGibson remains in its own conda
+# environment and owns task loading, metrics, and video recording.
+behavior_app = typer.Typer(
+    name="behavior",
+    help="BEHAVIOR Challenge integration — serve OpenRAL rSkills to OmniGibson.",
+    no_args_is_help=True,
+)
+app.add_typer(behavior_app, name="behavior")
+
+
+@behavior_app.command("serve")
+def behavior_serve(
+    rskill: str = typer.Option(
+        ...,
+        "--rskill",
+        help="rSkill reference: local name/path or Hugging Face repo id.",
+    ),
+    task: str = typer.Option(
+        ...,
+        "--task",
+        help="BEHAVIOR task name, e.g. turning_on_radio.",
+    ),
+    instruction: str | None = typer.Option(
+        None,
+        "--instruction",
+        help="Policy language instruction. Defaults to the task name with underscores replaced.",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="WebSocket bind address.",
+    ),
+    port: int = typer.Option(
+        8000,
+        "--port",
+        min=1,
+        max=65535,
+        help="WebSocket port used by omnigibson.eval.eval.",
+    ),
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        help="Policy device override, e.g. auto, cuda:0, or cpu.",
+    ),
+    state_dim: int = typer.Option(
+        61,
+        "--state-dim",
+        min=1,
+        help="Expected R1Pro proprioception width.",
+    ),
+    action_dim: int = typer.Option(
+        23,
+        "--action-dim",
+        min=1,
+        help="Expected R1Pro action width.",
+    ),
+) -> None:
+    """Serve one OpenRAL rSkill to BEHAVIOR's official evaluator."""
+    from openral_cli.behavior import _serve_behavior_policy
+
+    vla_spec = _parse_rskill_cli_arg(rskill).model_copy(update={"device": device})
+    _serve_behavior_policy(
+        vla_spec,
+        task=task,
+        instruction=instruction or task.replace("_", " "),
+        host=host,
+        port=port,
+        state_dim=state_dim,
+        action_dim=action_dim,
+    )
+
 
 # `openral install <group>` — post-install escape hatch for the
 # Tier-0 curl-bash installer (`scripts/install.sh`). The base install puts

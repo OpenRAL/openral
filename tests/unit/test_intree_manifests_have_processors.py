@@ -33,6 +33,7 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
     {
         "act-aloha",
         "act-aloha-insertion",
+        "gr00t-n17-b1k-turning-on-radio",
         "gr00t-n17-libero",
         "gr00t-n17-so101-fruit",
         # Non-lerobot VLAs: 3D Diffuser Actor (RLBench — own point-cloud/pose

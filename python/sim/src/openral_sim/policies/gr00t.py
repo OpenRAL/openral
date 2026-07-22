@@ -27,6 +27,12 @@ backbone's large ``nn.Linear`` layers into ``bnb.nn.Linear4bit`` shells, then
 diffusion action head stays in bf16 — this preserves action quality and
 side-steps the GR00T DiT ``TimestepEncoder`` uint8 bug (bug (b) below).
 
+The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
+native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under
+Python 3.10, so a manifest with
+``policy_extras.implementation=behavior_b1k_sidecar`` dispatches to
+:mod:`openral_sim.policies.behavior_groot` before the lerobot loader runs.
+
 Embodiment mapping
 ------------------
 The rSkill manifest declares its OpenRAL robot tag (e.g. ``franka_panda`` /
@@ -73,6 +79,7 @@ _log = structlog.get_logger(__name__)
 if TYPE_CHECKING:
     from openral_core import VLASpec
 
+    from openral_sim.policy import PolicyAdapter
     from openral_sim.rollout import Observation
 
 # The gr00t-n17-libero rSkill targets nvidia/GR00T-N1.7-LIBERO. GR00T's own
@@ -402,7 +409,7 @@ def _build_groot_config(
 
 
 @POLICIES.register("gr00t")
-def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
+def _build_gr00t(env_cfg: Any) -> PolicyAdapter:
     """Load the in-process lerobot ``GrootPolicy`` (GR00T N1.7) backend.
 
     YAML knobs (via ``vla.extra``): ``device``, ``embodiment_tag``,
@@ -420,14 +427,19 @@ def _build_gr00t(env_cfg: Any) -> _GrootAdapter:
             "gr00t adapter requires a bare rSkill reference as weights_uri so the "
             "loader can resolve the GR00T checkpoint + its embodiment contract."
         )
-    repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="GR00T")
-
     # Merge the manifest's policy_extras under any scene/CLI spec.extra overrides
     # (spec.extra wins) so a checkpoint's embodiment_tag / image_modality_keys
     # travel in its rSkill without every scene having to repeat them.
     policy_extras = dict(getattr(manifest, "policy_extras", {}) or {})
     extra = {**policy_extras, **extra}
+    if extra.get("implementation") == "behavior_b1k_sidecar":
+        from openral_sim.policies.behavior_groot import (
+            build_behavior_groot_policy,
+        )
 
+        return build_behavior_groot_policy(env_cfg, manifest, extra)
+
+    repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="GR00T")
     embodiment_tag = str(
         os.environ.get("OPENRAL_GR00T_EMBODIMENT_TAG")
         or extra.get("embodiment_tag", _GR00T_DEFAULT_EMBODIMENT_TAG)
