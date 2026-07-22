@@ -1,0 +1,42 @@
+# Unitree G1 humanoid VLN bench — deploy playground (bare MuJoCo digital twin).
+#
+# Boots the manifest-driven G1 twin with ADR-0089's pinned MuJoCo Playground
+# walking controller (ADR-0087 kinematic glide remains the HAL default): the
+# generic camera rig splices the manifest's forward `head` camera + a
+# visual-only staging floor into the menagerie MJCF, and BODY_TWIST nav
+# skills drive a 50 Hz leg policy under gravity. Pair with the InternVLA-N1 VLN
+# rSkill for closed-loop language-driven navigation:
+#
+#   OPENRAL_ALLOW_NONCOMMERCIAL=1 OPENRAL_INTERNVLA_N1_DEPTH=none \
+#     openral deploy sim --config scenes/deploy/g1_vln.yaml
+#   ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+#     "{rskill_id: 'OpenRAL/rskill-internvla_n1-mobile_base-vln-nf4', \
+#       prompt: 'walk forward', deadline_s: 120.0}"
+#
+# First launch downloads and SHA-256-verifies ~940 KB of pinned Apache-2.0
+# walking assets into $OPENRAL_CACHE_DIR (default ~/.cache/openral).
+#
+# Every perception/nav leg is off: the bare twin has no lidar/depth and the
+# InternVLA-N1 NF4 policy needs ~7 GB of an 8 GB card to itself.
+scene:
+  id: g1_vln_bench
+robot_id: g1
+hal:
+  defaults:
+    walking_enabled: true
+runtime:
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null
