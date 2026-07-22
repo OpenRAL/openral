@@ -98,12 +98,21 @@ def find_cosmos3_sidecar_script() -> Path:
     looking for the in-tree script.
 
     Raises:
-        ROSConfigError: When the script cannot be found (e.g. an installed
-            wheel without the repo checkout) and no override is set.
+        ROSConfigError: When the override path does not exist (a stale /
+            typo'd ``OPENRAL_COSMOS3_SIDECAR`` would otherwise surface later
+            as a misleading "sidecar exited early" error), or when no
+            override is set and the repo walk finds nothing (e.g. an
+            installed wheel without the repo checkout).
     """
     override = os.environ.get(SIDECAR_SCRIPT_ENV)
     if override:
-        return Path(override)
+        path = Path(override)
+        if not path.is_file():
+            raise ROSConfigError(
+                f"{SIDECAR_SCRIPT_ENV}={override!r} does not exist; point it at "
+                "tools/cosmos3_reasoner_sidecar.py or unset it to use the in-tree script."
+            )
+        return path
     for parent in Path(__file__).resolve().parents:
         cand = parent / "tools" / "cosmos3_reasoner_sidecar.py"
         if cand.exists():
@@ -117,6 +126,22 @@ def _base_url_is_loopback(base_url: str) -> bool:
     """True when ``base_url``'s host is a loopback name (autostart territory)."""
     host = urllib.parse.urlparse(base_url).hostname or ""
     return host in _LOOPBACK_HOSTS
+
+
+def _managed_port(base_url: str) -> int | None:
+    """The explicit port of a loopback ``base_url``, or ``None`` if unmanaged.
+
+    Autostart requires a loopback URL *with an explicit port*: the spawned
+    server binds — and the readiness probe hits — that same port. A portless
+    loopback URL (``http://127.0.0.1/v1``, e.g. a reverse proxy on :80) gives
+    the sidecar nowhere unambiguous to bind, and guessing would leave the
+    probe and the server on different ports; such URLs are treated as
+    self-managed endpoints instead.
+    """
+    parsed = urllib.parse.urlparse(base_url)
+    if (parsed.hostname or "") not in _LOOPBACK_HOSTS:
+        return None
+    return parsed.port
 
 
 def _endpoint_is_up(base_url: str, *, timeout_s: float = 2.0) -> bool:
@@ -164,7 +189,9 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             slower than steady state.
         max_tokens: Optional completion-token cap (see base class).
         auto_start: Spawn the managed sidecar when the loopback endpoint is
-            down. Defaults ``True``; forced off for non-loopback URLs.
+            down. Defaults ``True``; forced off for non-loopback URLs and
+            for loopback URLs without an explicit port (the spawned server
+            and the readiness probe must agree on one).
         boot_timeout_s: How long to wait for the spawned server to become
             ready. First boot provisions the venv and downloads weights —
             keep this generous (default :data:`DEFAULT_BOOT_TIMEOUT_S`).
@@ -196,7 +223,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             timeout_s=timeout_s,
             max_tokens=max_tokens,
         )
-        self._auto_start = auto_start and _base_url_is_loopback(base_url)
+        self._auto_start = auto_start and _managed_port(base_url) is not None
         self._boot_timeout_s = boot_timeout_s
         self._server_ready = False
         self._child: subprocess.Popen[bytes] | None = None
@@ -204,9 +231,22 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
     # -- managed server lifecycle -------------------------------------------
 
     def _spawn_argv(self) -> list[str]:
-        """Build the sidecar launch argv (split out for unit-testability)."""
+        """Build the sidecar launch argv (split out for unit-testability).
+
+        Only called on the autostart path, where ``_managed_port`` has
+        already guaranteed an explicit loopback port — the spawned server
+        binds exactly the port the readiness probe (and every later call)
+        targets. No fallback port: guessing one would split them.
+        """
         script = find_cosmos3_sidecar_script()
-        parsed = urllib.parse.urlparse(self._base_url or COSMOS3_BASE_URL)
+        base_url = self._base_url or COSMOS3_BASE_URL
+        parsed = urllib.parse.urlparse(base_url)
+        port = _managed_port(base_url)
+        if port is None:  # pragma: no cover — _ensure_server gates on _auto_start first
+            raise ROSConfigError(
+                f"cannot auto-start a managed server for {base_url!r}: autostart needs a "
+                "loopback base URL with an explicit port (e.g. http://127.0.0.1:8901/v1)."
+            )
         return [
             sys.executable,
             str(script),
@@ -215,7 +255,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
             "--host",
             parsed.hostname or "127.0.0.1",
             "--port",
-            str(parsed.port or 8901),
+            str(port),
         ]
 
     def _ensure_server(self) -> None:
@@ -235,20 +275,31 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         if not self._auto_start:
             raise ROSConfigError(
                 f"no Cosmos 3 reasoner endpoint at {base_url} and autostart is "
-                f"disabled ({AUTOSTART_ENV}=0 or non-loopback URL); start one with "
+                f"disabled ({AUTOSTART_ENV}=0, non-loopback URL, or loopback URL "
+                "without an explicit port); start one with "
                 "`python tools/cosmos3_reasoner_sidecar.py` (managed vLLM) or point "
                 "OPENRAL_REASONER_LLM_BASE_URL at a running vLLM / Cosmos 3 "
                 "Reasoner NIM endpoint."
             )
-        argv = self._spawn_argv()
-        print(f"[cosmos3] spawning reasoner server: {' '.join(argv)}", flush=True)
-        self._child = subprocess.Popen(argv)
-        atexit.register(self.close)
+        # Reuse a still-provisioning child from a previous (timed-out) attempt
+        # instead of spawning a duplicate: a first boot can legitimately outlive
+        # boot_timeout_s (venv provisioning + ~9 GB weight download), and a
+        # second Popen would orphan the first child (close()/atexit only track
+        # the latest) while the two servers fight for the port and VRAM.
+        if self._child is None or self._child.poll() is not None:
+            argv = self._spawn_argv()
+            print(f"[cosmos3] spawning reasoner server: {' '.join(argv)}", flush=True)
+            self._child = subprocess.Popen(argv)
+            atexit.register(self.close)
+        else:
+            print("[cosmos3] previous sidecar still provisioning; waiting on it", flush=True)
         deadline = time.monotonic() + self._boot_timeout_s
         while time.monotonic() < deadline:
             if self._child.poll() is not None:
+                code = self._child.returncode
+                self._child = None  # dead — next attempt may spawn a fresh one
                 raise ROSConfigError(
-                    f"Cosmos 3 reasoner sidecar exited early (code {self._child.returncode}); "
+                    f"Cosmos 3 reasoner sidecar exited early (code {code}); "
                     "run `python tools/cosmos3_reasoner_sidecar.py` in a terminal to see why "
                     "(common causes: no NVIDIA GPU, CUDA driver too old, HF auth missing)."
                 )
@@ -257,10 +308,13 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
                 self._server_ready = True
                 return
             time.sleep(2.0)
+        # Timed out — keep self._child so the next call waits on this same
+        # (possibly still-downloading) server rather than double-spawning.
         raise ROSConfigError(
             f"Cosmos 3 reasoner server not ready within {self._boot_timeout_s:.0f}s "
-            f"(first boot provisions a venv and downloads ~8 GB of weights — "
-            f"raise {BOOT_TIMEOUT_ENV} if that is still in progress)."
+            f"(first boot provisions a venv and downloads ~9 GB of weights — "
+            f"raise {BOOT_TIMEOUT_ENV} if that is still in progress; the spawned "
+            "server is kept and the next call will wait on it)."
         )
 
     def close(self) -> None:

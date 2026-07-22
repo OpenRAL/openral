@@ -91,9 +91,25 @@ def test_cosmos_explicit_model_and_base_url_win(monkeypatch: pytest.MonkeyPatch)
     assert client._auto_start is False
 
 
-def test_cosmos_autostart_env_disables_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "FALSE", "Off"])
+def test_cosmos_autostart_env_disables_spawn(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """Every common falsy spelling disables the managed spawn — an operator
+    who writes AUTOSTART=false must not get a surprise multi-GB server."""
     monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
-    monkeypatch.setenv("OPENRAL_COSMOS3_AUTOSTART", "0")
+    monkeypatch.setenv("OPENRAL_COSMOS3_AUTOSTART", value)
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, Cosmos3ToolUseClient)
+    assert client._auto_start is False
+
+
+def test_cosmos_portless_loopback_disables_autostart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loopback URL without an explicit port can't be managed: the spawned
+    server and the readiness probe would target different ports (reverse-proxy
+    on :80 case) — treat it as self-managed instead."""
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1/v1")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
     assert client._auto_start is False
@@ -137,6 +153,18 @@ def test_find_sidecar_script_env_override_wins(
     override.write_text("# placeholder\n")
     monkeypatch.setenv("OPENRAL_COSMOS3_SIDECAR", str(override))
     assert find_cosmos3_sidecar_script() == override
+
+
+def test_find_sidecar_script_missing_override_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale/typo'd override must fail with its real cause, not surface
+    later as a misleading 'sidecar exited early' GPU/driver diagnosis."""
+    monkeypatch.setenv("OPENRAL_COSMOS3_SIDECAR", str(tmp_path / "nope.py"))
+    with pytest.raises(ROSConfigError) as excinfo:
+        find_cosmos3_sidecar_script()
+    assert "OPENRAL_COSMOS3_SIDECAR" in str(excinfo.value)
+    assert "does not exist" in str(excinfo.value)
 
 
 def test_spawn_argv_shape() -> None:
@@ -184,6 +212,58 @@ def test_endpoint_up_short_circuits_spawn(monkeypatch: pytest.MonkeyPatch) -> No
     assert call.text == "hello"
     # The probe result is cached — the next call must not re-probe per tick.
     assert client._server_ready is True
+
+
+def test_live_child_is_reused_not_respawned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a boot timeout the still-provisioning child must be waited on,
+    never duplicated — a second Popen would orphan the first (leaked vLLM +
+    port/VRAM fight)."""
+    probes = {"n": 0}
+
+    def _up(*_a: object, **_k: object) -> bool:
+        probes["n"] += 1
+        return probes["n"] >= 3  # down for the pre-check + first loop probe, then up
+
+    monkeypatch.setattr(cosmos3, "_endpoint_is_up", _up)
+    monkeypatch.setattr(cosmos3.time, "sleep", lambda _s: None)
+
+    def _boom(*_a: object, **_k: object) -> None:  # pragma: no cover — must not run
+        raise AssertionError("must not spawn a duplicate while the child is alive")
+
+    monkeypatch.setattr(cosmos3.subprocess, "Popen", _boom)
+
+    class _LiveChild:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    client = Cosmos3ToolUseClient(auto_start=True, boot_timeout_s=30.0)
+    client._child = _LiveChild()  # type: ignore[assignment]  # reason: process-boundary double per §1.11
+    client._ensure_server()
+    assert client._server_ready is True
+
+
+def test_boot_timeout_keeps_child_for_next_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timeout must not discard the (possibly still-downloading) child —
+    the next call waits on it instead of double-spawning."""
+    monkeypatch.setattr(cosmos3, "_endpoint_is_up", lambda *_a, **_k: False)
+
+    class _LiveChild:
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+    child = _LiveChild()
+    client = Cosmos3ToolUseClient(auto_start=True, boot_timeout_s=0.0)
+    client._child = child  # type: ignore[assignment]  # reason: process-boundary double per §1.11
+    with pytest.raises(ROSConfigError) as excinfo:
+        client._ensure_server()
+    assert "not ready within" in str(excinfo.value)
+    assert client._child is child  # preserved, not replaced or dropped
 
 
 def test_early_exit_child_raises(monkeypatch: pytest.MonkeyPatch) -> None:

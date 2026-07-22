@@ -724,7 +724,14 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         )
 
         base_url = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or COSMOS3_BASE_URL
-        auto_start = os.environ.get(AUTOSTART_ENV, "").strip() != "0"
+        # Accept the common falsy spellings, not just "0" — an operator who
+        # writes AUTOSTART=false means "do not spawn a multi-GB server".
+        auto_start = os.environ.get(AUTOSTART_ENV, "").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         boot_env = os.environ.get(BOOT_TIMEOUT_ENV, "").strip()
         return Cosmos3ToolUseClient(
             model_id=model or DEFAULT_COSMOS3_MODEL,

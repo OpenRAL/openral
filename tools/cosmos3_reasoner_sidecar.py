@@ -369,6 +369,20 @@ def main() -> int:
         served_model_name=served_name,
         kv_cache_dtype=args.kv_cache_dtype,
     )
+    if "edge" in args.model.lower():
+        # Don't let a zero-config user sit through a ~30-minute first boot and
+        # then hit HTTP 500s without ever being told why (see UPSTREAM STATUS
+        # in the module docstring): the hash-locked stable vLLM boots the Edge
+        # tier but crashes on the first forward pass until a vLLM release
+        # ships the native model (vllm#48291 + vllm#49190).
+        print(
+            "[cosmos3-sidecar] WARNING: with the pinned stable vLLM this Edge server "
+            "boots but is expected to fail on inference (upstream cosmos3_edge "
+            "get_rope_index bug — fixed on vLLM main, unreleased). See "
+            "docs/reference/cosmos3-edge-reasoner.md; use a cloud/local reasoner "
+            "baseline meanwhile, or MODEL=nvidia/Cosmos3-Nano on a >=24 GB GPU.",
+            flush=True,
+        )
     print(
         f"[cosmos3-sidecar] launching vllm serve: model={args.model} "
         f"(served from {served_path}) port={args.port}",
