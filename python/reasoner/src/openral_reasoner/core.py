@@ -28,15 +28,15 @@ from openral_core.exceptions import (
     ROSPlanningError,
     ROSReasonerInvalidPlan,
 )
-from openral_observability import reasoner_span, semconv
+from openral_observability import semconv, start_reasoner_span
 from openral_observability.propagation import current_traceparent
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, use_span
 
-from openral_reasoner.context import ContextRenderer
+from openral_reasoner.context import ContextRenderer, PromptRecord
 from openral_reasoner.palette import ToolPalette
 from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT, ToolUseClient
 
-__all__ = ["ReasonerCore", "ReasonerTickResult"]
+__all__ = ["PreparedTick", "ReasonerCore", "ReasonerTickResult"]
 
 log = structlog.get_logger(__name__)
 
@@ -84,6 +84,31 @@ def _call_identity(call: ReasonerToolCall) -> str:
     """
     payload = {k: v for k, v in call.model_dump(mode="json").items() if k != "rationale"}
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+@dataclasses.dataclass(slots=True)
+class PreparedTick:
+    """In-flight state of a phased tick, prepare_tick → finish_tick.
+
+    Carries everything the blocking LLM phase needs (context text, palette
+    snapshot, system prompt) plus the bookkeeping captured at prepare time
+    (``seq``, ``prompts``, ``started``, the open OTel span). The ``seq`` and
+    ``prompts`` snapshots matter: events that arrive while the LLM call is in
+    flight were **not** rendered into the model's context, so
+    :meth:`~ReasonerCore.finish_tick` must mark seen / drain only what the
+    model actually saw.
+    """
+
+    context_text: str
+    palette: ToolPalette
+    system_prompt: str
+    renderer: ContextRenderer
+    span: Span
+    started: float
+    seq: int
+    prompts: tuple[PromptRecord, ...]
+    force: bool
+    tier: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -227,7 +252,7 @@ class ReasonerCore:
         self._call_streak = ("", "", 0)
         self._retry_cap_hold_seq = None
 
-    def tick(  # noqa: PLR0911, PLR0915  # reason: one return per suppression gate — the linear gate ladder (min_interval / retry_cap_hold / heartbeat_idle / palette_empty / error / retry_cap / success) reads best flat
+    def tick(
         self,
         *,
         world_state: WorldState | None,
@@ -236,7 +261,14 @@ class ReasonerCore:
         force: bool = False,
         tier: str = "heartbeat",
     ) -> ReasonerTickResult:
-        """Run one orchestrator pass.
+        """Run one orchestrator pass, synchronously.
+
+        Composition of the three phases (:meth:`prepare_tick` →
+        :meth:`run_prepared_llm` → :meth:`finish_tick`) on the calling
+        thread. The ROS node runs the LLM phase on a worker thread instead
+        (issue #21 — a blocking ``select_tool`` starves the rclpy executor);
+        this method remains the single-threaded contract for tests and
+        non-ROS embedders.
 
         Args:
             world_state: Latest WorldState snapshot or ``None``.
@@ -262,6 +294,45 @@ class ReasonerCore:
 
         Returns:
             A :class:`ReasonerTickResult`.
+        """
+        prep = self.prepare_tick(
+            world_state=world_state,
+            renderer=renderer,
+            palette=palette,
+            force=force,
+            tier=tier,
+        )
+        if isinstance(prep, ReasonerTickResult):
+            return prep
+        try:
+            call = self.run_prepared_llm(prep)
+        except Exception as exc:
+            # finish_tick returns a result for ROSPlanningError and re-raises
+            # anything else after closing the span — same surface as before
+            # the phase split.
+            return self.finish_tick(prep, error=exc)
+        return self.finish_tick(prep, call=call)
+
+    def prepare_tick(
+        self,
+        *,
+        world_state: WorldState | None,
+        renderer: ContextRenderer,
+        palette: ToolPalette,
+        force: bool = False,
+        tier: str = "heartbeat",
+    ) -> PreparedTick | ReasonerTickResult:
+        """Phase 1 of a tick: run the suppression gates and render the context.
+
+        Cheap and non-blocking — safe (and required) on the rclpy executor
+        thread, since it reads and snapshots state that executor callbacks
+        mutate (the renderer, the palette reference). Returns a suppressed
+        :class:`ReasonerTickResult` when a gate fires, else a
+        :class:`PreparedTick` whose blocking LLM phase
+        (:meth:`run_prepared_llm`) may run on any thread and whose
+        :meth:`finish_tick` must run back on the owning thread.
+
+        Args/semantics are those of :meth:`tick`.
         """
         started = self._clock()
         # min-interval gate — gate BEFORE opening the
@@ -313,64 +384,128 @@ class ReasonerCore:
             )
         # Every tick that reaches the LLM (or
         # the palette-empty short-circuit) opens a ``reasoner.tick``
-        # span. The reasoner_node reads ``current_traceparent()`` from
-        # inside this scope to stamp the outbound EmitPrompt's
-        # metadata_json.
+        # span. Non-attaching (start_reasoner_span) so the span can travel
+        # prepare → worker LLM phase → finish without leaking into
+        # executor callbacks that run between the phases; finish_tick
+        # re-attaches it to capture the traceparent.
         self._tick_idx += 1
-        with reasoner_span(
+        span = start_reasoner_span(
             tick_idx=self._tick_idx,
             model=getattr(self._client, "model_id", None),
             force=force,
-        ) as span:
-            span.set_attribute(semconv.REASONER_TIER, tier)
-            # Stamp the active mission queue on every tick span so
-            # the dashboard can render the task checklist. Set before the gate
-            # short-circuits below so suppressed (retry_cap / error) ticks still
-            # carry current mission state. The mission is unchanged within a tick.
-            _stamp_mission(span, renderer)
-            # palette-empty short-circuit — the LLM call would just
-            # timeout / pick a phantom rskill_id; surface the
-            # configuration error explicitly.
-            #
-            # Bypassed when ``force=True``: an event-preempted tick
-            # (SEVERITY_FAIL FailureTrigger or a new operator prompt)
-            # demands the LLM's attention even when no skills are
-            # installed — at minimum the LLM can pick :class:`EmitPromptTool`
-            # to escalate to the operator. The contract of ``force=True``
-            # is "an event demands attention, bypass the gating
-            # heuristics" — gating it here would silently swallow
-            # SEVERITY_FAIL preemptions on a bare reasoner.
-            if (
-                not force
-                and not palette.execute_rskill_ids
-                and not (palette.sensor_ids or palette.node_ids or renderer.prompts)
-            ):
-                self._last_tick_s = started
-                self._last_seen_seq = renderer.seq
-                span.set_attribute(semconv.REASONER_SUPPRESSED_REASON, "palette_empty")
+        )
+        span.set_attribute(semconv.REASONER_TIER, tier)
+        # Stamp the active mission queue on every tick span so
+        # the dashboard can render the task checklist. Set before the gate
+        # short-circuits below so suppressed (retry_cap / error) ticks still
+        # carry current mission state. The mission is unchanged within a tick.
+        _stamp_mission(span, renderer)
+        # palette-empty short-circuit — the LLM call would just
+        # timeout / pick a phantom rskill_id; surface the
+        # configuration error explicitly.
+        #
+        # Bypassed when ``force=True``: an event-preempted tick
+        # (SEVERITY_FAIL FailureTrigger or a new operator prompt)
+        # demands the LLM's attention even when no skills are
+        # installed — at minimum the LLM can pick :class:`EmitPromptTool`
+        # to escalate to the operator. The contract of ``force=True``
+        # is "an event demands attention, bypass the gating
+        # heuristics" — gating it here would silently swallow
+        # SEVERITY_FAIL preemptions on a bare reasoner.
+        if (
+            not force
+            and not palette.execute_rskill_ids
+            and not (palette.sensor_ids or palette.node_ids or renderer.prompts)
+        ):
+            self._last_tick_s = started
+            self._last_seen_seq = renderer.seq
+            span.set_attribute(semconv.REASONER_SUPPRESSED_REASON, "palette_empty")
+            span.end()
+            return ReasonerTickResult(
+                tool_call=None,
+                error=None,
+                elapsed_s=self._clock() - started,
+                suppressed_reason="palette_empty",
+            )
+        context_text = renderer.render(world_state=world_state)
+        # Snapshot seq + the rendered prompt records NOW: anything appended
+        # while the LLM phase is in flight was not in the model's context,
+        # so finish_tick must neither mark it seen nor drain it.
+        return PreparedTick(
+            context_text=context_text,
+            palette=palette,
+            system_prompt=self._system_prompt,
+            renderer=renderer,
+            span=span,
+            started=started,
+            seq=renderer.seq,
+            prompts=renderer.prompts,
+            force=force,
+            tier=tier,
+        )
+
+    def run_prepared_llm(self, prep: PreparedTick) -> ReasonerToolCall:
+        """Phase 2 of a tick: the blocking LLM round-trip.
+
+        The **only** phase safe to run off the owning thread — it touches
+        nothing but the client and the immutable snapshots inside ``prep``.
+        Runs under the tick span (per-thread attach) so client-internal
+        spans nest correctly; exception recording is deferred to
+        :meth:`finish_tick` (single recorder).
+
+        Raises:
+            ROSPlanningError: Provider/transport/decode failures, exactly
+                as :meth:`ToolUseClient.select_tool` raises them.
+        """
+        with use_span(
+            prep.span, end_on_exit=False, record_exception=False, set_status_on_exception=False
+        ):
+            return self._client.select_tool(
+                context_text=prep.context_text,
+                palette=prep.palette,
+                system_prompt=prep.system_prompt,
+            )
+
+    def finish_tick(
+        self,
+        prep: PreparedTick,
+        *,
+        call: ReasonerToolCall | None = None,
+        error: BaseException | None = None,
+    ) -> ReasonerTickResult:
+        """Phase 3 of a tick: bookkeeping + span close, back on the owning thread.
+
+        Applies the retry-cap ladder, marks the context seen **up to the
+        prepare-time snapshot** (``prep.seq`` / ``prep.prompts`` — events
+        that arrived mid-flight stay unseen for the next tick), captures
+        the traceparent, and ends the tick span.
+
+        Args:
+            prep: The matching :meth:`prepare_tick` output.
+            call: The selected tool call (success path).
+            error: The exception the LLM phase raised. A
+                :class:`ROSPlanningError` becomes ``ReasonerTickResult.error``;
+                anything else is recorded on the span and **re-raised** —
+                the pre-split behavior of an unexpected client bug.
+        """
+        with use_span(
+            prep.span, end_on_exit=True, record_exception=False, set_status_on_exception=False
+        ):
+            span = prep.span
+            if error is not None:
+                self._last_tick_s = prep.started
+                self._last_seen_seq = prep.seq
+                span.record_exception(error)
+                if not isinstance(error, ROSPlanningError):
+                    raise error
+                span.set_attribute(semconv.REASONER_ERROR_KIND, type(error).__name__)
                 return ReasonerTickResult(
                     tool_call=None,
-                    error=None,
-                    elapsed_s=self._clock() - started,
-                    suppressed_reason="palette_empty",
+                    error=error,
+                    elapsed_s=self._clock() - prep.started,
                 )
-            context_text = renderer.render(world_state=world_state)
-            try:
-                call = self._client.select_tool(
-                    context_text=context_text,
-                    palette=palette,
-                    system_prompt=self._system_prompt,
-                )
-            except ROSPlanningError as exc:
-                self._last_tick_s = started
-                self._last_seen_seq = renderer.seq
-                span.set_attribute(semconv.REASONER_ERROR_KIND, type(exc).__name__)
-                span.record_exception(exc)
-                return ReasonerTickResult(
-                    tool_call=None,
-                    error=exc,
-                    elapsed_s=self._clock() - started,
-                )
+            if call is None:
+                raise ValueError("finish_tick: pass exactly one of `call` or `error`")
             # retry-cap ("bounded retry counter per failure kind") — keyed
             # on the full call identity (tool + args minus rationale), so
             # only a *verbatim* repeat accumulates; a different skill /
@@ -388,20 +523,20 @@ class ReasonerCore:
             if streak > self._retry_cap:
                 # Arm the pre-call hold at the seq this cap fired against so
                 # subsequent unchanged-context ticks skip the LLM entirely.
-                self._retry_cap_hold_seq = renderer.seq
-                self._last_tick_s = started
-                self._last_seen_seq = renderer.seq
+                self._retry_cap_hold_seq = prep.seq
+                self._last_tick_s = prep.started
+                self._last_seen_seq = prep.seq
                 span.set_attribute(semconv.REASONER_TOOL, call.tool)
                 span.set_attribute(semconv.REASONER_SUPPRESSED_REASON, "retry_cap")
                 return ReasonerTickResult(
                     tool_call=None,
                     error=None,
-                    elapsed_s=self._clock() - started,
+                    elapsed_s=self._clock() - prep.started,
                     suppressed_reason="retry_cap",
                 )
             self._retry_cap_hold_seq = None
-            self._last_tick_s = started
-            self._last_seen_seq = renderer.seq
+            self._last_tick_s = prep.started
+            self._last_seen_seq = prep.seq
             span.set_attribute(semconv.REASONER_TOOL, call.tool)
             # ExecuteRskillTool carries a rskill_id worth surfacing on the
             # span for trace-search drill-down; other variants don't have
@@ -417,8 +552,8 @@ class ReasonerCore:
             _log_kwargs: dict[str, object] = {
                 "tick_idx": self._tick_idx,
                 "tool": call.tool,
-                "tier": tier,
-                "elapsed_s": round(self._clock() - started, 4),
+                "tier": prep.tier,
+                "elapsed_s": round(self._clock() - prep.started, 4),
             }
             if rskill_id:
                 _log_kwargs["rskill_id"] = rskill_id
@@ -427,20 +562,21 @@ class ReasonerCore:
                 _log_kwargs["rationale"] = rationale
             # Surface the active prompt so the caller can correlate which
             # operator goal drove this tool selection (multi-task tracing).
-            if renderer.prompts:
-                _log_kwargs["active_prompt"] = renderer.prompts[0].text[:200]
+            if prep.prompts:
+                _log_kwargs["active_prompt"] = prep.prompts[0].text[:200]
             log.info("reasoner.tick.selected", **_log_kwargs)
             # Capture the active traceparent WHILE the span is still in
             # scope so reasoner_node._dispatch (which runs after this
             # function returns) can stamp it onto outbound PromptStamped
             # metadata_json ("OTel context is the truth").
             traceparent = current_traceparent()
-            # Drain operator prompts on a successful tick (pull-once semantics).
-            renderer.drain_prompts()
+            # Drain the operator prompts the model actually saw (pull-once
+            # semantics); mid-flight arrivals survive for the next tick.
+            prep.renderer.drain_prompts(seen=prep.prompts)
             return ReasonerTickResult(
                 tool_call=call,
                 error=None,
-                elapsed_s=self._clock() - started,
+                elapsed_s=self._clock() - prep.started,
                 traceparent=traceparent,
             )
 

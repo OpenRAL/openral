@@ -8,5 +8,6 @@ Spawned by `openral deploy sim --robot g1` via
 `_ROBOT_HAL_REGISTRY["g1"]` (see
 `python/cli/src/openral_cli/deploy_sim.py`).
 
-The HAL is MuJoCo-backed; `HAL.connect()` pulls the MJCF from
-`robot_descriptions` on first use.
+The HAL is MuJoCo-backed. Its default contract/glide mode pulls the MJCF from
+`robot_descriptions`; `scenes/deploy/g1_vln.yaml` explicitly enables ADR-0089's
+hash-pinned MuJoCo Playground ONNX walking controller and matching MJCF.

@@ -105,6 +105,7 @@ _SIM_STEMS: list[str] = [
 ]
 
 _DEPLOY_STEMS: list[str] = [
+    "g1_vln",
     "isaac_franka",
     "isaac_franka_bowl",
     "isaac_franka_urdf",

@@ -275,6 +275,11 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         supported_robot_names=frozenset({"g1"}),
         default_params={},
         manifest_driven=True,
+        # Bare MuJoCo twin from the manifest's `sim:` block (ADR-0087
+        # kinematic-glide base + camera-rigged head cam) — an env-only
+        # DeployScene must not scene-attach. Scene props still compose
+        # via `deploy_scene.composition`, like so100/so101.
+        bare_twin_sim=True,
     ),
     "h1": _HalSpec(
         package="openral_hal_h1",

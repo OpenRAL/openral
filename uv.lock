@@ -2763,6 +2763,7 @@ dependencies = [
 [package.optional-dependencies]
 arm-sim = [
     { name = "mujoco" },
+    { name = "onnxruntime" },
     { name = "robot-descriptions" },
 ]
 so100 = [
@@ -2774,6 +2775,7 @@ requires-dist = [
     { name = "lerobot", extras = ["feetech"], specifier = ">=0.6.0" },
     { name = "lerobot", extras = ["feetech"], marker = "extra == 'so100'", specifier = ">=0.6.0" },
     { name = "mujoco", marker = "extra == 'arm-sim'", specifier = ">=3.0" },
+    { name = "onnxruntime", marker = "extra == 'arm-sim'", specifier = ">=1.17" },
     { name = "openral-core", editable = "python/core" },
     { name = "openral-sensors", editable = "python/sensors" },
     { name = "robot-descriptions", marker = "extra == 'arm-sim'", specifier = ">=1.12.0" },

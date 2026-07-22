@@ -39,6 +39,7 @@ so100 = [
 ]
 arm-sim = [
     "mujoco>=3.0",  # reason: MuJoCo physics engine for UR5e / UR10e / Franka Panda HAL sim adapters
+    "onnxruntime>=1.17",  # reason: pinned G1 walking controller inference
     "robot-descriptions>=1.12.0",  # reason: source of mujoco_menagerie MJCFs (UR5e, UR10e, Panda)
 ]
 

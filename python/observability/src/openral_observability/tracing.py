@@ -174,6 +174,20 @@ def reasoner_span(
         >>> with reasoner_span(tick_idx=0, model="fake") as span:
         ...     pass
     """
+    with _tracer().start_as_current_span(
+        name, attributes=_reasoner_attrs(tick_idx=tick_idx, model=model, force=force, **attrs)
+    ) as span:
+        yield span
+
+
+def _reasoner_attrs(
+    *,
+    tick_idx: int | None,
+    model: str | None,
+    force: bool | None,
+    **attrs: Any,
+) -> dict[str, Any]:
+    """Shared attribute tagging for :func:`reasoner_span` / :func:`start_reasoner_span`."""
     tagged: dict[str, Any] = {}
     if tick_idx is not None:
         tagged[semconv.REASONER_TICK_IDX] = tick_idx
@@ -183,8 +197,35 @@ def reasoner_span(
         tagged[semconv.REASONER_FORCE] = force
     for k, v in attrs.items():
         tagged[f"reasoner.{k}"] = v
-    with _tracer().start_as_current_span(name, attributes=tagged) as span:
-        yield span
+    return tagged
+
+
+def start_reasoner_span(
+    name: str = semconv.SPAN_REASONER_TICK,
+    *,
+    tick_idx: int | None = None,
+    model: str | None = None,
+    force: bool | None = None,
+    **attrs: Any,
+) -> Span:
+    """Non-attaching variant of :func:`reasoner_span` for phased (async) ticks.
+
+    Returns a started :class:`~opentelemetry.trace.Span` **without**
+    attaching it to the calling thread's context, so a tick split across
+    prepare → off-thread LLM call → finish (see
+    :meth:`openral_reasoner.ReasonerCore.prepare_tick`) can carry the span
+    between phases and re-attach per phase via
+    :func:`opentelemetry.trace.use_span`. Intermediate executor callbacks
+    never see it as current context. The caller owns ``span.end()``.
+
+    Example:
+        >>> from openral_observability import start_reasoner_span
+        >>> span = start_reasoner_span(tick_idx=0, model="fake")
+        >>> span.end()
+    """
+    return _tracer().start_span(
+        name, attributes=_reasoner_attrs(tick_idx=tick_idx, model=model, force=force, **attrs)
+    )
 
 
 def traced(

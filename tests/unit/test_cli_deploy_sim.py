@@ -697,6 +697,18 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
     assert "sim_robot_yaml" not in invocation.hal_params
 
 
+def test_g1_vln_scene_enables_walking_controller() -> None:
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "g1_vln.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "g1"
+    assert invocation.hal_params["walking_enabled"] is True
+
+
 def test_bh_deploy_sim_robot_yaml_override_wins() -> None:
     """An explicit `--hal robot_yaml=…` overrides the injected manifest default."""
     invocation = resolve_launch_invocation(
@@ -1036,16 +1048,16 @@ def test_bh_deploy_sim_missing_robot_in_yaml_fails(tmp_path: Path) -> None:
 def test_bh_preflight_palette_deps_silent_when_no_capability_match(tmp_path: Path) -> None:
     """A repo with rskills/ but no capability-matching skills returns silently.
 
-    Uses ``g1`` from the in-tree registry (humanoid: 0 skills match in the
+    Uses ``h1`` from the in-tree registry (humanoid: 0 skills match in the
     current registry per ``build_tool_palette``). The preflight should
     not gate on capability misses — that's the reasoner's job to
     surface at on_configure.
     """
-    g1_yaml = _REPO_ROOT / "robots" / "g1" / "robot.yaml"
-    if not g1_yaml.is_file():
-        pytest.skip(f"missing fixture: {g1_yaml}")
+    h1_yaml = _REPO_ROOT / "robots" / "h1" / "robot.yaml"
+    if not h1_yaml.is_file():
+        pytest.skip(f"missing fixture: {h1_yaml}")
     # No raise / no exit — silent return.
-    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=g1_yaml)
+    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=h1_yaml)
 
 
 def test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir(tmp_path: Path) -> None:

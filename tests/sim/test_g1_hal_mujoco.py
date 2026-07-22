@@ -10,18 +10,18 @@ The point of this suite is the G1 "real hardware first day" contract
 (CLAUDE.md §1.11): if these tests pass, the 29-DoF joint-position
 action layout, lifecycle, and ``RobotDescription`` joint order are
 guaranteed to match what a future ``G1RealHAL`` over ``unitree_sdk2``
-will see when the physical robot arrives.  Balance + walking remain
-out of scope — they live in CLAUDE.md §6.2 (M2 C++ S0 cerebellum) and
-no Python HAL twin can validate them.
+will see when the physical robot arrives. ADR-0089 additionally exercises a
+sim-only pretrained walking controller; production hardware balance remains
+the M2 C++ S0 responsibility.
 
-Gravity is disabled in every test because without an S0 balance
-controller the floating-base humanoid falls over in <1 s; with
-gravity off the joints converge to their commanded targets and the
-contract assertions are deterministic.
+Gravity is disabled in the joint-convergence fixtures so those contract
+assertions stay deterministic. The dedicated walking and glide fixtures run
+with gravity enabled.
 """
 
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -511,3 +511,145 @@ class TestFullLifecycle:
     # comment).  The per-section convergence tests above already
     # prove the 29-DoF action contract end-to-end on a per-joint
     # basis without driving the body into self-collision.
+
+
+# ── VLN / mobile_base contract (ADR-0087 kinematic-glide base) ────────────────
+#
+# The G1 consumes mobile_base BODY_TWIST skills (e.g. the InternVLA-N1
+# VLN rSkill) through a kinematic-glide base: the floating-base free
+# joint is pinned upright each physics step and the commanded planar
+# twist is Euler-integrated into its world pose, mirroring
+# PandaMobileHAL._apply_body_twist.  A real gait is the S0 cerebellum
+# (M2); the glide is the sim-only navigation stand-in.
+
+
+def _twist_action(vx: float = 0.0, vy: float = 0.0, wz: float = 0.0, *, vz: float = 0.0) -> Action:
+    return Action(
+        control_mode=ControlMode.BODY_TWIST,
+        horizon=1,
+        body_twist=[(vx, vy, vz, 0.0, 0.0, wz)],
+        frame_id="base_link",
+        stamp_ns=time.time_ns(),
+    )
+
+
+class TestG1VlnContract:
+    """Description-level contract for mobile_base VLN skills."""
+
+    def test_capabilities_advertise_body_twist(self) -> None:
+        modes = G1_DESCRIPTION.capabilities.supported_control_modes
+        assert ControlMode.BODY_TWIST.value in modes
+
+    def test_embodiment_tags_include_mobile_base(self) -> None:
+        # `mobile_base` is the canonical class tag any BODY_TWIST nav
+        # skill matches on (rskill-internvla_n1-mobile_base-vln-nf4,
+        # rskill-nav2-navigate-to-pose).
+        assert "mobile_base" in G1_DESCRIPTION.capabilities.embodiment_tags
+
+    def test_head_camera_sensor_declared(self) -> None:
+        heads = [s for s in G1_DESCRIPTION.sensors if s.name == "head"]
+        assert len(heads) == 1
+        head = heads[0]
+        assert head.modality == "rgb"
+        assert head.vla_feature_key == "observation.images.head"
+        assert head.sim_placement is not None
+        assert head.sim_placement.parent_body == "torso_link"
+        assert head.intrinsics is not None
+        assert head.intrinsics.width >= 224 and head.intrinsics.height >= 224
+        assert G1_DESCRIPTION.capabilities.has_vision is True
+
+
+class TestBodyTwistGlide:
+    """Closed-loop glide behaviour — gravity ON (the pin is the point)."""
+
+    @pytest.fixture()
+    def glide_hal(self) -> G1MujocoHAL:
+        hal = G1MujocoHAL(settle_steps=50)  # gravity enabled (default)
+        hal.connect()
+        yield hal
+        hal.disconnect()
+
+    def test_forward_twist_advances_base(self, glide_hal: G1MujocoHAL) -> None:
+        x0, y0, yaw0 = glide_hal.base_pose
+        glide_hal.send_action(_twist_action(vx=0.5))
+        x1, y1, yaw1 = glide_hal.base_pose
+        assert x1 - x0 == pytest.approx(0.5 * 0.05, rel=1e-6)  # one dt of glide
+        assert y1 == pytest.approx(y0, abs=1e-9)
+        assert yaw1 == pytest.approx(yaw0, abs=1e-9)
+
+    def test_yaw_twist_rotates_base(self, glide_hal: G1MujocoHAL) -> None:
+        _, _, yaw0 = glide_hal.base_pose
+        glide_hal.send_action(_twist_action(wz=1.0))
+        _, _, yaw1 = glide_hal.base_pose
+        assert yaw1 - yaw0 == pytest.approx(1.0 * 0.05, rel=1e-6)
+
+    def test_twist_follows_heading(self, glide_hal: G1MujocoHAL) -> None:
+        # Rotate ~90° in place, then drive "forward" — motion must be +y world.
+        for _ in range(32):  # 32 * 1.0 rad/s * 0.05 s ≈ 1.6 rad ≈ 92°
+            glide_hal.send_action(_twist_action(wz=1.0))
+        _, _, yaw = glide_hal.base_pose
+        assert yaw == pytest.approx(math.pi / 2, abs=0.15)
+        x0, y0, _ = glide_hal.base_pose
+        glide_hal.send_action(_twist_action(vx=0.5))
+        x1, y1, _ = glide_hal.base_pose
+        assert y1 > y0 + 0.02  # forward is now world +y
+        assert abs(x1 - x0) < 0.01
+
+    def test_base_stays_upright_under_gravity(self, glide_hal: G1MujocoHAL) -> None:
+        # Without the per-step pin the floating base free-falls in a few
+        # hundred steps.  Idle-step (the deploy-sim idle stepper path) and
+        # actuate; the pelvis must hold its standing height.
+        for _ in range(300):
+            assert glide_hal.idle_step() is True
+        glide_hal.send_action(_twist_action(vx=0.3))
+        assert glide_hal._data is not None
+        assert float(glide_hal._data.qpos[2]) > 0.7  # standing, not fallen
+
+    def test_non_planar_twist_rejected(self, glide_hal: G1MujocoHAL) -> None:
+        with pytest.raises(ROSConfigError):
+            glide_hal.send_action(_twist_action(vx=0.1, vz=0.5))
+
+    def test_joint_position_still_accepted(self, glide_hal: G1MujocoHAL) -> None:
+        x0, y0, _ = glide_hal.base_pose
+        glide_hal.send_action(_zero_action())
+        x1, y1, _ = glide_hal.base_pose
+        assert (x1, y1) == pytest.approx((x0, y0), abs=1e-9)  # arm action ≠ base motion
+
+    def test_base_twist_latches_and_zeroes(self, glide_hal: G1MujocoHAL) -> None:
+        glide_hal.send_action(_twist_action(vx=0.4, wz=0.2))
+        assert glide_hal.base_twist == pytest.approx((0.4, 0.0, 0.0, 0.0, 0.0, 0.2))
+        glide_hal.send_action(_zero_action())
+        assert glide_hal.base_twist == pytest.approx((0.0,) * 6)
+
+
+class TestBodyTwistWalking:
+    """Pinned MuJoCo Playground policy drives the gravity-on G1 through its legs."""
+
+    def test_walking_rejects_gravity_disabled(self) -> None:
+        with pytest.raises(ROSConfigError, match="gravity_enabled=True"):
+            G1MujocoHAL(walking_enabled=True, gravity_enabled=False)
+
+    def test_forward_command_walks_under_gravity(self) -> None:
+        try:
+            hal = G1MujocoHAL(walking_enabled=True, body_twist_dt_s=2.0)
+            hal.connect()
+        except ROSConfigError as exc:
+            pytest.skip(f"G1 walking assets unavailable: {exc}")
+        try:
+            x0, y0, _ = hal.base_pose
+            hal.send_action(_twist_action(vx=0.5))
+            x1, y1, _ = hal.base_pose
+            assert math.hypot(x1 - x0, y1 - y0) > 0.5
+            assert hal._data is not None
+            assert float(hal._data.qpos[2]) > 0.6
+            assert getattr(hal.read_images()["head"], "shape", None) == (480, 640, 3)
+        finally:
+            hal.disconnect()
+
+
+class TestHeadCamera:
+    def test_read_images_renders_head(self, connected_hal: G1MujocoHAL) -> None:
+        frames = connected_hal.read_images()
+        assert "head" in frames
+        img = frames["head"]
+        assert getattr(img, "shape", None) == (480, 640, 3)
