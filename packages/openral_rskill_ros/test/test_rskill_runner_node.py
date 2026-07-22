@@ -491,3 +491,110 @@ def test_execute_skill_estop_aborts_goal() -> None:
         assert result_msg is not None
         assert not result_msg.result.success
         assert "safety_estop" in result_msg.result.failure_reason
+
+
+def _send_goal(client: Any, executor: Any, *, prompt: str, deadline_s: float) -> Any:
+    """Send an ExecuteRskill goal and spin until accepted; return the goal handle."""
+    from openral_msgs.action import ExecuteRskill
+
+    goal = ExecuteRskill.Goal()
+    goal.rskill_id = "openral/test-constant-skill"
+    goal.revision = ""
+    goal.prompt = prompt
+    goal.prompt_metadata_json = ""
+    goal.deadline_s = deadline_s
+    send_future = client.send_goal_async(goal)
+    deadline = time.monotonic() + 5.0
+    while not send_future.done() and time.monotonic() < deadline:
+        executor.spin_once(timeout_sec=0.02)
+    assert send_future.done(), "send_goal_async timed out"
+    handle = send_future.result()
+    assert handle is not None and handle.accepted
+    return handle
+
+
+def _await_result(handle: Any, executor: Any, *, timeout_s: float = 8.0) -> Any:
+    """Spin until the goal's result future resolves; return the result message."""
+    result_future = handle.get_result_async()
+    deadline = time.monotonic() + timeout_s
+    while not result_future.done() and time.monotonic() < deadline:
+        executor.spin_once(timeout_sec=0.02)
+    assert result_future.done(), "result future timed out"
+    return result_future.result()
+
+
+def test_stale_finalized_resident_is_reloaded_on_redispatch() -> None:
+    """A key-matching resident left non-ACTIVE is evicted + re-resolved, not stepped.
+
+    #21 deploy validation: a re-dispatch ~1 s after the previous goal hit a
+    resident skill in state 'finalized' → every step() raised "must be
+    'active' to call step()" (the pre-async ~76 s reaction gap masked this).
+    """
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    with _compose_harness() as (executor, runtime, _safety, _observed):
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        handle = _send_goal(client, executor, prompt="same prompt", deadline_s=0.4)
+        _await_result(handle, executor)
+
+        runner = runtime.skill_runner_node
+        assert runner._resident_skill is not None
+        # Finalize the resident in place (what a lifecycle deactivate /
+        # estop teardown does) while its cache key stays valid.
+        runner._resident_skill.shutdown()
+
+        handle2 = _send_goal(client, executor, prompt="same prompt", deadline_s=0.4)
+        result2 = _await_result(handle2, executor)
+        assert "must be 'active'" not in result2.result.failure_reason, (
+            f"stale finalized resident was stepped: {result2.result.failure_reason!r}"
+        )
+        assert "finalized" not in result2.result.failure_reason
+
+
+def test_goal_accept_served_while_execute_runs() -> None:
+    """Goal-2's accept lands < 1 s while goal-1's execute is still running.
+
+    With the action server in the node-default mutually-exclusive group,
+    accept/result/cancel queued behind a long execute callback — observed
+    live as 50–100 s goal-accept latency under model-load thrash (#21
+    deploy validation). The reentrant group + execute serialization lock
+    keeps the protocol responsive while goals still run one at a time.
+    """
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    with _compose_harness() as (executor, runtime, _safety, _observed):
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.3)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        handle1 = _send_goal(client, executor, prompt="long goal", deadline_s=2.5)
+        # Let goal-1's execute callback actually start its rollout.
+        _spin_for(executor, 0.3)
+
+        goal2 = ExecuteRskill.Goal()
+        goal2.rskill_id = "openral/test-constant-skill"
+        goal2.revision = ""
+        goal2.prompt = "queued goal"
+        goal2.prompt_metadata_json = ""
+        goal2.deadline_s = 0.4
+        t0 = time.monotonic()
+        send2 = client.send_goal_async(goal2)
+        deadline = time.monotonic() + 5.0
+        while not send2.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        accept_latency = time.monotonic() - t0
+        assert send2.done() and send2.result() is not None and send2.result().accepted
+        assert accept_latency < 1.0, (
+            f"goal-2 accept took {accept_latency:.2f}s — action protocol queued "
+            "behind the in-flight execute callback"
+        )
+
+        # Both goals must still terminate (goal-2 executes after goal-1's
+        # rollout releases the serialization lock).
+        _await_result(handle1, executor)
+        _await_result(send2.result(), executor)
