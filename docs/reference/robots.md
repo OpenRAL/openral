@@ -17,7 +17,7 @@ Every embodiment is a typed `RobotDescription` manifest under `robots/<robot_id>
 | Enactic OpenArm v2 bimanual | [`robots/openarm/`](https://github.com/OpenRAL/openral/tree/master/robots/openarm/) | `OpenArmMujocoHAL` (`MujocoArmHAL`, 16-DoF bimanual) | ✓ sim |
 | Anvil OpenARM 2.0 bimanual | [`robots/anvil_openarm_v2/`](https://github.com/OpenRAL/openral/tree/master/robots/anvil_openarm_v2/) | `AnvilOpenArmV2MujocoHAL` (`MujocoArmHAL`, 16-DoF bimanual; v2 + Anvil J1/J6 range deltas + wrist support bracket) | ✓ sim |
 | Unitree H1 humanoid | [`robots/h1/`](https://github.com/OpenRAL/openral/tree/master/robots/h1/) | `H1MujocoHAL` (software PD loop, no S0 cerebellum) | ✓ sim |
-| Unitree G1 humanoid | [`robots/g1/`](https://github.com/OpenRAL/openral/tree/master/robots/g1/) | `G1MujocoHAL` (Menagerie MJCF) | ✓ sim |
+| Unitree G1 humanoid | [`robots/g1/`](https://github.com/OpenRAL/openral/tree/master/robots/g1/) | `G1MujocoHAL` (Menagerie MJCF; ADR-0087 kinematic-glide `body_twist` base + head camera for VLN) | ✓ sim |
 | Rethink Sawyer | [`robots/sawyer/`](https://github.com/OpenRAL/openral/tree/master/robots/sawyer/) | eval-only · real-HW HAL planned (#57) | ✓ sim |
 | Fourier GR1 | [`robots/gr1/`](https://github.com/OpenRAL/openral/tree/master/robots/gr1/) | eval-only (RoboCasa GR1 fork + RLDX-1) | ✓ sim |
 | Panda mobile (RoboCasa kitchen) | [`robots/panda_mobile/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile/) | eval-only (drives RoboCasa kitchen via robosuite) | ✓ sim |

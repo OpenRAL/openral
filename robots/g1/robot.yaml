@@ -400,25 +400,58 @@ joints:
 # entries here.
 end_effectors: []
 
+# Forward egocentric head camera (ADR-0087).  The menagerie MJCF ships no
+# <camera>, so the generic HAL camera rig splices this onto `torso_link` at
+# head height, looking forward.  `vla_feature_key` matches the InternVLA-N1
+# VLN rSkill's `sensors_required` (observation.images.camera1).  Named
+# `camera1` (its slot) rather than `head` because the deploy runner keys
+# observation images by the vla_feature_key slot suffix while the policy
+# adapter's fallback picks the first sensor NAME — they must agree.
+sensors:
+  - name: "camera1"
+    modality: "rgb"
+    frame_id: "head_camera"
+    parent_frame: "torso_link"
+    rate_hz: 15.0
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 343.0
+      fy: 343.0
+      cx: 320.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.camera1"
+    sim_placement:
+      parent_body: "torso_link"
+      pos: [0.06, 0.0, 0.40]
+      target: [1.06, 0.0, 0.33]
+
 capabilities:
   locomotion: ["bipedal"]
   can_lift_kg: 3.0
   has_dexterous_hands: false
   has_tactile: false
   has_force_control: true
-  has_vision: false
+  has_vision: true
   has_lidar: false
   has_audio: false
   bimanual: true
+  # body_twist rides the ADR-0087 kinematic-glide base (sim-only); a real
+  # gait is the M2 S0 cerebellum.
   supported_control_modes:
     - "joint_position"
+    - "body_twist"
   supported_vla_embodiments:
     - "g1"
     - "humanoid_everyday_g1"
+  # `mobile_base` is the canonical class tag BODY_TWIST nav skills match on
+  # (InternVLA-N1 VLN, nav2-navigate-to-pose).
   embodiment_tags:
     - "g1"
     - "unitree_g1"
     - "humanoid"
+    - "mobile_base"
 
 safety:
   max_ee_speed_m_s: 1.5

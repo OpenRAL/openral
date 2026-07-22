@@ -63,22 +63,38 @@ Example:
 
 from __future__ import annotations
 
+import math
+import time
+
+import structlog
+from openral_core import BODY_TWIST_DIM
 from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
+    Action,
     AssetRefs,
+    CameraSimPlacement,
     ControlMode,
     EmbodimentKind,
     HalEntrypoints,
+    IntrinsicsPinhole,
     JointSpec,
     JointType,
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
+    SensorModality,
+    SensorSpec,
     SimDescription,
     UrdfAsset,
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
+
+# Twist components a kinematic-glide base does not actuate (linear-z,
+# angular-x, angular-y).  Mirrors ``panda_mobile._PLANAR_TWIST_EPS``.
+_PLANAR_TWIST_EPS = 1e-9
+
+log = structlog.get_logger(__name__)
 
 __all__ = ["G1_DESCRIPTION", "G1MujocoHAL"]
 
@@ -297,17 +313,50 @@ G1_DESCRIPTION = RobotDescription(
     # joint chain.  Future ``g1_with_hands`` revs would add Inspire / Dex-3
     # hands as ``EndEffectorSpec`` entries here.
     end_effectors=[],
+    # Forward egocentric head camera (ADR-0087).  The menagerie MJCF ships
+    # no <camera>, so the generic HAL camera rig splices this onto
+    # ``torso_link`` at head height (~1.2 m world when standing), looking
+    # forward with a slight downward pitch.  ``vla_feature_key`` matches the
+    # InternVLA-N1 VLN rSkill's ``sensors_required`` so the skill loader
+    # auto-wires it as the policy's egocentric view.
+    # NOTE the sensor is *named* `camera1` (its slot), not `head`: the deploy
+    # runner keys observation images by the vla_feature_key slot suffix while
+    # the policy adapter's fallback picks the first sensor name — they only
+    # agree when name == slot. `frame_id` keeps the physical identity.
+    sensors=[
+        SensorSpec(
+            name="camera1",
+            modality=SensorModality.RGB,
+            frame_id="head_camera",
+            parent_frame="torso_link",
+            rate_hz=15.0,
+            intrinsics=IntrinsicsPinhole(
+                width=640, height=480, fx=343.0, fy=343.0, cx=320.0, cy=240.0
+            ),
+            encoding="rgb8",
+            vla_feature_key="observation.images.camera1",
+            sim_placement=CameraSimPlacement(
+                parent_body="torso_link",
+                pos=(0.06, 0.0, 0.40),
+                target=(1.06, 0.0, 0.33),
+            ),
+        )
+    ],
     capabilities=RobotCapabilities(
         locomotion=["bipedal"],
         can_lift_kg=3.0,
         has_dexterous_hands=False,
         has_force_control=True,
-        has_vision=False,  # built-in vision lives on the head; this manifest
-        # is the base robot only — sensors are wired by the bring-up YAML.
+        has_vision=True,  # head camera above (rigged into the sim MJCF)
         bimanual=True,
-        supported_control_modes=[ControlMode.JOINT_POSITION],
+        # BODY_TWIST rides the ADR-0087 kinematic-glide base (sim-only,
+        # like the JOINT_POSITION twin itself); a real gait is the M2 S0
+        # cerebellum.
+        supported_control_modes=[ControlMode.JOINT_POSITION, ControlMode.BODY_TWIST],
         supported_vla_embodiments=["g1", "humanoid_everyday_g1"],
-        embodiment_tags=["g1", "unitree_g1", "humanoid"],
+        # `mobile_base` is the canonical class tag BODY_TWIST nav skills
+        # match on (InternVLA-N1 VLN, nav2-navigate-to-pose).
+        embodiment_tags=["g1", "unitree_g1", "humanoid", "mobile_base"],
     ),
     safety=SafetyEnvelope(
         # Generous workspace envelope — the G1 stands ≈1.3 m tall and
@@ -392,11 +441,21 @@ class G1MujocoHAL(MujocoArmHAL):
         settle_steps: int = 1,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
+        body_twist_dt_s: float = 0.05,
     ) -> None:
         """Initialise the G1 HAL; no MuJoCo state is created until ``connect()``.
 
         All wiring (MJCF URI, floating-base offsets) lives in
         :data:`G1_DESCRIPTION.sim`.
+
+        Args:
+            mjcf_path: Optional override for the MJCF file path.
+            settle_steps: MuJoCo physics steps per :meth:`send_action`.
+            gravity_enabled: When ``False``, gravity is zeroed at connect.
+            staleness_limit_s: Maximum age of a cached state.
+            body_twist_dt_s: Logical control timestep one BODY_TWIST
+                action integrates the glide base by (matches
+                ``SimAttachedHAL`` / ``PandaMobileHAL``).
         """
         self._init_from_description(
             G1_DESCRIPTION,
@@ -405,3 +464,131 @@ class G1MujocoHAL(MujocoArmHAL):
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
         )
+        self._body_twist_dt_s = body_twist_dt_s
+        # Kinematic-glide base pin (ADR-0087): ``(x, y, yaw, z0)`` world pose
+        # the free joint is re-pinned to every physics step.  Captured lazily
+        # from the MJCF default qpos on first use after connect.
+        self._base_pin: tuple[float, float, float, float] | None = None
+        # Last commanded base twist, ``base_link`` frame; zeroed by any
+        # non-BODY_TWIST action (odom publisher contract, like PandaMobileHAL).
+        self._last_body_twist: tuple[float, float, float, float, float, float] = (0.0,) * 6
+
+    # ── Kinematic-glide base (ADR-0087) ──────────────────────────────────────
+
+    @property
+    def base_pose(self) -> tuple[float, float, float]:
+        """Current glide-base ``(x, y, yaw)`` for tests / odom publishers."""
+        x, y, yaw, _z0 = self._pin()
+        return (x, y, yaw)
+
+    @property
+    def base_twist(self) -> tuple[float, float, float, float, float, float]:
+        """Last commanded base body twist (``base_link`` frame); zeroed on non-twist actions."""
+        return self._last_body_twist
+
+    def connect(self) -> None:
+        """Connect and re-arm the base pin (recaptured from the fresh qpos)."""
+        super().connect()
+        self._base_pin = None
+
+    def send_action(self, action: Action) -> None:
+        """Route BODY_TWIST to the glide base; everything else to the arm path.
+
+        A BODY_TWIST action Euler-integrates the planar twist ``(vx, vy, wz)``
+        into the pinned free-joint pose (body frame rotated into world by the
+        current yaw, one ``body_twist_dt_s`` per action — the
+        ``PandaMobileHAL`` convention), then advances physics ``settle_steps``
+        ticks with the base pinned.  The 29 joint actuators keep holding their
+        last targets, so navigation composes with a held upper-body pose.
+        """
+        if action.control_mode != ControlMode.BODY_TWIST.value:
+            self._last_body_twist = (0.0,) * 6
+            super().send_action(action)
+            return
+
+        self._require_connected("send_action")
+        self._validate_action(action)
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        assert self._data is not None and self._model is not None
+        vx, vy, _vz, _wx, _wy, wz = (float(v) for v in action.body_twist[0])  # type: ignore[index]  # reason: _validate_action guarantees body_twist
+        self._last_body_twist = (vx, vy, 0.0, 0.0, 0.0, wz)
+        x, y, yaw, z0 = self._pin()
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        x += (cy * vx - sy * vy) * self._body_twist_dt_s
+        y += (sy * vx + cy * vy) * self._body_twist_dt_s
+        yaw += wz * self._body_twist_dt_s
+        yaw = (yaw + math.pi) % (2.0 * math.pi) - math.pi
+        self._base_pin = (x, y, yaw, z0)
+
+        for _ in range(self._settle_steps):
+            self._pin_base()
+            mj.mj_step(self._model, self._data)
+        self._last_state_time = time.monotonic()
+        self._last_action_ns = time.monotonic_ns()
+        log.debug(
+            "hal.send_action",
+            robot=self.description.name,
+            control_mode=action.control_mode,
+            body_twist=self._last_body_twist,
+        )
+
+    def idle_step(self) -> bool:
+        """HOLD-step with the glide base pinned (it would free-fall otherwise)."""
+        if self._connected and self._data is not None:
+            self._pin_base()
+        return super().idle_step()
+
+    def _validate_action(self, action: Action) -> None:
+        if action.control_mode == ControlMode.BODY_TWIST.value:
+            if not action.body_twist:
+                raise ROSConfigError(
+                    "G1MujocoHAL.send_action: empty Action.body_twist for BODY_TWIST."
+                )
+            row = action.body_twist[0]
+            if len(row) != BODY_TWIST_DIM:
+                raise ROSConfigError(
+                    f"G1MujocoHAL: BODY_TWIST expects {BODY_TWIST_DIM} floats "
+                    f"(vx, vy, vz, wx, wy, wz); got {len(row)}."
+                )
+            if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
+                raise ROSConfigError(
+                    "G1MujocoHAL: BODY_TWIST row carries non-zero linear-z / "
+                    "angular-x / angular-y; the glide base is planar — only "
+                    "vx, vy, wz are actuated."
+                )
+            return
+        super()._validate_action(action)
+
+    def _per_step_update(self, targets: list[float]) -> None:
+        """Re-pin the glide base inside the arm settle loop (gravity holds otherwise)."""
+        del targets
+        self._pin_base()
+
+    def _pin(self) -> tuple[float, float, float, float]:
+        """Return the glide-base pin ``(x, y, yaw, z0)``, capturing it on first use."""
+        if self._base_pin is None:
+            self._require_connected("base_pose")
+            assert self._data is not None
+            qw, qx, qy, qz = (float(self._data.qpos[i]) for i in range(3, 7))
+            yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+            self._base_pin = (
+                float(self._data.qpos[0]),
+                float(self._data.qpos[1]),
+                yaw,
+                float(self._data.qpos[2]),
+            )
+        return self._base_pin
+
+    def _pin_base(self) -> None:
+        """Write the pinned upright pose into the free joint and zero its velocity.
+
+        The pin is what keeps the gravity-on twin standing: without an S0
+        balance controller the free joint would integrate a fall.  Roll and
+        pitch are clamped to zero (upright), yaw/x/y come from the glide.
+        """
+        assert self._data is not None
+        x, y, yaw, z0 = self._pin()
+        half = 0.5 * yaw
+        self._data.qpos[0:7] = (x, y, z0, math.cos(half), 0.0, 0.0, math.sin(half))
+        self._data.qvel[0:6] = 0.0
