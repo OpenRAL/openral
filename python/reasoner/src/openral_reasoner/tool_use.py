@@ -36,7 +36,13 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
-from openral_core import ReasonerToolCall, RobotCapabilities
+from openral_core import (
+    REASONER_MANAGED_ENDPOINT,
+    REASONER_MODELS,
+    ReasonerModel,
+    ReasonerToolCall,
+    RobotCapabilities,
+)
 from openral_core.exceptions import (
     ROSConfigError,
     ROSPlanningError,
@@ -610,54 +616,235 @@ _KNOWN_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+# ── Model-first env contract (ADR-0088) ───────────────────────────────────────
+# Selection pivots from the location-leaking PROVIDER enum to the *model*; where
+# it runs is the orthogonal ENDPOINT axis. The legacy OPENRAL_REASONER_LLM_*
+# contract is honoured for one release via a deprecation shim below.
+REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"
+REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"
+REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
+REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
+REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
+REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+_LEGACY_PROVIDER_ENV: str = "OPENRAL_REASONER_LLM_PROVIDER"
+
+
 def build_tool_use_client_from_env() -> ToolUseClient:
-    """Read ``OPENRAL_REASONER_LLM_*`` env and build the matching client.
+    """Build a :class:`ToolUseClient` from the model-first env (ADR-0088).
 
-    Recognised env vars:
+    Env vars:
 
-    * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
-      ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``vllm`` /
-      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``cosmos``.
-      Required.
-    * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
-      Required for every provider except ``cosmos``, which defaults to
-      ``nvidia/Cosmos3-Edge``.
-    * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
-      ``anthropic`` and the auth-required cloud presets (``openrouter`` /
-      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``); ignored by
-      local ``openai-compatible`` / ``ollama`` / ``vllm`` endpoints that
-      don't enforce it.
-    * ``OPENRAL_REASONER_LLM_BASE_URL`` — for ``openai-compatible`` and
-      every preset. For ``openai-compatible`` it defaults to the OpenAI
-      cloud; for the local presets it defaults to
-      :data:`OLLAMA_BASE_URL` (``http://localhost:11434/v1``) /
-      :data:`VLLM_BASE_URL` (``http://localhost:8000/v1``); for
-      ``openrouter`` / ``gemini`` / ``xai`` / ``deepseek`` /
-      ``huggingface`` it defaults to that vendor's OpenAI-compatible
-      endpoint (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
-      :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`,
-      :data:`HUGGINGFACE_BASE_URL`). ``huggingface`` uses
-      ``tool_choice="auto"`` (its router rejects ``"required"``). For
-      ``cosmos`` it defaults to the managed local endpoint
-      (``http://127.0.0.1:8901/v1``); ``OPENRAL_COSMOS3_AUTOSTART=0``
-      disables the managed ``vllm serve`` spawn and
-      ``OPENRAL_COSMOS3_BOOT_TIMEOUT_S`` bounds its first-boot wait
-      (see :mod:`openral_reasoner.cosmos3`).
+    * ``OPENRAL_REASONER_MODEL`` (**required**) — a curated registry key
+      (:data:`~openral_core.REASONER_MODELS`: ``claude-opus-4-8`` / ``gpt-5.5``
+      / ``gpt-5.6`` / ``cosmos3-edge``), or a raw model id for the uncurated
+      escape hatch.
+    * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a URL, the ``managed``
+      sentinel, or unset (the model's registry default). The only axis that
+      carries local-vs-cloud, and it does so literally.
+    * ``OPENRAL_REASONER_API_KEY`` (conditional) — required iff the resolved
+      endpoint needs auth.
+    * ``OPENRAL_REASONER_DIALECT`` (escape hatch only) — ``anthropic`` |
+      ``openai``.
+    * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
+      registry defaults.
+
+    A raw model id that is not in the registry takes the escape hatch: it
+    requires ``OPENRAL_REASONER_ENDPOINT`` + ``OPENRAL_REASONER_DIALECT`` and
+    logs an ``reasoner.model.uncurated`` warning (untested for robotics tool
+    calling). The legacy ``OPENRAL_REASONER_LLM_PROVIDER`` contract still works
+    for one release, with a deprecation warning.
 
     Returns:
         A constructed :class:`ToolUseClient`.
 
     Raises:
-        ROSConfigError: When the required env vars are not set or the
-            provider is unknown.
+        ROSConfigError: When no model is selected, an uncurated model lacks its
+            endpoint/dialect, or a required API key is missing.
 
     Example:
-        >>> # Real usage requires API credentials; see tests for the
+        >>> # Real usage requires env + credentials; see tests for the
         >>> # FakeToolUseClient counterpart that needs no env.
         >>> import os
         >>> _ = os.environ  # placeholder for doctest discovery
     """
-    provider = os.environ.get("OPENRAL_REASONER_LLM_PROVIDER", "").strip().lower()
+    model_key = os.environ.get(REASONER_MODEL_ENV, "").strip()
+    legacy_provider = os.environ.get(_LEGACY_PROVIDER_ENV, "").strip().lower()
+    if not model_key:
+        if legacy_provider:
+            log.warning(
+                "reasoner.env.deprecated",
+                detail=(
+                    f"{_LEGACY_PROVIDER_ENV} is deprecated (ADR-0088); "
+                    f"set {REASONER_MODEL_ENV} to a curated model "
+                    f"({sorted(REASONER_MODELS)}) instead."
+                ),
+            )
+            return _build_from_legacy_env(legacy_provider)
+        raise ROSConfigError(
+            f"{REASONER_MODEL_ENV} is unset; set it to a curated model "
+            f"({sorted(REASONER_MODELS)}), or to a raw model id plus "
+            f"{REASONER_ENDPOINT_ENV} + {REASONER_DIALECT_ENV} for an uncurated "
+            "endpoint. The open-core path has no default — tests use "
+            "FakeToolUseClient. (Legacy OPENRAL_REASONER_LLM_PROVIDER is "
+            "deprecated but still honoured this release.)"
+        )
+    entry = REASONER_MODELS.get(model_key)
+    if entry is None:
+        return _build_uncurated_model(model_key)
+    return _build_curated_model(entry)
+
+
+def _reasoner_timeout_s(hosting: str) -> float:
+    """Per-call timeout: env override, else a hosting-aware default.
+
+    ``managed_local`` gets 120 s (an on-device model's first inference after
+    server boot compiles kernels); cloud/byo get the tight 10 s default.
+    """
+    env = os.environ.get(REASONER_TIMEOUT_ENV, "").strip()
+    if env:
+        return float(env)
+    return 120.0 if hosting == "managed_local" else 10.0
+
+
+def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
+    """Completion cap: env override, else the model's registry default."""
+    env = os.environ.get(REASONER_MAX_TOKENS_ENV, "").strip()
+    if env:
+        return int(env)
+    return entry.max_tokens_default
+
+
+def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
+    """Build the client for a registry model from its resolved properties."""
+    api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
+    endpoint_override = os.environ.get(REASONER_ENDPOINT_ENV, "").strip() or None
+    timeout_s = _reasoner_timeout_s(entry.hosting)
+    max_tokens = _reasoner_max_tokens(entry)
+
+    if entry.dialect == "anthropic":
+        if api_key is None:
+            raise ROSConfigError(
+                f"{REASONER_API_KEY_ENV} is unset; required for model {entry.id!r}."
+            )
+        return AnthropicToolUseClient(
+            model_id=entry.served_model_id, api_key=api_key, timeout_s=timeout_s
+        )
+
+    if entry.hosting == "managed_local":
+        return _build_managed_local(entry, api_key, endpoint_override, timeout_s, max_tokens)
+
+    # openai dialect, cloud or byo_local: an explicit endpoint override implies
+    # the operator owns the endpoint, so auth is no longer forced.
+    base_url = endpoint_override or entry.default_endpoint
+    if entry.auth_required and api_key is None and endpoint_override is None:
+        raise ROSConfigError(
+            f"{REASONER_API_KEY_ENV} is unset; required for model {entry.id!r} "
+            f"on its default endpoint ({base_url})."
+        )
+    return OpenAICompatibleToolUseClient(
+        model_id=entry.served_model_id,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_s=timeout_s,
+        tool_choice=entry.tool_choice,
+        max_tokens=max_tokens,
+    )
+
+
+def _build_managed_local(
+    entry: ReasonerModel,
+    api_key: str | None,
+    endpoint_override: str | None,
+    timeout_s: float,
+    max_tokens: int | None,
+) -> ToolUseClient:
+    """Build the managed-local (autostart) client for a ``managed_local`` model.
+
+    Today the only such model is ``cosmos3-edge`` → :class:`Cosmos3ToolUseClient`.
+    An explicit endpoint URL (anything but the ``managed`` sentinel) is a
+    bring-your-own server: autostart disengages inside the client for
+    non-loopback / explicit URLs.
+    """
+    from openral_reasoner.cosmos3 import (  # noqa: PLC0415  # reason: avoid a module-level import cycle (cosmos3 subclasses OpenAICompatibleToolUseClient)
+        AUTOSTART_ENV,
+        BOOT_TIMEOUT_ENV,
+        COSMOS3_BASE_URL,
+        DEFAULT_BOOT_TIMEOUT_S,
+        Cosmos3ToolUseClient,
+    )
+
+    if endpoint_override and endpoint_override != REASONER_MANAGED_ENDPOINT:
+        base_url = endpoint_override
+    else:
+        base_url = COSMOS3_BASE_URL
+    auto_start = os.environ.get(AUTOSTART_ENV, "").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    boot_env = os.environ.get(BOOT_TIMEOUT_ENV, "").strip()
+    return Cosmos3ToolUseClient(
+        model_id=entry.served_model_id,
+        api_key=api_key,
+        base_url=base_url,
+        timeout_s=timeout_s,
+        max_tokens=max_tokens,
+        auto_start=auto_start,
+        boot_timeout_s=float(boot_env) if boot_env else DEFAULT_BOOT_TIMEOUT_S,
+    )
+
+
+def _build_uncurated_model(model_key: str) -> ToolUseClient:
+    """Escape hatch: a non-registry model id + explicit endpoint/dialect.
+
+    Warns that the model is untested for robotics tool calling (ADR-0088);
+    nothing is blocked, the curated menu is simply first-class.
+    """
+    endpoint = os.environ.get(REASONER_ENDPOINT_ENV, "").strip()
+    dialect = os.environ.get(REASONER_DIALECT_ENV, "").strip().lower()
+    if not endpoint or dialect not in {"anthropic", "openai"}:
+        raise ROSConfigError(
+            f"{REASONER_MODEL_ENV}={model_key!r} is not a curated model "
+            f"({sorted(REASONER_MODELS)}); for an uncurated endpoint also set "
+            f"{REASONER_ENDPOINT_ENV} (a URL) and {REASONER_DIALECT_ENV} "
+            "(anthropic|openai)."
+        )
+    log.warning(
+        "reasoner.model.uncurated",
+        model=model_key,
+        detail=(
+            f"{model_key!r} is not on the curated robotics tool-calling list "
+            f"({sorted(REASONER_MODELS)}); tool-call reliability is unverified."
+        ),
+    )
+    api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
+    timeout_s = _reasoner_timeout_s("byo_local")
+    max_tokens_env = os.environ.get(REASONER_MAX_TOKENS_ENV, "").strip()
+    max_tokens = int(max_tokens_env) if max_tokens_env else None
+    if dialect == "anthropic":
+        if api_key is None:
+            raise ROSConfigError(
+                f"{REASONER_API_KEY_ENV} is unset; required for dialect=anthropic."
+            )
+        return AnthropicToolUseClient(model_id=model_key, api_key=api_key, timeout_s=timeout_s)
+    return OpenAICompatibleToolUseClient(
+        model_id=model_key,
+        api_key=api_key,
+        base_url=endpoint,
+        timeout_s=timeout_s,
+        max_tokens=max_tokens,
+    )
+
+
+def _build_from_legacy_env(provider: str) -> ToolUseClient:
+    """Deprecated ``OPENRAL_REASONER_LLM_*`` contract (ADR-0088 shim).
+
+    Preserved verbatim for one release so existing deployments keep working;
+    :func:`build_tool_use_client_from_env` logs a deprecation warning before
+    delegating here. Reads ``OPENRAL_REASONER_LLM_{MODEL,API_KEY,BASE_URL,
+    TIMEOUT_S,MAX_TOKENS}``.
+    """
     if not provider:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
