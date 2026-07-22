@@ -180,3 +180,12 @@ def test_purge_partial_imports_drops_only_matching_prefixes() -> None:
     finally:
         for k in ("__pd_test_target__", "__pd_test_target__.sub", "__pd_test_keep__"):
             sys.modules.pop(k, None)
+
+
+def test_gr00t_probe_covers_the_lazy_diffusers_import() -> None:
+    """``diffusers`` is imported lazily inside GrootPolicy's build, not by the
+    ``modeling_groot`` module import — probing only the modeling module admitted
+    gr00t rSkills to the reasoner palette on hosts without the gr00t extras and
+    every dispatch then aborted at runtime ("'diffusers' is required but not
+    installed"; observed live, deploy-sim 2026-07-20). The probe must cover it."""
+    assert "diffusers" in model_family_required_imports("gr00t")

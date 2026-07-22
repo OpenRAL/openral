@@ -142,8 +142,12 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     "rldx": ("zmq", "msgpack"),
     # GR00T-N1.7 now loads in-process via lerobot's native GrootPolicy and is
     # NF4-quantized like pi05. Mirror the factory's first imports in
-    # openral_sim.policies.gr00t.
-    "gr00t": ("transformers", "bitsandbytes", "lerobot.policies.groot.modeling_groot"),
+    # openral_sim.policies.gr00t. ``diffusers`` is imported lazily INSIDE
+    # GrootPolicy's build (not by modeling_groot's module import), so probing
+    # only the modeling module admitted the skill to the reasoner palette and
+    # then aborted every dispatch at runtime ("'diffusers' is required but not
+    # installed") — observed live in the 2026-07-20 deploy-sim run.
+    "gr00t": ("transformers", "bitsandbytes", "diffusers", "lerobot.policies.groot.modeling_groot"),
     # 3D Diffuser Actor shares the out-of-process sidecar contract; the
     # openral-side client only needs the ZMQ + msgpack wire (the policy + the
     # CoppeliaSim/PyRep RLBench env live in the sidecar's own py3.10 venv).

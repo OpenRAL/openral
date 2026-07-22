@@ -20,7 +20,6 @@ cross-field validation passes.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -159,15 +158,52 @@ class _LiberoSim:
         boundaries, and it orphans the MuJoCo viewer. Set the robosuite env's
         ``ignore_done`` so a continued (post-terminal) step does not raise, and
         :meth:`step` then swallows the inline reset. No-op for ``openral sim run``.
+
+        ``LiberoEnv`` builds its underlying ``OffScreenRenderEnv`` *lazily* (on
+        first ``reset``/``step``), and ``SimAttachedHAL`` calls this at
+        ``__init__`` time — before ``connect()`` does the first reset — so the
+        robosuite env usually does not exist yet here. :meth:`reset` therefore
+        re-applies ``ignore_done`` after every reset; the eager attempt below
+        only covers an already-built env.
         """
         self._continuous = True
+        self._apply_ignore_done(warn_if_missing=False)
+
+    def _apply_ignore_done(self, *, warn_if_missing: bool = True) -> None:
+        """Set ``ignore_done`` on the robosuite env so ``done`` never latches.
+
+        Without this, robosuite latches ``done`` at the horizon and the *next*
+        step hard-raises "executing action in terminated episode", which the
+        deploy-sim HAL recovers from by resetting — re-randomising the scene
+        under a running policy (the exact mid-goal reset this suppresses).
+
+        Args:
+            warn_if_missing: Warn when the walk finds no robosuite env. The
+                post-reset caller keeps the default (there the env MUST exist —
+                silence would re-hide the original bug); the eager
+                ``enable_continuous`` call passes ``False`` because it always
+                runs before the lazily-built env exists and would otherwise
+                warn on every normal deploy-sim startup.
+        """
         rs = self._robosuite_env()
-        if rs is not None:
-            with contextlib.suppress(Exception):  # best-effort across robosuite releases
-                rs.ignore_done = True
+        if rs is None:
+            if warn_if_missing:
+                _log.warning(
+                    "libero.enable_continuous.no_robosuite_env",
+                    hint=(
+                        "ignore_done not applied; a post-horizon step will raise "
+                        "and reset the scene"
+                    ),
+                )
+            return
+        rs.ignore_done = True
 
     def reset(self, seed: int | None = None) -> Observation:
         obs, _info = self._env.reset(seed=seed)
+        # The reset materialised the lazily-built env (and may have re-created
+        # it); in continuous mode ignore_done must land on the live instance.
+        if self._continuous:
+            self._apply_ignore_done()
         return self._wrap_obs(obs)
 
     def step(self, action: NDArray[np.float32]) -> StepResult:
