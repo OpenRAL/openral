@@ -4564,6 +4564,142 @@
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
+    "ReasonerModel": {
+      "$defs": {
+        "QuantizationDtype": {
+          "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+          "enum": [
+            "fp32",
+            "fp16",
+            "bf16",
+            "int8",
+            "int4",
+            "fp4_nvfp4"
+          ],
+          "title": "QuantizationDtype",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "A curated reasoner LLM \u2014 a member of :data:`REASONER_MODELS` (ADR-0088).\n\nMembership in :data:`REASONER_MODELS` *is* the \"tested for robotics tool\ncalling\" signal: every entry has been validated to reliably emit the\ndiscriminated :data:`ReasonerToolCall` union (per-skill ``execute_rskill__*``\ntools, nested ``GroundedSubtask``, ``tool_choice`` honoured). There is\ndeliberately no ``robotics_tool_calling`` flag \u2014 an untested model is simply\nnot in the registry, and is reachable only through the uncurated escape hatch\nwith a warning.\n\nThis model reorganises reasoner selection away from the location-leaking\n``OPENRAL_REASONER_LLM_PROVIDER`` enum (ADR-0088): the primary choice is the\n*model*; *where* it runs is the orthogonal, honest ``endpoint`` axis.\n\nAttributes:\n    id: Catalog key (``\"cosmos3-edge\"``, ``\"claude-opus-4-8\"``). The value of\n        ``OPENRAL_REASONER_MODEL``.\n    display_name: Human-facing label.\n    dialect: Which wire client speaks to this model (``anthropic`` uses the\n        Messages API; ``openai`` uses Chat Completions \u2014 vLLM, OpenRouter,\n        the Cosmos sidecar, etc. are all ``openai``).\n    hosting: ``cloud`` (vendor-run), ``managed_local`` (OpenRAL spawns the\n        server), or ``byo_local`` (operator-run local server).\n    served_model_id: The id the *endpoint* expects, which may differ from\n        ``id`` (``\"openai/gpt-5.5\"`` on OpenRouter, ``\"nvidia/Cosmos3-Edge\"``\n        on the sidecar).\n    default_endpoint: Vendor URL, loopback URL, the\n        :data:`REASONER_MANAGED_ENDPOINT` sentinel, or ``None`` (the\n        dialect's vendor default \u2014 e.g. the Anthropic API).\n    auth_required: Whether the resolved endpoint needs an API key.\n    tool_choice: ``\"required\"`` forces one tool call per tick (the reasoner\n        contract); ``\"auto\"`` for endpoints that reject ``\"required\"``.\n    max_tokens_default: Optional completion-token cap applied when the\n        operator sets none \u2014 bounds a metered gateway's up-front reservation\n        for reasoning models (GPT-5.x). ``None`` sends no cap.\n    min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.\n        ``None`` for ``cloud`` models (not a local-compute question).\n    required_dtype: Dtype the local runtime must support, matched against\n        :class:`ComputeSpec.gpu_supported_dtypes`. ``None`` for cloud models.\n    weights_license: Informational weights-license posture for local models\n        (\u00a71.9), e.g. ``\"OpenMDW-1.1\"``. ``None`` for cloud API models\n        (OpenRAL never holds their weights).\n\nExample:\n    >>> m = REASONER_MODELS[\"cosmos3-edge\"]\n    >>> m.dialect, m.hosting, m.auth_required\n    ('openai', 'managed_local', False)\n    >>> REASONER_MODELS[\"claude-opus-4-8\"].dialect\n    'anthropic'",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "display_name": {
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "dialect": {
+          "enum": [
+            "anthropic",
+            "openai"
+          ],
+          "title": "Dialect",
+          "type": "string"
+        },
+        "hosting": {
+          "enum": [
+            "cloud",
+            "managed_local",
+            "byo_local"
+          ],
+          "title": "Hosting",
+          "type": "string"
+        },
+        "served_model_id": {
+          "minLength": 1,
+          "title": "Served Model Id",
+          "type": "string"
+        },
+        "default_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default Endpoint"
+        },
+        "auth_required": {
+          "title": "Auth Required",
+          "type": "boolean"
+        },
+        "tool_choice": {
+          "default": "required",
+          "enum": [
+            "required",
+            "auto"
+          ],
+          "title": "Tool Choice",
+          "type": "string"
+        },
+        "max_tokens_default": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens Default"
+        },
+        "min_gpu_vram_gb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Gpu Vram Gb"
+        },
+        "required_dtype": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuantizationDtype"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "weights_license": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weights License"
+        }
+      },
+      "required": [
+        "id",
+        "display_name",
+        "dialect",
+        "hosting",
+        "served_model_id",
+        "auth_required"
+      ],
+      "title": "ReasonerModel",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
     "RewardContract": {
       "additionalProperties": false,
       "description": "Manifest contract for ``kind: \"reward\"`` rSkills.\n\nCarries the configuration a robotic **reward / progress-monitor** model\n(e.g. Robometer-4B, a Qwen3-VL-4B reward foundation model) needs to score\na rollout. A reward skill runs in parallel with a ``kind: \"vla\"`` policy,\ncontinuously ingesting the VLA's camera frames into a rolling window, and\nemits per-frame **progress** \u2208 ``progress_range`` and per-frame **success**\nprobability. The Reasoner queries it on demand (``QueryTaskProgressTool``)\nto decide whether to continue, escalate to a scene VLM, advance, or replan.\nThe signal is **advisory only** \u2014 it never actuates and never gates motors\n(CLAUDE.md \u00a71.1).\n\nRequired when :attr:`RSkillManifest.kind` is ``\"reward\"``; forbidden for all\nother kinds (enforced by :meth:`RSkillManifest._check_kind_consistency`).\nLike ``detector`` / ``vlm``, a reward skill is a pure perception consumer:\nit emits no Action chunks and requires no actuators.\n\nAttributes:\n    progress_range: ``(min, max)`` of the normalized per-frame progress\n        scalar. Default ``(0.0, 1.0)`` \u2014 Robometer's discrete/binned mode\n        (see :attr:`num_bins`) emits progress already in ``[0, 1]``.\n    success_threshold: Per-frame success probability at/above which the\n        frame is considered a task success. In ``[0.0, 1.0]``; default\n        ``0.5``.\n    preference: Whether the model also exposes a trajectory-preference\n        head (Robometer does). Default ``False`` \u2014 the progress/success\n        path is the Reasoner-facing contract; preference is future work.\n    backend: Which reward runtime scores this skill. ``\"robometer\"``\n        (default) \u2192 the fine-tuned Robometer RewardModel in-process;\n        ``\"topreward\"`` \u2192 the zero-shot TOPReward monitor (lerobot\n        ``TOPRewardModel``, per-frame progress from a prefix sweep of\n        ``P(\"True\" | video, instruction)``), run in-process. Selects the\n        backend in ``build_reward_monitor``; existing manifests default to\n        ``\"robometer\"`` so behavior is unchanged.\n    frame_window_s: Length of the rolling frame buffer in seconds. The node\n        evicts frames older than this relative to the newest. Must be > 0.\n    target_fps: Frame-sampling rate fed to the model (Robometer's example\n        uses 3 fps). Must be > 0. This is an S2-cadence monitor, not a\n        per-control-step signal.\n    num_bins: Discrete-mode bin count for the progress head. Robometer's\n        discrete mode yields per-frame normalized progress in ``[0, 1]``;\n        continuous mode yields raw regression values. Must be > 0;\n        default ``100``.\n    instruction_required: Whether a natural-language task instruction must\n        accompany the frames (Robometer requires one). Default ``True``.\n    check_floor: Below this progress value the attempt is clearly not done\n        \u2192 no VLM adjudication, straight to the replanning ladder. Must be\n        \u2264 ``success_threshold``; default ``0.4`` (calibrated for robometer's\n        loose/general eval distribution that wanders ~0.55-0.78).\n    plateau_window_s: Trailing window (seconds) over which\n        ``progress_trend \u2248 0`` indicates the policy has stopped getting\n        closer to the goal. Default ``3.0``.\n    plateau_tolerance: \u03b5 band absorbing critic noise when deciding whether\n        the trend is flat. Default ``0.05``.\n    default_patience_s: Baseline execution ceiling (seconds) used as a\n        backstop before the Reasoner escalates. Default ``30.0``.\n\nExample:\n    >>> c = RewardContract(frame_window_s=8.0, target_fps=3.0)\n    >>> c.progress_range\n    (0.0, 1.0)\n    >>> c.success_threshold\n    0.5\n    >>> c.check_floor\n    0.4",

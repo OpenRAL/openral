@@ -83,119 +83,79 @@ The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary
 ("Holds no authority over actuation").
 
-## LLM provider
+## Reasoner model registry
 
-The reasoner is wire-protocol agnostic — every provider satisfies the
-`ToolUseClient` Protocol. Three concrete clients ship in
-[`openral_reasoner`](../../python/reasoner/src/openral_reasoner/):
+Reasoner selection is **model-first** (ADR-0088). The primary knob is
+`OPENRAL_REASONER_MODEL`, a key in the curated
+[`openral_core.REASONER_MODELS`](../../python/core/src/openral_core/schemas.py)
+registry. Registry membership means the model has cleared OpenRAL's robotics
+tool-calling contract; there is deliberately no separate compatibility flag.
+The registry resolves the wire dialect, served model id, default endpoint,
+auth requirement, hosting mode, and local-compute floor.
 
-- `AnthropicToolUseClient` — Anthropic SDK; `OPENRAL_REASONER_LLM_PROVIDER=anthropic`.
-- `OpenAICompatibleToolUseClient` — OpenAI SDK pointed at any
-  OpenAI-protocol endpoint (cloud OpenAI, local vLLM, Ollama-OpenAI);
-  `OPENRAL_REASONER_LLM_PROVIDER=openai-compatible`.
-- `Cosmos3ToolUseClient`
-  ([`openral_reasoner.cosmos3`](../../python/reasoner/src/openral_reasoner/cosmos3.py)) —
-  the NVIDIA Cosmos 3 reasoner tower (default: the 4B on-device **Edge**
-  tier) behind a **managed local vLLM server** with lazy autostart;
-  `OPENRAL_REASONER_LLM_PROVIDER=cosmos`. See
-  [Local physical-AI baseline](#local-physical-ai-baseline--nvidia-cosmos-3-edge).
-- `OPENRAL_REASONER_LLM_PROVIDER=openrouter` — convenience preset on
-  top of `OpenAICompatibleToolUseClient` that pre-fills the OpenRouter
-  base URL (`https://openrouter.ai/api/v1`) so users don't have to
-  memorise it. Auth is always required.
+| `OPENRAL_REASONER_MODEL` | Served model | Client | Hosting / endpoint | Auth |
+|---|---|---|---|---|
+| `claude-opus-4-8` | `claude-opus-4-8` | `AnthropicToolUseClient` | Anthropic cloud | required |
+| `gpt-5.5` | `openai/gpt-5.5` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
+| `gpt-5.6` | `openai/gpt-5.6` | `OpenAICompatibleToolUseClient` | OpenRouter cloud | required |
+| `cosmos3-edge` | `nvidia/Cosmos3-Edge` | `Cosmos3ToolUseClient` | managed local `http://127.0.0.1:8901/v1` | none |
 
-### Named provider presets
+The env contract is:
 
-`OPENRAL_REASONER_LLM_PROVIDER` accepts these named values. Each is just
-a `ToolUseClient` selection plus a pre-filled `OPENRAL_REASONER_LLM_BASE_URL`
-(except `anthropic` / bare `openai-compatible`) so you don't hand-configure
-it. An explicit `OPENRAL_REASONER_LLM_BASE_URL` always overrides the preset
-(proxy / staging gateway / non-default port). The cloud presets
-(`openrouter` / `gemini` / `xai` / `deepseek` / `huggingface`) and the local
-presets (`ollama` / `vllm`) are all thin shortcuts over the same
-`OpenAICompatibleToolUseClient`, pointed at each target's OpenAI-compatible
-endpoint; the local ones also drop the API-key requirement and get a longer
-default timeout to absorb a cold first call.
-
-| `PROVIDER` | Client | Default base URL | API key |
-|---|---|---|---|
-| `anthropic` | `AnthropicToolUseClient` | `https://api.anthropic.com` | required |
-| `openai-compatible` | `OpenAICompatibleToolUseClient` | `https://api.openai.com/v1` (set yours) | optional¹ |
-| `ollama` | `OpenAICompatibleToolUseClient` | `http://localhost:11434/v1` | none |
-| `vllm` | `OpenAICompatibleToolUseClient` | `http://localhost:8000/v1` | none² |
-| `openrouter` | `OpenAICompatibleToolUseClient` | `https://openrouter.ai/api/v1` | required |
-| `gemini` | `OpenAICompatibleToolUseClient` | `https://generativelanguage.googleapis.com/v1beta/openai/` | required |
-| `xai` | `OpenAICompatibleToolUseClient` | `https://api.x.ai/v1` | required |
-| `deepseek` | `OpenAICompatibleToolUseClient` | `https://api.deepseek.com` | required |
-| `huggingface` | `OpenAICompatibleToolUseClient` | `https://router.huggingface.co/v1` | required³ |
-| `cosmos` | `Cosmos3ToolUseClient` | `http://127.0.0.1:8901/v1` | none⁴ |
-
-³ `huggingface` targets the HF inference **router** (e.g. `OPENRAL_REASONER_LLM_MODEL=Qwen/Qwen3-8B`)
-with an HF access token. The router only honours `tool_choice="auto"` (it rejects
-the `"required"` the other presets force), so this preset selects `"auto"` and the
-client retries once with an explicit nudge if the model answers in prose; it also
-gets the longer cold-start timeout.
-
-¹ `openai-compatible` ignores the key for local endpoints (vLLM /
-llama-server) that don't enforce auth; set it when targeting cloud OpenAI.
-² `vllm` is the convenience preset for a local `vllm serve` (loopback,
-no auth); set `OPENRAL_REASONER_LLM_API_KEY` only if you started vLLM with
-`--api-key`, and `OPENRAL_REASONER_LLM_BASE_URL` for a remote host / non-8000
-port. A vLLM endpoint reachable only via a custom URL still works under bare
-`openai-compatible` — `vllm` just saves you typing the default.
-⁴ `cosmos` is the only provider with a default model
-(`nvidia/Cosmos3-Edge`; set `OPENRAL_REASONER_LLM_MODEL` for
-`nvidia/Cosmos3-Nano` / `nvidia/Cosmos3-Super`). When the endpoint is
-loopback and down, the client auto-starts a managed `vllm serve` via
-`tools/cosmos3_reasoner_sidecar.py` (disable with
-`OPENRAL_COSMOS3_AUTOSTART=0`; first-boot wait tunable via
-`OPENRAL_COSMOS3_BOOT_TIMEOUT_S`, default 1800 s — venv provisioning plus a
-~8 GB weight download). Point `OPENRAL_REASONER_LLM_BASE_URL` at a
-self-managed `vllm serve` or a Cosmos 3 Reasoner NIM container to skip the
-managed sidecar entirely (autostart also disengages for any non-loopback
-URL).
+- `OPENRAL_REASONER_MODEL` — required registry key, or a raw model id for the
+  explicit uncurated escape hatch.
+- `OPENRAL_REASONER_ENDPOINT` — optional URL override. Location lives here,
+  not in a provider name. For an OpenAI-dialect cloud model, an override means
+  the operator owns auth policy for that endpoint; Anthropic-compatible
+  endpoints still require a key.
+- `OPENRAL_REASONER_API_KEY` — required only when the resolved endpoint needs it.
+- `OPENRAL_REASONER_MAX_TOKENS` / `OPENRAL_REASONER_TIMEOUT_S` — optional
+  per-call overrides.
+- `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
+  raw model id.
 
 ```bash
-# Gemini (Google AI Studio key)
-export OPENRAL_REASONER_LLM_PROVIDER=gemini
-export OPENRAL_REASONER_LLM_MODEL=gemini-2.5-flash
-export OPENRAL_REASONER_LLM_API_KEY=...
+# Curated cloud model
+export OPENRAL_REASONER_MODEL=gpt-5.5
+export OPENRAL_REASONER_API_KEY=sk-or-...
 
-# xAI (Grok)
-export OPENRAL_REASONER_LLM_PROVIDER=xai
-export OPENRAL_REASONER_LLM_MODEL=grok-4
-export OPENRAL_REASONER_LLM_API_KEY=xai-...
+# Curated managed-local model
+export OPENRAL_REASONER_MODEL=cosmos3-edge
 
-# DeepSeek (direct)
-export OPENRAL_REASONER_LLM_PROVIDER=deepseek
-export OPENRAL_REASONER_LLM_MODEL=deepseek-chat
-export OPENRAL_REASONER_LLM_API_KEY=sk-...
-
-# vLLM (local, self-hosted) — start `vllm serve <model>` first (listens on :8000)
-export OPENRAL_REASONER_LLM_PROVIDER=vllm
-export OPENRAL_REASONER_LLM_MODEL=qwen2.5-7b-instruct
-# OPENRAL_REASONER_LLM_BASE_URL only if not on localhost:8000;
-# OPENRAL_REASONER_LLM_API_KEY only if you ran `vllm serve --api-key ...`
-
-uv add openai --package openral-reasoner      # one-time, all four
+# Uncurated escape hatch: explicit and warned by the factory + doctor
+export OPENRAL_REASONER_MODEL=qwen3:8b
+export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
+export OPENRAL_REASONER_DIALECT=openai
 ```
 
-`OPENRAL_REASONER_LLM_MAX_TOKENS` (optional, OpenAI-compatible providers
-only) caps completion tokens per call. Unset → the endpoint's own default,
-which for reasoning models (GPT-5.x) is their full window (~65k); a metered
-gateway like OpenRouter *reserves* that up front and rejects the call on a
-low-balance key (HTTP 402 "requires more credits, or fewer max_tokens"). Set
-e.g. `16384` to bound the reservation (a tick only needs one tool call, plus
-reasoning headroom). The `anthropic` provider keeps its own internal 1024-token
-default and ignores this var.
+`OPENRAL_REASONER_MAX_TOKENS` defaults to `16384` for the curated GPT-5.x
+entries so OpenRouter does not reserve their full output window and reject a
+low-balance request with HTTP 402. Anthropic keeps its client default. Managed
+Cosmos gets a 120 s first-call timeout for kernel compilation.
 
-No cloud lock-in: the open-core path requires the deployment to pick
-the endpoint explicitly via env (`OPENRAL_REASONER_LLM_PROVIDER`,
-`OPENRAL_REASONER_LLM_MODEL`, `OPENRAL_REASONER_LLM_API_KEY`,
-`OPENRAL_REASONER_LLM_BASE_URL`). Tests use a deterministic
-`FakeToolUseClient` under
-[`tests/integration/fakes/`](../../tests/integration/fakes/) — the only
-test double permitted at this process boundary per CLAUDE.md §1.11.
+For `cosmos3-edge`, a down managed endpoint auto-starts
+`tools/cosmos3_reasoner_sidecar.py`; disable with
+`OPENRAL_COSMOS3_AUTOSTART=0`. `OPENRAL_COSMOS3_BOOT_TIMEOUT_S` bounds first
+boot. An explicit `OPENRAL_REASONER_ENDPOINT` points the same curated model at
+a self-managed vLLM/NIM endpoint.
+
+### Legacy migration
+
+The old `OPENRAL_REASONER_LLM_{PROVIDER,MODEL,API_KEY,BASE_URL,...}` contract
+is accepted for one release and emits a deprecation warning. New config wins
+when `OPENRAL_REASONER_MODEL` is set.
+
+| Legacy | Model-first |
+|---|---|
+| `OPENRAL_REASONER_LLM_PROVIDER` + `OPENRAL_REASONER_LLM_MODEL` | `OPENRAL_REASONER_MODEL` |
+| `OPENRAL_REASONER_LLM_BASE_URL` | `OPENRAL_REASONER_ENDPOINT` |
+| `OPENRAL_REASONER_LLM_API_KEY` | `OPENRAL_REASONER_API_KEY` |
+| `OPENRAL_REASONER_LLM_MAX_TOKENS` | `OPENRAL_REASONER_MAX_TOKENS` |
+| `OPENRAL_REASONER_LLM_TIMEOUT_S` | `OPENRAL_REASONER_TIMEOUT_S` |
+
+Tests use a deterministic `FakeToolUseClient` under
+[`tests/integration/fakes/`](../../tests/integration/fakes/) — the only test
+double permitted at this process boundary per CLAUDE.md §1.11.
 
 ## System prompt
 
@@ -228,73 +188,31 @@ brief still carries the factual body description it cannot hardcode.
 With no robot wired the prompt stays at the (possibly overridden) base
 brief alone.
 
-## Baseline LLM (recommended configurations)
+## Curated reasoner models
 
-The reasoner is event-driven with a 0.2 Hz heartbeat (one tick every
-5 s) since the 2026-05-25 amendment; it sees no pixels and
-picks exactly one of four typed tool calls per tick from a small
-palette. This is a constrained tool-use task — a small instruction-
-tuned model with reliable function-calling is plenty. Three baselines:
+The library factory has no default and refuses to guess. `openral deploy sim`
+does default to `OPENRAL_REASONER_MODEL=gpt-5.5`, with
+`OPENRAL_REASONER_MAX_TOKENS=16384`; it was the most reliable model in live
+collective-goal decomposition tests. The default needs
+`OPENRAL_REASONER_API_KEY` and fails loudly without it.
 
-> **Deploy-sim default — `openai/gpt-5.5` (via `openrouter`).** The *library*
-> (`build_tool_use_client_from_env`) has no default and refuses to guess (open-core,
-> no cloud lock-in). The `openral deploy sim` **launch** does pick one when the env
-> is unset: `provider=openrouter`, `model=openai/gpt-5.5`, with
-> `OPENRAL_REASONER_LLM_MAX_TOKENS` defaulted to `16384`. In live deploy testing
-> GPT-5.5 was the most reliable at decomposing a *collective* operator goal ("put
-> all the objects on the table into the basket") into grounded per-object subtasks —
-> glm-5.2 over-located and never called `decompose_mission`; Opus 4.8 worked but
-> needed nudges. Simple single-object goals run fine on the cheaper baselines below.
-> The default needs `OPENRAL_REASONER_LLM_API_KEY` in the environment; without it
-> the node fails loudly at activate (no silent fallback). Any explicit
-> `OPENRAL_REASONER_LLM_{PROVIDER,MODEL}` still wins.
-
-### Paid baseline — Anthropic Haiku 4.5
-
-Cheap (~$1/$5 per Mtok), ~0.74 s TTFT, native tool use, matches Sonnet-4
-on agentic benchmarks. Recommended default when an API key is acceptable.
+### Cloud — GPT-5.5 / GPT-5.6 via OpenRouter
 
 ```bash
-export OPENRAL_REASONER_LLM_PROVIDER=anthropic
-export OPENRAL_REASONER_LLM_MODEL=claude-haiku-4-5
-export OPENRAL_REASONER_LLM_API_KEY=sk-ant-...
-uv add anthropic --package openral-reasoner   # one-time
+export OPENRAL_REASONER_MODEL=gpt-5.5  # or gpt-5.6
+export OPENRAL_REASONER_API_KEY=sk-or-...
+uv add openai --package openral-reasoner
 ```
 
-### Free baseline — OpenRouter
-
-OpenRouter exposes `:free` variants of DeepSeek v3, Llama-4-Maverick,
-and Qwen3-235B that all pass tool-calling tests as of early 2026. Pick
-one directly, or use the `openrouter/free` auto-router (non-deterministic
-but always cheapest).
+### Cloud — Claude Opus 4.8
 
 ```bash
-export OPENRAL_REASONER_LLM_PROVIDER=openrouter
-export OPENRAL_REASONER_LLM_MODEL=deepseek/deepseek-chat-v3:free
-export OPENRAL_REASONER_LLM_API_KEY=sk-or-...
-uv add openai --package openral-reasoner      # one-time
+export OPENRAL_REASONER_MODEL=claude-opus-4-8
+export OPENRAL_REASONER_API_KEY=sk-ant-...
+uv add anthropic --package openral-reasoner
 ```
 
-### Local baseline — Ollama + Qwen3 8B
-
-Single-binary install, strong tool-calling, runs on a laptop GPU or CPU.
-One command sets it up; `openral doctor` then surfaces a green "Reasoner LLM"
-+ "Ollama" row:
-
-```bash
-just bootstrap-ollama          # installs ollama, starts the daemon, pulls qwen3:8b
-
-export OPENRAL_REASONER_LLM_PROVIDER=openai-compatible
-export OPENRAL_REASONER_LLM_MODEL=qwen3:8b
-export OPENRAL_REASONER_LLM_BASE_URL=http://localhost:11434/v1
-uv add openai --package openral-reasoner      # one-time
-```
-
-Run `openral doctor` after exporting the envs — the reasoner row reports
-exactly which variable is missing if any, and TCP-probes the Ollama
-endpoint when `BASE_URL` is loopback.
-
-### Local physical-AI baseline — NVIDIA Cosmos 3 Edge
+### Managed local — NVIDIA Cosmos 3 Edge
 
 [Cosmos 3 Edge](../../docs/reference/cosmos3-edge-reasoner.md) (released
 2026-07-20) is the 4B on-device tier of NVIDIA's Cosmos 3 omnimodal
@@ -308,17 +226,18 @@ on the same local model (no separate cloud VLM). Weights are
 server auto-starts on the first tick (first boot downloads ~8 GB):
 
 ```bash
-export OPENRAL_REASONER_LLM_PROVIDER=cosmos
-# optional: nvidia/Cosmos3-Nano (16B, workstation) / nvidia/Cosmos3-Super (64B)
-# export OPENRAL_REASONER_LLM_MODEL=nvidia/Cosmos3-Nano
+export OPENRAL_REASONER_MODEL=cosmos3-edge
 uv add openai --package openral-reasoner      # one-time (client SDK only)
 ```
 
 Requires an NVIDIA GPU (Ampere+; BF16 is the only officially-tested
-precision; **≥12 GB recommended** — 8 GB is the tight floor, needs
-`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95`). Pre-warm the server outside the reasoner
-with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
-`OPENRAL_REASONER_LLM_BASE_URL`.
+precision; **≥12 GB recommended**). An 8 GB 4070 was enough for validation,
+but the knobs differ by serving stack: the pinned stable stack needed
+`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` merely to boot (inference remains blocked);
+the working vLLM-main native implementation needed expandable CUDA segments
+plus `--kv-cache-dtype fp8`. Pre-warm the pinned sidecar with
+`python tools/cosmos3_reasoner_sidecar.py`, or point
+`OPENRAL_REASONER_ENDPOINT` at a compatible self-managed server.
 
 > ⚠️ **Live status (2026-07-21): works end-to-end on vLLM `main`; blocked on
 > the pinned stable release.** On vLLM nightly (native Edge model from
@@ -331,7 +250,20 @@ with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
 > `get_rope_index` bug — the lock is bumped the moment a vLLM release contains
 > #48291 + #49190. Full findings in the
 > [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
-> cloud/local baseline above as the working reasoner today.**
+> curated cloud model above as the working reasoner today.**
+
+### Uncurated local endpoint — explicit escape hatch
+
+Models outside `REASONER_MODELS` are not claimed compatible. They still work
+when the model id, endpoint, and dialect are explicit; the factory and doctor
+warn that robotics tool-calling reliability is unverified.
+
+```bash
+just bootstrap-ollama
+export OPENRAL_REASONER_MODEL=qwen3:8b
+export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
+export OPENRAL_REASONER_DIALECT=openai
+```
 
 ## Synopsis
 
@@ -339,10 +271,9 @@ with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
 just ros2-build      # builds openral_msgs + openral_reasoner_ros
 source install/setup.bash
 
-# One of the three baseline configs above, e.g.:
-export OPENRAL_REASONER_LLM_PROVIDER=anthropic
-export OPENRAL_REASONER_LLM_MODEL=claude-haiku-4-5
-export OPENRAL_REASONER_LLM_API_KEY=sk-ant-...
+# One curated model, e.g.:
+export OPENRAL_REASONER_MODEL=claude-opus-4-8
+export OPENRAL_REASONER_API_KEY=sk-ant-...
 
 ros2 run openral_reasoner_ros reasoner_node
 ros2 lifecycle set /openral_reasoner configure

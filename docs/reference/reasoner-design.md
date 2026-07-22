@@ -309,14 +309,16 @@ goal, §3) is genuinely reasoning-heavy. Weak/cheap models follow the one-tool-
 per-tick contract fine but **over-locate and never call `decompose_mission`**;
 the library must stay provider-agnostic (no cloud lock-in).
 
-**Solution.** Every provider satisfies the `ToolUseClient` protocol, selected at
-`on_configure` from `OPENRAL_REASONER_LLM_*` env. The *library* factory
-(`build_tool_use_client_from_env`) has **no default** and refuses to guess. The
-*deploy-sim launch* does pick one when env is unset: `provider=openrouter`,
-`model=openai/gpt-5.5`, with `OPENRAL_REASONER_LLM_MAX_TOKENS=16384` defaulted so
-a reasoning model doesn't reserve its full window and get 402'd on a metered key.
-Explicit env always wins; the default needs an API key (fails loudly at activate
-otherwise).
+**Solution.** Selection is model-first (ADR-0088). `OPENRAL_REASONER_MODEL`
+names a curated `ReasonerModel`; the registry resolves dialect, endpoint, auth,
+hosting, and local-compute requirements. Endpoint location is orthogonal via
+`OPENRAL_REASONER_ENDPOINT`, so Ollama/vLLM/cloud placement is not encoded in a
+misleading provider enum. The *library* factory has **no default** and refuses
+to guess. The *deploy-sim launch* defaults to the curated `gpt-5.5` entry, with
+`OPENRAL_REASONER_MAX_TOKENS=16384` so a reasoning model does not reserve its
+full window and get 402'd on a metered key. The default needs an API key and
+fails loudly without it. Raw uncurated models require an explicit endpoint +
+dialect and emit a warning; the old provider-first env remains a one-release shim.
 
 **Why.** In live deploy testing GPT-5.5 was the only model that *reliably*
 decomposed the collective goal (glm-5.2 over-located and never decomposed; Opus

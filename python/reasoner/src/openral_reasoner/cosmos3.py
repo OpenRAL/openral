@@ -1,4 +1,4 @@
-"""NVIDIA Cosmos 3 Edge reasoner backend (``OPENRAL_REASONER_LLM_PROVIDER=cosmos``).
+"""NVIDIA Cosmos 3 Edge reasoner backend (``OPENRAL_REASONER_MODEL=cosmos3-edge``).
 
 Cosmos 3 (released 2026; Edge tier 2026-07-20) is NVIDIA's omnimodal world-model
 family built on a Mixture-of-Transformers architecture with two towers: an
@@ -14,12 +14,12 @@ round-trip and no per-token cost.
 Serving paths (any OpenAI-compatible endpoint works; the first is managed):
 
 * **Managed local vLLM** (default) — :class:`Cosmos3ToolUseClient` probes
-  ``OPENRAL_REASONER_LLM_BASE_URL`` (default ``http://127.0.0.1:8901/v1``) and,
+  ``OPENRAL_REASONER_ENDPOINT`` (default ``http://127.0.0.1:8901/v1``) and,
   when the endpoint is loopback and down, auto-starts
   ``tools/cosmos3_reasoner_sidecar.py`` (uv-provisioned isolated venv, then
   ``vllm serve nvidia/Cosmos3-Edge`` with tool calling enabled). Same
   lazy-spawn/teardown lifecycle as the Qwen scene-VLM sidecar.
-* **Self-managed vLLM / NIM** — point ``OPENRAL_REASONER_LLM_BASE_URL`` at an
+* **Self-managed vLLM / NIM** — point ``OPENRAL_REASONER_ENDPOINT`` at an
   already-running ``vllm serve`` or a Cosmos 3 Reasoner NIM container and set
   ``OPENRAL_COSMOS3_AUTOSTART=0`` (autostart also disengages automatically for
   non-loopback URLs).
@@ -70,13 +70,13 @@ __all__ = [
 
 # Managed local endpoint for the Cosmos 3 reasoner. A dedicated port (not
 # vLLM's :8000 default) so the managed sidecar never collides with a generic
-# user-run `vllm serve` covered by the `vllm` provider preset.
+# user-run `vllm serve`.
 COSMOS3_BASE_URL: str = "http://127.0.0.1:8901/v1"
 
 # Default checkpoint: the 4B Edge tier — the on-device (Jetson Thor / RTX)
-# member of the Cosmos 3 family and the reason this provider exists. Any
-# Cosmos 3 tier works via OPENRAL_REASONER_LLM_MODEL (`nvidia/Cosmos3-Nano`
-# for workstation-grade quality, `nvidia/Cosmos3-Super` for datacenter).
+# member of the Cosmos 3 family and the reason this managed model entry exists.
+# Other Cosmos tiers use the explicit uncurated model + endpoint escape hatch
+# until they clear the registry's robotics tool-calling bar.
 DEFAULT_COSMOS3_MODEL: str = "nvidia/Cosmos3-Edge"
 
 # Env knobs (all optional). AUTOSTART defaults on for loopback endpoints;
@@ -278,7 +278,7 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
                 f"disabled ({AUTOSTART_ENV}=0, non-loopback URL, or loopback URL "
                 "without an explicit port); start one with "
                 "`python tools/cosmos3_reasoner_sidecar.py` (managed vLLM) or point "
-                "OPENRAL_REASONER_LLM_BASE_URL at a running vLLM / Cosmos 3 "
+                "OPENRAL_REASONER_ENDPOINT at a running vLLM / Cosmos 3 "
                 "Reasoner NIM endpoint."
             )
         # Reuse a still-provisioning child from a previous (timed-out) attempt

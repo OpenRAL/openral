@@ -8047,6 +8047,145 @@ care about.
 """
 
 
+# ─── Reasoner model registry ─────────────────────────────────────
+
+ReasonerDialect = Literal["anthropic", "openai"]
+"""Wire client an endpoint speaks — the only two the reasoner ships (ADR-0088)."""
+
+ReasonerHosting = Literal["cloud", "managed_local", "byo_local"]
+"""Where a reasoner model runs: a vendor's cloud, a server OpenRAL spawns and
+manages locally, or a local server the operator brings up themselves."""
+
+# The ``managed`` sentinel in ``ReasonerModel.default_endpoint`` means "OpenRAL
+# spawns the server" rather than a fixed URL — resolved to the model's managed
+# loopback endpoint (e.g. the Cosmos sidecar's ``:8901``) at client-build time.
+REASONER_MANAGED_ENDPOINT: str = "managed"
+
+
+class ReasonerModel(BaseModel):
+    """A curated reasoner LLM — a member of :data:`REASONER_MODELS` (ADR-0088).
+
+    Membership in :data:`REASONER_MODELS` *is* the "tested for robotics tool
+    calling" signal: every entry has been validated to reliably emit the
+    discriminated :data:`ReasonerToolCall` union (per-skill ``execute_rskill__*``
+    tools, nested ``GroundedSubtask``, ``tool_choice`` honoured). There is
+    deliberately no ``robotics_tool_calling`` flag — an untested model is simply
+    not in the registry, and is reachable only through the uncurated escape hatch
+    with a warning.
+
+    This model reorganises reasoner selection away from the location-leaking
+    ``OPENRAL_REASONER_LLM_PROVIDER`` enum (ADR-0088): the primary choice is the
+    *model*; *where* it runs is the orthogonal, honest ``endpoint`` axis.
+
+    Attributes:
+        id: Catalog key (``"cosmos3-edge"``, ``"claude-opus-4-8"``). The value of
+            ``OPENRAL_REASONER_MODEL``.
+        display_name: Human-facing label.
+        dialect: Which wire client speaks to this model (``anthropic`` uses the
+            Messages API; ``openai`` uses Chat Completions — vLLM, OpenRouter,
+            the Cosmos sidecar, etc. are all ``openai``).
+        hosting: ``cloud`` (vendor-run), ``managed_local`` (OpenRAL spawns the
+            server), or ``byo_local`` (operator-run local server).
+        served_model_id: The id the *endpoint* expects, which may differ from
+            ``id`` (``"openai/gpt-5.5"`` on OpenRouter, ``"nvidia/Cosmos3-Edge"``
+            on the sidecar).
+        default_endpoint: Vendor URL, loopback URL, the
+            :data:`REASONER_MANAGED_ENDPOINT` sentinel, or ``None`` (the
+            dialect's vendor default — e.g. the Anthropic API).
+        auth_required: Whether the resolved endpoint needs an API key.
+        tool_choice: ``"required"`` forces one tool call per tick (the reasoner
+            contract); ``"auto"`` for endpoints that reject ``"required"``.
+        max_tokens_default: Optional completion-token cap applied when the
+            operator sets none — bounds a metered gateway's up-front reservation
+            for reasoning models (GPT-5.x). ``None`` sends no cap.
+        min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.
+            ``None`` for ``cloud`` models (not a local-compute question).
+        required_dtype: Dtype the local runtime must support, matched against
+            :class:`ComputeSpec.gpu_supported_dtypes`. ``None`` for cloud models.
+        weights_license: Informational weights-license posture for local models
+            (§1.9), e.g. ``"OpenMDW-1.1"``. ``None`` for cloud API models
+            (OpenRAL never holds their weights).
+
+    Example:
+        >>> m = REASONER_MODELS["cosmos3-edge"]
+        >>> m.dialect, m.hosting, m.auth_required
+        ('openai', 'managed_local', False)
+        >>> REASONER_MODELS["claude-opus-4-8"].dialect
+        'anthropic'
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    dialect: ReasonerDialect
+    hosting: ReasonerHosting
+    served_model_id: str = Field(min_length=1)
+    default_endpoint: str | None = None
+    auth_required: bool
+    tool_choice: Literal["required", "auto"] = "required"
+    max_tokens_default: int | None = None
+    min_gpu_vram_gb: float | None = None
+    required_dtype: QuantizationDtype | None = None
+    weights_license: str | None = None
+
+    @property
+    def is_local(self) -> bool:
+        """True for ``managed_local`` / ``byo_local`` (needs local compute)."""
+        return self.hosting != "cloud"
+
+
+# OpenRouter's OpenAI-compatible endpoint — the default gateway for the curated
+# GPT-5.x entries (a metered router, hence the max_tokens caps below).
+_OPENROUTER_ENDPOINT: str = "https://openrouter.ai/api/v1"
+
+# The curated set. Adding a model = adding one entry here after it clears the
+# reasoner tool-calling bar; curation lives in this one reviewable place.
+REASONER_MODELS: dict[str, ReasonerModel] = {
+    "claude-opus-4-8": ReasonerModel(
+        id="claude-opus-4-8",
+        display_name="Claude Opus 4.8 (Anthropic)",
+        dialect="anthropic",
+        hosting="cloud",
+        served_model_id="claude-opus-4-8",
+        default_endpoint=None,  # Anthropic Messages API default
+        auth_required=True,
+    ),
+    "gpt-5.5": ReasonerModel(
+        id="gpt-5.5",
+        display_name="GPT-5.5 (via OpenRouter)",
+        dialect="openai",
+        hosting="cloud",
+        served_model_id="openai/gpt-5.5",
+        default_endpoint=_OPENROUTER_ENDPOINT,
+        auth_required=True,
+        max_tokens_default=16384,
+    ),
+    "gpt-5.6": ReasonerModel(
+        id="gpt-5.6",
+        display_name="GPT-5.6 (via OpenRouter)",
+        dialect="openai",
+        hosting="cloud",
+        served_model_id="openai/gpt-5.6",
+        default_endpoint=_OPENROUTER_ENDPOINT,
+        auth_required=True,
+        max_tokens_default=16384,
+    ),
+    "cosmos3-edge": ReasonerModel(
+        id="cosmos3-edge",
+        display_name="NVIDIA Cosmos 3 Edge (4B, on-device)",
+        dialect="openai",
+        hosting="managed_local",
+        served_model_id="nvidia/Cosmos3-Edge",
+        default_endpoint=REASONER_MANAGED_ENDPOINT,
+        auth_required=False,
+        min_gpu_vram_gb=12.0,
+        required_dtype=QuantizationDtype.BF16,
+        weights_license="OpenMDW-1.1",
+    ),
+}
+
+
 # ─── Reasoner tool calls ─────────────────────────────────────────
 
 

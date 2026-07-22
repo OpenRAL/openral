@@ -367,7 +367,11 @@ See [CLAUDE.md §3](CLAUDE.md) for the full model-by-model license matrix and ad
 
 The **reasoner** is the slow, deliberative half of the dual-system architecture. It is an event-driven LLM supervisor (0.2 Hz heartbeat, preempted by failures and operator prompts) that reads a structured situation report — world state, recent failures, perception events, pending prompts — and emits **exactly one typed `ReasonerToolCall` per tick**. It holds no actuation authority: every motion still crosses the S1 skill runner and the C++ safety kernel.
 
-- **Provider-agnostic** — pick any LLM via `OPENRAL_REASONER_LLM_PROVIDER` (Anthropic, OpenAI-compatible, OpenRouter, Ollama, vLLM, Gemini, xAI, DeepSeek). No cloud lock-in, no hidden default.
+- **Model-first** — pick a tested robotics tool-calling model via
+  `OPENRAL_REASONER_MODEL` (`claude-opus-4-8`, `gpt-5.5`, `gpt-5.6`,
+  `cosmos3-edge`). Endpoint location and auth are resolved from the curated
+  registry and remain overrideable; uncurated models require an explicit
+  endpoint + dialect and produce a warning. No cloud lock-in, no hidden library default.
 - **Closed, capability-gated tool palette** — built from the installed rSkill registry and rebuilt on `/openral/skill_registry_changed`. The LLM cannot dispatch a skill that isn't installed, capability-matched, and licensed.
 - **Twelve typed tools** — four effect tools (`execute_rskill`, `lifecycle_transition`, `emit_prompt`, `reload_gst_pipeline`), five read-only query tools (`recall_object`, `resolve_place`, `locate_in_view`, `query_scene`, `query_task_progress`), the `memory_write` / `memory_search` MEMORY.md tools, and `decompose_mission`.
 - **Playbooks** — human-authored `kind: playbook` Markdown SOPs (decompose-mission, verify-outcome, clarify-ambiguity, preflight-reach, stage-for-manipulation, find-object) read into the system prompt as content the reasoner follows — never code it executes.

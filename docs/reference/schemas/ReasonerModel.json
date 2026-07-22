@@ -1,0 +1,136 @@
+{
+  "$defs": {
+    "QuantizationDtype": {
+      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+      "enum": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "fp4_nvfp4"
+      ],
+      "title": "QuantizationDtype",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A curated reasoner LLM \u2014 a member of :data:`REASONER_MODELS` (ADR-0088).\n\nMembership in :data:`REASONER_MODELS` *is* the \"tested for robotics tool\ncalling\" signal: every entry has been validated to reliably emit the\ndiscriminated :data:`ReasonerToolCall` union (per-skill ``execute_rskill__*``\ntools, nested ``GroundedSubtask``, ``tool_choice`` honoured). There is\ndeliberately no ``robotics_tool_calling`` flag \u2014 an untested model is simply\nnot in the registry, and is reachable only through the uncurated escape hatch\nwith a warning.\n\nThis model reorganises reasoner selection away from the location-leaking\n``OPENRAL_REASONER_LLM_PROVIDER`` enum (ADR-0088): the primary choice is the\n*model*; *where* it runs is the orthogonal, honest ``endpoint`` axis.\n\nAttributes:\n    id: Catalog key (``\"cosmos3-edge\"``, ``\"claude-opus-4-8\"``). The value of\n        ``OPENRAL_REASONER_MODEL``.\n    display_name: Human-facing label.\n    dialect: Which wire client speaks to this model (``anthropic`` uses the\n        Messages API; ``openai`` uses Chat Completions \u2014 vLLM, OpenRouter,\n        the Cosmos sidecar, etc. are all ``openai``).\n    hosting: ``cloud`` (vendor-run), ``managed_local`` (OpenRAL spawns the\n        server), or ``byo_local`` (operator-run local server).\n    served_model_id: The id the *endpoint* expects, which may differ from\n        ``id`` (``\"openai/gpt-5.5\"`` on OpenRouter, ``\"nvidia/Cosmos3-Edge\"``\n        on the sidecar).\n    default_endpoint: Vendor URL, loopback URL, the\n        :data:`REASONER_MANAGED_ENDPOINT` sentinel, or ``None`` (the\n        dialect's vendor default \u2014 e.g. the Anthropic API).\n    auth_required: Whether the resolved endpoint needs an API key.\n    tool_choice: ``\"required\"`` forces one tool call per tick (the reasoner\n        contract); ``\"auto\"`` for endpoints that reject ``\"required\"``.\n    max_tokens_default: Optional completion-token cap applied when the\n        operator sets none \u2014 bounds a metered gateway's up-front reservation\n        for reasoning models (GPT-5.x). ``None`` sends no cap.\n    min_gpu_vram_gb: BF16-resident VRAM floor for a comfortable local fit.\n        ``None`` for ``cloud`` models (not a local-compute question).\n    required_dtype: Dtype the local runtime must support, matched against\n        :class:`ComputeSpec.gpu_supported_dtypes`. ``None`` for cloud models.\n    weights_license: Informational weights-license posture for local models\n        (\u00a71.9), e.g. ``\"OpenMDW-1.1\"``. ``None`` for cloud API models\n        (OpenRAL never holds their weights).\n\nExample:\n    >>> m = REASONER_MODELS[\"cosmos3-edge\"]\n    >>> m.dialect, m.hosting, m.auth_required\n    ('openai', 'managed_local', False)\n    >>> REASONER_MODELS[\"claude-opus-4-8\"].dialect\n    'anthropic'",
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "display_name": {
+      "minLength": 1,
+      "title": "Display Name",
+      "type": "string"
+    },
+    "dialect": {
+      "enum": [
+        "anthropic",
+        "openai"
+      ],
+      "title": "Dialect",
+      "type": "string"
+    },
+    "hosting": {
+      "enum": [
+        "cloud",
+        "managed_local",
+        "byo_local"
+      ],
+      "title": "Hosting",
+      "type": "string"
+    },
+    "served_model_id": {
+      "minLength": 1,
+      "title": "Served Model Id",
+      "type": "string"
+    },
+    "default_endpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Default Endpoint"
+    },
+    "auth_required": {
+      "title": "Auth Required",
+      "type": "boolean"
+    },
+    "tool_choice": {
+      "default": "required",
+      "enum": [
+        "required",
+        "auto"
+      ],
+      "title": "Tool Choice",
+      "type": "string"
+    },
+    "max_tokens_default": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Tokens Default"
+    },
+    "min_gpu_vram_gb": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Min Gpu Vram Gb"
+    },
+    "required_dtype": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuantizationDtype"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "weights_license": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Weights License"
+    }
+  },
+  "required": [
+    "id",
+    "display_name",
+    "dialect",
+    "hosting",
+    "served_model_id",
+    "auth_required"
+  ],
+  "title": "ReasonerModel",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

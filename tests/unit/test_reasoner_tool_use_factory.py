@@ -10,7 +10,9 @@ object's attributes directly.
 from __future__ import annotations
 
 import pytest
+from openral_core import REASONER_MODELS
 from openral_core.exceptions import ROSConfigError
+from openral_reasoner.cosmos3 import Cosmos3ToolUseClient
 from openral_reasoner.tool_use import (
     DEEPSEEK_BASE_URL,
     GEMINI_BASE_URL,
@@ -25,37 +27,90 @@ from openral_reasoner.tool_use import (
 )
 
 _ENV_VARS = (
+    "OPENRAL_REASONER_MODEL",
+    "OPENRAL_REASONER_ENDPOINT",
+    "OPENRAL_REASONER_API_KEY",
+    "OPENRAL_REASONER_DIALECT",
+    "OPENRAL_REASONER_MAX_TOKENS",
+    "OPENRAL_REASONER_TIMEOUT_S",
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
     "OPENRAL_REASONER_LLM_API_KEY",
     "OPENRAL_REASONER_LLM_BASE_URL",
+    "OPENRAL_REASONER_LLM_MAX_TOKENS",
+    "OPENRAL_REASONER_LLM_TIMEOUT_S",
 )
 
 
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip OPENRAL_REASONER_LLM_* before every test so a stray
-    developer env doesn't shadow the case under test."""
+    """Strip model-first + legacy reasoner env before every test."""
     for key in _ENV_VARS:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_provider_unset_raises_with_message() -> None:
+def test_model_unset_raises_with_message() -> None:
     with pytest.raises(ROSConfigError) as excinfo:
         build_tool_use_client_from_env()
     msg = str(excinfo.value)
+    assert "OPENRAL_REASONER_MODEL" in msg
+    assert "claude-opus-4-8" in msg
+    assert "gpt-5.5" in msg
+    assert "gpt-5.6" in msg
+    assert "cosmos3-edge" in msg
     assert "OPENRAL_REASONER_LLM_PROVIDER" in msg
-    # The error must list every accepted value so the user sees the menu.
-    assert "anthropic" in msg
-    assert "openai-compatible" in msg
-    assert "openrouter" in msg
-    assert "ollama" in msg
-    assert "vllm" in msg
-    assert "gemini" in msg
-    assert "xai" in msg
-    assert "deepseek" in msg
-    assert "huggingface" in msg
-    assert "cosmos" in msg
+
+
+def test_curated_anthropic_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-ant-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, AnthropicToolUseClient)
+    assert client.model_id == "claude-opus-4-8"
+
+
+def test_curated_anthropic_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "https://anthropic-proxy.internal")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "proxy-key")
+    monkeypatch.setenv("OPENRAL_REASONER_MAX_TOKENS", "4096")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, AnthropicToolUseClient)
+    assert client._base_url == "https://anthropic-proxy.internal"
+    assert client._max_tokens == 4096
+
+
+@pytest.mark.parametrize("model_key", ["gpt-5.5", "gpt-5.6"])
+def test_curated_openrouter_models(monkeypatch: pytest.MonkeyPatch, model_key: str) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", model_key)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == REASONER_MODELS[model_key].served_model_id
+    assert client._base_url == OPENROUTER_BASE_URL
+    assert client._max_tokens == 16384
+
+
+def test_curated_cosmos_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, Cosmos3ToolUseClient)
+    assert client.model_id == "nvidia/Cosmos3-Edge"
+
+
+def test_uncurated_model_requires_explicit_endpoint_and_dialect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_ENDPOINT"):
+        build_tool_use_client_from_env()
+
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://localhost:11434/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client.model_id == "qwen3:8b"
+    assert client._base_url == "http://localhost:11434/v1"
 
 
 def test_provider_unknown_raises(monkeypatch: pytest.MonkeyPatch) -> None:

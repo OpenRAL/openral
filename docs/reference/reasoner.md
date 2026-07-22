@@ -143,47 +143,46 @@ capability-matched, and licensed.
 
 ---
 
-## LLM provider selection
+## Reasoner model selection
 
-The reasoner is wire-protocol agnostic — every provider satisfies the
-`ToolUseClient` Protocol, selected at `on_configure` from environment variables.
-The **library** factory (`build_tool_use_client_from_env`) has **no default**
-(no cloud lock-in) and refuses to guess. The **`openral deploy sim` launch** does
-pick one when the env is unset — `openrouter` / `openai/gpt-5.5` with
-`OPENRAL_REASONER_LLM_MAX_TOKENS=16384` (it decomposed collective goals most
-reliably in live testing; needs an API key, fails loudly without one). Any
-explicit `OPENRAL_REASONER_LLM_{PROVIDER,MODEL}` still wins. See
-[Reasoner Design & Decisions](reasoner-design.md) §8 (Choosing the brain).
+Selection is model-first (ADR-0088). `OPENRAL_REASONER_MODEL` names a curated
+`openral_core.REASONER_MODELS` entry; registry membership means the model has
+passed OpenRAL's robotics tool-calling contract. The entry resolves the client
+dialect, served model id, endpoint, auth, hosting mode, and local-compute floor.
+The library has no default; `openral deploy sim` defaults to `gpt-5.5`.
 
-| `OPENRAL_REASONER_LLM_PROVIDER` | Client | Default base URL | API key |
-|---|---|---|---|
-| `anthropic` | `AnthropicToolUseClient` | `https://api.anthropic.com` | required |
-| `openai-compatible` | `OpenAICompatibleToolUseClient` | `https://api.openai.com/v1` (set yours) | optional |
-| `ollama` | OpenAI-compatible preset | `http://localhost:11434/v1` | none |
-| `vllm` | OpenAI-compatible preset | `http://localhost:8000/v1` | none |
-| `openrouter` | OpenAI-compatible preset | `https://openrouter.ai/api/v1` | required |
-| `gemini` | OpenAI-compatible preset | `https://generativelanguage.googleapis.com/v1beta/openai/` | required |
-| `xai` | OpenAI-compatible preset | `https://api.x.ai/v1` | required |
-| `deepseek` | OpenAI-compatible preset | `https://api.deepseek.com` | required |
+| Registry key | Served model | Hosting |
+|---|---|---|
+| `claude-opus-4-8` | `claude-opus-4-8` | Anthropic cloud |
+| `gpt-5.5` | `openai/gpt-5.5` | OpenRouter cloud |
+| `gpt-5.6` | `openai/gpt-5.6` | OpenRouter cloud |
+| `cosmos3-edge` | `nvidia/Cosmos3-Edge` | managed local vLLM |
 
-Other env: `OPENRAL_REASONER_LLM_MODEL` (required), `OPENRAL_REASONER_LLM_API_KEY`
-(conditional), `OPENRAL_REASONER_LLM_BASE_URL` (overrides any preset).
+Other env: `OPENRAL_REASONER_ENDPOINT` (optional URL override),
+`OPENRAL_REASONER_API_KEY` (conditional), and
+`OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`. A raw uncurated model id requires
+both `OPENRAL_REASONER_ENDPOINT` and
+`OPENRAL_REASONER_DIALECT=anthropic|openai`; doctor reports it as unverified.
 
 ```bash
-# Paid baseline — cheap, fast, native tool use
-export OPENRAL_REASONER_LLM_PROVIDER=anthropic
-export OPENRAL_REASONER_LLM_MODEL=claude-haiku-4-5
-export OPENRAL_REASONER_LLM_API_KEY=sk-ant-...
+# Curated cloud
+export OPENRAL_REASONER_MODEL=gpt-5.5
+export OPENRAL_REASONER_API_KEY=sk-or-...
 
-# Local baseline — runs on a laptop GPU/CPU
-just bootstrap-ollama                            # installs ollama, pulls qwen3:8b
-export OPENRAL_REASONER_LLM_PROVIDER=ollama
-export OPENRAL_REASONER_LLM_MODEL=qwen3:8b
+# Curated managed local
+export OPENRAL_REASONER_MODEL=cosmos3-edge
+
+# Explicit uncurated local endpoint
+export OPENRAL_REASONER_MODEL=qwen3:8b
+export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
+export OPENRAL_REASONER_DIALECT=openai
 ```
 
-`openral doctor` reports a green "Reasoner LLM" row once the envs are set (and
-TCP-probes a loopback Ollama/vLLM endpoint). Tests use a deterministic
-`FakeToolUseClient` — the only test double permitted at this boundary (CLAUDE.md §1.11).
+The old `OPENRAL_REASONER_LLM_*` provider-first contract remains a deprecated
+one-release shim. `openral doctor` resolves the model registry directly,
+checks auth, and probes loopback endpoints; a down managed-local endpoint is
+informational only while autostart is enabled. Tests use the deterministic
+`FakeToolUseClient` process-boundary double (CLAUDE.md §1.11).
 
 ---
 
@@ -216,7 +215,7 @@ consecutive selections of the same tool kind beyond the cap are suppressed for o
 tick with `suppressed_reason="retry_cap"`. The streak resets when context shifts
 materially (new operator prompt, palette refresh). This is the concrete gate that
 ships; the broader ladder (retry → param-tweak → substitute-skill → goal-replan →
-human-handoff, CLAUDE.md §7.6) is partially realized — the substitute/replan rungs
+human-handoff, CLAUDE.md §3) is partially realized — the substitute/replan rungs
 are still being built out.
 
 ---
@@ -239,9 +238,8 @@ published prompt back to the producing tick. Watch it live on `openral dashboard
 just ros2-build
 source install/setup.bash
 
-export OPENRAL_REASONER_LLM_PROVIDER=anthropic
-export OPENRAL_REASONER_LLM_MODEL=claude-haiku-4-5
-export OPENRAL_REASONER_LLM_API_KEY=sk-ant-...
+export OPENRAL_REASONER_MODEL=claude-opus-4-8
+export OPENRAL_REASONER_API_KEY=sk-ant-...
 
 ros2 run openral_reasoner_ros reasoner_node
 ros2 lifecycle set /openral_reasoner configure

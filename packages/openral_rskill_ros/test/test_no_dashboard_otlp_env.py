@@ -106,8 +106,9 @@ def _make_launch_context(*, enable_dashboard: bool) -> Any:
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
     cfg["reset_to_pose_service"] = ""
     cfg["dashboard_port"] = "4318"
-    cfg["reasoner_provider"] = "ollama"
-    cfg["reasoner_model"] = "gemma4:31b-cloud"
+    cfg["reasoner_provider"] = ""
+    cfg["reasoner_model"] = "gpt-5.5"
+    cfg["reasoner_endpoint"] = ""
     cfg["spatial_memory_path"] = ""
     cfg["spatial_memory_ingest"] = "false"
     cfg["hal_mode"] = "sim"
@@ -210,6 +211,14 @@ def test_no_dashboard_keeps_otel_resource_attributes() -> None:
         "OTEL_RESOURCE_ATTRIBUTES must reach every node even under --no-dashboard. "
         f"Missing on: {missing}"
     )
+
+
+def test_reasoner_uses_model_first_env() -> None:
+    envs = _collect_additional_envs(enable_dashboard=False)
+    reasoner_env = next(env for pkg, env in envs if pkg == "openral_reasoner_ros")
+    assert reasoner_env["OPENRAL_REASONER_MODEL"] == "gpt-5.5"
+    assert reasoner_env["OPENRAL_REASONER_MAX_TOKENS"] == "16384"
+    assert "OPENRAL_REASONER_LLM_PROVIDER" not in reasoner_env
 
 
 def test_dashboard_enabled_forwards_otlp_endpoint_to_every_node() -> None:

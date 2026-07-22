@@ -55,6 +55,7 @@ from openral_core.schemas import (
     QuantizationBackend,
     QuantizationConfig,
     QuantizationDtype,
+    ReasonerModel,
     RecallObjectMatch,
     RecallObjectQuery,
     RecallObjectResult,
@@ -180,6 +181,23 @@ _compute_spec_st = st.builds(
     compute_tops=_pos_float,
     system_memory_gb=_pos_float,
     gpu_vram_gb=_pos_float,
+)
+
+_reasoner_model_st = st.builds(
+    ReasonerModel,
+    id=_name,
+    display_name=_name,
+    dialect=st.sampled_from(["anthropic", "openai"]),
+    hosting=st.sampled_from(["cloud", "managed_local", "byo_local"]),
+    served_model_id=_name,
+    default_endpoint=st.none() | st.sampled_from(["managed", "http://127.0.0.1:8000/v1"]),
+    auth_required=st.booleans(),
+    tool_choice=st.sampled_from(["required", "auto"]),
+    max_tokens_default=st.none() | st.integers(min_value=1, max_value=131072),
+    min_gpu_vram_gb=st.none()
+    | st.floats(allow_nan=False, allow_infinity=False, min_value=0.1, max_value=1024.0),
+    required_dtype=st.none() | st.sampled_from(list(QuantizationDtype)),
+    weights_license=st.none() | _name,
 )
 
 _safety_st = st.builds(
@@ -427,6 +445,13 @@ def test_fuzz_robot_capabilities(instance: RobotCapabilities) -> None:
 def test_fuzz_compute_spec(instance: ComputeSpec) -> None:
     """ComputeSpec round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(ComputeSpec, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_reasoner_model_st)
+def test_fuzz_reasoner_model(instance: ReasonerModel) -> None:
+    """ReasonerModel round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(ReasonerModel, instance)
 
 
 @_FUZZ_SETTINGS
