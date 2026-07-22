@@ -75,7 +75,9 @@ died *after* the readiness probe; rclpy futures never time out on their
 own — the watchdog releases the latch, reactivates the peers, and emits
 a `KIND_CONTROLLER` FailureTrigger (`state="dispatch_timeout"`) so the
 ladder handles it instead of every future dispatch being refused as
-busy forever.
+busy forever. The expired dispatch generation invalidates its remaining
+callbacks; a late accepted goal is canceled and cannot overwrite a newer
+dispatch.
 
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary

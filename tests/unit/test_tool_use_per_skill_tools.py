@@ -66,12 +66,12 @@ def _real_aloha_palette() -> ToolPalette:
 # ── slug + description helpers ─────────────────────────────────────────────────
 
 
-def test_skill_id_to_tool_name_short_id_round_trip() -> None:
-    """Short HF-Hub ids slug 1:1 and stay under the 64-char limit."""
+def test_skill_id_to_tool_name_short_id_gets_hash_suffix() -> None:
+    """Short HF-Hub ids also get a collision-resistant sha1-8 suffix."""
     name = _skill_id_to_tool_name("OpenRAL/rskill-qwen35_4b-any-general-nf4")
-    assert name == "execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-nf4"
     assert len(name) <= 64
     assert name.startswith(_PER_SKILL_TOOL_PREFIX)
+    assert len(name.rsplit("_", 1)[-1]) == 8
 
 
 def test_skill_id_to_tool_name_long_id_truncates_with_sha1_suffix() -> None:

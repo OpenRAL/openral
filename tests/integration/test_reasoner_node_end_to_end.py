@@ -2241,6 +2241,22 @@ def test_emit_prompt_honours_target_topic() -> None:
         while time.monotonic() < grace:
             executor.spin_once(timeout_sec=0.1)
 
+        reasoner_name = reasoner.get_name()
+        assert target_topic in reasoner._emit_prompt_pubs
+        reasoner.trigger_deactivate()
+        reasoner.trigger_cleanup()
+        assert not reasoner._emit_prompt_pubs
+        cleanup_deadline = time.monotonic() + 2.0
+        while time.monotonic() < cleanup_deadline:
+            publishers = sub_node.get_publishers_info_by_topic(target_topic)
+            if all(info.node_name != reasoner_name for info in publishers):
+                break
+            executor.spin_once(timeout_sec=0.1)
+        assert all(
+            info.node_name != reasoner_name
+            for info in sub_node.get_publishers_info_by_topic(target_topic)
+        )
+
         executor.remove_node(reasoner)
         executor.remove_node(sub_node)
         sub_node.destroy_node()
@@ -2340,17 +2356,18 @@ def test_cascade_reprompt_does_not_reset_search_budget() -> None:
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
 def test_ladder_state_param_persists_and_restores(tmp_path: Any) -> None:
-    """ladder_state_path — a restarted reasoner resumes the persisted mission.
+    """ladder_state_path — a restart resumes the mission and charged locate budget.
 
-    Node A receives an operator goal (mission seeded + snapshotted); node B is
-    constructed fresh with the same param and must restore the mission at
-    configure instead of idling for a new goal.
+    Node A receives an operator goal, then charges a locate attempt that remains
+    within budget. Node B must restore both mutations instead of resetting the
+    bound and granting extra attempts after a crash.
     """
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
-    from openral_core import WaitTool
+    from openral_core import LocateInViewTool, WaitTool
     from openral_msgs.msg import PromptStamped
     from openral_reasoner import ToolPalette
+    from openral_reasoner.persistence import load_ladder_state
     from openral_reasoner_ros import ReasonerNode
     from rclpy.parameter import Parameter
     from rclpy.qos import (
@@ -2401,6 +2418,14 @@ def test_ladder_state_param_persists_and_restores(tmp_path: Any) -> None:
             executor.spin_once(timeout_sec=0.1)
         assert node_a.renderer.mission is not None, "operator goal did not seed a mission"
         assert state_path.exists(), "mission seed did not persist a ladder snapshot"
+        assert not node_a._charge_task_locate_budget(
+            LocateInViewTool(query="milk"),
+            traceparent=None,
+        )
+        charged = load_ladder_state(state_path)
+        assert charged is not None
+        assert charged.locate_task_id == "t1"
+        assert charged.locate_count == 1
 
         executor.remove_node(node_a)
         pub_node.destroy_node()
@@ -2422,6 +2447,8 @@ def test_ladder_state_param_persists_and_restores(tmp_path: Any) -> None:
         active = restored.active()
         assert active is not None
         assert active.text == "pick the milk and put it in the basket"
+        assert node_b._task_locate_budget.task_id == "t1"
+        assert node_b._task_locate_budget.count == 1
         node_b.destroy_node()
     finally:
         rclpy.shutdown()

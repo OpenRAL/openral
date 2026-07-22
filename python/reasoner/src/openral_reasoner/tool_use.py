@@ -30,6 +30,7 @@ exclusively in tests.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -751,71 +752,20 @@ _LLM_TOOL_NAME_MAX_LEN: int = 64
 
 
 def _skill_id_to_tool_name(rskill_id: str) -> str:
-    """Slugify a HF Hub skill id into a 64-char-max LLM tool name.
+    """Map a HF Hub skill id to a collision-resistant LLM tool name.
 
     HF Hub ids are ``<owner>/<repo>``; ``/`` and ``.`` are the only chars
-    outside the Anthropic / OpenAI tool-name regex in canonical ids.
-    Long ids get an 8-char sha1 suffix so the slug stays unique after
-    truncation.
-
-    The character mapping (``/`` → ``__``, ``.`` → ``_``) is not injective
-    (``a.b`` and ``a_b`` both slug to ``a_b``); collisions across a concrete
-    palette are resolved by :func:`_skill_tool_name_map`, which is the
-    authority both for rendering the tool list and for decoding the LLM's
-    pick — never call this directly for palette lookups.
+    outside the Anthropic / OpenAI tool-name regex in canonical ids. Every
+    name gets an 8-char sha1 suffix because the readable character mapping is
+    not injective (``a.b`` and ``a_b`` both slug to ``a_b``).
 
     >>> _skill_id_to_tool_name("OpenRAL/rskill-qwen35_4b-any-general-nf4")
-    'execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-nf4'
+    'execute_rskill__OpenRAL__rskill-qwen35_4b-any-general-n_9bf15b4a'
     """
     slug = rskill_id.replace("/", "__").replace(".", "_")
-    candidate = f"{_PER_SKILL_TOOL_PREFIX}{slug}"
-    if len(candidate) <= _LLM_TOOL_NAME_MAX_LEN:
-        return candidate
-    return _hashed_skill_tool_name(rskill_id, slug)
-
-
-def _hashed_skill_tool_name(rskill_id: str, slug: str) -> str:
-    """Disambiguated tool name: truncated slug + 8-char sha1 of the full id."""
-    import hashlib  # noqa: PLC0415  # reason: stdlib, only used on the slow palette-build path
-
-    # Reserve 9 chars for "_" + 8-char sha1 suffix to disambiguate post-truncation.
     h = hashlib.sha1(rskill_id.encode("utf-8")).hexdigest()[:8]
     max_slug = _LLM_TOOL_NAME_MAX_LEN - len(_PER_SKILL_TOOL_PREFIX) - 9
     return f"{_PER_SKILL_TOOL_PREFIX}{slug[:max_slug]}_{h}"
-
-
-def _skill_tool_name_map(palette: ToolPalette) -> dict[str, str]:
-    """Collision-free ``tool name → rskill_id`` map for a concrete palette.
-
-    The slug mapping in :func:`_skill_id_to_tool_name` is not injective
-    (``a.b`` / ``a_b`` collide). A silent collision would make the decoder's
-    reverse lookup dispatch the *wrong skill*, so any name claimed by more
-    than one palette id is replaced by its hashed variant for every claimant
-    (deterministic: depends only on each id, not on palette order). Shared by
-    the tool-schema renderer and :func:`_decode_tool_payload` so the two can
-    never disagree.
-
-    >>> from openral_reasoner.palette import RSkillToolEntry, ToolPalette
-    >>> from openral_core import RSkillAction
-    >>> def entry(rid: str) -> RSkillToolEntry:
-    ...     return RSkillToolEntry(rskill_id=rid, description="d", actions=(RSkillAction.PICK,))
-    >>> palette = ToolPalette(skills=(entry("org/a.b"), entry("org/a_b")))
-    >>> names = sorted(_skill_tool_name_map(palette))
-    >>> len(names) == 2 and names[0] != names[1]
-    True
-    """
-    base: dict[str, list[str]] = {}
-    for entry in palette.skills:
-        base.setdefault(_skill_id_to_tool_name(entry.rskill_id), []).append(entry.rskill_id)
-    out: dict[str, str] = {}
-    for name, ids in base.items():
-        if len(ids) == 1:
-            out[name] = ids[0]
-            continue
-        for rskill_id in ids:
-            slug = rskill_id.replace("/", "__").replace(".", "_")
-            out[_hashed_skill_tool_name(rskill_id, slug)] = rskill_id
-    return out
 
 
 def _format_skill_tool_description(entry: RSkillToolEntry) -> str:
@@ -866,7 +816,6 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
     if palette.skills:
         execute_schema = ExecuteRskillTool.model_json_schema()
         per_skill_schema = _drop_property(execute_schema, "rskill_id")
-        name_by_id = {rid: name for name, rid in _skill_tool_name_map(palette).items()}
         for entry in palette.skills:
             # When the manifest declares ``goal_params_schema``,
             # replace the per-skill tool's ``goal_params_json`` property
@@ -886,7 +835,7 @@ def _tool_palette_to_anthropic_tools(palette: ToolPalette) -> list[dict[str, obj
                 )
             tools.append(
                 {
-                    "name": name_by_id[entry.rskill_id],
+                    "name": _skill_id_to_tool_name(entry.rskill_id),
                     "description": _format_skill_tool_description(entry),
                     "input_schema": tool_schema,
                 },
@@ -1219,7 +1168,9 @@ def _decode_tool_payload(
     resolved_name = tool_name
     resolved_args = dict(arguments)
     if tool_name.startswith(_PER_SKILL_TOOL_PREFIX) and palette.skills:
-        slug_lookup = _skill_tool_name_map(palette)
+        slug_lookup = {
+            _skill_id_to_tool_name(entry.rskill_id): entry.rskill_id for entry in palette.skills
+        }
         if tool_name not in slug_lookup:
             raise ROSReasonerInvalidPlan(
                 f"LLM returned per-skill tool {tool_name!r} but no matching skill "

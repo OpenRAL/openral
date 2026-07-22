@@ -37,7 +37,6 @@ from openral_reasoner.mission import (
 )
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
-    is_cascade_source,
     should_rebuild_mission,
 )
 from openral_reasoner.palette import ToolPalette, build_tool_palette
@@ -104,7 +103,6 @@ __all__ = [
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",
-    "is_cascade_source",
     "load_ladder_state",
     "plan_active_search",
     "recall_object_tool_to_query",

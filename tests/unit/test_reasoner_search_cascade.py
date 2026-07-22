@@ -72,16 +72,3 @@ def test_repeated_locate_misses_exhaust_the_budget_when_not_reset() -> None:
     # …the fifth exhausts it → handoff.
     assert progress.record_attempt() is False
     assert progress.exhausted
-
-
-def test_feedback_log_throttle_truth_table() -> None:
-    """~1 Hz operator-visible feedback: first line always due, then one per
-    period (a VLA goal streams 600+ feedback messages; per-chunk WARNINGs
-    drowned the operator log in the 2026-07-20 live run)."""
-    from openral_reasoner_ros.reasoner_node import _FEEDBACK_LOG_PERIOD_S, _feedback_log_due
-
-    assert _FEEDBACK_LOG_PERIOD_S == 1.0
-    assert _feedback_log_due(now_s=0.0, last_s=float("-inf"), period_s=1.0)
-    assert not _feedback_log_due(now_s=0.5, last_s=0.0, period_s=1.0)
-    assert _feedback_log_due(now_s=1.0, last_s=0.0, period_s=1.0)
-    assert _feedback_log_due(now_s=7.3, last_s=0.0, period_s=1.0)

@@ -5,8 +5,8 @@ callback (and diverged — the search-bound reset excluded only
 ``"spatial_memory"`` while the cascade spans six sources, so every
 ``detector`` re-prompt reset the locate-miss budget it had just charged):
 
-1. ``is_cascade_source`` — the single source of truth for "this prompt is the
-   reasoner's own cascade, reset nothing".
+1. ``CASCADE_PROMPT_SOURCES`` — the single source of truth for "this prompt is
+   the reasoner's own cascade, reset nothing".
 2. ``should_rebuild_mission`` — new-goal vs mid-mission-reply discrimination.
 """
 
@@ -16,11 +16,10 @@ import pytest
 from openral_reasoner import MissionState
 from openral_reasoner.node_policy import (
     CASCADE_PROMPT_SOURCES,
-    is_cascade_source,
     should_rebuild_mission,
 )
 
-# ── is_cascade_source ────────────────────────────────────────────────────────
+# ── CASCADE_PROMPT_SOURCES ──────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -31,12 +30,12 @@ def test_every_cascade_source_is_recognised(source: str) -> None:
     """Every cascade frame_id — including detector/reward_monitor/mission —
     is classified as cascade (the pre-fix reset guard matched only
     ``spatial_memory``)."""
-    assert is_cascade_source(source)
+    assert source in CASCADE_PROMPT_SOURCES
 
 
 @pytest.mark.parametrize("source", ["cli", "dashboard", "auto", "", "operator"])
 def test_external_sources_are_not_cascade(source: str) -> None:
-    assert not is_cascade_source(source)
+    assert source not in CASCADE_PROMPT_SOURCES
 
 
 def test_detector_is_a_cascade_source_regression() -> None:
@@ -45,7 +44,6 @@ def test_detector_is_a_cascade_source_regression() -> None:
     the miss budget can never exceed 1 and an undetectable object loops
     locate→miss→reset forever."""
     assert "detector" in CASCADE_PROMPT_SOURCES
-    assert is_cascade_source("detector")
 
 
 # ── should_rebuild_mission ───────────────────────────────────────────────────

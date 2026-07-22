@@ -17,7 +17,7 @@ from openral_core import RSkillAction, WaitTool
 from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 from openral_reasoner.tool_use import (
     _decode_tool_payload,
-    _skill_tool_name_map,
+    _skill_id_to_tool_name,
     _tool_palette_to_anthropic_tools,
     _tool_palette_to_openai_tools,
 )
@@ -85,7 +85,9 @@ def test_wait_tool_decodes_to_waittool() -> None:
 def test_colliding_slugs_get_distinct_names_and_decode_to_the_right_skill() -> None:
     # "org/a.b" and "org/a_b" both slug to "org__a_b" under the naive mapping.
     palette = _palette("org/a.b", "org/a_b")
-    name_map = _skill_tool_name_map(palette)
+    name_map = {
+        _skill_id_to_tool_name(entry.rskill_id): entry.rskill_id for entry in palette.skills
+    }
     assert len(name_map) == 2
     assert len(set(name_map)) == 2, "colliding ids must yield distinct tool names"
     for name, rskill_id in name_map.items():
@@ -96,14 +98,14 @@ def test_colliding_slugs_get_distinct_names_and_decode_to_the_right_skill() -> N
 
 def test_rendered_tools_use_the_collision_free_names() -> None:
     palette = _palette("org/a.b", "org/a_b")
-    name_map = _skill_tool_name_map(palette)
+    name_map = {_skill_id_to_tool_name(entry.rskill_id) for entry in palette.skills}
     rendered = {
         t["name"] for t in _tool_palette_to_anthropic_tools(palette) if isinstance(t["name"], str)
     }
-    assert set(name_map).issubset(rendered)
+    assert name_map.issubset(rendered)
 
 
-def test_non_colliding_ids_keep_the_readable_name() -> None:
-    palette = _palette("OpenRAL/rskill-smolvla-so100-pick-fp16")
-    (name,) = _skill_tool_name_map(palette)
-    assert name == "execute_rskill__OpenRAL__rskill-smolvla-so100-pick-fp16"
+def test_non_colliding_ids_also_get_a_hash_suffix() -> None:
+    name = _skill_id_to_tool_name("OpenRAL/rskill-smolvla-so100-pick-fp16")
+    assert name.startswith("execute_rskill__OpenRAL__rskill-smolvla-so100-p")
+    assert len(name.rsplit("_", 1)[-1]) == 8

@@ -1,6 +1,6 @@
 """Live ROS tests for the execute_rskill dispatch-path robustness fixes.
 
-Two seams from the PR #19 xhigh code review, both on the busy-latch path:
+Three seams from the PR #19 xhigh code review, all on the busy-latch path:
 
 1. **Dispatch-phase watchdog** — `_rskill_inflight` latches BEFORE the async
    send, but rclpy futures never time out on their own: an action server that
@@ -15,6 +15,9 @@ Two seams from the PR #19 xhigh code review, both on the busy-latch path:
    runner keeps the policy warm: its own residency is why free is low, so a
    re-dispatch of the SAME skill was falsely refused. The probe is skipped
    when ``call.rskill_id`` matches the last accepted skill.
+3. **Dispatch generations** — a goal response arriving after its watchdog
+   expired must be canceled as stale; it cannot cancel a newer watchdog or
+   overwrite the newer goal's in-flight state.
 
 Real reasoner node + real ``ExecuteRskill`` ActionServer + real DDS graph
 (CLAUDE.md §1.11); the wedge in test 1 is produced by a real server whose node
@@ -35,6 +38,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import threading
 import time
 from typing import Any
 
@@ -153,6 +157,120 @@ def test_dispatch_watchdog_releases_a_wedged_busy_latch() -> None:
         executor.remove_node(sub_node)
         dead_server_node.destroy_node()
         sub_node.destroy_node()
+        reasoner.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_late_goal_response_cannot_replace_a_new_dispatch() -> None:
+    """A watchdog-expired goal response must be canceled as stale.
+
+    Goal A responds after its watchdog releases the latch. Goal B starts while
+    A is still pending. When A finally accepts, it must not cancel B's watchdog
+    or replace B's in-flight state.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import ExecuteRskillTool, WaitTool
+    from openral_msgs.action import ExecuteRskill
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.action import ActionServer
+    from rclpy.action.server import CancelResponse, GoalResponse
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.parameter import Parameter
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    old_id = "openral/rskill-watchdog-old"
+    new_id = "openral/rskill-watchdog-new"
+    old_cancelled = threading.Event()
+    new_completed = threading.Event()
+
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[WaitTool() for _ in range(64)]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({old_id, new_id})),
+            tick_hz=2.0,
+        )
+        reasoner.set_parameters([Parameter("dispatch_watchdog_s", value=0.5)])
+        reasoner.trigger_configure()
+        reasoner.trigger_activate()
+
+        server_node = rclpy.create_node("openral_test_vla_server_delayed_response")
+        server_group = ReentrantCallbackGroup()
+
+        def _goal(request: Any) -> GoalResponse:
+            time.sleep(1.2 if request.rskill_id == old_id else 2.0)
+            return GoalResponse.ACCEPT
+
+        def _execute(goal_handle: Any) -> Any:
+            result = ExecuteRskill.Result()
+            if goal_handle.request.rskill_id == old_id:
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and not goal_handle.is_cancel_requested:
+                    time.sleep(0.02)
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    old_cancelled.set()
+                    result.success = False
+                    result.failure_reason = "stale dispatch canceled"
+                    return result
+                goal_handle.abort()
+                result.success = False
+                result.failure_reason = "stale dispatch was not canceled"
+                return result
+            goal_handle.succeed()
+            new_completed.set()
+            result.success = True
+            result.trace_id = "00-new-dispatch"
+            return result
+
+        server = ActionServer(
+            server_node,
+            ExecuteRskill,
+            "/openral/execute_rskill",
+            execute_callback=_execute,
+            goal_callback=_goal,
+            cancel_callback=lambda _g: CancelResponse.ACCEPT,
+            callback_group=server_group,
+        )
+
+        executor = MultiThreadedExecutor(num_threads=5)
+        executor.add_node(reasoner)
+        executor.add_node(server_node)
+        _spin_until(executor, lambda: False, 1.5)
+
+        old_call = ExecuteRskillTool(rskill_id=old_id, prompt="old", deadline_s=0.0)
+        reasoner._dispatch_execute_rskill(old_call, traceparent=None)
+        assert _spin_until(executor, lambda: not reasoner._rskill_inflight, 3.0)
+
+        reasoner.set_parameters([Parameter("dispatch_watchdog_s", value=5.0)])
+        new_call = ExecuteRskillTool(rskill_id=new_id, prompt="new", deadline_s=0.0)
+        reasoner._dispatch_execute_rskill(new_call, traceparent=None)
+        new_generation = reasoner._active_dispatch_generation
+        assert new_generation is not None
+
+        assert _spin_until(executor, old_cancelled.is_set, 4.0)
+        assert reasoner._active_dispatch_generation == new_generation
+        assert reasoner._rskill_inflight
+        assert reasoner._renderer.inflight_skill == new_id
+        assert reasoner._dispatch_watchdog is not None
+
+        assert _spin_until(
+            executor,
+            lambda: new_completed.is_set() and not reasoner._rskill_inflight,
+            5.0,
+        )
+        assert reasoner._active_dispatch_generation is None
+
+        executor.remove_node(reasoner)
+        executor.remove_node(server_node)
+        executor.shutdown()
+        server.destroy()
+        server_node.destroy_node()
         reasoner.destroy_node()
     finally:
         rclpy.shutdown()

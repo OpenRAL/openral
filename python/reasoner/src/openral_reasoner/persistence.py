@@ -16,20 +16,28 @@ can never leave a truncated snapshot behind.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import pathlib
+from typing import Annotated, Literal
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 from openral_reasoner.mission import MissionState
 
 __all__ = ["ReasonerLadderState", "load_ladder_state", "save_ladder_state"]
 
-_SCHEMA_VERSION = "0.1"
+_SCHEMA_VERSION: Literal["0.1"] = "0.1"
 
 
-@dataclasses.dataclass(slots=True)
-class ReasonerLadderState:
+class ReasonerLadderState(BaseModel):
     """Everything a restarted reasoner needs to resume its ladders.
 
     Attributes:
@@ -42,11 +50,48 @@ class ReasonerLadderState:
         locate_count: Locate cycles charged against ``locate_task_id``.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    schema_version: Literal["0.1"] = _SCHEMA_VERSION
     mission: MissionState | None = None
-    subdivide_offered: set[str] = dataclasses.field(default_factory=set)
-    collective_nudges: dict[str, int] = dataclasses.field(default_factory=dict)
+    subdivide_offered: set[str] = Field(default_factory=set)
+    collective_nudges: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     locate_task_id: str | None = None
-    locate_count: int = 0
+    locate_count: int = Field(default=0, ge=0)
+
+    @field_validator("mission", mode="before")
+    @classmethod
+    def _load_mission(cls, value: object) -> MissionState | None:
+        if value is None or isinstance(value, MissionState):
+            return value
+        if isinstance(value, dict):
+            try:
+                mission = MissionState.from_state_dict(value)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"invalid mission snapshot: {exc}") from exc
+            tasks = mission.tasks
+            active_count = sum(task.status in ("active", "verifying") for task in tasks)
+            if len({task.task_id for task in tasks}) != len(tasks):
+                raise ValueError("invalid mission snapshot: duplicate task ids")
+            if any(
+                not task.task_id or not task.text.strip() or task.attempts < 0 or task.depth < 0
+                for task in tasks
+            ):
+                raise ValueError("invalid mission snapshot: invalid task fields")
+            if tasks and not mission.is_complete() and active_count != 1:
+                raise ValueError(
+                    "invalid mission snapshot: incomplete mission needs one active task"
+                )
+            return mission
+        raise ValueError("mission must be a MissionState, object, or null")
+
+    @field_serializer("mission")
+    def _dump_mission(self, mission: MissionState | None) -> dict[str, object] | None:
+        return mission.to_state_dict() if mission is not None else None
+
+    @field_serializer("subdivide_offered")
+    def _dump_subdivide_offered(self, offered: set[str]) -> list[str]:
+        return sorted(offered)
 
 
 def save_ladder_state(path: pathlib.Path | str, state: ReasonerLadderState) -> None:
@@ -65,17 +110,9 @@ def save_ladder_state(path: pathlib.Path | str, state: ReasonerLadderState) -> N
         'pick the bowl'
     """
     target = pathlib.Path(path)
-    payload: dict[str, object] = {
-        "schema_version": _SCHEMA_VERSION,
-        "mission": state.mission.to_state_dict() if state.mission is not None else None,
-        "subdivide_offered": sorted(state.subdivide_offered),
-        "collective_nudges": dict(state.collective_nudges),
-        "locate_task_id": state.locate_task_id,
-        "locate_count": state.locate_count,
-    }
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=1), encoding="utf-8")
+    tmp.write_text(state.model_dump_json(indent=1), encoding="utf-8")
     os.replace(tmp, target)
 
 
@@ -89,27 +126,9 @@ def load_ladder_state(path: pathlib.Path | str) -> ReasonerLadderState | None:
     """
     target = pathlib.Path(path)
     try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, dict) or raw.get("schema_version") != _SCHEMA_VERSION:
-        return None
-    try:
-        mission_raw = raw.get("mission")
-        mission = (
-            MissionState.from_state_dict(mission_raw) if isinstance(mission_raw, dict) else None
-        )
-        offered_raw = raw.get("subdivide_offered", [])
-        nudges_raw = raw.get("collective_nudges", {})
-        if not isinstance(offered_raw, list) or not isinstance(nudges_raw, dict):
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or "schema_version" not in payload:
             return None
-        locate_task_id = raw.get("locate_task_id")
-        return ReasonerLadderState(
-            mission=mission,
-            subdivide_offered={str(x) for x in offered_raw},
-            collective_nudges={str(k): int(v) for k, v in nudges_raw.items()},
-            locate_task_id=str(locate_task_id) if locate_task_id is not None else None,
-            locate_count=int(raw.get("locate_count", 0)),
-        )
-    except (KeyError, TypeError, ValueError):
+        return ReasonerLadderState.model_validate(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError):
         return None

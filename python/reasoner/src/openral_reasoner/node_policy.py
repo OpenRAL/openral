@@ -21,7 +21,6 @@ from openral_reasoner.mission import MissionState
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
-    "is_cascade_source",
     "should_rebuild_mission",
 ]
 
@@ -34,25 +33,6 @@ __all__ = [
 CASCADE_PROMPT_SOURCES: frozenset[str] = frozenset(
     {"spatial_memory", "detector", "scene_vlm", "reward_monitor", "memory", "mission"}
 )
-
-
-def is_cascade_source(source: str) -> bool:
-    """True when ``source`` is one of the reasoner's own cascade frame_ids.
-
-    Cascade prompts feed the next tick but leave every accumulating bound
-    (search budget, locate escalation set, retry-cap streak) untouched —
-    resetting a bound on the very response that charged it makes the bound
-    unable to ever exhaust.
-
-    Example:
-        >>> is_cascade_source("detector")
-        True
-        >>> is_cascade_source("cli")
-        False
-        >>> is_cascade_source("")
-        False
-    """
-    return source in CASCADE_PROMPT_SOURCES
 
 
 def should_rebuild_mission(
@@ -92,7 +72,7 @@ def should_rebuild_mission(
         >>> should_rebuild_mission("detector", "", None)  # cascade: never
         False
     """
-    if is_cascade_source(source):
+    if source in CASCADE_PROMPT_SOURCES:
         return False
     if mission is None or mission.is_empty() or mission.is_complete() or not mission.has_started():
         return True

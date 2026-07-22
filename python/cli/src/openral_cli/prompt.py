@@ -27,28 +27,7 @@ import time
 
 import typer
 
-__all__ = ["build_prompt_metadata", "prompt_command"]
-
-
-def build_prompt_metadata(*, new_goal: bool) -> str:
-    """Build the CLI prompt's ``metadata_json`` payload.
-
-    ``"new_goal": true`` is the reasoner's mission-replacement escape hatch:
-    :func:`openral_reasoner.node_policy.should_rebuild_mission` requires it to
-    replace a STARTED mission (without it a mid-mission prompt is
-    conversational context, never a queue rebuild). The prompt-router
-    preserves inbound keys when stamping ``source`` / ``priority``.
-
-    Example:
-        >>> build_prompt_metadata(new_goal=False)
-        '{"source_cli": true}'
-        >>> build_prompt_metadata(new_goal=True)
-        '{"new_goal": true, "source_cli": true}'
-    """
-    metadata: dict[str, bool] = {"source_cli": True}
-    if new_goal:
-        metadata["new_goal"] = True
-    return json.dumps(metadata, sort_keys=True)
+__all__ = ["prompt_command"]
 
 
 def prompt_command(
@@ -128,7 +107,8 @@ def prompt_command(
         msg.header.stamp = node.get_clock().now().to_msg()
         msg.header.frame_id = "openral_cli_prompt"
         msg.text = text
-        msg.metadata_json = build_prompt_metadata(new_goal=new_goal)
+        metadata = {"source_cli": True} | ({"new_goal": True} if new_goal else {})
+        msg.metadata_json = json.dumps(metadata, sort_keys=True)
 
         # Spin until a subscriber matches so the one-shot publish is
         # not delivered into the void. 0.5 s was too tight on hosts

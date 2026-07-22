@@ -86,18 +86,53 @@ def test_version_mismatch_loads_as_none(tmp_path: pathlib.Path) -> None:
     assert load_ladder_state(path) is None
 
 
-def test_bad_status_loads_as_none(tmp_path: pathlib.Path) -> None:
+def test_missing_version_loads_as_none(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "ladder.json"
-    payload = {
+    path.write_text(json.dumps({"mission": None}), encoding="utf-8")
+    assert load_ladder_state(path) is None
+
+
+def test_invalid_mission_loads_as_none(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "ladder.json"
+    valid = {
         "schema_version": "0.1",
-        "mission": {"tasks": [{"task_id": "t1", "text": "x", "status": "bogus"}]},
         "subdivide_offered": [],
         "collective_nudges": {},
         "locate_task_id": None,
         "locate_count": 0,
     }
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    assert load_ladder_state(path) is None
+    invalid_missions = (
+        {"tasks": [{"task_id": "t1", "text": "x", "status": "bogus"}]},
+        {
+            "tasks": [
+                {"task_id": "t1", "text": "x", "status": "active"},
+                {"task_id": "t2", "text": "y", "status": "active"},
+            ]
+        },
+        {"tasks": [{"task_id": "t1", "text": "x", "status": "active", "attempts": -1}]},
+    )
+    for mission in invalid_missions:
+        path.write_text(json.dumps(valid | {"mission": mission}), encoding="utf-8")
+        assert load_ladder_state(path) is None
+
+
+def test_invalid_boundary_fields_load_as_none(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "ladder.json"
+    valid = {
+        "schema_version": "0.1",
+        "mission": None,
+        "subdivide_offered": [],
+        "collective_nudges": {},
+        "locate_task_id": None,
+        "locate_count": 0,
+    }
+    for invalid in (
+        {"locate_count": -1},
+        {"collective_nudges": {"t1": -1}},
+        {"unexpected": True},
+    ):
+        path.write_text(json.dumps(valid | invalid), encoding="utf-8")
+        assert load_ladder_state(path) is None
 
 
 def test_save_is_atomic_no_tmp_left_behind(tmp_path: pathlib.Path) -> None:
