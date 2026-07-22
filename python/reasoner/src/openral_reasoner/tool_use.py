@@ -9,17 +9,16 @@ This module ships:
 
 - :class:`ToolUseClient` — structural Protocol every provider satisfies.
 - :class:`AnthropicToolUseClient` — wraps the Anthropic Python SDK's
-  tool-use API. Lazy-imported; gated by ``OPENRAL_REASONER_LLM_PROVIDER=anthropic``.
+  tool-use API. Lazy-imported; selected by a curated model with
+  ``dialect="anthropic"``.
 - :class:`OpenAICompatibleToolUseClient` — wraps the OpenAI Python SDK
   pointed at any OpenAI-compatible endpoint (cloud OpenAI, local vLLM,
-  Ollama-OpenAI, etc.). Lazy-imported; gated by
-  ``OPENRAL_REASONER_LLM_PROVIDER=openai-compatible``.
+  Ollama-OpenAI, etc.). Lazy-imported; selected by a curated model with
+  ``dialect="openai"`` or the explicit uncurated escape hatch.
 - :class:`build_tool_use_client_from_env` — factory that reads the
-  deployment env and returns the right client. No cloud lock-in:
-  the open-core path defaults to "no provider configured"; the user
-  picks one explicitly via env. ``PROVIDER=openrouter`` is a
-  shortcut that pre-fills the OpenRouter base URL on top of the
-  generic ``openai-compatible`` client.
+  model-first deployment env and resolves :data:`openral_core.REASONER_MODELS`.
+  No cloud lock-in: the open-core path defaults to "no model configured";
+  endpoint location is independently overrideable.
 
 Per CLAUDE.md §1.11 a deterministic :class:`FakeToolUseClient` lives
 under :mod:`tests.integration.fakes.fake_llm` — it is the only test
@@ -727,7 +726,11 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
                 f"{REASONER_API_KEY_ENV} is unset; required for model {entry.id!r}."
             )
         return AnthropicToolUseClient(
-            model_id=entry.served_model_id, api_key=api_key, timeout_s=timeout_s
+            model_id=entry.served_model_id,
+            api_key=api_key,
+            base_url=endpoint_override,
+            max_tokens=max_tokens or 1024,
+            timeout_s=timeout_s,
         )
 
     if entry.hosting == "managed_local":
@@ -827,7 +830,13 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             raise ROSConfigError(
                 f"{REASONER_API_KEY_ENV} is unset; required for dialect=anthropic."
             )
-        return AnthropicToolUseClient(model_id=model_key, api_key=api_key, timeout_s=timeout_s)
+        return AnthropicToolUseClient(
+            model_id=model_key,
+            api_key=api_key,
+            base_url=endpoint,
+            max_tokens=max_tokens or 1024,
+            timeout_s=timeout_s,
+        )
     return OpenAICompatibleToolUseClient(
         model_id=model_key,
         api_key=api_key,
@@ -1413,6 +1422,7 @@ class AnthropicToolUseClient:
         model_id: Anthropic model identifier (e.g. ``claude-opus-4-7``,
             ``claude-sonnet-4-6``).
         api_key: Anthropic API key. Required.
+        base_url: Optional Anthropic-compatible endpoint override.
         max_tokens: Hard cap on response tokens; defaults to 1024
             (tool-call payloads are small).
         timeout_s: Per-call wall-clock timeout in seconds. Defaults to
@@ -1427,6 +1437,7 @@ class AnthropicToolUseClient:
         *,
         model_id: str,
         api_key: str,
+        base_url: str | None = None,
         max_tokens: int = 1024,
         timeout_s: float = 10.0,
     ) -> None:
@@ -1435,6 +1446,7 @@ class AnthropicToolUseClient:
             raise ROSConfigError("AnthropicToolUseClient: api_key is required")
         self.model_id = model_id
         self._api_key = api_key
+        self._base_url = base_url
         self._max_tokens = max_tokens
         self._timeout_s = timeout_s
 
@@ -1452,9 +1464,11 @@ class AnthropicToolUseClient:
             raise ROSConfigError(
                 "AnthropicToolUseClient requires the `anthropic` SDK; "
                 "install with `uv add anthropic --package openral-reasoner` "
-                "or pick OPENRAL_REASONER_LLM_PROVIDER=openai-compatible.",
+                "or select an openai-dialect ReasonerModel.",
             ) from exc
-        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        client = anthropic.Anthropic(
+            api_key=self._api_key, base_url=self._base_url, timeout=self._timeout_s
+        )
         tools = _tool_palette_to_anthropic_tools(palette)
         try:
             response = client.messages.create(  # type: ignore[call-overload]  # reason: provider SDK boundary — tools/messages/tool_choice are heterogeneous TypedDicts that mypy cannot reconcile through dict literals; runtime payload is validated by the SDK
@@ -1504,7 +1518,9 @@ class AnthropicToolUseClient:
                 "AnthropicToolUseClient requires the `anthropic` SDK; "
                 "install with `uv add anthropic --package openral-reasoner`.",
             ) from exc
-        client = anthropic.Anthropic(api_key=self._api_key, timeout=self._timeout_s)
+        client = anthropic.Anthropic(
+            api_key=self._api_key, base_url=self._base_url, timeout=self._timeout_s
+        )
         b64 = base64.b64encode(image_jpeg).decode()
         try:
             response = client.messages.create(

@@ -111,8 +111,9 @@ def _make_launch_context(robot_yaml: Path) -> object:
     # Defaults that ship with the launch file.
     cfg["reset_to_pose_service"] = ""
     cfg["dashboard_port"] = "4318"
-    cfg["reasoner_provider"] = "ollama"
-    cfg["reasoner_model"] = "gemma4:31b-cloud"
+    cfg["reasoner_provider"] = ""
+    cfg["reasoner_model"] = "gpt-5.5"
+    cfg["reasoner_endpoint"] = ""
     cfg["spatial_memory_path"] = ""
     cfg["spatial_memory_ingest"] = "false"
     cfg["hal_mode"] = "sim"

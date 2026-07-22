@@ -1,6 +1,6 @@
 """Boot the NVIDIA Cosmos 3 reasoner behind vLLM's OpenAI-compatible API.
 
-The ``cosmos`` reasoner provider (``OPENRAL_REASONER_LLM_PROVIDER=cosmos``,
+The curated ``cosmos3-edge`` reasoner model (``OPENRAL_REASONER_MODEL=cosmos3-edge``,
 :class:`openral_reasoner.cosmos3.Cosmos3ToolUseClient`) plans with the
 **reasoner tower** of an NVIDIA Cosmos 3 omnimodal world model — by default the
 4B on-device **Edge** tier (``nvidia/Cosmos3-Edge``, OpenMDW-1.1, commercial

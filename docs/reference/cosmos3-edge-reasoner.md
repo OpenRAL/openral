@@ -1,7 +1,7 @@
 # NVIDIA Cosmos 3 Edge as the S2 reasoner
 
-> Assessment + integration record for the `cosmos` reasoner provider
-> (`OPENRAL_REASONER_LLM_PROVIDER=cosmos`,
+> Assessment + integration record for the curated `cosmos3-edge` reasoner model
+> (`OPENRAL_REASONER_MODEL=cosmos3-edge`,
 > `openral_reasoner.cosmos3.Cosmos3ToolUseClient`). Last reviewed
 > 2026-07-20 — the day the Edge weights shipped; recheck the
 > [Validation status](#validation-status) table before relying on
@@ -28,7 +28,8 @@ Mixture-of-Transformers model, two towers:
 Family tiers: **Edge 4B** (on-device — Jetson Thor T2000/T3000, RTX;
 trained from scratch on a Nemotron backbone), **Nano 16B** (workstation,
 Qwen3-VL-initialised), **Super 64B** (datacenter). All three serve the same
-API, so the tier is just `OPENRAL_REASONER_LLM_MODEL`.
+API. Edge is the curated registry entry; other tiers use the explicit
+uncurated model + endpoint escape hatch until separately validated.
 
 ## Why it fits the S2 slot
 
@@ -65,11 +66,11 @@ completion-adjudication gate (`describe_image`). Against that contract:
   --gpu-memory-utilization 0.90 --enforce-eager` on port **8901**. Every one
   of those non-obvious flags was forced by a real failure on the 8 GB 4070
   (see the validation ledger).
-- Config surface: `OPENRAL_REASONER_LLM_{MODEL,BASE_URL,API_KEY,TIMEOUT_S,MAX_TOKENS}`
-  as usual, plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
+- Config surface: `OPENRAL_REASONER_{MODEL,ENDPOINT,API_KEY,TIMEOUT_S,MAX_TOKENS}`
+  plus `OPENRAL_COSMOS3_AUTOSTART` / `OPENRAL_COSMOS3_BOOT_TIMEOUT_S`
   / `OPENRAL_COSMOS3_SIDECAR` / `OPENRAL_COSMOS3_GPU_MEM_UTIL`. Self-managed
   serving (your own `vllm serve`, or the Cosmos 3 Reasoner NIM container) is a
-  `BASE_URL` away.
+  `OPENRAL_REASONER_ENDPOINT` away.
 - `openral doctor` knows the provider (default base URL, no-key, no-model
   requirements; `Cosmos 3` probe row that reports `info` — not `warn` —
   when the endpoint is down, because autostart is the normal cold state).
@@ -119,7 +120,7 @@ KV-VRAM permitting.
 4. **Reasoning-trace latency.** Cosmos 3 supports explicit `<think>`
    reasoning; long traces would eat the 120 s call timeout on small GPUs.
    The reasoner does not request the explicit-reasoning format; if the model
-   emits it anyway, cap it with `OPENRAL_REASONER_LLM_MAX_TOKENS`.
+   emits it anyway, cap it with `OPENRAL_REASONER_MAX_TOKENS`.
 5. **No Edge-tier public benchmarks yet.** NVIDIA published family-level
    results (VANTAGE-Bench, PAI-Bench, Physics-IQ, RoboLab leads) but no
    Edge-specific numbers at launch. Treat quality claims as
@@ -158,7 +159,7 @@ end-to-end tick).
 * **transformers**: `cosmos3_edge` still release-less (5.14.1 lacks it); the SHA-pinned overlay remains required for config parsing on every path.
 * **Nightly caveat**: the current vLLM nightly wheel's metadata carries a self-contradictory `torchcodec` constraint on x86 Linux (resolver-breaking); it installs only with `--no-deps` over an existing 0.24.0 dep tree — fine for validation, not lockable.
 
-**Action when a vLLM release ships #48291 + #49190**: bump `cosmos3_reasoner.in`/`.lock`, drop the Edge branch of `materialize_reasoner_view` (native impl reads the repo layout), keep the transformers overlay until a transformers release lands, and re-run the reliability eval. Until then `provider=cosmos` on the pinned stable boots but 500s on inference; the cloud/local baselines in the reasoner README remain the working default.
+**Action when a vLLM release ships #48291 + #49190**: bump `cosmos3_reasoner.in`/`.lock`, drop the Edge branch of `materialize_reasoner_view` (native impl reads the repo layout), keep the transformers overlay until a transformers release lands, and re-run the reliability eval. Until then `OPENRAL_REASONER_MODEL=cosmos3-edge` on the pinned stable boots but 500s on inference; the curated cloud models in the reasoner README remain the working default.
 
 ## Layer-boundary notes
 

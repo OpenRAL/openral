@@ -30,7 +30,7 @@ from openral_reasoner import (
     ToolPalette, build_tool_palette,           # registry -> LLM tool palette
     AnthropicToolUseClient,                    # provider clients
     OpenAICompatibleToolUseClient,
-    build_tool_use_client_from_env,            # OPENRAL_REASONER_LLM_* selection
+    build_tool_use_client_from_env,            # model-first env selection
     ContextRenderer,                           # WorldState/event -> prompt context
     MemoryStore, MissionState,                 # self-maintained memory + mission ladder
     CriticWatchdog, SpatialMemoryQuerier,      # critic gating + spatial recall
@@ -43,9 +43,9 @@ from openral_reasoner import (
   ladder on failure (retry → param-tweak → substitute-skill → goal-replan
   → human-handoff).
 - `AnthropicToolUseClient` / `OpenAICompatibleToolUseClient` — concrete
-  `ToolUseClient` implementations; selected at activate-time via
-  `OPENRAL_REASONER_LLM_*` env vars (`PROVIDER` ∈ {`anthropic`,
-  `openai-compatible`, `openrouter`}). No hidden default.
+  `ToolUseClient` implementations; selected at activate-time from the curated
+  `openral_core.REASONER_MODELS` registry via `OPENRAL_REASONER_MODEL`.
+  `OPENRAL_REASONER_ENDPOINT` overrides where the model runs. No hidden default.
 - `ToolPalette` / `build_tool_palette` — generated from the local skill
   registry, rebuilt on `/openral/skill_registry_changed`.
 - `MemoryStore`, `MissionState`, `evaluate_task_verdict` — self-maintained

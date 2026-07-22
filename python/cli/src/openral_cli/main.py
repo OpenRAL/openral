@@ -678,37 +678,185 @@ def _probe_tcp(host: str, port: int, *, timeout_s: float = 0.2) -> bool:
     return False
 
 
-def _check_reasoner_llm() -> list[CheckResult]:
-    """Return rows describing the reasoner LLM env configuration.
+def _resolve_reasoner_endpoint(entry: object, override: str) -> str:
+    """Resolve a curated model's effective endpoint for the doctor row.
 
-    Always emits a leading ``Reasoner LLM`` summary row. When the
-    provider is set but the rest of the config is incomplete, follow-up
-    rows name each missing variable so the user can read the table
-    top-to-bottom and see exactly what to export.
-
-    When the resolved endpoint is loopback (Ollama / local vLLM /
-    llama-server), an additional probe row (labelled ``vLLM`` for
-    ``provider=vllm``, else ``Ollama``) TCP-probes the port so a user
-    trying the local baseline gets an immediate diagnosis if the daemon
-    isn't running.
-
-    The API key value is never printed — only ``set`` / ``unset``.
+    ``managed`` → the managed loopback (``:8901``, mirroring the Cosmos
+    sidecar default so doctor never imports the reasoner package); a set
+    ``default_endpoint`` verbatim; ``None`` → the Anthropic API default.
+    An explicit ``override`` always wins.
     """
-    rows: list[CheckResult] = []
-    provider_raw = os.environ.get("OPENRAL_REASONER_LLM_PROVIDER", "").strip()
-    provider = provider_raw.lower()
+    from openral_core import REASONER_MANAGED_ENDPOINT  # local import: flat doctor graph
 
-    if not provider:
+    if override:
+        return override
+    default = getattr(entry, "default_endpoint", None)
+    if default == REASONER_MANAGED_ENDPOINT:
+        return "http://127.0.0.1:8901/v1"
+    if default:
+        return str(default)
+    return "https://api.anthropic.com"
+
+
+def _reasoner_endpoint_probe_row(
+    label: str, base_url: str, *, managed: bool, autostart: bool
+) -> CheckResult:
+    """One loopback probe row, generic over hosting (ADR-0088).
+
+    A down endpoint is `info` only for a managed model with autostart on (the
+    client spawns the server on the first tick); a down managed endpoint with
+    autostart disabled, or any down BYO/local endpoint, is a real `warn`.
+    """
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (8901 if managed else 8000)
+    if _probe_tcp(host, port):
+        return CheckResult(label, "ok", f"endpoint reachable at {host}:{port}")
+    if managed and autostart:
+        return CheckResult(
+            label,
+            "info",
+            f"endpoint unreachable at {host}:{port} — auto-starts on the first "
+            "reasoner tick (managed vLLM sidecar); pre-warm with "
+            "`python tools/cosmos3_reasoner_sidecar.py`.",
+        )
+    if managed:
+        return CheckResult(
+            label,
+            "warn",
+            f"endpoint unreachable at {host}:{port} — OPENRAL_COSMOS3_AUTOSTART is "
+            "disabled; start your server (`python tools/cosmos3_reasoner_sidecar.py` "
+            "or your own vLLM / NIM).",
+        )
+    return CheckResult(
+        label,
+        "warn",
+        f"endpoint unreachable at {host}:{port} — start your local reasoner server.",
+    )
+
+
+def _check_reasoner_model(model_key: str) -> list[CheckResult]:
+    """Model-first reasoner rows (ADR-0088).
+
+    Resolve the registry entry and check each real precondition (curated? auth?
+    endpoint reachable / managed?).
+    """
+    from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
+
+    curated = sorted(REASONER_MODELS)
+    entry = REASONER_MODELS.get(model_key)
+    endpoint_override = os.environ.get("OPENRAL_REASONER_ENDPOINT", "").strip()
+    api_key = os.environ.get("OPENRAL_REASONER_API_KEY", "").strip()
+    key_status = "set" if api_key else "unset"
+
+    if entry is None:
+        dialect = os.environ.get("OPENRAL_REASONER_DIALECT", "").strip().lower()
+        if not endpoint_override or dialect not in {"anthropic", "openai"}:
+            return [
+                CheckResult(
+                    "Reasoner LLM",
+                    "fail",
+                    f"OPENRAL_REASONER_MODEL={model_key!r} is not a curated model "
+                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT (a URL) "
+                    "and OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
+                    "uncurated endpoint.",
+                )
+            ]
+        hatch_rows = [
+            CheckResult(
+                "Reasoner LLM",
+                "warn",
+                f"model={model_key} (uncurated) dialect={dialect} "
+                f"endpoint={endpoint_override} api_key={key_status} — untested for "
+                "robotics tool calling.",
+            )
+        ]
+        if _is_local_base_url(endpoint_override):
+            hatch_rows.append(
+                _reasoner_endpoint_probe_row(
+                    "Reasoner endpoint", endpoint_override, managed=False, autostart=False
+                )
+            )
+        return hatch_rows
+
+    endpoint = _resolve_reasoner_endpoint(entry, endpoint_override)
+    # OpenAI-compatible endpoint overrides may be unauthenticated (local vLLM,
+    # proxy-owned auth). Anthropic's SDK path still requires a key.
+    auth_required = bool(entry.auth_required) and not (
+        endpoint_override and entry.dialect == "openai"
+    )
+    summary = (
+        f"model={model_key} dialect={entry.dialect} hosting={entry.hosting} "
+        f"endpoint={endpoint} api_key={key_status}"
+    )
+    rows: list[CheckResult] = []
+    incomplete: list[CheckResult] = []
+    if auth_required and not api_key:
+        incomplete.append(
+            CheckResult(
+                "Reasoner API_KEY",
+                "missing",
+                f"OPENRAL_REASONER_API_KEY unset — required for model {model_key!r}.",
+            )
+        )
+    rows.append(CheckResult("Reasoner LLM", "warn" if incomplete else "ok", summary))
+    rows.extend(incomplete)
+
+    if _is_local_base_url(endpoint):
+        managed = entry.hosting == "managed_local"
+        autostart = _cosmos_autostart_enabled() if managed else False
+        label = "Cosmos 3" if managed else "Reasoner endpoint"
         rows.append(
+            _reasoner_endpoint_probe_row(label, endpoint, managed=managed, autostart=autostart)
+        )
+    return rows
+
+
+def _check_reasoner_llm() -> list[CheckResult]:
+    """Reasoner LLM doctor rows, model-first (ADR-0088).
+
+    Reads ``OPENRAL_REASONER_MODEL`` and resolves the curated registry entry;
+    the legacy ``OPENRAL_REASONER_LLM_PROVIDER`` contract still works this
+    release, flagged with a deprecation row. The API key value is never printed
+    — only ``set`` / ``unset``.
+    """
+    from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
+
+    model_key = os.environ.get("OPENRAL_REASONER_MODEL", "").strip()
+    legacy_provider = os.environ.get("OPENRAL_REASONER_LLM_PROVIDER", "").strip()
+    curated = ", ".join(sorted(REASONER_MODELS))
+    if not model_key:
+        if legacy_provider:
+            rows = [
+                CheckResult(
+                    "Reasoner env",
+                    "warn",
+                    "OPENRAL_REASONER_LLM_PROVIDER is deprecated (ADR-0088) — migrate to "
+                    f"OPENRAL_REASONER_MODEL ({curated}).",
+                )
+            ]
+            rows.extend(_check_reasoner_llm_legacy(legacy_provider))
+            return rows
+        return [
             CheckResult(
                 "Reasoner LLM",
                 "absent",
-                "OPENRAL_REASONER_LLM_PROVIDER unset — see "
-                "packages/openral_reasoner_ros/README.md for the three baseline configs "
-                "(anthropic / openrouter / openai-compatible).",
+                f"OPENRAL_REASONER_MODEL unset — set a curated model ({curated}); "
+                "see packages/openral_reasoner_ros/README.md.",
             )
-        )
-        return rows
+        ]
+    return _check_reasoner_model(model_key)
+
+
+def _check_reasoner_llm_legacy(provider_raw: str) -> list[CheckResult]:
+    """Deprecated provider-first doctor path (ADR-0088 shim).
+
+    Preserved so the legacy ``OPENRAL_REASONER_LLM_*`` contract keeps
+    diagnosing correctly for one release; :func:`_check_reasoner_llm` prepends a
+    deprecation row before delegating here.
+    """
+    rows: list[CheckResult] = []
+    provider = provider_raw.lower()
 
     if provider not in _REASONER_PROVIDER_DEFAULT_BASE_URL:
         rows.append(

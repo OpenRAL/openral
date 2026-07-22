@@ -35,10 +35,17 @@ from openral_reasoner.palette import ToolPalette, build_tool_palette
 from openral_reasoner.tool_use import build_tool_use_client_from_env
 
 _ENV_VARS = (
+    "OPENRAL_REASONER_MODEL",
+    "OPENRAL_REASONER_ENDPOINT",
+    "OPENRAL_REASONER_API_KEY",
+    "OPENRAL_REASONER_DIALECT",
+    "OPENRAL_REASONER_MAX_TOKENS",
+    "OPENRAL_REASONER_TIMEOUT_S",
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
     "OPENRAL_REASONER_LLM_API_KEY",
     "OPENRAL_REASONER_LLM_BASE_URL",
+    "OPENRAL_REASONER_LLM_MAX_TOKENS",
     "OPENRAL_REASONER_LLM_TIMEOUT_S",
     "OPENRAL_COSMOS3_AUTOSTART",
     "OPENRAL_COSMOS3_BOOT_TIMEOUT_S",
@@ -189,7 +196,7 @@ def test_autostart_off_and_endpoint_down_raises(monkeypatch: pytest.MonkeyPatch)
         client.select_tool(context_text="go", palette=_empty_palette())
     msg = str(excinfo.value)
     assert "cosmos3_reasoner_sidecar" in msg
-    assert "OPENRAL_REASONER_LLM_BASE_URL" in msg
+    assert "OPENRAL_REASONER_ENDPOINT" in msg
 
 
 def test_endpoint_up_short_circuits_spawn(monkeypatch: pytest.MonkeyPatch) -> None:

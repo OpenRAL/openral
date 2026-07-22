@@ -266,10 +266,19 @@ def test_check_just_missing() -> None:
 
 
 _REASONER_ENV = (
+    "OPENRAL_REASONER_MODEL",
+    "OPENRAL_REASONER_ENDPOINT",
+    "OPENRAL_REASONER_API_KEY",
+    "OPENRAL_REASONER_DIALECT",
+    "OPENRAL_REASONER_MAX_TOKENS",
+    "OPENRAL_REASONER_TIMEOUT_S",
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
     "OPENRAL_REASONER_LLM_API_KEY",
     "OPENRAL_REASONER_LLM_BASE_URL",
+    "OPENRAL_REASONER_LLM_MAX_TOKENS",
+    "OPENRAL_REASONER_LLM_TIMEOUT_S",
+    "OPENRAL_COSMOS3_AUTOSTART",
 )
 
 
@@ -284,7 +293,7 @@ def test_check_reasoner_llm_absent(_clear_reasoner_env: None) -> None:
     assert len(rows) == 1
     assert rows[0].check == "Reasoner LLM"
     assert rows[0].status == "absent"
-    assert "OPENRAL_REASONER_LLM_PROVIDER" in rows[0].details
+    assert "OPENRAL_REASONER_MODEL" in rows[0].details
     assert "packages/openral_reasoner_ros/README.md" in rows[0].details
 
 
@@ -293,10 +302,59 @@ def test_check_reasoner_llm_unknown_provider(
 ) -> None:
     monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "groq-cloud")
     rows = _check_reasoner_llm()
-    assert len(rows) == 1
+    assert len(rows) == 2
+    assert rows[0].check == "Reasoner env"
+    assert rows[0].status == "warn"
+    assert "deprecated" in rows[0].details
+    assert rows[1].status == "fail"
+    assert "groq-cloud" in rows[1].details
+    assert "anthropic" in rows[1].details
+
+
+def test_check_reasoner_curated_model_missing_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    assert "model=gpt-5.5" in summary.details
+    assert "hosting=cloud" in summary.details
+    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
+    assert key_row.status == "missing"
+    assert "OPENRAL_REASONER_API_KEY" in key_row.details
+
+
+def test_check_reasoner_anthropic_override_still_needs_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "https://anthropic-proxy.internal")
+    rows = _check_reasoner_llm()
+    assert next(r for r in rows if r.check == "Reasoner LLM").status == "warn"
+    assert next(r for r in rows if r.check == "Reasoner API_KEY").status == "missing"
+
+
+def test_check_reasoner_curated_cosmos_managed(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "ok"
+    assert "hosting=managed_local" in summary.details
+    assert "127.0.0.1:8901/v1" in summary.details
+    assert any(r.check == "Cosmos 3" for r in rows)
+
+
+def test_check_reasoner_uncurated_model_needs_escape_hatch(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    rows = _check_reasoner_llm()
     assert rows[0].status == "fail"
-    assert "groq-cloud" in rows[0].details
-    assert "anthropic" in rows[0].details
+    assert "OPENRAL_REASONER_ENDPOINT" in rows[0].details
+    assert "OPENRAL_REASONER_DIALECT" in rows[0].details
 
 
 def test_check_reasoner_llm_anthropic_ok_redacts_key(
