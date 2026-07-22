@@ -547,15 +547,11 @@ class TestG1VlnContract:
         assert "mobile_base" in G1_DESCRIPTION.capabilities.embodiment_tags
 
     def test_head_camera_sensor_declared(self) -> None:
-        # Named `camera1` (not `head`): the deploy runner keys observation
-        # images by the vla_feature_key slot suffix, while the policy
-        # adapter's fallback picks the first *sensor name* — the two only
-        # agree when the name equals the slot.
-        heads = [s for s in G1_DESCRIPTION.sensors if s.name == "camera1"]
+        heads = [s for s in G1_DESCRIPTION.sensors if s.name == "head"]
         assert len(heads) == 1
         head = heads[0]
         assert head.modality == "rgb"
-        assert head.vla_feature_key == "observation.images.camera1"
+        assert head.vla_feature_key == "observation.images.head"
         assert head.sim_placement is not None
         assert head.sim_placement.parent_body == "torso_link"
         assert head.intrinsics is not None
@@ -631,6 +627,6 @@ class TestBodyTwistGlide:
 class TestHeadCamera:
     def test_read_images_renders_head(self, connected_hal: G1MujocoHAL) -> None:
         frames = connected_hal.read_images()
-        assert "camera1" in frames
-        img = frames["camera1"]
+        assert "head" in frames
+        img = frames["head"]
         assert getattr(img, "shape", None) == (480, 640, 3)

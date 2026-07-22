@@ -402,13 +402,10 @@ end_effectors: []
 
 # Forward egocentric head camera (ADR-0087).  The menagerie MJCF ships no
 # <camera>, so the generic HAL camera rig splices this onto `torso_link` at
-# head height, looking forward.  `vla_feature_key` matches the InternVLA-N1
-# VLN rSkill's `sensors_required` (observation.images.camera1).  Named
-# `camera1` (its slot) rather than `head` because the deploy runner keys
-# observation images by the vla_feature_key slot suffix while the policy
-# adapter's fallback picks the first sensor NAME — they must agree.
+# head height, looking forward. `vla_feature_key` matches the InternVLA-N1
+# VLN rSkill's `sensors_required` (`observation.images.head`).
 sensors:
-  - name: "camera1"
+  - name: "head"
     modality: "rgb"
     frame_id: "head_camera"
     parent_frame: "torso_link"
@@ -421,7 +418,7 @@ sensors:
       cx: 320.0
       cy: 240.0
     encoding: "rgb8"
-    vla_feature_key: "observation.images.camera1"
+    vla_feature_key: "observation.images.head"
     sim_placement:
       parent_body: "torso_link"
       pos: [0.06, 0.0, 0.40]

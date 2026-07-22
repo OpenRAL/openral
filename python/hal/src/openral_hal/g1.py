@@ -316,16 +316,12 @@ G1_DESCRIPTION = RobotDescription(
     # Forward egocentric head camera (ADR-0087).  The menagerie MJCF ships
     # no <camera>, so the generic HAL camera rig splices this onto
     # ``torso_link`` at head height (~1.2 m world when standing), looking
-    # forward with a slight downward pitch.  ``vla_feature_key`` matches the
+    # forward with a slight downward pitch. ``vla_feature_key`` matches the
     # InternVLA-N1 VLN rSkill's ``sensors_required`` so the skill loader
     # auto-wires it as the policy's egocentric view.
-    # NOTE the sensor is *named* `camera1` (its slot), not `head`: the deploy
-    # runner keys observation images by the vla_feature_key slot suffix while
-    # the policy adapter's fallback picks the first sensor name — they only
-    # agree when name == slot. `frame_id` keeps the physical identity.
     sensors=[
         SensorSpec(
-            name="camera1",
+            name="head",
             modality=SensorModality.RGB,
             frame_id="head_camera",
             parent_frame="torso_link",
@@ -334,7 +330,7 @@ G1_DESCRIPTION = RobotDescription(
                 width=640, height=480, fx=343.0, fy=343.0, cx=320.0, cy=240.0
             ),
             encoding="rgb8",
-            vla_feature_key="observation.images.camera1",
+            vla_feature_key="observation.images.head",
             sim_placement=CameraSimPlacement(
                 parent_body="torso_link",
                 pos=(0.06, 0.0, 0.40),

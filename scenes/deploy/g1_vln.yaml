@@ -1,7 +1,7 @@
 # Unitree G1 humanoid VLN bench — deploy playground (bare MuJoCo digital twin).
 #
 # Boots the manifest-driven G1 twin (ADR-0087 kinematic-glide base): the
-# generic camera rig splices the manifest's forward `camera1` camera + a
+# generic camera rig splices the manifest's forward `head` camera + a
 # visual-only staging floor into the menagerie MJCF, and BODY_TWIST nav
 # skills glide the pinned floating base. Pair with the InternVLA-N1 VLN
 # rSkill for closed-loop language-driven navigation:
