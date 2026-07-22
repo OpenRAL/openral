@@ -697,6 +697,18 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
     assert "sim_robot_yaml" not in invocation.hal_params
 
 
+def test_g1_vln_scene_enables_walking_controller() -> None:
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "g1_vln.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.robot_id == "g1"
+    assert invocation.hal_params["walking_enabled"] is True
+
+
 def test_bh_deploy_sim_robot_yaml_override_wins() -> None:
     """An explicit `--hal robot_yaml=…` overrides the injected manifest default."""
     invocation = resolve_launch_invocation(

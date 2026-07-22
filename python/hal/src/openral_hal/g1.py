@@ -9,25 +9,21 @@ humanoid.
 
 What this is — and what it isn't
 --------------------------------
-This HAL is a **digital-twin contract validator**, not a useful
-humanoid sim. The G1 has a floating base and no S0 cerebellar
-controller; left to its own devices it falls over under gravity and
-the closed-loop convergence tests therefore run with
-``gravity_enabled=False``. The point of the suite is the same as for
-the SO-100 / ALOHA twins (CLAUDE.md §1.11):
+The default HAL remains a **digital-twin contract validator** with the
+ADR-0087 kinematic glide. ``walking_enabled=True`` selects ADR-0089's
+pinned MuJoCo Playground ONNX controller and its matching dynamics for
+gravity-on sim walking. The production C++ S0 controller remains future
+work; the Python policy is simulation-only. The suite validates:
 
 * the 29-DoF joint-position action layout,
 * the lifecycle wiring (``connect → read_state → send_action → estop``),
 * the joint indexing,
 * the ``RobotDescription`` round-trip,
-* and the embodiment / VLA tag plumbing
+* the embodiment / VLA tag plumbing,
+* and the optional BODY_TWIST-to-walking controller path
 
-all behave the same way the future ``G1RealHAL`` will see when the
-physical robot is plugged in. Balance, walking, and any actually
-useful humanoid control still live in CLAUDE.md §6.2 territory — the
-C++ S0 cerebellum tracked under the M2 milestone — and are explicitly
-out of scope here. See `docs/architecture/repo-state-map.html` for
-the "HAL · Unitree G1 (real-HW)" planned block.
+The walking controller must never be reused by a real HAL. See
+`docs/architecture/repo-state-map.html` for the planned production S0 block.
 
 Joint inventory
 ---------------
@@ -88,6 +84,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
+from openral_hal._g1_walking import G1WalkingController, ensure_g1_walking_assets
 from openral_hal._mujoco_arm import MujocoArmHAL
 
 # Twist components a kinematic-glide base does not actuate (linear-z,
@@ -345,9 +342,8 @@ G1_DESCRIPTION = RobotDescription(
         has_force_control=True,
         has_vision=True,  # head camera above (rigged into the sim MJCF)
         bimanual=True,
-        # BODY_TWIST rides the ADR-0087 kinematic-glide base (sim-only,
-        # like the JOINT_POSITION twin itself); a real gait is the M2 S0
-        # cerebellum.
+        # BODY_TWIST uses ADR-0087's kinematic glide by default and ADR-0089's
+        # pinned walking controller when the deploy scene opts in.
         supported_control_modes=[ControlMode.JOINT_POSITION, ControlMode.BODY_TWIST],
         supported_vla_embodiments=["g1", "humanoid_everyday_g1"],
         # `mobile_base` is the canonical class tag BODY_TWIST nav skills
@@ -400,12 +396,9 @@ class G1MujocoHAL(MujocoArmHAL):
 
     .. warning::
 
-       This HAL does **not** provide balance.  Without an S0
-       cerebellar controller (CLAUDE.md §6.2, M2 milestone) the robot
-       will fall over under gravity.  The closed-loop convergence
-       tests run with ``gravity_enabled=False`` for that reason.  Use
-       this HAL to validate the action contract / joint indexing /
-       lifecycle, **not** to roll out a humanoid policy.
+       The default mode does **not** provide balance; it uses ADR-0087's
+       upright kinematic pin. ``walking_enabled=True`` is a sim-only learned
+       controller, not the production C++ S0 controller required for hardware.
 
     Args:
         mjcf_path: Optional override for the MJCF file path.  When
@@ -438,6 +431,7 @@ class G1MujocoHAL(MujocoArmHAL):
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
         body_twist_dt_s: float = 0.05,
+        walking_enabled: bool = False,
     ) -> None:
         """Initialise the G1 HAL; no MuJoCo state is created until ``connect()``.
 
@@ -452,7 +446,18 @@ class G1MujocoHAL(MujocoArmHAL):
             body_twist_dt_s: Logical control timestep one BODY_TWIST
                 action integrates the glide base by (matches
                 ``SimAttachedHAL`` / ``PandaMobileHAL``).
+            walking_enabled: Use the pinned MuJoCo Playground ONNX walking
+                controller instead of the kinematic glide.
         """
+        walking_policy_path: str | None = None
+        if walking_enabled:
+            if not gravity_enabled:
+                raise ROSConfigError("G1 walking requires gravity_enabled=True.")
+            if mjcf_path is not None:
+                raise ROSConfigError(
+                    "G1 walking uses its pinned policy-tuned MJCF; mjcf_path cannot override it."
+                )
+            mjcf_path, walking_policy_path = ensure_g1_walking_assets()
         self._init_from_description(
             G1_DESCRIPTION,
             mjcf_path=mjcf_path,
@@ -460,7 +465,11 @@ class G1MujocoHAL(MujocoArmHAL):
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
         )
+        if body_twist_dt_s <= 0.0:
+            raise ROSConfigError("G1MujocoHAL body_twist_dt_s must be > 0.")
         self._body_twist_dt_s = body_twist_dt_s
+        self._walking_policy_path = walking_policy_path
+        self._walking_controller: G1WalkingController | None = None
         # Kinematic-glide base pin (ADR-0087): ``(x, y, yaw, z0)`` world pose
         # the free joint is re-pinned to every physics step.  Captured lazily
         # from the MJCF default qpos on first use after connect.
@@ -473,7 +482,9 @@ class G1MujocoHAL(MujocoArmHAL):
 
     @property
     def base_pose(self) -> tuple[float, float, float]:
-        """Current glide-base ``(x, y, yaw)`` for tests / odom publishers."""
+        """Current base ``(x, y, yaw)`` for tests / odom publishers."""
+        if self._walking_controller is not None:
+            return self._current_base_pose()
         x, y, yaw, _z0 = self._pin()
         return (x, y, yaw)
 
@@ -486,6 +497,26 @@ class G1MujocoHAL(MujocoArmHAL):
         """Connect and re-arm the base pin (recaptured from the fresh qpos)."""
         super().connect()
         self._base_pin = None
+        if self._walking_policy_path is not None:
+            try:
+                import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+                assert self._model is not None and self._data is not None
+                keyframe_id = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_KEY, "knees_bent")
+                if keyframe_id < 0:
+                    raise ROSConfigError("G1 walking MJCF is missing the 'knees_bent' keyframe.")
+                mj.mj_resetDataKeyframe(self._model, self._data, keyframe_id)
+                mj.mj_forward(self._model, self._data)
+                self._walking_controller = G1WalkingController(self._walking_policy_path)
+                self._walking_controller.initialize(self._data)
+            except ROSConfigError:
+                super().disconnect()
+                raise
+
+    def disconnect(self) -> None:
+        """Release the walking controller and MuJoCo model."""
+        self._walking_controller = None
+        super().disconnect()
 
     def send_action(self, action: Action) -> None:
         """Route BODY_TWIST to the glide base; everything else to the arm path.
@@ -509,6 +540,9 @@ class G1MujocoHAL(MujocoArmHAL):
         assert self._data is not None and self._model is not None
         vx, vy, _vz, _wx, _wy, wz = (float(v) for v in action.body_twist[0])  # type: ignore[index]  # reason: _validate_action guarantees body_twist
         self._last_body_twist = (vx, vy, 0.0, 0.0, 0.0, wz)
+        if self._walking_controller is not None:
+            self._walk((vx, vy, wz))
+            return
         x, y, yaw, z0 = self._pin()
         cy, sy = math.cos(yaw), math.sin(yaw)
         x += (cy * vx - sy * vy) * self._body_twist_dt_s
@@ -532,8 +566,21 @@ class G1MujocoHAL(MujocoArmHAL):
     def idle_step(self) -> bool:
         """HOLD-step with the glide base pinned (it would free-fall otherwise)."""
         if self._connected and self._data is not None:
+            self._last_body_twist = (0.0,) * 6
+            if self._walking_controller is not None:
+                # ponytail: pin only while idle; replace with a zero-command
+                # standing policy when one is published and validated.
+                self._base_pin = None
+                self._walking_controller.reset_state()
             self._pin_base()
         return super().idle_step()
+
+    def reset_to_pose(self, pose: list[float]) -> None:
+        """Reset the joint pose and walking policy state."""
+        super().reset_to_pose(pose)
+        self._base_pin = None
+        if self._walking_controller is not None:
+            self._walking_controller.reset_state()
 
     def _validate_action(self, action: Action) -> None:
         if action.control_mode == ControlMode.BODY_TWIST.value:
@@ -575,6 +622,33 @@ class G1MujocoHAL(MujocoArmHAL):
                 float(self._data.qpos[2]),
             )
         return self._base_pin
+
+    def _current_base_pose(self) -> tuple[float, float, float]:
+        self._require_connected("base_pose")
+        assert self._data is not None
+        qw, qx, qy, qz = (float(self._data.qpos[i]) for i in range(3, 7))
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        return (float(self._data.qpos[0]), float(self._data.qpos[1]), yaw)
+
+    def _walk(self, command: tuple[float, float, float]) -> None:
+        import mujoco as mj  # noqa: PLC0415  # reason: optional sim-only dep
+
+        assert self._model is not None and self._data is not None
+        assert self._walking_controller is not None
+        steps = max(1, round(self._body_twist_dt_s / float(self._model.opt.timestep)))
+        self._base_pin = None
+        for _ in range(steps):
+            self._walking_controller.apply(self._model, self._data, command)
+            mj.mj_step(self._model, self._data)
+        self._last_state_time = time.monotonic()
+        self._last_action_ns = time.monotonic_ns()
+        log.debug(
+            "hal.send_action",
+            robot=self.description.name,
+            control_mode=ControlMode.BODY_TWIST.value,
+            body_twist=self._last_body_twist,
+            walking=True,
+        )
 
     def _pin_base(self) -> None:
         """Write the pinned upright pose into the free joint and zero its velocity.

@@ -146,20 +146,22 @@ contributor should look at before adding similar code.
   fifth adapter ever needs the same shape, route it through
   `_policy_loading.load_manifest_for_spec`.
 - **Humanoid contract validators vs useful humanoid sims** —
-  `G1MujocoHAL` and `H1MujocoHAL` are contract validators only.
-  Both robots' floating bases fall without an S0 cerebellar balance
-  controller (CLAUDE.md §6.2); H1's closed-loop sim tests run with
-  `gravity_enabled=False`, and G1's joint-convergence tests do too.
+  `H1MujocoHAL` and G1's default joint-position path are contract validators.
+  Both robots' floating bases fall without an S0 cerebellar balance controller
+  (CLAUDE.md §6.2); their joint-convergence tests run with
+  `gravity_enabled=False`.
   This is the same situation a future GR1 HAL twin (currently still
   deferred — see below) will be in until the C++ S0 cerebellum
   lands.  Do NOT promote these HALs to "useful humanoid sim" by
   bolting Python balance heuristics onto them — that path crosses
   the S0 layer boundary §6.1 reserves for C++.  The one sanctioned
-  exception is `G1MujocoHAL`'s ADR-0087 **kinematic-glide base**:
+  sanctioned G1 sim exceptions are ADR-0087's **kinematic-glide base**:
   the free joint is *pinned* upright each step and BODY_TWIST
   Euler-integrates the planar pose — a kinematic navigation
   stand-in with zero dynamics control, NOT a balance controller,
-  and explicitly the seam (`_pin_base`) the future S0 replaces.
+  and ADR-0089's exact upstream MuJoCo Playground ONNX policy + matching MJCF.
+  The latter is selected explicitly by `walking_enabled=True`, runs only in the
+  sim HAL, and is not a Python balance heuristic or a real-hardware S0.
   Note that `H1MujocoHAL`'s software PD position loop is **not** a
   balance controller — it's a per-joint Kp/Kd that converts the
   H1 menagerie's torque actuators into the position-target contract

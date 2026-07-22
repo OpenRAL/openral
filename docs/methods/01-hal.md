@@ -219,19 +219,25 @@ _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions`
 - module const `_OPENARM_V2_PINNED_SHA: str` (L47) — bump to track upstream v2 updates.
 
 ### `python/hal/src/openral_hal/g1.py`
-_MuJoCo digital twin for the Unitree G1 humanoid (Menagerie MJCF). Joint-position contract validator + ADR-0087 kinematic-glide mobile base: the floating-base free joint is pinned upright every physics step (so the gravity-on twin stands) and BODY_TWIST actions Euler-integrate the planar twist into the pinned pose — the sim-only navigation stand-in until the M2 C++ S0 cerebellum (CLAUDE.md §6.2)._
+_MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
 
-- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL driving `mujoco_menagerie/unitree_g1/g1.xml` via `MujocoArmHAL` with an explicit `joint_qvel_addr` mapping (the free joint occupies 7 qpos slots but only 6 qvel slots). Floating-base joint is implicit world state, not in `description.joints`. Manifest-driven wrapper; `__init__` forwards to `self._init_from_description(G1_DESCRIPTION, …)` and arms the glide-base state. (L392)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05)` (L433)
-  - `base_pose -> tuple[float, float, float]` (property) — current glide-base `(x, y, yaw)`; consumed by the lifecycle `ProprioFrame` odom snapshot + tests. (L475)
-  - `base_twist -> tuple[float, ...]` (property) — last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action (matches `PandaMobileHAL`). (L481)
-  - `send_action(action)` — routes `BODY_TWIST` to the glide base (planar Euler integration, one `body_twist_dt_s` per action) with the base pinned through the settle loop; every other mode defers to the arm path. Non-planar twist components raise `ROSConfigError`. (L490)
-  - `idle_step() -> bool` — HOLD-step with the base pinned (it would free-fall otherwise). (L532)
-  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — the upright pin: `qpos[0:7]` = glide pose (roll/pitch clamped to 0), `qvel[0:6]` = 0, captured lazily from the fresh qpos after connect. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L559)
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L221)
-- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L229)
-- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L279)
-- const `G1_DESCRIPTION = RobotDescription(...)` (L307) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"` + `hal.real=None` (sim-only until M2). Advertises `supported_control_modes=[joint_position, body_twist]`, `embodiment_tags` incl. `mobile_base`, and a forward `head` RGB camera (`vla_feature_key=observation.images.head`, rigged onto `torso_link` via the ADR-0086 camera rig) so BODY_TWIST nav skills (InternVLA-N1 VLN) match. All MuJoCo wiring (MJCF URI, floating-base joint offsets) lives in `G1_DESCRIPTION.sim`. Drift-guarded against `robots/g1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+- `class G1MujocoHAL(MujocoArmHAL)` — 29-DoF humanoid HAL. Default mode drives `mujoco_menagerie/unitree_g1/g1.xml`; walking mode swaps in the pinned policy-tuned MJCF + ONNX controller. Floating-base joint remains implicit world state. (L388)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5, body_twist_dt_s=0.05, walking_enabled=False)` (L426)
+  - `base_pose -> tuple[float, float, float]` (property) — current glide pin or live walking base pose. (L484)
+  - `base_twist -> tuple[float, ...]` (property) — last commanded 6-vec base twist (`base_link` frame), zeroed by any non-BODY_TWIST action (matches `PandaMobileHAL`). (L492)
+  - `send_action(action)` — routes `BODY_TWIST` to either the ADR-0087 glide or ADR-0089 walking controller; every other mode defers to the joint path. Non-planar twist components raise `ROSConfigError`. (L521)
+  - `idle_step() -> bool` — HOLD-step with the base pinned; walking state resets so a stale velocity command is never replayed. (L566)
+  - `_per_step_update(targets)` / `_pin_base()` / `_pin()` — the upright pin: `qpos[0:7]` = glide pose (roll/pitch clamped to 0), `qvel[0:6]` = 0, captured lazily from the fresh qpos after connect. Replacing the pin with a balance controller is the designed S0 upgrade seam. (L606)
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L218)
+- `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L226)
+- `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L276)
+- const `G1_DESCRIPTION = RobotDescription(...)` (L304) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"` + `hal.real=None` (sim-only until M2). Advertises `supported_control_modes=[joint_position, body_twist]`, `embodiment_tags` incl. `mobile_base`, and a forward `head` RGB camera (`vla_feature_key=observation.images.head`, rigged onto `torso_link` via the ADR-0086 camera rig) so BODY_TWIST nav skills (InternVLA-N1 VLN) match. All MuJoCo wiring (MJCF URI, floating-base joint offsets) lives in `G1_DESCRIPTION.sim`. Drift-guarded against `robots/g1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+
+### `python/hal/src/openral_hal/_g1_walking.py`
+_ADR-0089's private, sim-only walking implementation._
+
+- `ensure_g1_walking_assets() -> tuple[str, str]` — downloads four files from pinned MuJoCo Playground commit `43d180a`, verifies SHA-256, links the cached Menagerie meshes, flattens the included MJCF, and returns `(mjcf_path, policy_path)`.
+- `class G1WalkingController` — 50 Hz CPU ONNX inference over 500 Hz MuJoCo physics; builds the upstream 103-D observation, validates the 29-D finite output, scales/clips joint targets, and persists gait phase/action history.
 
 ### `python/hal/src/openral_hal/so100_mujoco.py`
 _MuJoCo digital twin for the SO-100 follower arm (Menagerie MJCF)._

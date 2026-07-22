@@ -982,6 +982,7 @@ if _ROS2_AVAILABLE:
             # precedence over `scene_defaults.composition`; "" = none.
             self.declare_parameter("scene_composition_json", "")
             self.declare_parameter("viewer_enabled", True)
+            self.declare_parameter("walking_enabled", False)
             self.declare_parameter("camera_publish_rate_hz", 10.0)
             self.declare_parameter("viewer_sync_rate_hz", 30.0)
             # scan_* envelope params deploy_sim injects for lidar robots; declare
@@ -1061,6 +1062,8 @@ if _ROS2_AVAILABLE:
                 _value = self.get_parameter(_transport_key).get_parameter_value().string_value
                 if _value:
                     transport[_transport_key] = _value
+            if self.get_parameter("walking_enabled").get_parameter_value().bool_value:
+                transport["walking_enabled"] = True
             return build_hal(
                 description,
                 mode=hal_mode,  # type: ignore[arg-type]  # reason: hal_mode is a ROS param string validated as sim|real by build_hal

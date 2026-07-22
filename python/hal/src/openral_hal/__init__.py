@@ -27,8 +27,8 @@ Public surface:
   driving the ``mujoco_menagerie`` MJCF with the same 6-DoF action layout
   as ``SO100FollowerHAL``.
 - ``G1MujocoHAL`` / ``G1_DESCRIPTION``: MuJoCo-backed digital twin for the
-  Unitree G1 humanoid (29-DoF, no S0 cerebellum — contract validator only;
-  the robot falls without gravity disabled).  Real-HW G1 HAL is planned
+  Unitree G1 humanoid (29-DoF; ADR-0087 glide by default, optional ADR-0089
+  pretrained walking controller in sim). Real-HW G1 HAL is planned
   under the M2 milestone (CLAUDE.md §6.2).
 - ``H1MujocoHAL`` / ``H1_DESCRIPTION``: MuJoCo-backed digital twin for the
   Unitree H1 humanoid (19-DoF — predecessor to the G1 with a simpler 5-DoF

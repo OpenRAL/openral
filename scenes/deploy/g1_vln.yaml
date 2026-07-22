@@ -1,9 +1,10 @@
 # Unitree G1 humanoid VLN bench — deploy playground (bare MuJoCo digital twin).
 #
-# Boots the manifest-driven G1 twin (ADR-0087 kinematic-glide base): the
+# Boots the manifest-driven G1 twin with ADR-0089's pinned MuJoCo Playground
+# walking controller (ADR-0087 kinematic glide remains the HAL default): the
 # generic camera rig splices the manifest's forward `head` camera + a
 # visual-only staging floor into the menagerie MJCF, and BODY_TWIST nav
-# skills glide the pinned floating base. Pair with the InternVLA-N1 VLN
+# skills drive a 50 Hz leg policy under gravity. Pair with the InternVLA-N1 VLN
 # rSkill for closed-loop language-driven navigation:
 #
 #   OPENRAL_ALLOW_NONCOMMERCIAL=1 OPENRAL_INTERNVLA_N1_DEPTH=none \
@@ -12,11 +13,17 @@
 #     "{rskill_id: 'OpenRAL/rskill-internvla_n1-mobile_base-vln-nf4', \
 #       prompt: 'walk forward', deadline_s: 120.0}"
 #
+# First launch downloads and SHA-256-verifies ~940 KB of pinned Apache-2.0
+# walking assets into $OPENRAL_CACHE_DIR (default ~/.cache/openral).
+#
 # Every perception/nav leg is off: the bare twin has no lidar/depth and the
 # InternVLA-N1 NF4 policy needs ~7 GB of an 8 GB card to itself.
 scene:
   id: g1_vln_bench
 robot_id: g1
+hal:
+  defaults:
+    walking_enabled: true
 runtime:
   enable_slam: false
   enable_nav2: false

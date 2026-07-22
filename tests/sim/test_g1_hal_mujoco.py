@@ -10,18 +10,18 @@ The point of this suite is the G1 "real hardware first day" contract
 (CLAUDE.md §1.11): if these tests pass, the 29-DoF joint-position
 action layout, lifecycle, and ``RobotDescription`` joint order are
 guaranteed to match what a future ``G1RealHAL`` over ``unitree_sdk2``
-will see when the physical robot arrives.  Balance + walking remain
-out of scope — they live in CLAUDE.md §6.2 (M2 C++ S0 cerebellum) and
-no Python HAL twin can validate them.
+will see when the physical robot arrives. ADR-0089 additionally exercises a
+sim-only pretrained walking controller; production hardware balance remains
+the M2 C++ S0 responsibility.
 
-Gravity is disabled in every test because without an S0 balance
-controller the floating-base humanoid falls over in <1 s; with
-gravity off the joints converge to their commanded targets and the
-contract assertions are deterministic.
+Gravity is disabled in the joint-convergence fixtures so those contract
+assertions stay deterministic. The dedicated walking and glide fixtures run
+with gravity enabled.
 """
 
 from __future__ import annotations
 
+import math
 import time
 
 import pytest
@@ -584,8 +584,6 @@ class TestBodyTwistGlide:
         assert yaw1 - yaw0 == pytest.approx(1.0 * 0.05, rel=1e-6)
 
     def test_twist_follows_heading(self, glide_hal: G1MujocoHAL) -> None:
-        import math
-
         # Rotate ~90° in place, then drive "forward" — motion must be +y world.
         for _ in range(32):  # 32 * 1.0 rad/s * 0.05 s ≈ 1.6 rad ≈ 92°
             glide_hal.send_action(_twist_action(wz=1.0))
@@ -622,6 +620,31 @@ class TestBodyTwistGlide:
         assert glide_hal.base_twist == pytest.approx((0.4, 0.0, 0.0, 0.0, 0.0, 0.2))
         glide_hal.send_action(_zero_action())
         assert glide_hal.base_twist == pytest.approx((0.0,) * 6)
+
+
+class TestBodyTwistWalking:
+    """Pinned MuJoCo Playground policy drives the gravity-on G1 through its legs."""
+
+    def test_walking_rejects_gravity_disabled(self) -> None:
+        with pytest.raises(ROSConfigError, match="gravity_enabled=True"):
+            G1MujocoHAL(walking_enabled=True, gravity_enabled=False)
+
+    def test_forward_command_walks_under_gravity(self) -> None:
+        try:
+            hal = G1MujocoHAL(walking_enabled=True, body_twist_dt_s=2.0)
+            hal.connect()
+        except ROSConfigError as exc:
+            pytest.skip(f"G1 walking assets unavailable: {exc}")
+        try:
+            x0, y0, _ = hal.base_pose
+            hal.send_action(_twist_action(vx=0.5))
+            x1, y1, _ = hal.base_pose
+            assert math.hypot(x1 - x0, y1 - y0) > 0.5
+            assert hal._data is not None
+            assert float(hal._data.qpos[2]) > 0.6
+            assert getattr(hal.read_images()["head"], "shape", None) == (480, 640, 3)
+        finally:
+            hal.disconnect()
 
 
 class TestHeadCamera:
