@@ -297,7 +297,7 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
     sources = {status.hardware_id for arr in observed["diag"] for status in arr.status}
     expected = {
         "openral_world_state:so100_follower",
-        "openral_skill_runner:so100_follower",
+        "openral_rskill_runner:so100_follower",
         "openral_safety:robot",
     }
     missing = expected - sources
@@ -596,5 +596,7 @@ def test_goal_accept_served_while_execute_runs() -> None:
 
         # Both goals must still terminate (goal-2 executes after goal-1's
         # rollout releases the serialization lock).
-        _await_result(handle1, executor)
-        _await_result(send2.result(), executor)
+        result1 = _await_result(handle1, executor)
+        result2 = _await_result(send2.result(), executor)
+        assert result1.result.success, result1.result.failure_reason
+        assert result2.result.success, result2.result.failure_reason
