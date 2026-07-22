@@ -1048,16 +1048,16 @@ def test_bh_deploy_sim_missing_robot_in_yaml_fails(tmp_path: Path) -> None:
 def test_bh_preflight_palette_deps_silent_when_no_capability_match(tmp_path: Path) -> None:
     """A repo with rskills/ but no capability-matching skills returns silently.
 
-    Uses ``g1`` from the in-tree registry (humanoid: 0 skills match in the
+    Uses ``h1`` from the in-tree registry (humanoid: 0 skills match in the
     current registry per ``build_tool_palette``). The preflight should
     not gate on capability misses — that's the reasoner's job to
     surface at on_configure.
     """
-    g1_yaml = _REPO_ROOT / "robots" / "g1" / "robot.yaml"
-    if not g1_yaml.is_file():
-        pytest.skip(f"missing fixture: {g1_yaml}")
+    h1_yaml = _REPO_ROOT / "robots" / "h1" / "robot.yaml"
+    if not h1_yaml.is_file():
+        pytest.skip(f"missing fixture: {h1_yaml}")
     # No raise / no exit — silent return.
-    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=g1_yaml)
+    _preflight_palette_deps(repo_root=_REPO_ROOT, robot_yaml=h1_yaml)
 
 
 def test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir(tmp_path: Path) -> None:
