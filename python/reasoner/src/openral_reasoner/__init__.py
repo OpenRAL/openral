@@ -26,7 +26,7 @@ from openral_reasoner.context import (
     PerceptionEventRecord,
     PromptRecord,
 )
-from openral_reasoner.core import ReasonerCore, ReasonerTickResult
+from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
 from openral_reasoner.cosmos3 import (
     COSMOS3_BASE_URL,
     DEFAULT_COSMOS3_MODEL,
@@ -93,6 +93,7 @@ __all__ = [
     "MissionState",
     "OpenAICompatibleToolUseClient",
     "PerceptionEventRecord",
+    "PreparedTick",
     "PromptRecord",
     "ReasonerCore",
     "ReasonerLadderState",
