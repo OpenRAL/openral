@@ -86,13 +86,19 @@ authority lives behind the F1 action server + the F5 safety boundary
 ## LLM provider
 
 The reasoner is wire-protocol agnostic — every provider satisfies the
-`ToolUseClient` Protocol. Two concrete clients ship in
-[`openral_reasoner.tool_use`](../../python/reasoner/src/openral_reasoner/tool_use.py):
+`ToolUseClient` Protocol. Three concrete clients ship in
+[`openral_reasoner`](../../python/reasoner/src/openral_reasoner/):
 
 - `AnthropicToolUseClient` — Anthropic SDK; `OPENRAL_REASONER_LLM_PROVIDER=anthropic`.
 - `OpenAICompatibleToolUseClient` — OpenAI SDK pointed at any
   OpenAI-protocol endpoint (cloud OpenAI, local vLLM, Ollama-OpenAI);
   `OPENRAL_REASONER_LLM_PROVIDER=openai-compatible`.
+- `Cosmos3ToolUseClient`
+  ([`openral_reasoner.cosmos3`](../../python/reasoner/src/openral_reasoner/cosmos3.py)) —
+  the NVIDIA Cosmos 3 reasoner tower (default: the 4B on-device **Edge**
+  tier) behind a **managed local vLLM server** with lazy autostart;
+  `OPENRAL_REASONER_LLM_PROVIDER=cosmos`. See
+  [Local physical-AI baseline](#local-physical-ai-baseline--nvidia-cosmos-3-edge).
 - `OPENRAL_REASONER_LLM_PROVIDER=openrouter` — convenience preset on
   top of `OpenAICompatibleToolUseClient` that pre-fills the OpenRouter
   base URL (`https://openrouter.ai/api/v1`) so users don't have to
@@ -122,6 +128,7 @@ default timeout to absorb a cold first call.
 | `xai` | `OpenAICompatibleToolUseClient` | `https://api.x.ai/v1` | required |
 | `deepseek` | `OpenAICompatibleToolUseClient` | `https://api.deepseek.com` | required |
 | `huggingface` | `OpenAICompatibleToolUseClient` | `https://router.huggingface.co/v1` | required³ |
+| `cosmos` | `Cosmos3ToolUseClient` | `http://127.0.0.1:8901/v1` | none⁴ |
 
 ³ `huggingface` targets the HF inference **router** (e.g. `OPENRAL_REASONER_LLM_MODEL=Qwen/Qwen3-8B`)
 with an HF access token. The router only honours `tool_choice="auto"` (it rejects
@@ -136,6 +143,17 @@ no auth); set `OPENRAL_REASONER_LLM_API_KEY` only if you started vLLM with
 `--api-key`, and `OPENRAL_REASONER_LLM_BASE_URL` for a remote host / non-8000
 port. A vLLM endpoint reachable only via a custom URL still works under bare
 `openai-compatible` — `vllm` just saves you typing the default.
+⁴ `cosmos` is the only provider with a default model
+(`nvidia/Cosmos3-Edge`; set `OPENRAL_REASONER_LLM_MODEL` for
+`nvidia/Cosmos3-Nano` / `nvidia/Cosmos3-Super`). When the endpoint is
+loopback and down, the client auto-starts a managed `vllm serve` via
+`tools/cosmos3_reasoner_sidecar.py` (disable with
+`OPENRAL_COSMOS3_AUTOSTART=0`; first-boot wait tunable via
+`OPENRAL_COSMOS3_BOOT_TIMEOUT_S`, default 1800 s — venv provisioning plus a
+~8 GB weight download). Point `OPENRAL_REASONER_LLM_BASE_URL` at a
+self-managed `vllm serve` or a Cosmos 3 Reasoner NIM container to skip the
+managed sidecar entirely (autostart also disengages for any non-loopback
+URL).
 
 ```bash
 # Gemini (Google AI Studio key)
@@ -275,6 +293,45 @@ uv add openai --package openral-reasoner      # one-time
 Run `openral doctor` after exporting the envs — the reasoner row reports
 exactly which variable is missing if any, and TCP-probes the Ollama
 endpoint when `BASE_URL` is loopback.
+
+### Local physical-AI baseline — NVIDIA Cosmos 3 Edge
+
+[Cosmos 3 Edge](../../docs/reference/cosmos3-edge-reasoner.md) (released
+2026-07-20) is the 4B on-device tier of NVIDIA's Cosmos 3 omnimodal
+world-model family, built for exactly this job: physical reasoning, task
+planning, and embodied decision making on Jetson Thor / RTX-class GPUs. Unlike
+the general-purpose LLM baselines above it is a *physical-AI-native* planner —
+trained on robotics/AV/warehouse data, with spatial grounding and
+physical-plausibility judgment — and its `describe_image` completion gate runs
+on the same local model (no separate cloud VLM). Weights are
+**OpenMDW-1.1** (commercial use OK). One env var is enough; the managed vLLM
+server auto-starts on the first tick (first boot downloads ~8 GB):
+
+```bash
+export OPENRAL_REASONER_LLM_PROVIDER=cosmos
+# optional: nvidia/Cosmos3-Nano (16B, workstation) / nvidia/Cosmos3-Super (64B)
+# export OPENRAL_REASONER_LLM_MODEL=nvidia/Cosmos3-Nano
+uv add openai --package openral-reasoner      # one-time (client SDK only)
+```
+
+Requires an NVIDIA GPU (Ampere+; BF16 is the only officially-tested
+precision; **≥12 GB recommended** — 8 GB is the tight floor, needs
+`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95`). Pre-warm the server outside the reasoner
+with `python tools/cosmos3_reasoner_sidecar.py`, or serve it yourself and set
+`OPENRAL_REASONER_LLM_BASE_URL`.
+
+> ⚠️ **Live status (2026-07-21): works end-to-end on vLLM `main`; blocked on
+> the pinned stable release.** On vLLM nightly (native Edge model from
+> [vllm#48291](https://github.com/vllm-project/vllm/pull/48291) + the one-line
+> weight-filter from open [vllm#49190](https://github.com/vllm-project/vllm/pull/49190))
+> a real reasoner tick returned a **validated typed tool call in ~1.5 s** and
+> `describe_image` answered correctly, live on an 8 GB 4070 (`--kv-cache-dtype
+> fp8` needed there). The sidecar's hash-locked stable vLLM (0.24.0) predates
+> the native model and still crashes on inference via the Transformers-fallback
+> `get_rope_index` bug — the lock is bumped the moment a vLLM release contains
+> #48291 + #49190. Full findings in the
+> [assessment page](../../docs/reference/cosmos3-edge-reasoner.md). **Use a
+> cloud/local baseline above as the working reasoner today.**
 
 ## Synopsis
 

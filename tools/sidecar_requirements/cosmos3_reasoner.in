@@ -1,0 +1,13 @@
+# Source requirements for the Cosmos 3 reasoner serving venv (Python 3.12).
+# vllm>=0.23.0 is the load-bearing floor: the first vLLM release line that
+# serves the Cosmos 3 reasoner tower (Nano/Super via upstream Qwen3-VL support;
+# the Edge tier's Nemotron-backbone reasoner via its dedicated integration).
+# vLLM brings its own pinned torch/CUDA stack — that is the whole reason this
+# venv is isolated from the lerobot-pinned openral runtime.
+# Pure-PyPI resolution (no --torch-backend): vLLM's torch dependency ships the
+# CUDA runtime in its PyPI wheels, so no PyTorch index redirect is needed.
+# Regenerate the lock with:
+#   uv pip compile tools/sidecar_requirements/cosmos3_reasoner.in \
+#     --universal --generate-hashes --python-version 3.12 \
+#     -o tools/sidecar_requirements/cosmos3_reasoner.lock
+vllm>=0.23.0

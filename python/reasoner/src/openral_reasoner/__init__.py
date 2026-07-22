@@ -27,6 +27,12 @@ from openral_reasoner.context import (
     PromptRecord,
 )
 from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
+from openral_reasoner.cosmos3 import (
+    COSMOS3_BASE_URL,
+    DEFAULT_COSMOS3_MODEL,
+    Cosmos3ToolUseClient,
+    find_cosmos3_sidecar_script,
+)
 from openral_reasoner.critic_watchdog import CriticWatchdog, CriticWatchdogGroup
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
@@ -70,12 +76,15 @@ from openral_reasoner.tool_use import (
 
 __all__ = [
     "CASCADE_PROMPT_SOURCES",
+    "COSMOS3_BASE_URL",
+    "DEFAULT_COSMOS3_MODEL",
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_SYSTEM_PROMPT",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
     "AnthropicToolUseClient",
     "ContextRenderer",
+    "Cosmos3ToolUseClient",
     "CriticWatchdog",
     "CriticWatchdogGroup",
     "FailureEventRecord",
@@ -101,6 +110,7 @@ __all__ = [
     "build_tool_palette",
     "build_tool_use_client_from_env",
     "evaluate_task_verdict",
+    "find_cosmos3_sidecar_script",
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",

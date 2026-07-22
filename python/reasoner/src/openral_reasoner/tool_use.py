@@ -603,10 +603,13 @@ _LOCAL_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
 }
 
 # All accepted PROVIDER values; surfaced in error messages and reused by
-# the ``openral doctor`` reasoner check so the two stay in sync.
+# the ``openral doctor`` reasoner check so the two stay in sync. ``cosmos``
+# (the NVIDIA Cosmos 3 reasoner tower with a managed local vLLM server) is
+# registered here but implemented in :mod:`openral_reasoner.cosmos3`.
 _KNOWN_PROVIDERS: frozenset[str] = frozenset(
     {
         "anthropic",
+        "cosmos",
         "openai-compatible",
         *_LOCAL_OPENAI_COMPATIBLE_PRESETS,
         *_OPENAI_COMPATIBLE_PRESETS,
@@ -621,9 +624,11 @@ def build_tool_use_client_from_env() -> ToolUseClient:
 
     * ``OPENRAL_REASONER_LLM_PROVIDER`` — one of ``anthropic`` /
       ``openai-compatible`` / ``openrouter`` / ``ollama`` / ``vllm`` /
-      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``. Required.
-    * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``cosmos``.
       Required.
+    * ``OPENRAL_REASONER_LLM_MODEL`` — provider-specific model id.
+      Required for every provider except ``cosmos``, which defaults to
+      ``nvidia/Cosmos3-Edge``.
     * ``OPENRAL_REASONER_LLM_API_KEY`` — provider API key. Required for
       ``anthropic`` and the auth-required cloud presets (``openrouter`` /
       ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface``); ignored by
@@ -639,7 +644,12 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       endpoint (:data:`OPENROUTER_BASE_URL`, :data:`GEMINI_BASE_URL`,
       :data:`XAI_BASE_URL`, :data:`DEEPSEEK_BASE_URL`,
       :data:`HUGGINGFACE_BASE_URL`). ``huggingface`` uses
-      ``tool_choice="auto"`` (its router rejects ``"required"``).
+      ``tool_choice="auto"`` (its router rejects ``"required"``). For
+      ``cosmos`` it defaults to the managed local endpoint
+      (``http://127.0.0.1:8901/v1``); ``OPENRAL_COSMOS3_AUTOSTART=0``
+      disables the managed ``vllm serve`` spawn and
+      ``OPENRAL_COSMOS3_BOOT_TIMEOUT_S`` bounds its first-boot wait
+      (see :mod:`openral_reasoner.cosmos3`).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -659,12 +669,14 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         msg = (
             "OPENRAL_REASONER_LLM_PROVIDER is unset; "
             "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
-            "'vllm' / 'gemini' / 'xai' / 'deepseek' / 'huggingface' to enable the reasoner. "
-            "The open-core path has no default — tests use FakeToolUseClient."
+            "'vllm' / 'gemini' / 'xai' / 'deepseek' / 'huggingface' / 'cosmos' to enable "
+            "the reasoner. The open-core path has no default — tests use FakeToolUseClient."
         )
         raise ROSConfigError(msg)
     model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
-    if not model:
+    if not model and provider != "cosmos":
+        # ``cosmos`` is the one provider with a canonical checkpoint
+        # (nvidia/Cosmos3-Edge) — everything else must name a model.
         raise ROSConfigError(
             "OPENRAL_REASONER_LLM_MODEL is unset; required to construct a ToolUseClient.",
         )
@@ -678,6 +690,10 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     # gets the same generous default as the local self-hosted presets.
     slow_first_call = provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS or provider == "huggingface"
     default_timeout_s = 60.0 if slow_first_call else 10.0
+    if provider == "cosmos":
+        # An on-device 4B VLM's first inference after server boot compiles
+        # kernels and runs well below steady-state speed; give it headroom.
+        default_timeout_s = 120.0
     timeout_s = float(timeout_env) if timeout_env else default_timeout_s
     # Optional completion-token cap (OpenAI-compatible providers only). Unset →
     # the endpoint default; set it to fit a low-balance metered key or to bound
@@ -699,6 +715,39 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             base_url=base_url,
             timeout_s=timeout_s,
             max_tokens=max_tokens,
+        )
+    if provider == "cosmos":
+        # NVIDIA Cosmos 3 reasoner tower (default checkpoint: the 4B Edge
+        # tier) behind an OpenAI-compatible endpoint, with a managed local
+        # `vllm serve` autostart. Implementation lives in cosmos3.py; the
+        # import is function-local because cosmos3 imports this module.
+        from openral_reasoner.cosmos3 import (  # noqa: PLC0415  # reason: avoid a module-level import cycle (cosmos3 subclasses OpenAICompatibleToolUseClient)
+            AUTOSTART_ENV,
+            BOOT_TIMEOUT_ENV,
+            COSMOS3_BASE_URL,
+            DEFAULT_BOOT_TIMEOUT_S,
+            DEFAULT_COSMOS3_MODEL,
+            Cosmos3ToolUseClient,
+        )
+
+        base_url = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or COSMOS3_BASE_URL
+        # Accept the common falsy spellings, not just "0" — an operator who
+        # writes AUTOSTART=false means "do not spawn a multi-GB server".
+        auto_start = os.environ.get(AUTOSTART_ENV, "").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        boot_env = os.environ.get(BOOT_TIMEOUT_ENV, "").strip()
+        return Cosmos3ToolUseClient(
+            model_id=model or DEFAULT_COSMOS3_MODEL,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+            auto_start=auto_start,
+            boot_timeout_s=float(boot_env) if boot_env else DEFAULT_BOOT_TIMEOUT_S,
         )
     if provider in _OPENAI_COMPATIBLE_PRESETS:
         # openrouter / gemini / xai / deepseek — thin auth-required presets

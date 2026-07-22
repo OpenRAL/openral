@@ -650,7 +650,19 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
     "xai": "https://api.x.ai/v1",
     "deepseek": "https://api.deepseek.com",
     "huggingface": "https://router.huggingface.co/v1",
+    "cosmos": "http://127.0.0.1:8901/v1",
 }
+
+
+def _cosmos_autostart_enabled() -> bool:
+    """Mirror the reasoner client's OPENRAL_COSMOS3_AUTOSTART parsing.
+
+    Kept local (like the base-URL table above) so `openral doctor` never
+    imports the optionally-installed reasoner package; accepts the same
+    falsy spellings the client does.
+    """
+    value = os.environ.get("OPENRAL_COSMOS3_AUTOSTART", "").strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 
 def _is_local_base_url(url: str) -> bool:
@@ -716,21 +728,33 @@ def _check_reasoner_llm() -> list[CheckResult]:
 
     key_required = provider in _REASONER_PROVIDERS_REQUIRING_KEY
     key_status = "set" if api_key else "unset"
+    # `cosmos` defaults the model (build_tool_use_client_from_env applies
+    # nvidia/Cosmos3-Edge); surface the *effective* id so an operator pointing
+    # BASE_URL at a self-managed endpoint can spot a served-name mismatch here
+    # instead of at tick time.
+    if not model and provider == "cosmos":
+        shown_model = "nvidia/Cosmos3-Edge (default)"
+    else:
+        shown_model = model or "<unset>"
     parts = [
         f"provider={provider}",
-        f"model={model or '<unset>'}",
+        f"model={shown_model}",
         f"api_key={key_status}",
         f"base_url={base_url}",
     ]
     summary = " ".join(parts)
 
     incomplete: list[CheckResult] = []
-    if not model:
+    # ``cosmos`` is the one provider with a canonical default checkpoint
+    # (nvidia/Cosmos3-Edge, applied by build_tool_use_client_from_env), so an
+    # unset MODEL is complete config there, not a gap.
+    if not model and provider != "cosmos":
         incomplete.append(
             CheckResult(
                 "Reasoner MODEL",
                 "missing",
-                "OPENRAL_REASONER_LLM_MODEL unset — required for every provider.",
+                "OPENRAL_REASONER_LLM_MODEL unset — required for every provider "
+                "except cosmos (defaults to nvidia/Cosmos3-Edge).",
             )
         )
     if key_required and not api_key:
@@ -750,39 +774,57 @@ def _check_reasoner_llm() -> list[CheckResult]:
 
     # Local-endpoint probe. Only meaningful when the resolved base_url is
     # loopback; we never reach out to a cloud endpoint from `openral doctor`.
-    # Label + remediation are provider-aware so a vLLM endpoint isn't
-    # mislabelled as Ollama. The default port matches the daemon's own:
-    # 8000 for vLLM, 11434 otherwise.
     if _is_local_base_url(base_url):
-        parsed = urlparse(base_url)
-        host = parsed.hostname or "localhost"
-        if provider == "vllm":
-            probe_label = "vLLM"
-            default_port = 8000
-            hint = "start the server with `vllm serve <model>`"
-        else:
-            probe_label = "Ollama"
-            default_port = 11434
-            hint = "run `just bootstrap-ollama` or `ollama serve`"
-        port = parsed.port or default_port
-        if _probe_tcp(host, port):
-            rows.append(
-                CheckResult(
-                    probe_label,
-                    "ok",
-                    f"endpoint reachable at {host}:{port}",
-                )
-            )
-        else:
-            rows.append(
-                CheckResult(
-                    probe_label,
-                    "warn",
-                    f"endpoint unreachable at {host}:{port} — {hint}.",
-                )
-            )
+        rows.append(_probe_local_reasoner_endpoint(provider, base_url))
 
     return rows
+
+
+def _probe_local_reasoner_endpoint(provider: str, base_url: str) -> CheckResult:
+    """TCP-probe a loopback reasoner endpoint into one provider-aware row.
+
+    Label + remediation are provider-aware so a vLLM endpoint isn't
+    mislabelled as Ollama; the default port matches each daemon's own
+    (8000 vLLM, 8901 cosmos sidecar, 11434 Ollama). For ``cosmos`` a down
+    endpoint is benign (``info``) ONLY while the managed autostart is
+    enabled — with ``OPENRAL_COSMOS3_AUTOSTART`` disabled it is a real
+    problem and keeps ``warn`` severity, with a hint that does not falsely
+    claim the server auto-starts.
+    """
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "localhost"
+    cosmos_autostart = False  # only meaningful for provider == "cosmos"
+    if provider == "vllm":
+        probe_label = "vLLM"
+        default_port = 8000
+        hint = "start the server with `vllm serve <model>`"
+    elif provider == "cosmos":
+        probe_label = "Cosmos 3"
+        default_port = 8901
+        cosmos_autostart = _cosmos_autostart_enabled()
+        if cosmos_autostart:
+            hint = (
+                "auto-starts on the first reasoner tick (managed vLLM sidecar); "
+                "pre-warm with `python tools/cosmos3_reasoner_sidecar.py`"
+            )
+        else:
+            hint = (
+                "OPENRAL_COSMOS3_AUTOSTART is disabled — start your server "
+                "(`python tools/cosmos3_reasoner_sidecar.py` or your own vLLM / NIM)"
+            )
+    else:
+        probe_label = "Ollama"
+        default_port = 11434
+        hint = "run `just bootstrap-ollama` or `ollama serve`"
+    port = parsed.port or default_port
+    if _probe_tcp(host, port):
+        return CheckResult(probe_label, "ok", f"endpoint reachable at {host}:{port}")
+    benign = provider == "cosmos" and cosmos_autostart
+    return CheckResult(
+        probe_label,
+        "info" if benign else "warn",
+        f"endpoint unreachable at {host}:{port} — {hint}.",
+    )
 
 
 def _gather_checks() -> list[CheckResult]:
