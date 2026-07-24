@@ -93,7 +93,7 @@ def test_behavior_websocket_protocol_round_trip() -> None:
                 "robot_r1::proprio": np.zeros(61, dtype=np.float32),
             }
             for key in _CAMERAS:
-                observation[key] = np.zeros((8, 8, 3), dtype=np.uint8)
+                observation[key] = np.zeros((8, 8, 4), dtype=np.uint8)
             websocket.send_bytes(_pack(observation))
 
             reply = _unpack(websocket.receive_bytes())

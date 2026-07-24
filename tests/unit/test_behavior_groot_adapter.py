@@ -25,6 +25,8 @@ def test_behavior_groot_rskill_manifest_loads() -> None:
     assert manifest.action_contract is not None
     assert manifest.action_contract.dim == 23
     assert manifest.policy_extras["implementation"] == "behavior_b1k_sidecar"
+    assert manifest.policy_extras["quantization"] == "nf4"
+    assert manifest.policy_extras["nf4_min_params"] == 1_000_000
 
 
 def test_behavior_wire_observation_preserves_official_payload() -> None:

@@ -213,6 +213,8 @@ def build_behavior_groot_policy(
     task = str(extra.get("task", "turning_on_radio"))
     instruction = str(extra.get("instruction", task.replace("_", " ")))
     control_mode = str(extra.get("control_mode", "temporal_ensemble"))
+    quantization = str(extra.get("quantization", "nf4"))
+    nf4_min_params = _opt_int(extra.get("nf4_min_params"), 4_000_000)
     host = os.environ.get(_HOST_ENV, str(extra.get("host", _DEFAULT_HOST)))
     checkpoint = _checkpoint_path(manifest)
     default_port = _policy_default_port(task, str(checkpoint))
@@ -243,6 +245,10 @@ def build_behavior_groot_policy(
             control_mode,
             "--device",
             device,
+            "--quantization",
+            quantization,
+            "--nf4-min-params",
+            str(nf4_min_params),
             "--host",
             host,
             "--port",

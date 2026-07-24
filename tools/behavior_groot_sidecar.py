@@ -39,6 +39,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="temporal_ensemble",
     )
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--quantization", choices=("none", "nf4"), default="nf4")
+    parser.add_argument("--nf4-min-params", type=int, default=4_000_000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
     return parser.parse_args(argv)
@@ -162,12 +164,20 @@ class _BehaviorGrootPolicy:
         Gr00tPolicy = policy_module.Gr00tPolicy
 
         modality = _register_r1pro_modality()
+        load_device = "cpu" if args.quantization == "nf4" else args.device
         policy = Gr00tPolicy(
             embodiment_tag=EmbodimentTag.NEW_EMBODIMENT,
             model_path=args.checkpoint,
-            device=args.device,
+            device=load_device,
             strict=True,
         )
+        _drop_backbone_lm_head(policy.model)
+        if args.quantization == "nf4":
+            _quantize_nf4(
+                policy.model,
+                device=args.device,
+                min_params=args.nf4_min_params,
+            )
         self._policy = B1KPolicyWrapper(
             policy=policy,
             embodiment_tag=EmbodimentTag.NEW_EMBODIMENT,
@@ -185,6 +195,62 @@ class _BehaviorGrootPolicy:
             self._policy.text_prompt = instruction
         action = self._policy.act(observation)
         return np.asarray(action.detach().cpu().numpy(), dtype=np.float32).reshape(-1)
+
+
+def _drop_backbone_lm_head(model: Any) -> None:
+    """Replace the Qwen3-VL lm_head with Identity.
+
+    The B1K backbone consumes only ``hidden_states[-1]``; the full-vocab logits
+    projection (151k x seq) is dead weight and its output was the single largest
+    inference allocation (~594 MiB) on 8 GB hosts.
+    """
+    torch = importlib.import_module("torch")
+    for module in model.modules():
+        if hasattr(module, "lm_head") and hasattr(module, "language_model"):
+            module.lm_head = torch.nn.Identity()
+
+
+def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+    """Whole-model NF4 rewrite matching OpenRAL's native GR00T N1.7 path."""
+    if not device.startswith("cuda"):
+        raise ValueError("NF4 quantization requires a CUDA device.")
+    torch = importlib.import_module("torch")
+    bnb = importlib.import_module("bitsandbytes")
+
+    def _replace(module: Any) -> None:
+        for name, child in list(module.named_children()):
+            if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
+                quantized = bnb.nn.Linear4bit(
+                    child.in_features,
+                    child.out_features,
+                    bias=child.bias is not None,
+                    compute_dtype=torch.bfloat16,
+                    quant_type="nf4",
+                )
+                quantized.weight = bnb.nn.Params4bit(
+                    child.weight.data.clone(),
+                    requires_grad=False,
+                    quant_type="nf4",
+                )
+                if child.bias is not None:
+                    quantized.bias = torch.nn.Parameter(
+                        child.bias.data.clone().to(torch.bfloat16),
+                        requires_grad=False,
+                    )
+                setattr(module, name, quantized)
+            else:
+                _replace(child)
+
+    def _first_float_dtype(self: Any) -> Any:
+        for parameter in self.parameters():
+            if parameter.is_floating_point():
+                return parameter.dtype
+        return torch.bfloat16
+
+    model.__class__.dtype = property(_first_float_dtype)
+    _replace(model)
+    model.to(device)
+    model.eval()
 
 
 def _serve(policy: _BehaviorGrootPolicy, *, task: str, host: str, port: int) -> int:

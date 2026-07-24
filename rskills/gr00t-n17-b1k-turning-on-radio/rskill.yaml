@@ -71,6 +71,9 @@ policy_extras:
   task: "turning_on_radio"
   instruction: "turn on the radio"
   control_mode: "temporal_ensemble"
+  quantization: "nf4"
+  quantize_scope: "model"
+  nf4_min_params: 1000000
   source_revision: "ace36d935b376fbf25cd56371e23877b95407c40"
   use_world_state_policy_state: true
 

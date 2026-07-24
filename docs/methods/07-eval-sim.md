@@ -382,7 +382,7 @@ _NVIDIA Isaac GR00T N1.7 policy adapter — standard checkpoints run **in-proces
 #### `python/sim/src/openral_sim/policies/behavior_groot.py`
 _Official BEHAVIOR-1K GR00T policy adapter. The organizer checkpoint depends on the pinned `wensi-ai/Isaac-GR00T` `behavior` branch rather than lerobot's native N1.7 loader, so it runs in an externally-provisioned Python 3.10 sidecar. The OpenRAL process carries only pyzmq/msgpack (`behavior-groot` dependency group)._
 
-- `build_behavior_groot_policy(env_cfg, manifest, extra) -> _BehaviorGrootAdapter` — Resolve the local organizer checkpoint, sidecar endpoint, task/instruction, and control mode; auto-spawn `tools/behavior_groot_sidecar.py` or connect to an operator/remote sidecar.
+- `build_behavior_groot_policy(env_cfg, manifest, extra) -> _BehaviorGrootAdapter` — Resolve the local organizer checkpoint, sidecar endpoint, task/instruction, control mode, and quantization (`policy_extras.quantization`, default `nf4`, plus `nf4_min_params`); auto-spawn `tools/behavior_groot_sidecar.py` or connect to an operator/remote sidecar.
 - `_BehaviorGrootAdapter` — `PolicyAdapter` implementation that preserves the official flattened evaluator observation when present, otherwise maps canonical `images.{head,left_wrist,right_wrist}` + 61-D `state` back to the R1Pro wire keys; validates a finite 23-D action.
 - `_behavior_wire_observation(observation, *, instruction) -> dict[str, object]` — Pure official-wire assembler used by the adapter and unit tests.
 

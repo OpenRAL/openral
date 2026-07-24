@@ -52,7 +52,10 @@ to turn it on. It is task-specific to `turning_on_radio`.
 The adapter runs the pinned `wensi-ai/Isaac-GR00T` `behavior` branch in an
 isolated Python 3.10 sidecar. The sidecar uses the upstream `Gr00tPolicy` and
 `B1KPolicyWrapper` unchanged, including temporal ensembling and the official
-R1Pro modality split.
+R1Pro modality split. Two 8 GB-host memory measures are applied at load time:
+whole-model NF4 quantization of large linears, and replacing the Qwen3-VL
+`lm_head` with `Identity` (the wrapper consumes only hidden states, so the
+full-vocab logits projection is dead weight).
 
 ### Observation -> action contract
 
@@ -109,7 +112,7 @@ OmniGibson step.
 | `license` | `unknown` |
 | `role` | `s1` |
 | `model_family` | `gr00t` |
-| `runtime` | external Python 3.10 Isaac-GR00T sidecar |
+| `runtime` | external Python 3.10 Isaac-GR00T sidecar, whole-model NF4 |
 | `weights_uri` | `local://checkpoints/behavior-groot-turning-on-radio` |
 | `chunk_size` | 16 |
 | `state_contract.dim` / `action_contract.dim` | 61 / 23 |
@@ -161,8 +164,12 @@ and videos unmodified.
 
 ## Evaluation
 
-No OpenRAL-generated score is shipped. The organizer checkpoint and evaluator
-have not yet been run together on this host.
+No OpenRAL-generated score is shipped. The full official-evaluator loop has
+been reproduced locally on an 8 GB RTX 4070 Laptop GPU (NF4 sidecar 2.77 GiB
+inference peak alongside OmniGibson, ~0.8-1.3 steps/s): public instance 0
+(ID 301), 3225 steps to timeout, `success=false`, `q_score 0.0`. Whether the
+zero q_score reflects NF4 degradation or the checkpoint's zero-shot behavior
+on this instance has not been isolated; no success-rate claim is made.
 
 ## License
 

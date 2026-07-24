@@ -141,9 +141,11 @@ _Boot helper for the curated NVIDIA Cosmos 3 Edge reasoner model (`OPENRAL_REASO
 - `main() -> int` — argparse (`--model` default `nvidia/Cosmos3-Edge`, `--host`, `--port` default 8901, `--tool-call-parser`, `--max-model-len`, `--gpu-memory-utilization`, `--no-enforce-eager`, `--kv-cache-dtype`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME`, sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (fragmentation OOM fix verified live), resolves the served view, and `os.execvpe`s into `vllm serve`.
 
 ### `tools/behavior_groot_sidecar.py`
-_Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned `wensi-ai/Isaac-GR00T` behavior runtime, registers the official R1Pro modality slices, wraps `Gr00tPolicy` with `B1KPolicyWrapper`, and serves ZMQ `ping/reset/get_action/close`._
+_Python 3.10 sidecar for the official 2026 BEHAVIOR-1K GR00T N1.7 checkpoint. Imports the pinned `wensi-ai/Isaac-GR00T` behavior runtime, registers the official R1Pro modality slices, wraps `Gr00tPolicy` with `B1KPolicyWrapper`, and serves ZMQ `ping/reset/get_action/close`. Two 8 GB-host memory measures: whole-model NF4 (`--quantization nf4`, default) and dropping the unused Qwen3-VL `lm_head` (the wrapper reads only hidden states; ~840 MiB saved — 2.77 GiB inference peak, live-validated alongside OmniGibson)._
 
-- `main(argv) -> int` — Parse checkpoint/task/instruction/control-mode/device/endpoint, load the real checkpoint, and serve the 23-D action API.
+- `main(argv) -> int` — Parse checkpoint/task/instruction/control-mode/device/endpoint plus `--quantization {none,nf4}` / `--nf4-min-params`, set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, load the real checkpoint (CPU-first under NF4), and serve the 23-D action API.
+- `_drop_backbone_lm_head(model) -> None` — Replace the Qwen3-VL `lm_head` with `Identity`; the B1K wrapper consumes only `hidden_states[-1]`, so the full-vocab logits projection is dead weight and was the largest single inference allocation.
+- `_quantize_nf4(model, *, device, min_params) -> None` — Whole-model `bitsandbytes` `Linear4bit` rewrite of large `nn.Linear`s (manifest pins `nf4_min_params: 1000000`), keeping small layers floating; patches the model `dtype` property to the first floating parameter dtype, then moves to CUDA.
 
 ### `tools/behavior_scene_sidecar.py`
 _Official OmniGibson evaluator environment sidecar for `scene.id=behavior`. Resolves the configured task instance, exposes the challenge wrapper observation, applies external 23-D actions, and returns success/metrics/sim time over ZMQ._

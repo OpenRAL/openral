@@ -103,11 +103,12 @@ def _normalize_behavior_observation(
         rgb = raw.get(f"{sensor_key}::rgb")
         if rgb is not None:
             image = np.asarray(rgb, dtype=np.uint8)
-            if image.ndim != _RGB_RANK or image.shape[-1] != _RGB_CHANNELS:
+            if image.ndim != _RGB_RANK or image.shape[-1] < _RGB_CHANNELS:
                 raise ROSRuntimeError(
-                    f"BEHAVIOR camera {role!r} RGB must be HWC with 3 channels, got {image.shape}."
+                    f"BEHAVIOR camera {role!r} RGB must be HWC with at least 3 channels, "
+                    f"got {image.shape}."
                 )
-            images[role] = image
+            images[role] = image[..., :_RGB_CHANNELS]
 
         depth = raw.get(f"{sensor_key}::depth_linear")
         if depth is not None:
