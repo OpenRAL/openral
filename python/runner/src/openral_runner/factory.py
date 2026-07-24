@@ -6,7 +6,8 @@ with a typed ``ROSConfigError``:
 * ``SKILL_REGISTRY`` — :attr:`VLASpec.id` → :class:`Skill` factory. Today only
   ``gpu_passthrough`` (a no-op rSkill for plumbing verification).
 * ``SENSOR_BACKEND_REGISTRY`` — :attr:`SensorReaderConfig.backend` →
-  :class:`SensorReader` factory (``opencv_thread`` / ``gstreamer``).
+  :class:`SensorReader` factory (``opencv_thread`` / ``gstreamer`` /
+  ``galaxea_a1_camera_bridge``).
 
 Adding skills / backends is additive — append to the dict. The rSkill that
 drives a real deployment is selected at runtime by the reasoner from the
@@ -16,6 +17,7 @@ installed registry (``rskills/``), not pinned in the deploy config.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal, cast
 
 import structlog
 from openral_core import (
@@ -186,6 +188,45 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
     )
 
 
+def _make_galaxea_a1_camera_bridge_reader(cfg: SensorReaderConfig) -> SensorReader:
+    """Build the A1 Runtime Camera Bridge adapter from explicit scene params."""
+    from openral_runner.backends.galaxea_a1_camera_bridge import (
+        GalaxeaA1CameraBridgeReader,
+    )
+
+    params = cfg.backend_params
+    allowed = {"camera", "runtime_root_env", "deployment_config"}
+    unknown = set(params) - allowed
+    if unknown:
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}, "
+            f"backend=galaxea_a1_camera_bridge) has unknown params {sorted(unknown)!r}"
+        )
+    camera = params.get("camera")
+    if camera not in {"front", "wrist"}:
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}, "
+            "backend=galaxea_a1_camera_bridge) requires "
+            "backend_params.camera to be 'front' or 'wrist'"
+        )
+    runtime_root_env = params.get("runtime_root_env", "OPENRAL_GALAXEA_A1_RUNTIME_ROOT")
+    deployment_config = params.get(
+        "deployment_config",
+        "configs/deployments/lingbot/fruit_placement_eef.toml",
+    )
+    if not isinstance(runtime_root_env, str) or not isinstance(deployment_config, str):
+        raise ROSConfigError(
+            "Galaxea A1 camera bridge runtime_root_env and deployment_config must be strings"
+        )
+    return GalaxeaA1CameraBridgeReader(
+        sensor_id=cfg.sensor_id,
+        camera=cast(Literal["front", "wrist"], camera),
+        runtime_root_env=runtime_root_env,
+        deployment_config=deployment_config,
+        default_max_age_ms=cfg.max_age_ms,
+    )
+
+
 def _gstreamer_spec_from_params(
     cfg: SensorReaderConfig,
     source_param: object,
@@ -246,5 +287,6 @@ def _copy_bool_if_present(dst: dict[str, object], src: dict[str, object], key: s
 SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]] = {
     "opencv_thread": _make_opencv_thread_reader,
     "gstreamer": _make_gstreamer_reader,
+    "galaxea_a1_camera_bridge": _make_galaxea_a1_camera_bridge_reader,
 }
 """Registry of SensorReader factories. Keyed by :attr:`SensorReaderConfig.backend`."""

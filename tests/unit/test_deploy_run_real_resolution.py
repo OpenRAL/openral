@@ -11,9 +11,11 @@ for a simulation-only robot.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from openral_cli.deploy_sim import resolve_launch_invocation
-from openral_core.exceptions import ROSCapabilityMismatch
+from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 
 def _resolve(robot_id: str, mode: str) -> object:
@@ -27,6 +29,32 @@ def _resolve(robot_id: str, mode: str) -> object:
 
 
 class TestRealModeResolution:
+    def test_galaxea_a1_scene_resolves_to_real_lifecycle_package(self) -> None:
+        config = Path("scenes/deploy/galaxea_a1_bench.yaml")
+        inv = resolve_launch_invocation(
+            config=config,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_mode="real",
+        )
+        assert inv.hal.package == "openral_hal_galaxea_a1"
+        assert inv.hal.executable == "lifecycle_node.py"
+        assert inv.hal_params["hal_mode"] == "real"
+        assert str(inv.hal_params["robot_yaml"]).endswith("robots/galaxea_a1/robot.yaml")
+        assert "enable_reasoner:=false" in inv.argv_template
+
+    def test_direct_rskill_scene_rejects_initial_task(self) -> None:
+        with pytest.raises(ROSConfigError, match=r"runtime\.enable_reasoner=true"):
+            resolve_launch_invocation(
+                config=Path("scenes/deploy/galaxea_a1_bench.yaml"),
+                robot_override=None,
+                dashboard_port=4318,
+                reset_to_pose_service=None,
+                hal_mode="real",
+                initial_task_prompt="pick the mango",
+            )
+
     def test_manifest_robot_real_forwards_hal_mode(self) -> None:
         inv = _resolve("franka_panda", "real")
         assert inv.hal_params["hal_mode"] == "real"
@@ -46,8 +74,6 @@ class TestRealModeResolution:
             _resolve("g1", "real")
 
     def test_no_robot_and_no_config_raises(self) -> None:
-        from openral_core.exceptions import ROSConfigError
-
         with pytest.raises(ROSConfigError, match="robot_id is undefined"):
             resolve_launch_invocation(
                 config=None,

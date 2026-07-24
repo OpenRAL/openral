@@ -72,6 +72,7 @@ def test_builtin_registries_populated() -> None:
     assert "zero" in POLICIES
     assert "random" in POLICIES
     assert "smolvla" in POLICIES
+    assert "lingbot_va_a1" in POLICIES
 
 
 def test_registry_unknown_id_raises_with_known_list() -> None:

@@ -338,6 +338,7 @@ lingbot = [
     # transformers==4.57.3 + custom Triton MoE kernels, incompatible with this
     # repo's torch>=2.9 / transformers>=5 (CLAUDE.md §3). Apache-2.0 code + weights.
     { include-group = "sidecar-wire" },
+    "websockets>=15",
 ]
 locateanything = [
     # Opt-in LocateAnything-3B open-vocab VLM detector.

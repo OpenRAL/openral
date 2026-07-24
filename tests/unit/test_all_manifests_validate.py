@@ -46,6 +46,7 @@ _ROBOT_IDS: list[str] = [
     "anvil_openarm_v2",
     "franka_panda",
     "g1",
+    "galaxea_a1",
     "google_robot",
     "gr1",
     "h1",
@@ -106,6 +107,7 @@ _SIM_STEMS: list[str] = [
 
 _DEPLOY_STEMS: list[str] = [
     "g1_vln",
+    "galaxea_a1_bench",
     "isaac_franka",
     "isaac_franka_bowl",
     "isaac_franka_urdf",

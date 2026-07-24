@@ -2,6 +2,10 @@
 
 Public surface:
 - ``HAL``: structural Protocol every adapter must satisfy (RFC §8.2).
+- ``LifecycleEStopHAL`` / ``ResettableLifecycleEStopHAL``: optional typed
+  lifecycle e-stop propagation and recovery contracts.
+- ``HALHealthProvider`` / ``HALHealthReport``: optional cached diagnostics
+  contract for the generic lifecycle heartbeat.
 - ``RosControlHAL``: ros2_control-backed adapter.
 - ``SO100FollowerHAL``: lerobot SO-100 follower arm adapter.
 - ``SO100_DESCRIPTION`` / ``so100_with_sensors``: canonical SO-100 description
@@ -57,11 +61,13 @@ Public surface:
   fetched at a pinned SHA from ``bensonlee5/anvil-openarm-mujoco`` by
   ``openral_hal._anvil_openarm_v2_assets`` (``openarm:anvil_v2_bimanual``).
 - ``SimTransport``: typed in-memory ros2_control transport for unit tests.
+- ``GalaxeaA1HAL`` / ``GALAXEA_A1_DESCRIPTION``: real Galaxea A1 through an
+  isolated ROS 1 Noetic sidecar (the vendor SDK remains operator-provided).
 
-All ``*_REAL_DESCRIPTION`` constants are derived from their sim siblings via
-``openral_hal._real_description.make_real_description``; they share the same
-``hal`` entrypoints (``hal.sim`` / ``hal.real``) and differ only in
-``sdk_kind``.
+Where a sim sibling exists, ``*_REAL_DESCRIPTION`` constants are derived via
+``openral_hal._real_description.make_real_description`` and share its HAL
+entrypoints. Real-only platforms such as the Galaxea A1 publish one description
+directly until a licensed digital-twin asset is available.
 """
 
 from openral_hal.aloha import (
@@ -82,6 +88,7 @@ from openral_hal.franka_panda_real import (
     FrankaPandaRealHAL,
 )
 from openral_hal.g1 import G1_DESCRIPTION, G1MujocoHAL
+from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
 from openral_hal.h1 import H1_DESCRIPTION, H1MujocoHAL
 from openral_hal.openarm import OPENARM_DESCRIPTION, OpenArmMujocoHAL
 from openral_hal.panda_mobile import (
@@ -89,7 +96,14 @@ from openral_hal.panda_mobile import (
     PANDA_MOBILE_JOINT_NAMES,
     PandaMobileHAL,
 )
-from openral_hal.protocol import HAL
+from openral_hal.protocol import (
+    HAL,
+    EStopRecovery,
+    HALHealthProvider,
+    HALHealthReport,
+    LifecycleEStopHAL,
+    ResettableLifecycleEStopHAL,
+)
 from openral_hal.resolver import build_hal
 from openral_hal.ros_control import RosControlHAL
 from openral_hal.sawyer_real import (
@@ -127,6 +141,7 @@ __all__ = [
     "FRANKA_PANDA_DESCRIPTION",
     "FRANKA_PANDA_REAL_DESCRIPTION",
     "G1_DESCRIPTION",
+    "GALAXEA_A1_DESCRIPTION",
     "H1_DESCRIPTION",
     "HAL",
     "OPENARM_DESCRIPTION",
@@ -139,12 +154,18 @@ __all__ = [
     "AlohaHAL",
     "AlohaMujocoHAL",
     "AnvilOpenArmV2MujocoHAL",
+    "EStopRecovery",
     "FrankaPandaHAL",
     "FrankaPandaRealHAL",
     "G1MujocoHAL",
+    "GalaxeaA1HAL",
     "H1MujocoHAL",
+    "HALHealthProvider",
+    "HALHealthReport",
+    "LifecycleEStopHAL",
     "OpenArmMujocoHAL",
     "PandaMobileHAL",
+    "ResettableLifecycleEStopHAL",
     "Rizon4MujocoHAL",
     "RosControlHAL",
     "SO100DigitalTwin",

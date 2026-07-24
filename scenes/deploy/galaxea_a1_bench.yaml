@@ -1,0 +1,72 @@
+# Galaxea A1 hardware deployment. Start the ROS 1 sidecar, A1 Camera Bridge,
+# and LingBot policy server first, then run:
+#   openral deploy run --config scenes/deploy/galaxea_a1_bench.yaml
+scene:
+  id: galaxea_a1_bench
+robot_id: galaxea_a1
+
+sensors:
+  # These readers consume the A1 Runtime's public paired-frame bridge. They do
+  # not open either RealSense device; `just camera-web` remains the sole owner.
+  - name: front
+    modality: rgb
+    frame_id: a1_front_camera
+    rate_hz: 30.0
+    encoding: rgb8
+    intrinsics:
+      width: 480
+      height: 480
+      fx: 387.67059326171875
+      fy: 386.86669921875
+      cx: 220.1776123046875
+      cy: 250.0211944580078
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.05492031201720238, 0.06242402642965317, -0.0008095245575532317, 0.00015016942052170634, -0.020708303898572922]
+    vla_feature_key: observation.images.front
+    deploy_binding:
+      backend: galaxea_a1_camera_bridge
+      backend_params:
+        camera: front
+        runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
+        deployment_config: configs/deployments/lingbot/fruit_placement_eef.toml
+      max_age_ms: 500
+  - name: wrist
+    modality: rgb
+    frame_id: a1_wrist_camera
+    parent_frame: arm_seg6
+    rate_hz: 30.0
+    encoding: rgb8
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 392.2943115234375
+      fy: 391.7977294921875
+      cx: 320.1477355957031
+      cy: 241.63327026367188
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.05426114425063133, 0.05990355461835861, 0.0004118939395993948, 0.000653077382594347, -0.019962556660175323]
+    vla_feature_key: observation.images.wrist
+    deploy_binding:
+      backend: galaxea_a1_camera_bridge
+      backend_params:
+        camera: wrist
+        runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
+        deployment_config: configs/deployments/lingbot/fruit_placement_eef.toml
+      max_age_ms: 500
+runtime:
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_octomap: false
+  enable_octomap_kernel_check: true
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

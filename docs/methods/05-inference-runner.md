@@ -61,6 +61,17 @@ _:class:`OpenCVThreadSensorReader` — default backend. Mirrors lerobot's per-ca
   - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Lock-protected snapshot of the `_latest_frame` slot; constructs a `SensorFrame` with inlined raw bytes; raises `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on closed reader. (L173)
   - `_read_loop()` — Background daemon: `cv2.VideoCapture.read` → `_latest_frame + _latest_stamp_*_ns` under lock; sleeps `1/fps` on read failure / EOF. (L228)
 
+### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
+_Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
+opens a camera device; the A1 camera monitor stays the only RealSense owner._
+
+- `class GalaxeaA1CameraBridgeReader` — Reads either the `front` or `wrist`
+  member of a fresh synchronized pair and returns an inline RGB8
+  `SensorFrame`. The A1 Runtime root is named by the scene's
+  `runtime_root_env`; the tracked LingBot deployment config supplies camera
+  geometry, freshness, crop, and pair-skew rules. Missing roots/configs,
+  stale pairs, wrong shapes, and unknown backend params fail explicitly.
+
 ### `python/runner/src/openral_runner/backends/__init__.py`
 _Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` (PR I) + `Ros2ImageSensorReader` gate on optional deps._
 
@@ -165,12 +176,15 @@ _Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): h
 ### `python/runner/src/openral_runner/factory.py`
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
-- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L84)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`. (L246)
-- `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L40)
-- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L61)
-- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L90)
-- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L130)
+- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L86)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`, `galaxea_a1_camera_bridge`. (L287)
+- `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L42)
+- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L63)
+- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L92)
+- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L132)
+- `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
+  A1 Runtime paired-camera connector. Accepts only `camera`,
+  `runtime_root_env`, and `deployment_config`; unknown values are rejected.
 
 ### `python/runner/src/openral_runner/deploy_runner.py`
 _:class:`DeployRunner` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient._

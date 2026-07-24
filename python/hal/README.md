@@ -36,6 +36,7 @@ satisfies it. There is no inheritance requirement.
 | `ros_control.py` | `RosControlHAL` — adapter on top of `ros2_control` (no real ROS 2 import; works against `SimTransport` for unit tests and the live transport at runtime). |
 | `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport for unit tests. |
 | `so100_follower.py` | `SO100FollowerHAL` + `SO100_DESCRIPTION` + `so100_with_sensors` — real SO-100 follower arm via the `lerobot` SDK. |
+| `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
 | `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (used by smoketests, sim tests, and as a stand-in when no hardware is connected). |
 | `so100_mujoco.py` | `SO100MujocoHAL` — MuJoCo digital twin for the SO-100 follower, driving the `mujoco_menagerie` MJCF with the same 6-DoF action layout as `SO100FollowerHAL`. |
 | `_mujoco_arm.py` | `MujocoArmHAL` + `MujocoArmHAL.from_description` (MJCF resolved via `openral_core.assets.resolve_asset`) — shared MuJoCo backend for the arms below. It self-constructs from `RobotDescription.sim` (`SimDescription`), so per-robot subclasses are 5-line wrappers and **no Python file is required to add a new MuJoCo HAL** — declare a `sim:` block in `robots/<id>/robot.yaml` and call `MujocoArmHAL.from_description(desc)`. |
@@ -59,6 +60,7 @@ satisfies it. There is no inheritance requirement.
 | Robot | Adapter | Status | Notes |
 | --- | --- | --- | --- |
 | LeRobot SO-100 follower arm | `SO100FollowerHAL` | ✓ unit + sim | Embodiment tag: `so100_follower`. |
+| Galaxea A1 (real-HW) | `GalaxeaA1HAL` | ✓ unit + offline socket · HIL fixture | Joint-position + normalized-gripper only; official ROS 1 driver and joint tracker run in a separately owned sidecar. Lab-gated HIL via `tests/hil/test_galaxea_a1.py`. |
 | SO-100 (pure-Python sim) | `SO100DigitalTwin` | ✓ sim | In-process; no MuJoCo, no GPU. Used by the smoketest and CI. |
 | SO-100 (MuJoCo digital twin) | `SO100MujocoHAL` | ✓ sim (`tests/sim/test_so100_follower_hal_mujoco.py`) | Real MuJoCo physics on the `mujoco_menagerie` MJCF; same 6-DoF action layout as `SO100FollowerHAL`. |
 | Franka Panda (sim) | `FrankaPandaHAL` | ✓ sim | MuJoCo-backed. |
@@ -152,6 +154,7 @@ Each HAL adapter has (or will have) a thin ROS 2 lifecycle node under
 | ROS package | Wraps | Status |
 | --- | --- | --- |
 | `openral_hal_so100` | `SO100FollowerHAL` | ✓ working (unit + sim coverage) |
+| `openral_hal_galaxea_a1` | `GalaxeaA1HAL` | ✓ real observation/hold/joint/gripper + full C++ kernel graph HIL |
 | `openral_hal_franka` | `FrankaPandaHAL` (planned) | skeleton |
 | `openral_hal_ur5e` | `UR5eHAL` (sim) / `UR5eRealHAL` (real HW) | skeleton |
 | `openral_hal_ur10e` | `UR10eHAL` (sim) / `UR10eRealHAL` (real HW) | skeleton |
@@ -192,7 +195,8 @@ and topic names.
   plugin workaround baked in.
 - HIL: `tests/hil/test_franka_panda.py`,
   `tests/hil/test_sawyer.py`, `tests/hil/test_aloha.py`,
-  `tests/hil/test_ur5e.py`, `tests/hil/test_ur10e.py` — lab runners only
+  `tests/hil/test_ur5e.py`, `tests/hil/test_ur10e.py`,
+  `tests/hil/test_galaxea_a1.py` — lab runners only
   (`UR5E_HOST` / `UR10E_HOST` env vars + `[self-hosted, lab-ur*]` runner labels for the UR pair).
 - HIL transport bridges (lab-only): `tests/hil/_ros_control_transport.py`
   exposes `RosControlHILTransport` + `make_hil_transport` for the

@@ -8,6 +8,7 @@ Every embodiment is a typed `RobotDescription` manifest under `robots/<robot_id>
 |---|---|---|---|
 | SO-100 (LeRobot follower arm) | [`robots/so100_follower/`](https://github.com/OpenRAL/openral/tree/master/robots/so100_follower/) | `SO100FollowerHAL` (real) + `SO100MujocoHAL` (sim) + `openral_hal_so100` lifecycle node | ✓ HW + sim |
 | SO-101 (LeRobot follower arm) | [`robots/so101_follower/`](https://github.com/OpenRAL/openral/tree/master/robots/so101_follower/) | shares SO-100 family — `SO100FollowerHAL` (real) + `SO100MujocoHAL` (sim) + `openral_hal_so100` lifecycle node | ✓ HW + sim |
+| Galaxea A1 | [`robots/galaxea_a1/`](https://github.com/OpenRAL/openral/tree/master/robots/galaxea_a1/) | `GalaxeaA1HAL` (real-only) + isolated operator-provided ROS 1 SDK sidecar + `openral_hal_galaxea_a1` lifecycle node | ✓ unit + offline integration + real observation/hold/joint/gripper + C++ kernel HIL |
 | Franka Panda | [`robots/franka_panda/`](https://github.com/OpenRAL/openral/tree/master/robots/franka_panda/) | `FrankaPandaHAL` (`MujocoArmHAL`) + `openral_hal_franka` | ✓ sim · HW bring-up M3 (#56) |
 | UR5e | [`robots/ur5e/`](https://github.com/OpenRAL/openral/tree/master/robots/ur5e/) | `UR5eHAL` (`MujocoArmHAL`) + `openral_hal_ur5e` | ✓ sim · HW bring-up M3 |
 | UR10e | [`robots/ur10e/`](https://github.com/OpenRAL/openral/tree/master/robots/ur10e/) | `UR10eHAL` (`MujocoArmHAL`) + `openral_hal_ur10e` | ✓ sim · HW bring-up M3 |

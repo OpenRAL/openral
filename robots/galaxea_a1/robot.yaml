@@ -1,0 +1,167 @@
+# Galaxea A1 real-hardware manifest.
+#
+# Kinematic limits and link names are transcribed from the official A1 SDK
+# A1_URDF_0607_0028.urdf. The SDK itself remains operator-provided and is not
+# redistributed by OpenRAL. The HAL remains intentionally joint/gripper-space;
+# the LingBot rSkill lowers its EEF output before the safety boundary. URDF
+# asset publication and lowered collision geometry follow after the vendor
+# confirms a redistributable asset source.
+name: galaxea_a1
+embodiment_kind: manipulator
+base_frame: base_link
+
+joints:
+  - name: arm_joint1
+    joint_type: revolute
+    parent_link: base_link
+    child_link: arm_seg1
+    position_limits: [-2.8798, 2.8798]
+    velocity_limit: 20.944
+    effort_limit: 40.0
+    actuator_kind: bldc
+  - name: arm_joint2
+    joint_type: revolute
+    parent_link: arm_seg1
+    child_link: arm_seg2
+    position_limits: [0.0, 3.1415]
+    velocity_limit: 20.944
+    effort_limit: 40.0
+    actuator_kind: bldc
+  - name: arm_joint3
+    joint_type: revolute
+    parent_link: arm_seg2
+    child_link: arm_seg3
+    position_limits: [-3.3161, 0.0]
+    velocity_limit: 7.5398
+    effort_limit: 27.0
+    actuator_kind: bldc
+  - name: arm_joint4
+    joint_type: revolute
+    parent_link: arm_seg3
+    child_link: arm_seg4
+    position_limits: [-2.8798, 2.8798]
+    velocity_limit: 25.133
+    effort_limit: 7.0
+    actuator_kind: bldc
+  - name: arm_joint5
+    joint_type: revolute
+    parent_link: arm_seg4
+    child_link: arm_seg5
+    position_limits: [-1.6581, 1.6581]
+    velocity_limit: 25.133
+    effort_limit: 7.0
+    actuator_kind: bldc
+  - name: arm_joint6
+    joint_type: revolute
+    parent_link: arm_seg5
+    child_link: arm_seg6
+    position_limits: [-2.8798, 2.8798]
+    velocity_limit: 25.133
+    effort_limit: 7.0
+    actuator_kind: bldc
+
+end_effectors:
+  - name: gripper
+    kind: parallel_gripper
+    n_dof: 1
+
+sensors:
+  - name: front
+    modality: rgb
+    frame_id: a1_front_camera
+    rate_hz: 30.0
+    encoding: rgb8
+    intrinsics:
+      width: 480
+      height: 480
+      fx: 387.67059326171875
+      fy: 386.86669921875
+      cx: 220.1776123046875
+      cy: 250.0211944580078
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.05492031201720238, 0.06242402642965317, -0.0008095245575532317, 0.00015016942052170634, -0.020708303898572922]
+    vla_feature_key: observation.images.front
+    vendor: Intel
+    model: RealSense D455
+    metadata:
+      output_width: 480
+      output_height: 480
+      crop: "x=103,y=0,width=480,height=480"
+  - name: wrist
+    modality: rgb
+    frame_id: a1_wrist_camera
+    parent_frame: arm_seg6
+    rate_hz: 30.0
+    encoding: rgb8
+    intrinsics:
+      width: 640
+      height: 480
+      fx: 392.2943115234375
+      fy: 391.7977294921875
+      cx: 320.1477355957031
+      cy: 241.63327026367188
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.05426114425063133, 0.05990355461835861, 0.0004118939395993948, 0.000653077382594347, -0.019962556660175323]
+    vla_feature_key: observation.images.wrist
+    vendor: Intel
+    model: RealSense D405
+    metadata:
+      output_width: 640
+      output_height: 480
+
+capabilities:
+  can_lift_kg: 5.0
+  has_vision: true
+  supported_control_modes: [joint_position, gripper_position]
+  embodiment_tags: [galaxea_a1]
+
+safety:
+  max_ee_speed_m_s: 0.25
+  max_joint_speed_factor: 0.05
+  max_force_n: 40.0
+  max_torque_nm: 40.0
+  deadman_required: true
+
+sdk_kind: closed_with_api
+hal:
+  sim: null
+  real: openral_hal.galaxea_a1:GalaxeaA1HAL
+  parameters:
+    defaults:
+      host: 127.0.0.1
+      port: 46011
+      state_timeout_s: 0.5
+      status_timeout_s: 1.0
+      # Feedback may sit just beyond a nominal URDF endpoint because of encoder
+      # zero/quantization. Commands remain strictly inside the URDF limits.
+      feedback_limit_tolerance_rad: 0.01
+      initial_alignment_tolerance_rad: 0.05
+      # The official tracker starts from a compiled task.info pose. Its output
+      # remains staged until it converges to the measured initial hold.
+      tracker_alignment_timeout_s: 5.0
+      # This remains far below the A1 Runtime's independently validated 1.70
+      # rad IK-solution bound, while allowing the official tracker to cross its
+      # observed 0.03..0.038 rad steady-state residual.
+      max_target_step_rad: 0.08
+      # Policy targets stay below both the 0.05 rad locked-relay alignment
+      # bound and the independent HAL/sidecar command bound above.
+      policy_substep_rad: 0.045
+      command_lease_s: 0.5
+      # The vendor documents bit 6 as ECU->ACU timeout. It is observed while
+      # idle and is the only accepted arm bit. The gripper additionally ignores
+      # bit 3 (position jump) for compatibility with the physical G2 gripper.
+      idle_timeout_error_mask: 64
+      gripper_ignored_error_mask: 8
+      gripper_stroke_min_mm: 0.0
+      gripper_stroke_max_mm: 104.0
+
+onboard_compute:
+  driver_repo: https://github.com/userguide-galaxea/A1_SDK
+  driver_runtime: ROS 1 Noetic sidecar
+  command_topic: /arm_joint_target_position
+  joint_state_topic: /joint_states_host
+  motor_status_topic: /arm_status_host
+  gripper_command_topic: /gripper_position_control_host
+  gripper_feedback_topic: /gripper_stroke_host
+
+schema_version: "0.1"

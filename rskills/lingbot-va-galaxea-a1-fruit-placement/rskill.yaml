@@ -1,0 +1,99 @@
+# A1 Runtime LingBot-VA checkpoint deployed through OpenRAL.
+#
+# The model predicts episode-relative EEF pose + normalized gripper chunks.
+# The adapter validates those targets with the tracked A1 Runtime contract and
+# lowers each step to six absolute A1 joint positions plus one gripper value.
+# Both typed actions then traverse OpenRAL's safety kernel and A1 HAL.
+schema_version: "0.1"
+name: "OpenRAL/rskill-lingbot_va-galaxea_a1-fruit_placement-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+model_family: "lingbot_va_a1"
+
+embodiment_tags:
+  - "galaxea_a1"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.front"
+    min_width: 480
+    min_height: 480
+  - modality: "rgb"
+    vla_feature_key: "observation.images.wrist"
+    min_width: 640
+    min_height: 480
+
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+      joint_order:
+        - arm_joint1
+        - arm_joint2
+        - arm_joint3
+        - arm_joint4
+        - arm_joint5
+        - arm_joint6
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_open_unit"
+
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+weights_uri: "hf://pengyue-polaron/lingbot-va-galaxea-a1-fruit-placement-eef@90e017bdbc6afac2e441b4634c9192776bbcb8b7"
+
+# No `processors` block: this checkpoint is not a lerobot
+# PolicyProcessorPipeline. Quantile normalization and the action-channel map
+# ship in configs/va_a1_cfg.py and are applied by the external LingBot server
+# before OpenRAL receives the physical EEF target.
+state_contract:
+  dim: 6
+
+chunk_size: 16
+n_action_steps: 8
+latency_budget:
+  # Measured through the full OpenRAL camera + websocket + EEF/IK adapter:
+  # ~4.05 s for the first model call on this A1 host; replay ticks are cheap.
+  per_chunk_ms: 6000.0
+  max_execution_s: 180.0
+
+dataset_uri: "hf://pengyue-polaron/nyush-galaxea-a1-fruit-placement-eef-v21@1bc2c4035e7dc638f7dd9fa5ec7987bec66d0933"
+source_repo: "hf://robbyant/lingbot-va-base"
+description: >
+  LingBot-VA fruit-placement policy for the Galaxea A1. It consumes the
+  synchronized front and wrist RGB views, predicts episode-relative EEF pose
+  and continuous gripper chunks, and uses the tracked A1 Runtime IK contract
+  before OpenRAL validates and executes the resulting joint/gripper actions.
+
+actions:
+  - "pick"
+  - "place"
+objects:
+  - "fruit"
+  - "mango"
+  - "bowl"
+  - "plate"
+scenes:
+  - "tabletop"
+
+action_contract:
+  dim: 7
+  joint_units: "radians"
+  slots:
+    - range: [0, 5]
+      control_mode: "joint_position"
+      joint_names:
+        - arm_joint1
+        - arm_joint2
+        - arm_joint3
+        - arm_joint4
+        - arm_joint5
+        - arm_joint6
+    - range: [6, 6]
+      control_mode: "gripper_position"
+      ee: "gripper"

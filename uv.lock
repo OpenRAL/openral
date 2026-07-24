@@ -3040,6 +3040,7 @@ libero = [
 lingbot = [
     { name = "msgpack" },
     { name = "pyzmq" },
+    { name = "websockets" },
 ]
 locateanything = [
     { name = "msgpack" },
@@ -3181,6 +3182,7 @@ libero = [
 lingbot = [
     { name = "msgpack", specifier = ">=1" },
     { name = "pyzmq", specifier = ">=25" },
+    { name = "websockets", specifier = ">=15" },
 ]
 locateanything = [
     { name = "msgpack", specifier = ">=1" },

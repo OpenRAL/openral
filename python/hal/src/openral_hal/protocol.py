@@ -15,11 +15,74 @@ Example:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from openral_core.schemas import Action, JointState, RobotDescription
 
-__all__ = ["HAL"]
+__all__ = [
+    "HAL",
+    "EStopRecovery",
+    "HALHealthProvider",
+    "HALHealthReport",
+    "LifecycleEStopHAL",
+    "ResettableLifecycleEStopHAL",
+]
+
+
+class EStopRecovery(StrEnum):
+    """Recovery policy after a lifecycle node forwards an e-stop to a HAL."""
+
+    RESETTABLE = "resettable"
+    RESTART_REQUIRED = "restart_required"
+
+
+@dataclass(frozen=True)
+class HALHealthReport:
+    """Cached health data exposed through the lifecycle diagnostics heartbeat.
+
+    ``health()`` implementations must not perform device or network I/O. The
+    lifecycle node calls them from its low-rate diagnostics path.
+    """
+
+    message: str
+    fields: Mapping[str, str]
+
+
+@runtime_checkable
+class HALHealthProvider(Protocol):
+    """Optional HAL extension for cached diagnostics."""
+
+    def health(self) -> HALHealthReport:
+        """Return the latest cached health report without performing I/O."""
+        ...
+
+
+@runtime_checkable
+class LifecycleEStopHAL(Protocol):
+    """Optional extension for HALs that propagate the lifecycle e-stop downstream.
+
+    HALs that implement this protocol opt into receiving ``estop()`` when the
+    generic lifecycle node latches ``/openral/estop``. Existing HALs that do not
+    opt in retain the lifecycle node's local latch-only behavior.
+    """
+
+    estop_recovery: EStopRecovery
+
+    def estop(self) -> None:
+        """Stop downstream hardware or owned processes and always raise."""
+        ...
+
+
+@runtime_checkable
+class ResettableLifecycleEStopHAL(LifecycleEStopHAL, Protocol):
+    """Lifecycle e-stop extension for HALs that support in-process recovery."""
+
+    def reset_estop(self) -> None:
+        """Re-arm the downstream controller after its safety conditions pass."""
+        ...
 
 
 @runtime_checkable

@@ -402,6 +402,46 @@ if _ROS2_AVAILABLE:
             """
             return {}
 
+        def _heartbeat_status(self, robot_name: str) -> tuple[int, str, dict[str, str]]:
+            """Return the generic status plus optional cached HAL health.
+
+            Real hardware adapters may implement ``HALHealthProvider``. Its
+            ``health()`` method must use cached state only; the 1 Hz diagnostics
+            path must not perform device or network I/O.
+            """
+            from openral_observability import Level
+
+            from openral_hal.protocol import HALHealthProvider
+
+            extras = self._heartbeat_extra_fields()
+            if self._estopped:
+                return (
+                    Level.ERROR,
+                    "estop latched",
+                    {"robot": robot_name, "estopped": "true", **extras},
+                )
+            if self._hal is None:
+                return Level.ERROR, "hal disconnected", {"robot": robot_name, **extras}
+            if isinstance(self._hal, HALHealthProvider):
+                try:
+                    report = self._hal.health()
+                except Exception as exc:  # reason: diagnostics must surface, not hide, HAL faults
+                    return (
+                        Level.ERROR,
+                        f"HAL health check failed: {exc}",
+                        {"robot": robot_name, **extras},
+                    )
+                return (
+                    Level.OK,
+                    report.message,
+                    {"robot": robot_name, "estopped": "false", **extras, **report.fields},
+                )
+            return (
+                Level.OK,
+                "hal ready",
+                {"robot": robot_name, "estopped": "false", **extras},
+            )
+
         def on_configure_post_hal(self) -> TransitionCallbackReturn:
             """Subclass extension point after the base wires HAL + heartbeat.
 
@@ -439,7 +479,7 @@ if _ROS2_AVAILABLE:
         def on_configure(self, state: object) -> TransitionCallbackReturn:
             """Construct + connect the HAL, wire the heartbeat, then run post-hook."""
             from openral_core.exceptions import ROSConfigError, ROSRuntimeError
-            from openral_observability import DiagnosticsHeartbeat, Level
+            from openral_observability import DiagnosticsHeartbeat
 
             try:
                 self._hal = self._create_hal()
@@ -451,16 +491,7 @@ if _ROS2_AVAILABLE:
             robot_name = getattr(getattr(self._hal, "description", None), "name", self._node_name)
 
             def _status() -> tuple[int, str, dict[str, str]]:
-                extras = self._heartbeat_extra_fields()
-                if self._estopped:
-                    return Level.ERROR, "estop latched", {"robot": str(robot_name), **extras}
-                if self._hal is None:
-                    return Level.ERROR, "hal disconnected", {"robot": str(robot_name), **extras}
-                return (
-                    Level.OK,
-                    "hal ready",
-                    {"robot": str(robot_name), "estopped": "false", **extras},
-                )
+                return self._heartbeat_status(str(robot_name))
 
             self._heartbeat = DiagnosticsHeartbeat(
                 self,
@@ -747,13 +778,14 @@ if _ROS2_AVAILABLE:
             From the proprio snapshot for sim-attached HALs, else a live
             ``hal.read_state``.
             """
+            if self._hal is None or self._publisher is None or self._estopped:
+                return
+
             from openral_observability import producer as ral_producer
             from openral_observability import semconv
             from opentelemetry import trace
             from sensor_msgs.msg import JointState as RosJointState
 
-            if self._hal is None or self._publisher is None:
-                return
             tick_idx = self._read_tick_idx
             self._read_tick_idx += 1
             tracer = trace.get_tracer("openral_hal.lifecycle")
@@ -899,13 +931,25 @@ if _ROS2_AVAILABLE:
                 )
 
         def _on_estop(self, _msg: object) -> None:
-            """CLAUDE.md §1.5 — latch the estop flag."""
+            """Latch and invoke downstream stop for HALs that explicitly opt in."""
             if self._estopped:
                 return
             self._estopped = True
             self.get_logger().error(
                 "openral_hal.estop_received; ignoring further commands until reset."
             )
+            from openral_hal.protocol import LifecycleEStopHAL
+
+            if self._hal is None or not isinstance(self._hal, LifecycleEStopHAL):
+                return
+            from openral_core.exceptions import ROSEStopRequested
+
+            try:
+                self._hal.estop()
+            except ROSEStopRequested as exc:
+                self.get_logger().error(f"hardware estop completed: {exc}")
+            except Exception as exc:  # reason: latch must survive a vendor stop-path failure
+                self.get_logger().fatal(f"hardware estop failed: {exc}")
 
         def _on_estop_cleared(self, _msg: object) -> None:
             """Clear the estop latch when the reset authority broadcasts /openral/estop_cleared.
@@ -918,6 +962,38 @@ if _ROS2_AVAILABLE:
             """
             if not self._estopped:
                 return
+
+            from openral_hal.protocol import (
+                EStopRecovery,
+                LifecycleEStopHAL,
+                ResettableLifecycleEStopHAL,
+            )
+
+            if isinstance(self._hal, LifecycleEStopHAL):
+                recovery = self._hal.estop_recovery
+                if recovery == EStopRecovery.RESTART_REQUIRED:
+                    self.get_logger().error(
+                        "openral_hal.estop_clear_rejected; this real HAL requires a full "
+                        "lifecycle restart and fresh alignment after hardware estop."
+                    )
+                    return
+                if recovery != EStopRecovery.RESETTABLE:
+                    self.get_logger().fatal(
+                        f"openral_hal.estop_clear_rejected; unsupported recovery policy "
+                        f"{recovery!r}."
+                    )
+                    return
+                if not isinstance(self._hal, ResettableLifecycleEStopHAL):
+                    self.get_logger().fatal(
+                        "openral_hal.estop_clear_rejected; resettable HAL does not implement "
+                        "reset_estop()."
+                    )
+                    return
+                try:
+                    self._hal.reset_estop()
+                except Exception as exc:  # reason: never clear local latch after reset failure
+                    self.get_logger().fatal(f"hardware estop reset failed: {exc}")
+                    return
             self._estopped = False
             self.get_logger().info("openral_hal.estop_cleared; resuming command execution.")
 

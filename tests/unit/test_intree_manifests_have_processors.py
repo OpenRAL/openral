@@ -50,6 +50,12 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         # applied server-side by the model's FeatureTransform, not a lerobot
         # PolicyProcessorPipeline, so `processors is None` is correct.
         "lingbot-vla-4b-robotwin",
+        # LingBot-VA on Galaxea A1: the checkpoint's quantile normalization
+        # and action-channel mapping ship in configs/va_a1_cfg.py and are
+        # applied by the contract-checked A1 Runtime model server. OpenRAL
+        # consumes the server's physical EEF output; there is no lerobot
+        # PolicyProcessorPipeline or processor JSON pair to materialize.
+        "lingbot-va-galaxea-a1-fruit-placement",
         # InternVLA-N1: runs its own AutoProcessor + NavDP pipeline inside the
         # py3.11 sidecar; no lerobot PolicyProcessorPipeline. `internvla_n1` is
         # excluded from `_MODERN_PROCESSOR_FAMILIES` for the same reason.

@@ -608,6 +608,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         "true",
         "yes",
     )
+    enable_reasoner = LaunchConfiguration("enable_reasoner").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     # Read-only Foxglove live-scene bridge. Off by default;
     # ``openral deploy sim --foxglove`` opts in.
     enable_foxglove = LaunchConfiguration("enable_foxglove").perform(context).lower() in (
@@ -1055,24 +1060,25 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # (VRAM eviction only evicts the detectors, not the reasoner), so a one-shot drive to active is
     # behaviour-preserving — exactly as for the HAL block below.
     _reasoner_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
-    autostart.append(
-        ExecuteProcess(
-            cmd=[
-                sys.executable,
-                _reasoner_autostart_path,
-                "--node",
-                "/openral_reasoner",
-                "--target",
-                "active",
-                "--service-timeout-s",
-                "60.0",
-                "--transition-timeout-s",
-                "300.0",
-            ],
-            output="log",
+    if enable_reasoner:
+        autostart.append(
+            ExecuteProcess(
+                cmd=[
+                    sys.executable,
+                    _reasoner_autostart_path,
+                    "--node",
+                    "/openral_reasoner",
+                    "--target",
+                    "active",
+                    "--service-timeout-s",
+                    "60.0",
+                    "--transition-timeout-s",
+                    "300.0",
+                ],
+                output="log",
+            )
         )
-    )
-    autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
+        autostart += _autostart_lifecycle(prompt_router, "openral_prompt_router")
     # HAL autostart goes through ``tools/lifecycle_autostart.py`` rather
     # than ``_autostart_lifecycle`` because launch_ros's
     # ``lifecycle_event_manager`` race on Jazzy (same one documented for
@@ -1695,11 +1701,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     nodes: list = [
         safety_kernel,
         runtime,
-        reasoner,
-        prompt_router,
         hal,
         *extra_nodes,
     ]
+    if enable_reasoner:
+        nodes[2:2] = [reasoner, prompt_router]
     # Dashboard is opt-out (default on). ``openral deploy sim --no-dashboard``
     # threads ``enable_dashboard:=false`` to skip the spawn entirely —
     # useful for headless CI and avoids the
@@ -2173,6 +2179,15 @@ def generate_launch_description() -> LaunchDescription:
                 "/openral/perception/<alias>/locate_in_view, selectable by the "
                 "reasoner via LocateInViewTool.detector. Empty = no on-demand "
                 "locator. Ignored unless enable_object_detector is true."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_reasoner",
+            default_value="true",
+            description=(
+                "Spawn the reasoner and prompt-router lifecycle nodes. Disable "
+                "for direct-rSkill deployments that submit an explicit "
+                "/openral/execute_rskill goal and do not require LLM planning."
             ),
         ),
         DeclareLaunchArgument(
