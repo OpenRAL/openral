@@ -170,6 +170,20 @@ def test_read_state_tolerates_length_mismatch(jp_len: int) -> None:
         hal.disconnect()
 
 
+def test_read_policy_state_requires_explicit_key() -> None:
+    # A backend with only the generic obs["state"] exposes NO policy state:
+    # WorldState.policy_state is never inferred, so the HAL must not fall
+    # back to obs["state"] and silently publish /openral/policy_state.
+    description = _franka_description()
+    hal = SimAttachedHAL(_FakeSim([0.0] * len(description.joints)), description)
+    hal.connect()
+    try:
+        assert hal.idle_step() is True
+        assert hal.read_policy_state() is None
+    finally:
+        hal.disconnect()
+
+
 def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
     description = _franka_description()
     env = _GroupedSim([0.0] * len(description.joints))

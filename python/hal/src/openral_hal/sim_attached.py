@@ -986,7 +986,10 @@ class SimAttachedHAL:
         targets) a zero vector commands the joints *toward 0 rad* rather than
         holding the current pose. That is acceptable here — the goal is to keep
         the scene physically live so cameras render, not to freeze the arm in
-        place — but it is NOT a literal hold for those backends.
+        place — but it is NOT a literal hold for those backends. A backend can
+        opt out of the zero vector entirely by exposing ``idle_action()``
+        returning its own hold vector (the BEHAVIOR-1K backend returns the
+        current joint targets so idle ticks genuinely hold pose).
 
         Action-dim note: ``_env_action_dim`` is the env's authoritative width,
         resolved by :meth:`_probe_env_action_dim` from the backend's own
@@ -1018,13 +1021,18 @@ class SimAttachedHAL:
         # never define idle_step) is the real safety guarantee. Non-MuJoCo
         # backends (Isaac Sim sidecar, ManiSkill3) step via env.step(zeros) the
         # same as MJCF ones.
-        # Zero-action step — the same env.step(zeros) idiom as the
-        # deferred-reset path / send_action's tail (NOT robocasa.refresh_obs,
-        # which re-renders WITHOUT stepping). The shared ``_step_and_cache``
-        # does the deferred reset → step → obs re-cache → terminal re-latch so
-        # this path cannot drift from send_action. Never build a non-zero
-        # vector here. ``_step_and_cache`` deliberately leaves
-        # ``_last_env_action`` / ``_last_body_twist`` untouched.
+        # Hold-action step — the same env.step idiom as the deferred-reset
+        # path / send_action's tail (NOT robocasa.refresh_obs, which
+        # re-renders WITHOUT stepping). The shared ``_step_and_cache`` does
+        # the deferred reset → step → obs re-cache → terminal re-latch so
+        # this path cannot drift from send_action. The hold vector is zeros
+        # (a true HOLD for velocity / OSC-delta controllers) UNLESS the
+        # backend exposes ``idle_action()`` — position-controlled backends
+        # (BEHAVIOR-1K joint targets) return their current hold pose there,
+        # because for them a zero vector is a "drive to origin" command, not
+        # a hold. Never build any other vector here. ``_step_and_cache``
+        # deliberately leaves ``_last_env_action`` / ``_last_body_twist``
+        # untouched.
         idle_action_getter = getattr(self._env, "idle_action", None)
         idle_action = (
             np.asarray(idle_action_getter(), dtype=np.float32).reshape(-1)
@@ -1728,10 +1736,17 @@ class SimAttachedHAL:
         self._estop_latched = False
 
     def read_policy_state(self) -> list[float] | None:
-        """Return the cached simulator-native policy state, when exposed."""
+        """Return the simulator-native policy state, when the backend exposes one.
+
+        Only an explicit ``obs["policy_state"]`` counts — the generic
+        ``obs["state"]`` every sim backend populates is NOT a policy state, and
+        falling back to it would silently publish `/openral/policy_state` for
+        robots whose manifests never opted in (WorldState.policy_state is
+        documented as never inferred).
+        """
         if self._last_obs is None:
             return None
-        raw = self._last_obs.get("policy_state", self._last_obs.get("state"))
+        raw = self._last_obs.get("policy_state")
         if raw is None:
             return None
         return [float(value) for value in np.asarray(raw, dtype=np.float32).reshape(-1)]

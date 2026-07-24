@@ -1826,7 +1826,7 @@ def _build_runtime_skill_from_manifest(
     from openral_core.exceptions import ROSConfigError, ROSRuntimeError
     from openral_sim.factory import make_policy
     from openral_sim.policy_deps import (
-        model_family_install_hint,
+        manifest_install_hint,
         purge_partial_imports,
     )
 
@@ -1898,7 +1898,7 @@ def _build_runtime_skill_from_manifest(
         # is removed from ``sys.modules`` mid-process.
         purge_partial_imports(("lerobot", "transformers"))
         family = manifest.model_family
-        install_hint = model_family_install_hint(family)
+        install_hint = manifest_install_hint(manifest)
         raise ROSRuntimeError(
             f"failed to build {family!r} policy for rSkill "
             f"{manifest.name!r}: {type(exc).__name__}: {exc}. "
@@ -2262,6 +2262,16 @@ def _make_policy_adapter_skill(
             assembles ``obs["state"]`` via that layout's assembler
             instead of the raw joint-state slice. None preserves the
             joint-space path (every VLA shipped before the state-contract bindings design).
+
+    ``obs["state"]`` substitution paths in ``_step_impl`` (either sets
+    ``state_assembled`` and skips the joint-permutation + rad/deg conversion;
+    if a manifest somehow declares both, the layout assembler runs second and
+    wins):
+
+    1. ``policy_extras.use_world_state_policy_state`` — the manifest opts in
+       to the simulator-native ``WorldState.policy_state`` vector (BEHAVIOR-1K
+       R1Pro 61-D contract), staleness-gated via ``ROSPerceptionStale``.
+    2. ``tf_lookup`` + ``state_contract.layout`` — see above.
     """
     import numpy as np
     from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSRuntimeError
