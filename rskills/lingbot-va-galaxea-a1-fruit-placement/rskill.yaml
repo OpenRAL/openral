@@ -1,8 +1,8 @@
 # A1 Runtime LingBot-VA checkpoint deployed through OpenRAL.
 #
 # The model predicts episode-relative EEF pose + normalized gripper chunks.
-# The adapter validates those targets with the tracked A1 Runtime contract and
-# lowers each step to six absolute A1 joint positions plus one gripper value.
+# The Runtime-owned policy gateway validates those targets and lowers each step
+# to six absolute A1 joint positions plus one gripper value.
 # Both typed actions then traverse OpenRAL's safety kernel and A1 HAL.
 schema_version: "0.1"
 name: "OpenRAL/rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16"
@@ -75,9 +75,6 @@ description: >
 # bound remains below both the HAL's 0.08 rad live target-step ceiling and its
 # 0.05 rad initial-alignment ceiling.
 policy_extras:
-  # Relative to OPENRAL_GALAXEA_A1_RUNTIME_ROOT. This task-specific Runtime
-  # config belongs to the rSkill contract, not to the policy adapter code.
-  runtime_config: "configs/deployments/lingbot/fruit_placement_eef.toml"
   max_joint_substep_rad: 0.045
 
 actions:

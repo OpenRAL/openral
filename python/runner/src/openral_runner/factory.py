@@ -196,10 +196,10 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
 
 def _galaxea_a1_camera_bridge_params(
     cfg: SensorReaderConfig,
-) -> tuple[Literal["front", "wrist"], str, str]:
+) -> Literal["front", "wrist"]:
     """Validate and return the explicit A1 camera bridge scene parameters."""
     params = cfg.backend_params
-    allowed = {"camera", "runtime_root_env", "system_config"}
+    allowed = {"camera"}
     unknown = set(params) - allowed
     if unknown:
         raise ROSConfigError(
@@ -213,17 +213,7 @@ def _galaxea_a1_camera_bridge_params(
             "backend=galaxea_a1_camera_bridge) requires "
             "backend_params.camera to be 'front' or 'wrist'"
         )
-    runtime_root_env = params.get("runtime_root_env", "OPENRAL_GALAXEA_A1_RUNTIME_ROOT")
-    system_config = params.get("system_config")
-    if not isinstance(runtime_root_env, str) or not runtime_root_env:
-        raise ROSConfigError("Galaxea A1 camera bridge runtime_root_env must be a non-empty string")
-    if not isinstance(system_config, str) or not system_config:
-        raise ROSConfigError(
-            f"SensorReaderConfig({cfg.sensor_id!r}, "
-            "backend=galaxea_a1_camera_bridge) requires "
-            "backend_params.system_config"
-        )
-    return cast(Literal["front", "wrist"], camera), runtime_root_env, system_config
+    return cast(Literal["front", "wrist"], camera)
 
 
 def _make_galaxea_a1_camera_bridge_reader(
@@ -237,12 +227,9 @@ def _make_galaxea_a1_camera_bridge_reader(
         _GalaxeaA1CameraBridgeSession,
     )
 
-    camera, runtime_root_env, system_config = _galaxea_a1_camera_bridge_params(cfg)
+    camera = _galaxea_a1_camera_bridge_params(cfg)
     if session is None:
-        paired_session = _GalaxeaA1CameraBridgeSession(
-            runtime_root_env=runtime_root_env,
-            system_config=system_config,
-        )
+        paired_session = _GalaxeaA1CameraBridgeSession()
     elif isinstance(session, _GalaxeaA1CameraBridgeSession):
         paired_session = session
     else:
@@ -258,7 +245,7 @@ def _make_galaxea_a1_camera_bridge_reader(
 def make_sensor_readers(configs: Sequence[SensorReaderConfig]) -> list[SensorReader]:
     """Build readers in order, sharing resources within one deployment batch."""
     a1_backend = "galaxea_a1_camera_bridge"
-    a1_sessions: dict[tuple[str, str], _GalaxeaA1CameraBridgeSession] = {}
+    a1_session: _GalaxeaA1CameraBridgeSession | None = None
     readers: list[SensorReader] = []
     for cfg in configs:
         if cfg.backend.value == a1_backend:
@@ -266,16 +253,10 @@ def make_sensor_readers(configs: Sequence[SensorReaderConfig]) -> list[SensorRea
                 _GalaxeaA1CameraBridgeSession,
             )
 
-            _, runtime_root_env, system_config = _galaxea_a1_camera_bridge_params(cfg)
-            key = runtime_root_env, system_config
-            session = a1_sessions.get(key)
-            if session is None:
-                session = _GalaxeaA1CameraBridgeSession(
-                    runtime_root_env=runtime_root_env,
-                    system_config=system_config,
-                )
-                a1_sessions[key] = session
-            readers.append(_make_galaxea_a1_camera_bridge_reader(cfg, session=session))
+            _galaxea_a1_camera_bridge_params(cfg)
+            if a1_session is None:
+                a1_session = _GalaxeaA1CameraBridgeSession()
+            readers.append(_make_galaxea_a1_camera_bridge_reader(cfg, session=a1_session))
             continue
         factory = SENSOR_BACKEND_REGISTRY.get(cfg.backend.value)
         if factory is None:

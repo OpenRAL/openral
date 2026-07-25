@@ -403,37 +403,23 @@ _Robbyant LingBot-VLA 2.0 policy adapter (Apache-2.0 code + weights). Proxies th
 - `_policy_default_port(model_id, robo_name, variant="v2") -> int` / `_resolve_camera_keys(env_cfg, extra) -> tuple[str, ...]` / `_resolve_model_id(spec, extra, default_model_id) -> str` / `_locate_sidecar_script() -> Path` / `_opt_int(value, default) -> int` — per-(variant, model, embodiment) SHA-256-bucketed default port (20000–39999); scene-camera resolution (order load-bearing: top/left-wrist/right-wrist); model-id resolution (`vla.extra.model_id` > manifest `weights_uri` > `spec.weights_uri` > per-variant default); boot-helper locator; `vla.extra` int coercion. (L119)
 
 #### `python/sim/src/openral_sim/policies/lingbot_va_a1.py`
-_LingBot-VA real-deployment adapter for the Galaxea A1 embodiment. The external
-A1 Runtime owns model serving, EEF validation, IK, and synchronized camera
-acquisition; this adapter returns absolute six-joint plus normalized-gripper
-actions through OpenRAL's normal candidate-action and safety path._
+_Thin LingBot-VA real-deployment adapter for the Galaxea A1 embodiment. It
+connects to the Runtime-owned versioned policy gateway and returns its absolute
+six-joint plus normalized-gripper proposals through OpenRAL's normal
+candidate-action and safety path._
 
 - `_LingBotVaA1Adapter(spec, *, robot_description)` — Validates the A1
-  embodiment, loads the tracked external deployment contract, sends paired RGB
-  observations to LingBot, validates/solves each EEF target, and replays the
-  resulting joint solution using the rSkill-owned
-  `policy_extras.max_joint_substep_rad` bounded by the robot HAL's target-step
-  and initial-alignment ceilings. Chunk-boundary inference runs on one worker
-  while the adapter repeats the last validated absolute target.
-- `_bounded_joint_substep(current, target, *, max_step_rad)` — Pure
-  feedback-relative subdivision; finite matching vectors and a positive bound
-  are required.
-- `_joint_limits_from_description(robot_description, *, expected_joint_names)` —
-  Extracts the ordered finite joint-position command envelope from the active
-  OpenRAL `RobotDescription`.
-- `_build_manifest_bounded_ik_solver(*, ik_module, system, robot_description)` —
-  Constructs the A1 Runtime IK implementation with the OpenRAL limits rather
-  than its independently calibrated Runtime bounds, so every lowered target
-  already matches the C++ kernel and ROS 1 sidecar contract.
-- `_runtime_paths(spec) -> tuple[Path, Path]` — Resolves the external A1
-  Runtime checkout and the rSkill-owned relative deployment config, rejecting
-  missing, absolute, escaping, and nonexistent paths before importing Runtime
-  code.
+  embodiment and rSkill model identity, negotiates the active OpenRAL joint
+  envelope and policy-owned step bound, sends joints plus paired RGB
+  observations, and validates the returned 7-D action proposal. Runtime owns
+  its exact deployment config, EEF transforms, chunk/cache replay, and IK.
+- `_joint_contract(spec, robot_description)` — Extracts ordered finite command
+  limits and rejects a policy substep above either active HAL phase limit.
+- `_model_identity(spec) -> tuple[str, str]` — Resolves the rSkill's immutable
+  model repo/revision for the gateway identity handshake.
 - `_build_lingbot_va_a1(env_cfg) -> _LingBotVaA1Adapter` —
-  `@POLICIES.register("lingbot_va_a1")` factory. The task-specific A1 Runtime
-  deployment config is read from the manifest's `policy_extras.runtime_config`;
-  it is not a hidden adapter default. The adapter explicitly accepts only the
-  `galaxea_a1` embodiment.
+  `@POLICIES.register("lingbot_va_a1")` factory. The adapter explicitly accepts
+  only the `galaxea_a1` embodiment.
 
 #### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`
 _Boot helper + server for the LingBot-VLA 2.0 sidecar, companion to `openral_sim.policies.lingbot_vla2`._ The boot helper runs under the openral interpreter: it clones `github.com/robbyant/lingbot-vla-v2` at the pinned SHA `69729b4` into `<home>/source` (shallow-fetch of the exact commit; `$OPENRAL_LINGBOT_VLA2_REPO` reuses a checkout), builds a Python 3.12 venv from the upstream fully-pinned `requirements.txt` (torch==2.8.0 / transformers==4.57.3 / triton==3.4.0 / numpy==1.26.4) + `pyzmq` + `bitsandbytes` via the shared `ensure_pip_venv` (`$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON` reuses an interpreter), stamps the sidecar identity record, then `os.execvpe`s into the server with `make_isolated_env`. The server (sidecar venv, no openral import) loads `LingbotVLAv2Server` (NF4 Qwen3-VL backbone via `_nf4_backbone_in_place`, bf16 MoE expert), reconstructs the missing `lingbotvla_cli.yaml` from `configs/vla/robotwin/robotwin.yaml`, and answers `ping`/`reset`/`get_action`/`close` over the same msgpack ndarray wire as `openral_sim.sidecar`. flash-attn is NOT installed; `_install_attn_fallback` / `_coerce_attn_config` patch the upstream `flash_attention_2` hardcode to `sdpa` (or `eager`) before the model is built. `_install_lerobot_stub` installs a meta-path finder that stubs the training-only `lerobot.*` imports the model class pulls in (uninstallable here — it wants transformers 5.x), and `_write_cli_yaml` stringifies the `joints`/`norm_type` entries the upstream loader `ast.literal_eval`s; both are required for the inference-only load to succeed (verified live).

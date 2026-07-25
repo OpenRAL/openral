@@ -98,8 +98,8 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
     ),
     "lingbot_va_a1": (
         "Install the LingBot wire dependencies with `just sync --all-packages "
-        "--group lingbot`, set OPENRAL_GALAXEA_A1_RUNTIME_ROOT to the A1 "
-        "Runtime checkout, and start its contract-checked policy server."
+        "--group lingbot`, then start the A1 Runtime camera bridge, "
+        "contract-checked LingBot server, and OpenRAL policy gateway."
     ),
     "internvla_n1": (
         "Install the rldx extras: `just sync --all-packages --group rldx` "

@@ -4431,11 +4431,11 @@ sidecar transport + adapter but loads from the separate V1 upstream repo
 (adapter: ``openral_sim.policies.lingbot_vla2`` id ``lingbot_vla``).
 
 ``lingbot_va_a1`` is the Galaxea A1 EEF deployment adapter for the LingBot-VA
-checkpoint. It uses a separately maintained A1 Runtime checkout for the
-contract-checked LingBot service, paired camera bridge, EEF transforms, and IK,
-then returns joint/gripper actions through the normal OpenRAL safety and HAL
-path. The task-specific runtime configuration is declared by the rSkill's
-``policy_extras.runtime_config`` field rather than hidden in the adapter.
+checkpoint. It connects to versioned local Camera Bridge and policy-gateway
+services owned by the separately maintained A1 Runtime, without importing its
+checkout. Runtime owns the exact model configuration, EEF transforms, cache
+semantics, and IK; OpenRAL validates the gateway identity and returns its
+joint/gripper proposals through the normal safety and HAL path.
 
 ``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
 loaded in-process (``trust_remote_code``, gated by
@@ -7334,8 +7334,9 @@ class SensorReaderBackend(str, Enum):
 
     ``opencv_thread`` is the default and mirrors lerobot's per-camera
     background-thread pattern. ``galaxea_a1_camera_bridge`` consumes the
-    paired raw-frame service owned by an external A1 Runtime checkout without
-    opening either RealSense device. Three additional backends are reserved.
+    versioned paired raw-frame service owned by an external A1 Runtime process
+    without importing Runtime or opening either RealSense device. Three
+    additional backends are reserved.
     ``ros2_image`` subscribes to a ROS 2 image topic published by
     a vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink
     delivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).

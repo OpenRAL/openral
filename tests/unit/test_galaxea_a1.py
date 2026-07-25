@@ -9,11 +9,9 @@ import socket
 import sys
 import threading
 import time
-from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 from openral_core import (
     Action,
@@ -34,14 +32,11 @@ from openral_hal.galaxea_a1 import (
     _SocketTransport,
 )
 from openral_hal.protocol import HAL, HALHealthProvider, LifecycleEStopHAL
-from openral_runner.backends.galaxea_a1_camera_bridge import _PairedObservationCache
+from openral_runner.backends.galaxea_a1_ipc import RuntimeLocalClient, runtime_socket_path
 from openral_runner.factory import SENSOR_BACKEND_REGISTRY, make_sensor_readers
 from openral_sim.policies.lingbot_va_a1 import (
-    _bounded_joint_substep,
-    _joint_limits_from_description,
-    _LingBotVaA1Adapter,
-    _runtime_paths,
-    _validated_joint_substep_limit,
+    _joint_contract,
+    _model_identity,
 )
 
 _SIDECAR = runpy.run_path(
@@ -119,81 +114,48 @@ def test_lingbot_manifest_owns_policy_joint_substep() -> None:
     manifest = RSkillManifest.from_yaml(str(manifest_path))
 
     assert manifest.policy_extras["max_joint_substep_rad"] == 0.045
-    assert (
-        manifest.policy_extras["runtime_config"]
-        == "configs/deployments/lingbot/fruit_placement_eef.toml"
-    )
+    assert "runtime_config" not in manifest.policy_extras
 
 
-def test_lingbot_runtime_config_resolves_inside_runtime_checkout(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    config = tmp_path / "configs" / "deployments" / "lingbot" / "fruit_placement_eef.toml"
-    config.parent.mkdir(parents=True)
-    config.write_text("[deployment]\n", encoding="utf-8")
-    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
-    spec = VLASpec(
-        id="lingbot_va_a1",
-        weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
-        extra={"runtime_config": str(config.relative_to(tmp_path))},
-    )
-
-    assert _runtime_paths(spec) == (tmp_path.resolve(), config.resolve())
-
-
-def test_lingbot_runtime_config_is_required(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
+def test_lingbot_rskill_pins_the_gateway_model_identity() -> None:
     spec = VLASpec(
         id="lingbot_va_a1",
         weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
     )
 
-    with pytest.raises(ROSConfigError, match=r"policy_extras\.runtime_config"):
-        _runtime_paths(spec)
+    repo_id, revision = _model_identity(spec)
+
+    assert repo_id == "pengyue-polaron/lingbot-va-galaxea-a1-fruit-placement-eef"
+    assert revision == "90e017bdbc6afac2e441b4634c9192776bbcb8b7"
 
 
-@pytest.mark.parametrize("runtime_config", ["/tmp/outside.toml", "../outside.toml"])
-def test_lingbot_runtime_config_cannot_escape_runtime_checkout(
-    runtime_config: str,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
+def test_lingbot_joint_contract_uses_manifest_limits_and_policy_bound() -> None:
     spec = VLASpec(
         id="lingbot_va_a1",
         weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
-        extra={"runtime_config": runtime_config},
+        extra={"max_joint_substep_rad": 0.045},
     )
 
-    with pytest.raises(ROSConfigError, match=r"must be relative|escapes"):
-        _runtime_paths(spec)
-
-
-def test_lingbot_ik_uses_openral_manifest_joint_limits() -> None:
-    names = tuple(joint.name for joint in GALAXEA_A1_DESCRIPTION.joints)
-
-    lower, upper = _joint_limits_from_description(
+    names, lower, upper, step = _joint_contract(
+        spec,
         GALAXEA_A1_DESCRIPTION,
-        expected_joint_names=names,
     )
 
+    assert names == tuple(f"arm_joint{index}" for index in range(1, 7))
     assert lower == pytest.approx([-2.8798, 0.0, -3.3161, -2.8798, -1.6581, -2.8798])
     assert upper == pytest.approx([2.8798, 3.1415, 0.0, 2.8798, 1.6581, 2.8798])
+    assert step == 0.045
 
 
-def test_lingbot_ik_rejects_description_without_command_limits() -> None:
-    joints = list(GALAXEA_A1_DESCRIPTION.joints)
-    joints[1] = joints[1].model_copy(update={"position_limits": None})
-    description = GALAXEA_A1_DESCRIPTION.model_copy(update={"joints": joints})
+def test_lingbot_joint_contract_rejects_bound_above_hal_phase_limit() -> None:
+    spec = VLASpec(
+        id="lingbot_va_a1",
+        weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
+        extra={"max_joint_substep_rad": 0.06},
+    )
 
-    with pytest.raises(ValueError, match="finite position limits"):
-        _joint_limits_from_description(
-            description,
-            expected_joint_names=tuple(joint.name for joint in joints),
-        )
+    with pytest.raises(ROSConfigError, match="no greater than"):
+        _joint_contract(spec, GALAXEA_A1_DESCRIPTION)
 
 
 def test_manifest_and_hal_pin_official_a1_joint_transforms() -> None:
@@ -226,35 +188,36 @@ def test_hal_rejects_invalid_sidecar_ports(port: object) -> None:
         GalaxeaA1HAL(port=port)  # type: ignore[arg-type] # reason: runtime validation contract
 
 
-def test_camera_bridge_backend_requires_explicit_a1_runtime_root(
+def test_camera_bridge_backend_uses_runtime_process_endpoint(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("A1_PROCESS_STATE_ROOT", str(tmp_path))
     cfg = SensorReaderConfig(
         sensor_id="front",
         backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
-        backend_params={
-            "camera": "front",
-            "runtime_root_env": "OPENRAL_TEST_A1_RUNTIME_ROOT",
-            "system_config": "configs/system/a1.toml",
-        },
+        backend_params={"camera": "front"},
         max_age_ms=500,
     )
     reader = SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
     assert reader.sensor_id == "front"
     assert not reader.is_open
-    monkeypatch.delenv("OPENRAL_TEST_A1_RUNTIME_ROOT", raising=False)
-    with pytest.raises(ROSConfigError, match="OPENRAL_TEST_A1_RUNTIME_ROOT"):
+    assert runtime_socket_path("a1-camera-bridge.sock") == (tmp_path / "a1-camera-bridge.sock")
+    with pytest.raises(ROSConfigError, match="corresponding A1 Runtime service"):
         reader.open()
 
 
-def test_camera_bridge_backend_requires_explicit_system_config() -> None:
+def test_camera_bridge_backend_rejects_checkout_parameters() -> None:
     cfg = SensorReaderConfig(
         sensor_id="front",
         backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
-        backend_params={"camera": "front"},
+        backend_params={
+            "camera": "front",
+            "runtime_root_env": "OPENRAL_GALAXEA_A1_RUNTIME_ROOT",
+        },
     )
 
-    with pytest.raises(ROSConfigError, match=r"backend_params\.system_config"):
+    with pytest.raises(ROSConfigError, match="unknown params"):
         SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
 
 
@@ -268,16 +231,28 @@ def test_camera_bridge_backend_rejects_unknown_camera() -> None:
         SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
 
 
+def test_runtime_local_client_closes_a_broken_transport() -> None:
+    client_socket, peer_socket = socket.socketpair()
+    client = RuntimeLocalClient(
+        "test.sock",
+        label="test Runtime service",
+        max_response_bytes=1024,
+    )
+    client._socket = client_socket
+    peer_socket.close()
+
+    with pytest.raises(ROSRuntimeError, match="transport failed"):
+        client.call({"op": "describe"}, timeout_s=0.1)
+
+    assert client._socket is None
+
+
 def test_camera_bridge_batch_shares_one_paired_session() -> None:
     configs = [
         SensorReaderConfig(
             sensor_id=camera,
             backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
-            backend_params={
-                "camera": camera,
-                "runtime_root_env": "OPENRAL_TEST_A1_RUNTIME_ROOT",
-                "system_config": "configs/system/a1.toml",
-            },
+            backend_params={"camera": camera},
             max_age_ms=500,
         )
         for camera in ("front", "wrist")
@@ -286,157 +261,6 @@ def test_camera_bridge_batch_shares_one_paired_session() -> None:
     front, wrist = make_sensor_readers(configs)
 
     assert front._session is wrist._session
-
-
-def test_camera_bridge_pair_is_read_once_with_one_shared_timestamp() -> None:
-    calls = 0
-
-    def read_observation() -> dict[str, np.ndarray]:
-        nonlocal calls
-        calls += 1
-        return {
-            "front": np.full((2, 3, 3), calls, dtype=np.uint8),
-            "wrist": np.full((2, 4, 3), calls + 10, dtype=np.uint8),
-        }
-
-    cache = _PairedObservationCache(read_observation)
-
-    front = cache.read("front", max_age_ms=500)
-    wrist = cache.read("wrist", max_age_ms=500)
-
-    assert calls == 1
-    assert front.stamp_monotonic_ns == wrist.stamp_monotonic_ns
-    assert front.stamp_wall_ns == wrist.stamp_wall_ns
-    assert int(front.rgb[0, 0, 0]) == 1
-    assert int(wrist.rgb[0, 0, 0]) == 11
-
-    cache.read("front", max_age_ms=500)
-    assert calls == 2
-
-
-def test_lingbot_joint_lowering_respects_manifest_step_limit() -> None:
-    current = np.zeros(6, dtype=np.float64)
-    target = np.array([0.16, -0.08, 0.04, 0.0, 0.0, 0.0], dtype=np.float64)
-    step_limit = _validated_joint_substep_limit(
-        policy_substep_rad=0.04,
-        max_target_step_rad=0.04,
-        initial_alignment_tolerance_rad=0.05,
-    )
-    first, reached = _bounded_joint_substep(
-        current,
-        target,
-        max_step_rad=step_limit,
-    )
-    assert not reached
-    assert float(np.max(np.abs(first - current))) < 0.04
-    second, reached = _bounded_joint_substep(
-        first,
-        target,
-        max_step_rad=step_limit,
-    )
-    assert not reached
-    assert float(np.max(np.abs(second - first))) < 0.04
-    third, reached = _bounded_joint_substep(second, target, max_step_rad=step_limit)
-    assert not reached
-    fourth, reached = _bounded_joint_substep(third, target, max_step_rad=step_limit)
-    assert not reached
-    final, reached = _bounded_joint_substep(fourth, target, max_step_rad=step_limit)
-    assert reached
-    assert final == pytest.approx(target)
-
-
-def test_lingbot_joint_lowering_rejects_nonfinite_input() -> None:
-    with pytest.raises(ValueError, match="matching finite vectors"):
-        _bounded_joint_substep(
-            np.zeros(6, dtype=np.float64),
-            np.array([np.nan, 0, 0, 0, 0, 0], dtype=np.float64),
-            max_step_rad=0.08,
-        )
-
-
-def test_lingbot_joint_lowering_rejects_policy_bound_above_hal_phase_limits() -> None:
-    with pytest.raises(ValueError, match="must not exceed"):
-        _validated_joint_substep_limit(
-            policy_substep_rad=0.06,
-            max_target_step_rad=0.08,
-            initial_alignment_tolerance_rad=0.05,
-        )
-
-
-def test_lingbot_boundary_inference_replays_last_safe_target_without_blocking() -> None:
-    adapter = _LingBotVaA1Adapter.__new__(_LingBotVaA1Adapter)
-    adapter._boundary_future = Future()
-    adapter._boundary_deadline = time.monotonic() + 1.0
-    adapter._inference_timeout_s = 1.0
-    adapter._last_joint_target = np.arange(6, dtype=np.float64) / 10.0
-    adapter._last_gripper_target = 0.25
-
-    started = time.monotonic()
-    action = adapter._poll_chunk_boundary()
-
-    assert time.monotonic() - started < 0.05
-    assert action == pytest.approx([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.25])
-
-
-def test_lingbot_boundary_inference_fails_at_manifest_latency_budget() -> None:
-    adapter = _LingBotVaA1Adapter.__new__(_LingBotVaA1Adapter)
-    adapter._boundary_future = Future()
-    adapter._boundary_deadline = time.monotonic() - 0.001
-    adapter._inference_timeout_s = 6.0
-
-    with pytest.raises(ROSRuntimeError, match=r"6\.000 s per-chunk latency budget"):
-        adapter._poll_chunk_boundary()
-
-
-def test_lingbot_action_advances_only_after_reaching_solved_target() -> None:
-    adapter = _LingBotVaA1Adapter.__new__(_LingBotVaA1Adapter)
-    adapter._active_joint_target = np.array(
-        [0.12, -0.06, 0.03, 0.0, 0.0, 0.0],
-        dtype=np.float64,
-    )
-    adapter._active_gripper = 0.25
-    adapter._max_joint_step_rad = 0.03
-    adapter._origin_pose7 = np.array([0.5, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0])
-    adapter._solver = SimpleNamespace(
-        forward=lambda joints: (
-            np.asarray(joints[:3], dtype=np.float64),
-            np.array([0.0, 0.0, 0.0, 1.0]),
-        )
-    )
-    adapter._config = SimpleNamespace(action=SimpleNamespace(pose_mode="absolute"))
-    adapter._action_config = SimpleNamespace(min_quat_norm=1e-6)
-    adapter._chunk = SimpleNamespace(
-        cache_state=np.zeros((8, 1, 1), dtype=np.float64),
-        needs_observation_after=lambda _index: True,
-    )
-    adapter._active_cache_frame_index = 0
-    adapter._active_action_index = 0
-    adapter._step_index = 0
-    adapter._pending_observation = False
-    adapter._last_joint_target = None
-    adapter._last_gripper_target = None
-
-    first = adapter._step_active_action(np.zeros(6, dtype=np.float64))
-
-    assert first == pytest.approx([0.03, -0.015, 0.0075, 0.0, 0.0, 0.0, 0.25])
-    assert adapter._step_index == 0
-    assert adapter._pending_observation is False
-    assert adapter._active_joint_target is not None
-    assert adapter._chunk.cache_state == pytest.approx(np.zeros((8, 1, 1)))
-
-    final_feedback = np.array(
-        [0.11, -0.055, 0.0275, 0.0, 0.0, 0.0],
-        dtype=np.float64,
-    )
-    final = adapter._step_active_action(final_feedback)
-
-    assert final == pytest.approx([0.12, -0.06, 0.03, 0.0, 0.0, 0.0, 0.25])
-    assert adapter._step_index == 1
-    assert adapter._pending_observation is True
-    assert adapter._active_joint_target is None
-    assert adapter._chunk.cache_state[:, 0, 0] == pytest.approx(
-        [0.12, -0.06, 0.03, 0.0, 0.0, 0.0, 1.0, 0.25]
-    )
 
 
 def test_connect_reads_state_and_sends_aligned_joint_target() -> None:

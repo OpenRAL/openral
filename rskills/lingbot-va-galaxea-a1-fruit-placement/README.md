@@ -60,17 +60,17 @@ action-channel map `[0, 1, 2, 3, 4, 5, 6, 28]` are applied in the external
 LingBot server from the checkpoint's `configs/va_a1_cfg.py`; this is not a
 LeRobot `PolicyProcessorPipeline`.
 
-OpenRAL's `lingbot_va_a1` adapter validates each physical EEF target with the A1
-Runtime contract, solves IK, and emits six absolute joint targets plus one
-normalized gripper target. If an IK solution is farther than the rSkill's
-feedback-relative joint-step bound, the adapter advances toward that same
-solution on subsequent 30 Hz ticks and does not consume the next model action
-until the full solved target can be dispatched. It then writes the dispatched
-target's FK result into the LingBot KV cache. The typed action follows OpenRAL's normal
-candidate-action, C++ safety-kernel, safe-action, and Galaxea A1 HAL path.
-The Runtime-provided IK implementation is constructed with the active OpenRAL
-robot manifest's ordered joint limits, so Runtime calibration margins cannot
-widen the official command envelope.
+The A1 Runtime policy gateway validates each physical EEF target, solves IK,
+and emits six absolute joint targets plus one normalized gripper target. If an
+IK solution is farther than the rSkill's feedback-relative joint-step bound,
+the gateway advances toward that same solution on subsequent 30 Hz ticks and
+does not consume the next model action until the full solved target can be
+dispatched. It then writes the dispatched target's FK result into the LingBot
+KV cache. OpenRAL's thin adapter validates the gateway model and robot contract,
+then routes the typed proposal through the normal candidate-action, C++ safety
+kernel, safe-action, and Galaxea A1 HAL path. Runtime's IK is constructed with
+the active OpenRAL robot manifest's ordered joint limits, so Runtime calibration
+margins cannot widen the official command envelope.
 
 ## Sensors and observation contract
 
@@ -82,7 +82,9 @@ widen the official command envelope.
 | out | action | `(7,)` float32 | Six absolute joint targets in radians and one normalized gripper target |
 
 The A1 Runtime remains the sole camera-device owner. OpenRAL connects to its
-paired Camera Bridge and does not open either RealSense device itself.
+versioned paired Camera Bridge and policy gateway over private per-user Unix
+sockets; it neither imports the Runtime checkout nor opens either RealSense
+device.
 
 ## Supported robots
 
@@ -124,9 +126,9 @@ uv run --group lingbot openral rskill check \
 
 For real deployment, follow the owner-separated startup sequence in
 [`docs/methods/01-hal.md`](../../docs/methods/01-hal.md): start the A1 Runtime
-camera owner and LingBot server, start the isolated OpenRAL ROS1 sidecar, then
-run the OpenRAL deployment scene. Do not start the A1 Runtime joint execution
-bridge at the same time.
+camera owner, LingBot server, and policy gateway; start the isolated OpenRAL
+ROS1 sidecar; then run the OpenRAL deployment scene. Do not start the A1
+Runtime joint execution bridge at the same time.
 
 ## Evaluation
 

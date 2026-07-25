@@ -354,26 +354,27 @@ checkpoint-specific A1 rSkill. The dependency direction is deliberate:
 
 ```text
 A1 Camera Bridge -> OpenRAL WorldState -> LingBot-VA rSkill
-  -> A1 Runtime EEF validation + IK
+  -> A1 Runtime policy gateway (model contract + EEF/cache + IK)
   -> OpenRAL candidate_action -> C++ safety kernel -> safe_action
   -> GalaxeaA1HAL -> isolated ROS 1 sidecar -> official A1 driver
 ```
 
 The A1 Runtime is a public capability provider, not a second controller:
-start only its persistent camera owner and LingBot policy server. Do not start
-its LingBot ROS execution bridge or A1 joint runtime while OpenRAL owns the
-deployment. The rSkill owns its `policy_extras.max_joint_substep_rad` replay
+start only its persistent camera owner, LingBot policy server, and OpenRAL
+policy gateway. The gateway has no ROS imports or command publisher. Do not
+start its LingBot ROS execution bridge or A1 joint runtime while OpenRAL owns
+the deployment. The rSkill owns its `policy_extras.max_joint_substep_rad` replay
 setting and reads the independent `max_target_step_rad` ceiling from the same
 `RobotDescription` used to construct the HAL. Startup rejects a policy bound
 that exceeds either the HAL's live target-step ceiling or locked-relay
 alignment tolerance. The policy bound is 0.045 rad, below the 0.05 rad
 locked-relay alignment threshold; the independent HAL/sidecar live limit is
-0.08 rad. The adapter also constructs the Runtime-provided IK implementation
-with the active OpenRAL `RobotDescription`'s ordered command limits. Runtime
-calibration bounds may be wider, but they cannot widen the typed OpenRAL,
-safety-kernel, or official sidecar command envelope.
+0.08 rad. The gateway constructs Runtime's IK implementation with the active
+OpenRAL `RobotDescription`'s ordered command limits after verifying they are no
+wider than Runtime's envelope. Runtime calibration margins therefore cannot
+widen the typed OpenRAL, safety-kernel, or official sidecar command envelope.
 
-The adapter emits one bounded target per 30 Hz control tick. When its IK
+The gateway emits one bounded target per 30 Hz control tick. When its IK
 solution is farther than 0.045 rad from fresh feedback, it keeps advancing
 toward that same solved target on subsequent ticks and only consumes the next
 model action after the solved target has been dispatched. The FK of the actual
@@ -388,6 +389,9 @@ reachability check, not a motor-command step limit.
 cd /absolute/path/to/A1-Research
 just cameras start
 scripts/apps/lingbot/a1_lingbot_runtime.sh server
+uv run galaxea-a1-openral-policy \
+  --config configs/deployments/lingbot/fruit_placement_eef.toml \
+  --repo-root .
 
 # Terminal B — official ROS 1 sidecar, as in the bring-up section above.
 cd /absolute/path/to/OpenRAL
@@ -398,7 +402,6 @@ tools/run_galaxea_a1_sidecar.sh \
 
 # Terminal C — the complete OpenRAL real deployment.
 cd /absolute/path/to/OpenRAL
-export OPENRAL_GALAXEA_A1_RUNTIME_ROOT=/absolute/path/to/A1-Research
 uv run --group lingbot openral deploy run \
   --config scenes/deploy/galaxea_a1_bench.yaml
 ```

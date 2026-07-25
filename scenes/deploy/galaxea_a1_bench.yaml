@@ -1,5 +1,5 @@
 # Galaxea A1 hardware deployment. Start the ROS 1 sidecar, A1 Camera Bridge,
-# and LingBot policy server first, then run:
+# LingBot policy server, and A1 Runtime OpenRAL policy gateway first, then run:
 #   openral deploy run --config scenes/deploy/galaxea_a1_bench.yaml
 scene:
   id: galaxea_a1_bench
@@ -27,8 +27,6 @@ sensors:
       backend: galaxea_a1_camera_bridge
       backend_params:
         camera: front
-        runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
-        system_config: configs/system/a1.toml
       max_age_ms: 500
   - name: wrist
     modality: rgb
@@ -50,8 +48,6 @@ sensors:
       backend: galaxea_a1_camera_bridge
       backend_params:
         camera: wrist
-        runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
-        system_config: configs/system/a1.toml
       max_age_ms: 500
 runtime:
   enable_reasoner: false

@@ -2878,6 +2878,7 @@ name = "openral-runner"
 version = "0.1.0"
 source = { editable = "python/runner" }
 dependencies = [
+    { name = "msgpack" },
     { name = "openral-core" },
     { name = "openral-hal" },
     { name = "openral-observability" },
@@ -2896,6 +2897,7 @@ opencv = [
 
 [package.metadata]
 requires-dist = [
+    { name = "msgpack", specifier = ">=1.1" },
     { name = "opencv-python", marker = "extra == 'opencv'", specifier = ">=4.8" },
     { name = "openral-core", editable = "python/core" },
     { name = "openral-hal", editable = "python/hal" },
