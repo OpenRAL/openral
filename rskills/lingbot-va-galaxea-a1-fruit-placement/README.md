@@ -6,7 +6,7 @@ pipeline_tag: robotics
 tags:
 - OpenRAL
 - rskill
-- lingbot_va
+- lingbot_va_a1
 - vision-language-action
 - galaxea_a1
 base_model:
@@ -17,7 +17,7 @@ datasets:
 inference: false
 ---
 
-# rskill-lingbot_va-galaxea_a1-fruit_placement-bf16
+# rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16
 
 > **OpenRAL rSkill** — a LingBot-VA fruit-placement policy for the Galaxea A1,
 > deployed through OpenRAL's observation, typed-action, safety-kernel, and HAL
@@ -60,7 +60,7 @@ action-channel map `[0, 1, 2, 3, 4, 5, 6, 28]` are applied in the external
 LingBot server from the checkpoint's `configs/va_a1_cfg.py`; this is not a
 LeRobot `PolicyProcessorPipeline`.
 
-OpenRAL's `lingbot_va` adapter validates each physical EEF target with the A1
+OpenRAL's `lingbot_va_a1` adapter validates each physical EEF target with the A1
 Runtime contract, solves IK, and emits six absolute joint targets plus one
 normalized gripper target. If an IK solution is farther than the rSkill's
 feedback-relative joint-step bound, the adapter advances toward that same
@@ -98,10 +98,10 @@ enable the vendor AnyGrasp/AnyEffector path.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-lingbot_va-galaxea_a1-fruit_placement-bf16` |
+| `name` | `OpenRAL/rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
-| `model_family` | `lingbot_va` |
+| `model_family` | `lingbot_va_a1` |
 | `embodiment_tags` | `galaxea_a1` |
 | `runtime` / precision | `pytorch` / `bf16` |
 | `weights_uri` | revision-pinned public LingBot-VA A1 checkpoint |

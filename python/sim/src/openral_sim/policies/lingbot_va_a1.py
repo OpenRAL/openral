@@ -25,7 +25,6 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_sim.registry import POLICIES
 
 _RUNTIME_ROOT_ENV = "OPENRAL_GALAXEA_A1_RUNTIME_ROOT"
-_DEPLOYMENT_CONFIG = "configs/deployments/lingbot/fruit_placement_eef.toml"
 _COLOR_NDIM = 3
 _COLOR_CHANNELS = 3
 
@@ -133,19 +132,26 @@ def _build_manifest_bounded_ik_solver(
     )
 
 
-def _runtime_root() -> Path:
+def _runtime_paths(spec: VLASpec) -> tuple[Path, Path]:
+    """Resolve the external Runtime checkout and its manifest-owned config."""
     raw = os.environ.get(_RUNTIME_ROOT_ENV)
     if raw is None:
-        raise ROSConfigError(f"{_RUNTIME_ROOT_ENV} is required for the lingbot_va policy adapter")
+        raise ROSConfigError(f"{_RUNTIME_ROOT_ENV} is required for the lingbot_va_a1 adapter")
     root = Path(raw).expanduser().resolve()
-    config = root / _DEPLOYMENT_CONFIG
+    runtime_config = spec.extra.get("runtime_config")
+    if not isinstance(runtime_config, str) or not runtime_config.strip():
+        raise ROSConfigError(
+            "lingbot_va_a1 requires policy_extras.runtime_config "
+            "(a relative path inside the A1 Runtime checkout)"
+        )
+    if Path(runtime_config).is_absolute():
+        raise ROSConfigError("policy_extras.runtime_config must be relative")
+    config = (root / runtime_config).resolve()
+    if not config.is_relative_to(root):
+        raise ROSConfigError("policy_extras.runtime_config escapes the A1 Runtime checkout")
     if not config.is_file():
         raise ROSConfigError(f"A1 Runtime LingBot config not found: {config}")
-    for import_root in (root / "external" / "embodied-ops" / "src", root):
-        value = str(import_root)
-        if value not in sys.path:
-            sys.path.insert(0, value)
-    return root
+    return root, config
 
 
 class _LingBotVaA1Adapter:
@@ -154,7 +160,11 @@ class _LingBotVaA1Adapter:
     device = "external:a1-runtime"
 
     def __init__(self, spec: VLASpec, *, robot_description: Any) -> None:
-        root = _runtime_root()
+        root, runtime_config = _runtime_paths(spec)
+        for import_root in (root / "external" / "embodied-ops" / "src", root):
+            value = str(import_root)
+            if value not in sys.path:
+                sys.path.insert(0, value)
         client_module, config_module, protocol_module, ik_module, action_module = (
             import_module("galaxea_a1_runtime.apps.lingbot.client"),
             import_module("galaxea_a1_runtime.apps.lingbot.config"),
@@ -164,14 +174,14 @@ class _LingBotVaA1Adapter:
         )
         self.spec = spec
         self._config = config_module.load_lingbot_config(
-            root / _DEPLOYMENT_CONFIG,
+            runtime_config,
             repo_root=root,
         )
         self._action_config = action_module.build_action_transform_config(
             system=self._config.system
         )
         if robot_description is None or robot_description.name != "galaxea_a1":
-            raise ROSConfigError("lingbot_va requires the Galaxea A1 RobotDescription")
+            raise ROSConfigError("lingbot_va_a1 requires the Galaxea A1 RobotDescription")
         system = self._config.system
         try:
             self._solver = _build_manifest_bounded_ik_solver(
@@ -181,7 +191,7 @@ class _LingBotVaA1Adapter:
             )
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise ROSConfigError(
-                "lingbot_va could not construct A1 Runtime IK with the "
+                "lingbot_va_a1 could not construct A1 Runtime IK with the "
                 "OpenRAL RobotDescription joint contract"
             ) from exc
         try:
@@ -199,7 +209,7 @@ class _LingBotVaA1Adapter:
             )
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise ROSConfigError(
-                "lingbot_va requires a finite positive policy "
+                "lingbot_va_a1 requires a finite positive policy "
                 "max_joint_substep_rad plus the Galaxea A1 HAL target-step "
                 "and initial-alignment limits"
             ) from exc
@@ -213,10 +223,12 @@ class _LingBotVaA1Adapter:
         )
         latency_budget_ms = spec.extra.get("latency_budget_ms")
         if isinstance(latency_budget_ms, bool) or not isinstance(latency_budget_ms, (int, float)):
-            raise ROSConfigError("lingbot_va requires its manifest latency budget in VLASpec.extra")
+            raise ROSConfigError(
+                "lingbot_va_a1 requires its manifest latency budget in VLASpec.extra"
+            )
         self._inference_timeout_s = float(latency_budget_ms) / 1000.0
         if not np.isfinite(self._inference_timeout_s) or self._inference_timeout_s <= 0.0:
-            raise ROSConfigError("lingbot_va requires a positive per-chunk latency budget")
+            raise ROSConfigError("lingbot_va_a1 requires a positive per-chunk latency budget")
         self._inference_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="openral-lingbot-a1",
@@ -487,14 +499,14 @@ class _LingBotVaA1Adapter:
         state = np.asarray(observation.get("state"), dtype=np.float64)
         if state.shape != (6,) or not np.isfinite(state).all():
             raise ROSRuntimeError(
-                f"lingbot_va requires six finite A1 joint positions, got {state.shape}"
+                f"lingbot_va_a1 requires six finite A1 joint positions, got {state.shape}"
             )
         return state
 
     def _model_observation(self, observation: dict[str, Any]) -> dict[str, NDArray[np.uint8]]:
         images = observation.get("images")
         if not isinstance(images, dict):
-            raise ROSRuntimeError("lingbot_va requires OpenRAL image observations")
+            raise ROSRuntimeError("lingbot_va_a1 requires OpenRAL image observations")
         result: dict[str, NDArray[np.uint8]] = {}
         for source, target in (
             ("front", self._config.observations.front_key),
@@ -507,16 +519,16 @@ class _LingBotVaA1Adapter:
                 or image.dtype != np.uint8
             ):
                 raise ROSRuntimeError(
-                    f"lingbot_va image {source!r} must be HWC uint8 RGB, "
+                    f"lingbot_va_a1 image {source!r} must be HWC uint8 RGB, "
                     f"got shape={image.shape} dtype={image.dtype}"
                 )
             result[target] = image
         return result
 
 
-@POLICIES.register("lingbot_va")
-def _build_lingbot_va(env_cfg: Any) -> _LingBotVaA1Adapter:
-    """Build the external A1 Runtime-backed LingBot adapter."""
+@POLICIES.register("lingbot_va_a1")
+def _build_lingbot_va_a1(env_cfg: Any) -> _LingBotVaA1Adapter:
+    """Build the A1 Runtime-backed LingBot-VA adapter."""
     return _LingBotVaA1Adapter(
         env_cfg.vla,
         robot_description=getattr(env_cfg, "robot_description", None),

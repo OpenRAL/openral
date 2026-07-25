@@ -425,9 +425,14 @@ actions through OpenRAL's normal candidate-action and safety path._
   Constructs the A1 Runtime IK implementation with the OpenRAL limits rather
   than its independently calibrated Runtime bounds, so every lowered target
   already matches the C++ kernel and ROS 1 sidecar contract.
-- `_build_lingbot_va(env_cfg) -> _LingBotVaA1Adapter` —
-  `@POLICIES.register("lingbot_va")` factory. The model family remains
-  robot-agnostic; the current adapter explicitly accepts only the
+- `_runtime_paths(spec) -> tuple[Path, Path]` — Resolves the external A1
+  Runtime checkout and the rSkill-owned relative deployment config, rejecting
+  missing, absolute, escaping, and nonexistent paths before importing Runtime
+  code.
+- `_build_lingbot_va_a1(env_cfg) -> _LingBotVaA1Adapter` —
+  `@POLICIES.register("lingbot_va_a1")` factory. The task-specific A1 Runtime
+  deployment config is read from the manifest's `policy_extras.runtime_config`;
+  it is not a hidden adapter default. The adapter explicitly accepts only the
   `galaxea_a1` embodiment.
 
 #### `tools/lingbot_vla2_sidecar.py` + `tools/_lingbot_vla2_server.py`

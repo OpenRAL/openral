@@ -210,13 +210,14 @@ def _make_galaxea_a1_camera_bridge_reader(cfg: SensorReaderConfig) -> SensorRead
             "backend_params.camera to be 'front' or 'wrist'"
         )
     runtime_root_env = params.get("runtime_root_env", "OPENRAL_GALAXEA_A1_RUNTIME_ROOT")
-    deployment_config = params.get(
-        "deployment_config",
-        "configs/deployments/lingbot/fruit_placement_eef.toml",
-    )
-    if not isinstance(runtime_root_env, str) or not isinstance(deployment_config, str):
+    deployment_config = params.get("deployment_config")
+    if not isinstance(runtime_root_env, str) or not runtime_root_env:
+        raise ROSConfigError("Galaxea A1 camera bridge runtime_root_env must be a non-empty string")
+    if not isinstance(deployment_config, str) or not deployment_config:
         raise ROSConfigError(
-            "Galaxea A1 camera bridge runtime_root_env and deployment_config must be strings"
+            f"SensorReaderConfig({cfg.sensor_id!r}, "
+            "backend=galaxea_a1_camera_bridge) requires "
+            "backend_params.deployment_config"
         )
     return GalaxeaA1CameraBridgeReader(
         sensor_id=cfg.sensor_id,

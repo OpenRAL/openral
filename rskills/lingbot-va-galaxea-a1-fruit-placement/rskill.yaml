@@ -5,12 +5,12 @@
 # lowers each step to six absolute A1 joint positions plus one gripper value.
 # Both typed actions then traverse OpenRAL's safety kernel and A1 HAL.
 schema_version: "0.1"
-name: "OpenRAL/rskill-lingbot_va-galaxea_a1-fruit_placement-bf16"
+name: "OpenRAL/rskill-lingbot_va_a1-galaxea_a1-fruit_placement-bf16"
 version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
 kind: "vla"
-model_family: "lingbot_va"
+model_family: "lingbot_va_a1"
 
 embodiment_tags:
   - "galaxea_a1"
@@ -75,6 +75,9 @@ description: >
 # bound remains below both the HAL's 0.08 rad live target-step ceiling and its
 # 0.05 rad initial-alignment ceiling.
 policy_extras:
+  # Relative to OPENRAL_GALAXEA_A1_RUNTIME_ROOT. This task-specific Runtime
+  # config belongs to the rSkill contract, not to the policy adapter code.
+  runtime_config: "configs/deployments/lingbot/fruit_placement_eef.toml"
   max_joint_substep_rad: 0.045
 
 actions:

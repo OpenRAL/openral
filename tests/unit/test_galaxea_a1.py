@@ -25,6 +25,7 @@ from openral_core import (
     RSkillManifest,
     SensorReaderBackend,
     SensorReaderConfig,
+    VLASpec,
 )
 from openral_hal.galaxea_a1 import (
     GALAXEA_A1_DESCRIPTION,
@@ -38,6 +39,7 @@ from openral_sim.policies.lingbot_va_a1 import (
     _bounded_joint_substep,
     _joint_limits_from_description,
     _LingBotVaA1Adapter,
+    _runtime_paths,
     _validated_joint_substep_limit,
 )
 
@@ -116,6 +118,57 @@ def test_lingbot_manifest_owns_policy_joint_substep() -> None:
     manifest = RSkillManifest.from_yaml(str(manifest_path))
 
     assert manifest.policy_extras["max_joint_substep_rad"] == 0.045
+    assert (
+        manifest.policy_extras["runtime_config"]
+        == "configs/deployments/lingbot/fruit_placement_eef.toml"
+    )
+
+
+def test_lingbot_runtime_config_resolves_inside_runtime_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "configs" / "deployments" / "lingbot" / "fruit_placement_eef.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text("[deployment]\n", encoding="utf-8")
+    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
+    spec = VLASpec(
+        id="lingbot_va_a1",
+        weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
+        extra={"runtime_config": str(config.relative_to(tmp_path))},
+    )
+
+    assert _runtime_paths(spec) == (tmp_path.resolve(), config.resolve())
+
+
+def test_lingbot_runtime_config_is_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
+    spec = VLASpec(
+        id="lingbot_va_a1",
+        weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
+    )
+
+    with pytest.raises(ROSConfigError, match=r"policy_extras\.runtime_config"):
+        _runtime_paths(spec)
+
+
+@pytest.mark.parametrize("runtime_config", ["/tmp/outside.toml", "../outside.toml"])
+def test_lingbot_runtime_config_cannot_escape_runtime_checkout(
+    runtime_config: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("OPENRAL_GALAXEA_A1_RUNTIME_ROOT", str(tmp_path))
+    spec = VLASpec(
+        id="lingbot_va_a1",
+        weights_uri="rskills/lingbot-va-galaxea-a1-fruit-placement",
+        extra={"runtime_config": runtime_config},
+    )
+
+    with pytest.raises(ROSConfigError, match=r"must be relative|escapes"):
+        _runtime_paths(spec)
 
 
 def test_lingbot_ik_uses_openral_manifest_joint_limits() -> None:
@@ -191,6 +244,17 @@ def test_camera_bridge_backend_requires_explicit_a1_runtime_root(
     monkeypatch.delenv("OPENRAL_TEST_A1_RUNTIME_ROOT", raising=False)
     with pytest.raises(ROSConfigError, match="OPENRAL_TEST_A1_RUNTIME_ROOT"):
         reader.open()
+
+
+def test_camera_bridge_backend_requires_explicit_deployment_config() -> None:
+    cfg = SensorReaderConfig(
+        sensor_id="front",
+        backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
+        backend_params={"camera": "front"},
+    )
+
+    with pytest.raises(ROSConfigError, match=r"backend_params\.deployment_config"):
+        SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
 
 
 def test_camera_bridge_backend_rejects_unknown_camera() -> None:
