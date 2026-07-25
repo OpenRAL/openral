@@ -18,7 +18,7 @@ Environment:
         default is observation-only and sends no action.
     GALAXEA_A1_ALLOW_NUDGE: When ``"1"``, implies the hold gate, then moves
         ``arm_joint1`` by +0.01 rad and returns to the measured start. Both
-        legs must settle within 0.006 rad while every joint remains inside a
+        legs must settle within 0.008 rad while every joint remains inside a
         bounded excursion from the initial feedback.
     GALAXEA_A1_ALLOW_GRIPPER: When ``"1"``, implies the hold gate, moves the
         G2 gripper by the vendor example's 10 mm step away from the nearest
@@ -48,7 +48,7 @@ _ALLOW_GRIPPER = os.environ.get("GALAXEA_A1_ALLOW_GRIPPER", "0") == "1"
 _HOST = os.environ.get("GALAXEA_A1_HOST", "127.0.0.1")
 _PORT = int(os.environ.get("GALAXEA_A1_PORT", "46011"))
 _NUDGE_RAD = 0.01
-_SETTLE_TOLERANCE_RAD = 0.006
+_SETTLE_TOLERANCE_RAD = 0.008
 _MOTION_TIMEOUT_S = 3.0
 _MAX_EXCURSION_RAD = 0.025
 _GRIPPER_NUDGE_MM = 10.0

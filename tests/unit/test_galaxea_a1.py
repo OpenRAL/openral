@@ -18,9 +18,11 @@ import pytest
 from openral_core import (
     Action,
     ControlMode,
+    RobotDescription,
     ROSConfigError,
     ROSEStopRequested,
     ROSRuntimeError,
+    RSkillManifest,
     SensorReaderBackend,
     SensorReaderConfig,
 )
@@ -34,8 +36,9 @@ from openral_hal.protocol import HAL, HALHealthProvider, LifecycleEStopHAL
 from openral_runner.factory import SENSOR_BACKEND_REGISTRY
 from openral_sim.policies.lingbot_va_a1 import (
     _bounded_joint_substep,
-    _effective_joint_substep_limit,
+    _joint_limits_from_description,
     _LingBotVaA1Adapter,
+    _validated_joint_substep_limit,
 )
 
 _SIDECAR = runpy.run_path(
@@ -100,6 +103,73 @@ def test_description_and_protocol_surface() -> None:
     assert hal.description.hal.sim is None
     assert hal.description.capabilities.has_vision
     assert [sensor.name for sensor in hal.description.sensors] == ["front", "wrist"]
+    assert "policy_substep_rad" not in hal.description.hal.parameters.defaults
+
+
+def test_lingbot_manifest_owns_policy_joint_substep() -> None:
+    manifest_path = (
+        Path(__file__).resolve().parents[2]
+        / "rskills"
+        / "lingbot-va-galaxea-a1-fruit-placement"
+        / "rskill.yaml"
+    )
+    manifest = RSkillManifest.from_yaml(str(manifest_path))
+
+    assert manifest.policy_extras["max_joint_substep_rad"] == 0.045
+
+
+def test_lingbot_ik_uses_openral_manifest_joint_limits() -> None:
+    names = tuple(joint.name for joint in GALAXEA_A1_DESCRIPTION.joints)
+
+    lower, upper = _joint_limits_from_description(
+        GALAXEA_A1_DESCRIPTION,
+        expected_joint_names=names,
+    )
+
+    assert lower == pytest.approx([-2.8798, 0.0, -3.3161, -2.8798, -1.6581, -2.8798])
+    assert upper == pytest.approx([2.8798, 3.1415, 0.0, 2.8798, 1.6581, 2.8798])
+
+
+def test_lingbot_ik_rejects_description_without_command_limits() -> None:
+    joints = list(GALAXEA_A1_DESCRIPTION.joints)
+    joints[1] = joints[1].model_copy(update={"position_limits": None})
+    description = GALAXEA_A1_DESCRIPTION.model_copy(update={"joints": joints})
+
+    with pytest.raises(ValueError, match="finite position limits"):
+        _joint_limits_from_description(
+            description,
+            expected_joint_names=tuple(joint.name for joint in joints),
+        )
+
+
+def test_manifest_and_hal_pin_official_a1_joint_transforms() -> None:
+    manifest_path = Path(__file__).resolve().parents[2] / "robots" / "galaxea_a1" / "robot.yaml"
+    manifest = RobotDescription.from_yaml(str(manifest_path))
+    expected = [
+        ((-0.0011147, 0.0, 0.0892), (0.0, 0.0, 3.1416), (0.0, 0.0, 1.0)),
+        ((0.0, -0.00004, 0.0615), (1.5708, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        ((0.34928, 0.02, 0.0), (0.0, 0.0, 1.5708), (0.0, 0.0, 1.0)),
+        ((0.07, -0.00395, -0.00004), (-1.5708, 1.5708, 0.0), (0.0, 0.0, 1.0)),
+        ((0.0, 0.0, 0.2776), (-1.5708, 0.0, 3.1416), (0.0, 0.0, 1.0)),
+        ((0.0, -0.1575, -0.00023266), (1.5708, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    ]
+
+    for description in (manifest, GALAXEA_A1_DESCRIPTION):
+        assert [
+            (joint.origin_xyz, joint.origin_rpy, joint.axis_xyz) for joint in description.joints
+        ] == expected
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "sidecar.example", "::1"])
+def test_hal_rejects_non_loopback_sidecar_hosts(host: str) -> None:
+    with pytest.raises(ROSConfigError, match="IPv4 loopback"):
+        GalaxeaA1HAL(host=host)
+
+
+@pytest.mark.parametrize("port", [True, "46011", 46011.5, 0, 65536])
+def test_hal_rejects_invalid_sidecar_ports(port: object) -> None:
+    with pytest.raises(ROSConfigError, match="TCP port"):
+        GalaxeaA1HAL(port=port)  # type: ignore[arg-type] # reason: runtime validation contract
 
 
 def test_camera_bridge_backend_requires_explicit_a1_runtime_root(
@@ -136,7 +206,8 @@ def test_camera_bridge_backend_rejects_unknown_camera() -> None:
 def test_lingbot_joint_lowering_respects_manifest_step_limit() -> None:
     current = np.zeros(6, dtype=np.float64)
     target = np.array([0.16, -0.08, 0.04, 0.0, 0.0, 0.0], dtype=np.float64)
-    step_limit = _effective_joint_substep_limit(
+    step_limit = _validated_joint_substep_limit(
+        policy_substep_rad=0.04,
         max_target_step_rad=0.04,
         initial_alignment_tolerance_rad=0.05,
     )
@@ -172,6 +243,15 @@ def test_lingbot_joint_lowering_rejects_nonfinite_input() -> None:
         )
 
 
+def test_lingbot_joint_lowering_rejects_policy_bound_above_hal_phase_limits() -> None:
+    with pytest.raises(ValueError, match="must not exceed"):
+        _validated_joint_substep_limit(
+            policy_substep_rad=0.06,
+            max_target_step_rad=0.08,
+            initial_alignment_tolerance_rad=0.05,
+        )
+
+
 def test_lingbot_boundary_inference_replays_last_safe_target_without_blocking() -> None:
     adapter = _LingBotVaA1Adapter.__new__(_LingBotVaA1Adapter)
     adapter._boundary_future = Future()
@@ -197,19 +277,27 @@ def test_lingbot_boundary_inference_fails_at_manifest_latency_budget() -> None:
         adapter._poll_chunk_boundary()
 
 
-def test_lingbot_small_action_advances_without_feedback_completion_gate() -> None:
+def test_lingbot_action_advances_only_after_reaching_solved_target() -> None:
     adapter = _LingBotVaA1Adapter.__new__(_LingBotVaA1Adapter)
     adapter._active_joint_target = np.array(
-        [0.01, -0.005, 0.0025, 0.0, 0.0, 0.0],
+        [0.12, -0.06, 0.03, 0.0, 0.0, 0.0],
         dtype=np.float64,
     )
     adapter._active_gripper = 0.25
     adapter._max_joint_step_rad = 0.03
+    adapter._origin_pose7 = np.array([0.5, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0])
+    adapter._solver = SimpleNamespace(
+        forward=lambda joints: (
+            np.asarray(joints[:3], dtype=np.float64),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+        )
+    )
+    adapter._config = SimpleNamespace(action=SimpleNamespace(pose_mode="absolute"))
+    adapter._action_config = SimpleNamespace(min_quat_norm=1e-6)
     adapter._chunk = SimpleNamespace(
         cache_state=np.zeros((8, 1, 1), dtype=np.float64),
         needs_observation_after=lambda _index: True,
     )
-    adapter._active_cache_action = np.arange(8, dtype=np.float64)
     adapter._active_cache_frame_index = 0
     adapter._active_action_index = 0
     adapter._step_index = 0
@@ -217,13 +305,27 @@ def test_lingbot_small_action_advances_without_feedback_completion_gate() -> Non
     adapter._last_joint_target = None
     adapter._last_gripper_target = None
 
-    action = adapter._step_active_action(np.zeros(6, dtype=np.float64))
+    first = adapter._step_active_action(np.zeros(6, dtype=np.float64))
 
-    assert action == pytest.approx([0.01, -0.005, 0.0025, 0.0, 0.0, 0.0, 0.25])
+    assert first == pytest.approx([0.03, -0.015, 0.0075, 0.0, 0.0, 0.0, 0.25])
+    assert adapter._step_index == 0
+    assert adapter._pending_observation is False
+    assert adapter._active_joint_target is not None
+    assert adapter._chunk.cache_state == pytest.approx(np.zeros((8, 1, 1)))
+
+    final_feedback = np.array(
+        [0.11, -0.055, 0.0275, 0.0, 0.0, 0.0],
+        dtype=np.float64,
+    )
+    final = adapter._step_active_action(final_feedback)
+
+    assert final == pytest.approx([0.12, -0.06, 0.03, 0.0, 0.0, 0.0, 0.25])
     assert adapter._step_index == 1
     assert adapter._pending_observation is True
     assert adapter._active_joint_target is None
-    assert adapter._chunk.cache_state[:, 0, 0] == pytest.approx(np.arange(8))
+    assert adapter._chunk.cache_state[:, 0, 0] == pytest.approx(
+        [0.12, -0.06, 0.03, 0.0, 0.0, 0.0, 1.0, 0.25]
+    )
 
 
 def test_connect_reads_state_and_sends_aligned_joint_target() -> None:

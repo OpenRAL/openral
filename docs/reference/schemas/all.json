@@ -155,7 +155,8 @@
         "opencv_thread",
         "ros2_image",
         "gstreamer",
-        "holoscan"
+        "holoscan",
+        "galaxea_a1_camera_bridge"
       ]
     },
     "DeadlineOverrunPolicy": {
@@ -514,12 +515,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -1071,12 +1073,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -3607,12 +3610,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -6182,6 +6186,7 @@
                 "openvla",
                 "lingbot_vla2",
                 "lingbot_vla",
+                "lingbot_va",
                 "internvla_n1"
               ],
               "type": "string"
@@ -6202,6 +6207,7 @@
               "custom",
               "franka_panda",
               "g1",
+              "galaxea_a1",
               "google_robot",
               "gr1",
               "h1",
@@ -8851,6 +8857,18 @@
           "additionalProperties": false,
           "description": "Committed deploy-posture toggles for a workcell scene.\n\nEvery runtime leg ``openral deploy sim`` / ``deploy run`` can bring up is\ndeclared here so a committed :class:`DeployScene` pins its posture\nexplicitly instead of relying on per-invocation CLI flags. Precedence is\n``CLI flag > scene runtime > auto`` \u2014 an explicit CLI flag always wins,\nand ``None`` means \"auto\" (the manifest-derived / built-in default the CLI\ndocuments for that flag: SLAM from ``capabilities.has_lidar``/vision-SLAM,\nNav2 tracks SLAM, octomap from a depth SensorSpec, detector on,\nkernel-check on, reward monitor / critic off).\n\nHost-operational knobs (dashboard, foxglove, ports, dataset recording,\n``--initial-task``, ``--dry-run``) stay CLI-only \u2014 they describe the\ninvocation, not the workcell.\n\nRelative ``*_manifest`` / ``object_detector_onnx`` paths that exist next\nto the scene YAML are resolved against the scene's directory; otherwise\nthe value is passed through verbatim (repo-relative default / alias).",
           "properties": {
+            "enable_reasoner": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enable Reasoner"
+            },
             "enable_slam": {
               "anyOf": [
                 {
@@ -9538,12 +9556,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -10159,6 +10178,18 @@
           "additionalProperties": false,
           "description": "Committed deploy-posture toggles for a workcell scene.\n\nEvery runtime leg ``openral deploy sim`` / ``deploy run`` can bring up is\ndeclared here so a committed :class:`DeployScene` pins its posture\nexplicitly instead of relying on per-invocation CLI flags. Precedence is\n``CLI flag > scene runtime > auto`` \u2014 an explicit CLI flag always wins,\nand ``None`` means \"auto\" (the manifest-derived / built-in default the CLI\ndocuments for that flag: SLAM from ``capabilities.has_lidar``/vision-SLAM,\nNav2 tracks SLAM, octomap from a depth SensorSpec, detector on,\nkernel-check on, reward monitor / critic off).\n\nHost-operational knobs (dashboard, foxglove, ports, dataset recording,\n``--initial-task``, ``--dry-run``) stay CLI-only \u2014 they describe the\ninvocation, not the workcell.\n\nRelative ``*_manifest`` / ``object_detector_onnx`` paths that exist next\nto the scene YAML are resolved against the scene's directory; otherwise\nthe value is passed through verbatim (repo-relative default / alias).",
           "properties": {
+            "enable_reasoner": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enable Reasoner"
+            },
             "enable_slam": {
               "anyOf": [
                 {
@@ -10846,12 +10877,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -11611,6 +11643,18 @@
           "additionalProperties": false,
           "description": "Committed deploy-posture toggles for a workcell scene.\n\nEvery runtime leg ``openral deploy sim`` / ``deploy run`` can bring up is\ndeclared here so a committed :class:`DeployScene` pins its posture\nexplicitly instead of relying on per-invocation CLI flags. Precedence is\n``CLI flag > scene runtime > auto`` \u2014 an explicit CLI flag always wins,\nand ``None`` means \"auto\" (the manifest-derived / built-in default the CLI\ndocuments for that flag: SLAM from ``capabilities.has_lidar``/vision-SLAM,\nNav2 tracks SLAM, octomap from a depth SensorSpec, detector on,\nkernel-check on, reward monitor / critic off).\n\nHost-operational knobs (dashboard, foxglove, ports, dataset recording,\n``--initial-task``, ``--dry-run``) stay CLI-only \u2014 they describe the\ninvocation, not the workcell.\n\nRelative ``*_manifest`` / ``object_detector_onnx`` paths that exist next\nto the scene YAML are resolved against the scene's directory; otherwise\nthe value is passed through verbatim (repo-relative default / alias).",
           "properties": {
+            "enable_reasoner": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Enable Reasoner"
+            },
             "enable_slam": {
               "anyOf": [
                 {
@@ -12298,12 +12342,13 @@
           "type": "string"
         },
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -13246,12 +13291,13 @@
     "SensorReaderConfig": {
       "$defs": {
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"
@@ -13320,12 +13366,13 @@
     "SensorDeployBinding": {
       "$defs": {
         "SensorReaderBackend": {
-          "description": "Which :class:`SensorReader` implementation to instantiate.\n\nFour backends are reserved. ``opencv_thread``\nis the default and mirrors lerobot's per-camera background-thread\npattern. ``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "description": "Which :class:`SensorReader` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\npaired raw-frame service owned by an external A1 Runtime checkout without\nopening either RealSense device. Three additional backends are reserved.\n``ros2_image`` subscribes to a ROS 2 image topic published by\na vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
           "enum": [
             "opencv_thread",
             "ros2_image",
             "gstreamer",
-            "holoscan"
+            "holoscan",
+            "galaxea_a1_camera_bridge"
           ],
           "title": "SensorReaderBackend",
           "type": "string"

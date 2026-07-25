@@ -1312,6 +1312,7 @@
             "openvla",
             "lingbot_vla2",
             "lingbot_vla",
+            "lingbot_va",
             "internvla_n1"
           ],
           "type": "string"
@@ -1332,6 +1333,7 @@
           "custom",
           "franka_panda",
           "g1",
+          "galaxea_a1",
           "google_robot",
           "gr1",
           "h1",

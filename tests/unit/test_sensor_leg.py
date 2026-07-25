@@ -14,7 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openral_core import SensorDeployBinding, SensorSpec
+from openral_core import (
+    SensorDeployBinding,
+    SensorReaderBackend,
+    SensorReaderConfig,
+    SensorSpec,
+)
 from openral_rskill_ros.sensor_leg import (
     SensorLeg,
     _publish_rate_hz,
@@ -82,6 +87,70 @@ def test_empty_leg_close_is_idempotent() -> None:
     assert leg.publishers == []
 
 
+def test_multi_camera_ros_publishers_start_only_after_explicit_lifecycle_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All ROS entities are prepared before background publishing is allowed."""
+    from openral_runner.factory import SENSOR_BACKEND_REGISTRY
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    events: list[tuple[str, str]] = []
+
+    class _Reader:
+        def __init__(self, sensor_id: str) -> None:
+            self.sensor_id = sensor_id
+
+        def open(self) -> None:
+            events.append(("open", self.sensor_id))
+
+        def close(self) -> None:
+            events.append(("close", self.sensor_id))
+
+    def build_reader(config: SensorReaderConfig) -> _Reader:
+        return _Reader(config.sensor_id)
+
+    backend = SensorReaderBackend.OPENCV_THREAD
+    monkeypatch.setitem(SENSOR_BACKEND_REGISTRY, backend.value, build_reader)
+    monkeypatch.setattr(
+        SensorRosPublisher,
+        "prepare",
+        lambda self: events.append(("prepare", self._reader.sensor_id)),
+    )
+    monkeypatch.setattr(
+        SensorRosPublisher,
+        "start",
+        lambda self: events.append(("start", self._reader.sensor_id)),
+    )
+    monkeypatch.setattr(SensorRosPublisher, "stop", lambda self: None)
+
+    binding = SensorDeployBinding(backend=backend)
+    leg = open_deploy_sensor_readers(
+        [
+            _spec("front", binding=binding),
+            _spec("wrist", binding=binding),
+        ],
+        ros_node=object(),
+    )
+    try:
+        assert events == [
+            ("open", "front"),
+            ("open", "wrist"),
+            ("prepare", "front"),
+            ("prepare", "wrist"),
+        ]
+        leg.start()
+        assert events == [
+            ("open", "front"),
+            ("open", "wrist"),
+            ("prepare", "front"),
+            ("prepare", "wrist"),
+            ("start", "front"),
+            ("start", "wrist"),
+        ]
+    finally:
+        leg.close()
+
+
 def test_gstreamer_testsrc_leg_publishes_frames(tmp_path: Path) -> None:
     """Full leg over a real videotestsrc pipeline: open → ROS tee → frame → close.
 
@@ -143,6 +212,7 @@ class _CountingAggregator(WorldStateAggregator):
 aggregator = _CountingAggregator(description)
 leg = open_deploy_sensor_readers([spec], aggregator=aggregator)
 try:
+    leg.start()
     assert len(leg.readers) == 1, leg.readers
     # The direct-aggregator pump is registered as a publisher-shaped pump;
     # the sensor is recorded for WorldState's direct_image_frame_sensors.

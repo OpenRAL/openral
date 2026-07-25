@@ -15,6 +15,9 @@ joints:
     joint_type: revolute
     parent_link: base_link
     child_link: arm_seg1
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [-0.0011147, 0, 0.0892]
+    origin_rpy: [0, 0, 3.1416]
     position_limits: [-2.8798, 2.8798]
     velocity_limit: 20.944
     effort_limit: 40.0
@@ -23,6 +26,9 @@ joints:
     joint_type: revolute
     parent_link: arm_seg1
     child_link: arm_seg2
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [0, -0.00004, 0.0615]
+    origin_rpy: [1.5708, 0, 0]
     position_limits: [0.0, 3.1415]
     velocity_limit: 20.944
     effort_limit: 40.0
@@ -31,6 +37,9 @@ joints:
     joint_type: revolute
     parent_link: arm_seg2
     child_link: arm_seg3
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [0.34928, 0.02, 0]
+    origin_rpy: [0, 0, 1.5708]
     position_limits: [-3.3161, 0.0]
     velocity_limit: 7.5398
     effort_limit: 27.0
@@ -39,6 +48,9 @@ joints:
     joint_type: revolute
     parent_link: arm_seg3
     child_link: arm_seg4
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [0.07, -0.00395, -0.00004]
+    origin_rpy: [-1.5708, 1.5708, 0]
     position_limits: [-2.8798, 2.8798]
     velocity_limit: 25.133
     effort_limit: 7.0
@@ -47,6 +59,9 @@ joints:
     joint_type: revolute
     parent_link: arm_seg4
     child_link: arm_seg5
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [0, 0, 0.2776]
+    origin_rpy: [-1.5708, 0, 3.1416]
     position_limits: [-1.6581, 1.6581]
     velocity_limit: 25.133
     effort_limit: 7.0
@@ -55,6 +70,9 @@ joints:
     joint_type: revolute
     parent_link: arm_seg5
     child_link: arm_seg6
+    axis_xyz: [0, 0, 1]
+    origin_xyz: [0, -0.1575, -0.00023266]
+    origin_rpy: [1.5708, 0, 0]
     position_limits: [-2.8798, 2.8798]
     velocity_limit: 25.133
     effort_limit: 7.0
@@ -143,9 +161,6 @@ hal:
       # rad IK-solution bound, while allowing the official tracker to cross its
       # observed 0.03..0.038 rad steady-state residual.
       max_target_step_rad: 0.08
-      # Policy targets stay below both the 0.05 rad locked-relay alignment
-      # bound and the independent HAL/sidecar command bound above.
-      policy_substep_rad: 0.045
       command_lease_s: 0.5
       # The vendor documents bit 6 as ECU->ACU timeout. It is observed while
       # idle and is the only accepted arm bit. The gripper additionally ignores

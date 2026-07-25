@@ -3,6 +3,9 @@
 ROS 2 lifecycle host for the real-only Galaxea A1 HAL. The Python HAL talks to
 `tools/galaxea_a1_ros1_sidecar.py`; the sidecar runs in an operator-provisioned
 ROS Noetic environment and owns the official SDK driver and joint tracker.
+The HAL accepts only literal IPv4 loopback sidecar addresses and strict integer
+TCP ports; remote, IPv6, and DNS-resolved endpoints are rejected before any
+connection attempt.
 
 The vendor SDK is not bundled. See `docs/methods/01-hal.md` for the deployment
 and hardware bring-up sequence.

@@ -59,24 +59,84 @@ def _bounded_joint_substep(
     return current + delta * (float32_bound / largest), False
 
 
-def _effective_joint_substep_limit(
+def _validated_joint_substep_limit(
     *,
+    policy_substep_rad: float,
     max_target_step_rad: float,
     initial_alignment_tolerance_rad: float,
 ) -> float:
-    """Return the tighter live-step and locked-relay alignment limit."""
-    limits = (float(max_target_step_rad), float(initial_alignment_tolerance_rad))
+    """Validate the policy bound against both HAL command phases."""
+    policy_limit = float(policy_substep_rad)
+    limits = (policy_limit, float(max_target_step_rad), float(initial_alignment_tolerance_rad))
     if any(not np.isfinite(value) or value <= 0.0 for value in limits):
         raise ValueError("A1 joint substep limits must be finite and positive")
-    return min(limits)
+    if policy_limit > min(limits[1:]):
+        raise ValueError(
+            "policy joint substep must not exceed the HAL target-step or initial-alignment limit"
+        )
+    return policy_limit
+
+
+def _joint_limits_from_description(
+    robot_description: Any,
+    *,
+    expected_joint_names: tuple[str, ...],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return ordered command limits from the active OpenRAL robot contract."""
+    joints = getattr(robot_description, "joints", ())
+    by_name = {getattr(joint, "name", None): joint for joint in joints}
+    if len(by_name) != len(joints) or set(by_name) != set(expected_joint_names):
+        raise ValueError("A1 Runtime IK joint names must exactly match the OpenRAL description")
+    lower: list[float] = []
+    upper: list[float] = []
+    for name in expected_joint_names:
+        limits = getattr(by_name[name], "position_limits", None)
+        if limits is None:
+            raise ValueError(f"OpenRAL joint {name!r} requires finite position limits")
+        try:
+            lo_raw, hi_raw = limits
+            lo, hi = float(lo_raw), float(hi_raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"OpenRAL joint {name!r} requires finite position limits") from None
+        if not np.isfinite((lo, hi)).all() or lo >= hi:
+            raise ValueError(f"OpenRAL joint {name!r} requires finite position limits")
+        lower.append(lo)
+        upper.append(hi)
+    return np.asarray(lower, dtype=np.float64), np.asarray(upper, dtype=np.float64)
+
+
+def _build_manifest_bounded_ik_solver(
+    *,
+    ik_module: Any,
+    system: Any,
+    robot_description: Any,
+) -> Any:
+    """Construct Runtime IK with the active OpenRAL command envelope."""
+    joint_names = tuple(system.joint_safety.names)
+    lower_limits, upper_limits = _joint_limits_from_description(
+        robot_description,
+        expected_joint_names=joint_names,
+    )
+    config = system.eef_ik
+    return ik_module.A1EefIkSolver(
+        urdf_path=config.urdf,
+        joint_names=joint_names,
+        lower_limits=lower_limits,
+        upper_limits=upper_limits,
+        max_iterations=config.max_iterations,
+        damping=config.damping,
+        orientation_weight=config.orientation_weight,
+        max_iteration_step_rad=config.max_iteration_step_rad,
+        position_tolerance_m=config.position_tolerance_m,
+        orientation_tolerance_rad=config.orientation_tolerance_rad,
+        max_solution_delta_rad=config.max_solution_delta_rad,
+    )
 
 
 def _runtime_root() -> Path:
     raw = os.environ.get(_RUNTIME_ROOT_ENV)
     if raw is None:
-        raise ROSConfigError(
-            f"{_RUNTIME_ROOT_ENV} is required for the lingbot_va_a1 policy adapter"
-        )
+        raise ROSConfigError(f"{_RUNTIME_ROOT_ENV} is required for the lingbot_va policy adapter")
     root = Path(raw).expanduser().resolve()
     config = root / _DEPLOYMENT_CONFIG
     if not config.is_file():
@@ -95,11 +155,13 @@ class _LingBotVaA1Adapter:
 
     def __init__(self, spec: VLASpec, *, robot_description: Any) -> None:
         root = _runtime_root()
-        client_module = import_module("galaxea_a1_runtime.apps.lingbot.client")
-        config_module = import_module("galaxea_a1_runtime.apps.lingbot.config")
-        protocol_module = import_module("galaxea_a1_runtime.apps.lingbot.protocol")
-        ik_module = import_module("galaxea_a1_runtime.hardware.eef_ik")
-        action_module = import_module("galaxea_a1_runtime.policies.eef_actions")
+        client_module, config_module, protocol_module, ik_module, action_module = (
+            import_module("galaxea_a1_runtime.apps.lingbot.client"),
+            import_module("galaxea_a1_runtime.apps.lingbot.config"),
+            import_module("galaxea_a1_runtime.apps.lingbot.protocol"),
+            import_module("galaxea_a1_runtime.hardware.eef_ik"),
+            import_module("galaxea_a1_runtime.policies.eef_actions"),
+        )
         self.spec = spec
         self._config = config_module.load_lingbot_config(
             root / _DEPLOYMENT_CONFIG,
@@ -108,22 +170,38 @@ class _LingBotVaA1Adapter:
         self._action_config = action_module.build_action_transform_config(
             system=self._config.system
         )
-        self._solver = ik_module.build_eef_ik_solver(self._config.system)
         if robot_description is None or robot_description.name != "galaxea_a1":
-            raise ROSConfigError("lingbot_va_a1 requires the Galaxea A1 RobotDescription")
+            raise ROSConfigError("lingbot_va requires the Galaxea A1 RobotDescription")
+        system = self._config.system
+        try:
+            self._solver = _build_manifest_bounded_ik_solver(
+                ik_module=ik_module,
+                system=system,
+                robot_description=robot_description,
+            )
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise ROSConfigError(
+                "lingbot_va could not construct A1 Runtime IK with the "
+                "OpenRAL RobotDescription joint contract"
+            ) from exc
         try:
             hal_defaults = robot_description.hal.parameters.defaults
-            self._max_joint_step_rad = _effective_joint_substep_limit(
-                max_target_step_rad=min(
-                    hal_defaults["max_target_step_rad"],
-                    hal_defaults["policy_substep_rad"],
-                ),
+            policy_substep_raw = spec.extra["max_joint_substep_rad"]
+            if isinstance(policy_substep_raw, bool) or not isinstance(
+                policy_substep_raw, (int, float)
+            ):
+                raise TypeError("max_joint_substep_rad must be numeric")
+            policy_substep_rad = float(policy_substep_raw)
+            self._max_joint_step_rad = _validated_joint_substep_limit(
+                policy_substep_rad=policy_substep_rad,
+                max_target_step_rad=hal_defaults["max_target_step_rad"],
                 initial_alignment_tolerance_rad=hal_defaults["initial_alignment_tolerance_rad"],
             )
         except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise ROSConfigError(
-                "Galaxea A1 RobotDescription requires finite positive "
-                "joint step, policy-substep, and initial-alignment limits"
+                "lingbot_va requires a finite positive policy "
+                "max_joint_substep_rad plus the Galaxea A1 HAL target-step "
+                "and initial-alignment limits"
             ) from exc
         server = self._config.server
         self._client = client_module.LingBotClient(
@@ -135,12 +213,10 @@ class _LingBotVaA1Adapter:
         )
         latency_budget_ms = spec.extra.get("latency_budget_ms")
         if isinstance(latency_budget_ms, bool) or not isinstance(latency_budget_ms, (int, float)):
-            raise ROSConfigError(
-                "lingbot_va_a1 requires its manifest latency budget in VLASpec.extra"
-            )
+            raise ROSConfigError("lingbot_va requires its manifest latency budget in VLASpec.extra")
         self._inference_timeout_s = float(latency_budget_ms) / 1000.0
         if not np.isfinite(self._inference_timeout_s) or self._inference_timeout_s <= 0.0:
-            raise ROSConfigError("lingbot_va_a1 requires a positive per-chunk latency budget")
+            raise ROSConfigError("lingbot_va requires a positive per-chunk latency budget")
         self._inference_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="openral-lingbot-a1",
@@ -158,7 +234,6 @@ class _LingBotVaA1Adapter:
         self._model_calls = 0
         self._active_joint_target: NDArray[np.float64] | None = None
         self._active_gripper: float | None = None
-        self._active_cache_action: NDArray[np.float64] | None = None
         self._active_cache_frame_index: int | None = None
         self._active_action_index: int | None = None
         self._last_joint_target: NDArray[np.float64] | None = None
@@ -355,25 +430,13 @@ class _LingBotVaA1Adapter:
         except Exception as exc:
             raise ROSRuntimeError(f"LingBot A1 EEF target was rejected: {exc}") from exc
         solved_joints = np.asarray(solution.joint_positions, dtype=np.float64)
-        executed_xyz, executed_quat = self._solver.forward(solved_joints)
-        executed = np.concatenate([executed_xyz, executed_quat, [validated[7]]])
-        cache_action = (
-            executed
-            if self._config.action.pose_mode == "absolute"
-            else action_module.absolute_action_to_relative(
-                executed,
-                self._origin_pose7,
-                min_quat_norm=self._action_config.min_quat_norm,
-            )
-        )
         self._active_joint_target = solved_joints
         self._active_gripper = float(validated[7])
-        self._active_cache_action = np.asarray(cache_action, dtype=np.float64)
         self._active_cache_frame_index = cache_frame_index
         self._active_action_index = action_index
 
     def _step_active_action(self, joints: NDArray[np.float64]) -> NDArray[np.float32]:
-        """Advance one manifest-bounded joint substep toward the EEF solution."""
+        """Advance one model action without truncating its solved joint target."""
         assert self._active_joint_target is not None
         assert self._active_gripper is not None
         target, reaches_solution = _bounded_joint_substep(
@@ -381,33 +444,41 @@ class _LingBotVaA1Adapter:
             self._active_joint_target,
             max_step_rad=self._max_joint_step_rad,
         )
+
+        action = np.concatenate([target, [self._active_gripper]]).astype(np.float32)
         self._last_joint_target = target.copy()
         self._last_gripper_target = self._active_gripper
         if not reaches_solution:
-            return np.concatenate([target, [self._active_gripper]]).astype(np.float32)
+            return action
 
         assert self._chunk is not None
-        assert self._active_cache_action is not None
         assert self._active_cache_frame_index is not None
         assert self._active_action_index is not None
+        assert self._origin_pose7 is not None
+        executed_xyz, executed_quat = self._solver.forward(target)
+        executed = np.concatenate([executed_xyz, executed_quat, [self._active_gripper]])
+        if self._config.action.pose_mode == "absolute":
+            cache_action = executed
+        else:
+            action_module = import_module("galaxea_a1_runtime.policies.eef_actions")
+            cache_action = action_module.absolute_action_to_relative(
+                executed,
+                self._origin_pose7,
+                min_quat_norm=self._action_config.min_quat_norm,
+            )
         self._chunk.cache_state[
             :,
             self._active_cache_frame_index,
             self._active_action_index,
-        ] = self._active_cache_action
+        ] = cache_action
         self._pending_observation = self._chunk.needs_observation_after(self._active_action_index)
         self._step_index += 1
-        action = np.concatenate([self._active_joint_target, [self._active_gripper]]).astype(
-            np.float32
-        )
-        self._last_joint_target = self._active_joint_target.copy()
         self._clear_active_action()
         return action
 
     def _clear_active_action(self) -> None:
         self._active_joint_target = None
         self._active_gripper = None
-        self._active_cache_action = None
         self._active_cache_frame_index = None
         self._active_action_index = None
 
@@ -416,14 +487,14 @@ class _LingBotVaA1Adapter:
         state = np.asarray(observation.get("state"), dtype=np.float64)
         if state.shape != (6,) or not np.isfinite(state).all():
             raise ROSRuntimeError(
-                f"lingbot_va_a1 requires six finite A1 joint positions, got {state.shape}"
+                f"lingbot_va requires six finite A1 joint positions, got {state.shape}"
             )
         return state
 
     def _model_observation(self, observation: dict[str, Any]) -> dict[str, NDArray[np.uint8]]:
         images = observation.get("images")
         if not isinstance(images, dict):
-            raise ROSRuntimeError("lingbot_va_a1 requires OpenRAL image observations")
+            raise ROSRuntimeError("lingbot_va requires OpenRAL image observations")
         result: dict[str, NDArray[np.uint8]] = {}
         for source, target in (
             ("front", self._config.observations.front_key),
@@ -436,15 +507,15 @@ class _LingBotVaA1Adapter:
                 or image.dtype != np.uint8
             ):
                 raise ROSRuntimeError(
-                    f"lingbot_va_a1 image {source!r} must be HWC uint8 RGB, "
+                    f"lingbot_va image {source!r} must be HWC uint8 RGB, "
                     f"got shape={image.shape} dtype={image.dtype}"
                 )
             result[target] = image
         return result
 
 
-@POLICIES.register("lingbot_va_a1")
-def _build_lingbot_va_a1(env_cfg: Any) -> _LingBotVaA1Adapter:
+@POLICIES.register("lingbot_va")
+def _build_lingbot_va(env_cfg: Any) -> _LingBotVaA1Adapter:
     """Build the external A1 Runtime-backed LingBot adapter."""
     return _LingBotVaA1Adapter(
         env_cfg.vla,

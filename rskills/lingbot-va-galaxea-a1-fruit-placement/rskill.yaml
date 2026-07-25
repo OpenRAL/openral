@@ -10,7 +10,7 @@ version: "0.1.0"
 license: "apache-2.0"
 role: "s1"
 kind: "vla"
-model_family: "lingbot_va_a1"
+model_family: "lingbot_va"
 
 embodiment_tags:
   - "galaxea_a1"
@@ -60,7 +60,7 @@ latency_budget:
   # Measured through the full OpenRAL camera + websocket + EEF/IK adapter:
   # ~4.05 s for the first model call on this A1 host; replay ticks are cheap.
   per_chunk_ms: 6000.0
-  max_execution_s: 180.0
+  max_execution_s: 420.0
 
 dataset_uri: "hf://pengyue-polaron/nyush-galaxea-a1-fruit-placement-eef-v21@1bc2c4035e7dc638f7dd9fa5ec7987bec66d0933"
 source_repo: "hf://robbyant/lingbot-va-base"
@@ -69,6 +69,13 @@ description: >
   synchronized front and wrist RGB views, predicts episode-relative EEF pose
   and continuous gripper chunks, and uses the tracked A1 Runtime IK contract
   before OpenRAL validates and executes the resulting joint/gripper actions.
+
+# The LingBot EEF solution may be farther from current feedback than the A1
+# joint tracker accepts in one update. This policy-owned per-tick lowering
+# bound remains below both the HAL's 0.08 rad live target-step ceiling and its
+# 0.05 rad initial-alignment ceiling.
+policy_extras:
+  max_joint_substep_rad: 0.045
 
 actions:
   - "pick"

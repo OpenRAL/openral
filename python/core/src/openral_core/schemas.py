@@ -4401,7 +4401,7 @@ ModelFamily: TypeAlias = Literal[
     "openvla",
     "lingbot_vla2",
     "lingbot_vla",
-    "lingbot_va_a1",
+    "lingbot_va",
     "internvla_n1",
 ]
 """VLA / policy family the skill belongs to.
@@ -4430,7 +4430,8 @@ sidecar transport + adapter but loads from the separate V1 upstream repo
 ``lerobot==0.4.2`` venv, driven by ``tools/_lingbot_vla2_server.py --variant v1``
 (adapter: ``openral_sim.policies.lingbot_vla2`` id ``lingbot_vla``).
 
-``lingbot_va_a1`` is a checkpoint-specific real-deployment connector. It
+``lingbot_va`` is the LingBot-VA model family. Its current real-deployment
+adapter supports the Galaxea A1 embodiment and
 uses a separately maintained A1 Runtime checkout for the contract-checked
 LingBot service, paired camera bridge, EEF transforms, and IK, then returns
 joint/gripper actions through the normal OpenRAL safety and HAL path.
@@ -5994,7 +5995,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "3d_diffuser_actor",  # family diffuser_actor
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
-        "lingbot_va",  # family lingbot_va_a1
+        "lingbot_va",  # family lingbot_va
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         # Non-VLA tool-model tokens (detector / vlm / reward).
         "omdet_turbo",
@@ -6028,7 +6029,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "openvla": "openvla_oft",
     "lingbot_vla": "lingbot_vla",
     "lingbot_vla2": "lingbot_vla2",
-    "lingbot_va_a1": "lingbot_va",
+    "lingbot_va": "lingbot_va",
     "internvla_n1": "internvla_n1",
 }
 """VLA :data:`ModelFamily` → its canonical ``<model>`` *suggestion* token
@@ -6048,7 +6049,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "openvla": frozenset({"openvla", "openvla_oft"}),
     "lingbot_vla": frozenset({"lingbot_vla"}),
     "lingbot_vla2": frozenset({"lingbot_vla2"}),
-    "lingbot_va_a1": frozenset({"lingbot_va"}),
+    "lingbot_va": frozenset({"lingbot_va"}),
     "internvla_n1": frozenset({"internvla_n1"}),
 }
 """The documented **family → allowed ``<model>`` tokens** map: when a manifest

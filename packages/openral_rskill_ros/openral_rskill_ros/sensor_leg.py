@@ -11,7 +11,7 @@ manifest for robot-mounted cameras (wrist / head) and on
 
 This module is that leg. :func:`open_deploy_sensor_readers` builds one
 reader per bound spec via the runner's ``SENSOR_BACKEND_REGISTRY`` and
-guarantees every camera ends up on the WorldState subscription topic
+prepares every camera for the WorldState subscription topic
 ``<topic_prefix>/<name>/image``:
 
 * ``gstreamer`` backend — the reader's built-in ROS tee publishes
@@ -38,10 +38,11 @@ The ROS tee stays on for observability (dashboard thumbnails, detectors);
 WorldState's ``direct_image_frame_sensors`` parameter stops ``_on_image``
 from double-writing those sensors into the aggregator.
 
-The caller owns teardown: :meth:`SensorLeg.close` stops publishers and
-closes readers idempotently. ``runtime_node`` wires this in when its
-``deploy_config`` parameter is set (real deploys only — sim keeps the
-HAL bridge as its single camera source).
+The caller starts the prepared pumps with :meth:`SensorLeg.start` only after
+the composed ROS lifecycle nodes are configured, then owns teardown through
+:meth:`SensorLeg.close`. ``runtime_node`` wires this in when its
+``deploy_config`` parameter is set (real deploys only — sim keeps the HAL
+bridge as its single camera source).
 """
 
 from __future__ import annotations
@@ -130,13 +131,13 @@ class _AggregatorPump:
 
 @dataclass
 class SensorLeg:
-    """Open readers + started publishers for one deploy session.
+    """Open readers + prepared publishers for one deploy session.
 
     Attributes:
         readers: Open :class:`SensorReader` instances, one per deploy-bound
             :class:`SensorSpec` (gstreamer readers publish via their
             internal ROS tee).
-        publishers: Started :class:`SensorRosPublisher` pumps for the
+        publishers: Prepared :class:`SensorRosPublisher` pumps for the
             readers without a native ROS tee. Parallel list, NOT
             index-aligned with ``readers``.
     """
@@ -147,6 +148,19 @@ class SensorLeg:
     #: WorldState's ``direct_image_frame_sensors`` parameter must list these
     #: so ``_on_image`` doesn't double-write them from the ROS tee.
     direct_sensors: list[str] = field(default_factory=list)
+
+    def start(self) -> None:
+        """Start every prepared publisher after ROS lifecycle configuration.
+
+        Entity creation and lifecycle transitions remain single-threaded.
+        Only after those complete may camera pumps publish concurrently.
+        """
+        try:
+            for publisher in self.publishers:
+                publisher.start()  # type: ignore[attr-defined]  # reason: duck-typed pump
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Stop publishers first (they poll the readers), then close readers.
@@ -248,8 +262,9 @@ def open_deploy_sensor_readers(
     *,
     topic_prefix: str = DEFAULT_TOPIC_PREFIX,
     aggregator: Any | None = None,  # reason: WorldStateAggregator — deferred import
+    ros_node: Any | None = None,  # reason: composed rclpy node — deferred import
 ) -> SensorLeg:
-    """Open every deploy-bound sensor in ``sensors`` and publish each onto ROS.
+    """Open deploy-bound sensors and prepare their ROS publishing resources.
 
     Args:
         sensors: Robot-manifest sensors plus :attr:`DeployScene.sensors`
@@ -264,10 +279,13 @@ def open_deploy_sensor_readers(
             intact) straight into it, and the sensor is recorded in
             :attr:`SensorLeg.direct_sensors` — forward that list to
             WorldState's ``direct_image_frame_sensors`` parameter.
+        ros_node: Existing composed ROS node that owns image publishers. When
+            omitted, each fallback publisher owns its historical private node.
 
     Returns:
-        A :class:`SensorLeg` holding the open readers + started
-        publishers. Call :meth:`SensorLeg.close` on shutdown.
+        A :class:`SensorLeg` holding open readers and prepared publishers.
+        Call :meth:`SensorLeg.start` after the owning ROS lifecycle nodes are
+        configured, then :meth:`SensorLeg.close` on shutdown.
 
     Raises:
         ROSConfigError: A binding names an unknown backend, or a backend's
@@ -278,6 +296,7 @@ def open_deploy_sensor_readers(
         >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")  # doctest: +SKIP
         >>> scene = DeployScene.from_yaml("scenes/deploy/so101_bench.yaml")  # doctest: +SKIP
         >>> leg = open_deploy_sensor_readers([*desc.sensors, *scene.sensors])  # doctest: +SKIP
+        >>> leg.start()  # doctest: +SKIP
         >>> try:  # doctest: +SKIP
         ...     ...  # spin the graph
         ... finally:
@@ -342,15 +361,14 @@ def open_deploy_sensor_readers(
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
                     info_topic=f"{topic_prefix}/{spec.name}/camera_info",
+                    node=ros_node,
                 )
-                publisher.start()
                 leg.publishers.append(publisher)
             if aggregator is not None:
                 # Zero-copy vision path: in-process reader → aggregator, no ROS hop
                 # for the policy leg (NVMM handles survive). The ROS tee above
                 # keeps serving observability consumers.
                 pump = _AggregatorPump(reader, spec.name, aggregator, _publish_rate_hz(spec))
-                pump.start()
                 leg.publishers.append(pump)
                 leg.direct_sensors.append(spec.name)
             log.info(
@@ -360,6 +378,14 @@ def open_deploy_sensor_readers(
                 topic=topic,
                 direct_to_aggregator=aggregator is not None,
             )
+        # Prepare every ROS entity while execution is still single-threaded.
+        # SensorLeg.start() runs only after the composed lifecycle nodes have
+        # also finished creating their publishers, subscriptions, and action
+        # servers.
+        for publisher in leg.publishers:
+            prepare = getattr(publisher, "prepare", None)
+            if prepare is not None:
+                prepare()
     except Exception:
         # Half-open leg → close what we already opened before re-raising;
         # a failed camera must not leak a v4l2 handle past the error.

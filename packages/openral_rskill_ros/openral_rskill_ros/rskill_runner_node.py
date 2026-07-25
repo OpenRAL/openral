@@ -1846,13 +1846,15 @@ def _build_runtime_skill_from_manifest(
             "are resolved via make_default_skill_resolver(), which branches "
             "on manifest.kind before reaching this helper."
         )
+    policy_extra = dict(manifest.policy_extras)
+    policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
     vla = VLASpec(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that
         # `openral sim run` uses can find the manifest on disk.
         weights_uri=str(yaml_path.parent),
         device="auto",
-        extra={"latency_budget_ms": manifest.latency_budget.per_chunk_ms},
+        extra=policy_extra,
     )
     # The policy factories only access `env_cfg.vla`; a SimpleNamespace
     # wrapper is enough to avoid building a full Pydantic SimEnvironment

@@ -9,6 +9,7 @@ lives on a worker thread so ``read_state`` and ``send_action`` never block.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import math
 import select
@@ -58,6 +59,22 @@ _JOINT_LIMITS = (
     (-1.6581, 1.6581),
     (-2.8798, 2.8798),
 )
+_JOINT_ORIGINS_XYZ = (
+    (-0.0011147, 0.0, 0.0892),
+    (0.0, -0.00004, 0.0615),
+    (0.34928, 0.02, 0.0),
+    (0.07, -0.00395, -0.00004),
+    (0.0, 0.0, 0.2776),
+    (0.0, -0.1575, -0.00023266),
+)
+_JOINT_ORIGINS_RPY = (
+    (0.0, 0.0, 3.1416),
+    (1.5708, 0.0, 0.0),
+    (0.0, 0.0, 1.5708),
+    (-1.5708, 1.5708, 0.0),
+    (-1.5708, 0.0, 3.1416),
+    (1.5708, 0.0, 0.0),
+)
 _PROTOCOL_VERSION = 1
 _GRIPPER_STATUS_INDEX = len(_JOINT_NAMES)
 _MAX_TCP_PORT = 65536
@@ -74,6 +91,9 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
             joint_type=JointType.REVOLUTE,
             parent_link="base_link" if index == 1 else f"arm_seg{index - 1}",
             child_link=f"arm_seg{index}",
+            axis_xyz=(0.0, 0.0, 1.0),
+            origin_xyz=_JOINT_ORIGINS_XYZ[index - 1],
+            origin_rpy=_JOINT_ORIGINS_RPY[index - 1],
             position_limits=limits,
             velocity_limit=velocity,
             effort_limit=effort,
@@ -184,7 +204,6 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
                 "initial_alignment_tolerance_rad": 0.05,
                 "tracker_alignment_timeout_s": 5.0,
                 "max_target_step_rad": 0.08,
-                "policy_substep_rad": 0.045,
                 "command_lease_s": 0.5,
                 "idle_timeout_error_mask": 64,
                 "gripper_ignored_error_mask": 8,
@@ -547,7 +566,6 @@ class GalaxeaA1HAL(HALBase):
         initial_alignment_tolerance_rad: float = 0.05,
         tracker_alignment_timeout_s: float = 5.0,
         max_target_step_rad: float = 0.08,
-        policy_substep_rad: float = 0.045,
         command_lease_s: float = 0.5,
         idle_timeout_error_mask: int = 64,
         gripper_ignored_error_mask: int = 8,
@@ -557,15 +575,25 @@ class GalaxeaA1HAL(HALBase):
         transport: _A1Transport | None = None,
     ) -> None:
         """Configure the sidecar endpoint and explicit safety deadlines."""
-        if not host.strip() or not 0 < int(port) < _MAX_TCP_PORT:
-            raise ROSConfigError("GalaxeaA1HAL requires a valid sidecar host and TCP port.")
+        if not isinstance(host, str):
+            raise ROSConfigError("GalaxeaA1HAL requires a literal IPv4 loopback address.")
+        try:
+            sidecar_address = ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ROSConfigError("GalaxeaA1HAL requires a literal IPv4 loopback address.") from exc
+        if (
+            not isinstance(sidecar_address, ipaddress.IPv4Address)
+            or not sidecar_address.is_loopback
+        ):
+            raise ROSConfigError("GalaxeaA1HAL requires a literal IPv4 loopback address.")
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < _MAX_TCP_PORT:
+            raise ROSConfigError("GalaxeaA1HAL requires a TCP port in [1, 65535].")
         positive = {
             "state_timeout_s": state_timeout_s,
             "status_timeout_s": status_timeout_s,
             "initial_alignment_tolerance_rad": initial_alignment_tolerance_rad,
             "tracker_alignment_timeout_s": tracker_alignment_timeout_s,
             "max_target_step_rad": max_target_step_rad,
-            "policy_substep_rad": policy_substep_rad,
             "command_lease_s": command_lease_s,
             "connect_timeout_s": connect_timeout_s,
         }
@@ -573,8 +601,6 @@ class GalaxeaA1HAL(HALBase):
             raise ROSConfigError(
                 f"GalaxeaA1HAL timing and motion limits must be positive: {positive}"
             )
-        if policy_substep_rad >= max_target_step_rad:
-            raise ROSConfigError("policy_substep_rad must be smaller than max_target_step_rad.")
         if not math.isfinite(feedback_limit_tolerance_rad) or feedback_limit_tolerance_rad < 0.0:
             raise ROSConfigError("feedback_limit_tolerance_rad must be finite and non-negative.")
         if (
@@ -590,14 +616,13 @@ class GalaxeaA1HAL(HALBase):
         if any(isinstance(v, bool) or not 0 <= int(v) <= _MAX_STATUS_MASK for v in masks.values()):
             raise ROSConfigError(f"GalaxeaA1HAL motor status masks must be uint32 values: {masks}")
         self._host = host
-        self._port = int(port)
+        self._port = port
         self._state_timeout_s = state_timeout_s
         self._status_timeout_s = status_timeout_s
         self._feedback_limit_tolerance = feedback_limit_tolerance_rad
         self._alignment = initial_alignment_tolerance_rad
         self._tracker_alignment_timeout = tracker_alignment_timeout_s
         self._max_step = max_target_step_rad
-        self._policy_substep = policy_substep_rad
         self._lease = command_lease_s
         self._idle_mask = int(idle_timeout_error_mask)
         self._gripper_mask = int(gripper_ignored_error_mask)
@@ -723,7 +748,6 @@ class GalaxeaA1HAL(HALBase):
             message="A1 feedback and motor status healthy",
             fields={
                 "sidecar": f"{self._host}:{self._port}",
-                "policy_substep_rad": f"{self._policy_substep:.6f}",
                 "joint_state_age_s": f"{now - state.received_monotonic:.3f}",
                 "motor_status_age_s": f"{now - state.status_received_monotonic:.3f}",
                 "motor_status_codes": ",".join(str(code) for code in state.status_codes),

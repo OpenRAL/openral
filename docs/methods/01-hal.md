@@ -179,8 +179,8 @@ _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
-official ROS 1 Noetic SDK runs out of process behind a loopback JSON-lines
-sidecar. No vendor source, binary, or message package is distributed._
+official ROS 1 Noetic SDK runs out of process behind a literal IPv4-loopback
+JSON-lines sidecar. No vendor source, binary, or message package is distributed._
 
 - `class GalaxeaA1HAL(HALBase)` — six-axis joint-position + normalized
   gripper adapter. `read_state` and `send_action` use a cached snapshot/latest
@@ -194,7 +194,10 @@ sidecar. No vendor source, binary, or message package is distributed._
 - const `GALAXEA_A1_DESCRIPTION` — real-only `RobotDescription`, mirrored by
   `robots/galaxea_a1/robot.yaml`; official A1 URDF joint names/limits, explicit
   sidecar deadlines, motor masks, 0..104 mm normalized gripper mapping, and
-  the calibrated D455 front / D405 wrist RGB observation contracts.
+  the calibrated D455 front / D405 wrist RGB observation contracts. The six
+  joint origins, orientations, and axes are transcribed from the official A1
+  URDF; collision primitives remain absent until their redistribution and
+  lowering provenance is cleared.
 - `tools/galaxea_a1_ros1_sidecar.py` — Python-3.8-compatible ROS 1 process that
   owns `roscore`, `signal_arm/single_arm_node.launch`, and the official
   `mobiman/jointTracker_demo_node` binary. The tracker publishes to
@@ -281,9 +284,9 @@ GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_HOLD=1 just hil galaxea_a1
 ```
 
 After the hold passes, a separate lab opt-in moves `arm_joint1` by +0.01 rad,
-requires it to settle within 0.006 rad (above the observed 0.001 rad encoder
-quantization), continuously bounds all six joint excursions, returns to the
-measured start, and then performs the same downstream e-stop:
+requires it to settle within 0.008 rad (covering the measured 0.007 rad
+small-command residual), continuously bounds all six joint excursions, returns
+to the measured start, and then performs the same downstream e-stop:
 
 ```bash
 GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_NUDGE=1 just hil galaxea_a1
@@ -359,18 +362,26 @@ A1 Camera Bridge -> OpenRAL WorldState -> LingBot-VA rSkill
 The A1 Runtime is a public capability provider, not a second controller:
 start only its persistent camera owner and LingBot policy server. Do not start
 its LingBot ROS execution bridge or A1 joint runtime while OpenRAL owns the
-deployment. The rSkill reads `max_target_step_rad` from the same
-`RobotDescription` used to construct the HAL, takes the tighter of the tracked
-policy bound and `initial_alignment_tolerance_rad`, and explicitly subdivides a
-larger IK result. The policy substep is 0.045 rad, above the official tracker's
-observed 0.03..0.038 rad steady-state residual but below the 0.05 rad locked-relay
-alignment bound. The independent HAL/sidecar limit is 0.08 rad, leaving 0.035
-rad of feedback/transport headroom and remaining far below the A1 Runtime's
-validated 1.70 rad IK-solution bound. An action already within the policy bound
-advances in one 30 Hz model tick, matching the A1 Runtime LingBot rollout
-cadence. A larger IK solution is subdivided from fresh measured feedback until
-it reaches the requested solution. Tracker steady-state error is not a
-completion gate. Neither limit is bypassed or duplicated.
+deployment. The rSkill owns its `policy_extras.max_joint_substep_rad` replay
+setting and reads the independent `max_target_step_rad` ceiling from the same
+`RobotDescription` used to construct the HAL. Startup rejects a policy bound
+that exceeds either the HAL's live target-step ceiling or locked-relay
+alignment tolerance. The policy bound is 0.045 rad, below the 0.05 rad
+locked-relay alignment threshold; the independent HAL/sidecar live limit is
+0.08 rad. The adapter also constructs the Runtime-provided IK implementation
+with the active OpenRAL `RobotDescription`'s ordered command limits. Runtime
+calibration bounds may be wider, but they cannot widen the typed OpenRAL,
+safety-kernel, or official sidecar command envelope.
+
+The adapter emits one bounded target per 30 Hz control tick. When its IK
+solution is farther than 0.045 rad from fresh feedback, it keeps advancing
+toward that same solved target on subsequent ticks and only consumes the next
+model action after the solved target has been dispatched. The FK of the actual
+dispatched target is written into the KV cache, so the policy state reflects
+what OpenRAL commanded rather than an unreachable ideal. The official tracker's
+steady-state error cannot widen the command envelope or bypass the bounded
+step. The A1 Runtime's 1.70 rad IK-solution validation remains an upstream
+reachability check, not a motor-command step limit.
 
 ```bash
 # Terminal A — A1 Runtime capability providers only (no ROS command publisher).

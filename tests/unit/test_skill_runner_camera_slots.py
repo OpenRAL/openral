@@ -19,28 +19,40 @@ mocks, CLAUDE.md §1.11).
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
-
-# The module under test bundles the full lifecycle node (rclpy / IDL).
-# Skip cleanly when those aren't sourced — the helpers are still defined
-# at module top-level, just unreachable.
-pytest.importorskip("rclpy")
-pytest.importorskip("openral_msgs")
-
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import FrameEncoding, SensorFrame
-from openral_rskill_ros.rskill_runner_node import (
-    _build_runtime_skill_from_manifest,
-    _decode_image_frames,
-    _sensor_name_to_vla_slot,
-    _vla_camera_slots,
-)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_skill_runner_module() -> ModuleType:
+    """Load the runner helpers without requiring a sourced ROS 2 workspace."""
+    source = (
+        _REPO_ROOT
+        / "packages"
+        / "openral_rskill_ros"
+        / "openral_rskill_ros"
+        / "rskill_runner_node.py"
+    )
+    spec = importlib.util.spec_from_file_location("_test_camera_skill_runner_node", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_RUNNER = _load_skill_runner_module()
+_build_runtime_skill_from_manifest = _RUNNER._build_runtime_skill_from_manifest
+_decode_image_frames = _RUNNER._decode_image_frames
+_sensor_name_to_vla_slot = _RUNNER._sensor_name_to_vla_slot
+_vla_camera_slots = _RUNNER._vla_camera_slots
 
 
 def _franka() -> RobotDescription:
@@ -110,6 +122,37 @@ class TestDecodeImageFrames:
 
 
 class TestBuildRuntimeSkillSceneCameras:
+    def test_threads_manifest_policy_extras_into_runtime_vla(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deploy runner preserves adapter-owned rSkill configuration."""
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = _REPO_ROOT / "rskills" / "lingbot-va-galaxea-a1-fruit-placement" / "rskill.yaml"
+        description = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "galaxea_a1" / "robot.yaml")
+        )
+        captured: dict[str, object] = {}
+
+        def _capture(env_cfg: object) -> object:
+            captured["extra"] = dict(env_cfg.vla.extra)  # type: ignore[attr-defined]
+            raise ImportError("stop before A1 Runtime import")
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _capture)
+
+        with pytest.raises(ROSRuntimeError):
+            _build_runtime_skill_from_manifest(
+                yaml_path=yaml_path,
+                prompt="put the mango into the blue bowl",
+                scene_cameras=("front", "wrist"),
+                description=description,
+            )
+
+        assert captured["extra"] == {
+            "max_joint_substep_rad": 0.045,
+            "latency_budget_ms": 6000.0,
+        }
+
     def test_overrides_sensor_name_scene_cameras_with_vla_slots(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

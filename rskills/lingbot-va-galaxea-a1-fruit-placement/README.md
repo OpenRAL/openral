@@ -6,7 +6,7 @@ pipeline_tag: robotics
 tags:
 - OpenRAL
 - rskill
-- lingbot_va_a1
+- lingbot_va
 - vision-language-action
 - galaxea_a1
 base_model:
@@ -60,13 +60,17 @@ action-channel map `[0, 1, 2, 3, 4, 5, 6, 28]` are applied in the external
 LingBot server from the checkpoint's `configs/va_a1_cfg.py`; this is not a
 LeRobot `PolicyProcessorPipeline`.
 
-OpenRAL's `lingbot_va_a1` adapter validates each physical EEF target with the A1
+OpenRAL's `lingbot_va` adapter validates each physical EEF target with the A1
 Runtime contract, solves IK, and emits six absolute joint targets plus one
-normalized gripper target. If an IK solution is farther than the robot
-manifest's per-tick joint-step limit, the adapter explicitly subdivides it
-before advancing the model action or KV cache. The typed action then follows
-OpenRAL's normal candidate-action, C++ safety-kernel, safe-action, and Galaxea A1
-HAL path.
+normalized gripper target. If an IK solution is farther than the rSkill's
+feedback-relative joint-step bound, the adapter advances toward that same
+solution on subsequent 30 Hz ticks and does not consume the next model action
+until the full solved target can be dispatched. It then writes the dispatched
+target's FK result into the LingBot KV cache. The typed action follows OpenRAL's normal
+candidate-action, C++ safety-kernel, safe-action, and Galaxea A1 HAL path.
+The Runtime-provided IK implementation is constructed with the active OpenRAL
+robot manifest's ordered joint limits, so Runtime calibration margins cannot
+widen the official command envelope.
 
 ## Sensors and observation contract
 
@@ -78,13 +82,13 @@ HAL path.
 | out | action | `(7,)` float32 | Six absolute joint targets in radians and one normalized gripper target |
 
 The A1 Runtime remains the sole camera-device owner. OpenRAL connects to its
-public paired Camera Bridge and does not open either RealSense device itself.
+paired Camera Bridge and does not open either RealSense device itself.
 
 ## Supported robots
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Galaxea A1, original arm | `galaxea_a1` | Hardware-in-the-loop integration | Joint and gripper OpenRAL HAL round trips have passed; the combined model-to-hardware task run is the remaining validation step |
+| Galaxea A1, original arm | `galaxea_a1` | Hardware-in-the-loop integration | Joint/gripper round trips and one visually verified model-driven lemon pick-and-place have passed through OpenRAL; automatic task adjudication remains pending |
 
 This rSkill is specific to the six-joint Galaxea A1 contract in
 `robots/galaxea_a1/robot.yaml`. It is not a generic Cartesian HAL and does not
@@ -97,7 +101,7 @@ enable the vendor AnyGrasp/AnyEffector path.
 | `name` | `OpenRAL/rskill-lingbot_va-galaxea_a1-fruit_placement-bf16` |
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
-| `model_family` | `lingbot_va_a1` |
+| `model_family` | `lingbot_va` |
 | `embodiment_tags` | `galaxea_a1` |
 | `runtime` / precision | `pytorch` / `bf16` |
 | `weights_uri` | revision-pinned public LingBot-VA A1 checkpoint |
@@ -126,12 +130,15 @@ bridge at the same time.
 
 ## Evaluation
 
-No formal task-success result is shipped yet. Offline validation has exercised
-the real paired cameras, real model server, manifest-to-policy construction,
-EEF validation and IK, joint-step subdivision, and OpenRAL typed joint/gripper
-dispatch. The OpenRAL candidate-action-to-HAL path has also passed separate
-real-hardware joint and gripper round trips. One combined live rollout is still
-required before claiming end-to-end OpenRAL model deployment on the A1.
+No formal automatic task-success result is shipped yet. Validation has
+exercised the real paired cameras, real model server, manifest-to-policy
+construction, EEF validation and IK, joint-step subdivision, and OpenRAL typed
+joint/gripper dispatch. Separate real-hardware joint/gripper round trips and a
+visually verified lemon pick-and-place have traversed candidate action, the C++
+safety kernel, safe action, HAL, ROS 1 relay, and the official driver. The
+non-terminating VLA continued after the visible placement and was stopped by
+the unchanged joint-solution jump guard; a success detector or bounded episode
+termination is still needed for a formal task-success result.
 
 ## License
 

@@ -115,6 +115,23 @@ def test_publisher_construction_does_not_touch_ros() -> None:
     assert pub.info_topic == "/cam/image_raw/camera_info"
 
 
+def test_publisher_accepts_external_node_without_owning_its_lifecycle() -> None:
+    """Composed runtimes retain node ownership across publisher stop."""
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    reader = _FakeReader(sensor_id="wrist_rgb", frame=_make_frame())
+    node = object()
+    pub = SensorRosPublisher(
+        reader=reader,
+        topic="/cam/image_raw",
+        rate_hz=30.0,
+        node=node,  # type: ignore[arg-type] # reason: constructor is ROS-I/O-free
+    )
+
+    assert pub._node is node
+    assert pub._owns_node is False
+
+
 def test_publisher_start_without_rclpy_raises_runtime_error() -> None:
     """When rclpy is genuinely absent, start() raises RuntimeError with install hint.
 

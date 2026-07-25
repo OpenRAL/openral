@@ -36,7 +36,7 @@ satisfies it. There is no inheritance requirement.
 | `ros_control.py` | `RosControlHAL` — adapter on top of `ros2_control` (no real ROS 2 import; works against `SimTransport` for unit tests and the live transport at runtime). |
 | `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport for unit tests. |
 | `so100_follower.py` | `SO100FollowerHAL` + `SO100_DESCRIPTION` + `so100_with_sensors` — real SO-100 follower arm via the `lerobot` SDK. |
-| `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
+| `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a literal IPv4-loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
 | `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (used by smoketests, sim tests, and as a stand-in when no hardware is connected). |
 | `so100_mujoco.py` | `SO100MujocoHAL` — MuJoCo digital twin for the SO-100 follower, driving the `mujoco_menagerie` MJCF with the same 6-DoF action layout as `SO100FollowerHAL`. |
 | `_mujoco_arm.py` | `MujocoArmHAL` + `MujocoArmHAL.from_description` (MJCF resolved via `openral_core.assets.resolve_asset`) — shared MuJoCo backend for the arms below. It self-constructs from `RobotDescription.sim` (`SimDescription`), so per-robot subclasses are 5-line wrappers and **no Python file is required to add a new MuJoCo HAL** — declare a `sim:` block in `robots/<id>/robot.yaml` and call `MujocoArmHAL.from_description(desc)`. |
