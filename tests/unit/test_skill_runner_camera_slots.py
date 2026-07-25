@@ -25,7 +25,7 @@ from types import ModuleType
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription
+from openral_core import RobotDescription, RSkillManifest
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import FrameEncoding, SensorFrame
 
@@ -148,9 +148,10 @@ class TestBuildRuntimeSkillSceneCameras:
                 description=description,
             )
 
+        manifest = RSkillManifest.from_yaml(str(yaml_path))
         assert captured["extra"] == {
-            "max_joint_substep_rad": 0.045,
-            "latency_budget_ms": 6000.0,
+            **manifest.policy_extras,
+            "latency_budget_ms": manifest.latency_budget.per_chunk_ms,
         }
 
     def test_overrides_sensor_name_scene_cameras_with_vla_slots(

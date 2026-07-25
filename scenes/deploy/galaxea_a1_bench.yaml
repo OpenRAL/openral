@@ -28,7 +28,7 @@ sensors:
       backend_params:
         camera: front
         runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
-        deployment_config: configs/deployments/lingbot/fruit_placement_eef.toml
+        system_config: configs/system/a1.toml
       max_age_ms: 500
   - name: wrist
     modality: rgb
@@ -51,7 +51,7 @@ sensors:
       backend_params:
         camera: wrist
         runtime_root_env: OPENRAL_GALAXEA_A1_RUNTIME_ROOT
-        deployment_config: configs/deployments/lingbot/fruit_placement_eef.toml
+        system_config: configs/system/a1.toml
       max_age_ms: 500
 runtime:
   enable_reasoner: false

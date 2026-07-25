@@ -305,27 +305,39 @@ def open_deploy_sensor_readers(
     # Deferred imports — openral_runner pulls torch-adjacent modules; keep
     # this module importable for AST/shape tests on minimal hosts.
     from openral_core import SensorReaderBackend, SensorReaderConfig
-    from openral_runner.factory import SENSOR_BACKEND_REGISTRY
+    from openral_runner.factory import make_sensor_readers
 
     leg = SensorLeg()
-    try:
-        for spec in sensors:
-            binding = spec.deploy_binding
-            if binding is None:
-                continue
-            topic = f"{topic_prefix}/{spec.name}/image"
-            if binding.backend == SensorReaderBackend.GSTREAMER:
-                # Native in-pipeline tee: force it on so the frames reach ROS.
-                cfg = SensorReaderConfig(
+    prepared: list[tuple[SensorSpec, str, SensorReaderConfig, bool]] = []
+    for spec in sensors:
+        binding = spec.deploy_binding
+        if binding is None:
+            continue
+        topic = f"{topic_prefix}/{spec.name}/image"
+        native_tee = binding.backend == SensorReaderBackend.GSTREAMER
+        prepared.append(
+            (
+                spec,
+                topic,
+                SensorReaderConfig(
                     sensor_id=spec.name,
                     backend=binding.backend,
                     backend_params=binding.backend_params,
                     max_age_ms=binding.max_age_ms,
-                    publish_to_ros=True,
-                    publish_topic=topic,
-                    publish_rate_hz=_publish_rate_hz(spec),
-                )
-                reader = SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
+                    publish_to_ros=native_tee,
+                    publish_topic=topic if native_tee else None,
+                    publish_rate_hz=_publish_rate_hz(spec) if native_tee else None,
+                ),
+                native_tee,
+            )
+        )
+    readers = make_sensor_readers([cfg for _, _, cfg, _ in prepared])
+    try:
+        for (spec, topic, _cfg, native_tee), reader in zip(prepared, readers, strict=True):
+            binding = spec.deploy_binding
+            assert binding is not None  # reason: prepared filters unbound specs
+            if native_tee:
+                # Native in-pipeline tee: force it on so the frames reach ROS.
                 reader.open()
                 # Serialise cold-start: block until this camera streams a frame
                 # before opening the next one (reopening on a transient bus
@@ -340,13 +352,6 @@ def open_deploy_sensor_readers(
                 # attach the polling ROS publisher pump.
                 from openral_sensors.ros_publisher import SensorRosPublisher
 
-                cfg = SensorReaderConfig(
-                    sensor_id=spec.name,
-                    backend=binding.backend,
-                    backend_params=binding.backend_params,
-                    max_age_ms=binding.max_age_ms,
-                )
-                reader = SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
                 reader.open()
                 leg.readers.append(reader)
                 # Manifest-calibrated intrinsics → companion CameraInfo on the

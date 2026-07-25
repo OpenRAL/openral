@@ -34,7 +34,8 @@ from openral_hal.galaxea_a1 import (
     _SocketTransport,
 )
 from openral_hal.protocol import HAL, HALHealthProvider, LifecycleEStopHAL
-from openral_runner.factory import SENSOR_BACKEND_REGISTRY
+from openral_runner.backends.galaxea_a1_camera_bridge import _PairedObservationCache
+from openral_runner.factory import SENSOR_BACKEND_REGISTRY, make_sensor_readers
 from openral_sim.policies.lingbot_va_a1 import (
     _bounded_joint_substep,
     _joint_limits_from_description,
@@ -234,7 +235,7 @@ def test_camera_bridge_backend_requires_explicit_a1_runtime_root(
         backend_params={
             "camera": "front",
             "runtime_root_env": "OPENRAL_TEST_A1_RUNTIME_ROOT",
-            "deployment_config": "configs/deployments/lingbot/fruit_placement_eef.toml",
+            "system_config": "configs/system/a1.toml",
         },
         max_age_ms=500,
     )
@@ -246,14 +247,14 @@ def test_camera_bridge_backend_requires_explicit_a1_runtime_root(
         reader.open()
 
 
-def test_camera_bridge_backend_requires_explicit_deployment_config() -> None:
+def test_camera_bridge_backend_requires_explicit_system_config() -> None:
     cfg = SensorReaderConfig(
         sensor_id="front",
         backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
         backend_params={"camera": "front"},
     )
 
-    with pytest.raises(ROSConfigError, match=r"backend_params\.deployment_config"):
+    with pytest.raises(ROSConfigError, match=r"backend_params\.system_config"):
         SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
 
 
@@ -265,6 +266,52 @@ def test_camera_bridge_backend_rejects_unknown_camera() -> None:
     )
     with pytest.raises(ROSConfigError, match="'front' or 'wrist'"):
         SENSOR_BACKEND_REGISTRY[cfg.backend.value](cfg)
+
+
+def test_camera_bridge_batch_shares_one_paired_session() -> None:
+    configs = [
+        SensorReaderConfig(
+            sensor_id=camera,
+            backend=SensorReaderBackend.GALAXEA_A1_CAMERA_BRIDGE,
+            backend_params={
+                "camera": camera,
+                "runtime_root_env": "OPENRAL_TEST_A1_RUNTIME_ROOT",
+                "system_config": "configs/system/a1.toml",
+            },
+            max_age_ms=500,
+        )
+        for camera in ("front", "wrist")
+    ]
+
+    front, wrist = make_sensor_readers(configs)
+
+    assert front._session is wrist._session
+
+
+def test_camera_bridge_pair_is_read_once_with_one_shared_timestamp() -> None:
+    calls = 0
+
+    def read_observation() -> dict[str, np.ndarray]:
+        nonlocal calls
+        calls += 1
+        return {
+            "front": np.full((2, 3, 3), calls, dtype=np.uint8),
+            "wrist": np.full((2, 4, 3), calls + 10, dtype=np.uint8),
+        }
+
+    cache = _PairedObservationCache(read_observation)
+
+    front = cache.read("front", max_age_ms=500)
+    wrist = cache.read("wrist", max_age_ms=500)
+
+    assert calls == 1
+    assert front.stamp_monotonic_ns == wrist.stamp_monotonic_ns
+    assert front.stamp_wall_ns == wrist.stamp_wall_ns
+    assert int(front.rgb[0, 0, 0]) == 1
+    assert int(wrist.rgb[0, 0, 0]) == 11
+
+    cache.read("front", max_age_ms=500)
+    assert calls == 2
 
 
 def test_lingbot_joint_lowering_respects_manifest_step_limit() -> None:

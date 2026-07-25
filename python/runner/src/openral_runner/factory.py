@@ -16,8 +16,8 @@ installed registry (``rskills/``), not pinned in the deploy config.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Literal, cast
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Literal, cast
 
 import structlog
 from openral_core import (
@@ -31,9 +31,15 @@ from openral_runner.backends import OpenCVThreadSensorReader
 from openral_runner.backends.gstreamer.pipeline import PipelineSpec, Source
 from openral_runner.sensor_reader import SensorReader
 
+if TYPE_CHECKING:
+    from openral_runner.backends.galaxea_a1_camera_bridge import (
+        _GalaxeaA1CameraBridgeSession,
+    )
+
 __all__ = [
     "SENSOR_BACKEND_REGISTRY",
     "SKILL_REGISTRY",
+    "make_sensor_readers",
 ]
 
 log = structlog.get_logger(__name__)
@@ -188,14 +194,12 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
     )
 
 
-def _make_galaxea_a1_camera_bridge_reader(cfg: SensorReaderConfig) -> SensorReader:
-    """Build the A1 Runtime Camera Bridge adapter from explicit scene params."""
-    from openral_runner.backends.galaxea_a1_camera_bridge import (
-        GalaxeaA1CameraBridgeReader,
-    )
-
+def _galaxea_a1_camera_bridge_params(
+    cfg: SensorReaderConfig,
+) -> tuple[Literal["front", "wrist"], str, str]:
+    """Validate and return the explicit A1 camera bridge scene parameters."""
     params = cfg.backend_params
-    allowed = {"camera", "runtime_root_env", "deployment_config"}
+    allowed = {"camera", "runtime_root_env", "system_config"}
     unknown = set(params) - allowed
     if unknown:
         raise ROSConfigError(
@@ -210,22 +214,74 @@ def _make_galaxea_a1_camera_bridge_reader(cfg: SensorReaderConfig) -> SensorRead
             "backend_params.camera to be 'front' or 'wrist'"
         )
     runtime_root_env = params.get("runtime_root_env", "OPENRAL_GALAXEA_A1_RUNTIME_ROOT")
-    deployment_config = params.get("deployment_config")
+    system_config = params.get("system_config")
     if not isinstance(runtime_root_env, str) or not runtime_root_env:
         raise ROSConfigError("Galaxea A1 camera bridge runtime_root_env must be a non-empty string")
-    if not isinstance(deployment_config, str) or not deployment_config:
+    if not isinstance(system_config, str) or not system_config:
         raise ROSConfigError(
             f"SensorReaderConfig({cfg.sensor_id!r}, "
             "backend=galaxea_a1_camera_bridge) requires "
-            "backend_params.deployment_config"
+            "backend_params.system_config"
         )
+    return cast(Literal["front", "wrist"], camera), runtime_root_env, system_config
+
+
+def _make_galaxea_a1_camera_bridge_reader(
+    cfg: SensorReaderConfig,
+    *,
+    session: _GalaxeaA1CameraBridgeSession | None = None,
+) -> SensorReader:
+    """Build one view over an explicitly shareable A1 paired-camera session."""
+    from openral_runner.backends.galaxea_a1_camera_bridge import (
+        GalaxeaA1CameraBridgeReader,
+        _GalaxeaA1CameraBridgeSession,
+    )
+
+    camera, runtime_root_env, system_config = _galaxea_a1_camera_bridge_params(cfg)
+    if session is None:
+        paired_session = _GalaxeaA1CameraBridgeSession(
+            runtime_root_env=runtime_root_env,
+            system_config=system_config,
+        )
+    elif isinstance(session, _GalaxeaA1CameraBridgeSession):
+        paired_session = session
+    else:
+        raise TypeError("session must be an A1 camera bridge session")
     return GalaxeaA1CameraBridgeReader(
         sensor_id=cfg.sensor_id,
-        camera=cast(Literal["front", "wrist"], camera),
-        runtime_root_env=runtime_root_env,
-        deployment_config=deployment_config,
+        camera=camera,
+        session=paired_session,
         default_max_age_ms=cfg.max_age_ms,
     )
+
+
+def make_sensor_readers(configs: Sequence[SensorReaderConfig]) -> list[SensorReader]:
+    """Build readers in order, sharing resources within one deployment batch."""
+    a1_backend = "galaxea_a1_camera_bridge"
+    a1_sessions: dict[tuple[str, str], _GalaxeaA1CameraBridgeSession] = {}
+    readers: list[SensorReader] = []
+    for cfg in configs:
+        if cfg.backend.value == a1_backend:
+            from openral_runner.backends.galaxea_a1_camera_bridge import (
+                _GalaxeaA1CameraBridgeSession,
+            )
+
+            _, runtime_root_env, system_config = _galaxea_a1_camera_bridge_params(cfg)
+            key = runtime_root_env, system_config
+            session = a1_sessions.get(key)
+            if session is None:
+                session = _GalaxeaA1CameraBridgeSession(
+                    runtime_root_env=runtime_root_env,
+                    system_config=system_config,
+                )
+                a1_sessions[key] = session
+            readers.append(_make_galaxea_a1_camera_bridge_reader(cfg, session=session))
+            continue
+        factory = SENSOR_BACKEND_REGISTRY.get(cfg.backend.value)
+        if factory is None:
+            raise ROSConfigError(f"unknown sensor reader backend {cfg.backend.value!r}")
+        readers.append(factory(cfg))
+    return readers
 
 
 def _gstreamer_spec_from_params(

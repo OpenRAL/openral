@@ -66,11 +66,9 @@ _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
 opens a camera device; the A1 camera monitor stays the only RealSense owner._
 
 - `class GalaxeaA1CameraBridgeReader` — Reads either the `front` or `wrist`
-  member of a fresh synchronized pair and returns an inline RGB8
-  `SensorFrame`. The A1 Runtime root is named by the scene's
-  `runtime_root_env`; the tracked LingBot deployment config supplies camera
-  geometry, freshness, crop, and pair-skew rules. Missing roots/configs,
-  stale pairs, wrong shapes, and unknown backend params fail explicitly.
+  member of the session's atomically cached pair and returns an inline RGB8
+  `SensorFrame`. Both views receive the same pair timestamp. Missing
+  roots/configs, stale pairs, wrong shapes, and unknown params fail explicitly.
 
 ### `python/runner/src/openral_runner/backends/__init__.py`
 _Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` (PR I) + `Ros2ImageSensorReader` gate on optional deps._
@@ -176,16 +174,20 @@ _Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): h
 ### `python/runner/src/openral_runner/factory.py`
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
-- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L86)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`, `galaxea_a1_camera_bridge`. (L288)
-- `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L42)
-- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L63)
-- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L92)
-- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L132)
+- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough` (M8 PR I/10). (L92)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `gstreamer`, `galaxea_a1_camera_bridge`. (L344)
+- `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L48)
+- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L69)
+- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`. (L98)
+- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (M8 PR I/2 + I/4.) (L138)
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   A1 Runtime paired-camera connector. Accepts only `camera`,
-  `runtime_root_env`, and `deployment_config`; unknown values are rejected and
-  the scene must declare `deployment_config` explicitly.
+  `runtime_root_env`, and `system_config`; unknown values are rejected and the
+  scene must declare `system_config` explicitly.
+- `make_sensor_readers(configs) -> list[SensorReader]` — Batch constructor that
+  preserves config order and shares one A1 paired-camera session for matching
+  `runtime_root_env` / `system_config` bindings. Other backends still dispatch
+  through `SENSOR_BACKEND_REGISTRY`.
 
 ### `python/runner/src/openral_runner/deploy_runner.py`
 _:class:`DeployRunner` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient._
