@@ -229,7 +229,7 @@ def build_sim_env_from_yaml(
     if scene_id not in SCENES:
         raise ROSConfigError(
             f"build_sim_env_from_yaml: scene id {scene_id!r} is not registered in "
-            f"openral_sim.SCENES. Available: {sorted(SCENES)}."  # type: ignore[call-overload]  # reason: _Registry is iterable and yields comparable str keys at runtime
+            f"openral_sim.SCENES. Available: {sorted(SCENES)}."
         )
 
     # Resolve robot_id from the YAML, the SCENES fixed_robot registry,

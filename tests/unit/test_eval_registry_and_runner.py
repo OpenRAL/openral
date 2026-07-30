@@ -88,6 +88,23 @@ def test_registry_unknown_id_raises_with_known_list() -> None:
     assert "widget" in msg and "typo" in msg and "['a']" in msg
 
 
+def test_registry_iterates_ids_for_error_messages() -> None:
+    """``sorted(REGISTRY)`` is used in error paths (e.g. sim_bringup's unknown-scene
+    message); before ``__iter__`` existed that crashed with a TypeError, masking the
+    typed ROSConfigError it was formatting."""
+    reg: _Registry[int] = _Registry("widget")
+
+    @reg.register("b")
+    def _factory_b() -> int:
+        return 2
+
+    @reg.register("a")
+    def _factory_a() -> int:
+        return 1
+
+    assert sorted(reg) == ["a", "b"]
+
+
 def test_registry_duplicate_registration_rejected() -> None:
     reg: _Registry[int] = _Registry("widget")
     reg.register("a")(lambda: 1)

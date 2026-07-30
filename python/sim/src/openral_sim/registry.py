@@ -24,7 +24,7 @@ Example::
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from openral_core.exceptions import ROSConfigError
@@ -128,6 +128,10 @@ class _Registry(Generic[T]):
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._items
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over registered IDs, so ``sorted(REGISTRY)`` works in error messages."""
+        return iter(self._items)
 
 
 SCENES: _Registry[SimRollout] = _Registry("scene")
