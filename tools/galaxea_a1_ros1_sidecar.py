@@ -520,6 +520,17 @@ class Bridge:
             gripper = float(gripper)
             if not math.isfinite(gripper) or not 0.0 <= gripper <= 1.0:
                 raise ValueError("gripper must be within [0, 1]")
+            with self._lock:
+                gripper_relay_state = self._relay_state
+            if gripper_relay_state != "ACTIVE":
+                # The gripper bypasses the tracker's staged-hold interpolation,
+                # so it must not actuate before the arm relay has finished
+                # alignment. Same fail-closed contract as the joint path above;
+                # the deploy flow always streams the joint hold to ACTIVE
+                # before the first gripper setpoint.
+                raise RuntimeError(
+                    f"gripper command refused: command relay is not ACTIVE: {gripper_relay_state}"
+                )
             gripper_mm = config["gripper_min"] + gripper * (
                 config["gripper_max"] - config["gripper_min"]
             )

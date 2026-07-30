@@ -223,7 +223,7 @@ class GalaxeaA1CameraBridgeReader:
     def read_latest(self, max_age_ms: int | None = None) -> SensorFrame:
         """Return the latest source-timestamped RGB frame."""
         if not self.is_open:
-            raise RuntimeError(f"GalaxeaA1CameraBridgeReader({self.sensor_id!r}) is closed")
+            raise ROSRuntimeError(f"GalaxeaA1CameraBridgeReader({self.sensor_id!r}) is closed")
         budget_ms = self._default_max_age_ms if max_age_ms is None else max_age_ms
         frame = self._session.read(self._camera, max_age_ms=budget_ms)
         height, width, channels = frame.rgb.shape

@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from openral_core import (
@@ -336,116 +337,122 @@ def test_sidecar_pins_every_vendor_topic_in_launch_commands() -> None:
     assert not any("eePose" in key for key in tracker_parameters)
 
 
-def test_sidecar_relay_never_forwards_unaligned_tracker_startup() -> None:
-    class FakePublisher:
-        def __init__(self, topic: str) -> None:
-            self.topic = topic
-            self.messages: list[object] = []
+class _FakeSidecarPublisher:
+    def __init__(self, topic: str) -> None:
+        self.topic = topic
+        self.messages: list[object] = []
 
-        def publish(self, message: object) -> None:
-            self.messages.append(message)
+    def publish(self, message: object) -> None:
+        self.messages.append(message)
 
-        def get_num_connections(self) -> int:
-            return 1
+    def get_num_connections(self) -> int:
+        return 1
 
-    class FakeSubscriber:
-        def get_num_connections(self) -> int:
-            return 1
 
-    class FakeRospy:
-        class Time:
-            @staticmethod
-            def now() -> int:
-                return 123
+class _FakeSidecarSubscriber:
+    def get_num_connections(self) -> int:
+        return 1
 
-        def __init__(self) -> None:
-            self.publishers: dict[str, FakePublisher] = {}
 
-        def Publisher(  # noqa: N802 - mirrors rospy's public API
-            self, topic: str, _message_type: object, *, queue_size: int
-        ) -> FakePublisher:
-            assert queue_size == 1
-            publisher = FakePublisher(topic)
-            self.publishers[topic] = publisher
-            return publisher
+class _FakeSidecarRospy:
+    class Time:
+        @staticmethod
+        def now() -> int:
+            return 123
 
-        def Subscriber(  # noqa: N802 - mirrors rospy's public API
-            self,
-            _topic: str,
-            _message_type: object,
-            _callback: object,
-            *,
-            queue_size: int,
-        ) -> FakeSubscriber:
-            assert queue_size == 1
-            return FakeSubscriber()
+    def __init__(self) -> None:
+        self.publishers: dict[str, _FakeSidecarPublisher] = {}
 
-        def logerr(self, *_args: object) -> None:
-            pass
+    def Publisher(  # noqa: N802 - mirrors rospy's public API
+        self, topic: str, _message_type: object, *, queue_size: int
+    ) -> _FakeSidecarPublisher:
+        assert queue_size == 1
+        publisher = _FakeSidecarPublisher(topic)
+        self.publishers[topic] = publisher
+        return publisher
 
-        def logwarn(self, *_args: object) -> None:
-            pass
+    def Subscriber(  # noqa: N802 - mirrors rospy's public API
+        self,
+        _topic: str,
+        _message_type: object,
+        _callback: object,
+        *,
+        queue_size: int,
+    ) -> _FakeSidecarSubscriber:
+        assert queue_size == 1
+        return _FakeSidecarSubscriber()
 
-    def joint_state() -> SimpleNamespace:
-        return SimpleNamespace(
-            header=SimpleNamespace(
-                stamp=SimpleNamespace(to_nsec=time.time_ns),
-                frame_id="",
-            ),
-            name=[],
-            position=[],
-            velocity=[],
-            effort=[],
-        )
+    def logerr(self, *_args: object) -> None:
+        pass
 
-    def arm_command(position: tuple[float, ...]) -> SimpleNamespace:
-        return SimpleNamespace(
-            header=SimpleNamespace(stamp=0),
-            p_des=list(position),
-            v_des=[0.0] * 6,
-            kp=[1.0] * 6,
-            kd=[1.0] * 6,
-            t_ff=[0.0] * 6,
-            mode=0,
-        )
+    def logwarn(self, *_args: object) -> None:
+        pass
 
-    def gripper_command() -> SimpleNamespace:
-        return SimpleNamespace(header=SimpleNamespace(stamp=0), gripper_stroke=0.0)
 
-    rospy = FakeRospy()
+def _sidecar_joint_state() -> SimpleNamespace:
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(to_nsec=time.time_ns),
+            frame_id="",
+        ),
+        name=[],
+        position=[],
+        velocity=[],
+        effort=[],
+    )
+
+
+def _sidecar_arm_command(position: tuple[float, ...]) -> SimpleNamespace:
+    return SimpleNamespace(
+        header=SimpleNamespace(stamp=0),
+        p_des=list(position),
+        v_des=[0.0] * 6,
+        kp=[1.0] * 6,
+        kd=[1.0] * 6,
+        t_ff=[0.0] * 6,
+        mode=0,
+    )
+
+
+def _sidecar_gripper_command() -> SimpleNamespace:
+    return SimpleNamespace(header=SimpleNamespace(stamp=0), gripper_stroke=0.0)
+
+
+_SIDECAR_HELLO: dict[str, object] = {
+    "op": "hello",
+    "protocol": 1,
+    "robot": "galaxea_a1",
+    "joint_names": [f"arm_joint{i}" for i in range(1, 7)],
+    "joint_position_min": [-2.8798, 0.0, -3.3161, -2.8798, -1.6581, -2.8798],
+    "joint_position_max": [2.8798, 3.1415, 0.0, 2.8798, 1.6581, 2.8798],
+    "initial_alignment_tolerance_rad": 0.05,
+    "tracker_alignment_timeout_s": 5.0,
+    "max_target_step_rad": 0.08,
+    "command_lease_s": 0.5,
+    "state_timeout_s": 0.5,
+    "status_timeout_s": 1.0,
+    "feedback_limit_tolerance_rad": 0.01,
+    "idle_timeout_error_mask": 64,
+    "gripper_ignored_error_mask": 8,
+    "gripper_stroke_min_mm": 0.0,
+    "gripper_stroke_max_mm": 104.0,
+}
+
+
+def _primed_sidecar_bridge(
+    current: tuple[float, ...],
+) -> tuple[_FakeSidecarRospy, Any, dict[str, object]]:
+    """Build a configured Bridge with joint/gripper/status feedback already latched."""
+    rospy = _FakeSidecarRospy()
     bridge = _SIDECAR["Bridge"](
         rospy,
-        joint_state,
+        _sidecar_joint_state,
         object,
-        gripper_command,
+        _sidecar_gripper_command,
         SimpleNamespace,
     )
-    config = _SIDECAR["_hello_config"](
-        {
-            "op": "hello",
-            "protocol": 1,
-            "robot": "galaxea_a1",
-            "joint_names": [f"arm_joint{i}" for i in range(1, 7)],
-            "joint_position_min": [-2.8798, 0.0, -3.3161, -2.8798, -1.6581, -2.8798],
-            "joint_position_max": [2.8798, 3.1415, 0.0, 2.8798, 1.6581, 2.8798],
-            "initial_alignment_tolerance_rad": 0.05,
-            "tracker_alignment_timeout_s": 5.0,
-            "max_target_step_rad": 0.08,
-            "command_lease_s": 0.5,
-            "state_timeout_s": 0.5,
-            "status_timeout_s": 1.0,
-            "feedback_limit_tolerance_rad": 0.01,
-            "idle_timeout_error_mask": 64,
-            "gripper_ignored_error_mask": 8,
-            "gripper_stroke_min_mm": 0.0,
-            "gripper_stroke_max_mm": 104.0,
-        }
-    )
-    # Encoder zero/quantization can leave feedback just beyond a nominal
-    # endpoint. The requested hold is projected to the exact legal endpoint.
-    current = (0.0, -0.001, -1.0, 0.0, 0.0, 0.0)
-    hold_target = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
-    joint_feedback = joint_state()
+    config = _SIDECAR["_hello_config"](dict(_SIDECAR_HELLO))
+    joint_feedback = _sidecar_joint_state()
     joint_feedback.name = [f"arm_joint{i}" for i in range(1, 7)]
     joint_feedback.position = list(current)
     joint_feedback.velocity = [0.0] * 6
@@ -458,6 +465,16 @@ def test_sidecar_relay_never_forwards_unaligned_tracker_startup() -> None:
         )
     )
     bridge.configure(config)
+    return rospy, bridge, config
+
+
+def test_sidecar_relay_never_forwards_unaligned_tracker_startup() -> None:
+    arm_command = _sidecar_arm_command
+    # Encoder zero/quantization can leave feedback just beyond a nominal
+    # endpoint. The requested hold is projected to the exact legal endpoint.
+    current = (0.0, -0.001, -1.0, 0.0, 0.0, 0.0)
+    hold_target = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
+    rospy, bridge, config = _primed_sidecar_bridge(current)
 
     assert not bridge.apply({"joint_targets": list(hold_target)}, config, True)
     target_publisher = rospy.publishers["/arm_joint_target_position"]
@@ -486,6 +503,63 @@ def test_sidecar_relay_never_forwards_unaligned_tracker_startup() -> None:
     assert not bridge.apply({"gripper": 0.75}, config, False)
     assert len(gripper_publisher.messages) == 1
     assert gripper_publisher.messages[0].gripper_stroke == 78.0
+
+
+def test_sidecar_gripper_requires_active_relay() -> None:
+    """Gripper actuation is gated by the same relay machine as arm joints.
+
+    The gripper bypasses the tracker's staged-hold interpolation, so a
+    setpoint arriving while the relay is still ``LOCKED`` or ``ARMING`` must
+    fail closed instead of moving the physical gripper before alignment.
+    """
+    current = (0.0, -0.001, -1.0, 0.0, 0.0, 0.0)
+    hold_target = (0.0, 0.0, -1.0, 0.0, 0.0, 0.0)
+    rospy, bridge, config = _primed_sidecar_bridge(current)
+    gripper_publisher = rospy.publishers["/gripper_position_control_host"]
+
+    # LOCKED: a gripper-only action is refused and nothing is published.
+    with pytest.raises(RuntimeError, match="not ACTIVE: LOCKED"):
+        bridge.apply({"gripper": 0.5}, config, True)
+    assert gripper_publisher.messages == []
+
+    # First joint command stages the relay (ARMING); gripper stays refused,
+    # even when it rides in the same packet as a valid joint target.
+    assert not bridge.apply({"joint_targets": list(hold_target)}, config, True)
+    assert bridge.relay_state() == "ARMING"
+    with pytest.raises(RuntimeError, match="not ACTIVE: ARMING"):
+        bridge.apply({"gripper": 0.5, "joint_targets": list(hold_target)}, config, False)
+    assert gripper_publisher.messages == []
+
+    # Tracker aligns with the staged hold -> ACTIVE: the setpoint now forwards.
+    bridge._on_staged(_sidecar_arm_command(hold_target))
+    assert bridge.relay_state() == "ACTIVE"
+    assert not bridge.apply({"gripper": 0.5}, config, False)
+    assert len(gripper_publisher.messages) == 1
+    assert gripper_publisher.messages[0].gripper_stroke == 52.0
+
+
+def test_deploy_sim_of_real_only_robot_raises_typed_errors() -> None:
+    """`deploy sim` of the hardware-only A1 fails with typed errors, never a TypeError.
+
+    The bare-twin path reports the robot as real-hardware-only; attaching the
+    deploy bench scene (which registers no sim scene id) reports the unknown
+    scene id — the latter used to crash with ``TypeError: '_Registry' object
+    is not iterable`` while formatting its own error message.
+    """
+    from openral_core.exceptions import ROSCapabilityMismatch
+    from openral_hal.resolver import build_hal
+
+    repo_root = Path(__file__).resolve().parents[2]
+    robot_yaml = repo_root / "robots" / "galaxea_a1" / "robot.yaml"
+    description = RobotDescription.from_yaml(str(robot_yaml))
+    with pytest.raises(ROSCapabilityMismatch, match="real-hardware-only"):
+        build_hal(description, mode="sim")
+    with pytest.raises(ROSConfigError, match="not registered"):
+        build_hal(
+            description,
+            mode="sim",
+            sim_env_yaml=str(repo_root / "scenes" / "deploy" / "galaxea_a1_bench.yaml"),
+        )
 
 
 def test_sidecar_stop_waits_for_sigkill_completion() -> None:

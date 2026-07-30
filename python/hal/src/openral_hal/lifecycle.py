@@ -776,9 +776,15 @@ if _ROS2_AVAILABLE:
             """Timer callback: publish joint state.
 
             From the proprio snapshot for sim-attached HALs, else a live
-            ``hal.read_state``.
+            ``hal.read_state``. While the e-stop latch is set, snapshot-backed
+            HALs keep publishing the last post-step frame so operators retain
+            joint visibility through the latch; real HALs are skipped instead —
+            their transport may already be torn down (``RESTART_REQUIRED``
+            stops the whole vendor stack) and polling would only spam errors.
             """
-            if self._hal is None or self._publisher is None or self._estopped:
+            if self._hal is None or self._publisher is None:
+                return
+            if self._estopped and self._proprio is None:
                 return
 
             from openral_observability import producer as ral_producer
@@ -954,11 +960,17 @@ if _ROS2_AVAILABLE:
         def _on_estop_cleared(self, _msg: object) -> None:
             """Clear the estop latch when the reset authority broadcasts /openral/estop_cleared.
 
-            Without this the HAL stayed latched after the kernel's estop_reset —
-            it dropped every command (``_on_safe_action`` returns early on
-            ``_estopped``) so the robot never resumed until a node restart. The
-            kernel's cooldown gate has already passed by the time this fires
-            (the dashboard publishes it only after estop_reset returns success).
+            Recovery is per-HAL policy. HALs without the hardware-estop opt-in
+            just clear the local latch — without that the node dropped every
+            command (``_on_safe_action`` returns early on ``_estopped``) and
+            never resumed until a node restart. Opted-in HALs declare
+            ``estop_recovery``: ``RESETTABLE`` HALs get ``reset_estop()`` and
+            then resume, while ``RESTART_REQUIRED`` HALs (e.g. Galaxea A1,
+            whose estop stops the entire ROS 1 sidecar) deliberately keep the
+            latch — a full lifecycle restart with fresh alignment is the only
+            way back. The kernel's cooldown gate has already passed by the
+            time this fires (the dashboard publishes it only after estop_reset
+            returns success).
             """
             if not self._estopped:
                 return

@@ -4,6 +4,15 @@ The vendor stack is ROS 1 Noetic while OpenRAL is ROS 2 / Python 3.12.  This
 adapter therefore owns no vendor imports: an operator-provisioned sidecar runs
 the official SDK and streams typed JSON records over loopback TCP.  Network I/O
 lives on a worker thread so ``read_state`` and ``send_action`` never block.
+
+Example:
+    >>> from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
+    >>> hal = GalaxeaA1HAL()  # doctest: +SKIP
+    >>> hal.connect()  # requires the running ROS 1 sidecar  # doctest: +SKIP
+    >>> state = hal.read_state()  # doctest: +SKIP
+    >>> len(state.position) == len(GALAXEA_A1_DESCRIPTION.joints) == 7  # doctest: +SKIP
+    True
+    >>> hal.disconnect()  # doctest: +SKIP
 """
 
 from __future__ import annotations
@@ -550,7 +559,18 @@ def _decode_nonnegative_int(raw: dict[str, object], key: str, *, default: int | 
 
 
 class GalaxeaA1HAL(HALBase):
-    """OpenRAL real HAL for the six-axis Galaxea A1 plus parallel gripper."""
+    """OpenRAL real HAL for the six-axis Galaxea A1 plus parallel gripper.
+
+    Example:
+        >>> from openral_hal.galaxea_a1 import GalaxeaA1HAL
+        >>> from openral_core import Action, ControlMode
+        >>> hal = GalaxeaA1HAL(port=46011)  # doctest: +SKIP
+        >>> hal.connect()  # doctest: +SKIP
+        >>> hal.send_action(  # doctest: +SKIP
+        ...     Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.5], stamp_ns=0)
+        ... )
+        >>> hal.disconnect()  # doctest: +SKIP
+    """
 
     description = GALAXEA_A1_DESCRIPTION
     estop_recovery = EStopRecovery.RESTART_REQUIRED
@@ -767,7 +787,8 @@ class GalaxeaA1HAL(HALBase):
         log.critical("hal.estop", robot=self.description.name)
         try:
             # The sidecar acknowledges only after tracker, driver, and roscore
-            # have exited. Its bounded shutdown allows up to three seconds.
+            # have exited. Its bounded shutdown allows up to four seconds
+            # (3 s SIGINT grace + 1 s SIGKILL wait).
             self._transport.estop(timeout_s=4.0)
         finally:
             self._connected = False

@@ -95,6 +95,55 @@ def test_estopped_node_does_not_poll_disconnected_real_hal() -> None:
         rclpy.try_shutdown()
 
 
+def test_estopped_snapshot_backed_node_keeps_publishing_joint_state() -> None:
+    """Snapshot-backed (sim-attached) HALs keep /joint_states alive through the latch.
+
+    Only real HALs skip the publish while ``_estopped`` — their transport may
+    already be torn down. A proprio snapshot is plain data, so operators keep
+    joint visibility during an e-stop instead of the topic going dark.
+    """
+    import time
+
+    from openral_core.schemas import JointState
+    from openral_hal.galaxea_a1 import GALAXEA_A1_DESCRIPTION, GalaxeaA1HAL
+    from openral_hal.proprio_snapshot import ProprioFrame, ProprioSnapshot
+    from sensor_msgs.msg import JointState as RosJointState
+
+    rclpy.init()
+    try:
+        node = ManifestHALLifecycleNode("openral_hal_galaxea_a1_snapshot_estop")
+        listener = rclpy.create_node("t_estop_joint_state_listener")
+        received: list[RosJointState] = []
+        listener.create_subscription(RosJointState, "/t_estop_joint_states", received.append, 5)
+        try:
+            node._publisher = node.create_publisher(RosJointState, "/t_estop_joint_states", 5)
+            node._hal = cast(HAL, GalaxeaA1HAL())
+            names = [joint.name for joint in GALAXEA_A1_DESCRIPTION.joints]
+            positions = [0.25] * len(names)
+            snapshot = ProprioSnapshot()
+            snapshot.set(
+                ProprioFrame(
+                    state=JointState(name=names, position=positions, stamp_ns=1),
+                    base_pose=(0.0, 0.0, 0.0),
+                    base_pose_6dof=None,
+                    base_twist=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+                )
+            )
+            node._proprio = snapshot
+            node._estopped = True
+            node._publish_joint_state()
+            deadline = time.monotonic() + 2.0
+            while not received and time.monotonic() < deadline:
+                rclpy.spin_once(listener, timeout_sec=0.1)
+            assert received, "estopped snapshot-backed node stopped publishing joint state"
+            assert list(received[0].position) == positions
+        finally:
+            node.destroy_node()
+            listener.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
 def test_downstream_estop_failure_stays_latched_without_crashing_callback() -> None:
     rclpy.init()
     try:
