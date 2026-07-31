@@ -1846,13 +1846,15 @@ def _build_runtime_skill_from_manifest(
             "are resolved via make_default_skill_resolver(), which branches "
             "on manifest.kind before reaching this helper."
         )
+    policy_extra = dict(manifest.policy_extras)
+    policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
     vla = VLASpec(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that
         # `openral sim run` uses can find the manifest on disk.
         weights_uri=str(yaml_path.parent),
         device="auto",
-        extra={},
+        extra=policy_extra,
     )
     # The policy factories only access `env_cfg.vla`; a SimpleNamespace
     # wrapper is enough to avoid building a full Pydantic SimEnvironment
@@ -1870,7 +1872,11 @@ def _build_runtime_skill_from_manifest(
     # which `resolve_camera_keys` still honours first. The obs-image keys are
     # realigned to match in `_PolicyAdapterSkill._step_impl`.
     effective_scene_cameras = _required_vla_camera_slots(manifest, description) or scene_cameras
-    env_stub = _SimpleEnvCfg(vla=vla, cameras=effective_scene_cameras)
+    env_stub = _SimpleEnvCfg(
+        vla=vla,
+        cameras=effective_scene_cameras,
+        robot_description=description,
+    )
     try:
         adapter = make_policy(env_stub)  # type: ignore[arg-type]
     except ImportError as exc:
@@ -1915,11 +1921,18 @@ class _SimpleSceneCfg:
 
 
 class _SimpleEnvCfg:
-    """Minimal `env_cfg` carrier — `.vla` and `.scene.cameras` are read by policy factories."""
+    """Minimal policy factory input with VLA, camera, and robot contracts."""
 
-    def __init__(self, *, vla: object, cameras: list[str] | tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        vla: object,
+        cameras: list[str] | tuple[str, ...] = (),
+        robot_description: RobotDescription | None = None,
+    ) -> None:
         self.vla = vla
         self.scene = _SimpleSceneCfg(cameras=cameras)
+        self.robot_description = robot_description
 
 
 def _effective_perm(robot_to_policy: list[int] | None, n: int) -> list[int]:

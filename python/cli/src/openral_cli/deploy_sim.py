@@ -297,6 +297,14 @@ _ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
         default_params={},
         manifest_driven=True,
     ),
+    "galaxea_a1": _HalSpec(
+        package="openral_hal_galaxea_a1",
+        executable="lifecycle_node.py",
+        node_name="openral_hal_galaxea_a1",
+        supported_robot_names=frozenset({"galaxea_a1"}),
+        default_params={},
+        manifest_driven=True,
+    ),
 }
 
 # The lidar-less visual-SLAM twin reuses panda_mobile's HAL verbatim (same node,
@@ -943,6 +951,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     deploy_config: Path | None = None,
     hal_param_overrides: dict[str, object] | None = None,
     hal_mode: str = "sim",
+    enable_reasoner: bool | None = None,
     enable_slam: bool | None = None,
     enable_nav2: bool | None = None,
     enable_octomap: bool | None = None,
@@ -1025,6 +1034,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                     return str(cand)
             return value
 
+        if enable_reasoner is None:
+            enable_reasoner = rt.enable_reasoner
         enable_slam = enable_slam if enable_slam is not None else rt.enable_slam
         enable_nav2 = enable_nav2 if enable_nav2 is not None else rt.enable_nav2
         enable_octomap = enable_octomap if enable_octomap is not None else rt.enable_octomap
@@ -1057,12 +1068,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             slam_mono_camera = rt.slam_mono_camera
         slam_depth_sidecar_autostart = rt.slam_depth_sidecar_autostart
     # Built-in defaults for the tri-state flags nothing pinned.
+    if enable_reasoner is None:
+        enable_reasoner = True
     if enable_octomap_kernel_check is None:
         enable_octomap_kernel_check = True
     if enable_reward_monitor is None:
         enable_reward_monitor = False
     if enable_critic is None:
         enable_critic = False
+    if not enable_reasoner and _resolved_initial_prompt:
+        raise ROSConfigError(
+            "an initial task requires runtime.enable_reasoner=true; "
+            "submit a specific rSkill through /openral/execute_rskill when "
+            "running a direct-rSkill deployment"
+        )
     # Established default: the Isaac ROS composable node. Do NOT auto-pick
     # pycuvslam just because its wheel is importable (§1.4 — explicit).
     if slam_visual_impl is None:
@@ -1334,6 +1353,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # → ``hal_mode="sim"`` (default; the scene's robosuite OSC controller
         # synthesises cartesian/OSC modes); ``deploy run`` → ``"real"``.
         f"hal_mode:={hal_mode}",
+        f"enable_reasoner:={'true' if enable_reasoner else 'false'}",
         f"enable_slam:={'true' if enable_slam else 'false'}",
         f"slam_backend:={slam_backend}",
         f"slam_visual_impl:={slam_visual_impl}",

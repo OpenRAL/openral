@@ -147,9 +147,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     dataset_license: str = (
         bootstrap.get_parameter("dataset_license").get_parameter_value().string_value
     )
-    deploy_config: str = (
-        bootstrap.get_parameter("deploy_config").get_parameter_value().string_value
-    )
+    deploy_config: str = bootstrap.get_parameter("deploy_config").get_parameter_value().string_value
     bootstrap.destroy_node()
 
     if not robot_yaml:
@@ -238,6 +236,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             sensor_leg = open_deploy_sensor_readers(
                 merge_deploy_sensors(runtime.description.sensors, scene.sensors),
                 aggregator=runtime.aggregator,
+                ros_node=runtime.world_state_node,
             )
             if sensor_leg.direct_sensors:
                 from rclpy.parameter import Parameter
@@ -296,6 +295,17 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             )
             rclpy.try_shutdown()
             return 5
+
+    # Start camera publication only after both composed lifecycle nodes have
+    # created all ROS entities. Concurrent publishing during runner configure
+    # can block rclpy entity creation before the ExecuteRskill server exists.
+    if sensor_leg is not None:
+        try:
+            sensor_leg.start()
+        except Exception as exc:  # surface as exit code, not stack trace
+            print(f"runtime_node: sensor leg failed to start: {exc!s}", file=sys.stderr)
+            rclpy.try_shutdown()
+            return 6
 
     try:
         executor.spin()

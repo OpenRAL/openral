@@ -4309,6 +4309,7 @@ EmbodimentTag: TypeAlias = Literal[
     "custom",
     "franka_panda",
     "g1",
+    "galaxea_a1",
     "google_robot",
     "gr1",
     "h1",
@@ -4400,6 +4401,7 @@ ModelFamily: TypeAlias = Literal[
     "openvla",
     "lingbot_vla2",
     "lingbot_vla",
+    "lingbot_va_a1",
     "internvla_n1",
 ]
 """VLA / policy family the skill belongs to.
@@ -4427,6 +4429,13 @@ sidecar transport + adapter but loads from the separate V1 upstream repo
 (``github.com/robbyant/lingbot-vla``) in its own ``transformers==4.51.3`` /
 ``lerobot==0.4.2`` venv, driven by ``tools/_lingbot_vla2_server.py --variant v1``
 (adapter: ``openral_sim.policies.lingbot_vla2`` id ``lingbot_vla``).
+
+``lingbot_va_a1`` is the Galaxea A1 EEF deployment adapter for the LingBot-VA
+checkpoint. It connects to versioned local Camera Bridge and policy-gateway
+services owned by the separately maintained A1 Runtime, without importing its
+checkout. Runtime owns the exact model configuration, EEF transforms, cache
+semantics, and IK; OpenRAL validates the gateway identity and returns its
+joint/gripper proposals through the normal safety and HAL path.
 
 ``openvla`` (OpenVLA / OpenVLA-OFT) is a transformers *custom-code* model
 loaded in-process (``trust_remote_code``, gated by
@@ -5987,6 +5996,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "3d_diffuser_actor",  # family diffuser_actor
         "lingbot_vla",  # family lingbot_vla
         "lingbot_vla2",  # family lingbot_vla2
+        "lingbot_va_a1",  # family lingbot_va_a1
         "internvla_n1",  # family internvla_n1 (InternVLA-N1 / DualVLN)
         # Non-VLA tool-model tokens (detector / vlm / reward).
         "omdet_turbo",
@@ -6020,6 +6030,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "openvla": "openvla_oft",
     "lingbot_vla": "lingbot_vla",
     "lingbot_vla2": "lingbot_vla2",
+    "lingbot_va_a1": "lingbot_va_a1",
     "internvla_n1": "internvla_n1",
 }
 """VLA :data:`ModelFamily` → its canonical ``<model>`` *suggestion* token
@@ -6039,6 +6050,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "openvla": frozenset({"openvla", "openvla_oft"}),
     "lingbot_vla": frozenset({"lingbot_vla"}),
     "lingbot_vla2": frozenset({"lingbot_vla2"}),
+    "lingbot_va_a1": frozenset({"lingbot_va_a1"}),
     "internvla_n1": frozenset({"internvla_n1"}),
 }
 """The documented **family → allowed ``<model>`` tokens** map: when a manifest
@@ -6979,6 +6991,7 @@ class DeployRuntime(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    enable_reasoner: bool | None = None
     enable_slam: bool | None = None
     enable_nav2: bool | None = None
     enable_octomap: bool | None = None
@@ -7319,9 +7332,12 @@ class ProtocolSpec(BaseModel):
 class SensorReaderBackend(str, Enum):
     """Which :class:`SensorReader` implementation to instantiate.
 
-    Four backends are reserved. ``opencv_thread``
-    is the default and mirrors lerobot's per-camera background-thread
-    pattern. ``ros2_image`` subscribes to a ROS 2 image topic published by
+    ``opencv_thread`` is the default and mirrors lerobot's per-camera
+    background-thread pattern. ``galaxea_a1_camera_bridge`` consumes the
+    versioned paired raw-frame service owned by an external A1 Runtime process
+    without importing Runtime or opening either RealSense device. Three
+    additional backends are reserved.
+    ``ros2_image`` subscribes to a ROS 2 image topic published by
     a vendor driver. ``gstreamer`` runs a GStreamer pipeline whose appsink
     delivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).
 
@@ -7337,6 +7353,7 @@ class SensorReaderBackend(str, Enum):
     ROS2_IMAGE = "ros2_image"
     GSTREAMER = "gstreamer"
     HOLOSCAN = "holoscan"
+    GALAXEA_A1_CAMERA_BRIDGE = "galaxea_a1_camera_bridge"
 
 
 class DeadlineOverrunPolicy(str, Enum):

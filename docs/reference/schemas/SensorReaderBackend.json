@@ -7,6 +7,7 @@
     "opencv_thread",
     "ros2_image",
     "gstreamer",
-    "holoscan"
+    "holoscan",
+    "galaxea_a1_camera_bridge"
   ]
 }

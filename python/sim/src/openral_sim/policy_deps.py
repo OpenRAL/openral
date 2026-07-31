@@ -96,6 +96,11 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
         "runs in tools/lingbot_vla2_sidecar.py's own auto-provisioned Python 3.12 "
         "+ torch-2.8 venv."
     ),
+    "lingbot_va_a1": (
+        "Install the LingBot wire dependencies with `just sync --all-packages "
+        "--group lingbot`, then start the A1 Runtime camera bridge, "
+        "contract-checked LingBot server, and OpenRAL policy gateway."
+    ),
     "internvla_n1": (
         "Install the rldx extras: `just sync --all-packages --group rldx` "
         "(adds pyzmq + msgpack for the InternVLA-N1 sidecar client). The "
@@ -123,6 +128,7 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
     "gr00t": ("sim", "gr00t"),
     "diffuser_actor": ("rlbench",),
     "lingbot_vla2": ("lingbot",),
+    "lingbot_va_a1": ("lingbot",),
     "internvla_n1": ("rldx",),
     "mock": (),
 }
@@ -158,6 +164,7 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     # sidecar's own auto-provisioned py3.12 + torch-2.8 venv). See
     # openral_sim.policies.lingbot_vla2.
     "lingbot_vla2": ("zmq", "msgpack"),
+    "lingbot_va_a1": ("websockets", "msgpack"),
     # InternVLA-N1 shares the sidecar contract — the openral side only
     # needs the ZMQ + msgpack wire; the transformers-4.51 stack lives in
     # the sidecar's auto-provisioned py3.11 venv.

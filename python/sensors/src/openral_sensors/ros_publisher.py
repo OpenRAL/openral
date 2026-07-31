@@ -129,6 +129,7 @@ class SensorRosPublisher:
         qos_depth: int = _DEFAULT_QOS_DEPTH,
         camera_info: IntrinsicsPinhole | None = None,
         info_topic: str | None = None,
+        node: Node | None = None,
     ) -> None:
         """Stash configuration; no ROS I/O until :meth:`start`."""
         if not topic.startswith("/"):
@@ -149,8 +150,10 @@ class SensorRosPublisher:
         self._qos_depth = qos_depth
         self._camera_info_spec = camera_info
 
-        # Populated by start().
-        self._node: Node | None = None
+        # A composed runtime injects its existing node. Standalone callers
+        # retain the original private-node behavior.
+        self._node: Node | None = node
+        self._owns_node = node is None
         self._image_publisher: Publisher | None = None
         self._info_publisher: Publisher | None = None
         self._we_initialised_rclpy = False
@@ -187,15 +190,19 @@ class SensorRosPublisher:
         """The configured ``CameraInfo`` companion topic (read-only)."""
         return self._info_topic
 
-    def start(self) -> None:
-        """Init rclpy (if needed), create publishers, start the pump thread.
+    def prepare(self) -> None:
+        """Create ROS resources without starting the frame-pump thread.
+
+        Multi-camera callers prepare every publisher before starting any
+        background pump. This avoids concurrent rclpy operations while another
+        camera's node is still being constructed.
 
         Raises:
             RuntimeError: When ``rclpy`` / ``sensor_msgs`` are not
                 importable. Source a ROS 2 install before instantiating
                 the lifecycle node that owns this publisher.
         """
-        if self._is_started:
+        if self._image_publisher is not None:
             return
         try:
             import rclpy
@@ -217,9 +224,10 @@ class SensorRosPublisher:
             rclpy.init()
             self._we_initialised_rclpy = True
 
-        from rclpy.node import Node
+        if self._node is None:
+            from rclpy.node import Node
 
-        self._node = Node(self._node_name)
+            self._node = Node(self._node_name)
         # Image stream QoS — sensor_data-style per CLAUDE.md §5.3.
         image_qos = QoSProfile(
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -240,6 +248,11 @@ class SensorRosPublisher:
                 CameraInfo, self._info_topic, info_qos
             )
 
+    def start(self) -> None:
+        """Prepare ROS resources and start the frame-pump thread."""
+        if self._is_started:
+            return
+        self.prepare()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._pump_loop,
@@ -263,7 +276,7 @@ class SensorRosPublisher:
         to finish its current publish; a stuck thread is logged but
         not awaited indefinitely.
         """
-        if not self._is_started:
+        if not self._is_started and self._image_publisher is None:
             return
         self._stop_event.set()
         if self._thread is not None:
@@ -281,10 +294,10 @@ class SensorRosPublisher:
         if self._info_publisher is not None and self._node is not None:
             self._node.destroy_publisher(self._info_publisher)
         self._info_publisher = None
-        if self._node is not None:
+        if self._node is not None and self._owns_node:
             self._node.destroy_node()
-        self._node = None
-        if self._we_initialised_rclpy:
+            self._node = None
+        if self._we_initialised_rclpy and self._owns_node:
             import rclpy
 
             if rclpy.ok():

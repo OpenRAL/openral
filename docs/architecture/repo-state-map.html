@@ -701,6 +701,15 @@ const LAYERS = [
         schemas: ["RobotDescription", "JointState", "Action"],
       },
       {
+        title: "HAL · Galaxea A1 (real-HW)",
+        pkg: "python/hal · galaxea_a1.py · tools/galaxea_a1_ros1_sidecar.py · docker/galaxea_a1_sidecar · packages/openral_hal_galaxea_a1",
+        status: "yellow",
+        desc: "Real-only six-axis A1 HAL over an isolated ROS 1 Noetic sidecar. The operator provides the official SDK; OpenRAL bundles no vendor code. A background transport accepts only literal IPv4 loopback endpoints and keeps network I/O off the HAL hot path. The sidecar owns roscore + official serial driver + joint tracker and stops the full process group on command-lease expiry, disconnect, motor fault, or e-stop. Its locked staged-command relay blocks the tracker's compiled startup pose until it aligns with fresh measured feedback. The manifest at robots/galaxea_a1/robot.yaml includes the official URDF's joint axes and transforms; collision primitives remain uncommitted pending cleared lowering provenance. Unit, socket, ROS lifecycle, and read-only preflight coverage are complete. Real HIL has passed observation, current hold, a bounded 0.01 rad joint round trip, a 10 mm gripper round trip, and current hold through candidate_action → the C++ kernel → safe_action → the real HAL. The LingBot-VA A1 rSkill consumes the external A1 Runtime's paired-camera/model/EEF-IK contracts, explicitly subdivides IK solutions by its own policy_extras bound under the independent HAL ceiling, and returns typed joint + gripper actions to the same OpenRAL safety path.",
+        inputs: ["Action (6-D + gripper)", "/joint_states_host", "/arm_status_host"],
+        outputs: ["/arm_joint_target_position", "/gripper_position_control_host", "JointState"],
+        schemas: ["RobotDescription", "JointState", "Action"],
+      },
+      {
         title: "HAL · Sawyer (real-HW)",
         pkg: "python/hal · sawyer_real.py",
         status: "yellow",
@@ -1569,7 +1578,7 @@ const CROSS = [
     title: "Tests · HIL",
     pkg: "tests/hil",
     status: "yellow",
-    desc: "7 files: test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), plus test_detect_jetson_live for the auto-provisioning probe. SO-100 / SO-101 / RealSense HIL gates were removed until matching lab hardware exists. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online.",
+    desc: "8 files: test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), test_galaxea_a1 (direct HAL observation/hold/joint/gripper gates), test_galaxea_a1_deploy (full candidate_action → C++ kernel → safe_action → real HAL → ROS 1 relay hold + mandatory e-stop), plus test_detect_jetson_live for the auto-provisioning probe. SO-100 / SO-101 / RealSense HIL gates were removed until matching lab hardware exists. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online.",
   },
   {
     title: "CI · Docker image build",

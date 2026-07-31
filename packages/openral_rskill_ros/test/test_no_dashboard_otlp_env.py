@@ -87,37 +87,26 @@ def _import_launch_module() -> Any:
     return module
 
 
-def _make_launch_context(*, enable_dashboard: bool) -> Any:
-    """Return a :class:`launch.LaunchContext` pre-populated with the defaults.
-
-    Mirrors the ``DeclareLaunchArgument(default_value=…)`` block at the
-    bottom of ``sim_e2e.launch.py`` and pins ``enable_dashboard`` to the
-    value the test cares about. Only ``robot_yaml`` / ``hal_*`` lack
-    defaults (CLI-required) so we set them by hand to a representative HAL.
-    """
+def _make_launch_context(*, enable_dashboard: bool, enable_reasoner: bool = True) -> Any:
+    """Return a launch context populated from the launch's own declarations."""
     from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument
 
+    module = _import_launch_module()
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
+    # Required CLI-provided arguments have no defaults.
     cfg["robot_yaml"] = str(_REPO_ROOT / "robots" / _REPRESENTATIVE_ROBOT / "robot.yaml")
     cfg["hal_package"] = "openral_hal_openarm"
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
-    cfg["reset_to_pose_service"] = ""
-    cfg["dashboard_port"] = "4318"
-    cfg["reasoner_provider"] = ""
-    cfg["reasoner_model"] = "gpt-5.5"
-    cfg["reasoner_endpoint"] = ""
-    cfg["spatial_memory_path"] = ""
-    cfg["spatial_memory_ingest"] = "false"
-    cfg["hal_mode"] = "sim"
-    cfg["enable_slam"] = "false"
-    cfg["enable_nav2"] = "false"
-    cfg["enable_octomap"] = "false"
-    cfg["octomap_cloud_topic"] = "/openral/cameras/front_depth/points"
-    cfg["enable_object_detector"] = "false"
-    cfg["object_detector_onnx"] = str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "model.onnx")
+
+    for entity in module.generate_launch_description().entities:
+        if isinstance(entity, DeclareLaunchArgument):
+            entity.execute(ctx)
+
+    cfg["enable_reasoner"] = "true" if enable_reasoner else "false"
     cfg["enable_dashboard"] = "true" if enable_dashboard else "false"
     return ctx
 
@@ -219,6 +208,23 @@ def test_reasoner_uses_model_first_env() -> None:
     assert reasoner_env["OPENRAL_REASONER_MODEL"] == "gpt-5.5"
     assert reasoner_env["OPENRAL_REASONER_MAX_TOKENS"] == "16384"
     assert "OPENRAL_REASONER_LLM_PROVIDER" not in reasoner_env
+
+
+def test_direct_rskill_mode_omits_reasoner_and_prompt_router() -> None:
+    from launch_ros.actions import LifecycleNode, Node
+
+    module = _import_launch_module()
+    ctx = _make_launch_context(enable_dashboard=False, enable_reasoner=False)
+    entities = module.compose_runtime_graph(ctx)
+    packages = {
+        getattr(entity, "_Node__package", None)
+        for entity in entities
+        if isinstance(entity, Node | LifecycleNode)
+    }
+    assert "openral_reasoner_ros" not in packages
+    assert "openral_prompt_router" not in packages
+    assert "openral_safety_kernel" in packages
+    assert "openral_rskill_ros" in packages
 
 
 def test_dashboard_enabled_forwards_otlp_endpoint_to_every_node() -> None:

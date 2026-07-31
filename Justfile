@@ -164,15 +164,16 @@ docker-build-x86:
 # (ros-tee / perception-tee / nvmm-source) moved to openral-pro with it.
 
 # GStreamer-free deploy smoke inside the open x86 image: asserts `import gi`
-# is absent, cv2 / feetech (scservo_sdk) / onnxruntime / omdet are present, and
-# `deploy run --config so101_bench.yaml --dry-run` resolves the launch. This is
-# what CI (`docker-build.yml`) runs on the built image. Exits non-zero on failure.
+# is absent, cv2 / feetech (scservo_sdk) / onnxruntime / omdet plus the LingBot
+# msgpack/websocket protocol dependencies are present, and `deploy run --config
+# so101_bench.yaml --dry-run` resolves the launch. This is what CI
+# (`docker-build.yml`) runs on the built image. Exits non-zero on failure.
 docker-smoke-x86-deploy: docker-build-x86
     docker run --rm --entrypoint /entrypoint.sh openral:x86 \
         bash -lc 'set -e; \
-          python -c "import cv2, scservo_sdk, onnxruntime; from transformers import AutoModelForZeroShotObjectDetection; \
+          python -c "import cv2, msgpack, scservo_sdk, onnxruntime, websockets.sync.client; from transformers import AutoModelForZeroShotObjectDetection; \
               import importlib.util as u; assert u.find_spec(\"gi\") is None, \"gi present — expected gstreamer-free\"; \
-              print(\"OK: cv2\", cv2.__version__, \"| feetech + onnxruntime + omdet present | gi absent\")"; \
+              print(\"OK: cv2\", cv2.__version__, \"| feetech + onnxruntime + omdet + LingBot protocol present | gi absent\")"; \
           openral deploy run --config scenes/deploy/so101_bench.yaml --dry-run | grep -q "hal_mode:=real" \
             && echo "OK: deploy run --dry-run resolves"'
 
@@ -395,6 +396,7 @@ ros2-build:
         --packages-select openral_msgs \
                           opentelemetry_cpp_vendor \
                           openral_hal_so100 \
+                          openral_hal_galaxea_a1 \
                           openral_hal_panda_mobile \
                           openral_hal_openarm \
                           openral_hal_franka \
@@ -494,6 +496,7 @@ ros2-test:
         --packages-select openral_msgs \
                           opentelemetry_cpp_vendor \
                           openral_hal_so100 \
+                          openral_hal_galaxea_a1 \
                           openral_hal_panda_mobile \
                           openral_hal_openarm \
                           openral_hal_franka \

@@ -9,6 +9,14 @@ injected `publish_fn` / `state_fn` callables. Off-lab they are guarded
 behind `importlib.util.find_spec("rclpy") is None` plus a per-robot env
 probe; the unit-lane conformance tests use `SimTransport` instead.
 
+The Galaxea A1 uses an isolated ROS 1 sidecar rather than a
+`ros2_control` bridge. Its HAL-level gate lives in
+`tests/hil/test_galaxea_a1.py`; the separate
+`tests/hil/test_galaxea_a1_deploy.py` gate runs inside an active deploy
+container and proves a measured hold across the real C++ kernel, ROS 2 HAL,
+and staged ROS 1 command relay. Both are environment-gated, time-bounded, and
+end by stopping the sidecar through the downstream e-stop path.
+
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 
@@ -21,4 +29,3 @@ _4-way fan-out bridge for the bimanual ALOHA HAL._
 
 - `AlohaHILTransport(node, joint_names, *, left_arm_command_topic, right_arm_command_topic, left_gripper_command_topic, right_gripper_command_topic, joint_state_topic)` — Owns four `JointTrajectory` publishers (two arms 6-DOF + two grippers 1-DOF — Trossen gripper modeled as a 1-DOF `JointTrajectoryController`) and one aggregated `JointState` subscriber. `publish(topic, msg)` dispatches by topic match; unknown topics raise `ValueError`. (L67)
 - `make_aloha_hil_transport(node_name, *, left/right arm + gripper command topics, joint_state_topic) -> tuple[Node, AlohaHILTransport, Callable[[], None]]` — Factory; derives the canonical 14 joint names from the public `ALOHA_REAL_DESCRIPTION.joints` so the bridge stays in lock-step with the HAL manifest. (L228)
-
