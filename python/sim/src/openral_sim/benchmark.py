@@ -186,6 +186,7 @@ def run_benchmark(
     vla: VLASpec,
     device: str | None = None,
     save_dir: str | None = None,
+    video_dir: str | None = None,
 ) -> tuple[RSkillEvalResult, list[EpisodeResult]]:
     """Run a benchmark suite end-to-end against one rSkill.
 
@@ -213,6 +214,13 @@ def run_benchmark(
             for adapter-side artefacts (videos, traces). Unrelated to where
             the final :class:`RSkillEvalResult` JSON lives — that path is
             chosen by the caller (see :func:`default_output_path`).
+        video_dir: When set, record per-step world frames and write one MP4
+            per episode into this directory via
+            :func:`openral_sim._website_video.write_world_videos`
+            (named ``<task>[_seed<n>]_<rskill>_<success|fail>.mp4`` plus a
+            merged ``videos.json``). Frames are written and freed after each
+            episode so multi-hundred-episode suites don't accumulate
+            gigabytes of RGB in memory. ``None`` disables frame capture.
 
     Returns:
         A pair ``(result, episodes)`` where ``result`` is a validated
@@ -293,6 +301,7 @@ def run_benchmark(
                 seed=seed,
                 n_episodes=1,
                 save_dir=save_dir,
+                record_video=video_dir is not None,
             )
             runner = SimRunner(env_cfg, view=False, strict_view=False)
             try:
@@ -302,6 +311,20 @@ def run_benchmark(
             finally:
                 runner.deactivate()
             episode = episodes[0]
+            if video_dir is not None:
+                from openral_sim._website_video import write_world_videos
+
+                # Suffix the seed so multi-episode sweeps of one task don't
+                # overwrite each other's <task>_<rskill>_<outcome>.mp4.
+                video_slug = task_id if len(seeds) == 1 else f"{task_id}_seed{seed}"
+                write_world_videos(
+                    [episode],
+                    Path(video_dir),
+                    scene=video_slug,
+                    rskill=Path(str(vla.weights_uri)).name,
+                    section="benchmark",
+                )
+                episode.frames.clear()
             per_task[task_id].append(episode.success)
             all_episodes.append(episode)
             _log.info(

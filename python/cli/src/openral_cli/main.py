@@ -2926,6 +2926,24 @@ def benchmark_run(
             "Disable for read-only paper-number runs."
         ),
     ),
+    video: bool = typer.Option(
+        True,
+        "--video/--no-video",
+        help=(
+            "Record per-step world frames and write one MP4 per episode "
+            "(named <task>[_seed<n>]_<rskill>_<success|fail>.mp4 plus a "
+            "videos.json manifest). On by default; frames are written and "
+            "freed per episode. Disable for allocation-light CI runs."
+        ),
+    ),
+    video_dir: Path | None = typer.Option(
+        None,
+        "--video-dir",
+        help=(
+            "Destination directory for --video MP4s. Defaults to "
+            "<eval JSON dir>/videos/<suite_id> next to the RSkillEvalResult."
+        ),
+    ),
     dashboard: bool = typer.Option(
         False,
         "--dashboard",
@@ -3003,6 +3021,11 @@ def benchmark_run(
 
     out_path = out if out is not None else _default_benchmark_out_path(vla_spec, suite_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_video_dir: Path | None = None
+    if video:
+        effective_video_dir = (
+            video_dir if video_dir is not None else (out_path.parent / "videos" / suite_id)
+        )
 
     from openral_observability.dashboard import attached_dashboard
     from openral_sim.benchmark import run_benchmark
@@ -3016,7 +3039,10 @@ def benchmark_run(
             vla=vla_spec,
             device=device,
             save_dir=str(save_dir) if save_dir is not None else None,
+            video_dir=str(effective_video_dir) if effective_video_dir is not None else None,
         )
+    if effective_video_dir is not None:
+        console.print(f"[cyan]videos[/cyan] {effective_video_dir}")
 
     out_path.write_text(result.model_dump_json(indent=2))
     avg = result.results.get("avg_success_rate", 0.0)
