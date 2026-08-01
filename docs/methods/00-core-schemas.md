@@ -258,7 +258,7 @@ On-disk + runtime contracts for the hardware inference runner (`openral deploy -
   - `_decode_data(cls, value: Any) -> bytes | None` [@field_validator("data", mode="before")] — Accept raw `bytes` or a base64-encoded `str` on JSON parse. (L614)
   - `_encode_data(self, value: bytes | None) -> str | None` [@field_serializer("data", when_used="json")] — JSON-serialize the binary payload as base64. (L632)
   - `model_post_init(_context: object) -> None` — Cross-field validation: exactly one of `(data, topic, handle)` must be set. (L637)
-- `class SensorReaderBackend(str, Enum)` — Which `SensorReader` implementation a sensor uses. (L1691)
+- `class SensorReaderBackend(str, Enum)` — Which `SensorReader` implementation a sensor uses. Includes `galaxea_a1_camera_bridge`, which consumes the versioned paired raw-frame owner exposed by an external A1 Runtime process without importing Runtime or reopening either RealSense device. (L1691)
   `OPENCV_THREAD, ROS2_IMAGE, GSTREAMER`
 - `class DeadlineOverrunPolicy(str, Enum)` — Behaviour when a tick exceeds `1 / rate_hz`. (L1706)
   `WARN, DROP, RAISE`

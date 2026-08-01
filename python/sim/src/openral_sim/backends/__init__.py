@@ -31,7 +31,9 @@ returns the bound robot or ``None``):
   ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
   py3.10 sidecar), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
   SAPIEN dual-arm benchmark behind a py3.10 sidecar), ``vlabench``
-  (franka_panda — native in-process on lerobot's VLABenchEnv).
+  (franka_panda — native in-process on lerobot's VLABenchEnv), ``behavior``
+  (r1pro — the BEHAVIOR-1K 2026 OmniGibson evaluator behind an
+  out-of-process sidecar in the official BEHAVIOR Python environment).
 """
 
 from __future__ import annotations
