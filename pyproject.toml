@@ -93,7 +93,7 @@ robosuite = { git = "https://github.com/ARISE-Initiative/robosuite.git", rev = "
 
 [dependency-groups]
 dev = [
-    "pytest>=8,<9", # reason: test runner. Pin <9: pytest 9.0.3 has a collection regression where multiple modules with module-level pytest.importorskip / pytest.skip(allow_module_level=True) emit "ERROR: found no collectors" and conflate every SKIPPED entry under the first module — silently hides skip reasons in tests/sim/ (breaks tests/unit/test_sim_collection.py).
+    "pytest>=8,<10", # reason: test runner. Cap <10: stay within the validated major. The former <9 cap guarded against the pytest 9.0.3 collection regression (module-level pytest.importorskip / pytest.skip(allow_module_level=True) emitted "ERROR: found no collectors" and conflated SKIPPED entries under the first module, hiding skip reasons in tests/sim/); fixed by 9.1.x — the full suite incl. tests/unit/test_sim_collection.py passes on 9.1.1 (see PR #29's CI run).
     "pytest-asyncio>=0.23", # reason: async test support
     "pytest-cov>=5", # reason: coverage reports
     "hypothesis>=6.100", # reason: schema fuzz testing
