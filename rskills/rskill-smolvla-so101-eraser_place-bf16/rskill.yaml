@@ -1,0 +1,181 @@
+# rSkill manifest — OpenRAL packaging format V1 (CLAUDE.md §3 "rSkill packaging")
+#
+# Wraps: makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54
+#        (Apache-2.0) — SmolVLA finetuned from lerobot/smolvla_base (20k steps,
+#        batch 32, AdamW 1e-4, lerobot 0.6.0) on a real SO-ARM follower teleop
+#        dataset (makermods/eraser_place_unblurry_real: 25 episodes, 10 534
+#        frames @ 30 FPS), single task "place the erase on the blue square".
+#        Recorded with TWO 640x480 cameras: an arm-mounted "wrist" view and a
+#        fixed "front" view.
+# Base:  lerobot/smolvla_base (arxiv:2506.01844)
+#
+# EMBODIMENT — the checkpoint's `train_config.json` and the dataset's
+# `meta/info.json` both record `robot_type: "so_follower"`, lerobot 0.6.0's
+# UNIFIED SO-ARM class: it does not distinguish SO-100 from SO-101. The arm was
+# confirmed out-of-band to be an SO-101 follower, so this manifest declares
+# `so101_follower` (the same lerobot Feetech driver + identical 6-joint chain
+# serves both revisions — see robots/so101_follower/robot.yaml `hal.real`).
+#
+# JOINT ENVELOPE — the training distribution slightly EXCEEDS the SO-101 MJCF
+# `new_calib` limits this repo's robot manifest carries. Measured over the
+# dataset's own normalizer stats (lerobot units == the manifest's declared
+# `degrees`):
+#   shoulder_lift  min -103.8  vs robot limit -100.0  (-1.7453 rad)
+#   elbow_flex     max  +97.0  vs robot limit  +90.0  (+1.5708 rad)
+#   wrist_flex     max +103.4  vs robot limit  +95.0  (+1.6581 rad)
+# Those are the tails of a per-arm servo calibration, not a different
+# kinematic chain. The safety kernel clamps/rejects anything past the manifest
+# limits, so expect clipping at the very top of the elbow / wrist_flex range.
+# Do NOT widen robots/so101_follower/robot.yaml to accommodate this checkpoint:
+# the limits are the mechanical contract, and loosening them is a safety-WG
+# decision with a hazard-log entry (CLAUDE.md §3 "Safety"), not a packaging fix.
+#
+# UNITS — degrees: the normalizer observation.state/action stats span
+# ~[-103.8, +103.4] (MEAN_STD), i.e. the lerobot SO-ARM joint scale the repo
+# models as DEGREES (radians would be ±3.14). The runner converts deg<->rad at
+# the HAL boundary; declared explicitly below so it does not fall back to the
+# stats-magnitude heuristic. Same posture as the two sibling SO-101 SmolVLA
+# skills (rskill-smolvla-so101-pen-bf16 / -pick_place_pen-bf16).
+#
+# PROVENANCE — weights stay UPSTREAM at makermods/... (Apache-2.0). Verified on
+# this host that `SmolVLAPolicy.from_pretrained` loads the repo ROOT directly
+# (config.json + model.safetensors + the two processor JSONs and their
+# normalizer .safetensors all live at the root; the 20 `checkpoints/<step>/`
+# training snapshots are NOT touched because every OpenRAL fetch path is
+# per-file `hf_hub_download`, never `snapshot_download`, on the weights repo).
+# No config sanitize is needed: the config carries no stray keys that lerobot
+# 0.6.0's draccus `SmolVLAConfig` rejects.
+
+# ── Identity ───────────────────────────────────────────────────────────────
+schema_version: "0.1"
+name: "OpenRAL/rskill-smolvla-so101-eraser_place-bf16"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+
+# ── Policy identity ────────────────────────────────────────────────────────
+model_family: "smolvla"
+
+# ── Compatibility contract ─────────────────────────────────────────────────
+embodiment_tags:
+  - "so101_follower"
+
+# Two RGB streams, trained at 640x480 (the policy's own
+# resize_imgs_with_padding takes them to 512x512). The runner matches each
+# entry against the robot's SensorSpec.vla_feature_key declared in
+# robots/so101_follower/robot.yaml (top -> camera1, wrist -> camera2); the
+# `image_preprocessing.aliases` below then rename those slots to this
+# checkpoint's own input-feature keys (front / wrist).
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 224
+    min_height: 224
+
+# Output side. The loader auto-fills n_dof + vla_action_key from
+# robots/so101_follower/robot.yaml. Absolute joint-position targets.
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+# ── Starting pose ────────────────────────────────────────────────────────
+# Joint order = robots/so101_follower manifest joints (radians):
+# [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper].
+#
+# Derived from the TRAINING DATA, not from the SRDF: the mean over all 25
+# episodes' frame_index==0 states is
+#   [-6.59, -102.70, +95.03, +59.02, +5.94, +2.08]  (lerobot units / degrees)
+#   [-0.115, -1.7924, +1.6586, +1.0301, +0.1037, +0.0363]  (radians)
+# with per-joint std <= 7 (shoulder_lift std 0.09 — a hard mechanical home).
+# Two channels are CLAMPED to the so101 manifest limits (see JOINT ENVELOPE
+# above): shoulder_lift -1.7924 -> -1.7453, elbow_flex +1.6586 -> +1.5708.
+# Both clamps are <= 5 deg and stay well inside the observed start spread, so
+# the first VLA tick still sees an in-distribution pose.
+starting_pose: [-0.115, -1.7453, 1.5708, 1.0301, 0.1037, 0.0363]
+
+# ── Runtime / weights ──────────────────────────────────────────────────────
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+# VRAM footprint for the VLA<->reward co-residency preflight. MEASURED on an
+# RTX 4070 Laptop: 1.13 GiB resident after load, 1.19 GiB peak across a
+# 2-camera inference (450.0 M params, SmolVLM2-500M backbone) — the declared
+# 1.5 keeps ~0.3 GB of headroom, matching the two sibling SO-101 skills.
+# 1.5 + Robometer NF4 3.6 + 0.5 margin = 5.6 GB on an 8 GB card.
+min_vram_gb:
+  bf16: 1.5
+# Pair this VLA with its task-progress reward monitor so a reward-enabled
+# deploy auto-resolves the Robometer NF4 manifest.
+reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
+weights_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54"
+
+# ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
+processors:
+  preprocessor_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54/policy_preprocessor.json"
+  postprocessor_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54/policy_postprocessor.json"
+# Real SO-101 teleop recorded upright — no rotation. Aliases are keyed by the
+# VLA SLOT names (camera1/camera2): by the time the adapter sees the batch the
+# runner has already re-keyed the manifest sensor names via vla_feature_key
+# (top -> camera1, wrist -> camera2 in robots/so101_follower). The aliases then
+# rename those slots to the checkpoint's input-feature keys
+# (observation.images.front / observation.images.wrist): the robot's fixed
+# overhead camera (camera1) fills the training "front" view.
+image_preprocessing:
+  flip_180: false
+  aliases:
+    camera1: "front"
+    camera2: "wrist"
+state_contract:
+  dim: 6
+
+# ── Execution semantics ────────────────────────────────────────────────────
+# SmolVLA chunk_size=50 (checkpoint config); full-chunk synchronous replay.
+chunk_size: 50
+n_action_steps: 50
+latency_budget:
+  # 191 ms measured (steady-state median, 524 ms first call) on an RTX 4070
+  # Laptop over the two-camera batch, + margin. A 50-step chunk covers 1.67 s
+  # of a 30 Hz arm, so inference is not the bottleneck.
+  per_chunk_ms: 400.0
+
+# ── Provenance ─────────────────────────────────────────────────────────────
+paper_url: "https://arxiv.org/abs/2506.01844"
+dataset_uri: "hf://makermods/eraser_place_unblurry_real"
+source_repo: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54"
+
+description: >
+  SmolVLA finetuned to place an eraser on a blue square with a real SO-101
+  follower arm (Apache-2.0). Emits 6-DoF absolute joint-position chunks (size
+  50, in joint degrees) from two RGB views (fixed front overview + arm-mounted
+  wrist). 20k steps on 25 teleop episodes (10 534 frames @ 30 FPS) from
+  makermods/eraser_place_unblurry_real. ONE training task string — "place the
+  erase on the blue square" (upstream typo included); deploy it verbatim.
+
+# Action vocabulary for the reasoner LLM tool palette.
+actions:
+  - "pick"
+  - "place"
+  - "pick_and_place"
+objects:
+  - "eraser"
+scenes:
+  - "tabletop"
+
+# Per-checkpoint action contract.
+action_contract:
+  dim: 6
+  # SO-101 emits absolute joint positions (5 arm joints + 1 gripper).
+  representation: "joint_positions"
+  # EXPLICIT joint units — normalizer stats span ~[-103.8, +103.4] (verified:
+  # observation.state.min=-102.86 / .max=+101.10, action.min=-103.82 /
+  # .max=+103.38), i.e. DEGREES on the lerobot SO-ARM scale. The runner
+  # converts deg<->rad at the policy boundary. Declared so the runner does NOT
+  # rely on the stats-magnitude heuristic.
+  joint_units: "degrees"
