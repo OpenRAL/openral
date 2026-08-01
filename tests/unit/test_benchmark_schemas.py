@@ -481,6 +481,16 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
         "RoboTwin 2.0 — dual-arm (aloha-agilex)",
         "RoboTwin 2.0 (SAPIEN), aloha-agilex",
     ),
+    (
+        "behavior",
+        "r1pro",
+        "behavior",
+        100,
+        1,
+        "is_success",
+        "BEHAVIOR-1K 2026 challenge (100 tasks)",
+        "OmniGibson / Isaac Sim (sidecar)",
+    ),
 ]
 
 

@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2403.09227",
+    "arxiv": "https://arxiv.org/abs/2403.09227",
+    "model_variant": "gr00t",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite behavior --rskill rskills/gr00t-n17-b1k-turning-on-radio",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "BEHAVIOR-1K 2026 challenge (100 tasks)",
+    "dataset": null,
+    "protocol": "1 episodes per task, success_key=is_success, max_steps=3224",
+    "robot": "r1pro",
+    "simulator": "OmniGibson / Isaac Sim (sidecar)"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 3224,
+    "vla_id": "gr00t",
+    "weights_uri": "rskills/gr00t-n17-b1k-turning-on-radio"
+  },
+  "results": {
+    "behavior/turning_on_radio_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 1,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 1,
+    "mean_step_latency_ms_avg": 436.5139267810073
+  },
+  "baselines": {},
+  "trace_id": null
+}

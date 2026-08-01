@@ -67,6 +67,7 @@ _ROBOT_IDS: list[str] = [
 _BENCHMARK_STEMS: list[str] = [
     "aloha_insertion",
     "aloha_transfer_cube",
+    "behavior_turning_on_radio",
     "libero_10",
     "libero_goal",
     "libero_object",

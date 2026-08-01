@@ -4024,6 +4024,19 @@ SCENE_FAMILY_TASK_SPACE: dict[str, SceneTaskSpace] = {
         action_dim=8,
         runs_via_default_packers=False,
     ),
+    # BEHAVIOR-1K OmniGibson R1 Pro mixed 23-D: base body_twist(3) + torso+arms
+    # joint_position(4+7+7) + grippers(1+1), committed atomically as one
+    # official evaluator step.
+    "behavior": SceneTaskSpace(
+        modes=frozenset(
+            {
+                ControlMode.BODY_TWIST,
+                ControlMode.JOINT_POSITION,
+                ControlMode.GRIPPER_POSITION,
+            }
+        ),
+        action_dim=23,
+    ),
 }
 
 
@@ -4371,6 +4384,7 @@ BenchmarkName: TypeAlias = Literal[
     "aloha",
     "aloha_insertion",
     "aloha_transfer_cube",
+    "behavior",
     "gr1_tabletop",
     "libero_10",
     "libero_goal",

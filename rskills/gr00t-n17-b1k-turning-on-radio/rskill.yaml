@@ -125,6 +125,9 @@ n_action_steps: 1
 latency_budget:
   per_chunk_ms: 1500.0
 
+evaluated_tasks:
+  - "behavior/turning_on_radio"
+
 paper_url: "https://arxiv.org/abs/2503.14734"
 dataset_uri: "hf://behavior-1k/2026-challenge-demos"
 
@@ -143,3 +146,6 @@ objects:
 scenes:
   - "household"
   - "living_room"
+
+benchmarks:
+  behavior: 0.0
