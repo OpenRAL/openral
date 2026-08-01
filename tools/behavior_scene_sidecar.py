@@ -36,7 +36,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--env-wrapper",
-        default="omnigibson.eval.wrappers.RGBDFullResWrapper",
+        # DefaultWrapper (rgb-only 224x224) is the only wrapper that boots on the
+        # pinned OmniGibson build: RGBDFullResWrapper reloads the full observation
+        # space in __init__, reading joint state before og.sim.update_handles().
+        default="omnigibson.eval.wrappers.DefaultWrapper",
     )
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--host", default="127.0.0.1")

@@ -305,7 +305,7 @@ def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
     task = str(opts.get("task") or env_cfg.task.id.removeprefix("behavior/"))
     instance_index = _opt_int(opts.get("instance_index"), 0)
     mode = str(opts.get("mode", "public_test"))
-    env_wrapper = str(opts.get("env_wrapper", "omnigibson.eval.wrappers.RGBDFullResWrapper"))
+    env_wrapper = str(opts.get("env_wrapper", "omnigibson.eval.wrappers.DefaultWrapper"))
     host = os.environ.get(_HOST_ENV, str(opts.get("host", _DEFAULT_HOST)))
     default_port = _scene_default_port(task, instance_index, mode)
     port = _opt_int(os.environ.get(_PORT_ENV, opts.get("port")), default_port)

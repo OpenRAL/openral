@@ -165,7 +165,7 @@ Columns:
 
 | VLA / source | Sim env | Robot tag | State dim | Cameras | Action | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| Organizer GR00T N1.7 `turning_on_radio` checkpoint ([baseline](https://behavior.stanford.edu/challenge/baselines.html)) | OmniGibson / Isaac Sim | `r1pro` | **61-D** official R1Pro proprio order | head 720² + wrist 480² under `RGBDFullResWrapper` (adapter resizes to 224²) | **23-D** base velocity (3) + torso (4) + arms (7+7) + symmetric grippers (1+1) | `rskills/gr00t-n17-b1k-turning-on-radio` | **Unknown** for the organizer Drive artifact | Runs through `openral behavior serve`, `openral sim run`, or the full `openral deploy sim` graph. Deploy preserves the 61-D state and commits all six safety-approved typed slots as one simulator step. |
+| Organizer GR00T N1.7 `turning_on_radio` checkpoint ([baseline](https://behavior.stanford.edu/challenge/baselines.html)) | OmniGibson / Isaac Sim | `r1pro` | **61-D** official R1Pro proprio order | 224² RGB under the official `DefaultWrapper` (`RGBDFullResWrapper` crashes at boot on the pinned OmniGibson build — it reads joint state before the physics views exist) | **23-D** base velocity (3) + torso (4) + arms (7+7) + symmetric grippers (1+1) | `rskills/gr00t-n17-b1k-turning-on-radio` | **Unknown** for the organizer Drive artifact | Runs through `openral behavior serve`, `openral sim run`, `openral benchmark run --suite behavior`, or the full `openral deploy sim` graph. Deploy preserves the 61-D state and commits all six safety-approved typed slots as one simulator step. |
 
 ---
 
