@@ -118,3 +118,19 @@ def test_gr00t_factory_reports_missing_organizer_checkpoint(
     )
     with pytest.raises(ROSConfigError, match="checkpoint not found"):
         gr00t._build_gr00t(env)
+
+
+def test_sidecar_parses_int8_quantization() -> None:
+    # The sidecar CLI is the adapter's argv contract: `quantization` from
+    # policy_extras is forwarded verbatim, so every advertised choice must parse.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "behavior_groot_sidecar", _REPO_ROOT / "tools" / "behavior_groot_sidecar.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    args = module._parse_args(["--checkpoint", str(_RSKILL), "--quantization", "int8"])
+    assert args.quantization == "int8"
+    assert args.nf4_min_params == 4_000_000

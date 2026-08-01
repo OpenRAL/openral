@@ -39,7 +39,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="temporal_ensemble",
     )
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--quantization", choices=("none", "nf4"), default="nf4")
+    parser.add_argument("--quantization", choices=("none", "nf4", "int8"), default="nf4")
     parser.add_argument("--nf4-min-params", type=int, default=4_000_000)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=22000)
@@ -164,7 +164,7 @@ class _BehaviorGrootPolicy:
         Gr00tPolicy = policy_module.Gr00tPolicy
 
         modality = _register_r1pro_modality()
-        load_device = "cpu" if args.quantization == "nf4" else args.device
+        load_device = "cpu" if args.quantization in ("nf4", "int8") else args.device
         policy = Gr00tPolicy(
             embodiment_tag=EmbodimentTag.NEW_EMBODIMENT,
             model_path=args.checkpoint,
@@ -174,6 +174,12 @@ class _BehaviorGrootPolicy:
         _drop_backbone_lm_head(policy.model)
         if args.quantization == "nf4":
             _quantize_nf4(
+                policy.model,
+                device=args.device,
+                min_params=args.nf4_min_params,
+            )
+        elif args.quantization == "int8":
+            _quantize_int8(
                 policy.model,
                 device=args.device,
                 min_params=args.nf4_min_params,
@@ -193,6 +199,17 @@ class _BehaviorGrootPolicy:
         instruction = observation.pop("openral_instruction", None)
         if isinstance(instruction, str):
             self._policy.text_prompt = instruction
+        dump_dir = os.environ.get("OPENRAL_BEHAVIOR_GROOT_DUMP_OBS")
+        if dump_dir:
+            self._dump_count = getattr(self, "_dump_count", 0)
+            if self._dump_count < 32:
+                import pickle
+                from pathlib import Path
+
+                Path(dump_dir).mkdir(parents=True, exist_ok=True)
+                with open(f"{dump_dir}/obs_{self._dump_count:03d}.pkl", "wb") as fh:
+                    pickle.dump(observation, fh)
+                self._dump_count += 1
         action = self._policy.act(observation)
         return np.asarray(action.detach().cpu().numpy(), dtype=np.float32).reshape(-1)
 
@@ -235,6 +252,49 @@ def _quantize_nf4(model: Any, *, device: str, min_params: int = 4_000_000) -> No
                 if child.bias is not None:
                     quantized.bias = torch.nn.Parameter(
                         child.bias.data.clone().to(torch.bfloat16),
+                        requires_grad=False,
+                    )
+                setattr(module, name, quantized)
+            else:
+                _replace(child)
+
+    def _first_float_dtype(self: Any) -> Any:
+        for parameter in self.parameters():
+            if parameter.is_floating_point():
+                return parameter.dtype
+        return torch.bfloat16
+
+    model.__class__.dtype = property(_first_float_dtype)
+    _replace(model)
+    model.to(device)
+    model.eval()
+
+
+def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> None:
+    """Whole-model LLM.int8 rewrite; ~2x NF4 size but far less lossy on 3B policies."""
+    if not device.startswith("cuda"):
+        raise ValueError("int8 quantization requires a CUDA device.")
+    torch = importlib.import_module("torch")
+    bnb = importlib.import_module("bitsandbytes")
+
+    def _replace(module: Any) -> None:
+        for name, child in list(module.named_children()):
+            if isinstance(child, torch.nn.Linear) and child.weight.numel() >= min_params:
+                quantized = bnb.nn.Linear8bitLt(
+                    child.in_features,
+                    child.out_features,
+                    bias=child.bias is not None,
+                    has_fp16_weights=False,
+                    threshold=6.0,
+                )
+                quantized.weight = bnb.nn.Int8Params(
+                    child.weight.data.clone(),
+                    requires_grad=False,
+                    has_fp16_weights=False,
+                )
+                if child.bias is not None:
+                    quantized.bias = torch.nn.Parameter(
+                        child.bias.data.clone().to(torch.float16),
                         requires_grad=False,
                     )
                 setattr(module, name, quantized)
