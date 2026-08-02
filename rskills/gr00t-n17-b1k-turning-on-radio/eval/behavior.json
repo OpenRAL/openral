@@ -34,7 +34,7 @@
     "n_tasks": 1,
     "n_episodes_per_task": 1,
     "n_episodes_total": 1,
-    "mean_step_latency_ms_avg": 436.5139267810073
+    "mean_step_latency_ms_avg": 439.5577903937344
   },
   "baselines": {},
   "trace_id": null
