@@ -167,6 +167,11 @@ if _ROS2_AVAILABLE:
             # frame period, so the per-sensor diagnostics flapped OK↔STALE on
             # every snapshot. See WorldStateAggregator.DEFAULT_STALENESS_S.
             self.declare_parameter("staleness_limit_s", 0.5)
+            # Separate window for the step-locked /openral/policy_state
+            # component (one message per env.step; a heavy sidecar sim
+            # legitimately steps at ~1 s wall). See
+            # WorldStateAggregator.DEFAULT_POLICY_STATE_STALENESS_S.
+            self.declare_parameter("policy_state_staleness_limit_s", 5.0)
             # Camera image topics to subscribe to. Each entry yields a
             # `sensor_msgs/Image` subscription that lands the bytes on
             # `WorldStateAggregator.update_image_frame(<name>, ...)`
@@ -257,6 +262,11 @@ if _ROS2_AVAILABLE:
             staleness: float = (
                 self.get_parameter("staleness_limit_s").get_parameter_value().double_value
             )
+            policy_staleness: float = (
+                self.get_parameter("policy_state_staleness_limit_s")
+                .get_parameter_value()
+                .double_value
+            )
 
             joint_states_topic: str = (
                 self.get_parameter("joint_states_topic").get_parameter_value().string_value
@@ -296,7 +306,11 @@ if _ROS2_AVAILABLE:
                     ),
                     safety=SafetyEnvelope(),
                 )
-                self._aggregator = WorldStateAggregator(desc, staleness_limit_s=staleness)
+                self._aggregator = WorldStateAggregator(
+                    desc,
+                    staleness_limit_s=staleness,
+                    policy_state_staleness_limit_s=policy_staleness,
+                )
 
             sensor_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,

@@ -102,6 +102,13 @@ DEFAULT_RATE_HZ: float = 30.0
 # flagging a genuinely dead component. This is a freshness indicator, not a
 # safety gate (the C++ kernel owns enforcement).
 DEFAULT_STALENESS_S: float = 0.5
+# policy_state is step-locked, not rate-locked: the HAL publishes it once per
+# env.step capture (never a latched republish, so the wedged-sim case IS
+# observable), and a heavy sidecar sim (BEHAVIOR-1K on the 8 GB reference
+# host) legitimately steps at ~1 s wall per step. 5 s covers the slowest
+# normal stepping with margin while still flagging a wedged sidecar in
+# seconds rather than its 120 s ZMQ timeout.
+DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0
 
 
 class WorldStateAggregator:
@@ -119,6 +126,10 @@ class WorldStateAggregator:
         staleness_limit_s: Maximum age (seconds) for a component reading
             before it is classified as ``"stale"``.  Default ``0.1 s``
             (3 frames at 30 Hz).
+        policy_state_staleness_limit_s: Separate window for the step-locked
+            ``policy_state`` component, published once per simulator step
+            rather than at a fixed rate. Default ``5.0 s`` — see
+            :data:`DEFAULT_POLICY_STATE_STALENESS_S`.
         clock_fn: Callable returning the current time in nanoseconds.
             Defaults to ``time.time_ns``.  Override in tests to control time.
 
@@ -162,11 +173,13 @@ class WorldStateAggregator:
         description: RobotDescription,
         *,
         staleness_limit_s: float = DEFAULT_STALENESS_S,
+        policy_state_staleness_limit_s: float = DEFAULT_POLICY_STATE_STALENESS_S,
         clock_fn: Callable[[], int] | None = None,
     ) -> None:
         """Initialise the aggregator; does not open any connection."""
         self.description = description
         self._staleness_limit_ns: int = int(staleness_limit_s * 1e9)
+        self._policy_state_staleness_limit_ns: int = int(policy_state_staleness_limit_s * 1e9)
         self._clock_fn: Callable[[], int] = clock_fn or time.time_ns
         self._lock = threading.RLock()
 
@@ -447,7 +460,7 @@ class WorldStateAggregator:
             if self._policy_state is not None:
                 policy_age_ns = now_ns - self._policy_state_stamp_ns
                 diag["policy_state"] = (
-                    "ok" if policy_age_ns <= self._staleness_limit_ns else "stale"
+                    "ok" if policy_age_ns <= self._policy_state_staleness_limit_ns else "stale"
                 )
                 ages_ms["policy_state"] = policy_age_ns / 1e6
 

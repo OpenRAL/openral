@@ -114,6 +114,24 @@ class TestDecodeActionChunk:
         assert action.confidence == pytest.approx(0.75)
         assert action.tick_index == 42
 
+    def test_zero_confidence_round_trips(self) -> None:
+        """confidence=0.0 (policy disowns the action) must not decode as 1.0.
+
+        The old ``or 1.0`` falsy guard rewrote an explicit zero to full
+        confidence, so downstream consumers (dataset recording, diagnostics)
+        recorded the opposite of what the policy declared.
+        """
+        chunk = FakeChunk(
+            flat=[0.25],
+            n_dof=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.GRIPPER_POSITION],
+            ee_name="left_gripper",
+            confidence=0.0,
+        )
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.confidence == 0.0
+
     def test_cartesian_twist_populates_typed_field(self) -> None:
         chunk = FakeChunk(
             flat=[0.1, 0.0, 0.0, 0.0, 0.0, 0.0],

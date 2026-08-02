@@ -161,6 +161,14 @@ def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
 # above this is rejected with ROSConfigError. Mirror of
 # ``openral_hal.panda_mobile._PLANAR_TWIST_EPS``.
 _PLANAR_TWIST_EPS = 1e-6
+# Atomic action-group fail-loud bounds: after this many CONSECUTIVE
+# incomplete-group drops send_action raises (the sim has not stepped once —
+# a slot-count contract mismatch or a persistently-rejected slot), and a
+# pending partial group older than this releases the idle stepper (a skill
+# that died mid-tick must not freeze scene physics/cameras forever). Inference
+# ticks are budgeted <= ~1.5 s, so 5 s is unambiguously a dead tick.
+_MAX_CONSECUTIVE_GROUP_DROPS = 3
+_PENDING_GROUP_STALE_NS = 5_000_000_000
 
 
 # ActionPacker is the per-composition translation between an OpenRAL
@@ -479,6 +487,14 @@ class SimAttachedHAL:
         # ``action_group_size`` is complete.
         self._pending_action_tick: int | None = None
         self._pending_actions: list[Action] = []
+        # Fail-loud accounting for the atomic group path: consecutive
+        # incomplete-group drops (a persistent slot-count mismatch or a
+        # persistently-rejected slot must surface as a typed error, not a
+        # silent actuation no-op) and the wall-clock stamp of the oldest
+        # pending slot (so a skill that dies mid-tick cannot block
+        # ``idle_step`` forever).
+        self._dropped_group_streak: int = 0
+        self._pending_since_ns: int = 0
         # Latched when the last env.step reported terminal
         # (terminated/truncated). The next send_action resets the env
         # before stepping so episodic backends (LIBERO) never step a
@@ -537,6 +553,7 @@ class SimAttachedHAL:
         self._episode_done = False  # fresh episode after (re)connect
         self._pending_action_tick = None
         self._pending_actions.clear()
+        self._dropped_group_streak = 0
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
@@ -802,18 +819,39 @@ class SimAttachedHAL:
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
+            # Atomicity is preserved (a group missing a safety-rejected slot
+            # must NOT commit its other slots), but the drop must be loud: a
+            # persistent mismatch means actuation is a permanent no-op. One
+            # transient drop (a single safety rejection) is tolerated; a
+            # streak fails with a typed error naming the likely causes.
+            self._dropped_group_streak += 1
+            dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
-                f"[sim_attached.send_action] dropping incomplete safe action group "
+                f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
                 f"tick={self._pending_action_tick} "
-                f"slots={len(self._pending_actions)}/{group_size}; "
+                f"slots={len(self._pending_actions)}/{group_size} "
+                f"modes={dropped_modes} consecutive_drops={self._dropped_group_streak}; "
                 f"starting tick={tick}",
                 flush=True,
             )
             self._pending_actions.clear()
             self._pending_action_tick = None
+            if self._dropped_group_streak >= _MAX_CONSECUTIVE_GROUP_DROPS:
+                self._dropped_group_streak = 0
+                raise ROSRuntimeError(
+                    f"SimAttachedHAL: {_MAX_CONSECUTIVE_GROUP_DROPS} consecutive inference "
+                    f"ticks each staged an incomplete action group (last: "
+                    f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}) — the "
+                    "simulator has not stepped once. Either the rSkill emits fewer typed "
+                    "slots per tick than the backend's action_group_size (contract "
+                    "mismatch — pair this backend with a full-group rSkill), or the "
+                    "safety supervisor is persistently rejecting one slot (see its log "
+                    "for the violation)."
+                )
         if self._pending_action_tick is None:
             self._pending_action_tick = tick
         self._pending_actions.append(action)
+        self._pending_since_ns = time.monotonic_ns()
         if len(self._pending_actions) < group_size:
             return
         if len(self._pending_actions) > group_size:
@@ -833,6 +871,32 @@ class SimAttachedHAL:
             raise ROSRuntimeError(
                 f"SimAttachedHAL.send_action_group: env step failed: {exc}"
             ) from exc
+        self._dropped_group_streak = 0
+        # Latch the commanded base twist from the group's BODY_TWIST slot so
+        # ``base_twist`` (and the /odom publisher reading it) reflects what the
+        # policy commanded — the group path bypasses send_action's per-mode
+        # branches that normally maintain ``_last_body_twist``. Mirrors the
+        # ``(vx, vy, 0, 0, 0, wz)`` latch of ``_apply_body_twist_*`` and the
+        # zero-clear of the non-twist path.
+        twist_row = next(
+            (
+                a.body_twist[0]
+                for a in actions
+                if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
+            ),
+            None,
+        )
+        if twist_row is not None and len(twist_row) >= BODY_TWIST_DIM:
+            self._last_body_twist = (
+                float(twist_row[0]),
+                float(twist_row[1]),
+                0.0,
+                0.0,
+                0.0,
+                float(twist_row[5]),
+            )
+        else:
+            self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
 
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
@@ -1014,7 +1078,21 @@ class SimAttachedHAL:
         if self._env_action_dim is None:
             return False
         if self._pending_actions:
-            return False
+            # A tick's slots are mid-flight — never interleave a HOLD step
+            # inside an atomic group. But a group whose slots stopped arriving
+            # (skill died mid-tick) must not freeze the scene forever: past
+            # the staleness bound, discard it loudly and resume idle stepping.
+            if time.monotonic_ns() - self._pending_since_ns < _PENDING_GROUP_STALE_NS:
+                return False
+            print(
+                f"[sim_attached.idle_step] ERROR discarding stale pending action group "
+                f"tick={self._pending_action_tick} "
+                f"slots={len(self._pending_actions)} (no new slot for "
+                f"{_PENDING_GROUP_STALE_NS / 1e9:.0f}s); resuming idle stepping",
+                flush=True,
+            )
+            self._pending_actions.clear()
+            self._pending_action_tick = None
         # No MuJoCo-handle gate: idle-stepping is valid for ANY wrapped
         # SimRollout — a zero action is a HOLD for the sim's velocity / OSC-delta
         # controllers, and the method-only-on-SimAttachedHAL exclusion (real HALs

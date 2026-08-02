@@ -135,7 +135,14 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs: dict[str, Any] = {"control_mode": mode, "horizon": horizon}
     kwargs["ee_name"] = str(getattr(msg, "ee_name", "") or "") or None
     kwargs["frame_id"] = str(getattr(msg, "frame_id", "") or "") or None
-    kwargs["confidence"] = float(getattr(msg, "confidence", 1.0) or 1.0)
+    # Decode the wire value verbatim — no falsy-zero guard: confidence=0.0 is
+    # a schema-legal "the policy explicitly disowns this action" and coercing
+    # it to 1.0 would record/act on full confidence. A missing attribute
+    # (pre-confidence IDL) still defaults to the schema's 1.0; an unset wire
+    # field decodes as the IDL default 0.0, which errs in the safe (low-
+    # confidence) direction.
+    confidence_raw = getattr(msg, "confidence", None)
+    kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     if mode in (ControlMode.JOINT_POSITION, ControlMode.JOINT_TRAJECTORY):
         kwargs["joint_targets"] = rows
@@ -344,6 +351,14 @@ if _ROS2_AVAILABLE:
             self._publisher: Any = None
             self._joint_state_pub: Any = None
             self._policy_state_pub: Any = None
+            # Identity of the last ProprioFrame whose policy_state was
+            # published. Frames are immutable and freshly constructed per
+            # ``env.step`` capture, so publishing only on a NEW frame makes
+            # /openral/policy_state a true "the simulator stepped" signal —
+            # republishing the latch every timer tick would keep the
+            # aggregator's staleness stamp fresh forever and the downstream
+            # ROSPerceptionStale gate could never fire on a wedged sim.
+            self._policy_state_last_frame: Any = None
             self._safe_action_sub: Any = None
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
@@ -677,6 +692,7 @@ if _ROS2_AVAILABLE:
             if self._policy_state_pub is not None:
                 self.destroy_publisher(self._policy_state_pub)
                 self._policy_state_pub = None
+            self._policy_state_last_frame = None
             return TransitionCallbackReturn.SUCCESS
 
         def on_cleanup(self, state: object) -> TransitionCallbackReturn:
@@ -865,12 +881,20 @@ if _ROS2_AVAILABLE:
                 self._joint_state_pub.publish(msg)
             if self._policy_state_pub is not None:
                 frame = self._proprio.latest() if self._proprio is not None else None
-                if frame is not None and frame.policy_state is not None:
+                # Publish only when the frame is NEW (one publish per env.step
+                # capture) — see ``_policy_state_last_frame``. Latched
+                # republishing would defeat the downstream staleness gate.
+                if (
+                    frame is not None
+                    and frame.policy_state is not None
+                    and frame is not self._policy_state_last_frame
+                ):
                     from std_msgs.msg import Float32MultiArray
 
                     policy_msg = Float32MultiArray()
                     policy_msg.data = list(frame.policy_state)
                     self._policy_state_pub.publish(policy_msg)
+                    self._policy_state_last_frame = frame
 
         def _on_safe_action(self, msg: object) -> None:
             """``/openral/safe_action`` callback.

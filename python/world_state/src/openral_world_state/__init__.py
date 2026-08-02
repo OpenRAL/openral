@@ -23,6 +23,7 @@ Public surface:
 """
 
 from openral_world_state.aggregator import (
+    DEFAULT_POLICY_STATE_STALENESS_S,
     DEFAULT_RATE_HZ,
     DEFAULT_STALENESS_S,
     WorldStateAggregator,
@@ -74,6 +75,7 @@ __all__ = [
     "DEFAULT_CLIP_PRETRAINED",
     "DEFAULT_MAP_FRAME",
     "DEFAULT_MIN_TEXT_SIMILARITY",
+    "DEFAULT_POLICY_STATE_STALENESS_S",
     "DEFAULT_RATE_HZ",
     "DEFAULT_STALENESS_S",
     "DEFAULT_STANDOFF_M",

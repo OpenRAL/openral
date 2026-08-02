@@ -210,3 +210,98 @@ def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
     assert len(env.groups) == 1
     assert [action.tick_index for action in env.groups[0]] == [7, 7]
     assert hal.read_policy_state() == list(np.arange(8, dtype=np.float32))
+
+
+def test_incomplete_action_group_drops_fail_loud_after_streak() -> None:
+    """Consecutive incomplete groups raise instead of silently never stepping.
+
+    A skill that emits fewer typed slots per tick than the backend's
+    ``action_group_size`` (or a safety supervisor persistently rejecting one
+    slot) previously froze the sim forever with only a stdout print.
+    """
+    from openral_core.exceptions import ROSRuntimeError
+
+    description = _franka_description()
+    env = _GroupedSim([0.0] * len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+
+    def one_slot(tick: int) -> Action:
+        return Action(
+            control_mode=ControlMode.BODY_TWIST,
+            body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.0)],
+            tick_index=tick,
+        )
+
+    hal.send_action(one_slot(1))  # stages tick 1 (1/2 slots)
+    hal.send_action(one_slot(2))  # drops tick 1 (drop #1), stages tick 2
+    hal.send_action(one_slot(3))  # drop #2
+    with pytest.raises(ROSRuntimeError, match="consecutive"):
+        hal.send_action(one_slot(4))  # drop #3 -> typed failure
+    assert env.steps == 0  # atomicity preserved: nothing partial ever stepped
+
+
+def test_group_commit_latches_commanded_base_twist() -> None:
+    """The group path maintains base_twist like the per-mode send_action paths."""
+    description = _franka_description()
+    env = _GroupedSim([0.0] * len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            body_twist=[(0.1, 0.2, 0.0, 0.0, 0.0, 0.3)],
+            tick_index=5,
+        )
+    )
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[1.0],
+            ee_name="panda_hand",
+            tick_index=5,
+        )
+    )
+    assert env.steps == 1
+    assert hal.base_twist == (
+        pytest.approx(0.1),
+        pytest.approx(0.2),
+        0.0,
+        0.0,
+        0.0,
+        pytest.approx(0.3),
+    )
+
+
+def test_stale_pending_group_releases_idle_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A group whose slots stopped arriving must not block idle stepping forever."""
+    import time as time_module
+
+    class _IdleSteppableGroupedSim(_GroupedSim):
+        # The real grouped backend (BEHAVIOR) accepts flat env.step too —
+        # that is exactly what idle_step drives (its hold vector).
+        def step(self, action: np.ndarray) -> StepResult:
+            del action
+            self.steps += 1
+            return StepResult(self._obs(), 0.0, False, False, {})
+
+    description = _franka_description()
+    env = _IdleSteppableGroupedSim([0.0] * len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+
+    now = [time_module.monotonic_ns()]
+    monkeypatch.setattr("openral_hal.sim_attached.time.monotonic_ns", lambda: now[0])
+
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.0)],
+            tick_index=9,
+        )
+    )
+    assert hal.idle_step() is False  # slots mid-flight: never interleave a HOLD
+
+    now[0] += 6_000_000_000  # +6 s: the skill died mid-tick
+    assert hal.idle_step() is True  # stale group discarded, scene stays live
+    assert env.steps == 1

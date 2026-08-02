@@ -230,6 +230,36 @@ class TestJointStateUpdates:
         assert snapshot.policy_state == [1.0, 2.0, 3.0]
         assert snapshot.diagnostics["policy_state"] == "ok"
 
+    def test_policy_state_uses_its_own_staleness_window(self) -> None:
+        """policy_state is step-locked: fresh past the general window, stale past its own.
+
+        A heavy sidecar sim legitimately steps at ~1 s wall, so policy_state
+        must NOT flap stale at the 0.5 s general window — but a wedged
+        simulator (no new step, no new publish) must trip the gate once the
+        dedicated window (default 5 s) elapses.
+        """
+        now_ns = [time.time_ns()]
+
+        def fake_clock() -> int:
+            return now_ns[0]
+
+        agg = WorldStateAggregator(
+            _make_description(),
+            staleness_limit_s=0.1,
+            policy_state_staleness_limit_s=5.0,
+            clock_fn=fake_clock,
+        )
+        agg.update_joint_state(_js([0.0, 0.0, 0.0]))
+        agg.update_policy_state([1.0, 2.0, 3.0])
+
+        now_ns[0] += 1_000_000_000  # +1 s: slow-but-alive sim step interval
+        ws = agg.snapshot()
+        assert ws.diagnostics["joint_state"] == "stale"
+        assert ws.diagnostics["policy_state"] == "ok"
+
+        now_ns[0] += 5_000_000_000  # +5 s more: wedged simulator
+        assert agg.snapshot().diagnostics["policy_state"] == "stale"
+
     def test_stale_joint_state_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Advance the clock past staleness_limit_s and verify 'stale'."""
         now_ns = time.time_ns()
