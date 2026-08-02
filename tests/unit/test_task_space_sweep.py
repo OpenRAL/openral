@@ -176,17 +176,19 @@ def test_rc365_sim_executable_after_fix() -> None:
     assert match.ok is True, match.reasons
 
 
-def test_every_actuating_skill_has_a_matching_robot_or_custom_contract() -> None:
-    """Every actuating rSkill names a robot or carries the explicit custom contract."""
+def test_every_actuating_skill_has_a_matching_robot() -> None:
+    """Every actuating rSkill names an embodiment some robots/ manifest provides."""
     robots = _robots()
     orphans = []
     for path in RSKILL_YAMLS:
         skill = RSkillManifest.from_yaml(path)
         if skill.action_contract is None:
             continue
-        if "custom" in skill.embodiment_tags:
-            assert skill.embodiment_extra is not None
-            continue
+        # No "custom"-tag bypass: no in-tree rSkill uses the tag, and skipping
+        # robot matching for it would let an orphaned custom-contract skill
+        # ship with CI green and fail only at deploy time. If a legitimate
+        # custom-embodiment skill ever lands, exempt it here CONSCIOUSLY with
+        # its name, not by tag.
         if not _matching_robot_names(skill, robots):
             orphans.append((_name(path), skill.embodiment_tags))
     assert not orphans, f"actuating skills with no matching robot: {orphans}"

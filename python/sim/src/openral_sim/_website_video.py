@@ -159,6 +159,16 @@ def write_world_videos(
         status = "success" if r.success else "fail"
         ep = f"_ep{i}" if multi else ""
         path = out_dir / f"{scene_slug}_{rskill_slug}{ep}_{status}.mp4"
+        # The filename embeds the outcome, so a re-run whose outcome flipped
+        # would otherwise leave the previous run's opposite-status MP4 (and
+        # its manifest record) contradicting the new one. Remove the stale
+        # sibling before writing.
+        other_status = "fail" if r.success else "success"
+        stale = out_dir / f"{scene_slug}_{rskill_slug}{ep}_{other_status}.mp4"
+        if stale.exists():
+            stale.unlink()
+            _drop_manifest_records(out_dir / "videos.json", {stale.name})
+            print(f"  removed stale {stale}")
         out = save_world_mp4(r, path, size=size, fps=fps)
         print(f"  wrote {out}")
         records.append(
@@ -193,6 +203,18 @@ def append_video_manifest(manifest: Path, records: list[dict[str, Any]]) -> None
     merged = [rec for rec in existing if rec.get("file") not in new_files] + records
     manifest.write_text(json.dumps(merged, indent=2))
     print(f"  updated {manifest}")
+
+
+def _drop_manifest_records(manifest: Path, file_names: set[str]) -> None:
+    """Remove ``videos.json`` records whose ``file`` was deleted from disk."""
+    if not manifest.exists():
+        return
+    loaded = json.loads(manifest.read_text())
+    if not isinstance(loaded, list):
+        return
+    kept = [rec for rec in loaded if rec.get("file") not in file_names]
+    if len(kept) != len(loaded):
+        manifest.write_text(json.dumps(kept, indent=2))
 
 
 def _slug(s: str) -> str:

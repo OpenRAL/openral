@@ -51,6 +51,11 @@ def _tracer() -> trace.Tracer:
 
 _log = structlog.get_logger(__name__)
 _VIDEO_FRAMES_INFO_KEY = "_openral_video_frames"
+# In-memory world-frame cap for record_video (see _EpisodeBuffer.frame_stride):
+# 8192 frames ≈ 1.2 GiB at the 224² frames of the longest-episode backend
+# (BEHAVIOR). Episodes shorter than the cap — every LIBERO / MetaWorld /
+# RoboCasa / RoboTwin protocol — capture every frame exactly as before.
+_VIDEO_FRAME_CAP = 8192
 _IMAGE_NDIM = 3
 _GRAYSCALE_CHANNELS = 1
 _RGB_CHANNELS = 3
@@ -219,6 +224,13 @@ class _EpisodeBuffer:
 
     latencies: list[float] = field(default_factory=list)
     frames: list[NDArray[np.uint8]] = field(default_factory=list)
+    # Bounded world-frame capture: when ``frames`` reaches the runner's cap the
+    # kept set is halved and the capture stride doubles, so memory stays
+    # O(cap) while the video still covers the whole episode (coarser time
+    # base). Only very long episodes (BEHAVIOR's multi-ten-thousand-step caps)
+    # ever hit this; LIBERO/RoboCasa-length episodes are unaffected.
+    frame_stride: int = 1
+    frame_tick: int = 0
     vla_input_frames: list[NDArray[np.uint8]] = field(default_factory=list)
     joint_positions: list[NDArray[np.float32]] = field(default_factory=list)
     actions: list[NDArray[np.float32]] = field(default_factory=list)
@@ -596,9 +608,17 @@ class SimRunner(InferenceRunnerBase):
 
         record = self._env_cfg.record_video
         if record:
-            frame = self._env.render()
-            if frame is not None:
-                self._buf.frames.append(frame)
+            # See _EpisodeBuffer.frame_stride: capped, stride-doubling capture
+            # so a 39k-step BEHAVIOR episode cannot hold gigabytes of RGB in
+            # process memory (finding: video-by-default must stay memory-flat).
+            if self._buf.frame_tick % self._buf.frame_stride == 0:
+                frame = self._env.render()
+                if frame is not None:
+                    self._buf.frames.append(frame)
+                    if len(self._buf.frames) >= _VIDEO_FRAME_CAP:
+                        self._buf.frames = self._buf.frames[::2]
+                        self._buf.frame_stride *= 2
+            self._buf.frame_tick += 1
             state = self._obs.get("state") if isinstance(self._obs, dict) else None
             if state is not None:
                 self._buf.joint_positions.append(np.asarray(state, dtype=np.float32).copy())
