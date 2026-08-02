@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode
 
+from openral_sim import _behavior_wire
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
 from openral_sim.sidecar import SidecarClient
@@ -40,16 +41,19 @@ _ACTION_DIM = 23
 _ACTION_GROUP_SIZE = 6
 _JOINT_DIM = 22
 
-_STATE_KEY = "robot_r1::proprio"
-_CAMERA_KEYS = {
-    "head": "robot_r1::robot_r1:zed_link:Camera:0::rgb",
-    "left_wrist": "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb",
-    "right_wrist": "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb",
-}
+_STATE_KEY = _behavior_wire.STATE_KEY
+_CAMERA_KEYS = _behavior_wire.CAMERA_RGB_KEYS
+_explicit_port = _behavior_wire.explicit_port
 
 
-def _scene_default_port(task: str, instance_index: int, mode: str) -> int:
-    key = f"behavior|{task}|{instance_index}|{mode}".encode()
+def _scene_default_port(
+    task: str, instance_index: int, mode: str, max_steps: int, env_wrapper: str
+) -> int:
+    # Every option that changes the running environment's behavior is part of
+    # the port key, so a config change can never silently adopt a still-running
+    # sidecar booted with the old config (the ping-identity check is lenient
+    # about absent keys; the port hash is the primary stale-reuse guard).
+    key = f"behavior|{task}|{instance_index}|{mode}|{max_steps}|{env_wrapper}".encode()
     digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
     return _PORT_MIN + (digest % (_PORT_MAX - _PORT_MIN))
 
@@ -271,6 +275,14 @@ class _BehaviorSidecar:
         self._client.close()
 
     def _wrap_obs(self, raw: dict[str, Any]) -> Observation:
+        # ``base_pose`` is an OpenRAL-side addition the sidecar injects next to
+        # the official evaluator keys (the robot's world (x, y, yaw), read from
+        # OmniGibson — the 61-D proprio carries only base *velocity*). Pop it
+        # out so ``behavior_raw`` — the payload forwarded verbatim to the
+        # official GR00T policy wire — stays byte-identical to the evaluator's
+        # own observation.
+        raw = dict(raw)
+        base_pose_raw = raw.pop("base_pose", None)
         state = np.asarray(raw.get(_STATE_KEY, []), dtype=np.float32).reshape(-1)
         if state.shape != (61,):
             raise ROSRuntimeError(
@@ -285,7 +297,7 @@ class _BehaviorSidecar:
         if images:
             self._last_image = images.get("head", next(iter(images.values())))
         positions, velocities = _joint_state_from_policy_state(state)
-        return {
+        obs: Observation = {
             "images": images,
             "state": state,
             "policy_state": state,
@@ -294,6 +306,12 @@ class _BehaviorSidecar:
             "task": self.task.instruction,
             "behavior_raw": raw,
         }
+        if base_pose_raw is not None:
+            base_pose = np.asarray(base_pose_raw, dtype=np.float32).reshape(-1)
+            if base_pose.shape[0] >= 3:  # noqa: PLR2004  # reason: x/y/yaw triple
+                # SimAttachedHAL.base_pose reads this for its non-MuJoCo /odom path.
+                obs["base_pose"] = base_pose[:3]
+        return obs
 
 
 @SCENES.register(_SCENE_ID, fixed_robot=_ROBOT_ID)
@@ -307,8 +325,11 @@ def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
     mode = str(opts.get("mode", "public_test"))
     env_wrapper = str(opts.get("env_wrapper", "omnigibson.eval.wrappers.DefaultWrapper"))
     host = os.environ.get(_HOST_ENV, str(opts.get("host", _DEFAULT_HOST)))
-    default_port = _scene_default_port(task, instance_index, mode)
-    port = _opt_int(os.environ.get(_PORT_ENV, opts.get("port")), default_port)
+    max_steps = int(env_cfg.task.max_steps or 500)
+    default_port = _scene_default_port(task, instance_index, mode, max_steps, env_wrapper)
+    port = _explicit_port(
+        os.environ.get(_PORT_ENV), opts.get("port"), default_port, env_var=_PORT_ENV
+    )
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
     launch_argv: list[str] = []
@@ -325,7 +346,7 @@ def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
             "--env-wrapper",
             env_wrapper,
             "--max-steps",
-            str(env_cfg.task.max_steps or 500),
+            str(max_steps),
             "--host",
             host,
             "--port",
@@ -341,7 +362,14 @@ def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
         boot_timeout_s=_opt_float(opts.get("boot_timeout_s"), _DEFAULT_BOOT_TIMEOUT_S),
         launch_argv=launch_argv,
         auto_spawn=auto_spawn,
-        expected_identity={"scene": "behavior", "task": task, "instance_index": instance_index},
+        expected_identity={
+            "scene": "behavior",
+            "task": task,
+            "instance_index": instance_index,
+            "mode": mode,
+            "max_steps": max_steps,
+            "env_wrapper": env_wrapper,
+        },
     )
     client.connect()
     return _BehaviorSidecar(scene=env_cfg.scene, task=env_cfg.task, _client=client)

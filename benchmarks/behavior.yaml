@@ -43,7 +43,10 @@
   task:
     id: behavior/turning_on_radio
     scene_id: behavior
-    instruction: "turning on radio"
+    # Matches every other in-tree entry point for this task (the rSkill
+    # manifest, scenes/sim + scenes/benchmark YAMLs) so `benchmark run`,
+    # `benchmark scene`, and `sim run` condition the checkpoint identically.
+    instruction: "turn on the radio"
     max_steps: 3224
     success_key: is_success
   robot_id: r1pro

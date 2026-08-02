@@ -87,6 +87,17 @@ contributor should look at before adding similar code.
    thin `_<family>_phase` shortcut so `tools/profile_policy_load.py`
    and `openral dashboard` see the same event shape across all adapters.
 
+7. **BEHAVIOR R1Pro wire constants — *resolved in-process, mirrored
+   cross-venv.*** The evaluator's raw observation keys and the 61-D/23-D
+   contract widths were hand-copied in three importable modules; they now
+   live once in `python/sim/src/openral_sim/_behavior_wire.py`
+   (`STATE_KEY` / `STATE_DIM` / `ACTION_DIM` / `CAMERA_SENSORS` /
+   `CAMERA_RGB_KEYS` / `explicit_port`), imported by the scene backend,
+   the `behavior_groot` policy adapter, and `openral_cli.behavior`. The
+   sidecar scripts under `tools/behavior_*_sidecar.py` run in isolated
+   venvs that cannot import `openral_sim` — their copies are a deliberate
+   wire-contract MIRROR: update them in lockstep with `_behavior_wire`.
+
 ### Already correctly DRY (do not flag)
 
 - **SimSensorBridge** — the single source for RGB camera publishing + MuJoCo viewer

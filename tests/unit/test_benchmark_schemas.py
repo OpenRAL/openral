@@ -494,6 +494,40 @@ _CATALOGUE_FIXTURES: list[tuple[str, str, str, int, int, str, str, str]] = [
 ]
 
 
+def test_behavior_suite_instruction_matches_other_entry_points() -> None:
+    """One task, one instruction string across every entry point.
+
+    ``obs["task"]`` (the scene's ``task.instruction``) wins instruction
+    resolution and is forwarded to the language-conditioned checkpoint every
+    step, so a divergent string in the suite silently conditions ``benchmark
+    run`` differently from ``benchmark scene`` / ``sim run`` on the same
+    task+seed — making the published eval JSON non-reproducible across
+    entry points.
+    """
+    import yaml
+
+    root = _BENCHMARKS_DIR.parent
+    path = _BENCHMARKS_DIR / "behavior.yaml"
+    if not path.exists():
+        pytest.skip("benchmarks/behavior.yaml fixture not present in this checkout")
+    suite = {s.task.id: s.task.instruction for s in load_benchmark_suite(str(path))}
+
+    scene_yaml = yaml.safe_load(
+        (root / "scenes" / "benchmark" / "behavior_turning_on_radio.yaml").read_text()
+    )
+    sim_yaml = yaml.safe_load(
+        (root / "scenes" / "sim" / "behavior_turning_on_radio.yaml").read_text()
+    )
+    manifest_yaml = yaml.safe_load(
+        (root / "rskills" / "gr00t-n17-b1k-turning-on-radio" / "rskill.yaml").read_text()
+    )
+
+    expected = scene_yaml["task"]["instruction"]
+    assert suite["behavior/turning_on_radio"] == expected
+    assert sim_yaml["task"]["instruction"] == expected
+    assert manifest_yaml["policy_extras"]["instruction"] == expected
+
+
 @pytest.mark.parametrize(
     (
         "stem",

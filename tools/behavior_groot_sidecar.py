@@ -313,7 +313,15 @@ def _quantize_int8(model: Any, *, device: str, min_params: int = 4_000_000) -> N
     model.eval()
 
 
-def _serve(policy: _BehaviorGrootPolicy, *, task: str, host: str, port: int) -> int:
+def _serve(
+    policy: _BehaviorGrootPolicy,
+    *,
+    task: str,
+    quantization: str,
+    control_mode: str,
+    host: str,
+    port: int,
+) -> int:
     import msgpack
     import zmq
 
@@ -332,6 +340,8 @@ def _serve(policy: _BehaviorGrootPolicy, *, task: str, host: str, port: int) -> 
                     "ok": True,
                     "model": "behavior_groot",
                     "task": task,
+                    "quantization": quantization,
+                    "control_mode": control_mode,
                     "action_dim": 23,
                 }
             elif endpoint == "reset":
@@ -358,6 +368,8 @@ def main(argv: list[str]) -> int:
     return _serve(
         _BehaviorGrootPolicy(args),
         task=args.task,
+        quantization=args.quantization,
+        control_mode=args.control_mode,
         host=args.host,
         port=args.port,
     )

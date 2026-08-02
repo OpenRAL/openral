@@ -8,24 +8,24 @@ from typing import TYPE_CHECKING
 
 import msgpack
 import numpy as np
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSRuntimeError
+from openral_sim import _behavior_wire
 
 if TYPE_CHECKING:
     from openral_core import VLASpec
     from openral_sim.policy import PolicyAdapter
     from openral_sim.rollout import Observation
 
-_R1PRO_CAMERA_SENSORS = {
-    "head": "robot_r1::robot_r1:zed_link:Camera:0",
-    "left_wrist": "robot_r1::robot_r1:left_realsense_link:Camera:0",
-    "right_wrist": "robot_r1::robot_r1:right_realsense_link:Camera:0",
-}
-_R1PRO_STATE_KEY = "robot_r1::proprio"
-_R1PRO_STATE_DIM = 61
-_R1PRO_ACTION_DIM = 23
+_log = structlog.get_logger(__name__)
+
+_R1PRO_CAMERA_SENSORS = _behavior_wire.CAMERA_SENSORS
+_R1PRO_STATE_KEY = _behavior_wire.STATE_KEY
+_R1PRO_STATE_DIM = _behavior_wire.STATE_DIM
+_R1PRO_ACTION_DIM = _behavior_wire.ACTION_DIM
 _RGB_RANK = 3
 _RGB_CHANNELS = 3
 
@@ -174,18 +174,29 @@ def _create_behavior_app(
                 if message.get("reset") is True:
                     await asyncio.to_thread(policy.reset)
                     continue
-                observation = _normalize_behavior_observation(
-                    message,
-                    instruction=instruction,
-                    state_dim=state_dim,
-                )
-                action = await asyncio.to_thread(
-                    _policy_action,
-                    policy,
-                    observation,
-                    instruction,
-                    action_dim,
-                )
+                try:
+                    observation = _normalize_behavior_observation(
+                        message,
+                        instruction=instruction,
+                        state_dim=state_dim,
+                    )
+                    action = await asyncio.to_thread(
+                        _policy_action,
+                        policy,
+                        observation,
+                        instruction,
+                        action_dim,
+                    )
+                # One bad frame must not tear down a multi-hour eval socket
+                # silently: log + typed error reply; the evaluator decides.
+                except Exception as exc:
+                    _log.error(
+                        "behavior_serve.step_failed",
+                        error=f"{type(exc).__name__}: {exc}",
+                        task=task,
+                    )
+                    await websocket.send_bytes(_packb({"error": f"{type(exc).__name__}: {exc}"}))
+                    continue
                 await websocket.send_bytes(_packb({"action": action}))
         except WebSocketDisconnect:
             return

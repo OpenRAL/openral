@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
+from openral_sim import _behavior_wire
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
@@ -38,22 +39,27 @@ _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 600.0
 _IMPLEMENTATION = "behavior_b1k_sidecar"
 
-_STATE_KEY = "robot_r1::proprio"
-_CAMERA_KEYS = {
-    "head": "robot_r1::robot_r1:zed_link:Camera:0::rgb",
-    "left_wrist": "robot_r1::robot_r1:left_realsense_link:Camera:0::rgb",
-    "right_wrist": "robot_r1::robot_r1:right_realsense_link:Camera:0::rgb",
-}
-_STATE_DIM = 61
-_ACTION_DIM = 23
+_STATE_KEY = _behavior_wire.STATE_KEY
+_CAMERA_KEYS = _behavior_wire.CAMERA_RGB_KEYS
+_STATE_DIM = _behavior_wire.STATE_DIM
+_ACTION_DIM = _behavior_wire.ACTION_DIM
 
 
 class _EnvCfg(Protocol):
     vla: VLASpec
 
 
-def _policy_default_port(task: str, checkpoint: str) -> int:
-    key = f"behavior-groot|{task}|{checkpoint}".encode()
+def _policy_default_port(
+    task: str, checkpoint: str, quantization: str, control_mode: str, nf4_min_params: int
+) -> int:
+    # Every option that changes the served policy's behavior is part of the
+    # port key, so e.g. an nf4→int8 A/B rerun can never silently adopt the
+    # still-running sidecar quantized the old way (the ping-identity check is
+    # lenient about absent keys; the port hash is the primary stale-reuse
+    # guard).
+    key = (
+        f"behavior-groot|{task}|{checkpoint}|{quantization}|{control_mode}|{nf4_min_params}"
+    ).encode()
     digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
     return _PORT_MIN + (digest % (_PORT_MAX - _PORT_MIN))
 
@@ -217,8 +223,12 @@ def build_behavior_groot_policy(
     nf4_min_params = _opt_int(extra.get("nf4_min_params"), 4_000_000)
     host = os.environ.get(_HOST_ENV, str(extra.get("host", _DEFAULT_HOST)))
     checkpoint = _checkpoint_path(manifest)
-    default_port = _policy_default_port(task, str(checkpoint))
-    port = _opt_int(os.environ.get(_PORT_ENV, extra.get("port")), default_port)
+    default_port = _policy_default_port(
+        task, str(checkpoint), quantization, control_mode, nf4_min_params
+    )
+    port = _behavior_wire.explicit_port(
+        os.environ.get(_PORT_ENV), extra.get("port"), default_port, env_var=_PORT_ENV
+    )
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
     launch_argv: list[str] = []
@@ -263,7 +273,12 @@ def build_behavior_groot_policy(
         boot_timeout_s=_opt_float(extra.get("boot_timeout_s"), _DEFAULT_BOOT_TIMEOUT_S),
         launch_argv=launch_argv,
         auto_spawn=auto_spawn,
-        expected_identity={"model": "behavior_groot", "task": task},
+        expected_identity={
+            "model": "behavior_groot",
+            "task": task,
+            "quantization": quantization,
+            "control_mode": control_mode,
+        },
     )
     client.connect()
     return _BehaviorGrootAdapter(spec=spec, device="sidecar", _client=client)

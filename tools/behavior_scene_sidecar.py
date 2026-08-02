@@ -112,10 +112,35 @@ class _BehaviorEnv:
         return int(self._evaluator.robot.action_dim)
 
     def reset(self, seed: int | None = None) -> dict[str, object]:
-        del seed
+        if seed is not None:
+            # Apply the caller's per-episode seed the same way the official
+            # eval entrypoint seeds (Python + NumPy + Torch via
+            # ``seed_everything``) so multi-seed benchmark sweeps genuinely
+            # vary and the recorded seed is the one that was applied.
+            eval_utils = importlib.import_module("omnigibson.eval.utils.eval_utils")
+            eval_utils.seed_everything(int(seed))
         self._evaluator.reset()
         self._steps = 0
-        return _to_numpy_dict(self._evaluator.obs)
+        return self._obs_payload()
+
+    def _obs_payload(self) -> dict[str, object]:
+        """The evaluator observation plus the OpenRAL-side ``base_pose`` key.
+
+        The 61-D proprio carries only base *velocity*; the robot's world
+        ``(x, y, yaw)`` is read from OmniGibson directly so the HAL's /odom
+        publisher can report real base motion. The backend pops the key back
+        out before forwarding the official policy wire payload.
+        """
+        payload = _to_numpy_dict(self._evaluator.obs)
+        robot = self._evaluator.robot
+        try:
+            transforms = importlib.import_module("omnigibson.utils.transform_utils")
+            pos, quat = robot.get_position_orientation()
+            yaw = float(transforms.quat2euler(quat)[2])
+            payload["base_pose"] = np.asarray([float(pos[0]), float(pos[1]), yaw], dtype=np.float32)
+        except Exception as exc:  # reason: pose is best-effort telemetry; never fail an obs over it
+            print(f"[behavior_scene_sidecar] base_pose read failed: {exc}", flush=True)
+        return payload
 
     def step(self, action: NDArray[np.float32]) -> dict[str, object]:
         evaluator = self._evaluator
@@ -137,7 +162,7 @@ class _BehaviorEnv:
         success = bool(info.get("done", {}).get("success", False))
         metric_info = _to_numpy_dict(metrics)
         return {
-            "observation": _to_numpy_dict(evaluator.obs),
+            "observation": self._obs_payload(),
             "reward": float(reward),
             "terminated": bool(terminated),
             "truncated": bool(truncated),
@@ -168,6 +193,9 @@ def _serve(env: _BehaviorEnv, *, args: argparse.Namespace) -> int:
                     "scene": "behavior",
                     "task": args.task,
                     "instance_index": args.instance_index,
+                    "mode": args.mode,
+                    "max_steps": args.max_steps,
+                    "env_wrapper": args.env_wrapper,
                     "action_dim": env.action_dim,
                 }
             elif endpoint == "reset":

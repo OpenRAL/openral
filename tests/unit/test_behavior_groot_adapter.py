@@ -77,13 +77,18 @@ def test_behavior_checkpoint_env_override(
     assert behavior_groot._checkpoint_path(manifest) == checkpoint
 
 
-def test_behavior_policy_ports_are_stable_and_task_specific() -> None:
-    a = behavior_groot._policy_default_port("turning_on_radio", "/checkpoint")
-    b = behavior_groot._policy_default_port("turning_on_radio", "/checkpoint")
-    other = behavior_groot._policy_default_port("cleaning_a_table", "/checkpoint")
-    assert a == b
-    assert behavior_groot._PORT_MIN <= a < behavior_groot._PORT_MAX
-    assert a != other
+def test_behavior_policy_ports_are_stable_and_config_specific() -> None:
+    def port(task: str = "turning_on_radio", quant: str = "nf4") -> int:
+        return behavior_groot._policy_default_port(
+            task, "/checkpoint", quant, "temporal_ensemble", 1_000_000
+        )
+
+    assert port() == port()
+    assert behavior_groot._PORT_MIN <= port() < behavior_groot._PORT_MAX
+    assert port() != port(task="cleaning_a_table")
+    # A quantization change must land on a different port so an A/B rerun can
+    # never silently adopt the still-running sidecar quantized the old way.
+    assert port() != port(quant="int8")
 
 
 def test_gr00t_factory_dispatches_behavior_sidecar(
