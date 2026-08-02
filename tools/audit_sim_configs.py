@@ -127,6 +127,12 @@ CATALOGUE: Final[tuple[ConfigSpec, ...]] = (
         "robocasa",
         "sim",
     ),
+    ConfigSpec(
+        "scenes/sim/behavior_turning_on_radio.yaml",
+        "rskills/gr00t-n17-b1k-turning-on-radio",
+        "behavior-groot",
+        "sim",
+    ),
     # ---- BenchmarkScene tier (openral benchmark scene --no-update-manifest --n-episodes 1) ----
     # Each row is a demo-grade run, not a paper-comparable claim.
     ConfigSpec(
@@ -181,6 +187,7 @@ CATALOGUE: Final[tuple[ConfigSpec, ...]] = (
     ConfigSpec("scenes/deploy/so101_box.yaml", "", "sim", "deploy"),
     ConfigSpec("scenes/deploy/robocasa_pnp.yaml", "", "robocasa", "deploy"),
     ConfigSpec("scenes/deploy/libero_pnp.yaml", "", "libero", "deploy"),
+    ConfigSpec("scenes/deploy/behavior_r1pro.yaml", "", "behavior-groot", "deploy"),
 )
 
 

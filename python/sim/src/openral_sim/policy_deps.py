@@ -51,7 +51,10 @@ from typing import Any
 
 __all__ = [
     "can_import_policy_family",
+    "can_import_policy_manifest",
     "filter_importable_manifests",
+    "manifest_install_groups",
+    "manifest_install_hint",
     "model_family_install_groups",
     "model_family_install_hint",
     "model_family_required_imports",
@@ -82,7 +85,9 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
     "gr00t": (
         "Install the gr00t extras: `just sync --all-packages --group gr00t` "
         "(adds lerobot[groot]). GR00T-N1.7 now runs in-process on lerobot 0.6.0 "
-        "under this repo's Python 3.12 — no sidecar."
+        "under this repo's Python 3.12. The official BEHAVIOR-1K organizer "
+        "checkpoint is a manifest-selected exception and uses the "
+        "`behavior-groot` sidecar-wire group."
     ),
     "diffuser_actor": (
         "Install the rlbench extras: `just sync --all-packages --group rlbench` "
@@ -218,7 +223,11 @@ def can_import_policy_family(family: str) -> tuple[bool, str | None]:
     primary error, not a cascade) and returns ``(False, reason)``
     where ``reason`` carries the leaf import error.
     """
-    required = model_family_required_imports(family)
+    return _can_import_modules(model_family_required_imports(family))
+
+
+def _can_import_modules(required: tuple[str, ...]) -> tuple[bool, str | None]:
+    """Probe an explicit import set with the same partial-import cleanup."""
     for mod in required:
         try:
             importlib.import_module(mod)
@@ -234,6 +243,38 @@ def can_import_policy_family(family: str) -> tuple[bool, str | None]:
             purge_partial_imports(("lerobot", "transformers", mod.split(".", 1)[0]))
             return False, f"{type(exc).__name__}: {exc}"
     return True, None
+
+
+def _is_behavior_groot_manifest(manifest: Any) -> bool:
+    extras = getattr(manifest, "policy_extras", {}) or {}
+    return (
+        getattr(manifest, "model_family", None) == "gr00t"
+        and extras.get("implementation") == "behavior_b1k_sidecar"
+    )
+
+
+def can_import_policy_manifest(manifest: Any) -> tuple[bool, str | None]:
+    """Probe the manifest-selected runtime, including GR00T sidecar variants."""
+    if _is_behavior_groot_manifest(manifest):
+        return _can_import_modules(("zmq", "msgpack"))
+    return can_import_policy_family(getattr(manifest, "model_family", None) or "")
+
+
+def manifest_install_groups(manifest: Any) -> tuple[str, ...]:
+    """Return dependency groups for the manifest-selected policy runtime."""
+    if _is_behavior_groot_manifest(manifest):
+        return ("behavior-groot",)
+    return model_family_install_groups(getattr(manifest, "model_family", None) or "")
+
+
+def manifest_install_hint(manifest: Any) -> str:
+    """Return the install hint for the manifest-selected policy runtime."""
+    if _is_behavior_groot_manifest(manifest):
+        return (
+            "Install the BEHAVIOR GR00T wire extras: "
+            "`just sync --all-packages --group behavior-groot`."
+        )
+    return model_family_install_hint(getattr(manifest, "model_family", None) or "")
 
 
 def filter_importable_manifests(
@@ -257,13 +298,13 @@ def filter_importable_manifests(
     kept: list[Any] = []
     for manifest in manifests:
         family = getattr(manifest, "model_family", None) or ""
-        ok, reason = can_import_policy_family(family)
+        ok, reason = can_import_policy_manifest(manifest)
         if ok:
             kept.append(manifest)
             continue
         if log_fn is not None:
             name = getattr(manifest, "name", "<unknown>")
-            hint = model_family_install_hint(family)
+            hint = manifest_install_hint(manifest)
             log_fn(f"palette: dropping rSkill {name!r} (model_family={family!r}): {reason}. {hint}")
     return kept
 

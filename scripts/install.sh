@@ -192,6 +192,7 @@ Opt-in extras (installed into the same managed venv):
   openral install simpler-env     # real-to-sim correlator
   openral install robocasa        # RoboCasa kitchens (excludes libero — conflicting robosuite pins)
   openral install rldx            # RLDX-1 sidecar client
+  openral install behavior-groot  # BEHAVIOR-1K GR00T + OmniGibson sidecar wire
   openral install list            # show every known group
 
 System bootstrap (needs sudo + clones the openral repo):

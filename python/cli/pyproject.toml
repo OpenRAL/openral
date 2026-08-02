@@ -16,6 +16,9 @@ dependencies = [
     "rich>=13.7",         # reason: terminal formatting
     "pyudev>=0.24.4",
     "opencv-python-headless>=4.9,<5",  # reason: camera thumbnails in `openral detect` sensor wizard; <5 keeps numpy<2.5 (opencv 5 pulls numpy 2.5, breaking the workspace pin)
+    "fastapi>=0.110",      # reason: BEHAVIOR evaluator WebSocket + /healthz policy endpoint
+    "uvicorn[standard]>=0.27", # reason: serve the BEHAVIOR policy ASGI app
+    "msgpack>=1",          # reason: official BEHAVIOR ndarray wire format
 ]
 
 [project.scripts]

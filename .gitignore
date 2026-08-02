@@ -78,6 +78,10 @@ tmp/
 example_videos/
 outputs/
 
+# Per-episode benchmark rollout MP4s (`openral benchmark run` records by
+# default next to the eval JSON; the JSON is checked in, the videos are not).
+rskills/*/eval/videos/
+
 # Optional project-local LIBERO config dir — useful when overriding
 # LIBERO_CONFIG_PATH to bypass ~/.libero (see tools/fix_libero_config.py
 # + docs/reference/vla_compatibility.md). The auto-fix targets ~/.libero

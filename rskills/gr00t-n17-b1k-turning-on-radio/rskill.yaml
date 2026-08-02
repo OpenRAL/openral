@@ -1,0 +1,151 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-gr00t-n17-b1k-turning-on-radio"
+version: "0.1.0"
+license: "unknown"
+role: "s1"
+kind: "vla"
+model_family: "gr00t"
+
+embodiment_tags:
+  - "r1pro"
+
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.head"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.left_wrist"
+    min_width: 224
+    min_height: 224
+  - modality: "rgb"
+    vla_feature_key: "observation.images.right_wrist"
+    min_width: 224
+    min_height: 224
+
+actuators_required:
+  - kind: "body_twist"
+    n_dof: 3
+    vla_action_key: "action.base"
+    control_mode_semantics:
+      mode: "absolute"
+  - kind: "joint_position"
+    n_dof: 18
+    vla_action_key: "action.joints"
+    control_mode_semantics:
+      mode: "absolute"
+      joint_order:
+        - "torso_joint1"
+        - "torso_joint2"
+        - "torso_joint3"
+        - "torso_joint4"
+        - "left_arm_joint1"
+        - "left_arm_joint2"
+        - "left_arm_joint3"
+        - "left_arm_joint4"
+        - "left_arm_joint5"
+        - "left_arm_joint6"
+        - "left_arm_joint7"
+        - "right_arm_joint1"
+        - "right_arm_joint2"
+        - "right_arm_joint3"
+        - "right_arm_joint4"
+        - "right_arm_joint5"
+        - "right_arm_joint6"
+        - "right_arm_joint7"
+  - kind: "gripper_position"
+    n_dof: 2
+    vla_action_key: "action.grippers"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_open_symmetric"
+
+runtime: "pytorch"
+quantization:
+  dtype: "bf16"
+  backend: "pytorch"
+weights_uri: "local://checkpoints/behavior-groot-turning-on-radio"
+
+policy_extras:
+  implementation: "behavior_b1k_sidecar"
+  task: "turning_on_radio"
+  instruction: "turn on the radio"
+  control_mode: "temporal_ensemble"
+  quantization: "nf4"
+  quantize_scope: "model"
+  nf4_min_params: 1000000
+  source_revision: "ace36d935b376fbf25cd56371e23877b95407c40"
+  use_world_state_policy_state: true
+
+state_contract:
+  dim: 61
+
+action_contract:
+  dim: 23
+  slots:
+    - range: [0, 2]
+      control_mode: "body_twist"
+      frame: "base_link"
+    - range: [3, 6]
+      control_mode: "joint_position"
+      joint_names:
+        - "torso_joint1"
+        - "torso_joint2"
+        - "torso_joint3"
+        - "torso_joint4"
+    - range: [7, 13]
+      control_mode: "joint_position"
+      joint_names:
+        - "left_arm_joint1"
+        - "left_arm_joint2"
+        - "left_arm_joint3"
+        - "left_arm_joint4"
+        - "left_arm_joint5"
+        - "left_arm_joint6"
+        - "left_arm_joint7"
+    - range: [14, 14]
+      control_mode: "gripper_position"
+      ee: "left_gripper"
+    - range: [15, 21]
+      control_mode: "joint_position"
+      joint_names:
+        - "right_arm_joint1"
+        - "right_arm_joint2"
+        - "right_arm_joint3"
+        - "right_arm_joint4"
+        - "right_arm_joint5"
+        - "right_arm_joint6"
+        - "right_arm_joint7"
+    - range: [22, 22]
+      control_mode: "gripper_position"
+      ee: "right_gripper"
+
+chunk_size: 16
+n_action_steps: 1
+latency_budget:
+  per_chunk_ms: 1500.0
+
+evaluated_tasks:
+  - "behavior/turning_on_radio"
+
+paper_url: "https://arxiv.org/abs/2503.14734"
+dataset_uri: "hf://behavior-1k/2026-challenge-demos"
+
+description: >
+  GR00T N1.7 finetuned for the 2026 BEHAVIOR-1K turning_on_radio task on the
+  simulated Galaxea R1 Pro. Consumes head plus dual-wrist RGB and 61-D
+  proprioception; emits the official mixed 23-D mobile-bimanual action.
+
+actions:
+  - "rotate"
+  - "push"
+objects:
+  - "radio"
+  - "dial"
+  - "button"
+scenes:
+  - "household"
+  - "living_room"
+
+benchmarks:
+  behavior: 0.0

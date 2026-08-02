@@ -1,0 +1,44 @@
+# BEHAVIOR-1K 2026 — turning_on_radio (public instance 0), OmniGibson, R1 Pro.
+# Run: openral benchmark scene --config scenes/benchmark/behavior_turning_on_radio.yaml \
+#                              --rskill rskills/gr00t-n17-b1k-turning-on-radio
+# Setup: official BEHAVIOR-1K OmniGibson environment in its own py3.10 venv
+#        (OPENRAL_BEHAVIOR_SIDECAR_PYTHON); `just sync --group behavior-groot`
+#        for the openral-side wire.
+
+robot_id: r1pro
+
+scene:
+  id: behavior
+  backend: isaacsim
+  observation_height: 224
+  observation_width: 224
+  cameras: ["head", "left_wrist", "right_wrist"]
+  backend_options:
+    task: turning_on_radio
+    instance_index: 0
+    mode: public_test
+    env_wrapper: "omnigibson.eval.wrappers.DefaultWrapper"
+    boot_timeout_s: 1200
+    timeout_ms: 120000
+
+task:
+  id: behavior/turning_on_radio
+  scene_id: behavior
+  instruction: "turn on the radio"
+  max_steps: 3224        # organizer cap: int(1.5 x mean human-demo length) for this task
+  success_key: is_success
+
+n_episodes: 1            # ~1-2 h wall-clock per episode on the 8 GB reference host
+seed: 0
+
+metadata:
+  paper: "https://arxiv.org/abs/2403.09227"
+  display_name: "BEHAVIOR-1K 2026 — turning_on_radio"
+  simulator: "OmniGibson / Isaac Sim (py3.10 sidecar)"
+  honest_scope: >
+    Single public instance (index 0) of turning_on_radio, the one 2026
+    challenge task with a released organizer baseline checkpoint. The official
+    leaderboard metric is q_score partial credit averaged over all public
+    instances; this scene records the evaluator's binary is_success. The
+    organizer baseline itself is flaky on this task (Isaac-GR00T issue #515:
+    q_score 0.0 in 9/10 episodes vs the claimed 0.70).

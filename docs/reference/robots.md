@@ -22,6 +22,7 @@ Every embodiment is a typed `RobotDescription` manifest under `robots/<robot_id>
 | Rethink Sawyer | [`robots/sawyer/`](https://github.com/OpenRAL/openral/tree/master/robots/sawyer/) | eval-only · real-HW HAL planned (#57) | ✓ sim |
 | Fourier GR1 | [`robots/gr1/`](https://github.com/OpenRAL/openral/tree/master/robots/gr1/) | eval-only (RoboCasa GR1 fork + RLDX-1) | ✓ sim |
 | Panda mobile (RoboCasa kitchen) | [`robots/panda_mobile/`](https://github.com/OpenRAL/openral/tree/master/robots/panda_mobile/) | eval-only (drives RoboCasa kitchen via robosuite) | ✓ sim |
+| Galaxea R1 Pro | [`robots/r1pro/`](https://github.com/OpenRAL/openral/tree/master/robots/r1pro/) | generic scene-attached HAL + official BEHAVIOR/OmniGibson sidecar | ✓ sim |
 | Google Robot (SimplerEnv) | [`robots/google_robot/`](https://github.com/OpenRAL/openral/tree/master/robots/google_robot/) | eval-only (SimplerEnv `fractal20220817_data` bridge env) | ✓ sim |
 | WidowX (SimplerEnv) | [`robots/widowx/`](https://github.com/OpenRAL/openral/tree/master/robots/widowx/) | eval-only (SimplerEnv `bridge_orig` env) | ✓ sim |
 | PushT 2-D (gym-pusht) | [`robots/pusht_2d/`](https://github.com/OpenRAL/openral/tree/master/robots/pusht_2d/) | eval-only (`pymunk` 2-D rigid-body) | ✓ sim |

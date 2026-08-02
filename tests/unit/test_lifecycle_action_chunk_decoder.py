@@ -38,6 +38,10 @@ class FakeChunk:
     n_dof: int = 0
     horizon: int = 1
     control_mode: int = 0
+    ee_name: str = ""
+    frame_id: str = ""
+    confidence: float = 1.0
+    tick_index: int = 0
 
 
 class TestDecodeActionChunk:
@@ -92,6 +96,41 @@ class TestDecodeActionChunk:
         assert isinstance(action, Action)
         assert action.control_mode is ControlMode.BODY_TWIST
         assert action.body_twist == [(0.2, 0.0, 0.0, 0.0, 0.0, 0.3)]
+
+    def test_slot_metadata_survives_safety_wire(self) -> None:
+        chunk = FakeChunk(
+            flat=[0.25],
+            n_dof=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.GRIPPER_POSITION],
+            ee_name="left_gripper",
+            frame_id="base_link",
+            confidence=0.75,
+            tick_index=42,
+        )
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.ee_name == "left_gripper"
+        assert action.frame_id == "base_link"
+        assert action.confidence == pytest.approx(0.75)
+        assert action.tick_index == 42
+
+    def test_zero_confidence_round_trips(self) -> None:
+        """confidence=0.0 (policy disowns the action) must not decode as 1.0.
+
+        The old ``or 1.0`` falsy guard rewrote an explicit zero to full
+        confidence, so downstream consumers (dataset recording, diagnostics)
+        recorded the opposite of what the policy declared.
+        """
+        chunk = FakeChunk(
+            flat=[0.25],
+            n_dof=1,
+            control_mode=CONTROL_MODE_TO_UINT8[ControlMode.GRIPPER_POSITION],
+            ee_name="left_gripper",
+            confidence=0.0,
+        )
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.confidence == 0.0
 
     def test_cartesian_twist_populates_typed_field(self) -> None:
         chunk = FakeChunk(

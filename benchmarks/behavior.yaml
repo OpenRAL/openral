@@ -1,0 +1,1556 @@
+# BEHAVIOR-1K 2026 challenge suite — all 100 public challenge tasks.
+#
+# BEHAVIOR-1K (Li et al., 2403.09227) defines 1,000 household activities; the
+# 2026 challenge (and its OmniGibson evaluator) exposes this 100-task subset
+# on the Galaxea R1 Pro. Per-task max_steps is the official cap the evaluator
+# computes itself: int(1.5 x mean human-demo length), read from the installed
+# challenge human-demo stats. Instance 0 of the public_test split per task.
+#
+# Run (auto-filters to the rSkill's evaluated_tasks, like maniskill3_panda):
+#   openral benchmark run --suite behavior --rskill rskills/gr00t-n17-b1k-turning-on-radio
+#
+# Setup: OmniGibson owns the scene physics in its official Python 3.10
+# environment (never vendored); the scene runs out-of-process through
+# tools/behavior_scene_sidecar.py (OPENRAL_BEHAVIOR_SIDECAR_PYTHON). Policy
+# checkpoints from the pinned wensi-ai/Isaac-GR00T runtime run in their own
+# sidecar (tools/behavior_groot_sidecar.py, whole-model NF4 on 8 GB).
+#
+# env_wrapper: the official DefaultWrapper (rgb-only, 224x224) — the wrapper
+# every verified rollout used. RGBDFullResWrapper crashes at boot on the
+# pinned OmniGibson build (reads joint state before og.sim.update_handles()).
+#
+# Protocol: the official evaluator scores partial credit (q_score) over final
+# goal predicates averaged across public instances; OpenRAL's runner records
+# the binary `is_success` from the same evaluator wrapper.
+#
+# GENERATED from the evaluator's own load_available_tasks() +
+# load_human_stats() (cap = int(1.5 x mean human-demo length)); regenerate
+# from those helpers rather than hand-editing task rows.
+
+- scene: &scene
+    id: behavior
+    backend: isaacsim
+    observation_height: 224
+    observation_width: 224
+    cameras: ["head", "left_wrist", "right_wrist"]
+    backend_options: &opts
+      task: turning_on_radio
+      instance_index: 0
+      mode: public_test
+      env_wrapper: "omnigibson.eval.wrappers.DefaultWrapper"
+      boot_timeout_s: 1200
+      timeout_ms: 120000
+  task:
+    id: behavior/turning_on_radio
+    scene_id: behavior
+    # Matches every other in-tree entry point for this task (the rSkill
+    # manifest, scenes/sim + scenes/benchmark YAMLs) so `benchmark run`,
+    # `benchmark scene`, and `sim run` condition the checkpoint identically.
+    instruction: "turn on the radio"
+    max_steps: 3224
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: &meta
+    paper: "https://arxiv.org/abs/2403.09227"
+    display_name: "BEHAVIOR-1K 2026 challenge (100 tasks)"
+    simulator: "OmniGibson / Isaac Sim (sidecar)"
+    honest_scope: >
+      All 100 public tasks of the BEHAVIOR-1K 2026 challenge, one episode on
+      public_test instance 0 each, with the official per-task step cap
+      (1.5x mean human-demo length). The official leaderboard metric is
+      q_score partial credit averaged over all public instances; this suite
+      records the evaluator's binary is_success on one instance per task
+      because a single episode takes ~1-2 h wall-clock on the 8 GB reference
+      host (closed-loop protocol). The runner auto-filters to the rSkill's
+      evaluated_tasks; the only released organizer baseline checkpoint
+      covers turning_on_radio, and that checkpoint is itself flaky
+      (Isaac-GR00T issue #515: q_score 0.0 in 9/10 episodes vs the claimed
+      0.70) — numbers reflect the checkpoint, not an OpenRAL integration
+      ceiling (NF4-vs-bf16 action MAE 0.003).
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: assembling_gift_baskets
+  task:
+    id: behavior/assembling_gift_baskets
+    scene_id: behavior
+    instruction: "assembling gift baskets"
+    max_steps: 39090
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: attach_a_camera_to_a_tripod
+  task:
+    id: behavior/attach_a_camera_to_a_tripod
+    scene_id: behavior
+    instruction: "attach a camera to a tripod"
+    max_steps: 5867
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: boxing_books_up_for_storage
+  task:
+    id: behavior/boxing_books_up_for_storage
+    scene_id: behavior
+    instruction: "boxing books up for storage"
+    max_steps: 36341
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: boxing_food_after_dinner
+  task:
+    id: behavior/boxing_food_after_dinner
+    scene_id: behavior
+    instruction: "boxing food after dinner"
+    max_steps: 10046
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: bringing_in_wood
+  task:
+    id: behavior/bringing_in_wood
+    scene_id: behavior
+    instruction: "bringing in wood"
+    max_steps: 20303
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: bringing_paper_to_recycling
+  task:
+    id: behavior/bringing_paper_to_recycling
+    scene_id: behavior
+    instruction: "bringing paper to recycling"
+    max_steps: 16821
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: bringing_water
+  task:
+    id: behavior/bringing_water
+    scene_id: behavior
+    instruction: "bringing water"
+    max_steps: 14157
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: can_meat
+  task:
+    id: behavior/can_meat
+    scene_id: behavior
+    instruction: "can meat"
+    max_steps: 17770
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: canning_food
+  task:
+    id: behavior/canning_food
+    scene_id: behavior
+    instruction: "canning food"
+    max_steps: 34463
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: carrying_in_groceries
+  task:
+    id: behavior/carrying_in_groceries
+    scene_id: behavior
+    instruction: "carrying in groceries"
+    max_steps: 21412
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: carrying_out_garden_furniture
+  task:
+    id: behavior/carrying_out_garden_furniture
+    scene_id: behavior
+    instruction: "carrying out garden furniture"
+    max_steps: 16588
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: chop_an_onion
+  task:
+    id: behavior/chop_an_onion
+    scene_id: behavior
+    instruction: "chop an onion"
+    max_steps: 9599
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: chopping_wood
+  task:
+    id: behavior/chopping_wood
+    scene_id: behavior
+    instruction: "chopping wood"
+    max_steps: 16127
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_a_keyboard
+  task:
+    id: behavior/clean_a_keyboard
+    scene_id: behavior
+    instruction: "clean a keyboard"
+    max_steps: 5814
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_a_patio
+  task:
+    id: behavior/clean_a_patio
+    scene_id: behavior
+    instruction: "clean a patio"
+    max_steps: 18106
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_a_trumpet
+  task:
+    id: behavior/clean_a_trumpet
+    scene_id: behavior
+    instruction: "clean a trumpet"
+    max_steps: 7960
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_boxing_gloves
+  task:
+    id: behavior/clean_boxing_gloves
+    scene_id: behavior
+    instruction: "clean boxing gloves"
+    max_steps: 12353
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_up_broken_glass
+  task:
+    id: behavior/clean_up_broken_glass
+    scene_id: behavior
+    instruction: "clean up broken glass"
+    max_steps: 13037
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_up_your_desk
+  task:
+    id: behavior/clean_up_your_desk
+    scene_id: behavior
+    instruction: "clean up your desk"
+    max_steps: 32126
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clean_your_rusty_garden_tools
+  task:
+    id: behavior/clean_your_rusty_garden_tools
+    scene_id: behavior
+    instruction: "clean your rusty garden tools"
+    max_steps: 22736
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cleaning_up_branches_and_twigs
+  task:
+    id: behavior/cleaning_up_branches_and_twigs
+    scene_id: behavior
+    instruction: "cleaning up branches and twigs"
+    max_steps: 18790
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cleaning_up_plates_and_food
+  task:
+    id: behavior/cleaning_up_plates_and_food
+    scene_id: behavior
+    instruction: "cleaning up plates and food"
+    max_steps: 20544
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: clearing_food_from_table_into_fridge
+  task:
+    id: behavior/clearing_food_from_table_into_fridge
+    scene_id: behavior
+    instruction: "clearing food from table into fridge"
+    max_steps: 19602
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: collecting_aluminum_cans
+  task:
+    id: behavior/collecting_aluminum_cans
+    scene_id: behavior
+    instruction: "collecting aluminum cans"
+    max_steps: 15304
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: collecting_childrens_toys
+  task:
+    id: behavior/collecting_childrens_toys
+    scene_id: behavior
+    instruction: "collecting childrens toys"
+    max_steps: 28779
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: composting_waste
+  task:
+    id: behavior/composting_waste
+    scene_id: behavior
+    instruction: "composting waste"
+    max_steps: 5457
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_a_brisket
+  task:
+    id: behavior/cook_a_brisket
+    scene_id: behavior
+    instruction: "cook a brisket"
+    max_steps: 11002
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_a_frozen_pie
+  task:
+    id: behavior/cook_a_frozen_pie
+    scene_id: behavior
+    instruction: "cook a frozen pie"
+    max_steps: 13001
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_bacon
+  task:
+    id: behavior/cook_bacon
+    scene_id: behavior
+    instruction: "cook bacon"
+    max_steps: 11519
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_broccolini
+  task:
+    id: behavior/cook_broccolini
+    scene_id: behavior
+    instruction: "cook broccolini"
+    max_steps: 6926
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_brussels_sprouts
+  task:
+    id: behavior/cook_brussels_sprouts
+    scene_id: behavior
+    instruction: "cook brussels sprouts"
+    max_steps: 23492
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_cabbage
+  task:
+    id: behavior/cook_cabbage
+    scene_id: behavior
+    instruction: "cook cabbage"
+    max_steps: 21217
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: cook_hot_dogs
+  task:
+    id: behavior/cook_hot_dogs
+    scene_id: behavior
+    instruction: "cook hot dogs"
+    max_steps: 13717
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: dispose_of_batteries
+  task:
+    id: behavior/dispose_of_batteries
+    scene_id: behavior
+    instruction: "dispose of batteries"
+    max_steps: 21642
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: dispose_of_glass
+  task:
+    id: behavior/dispose_of_glass
+    scene_id: behavior
+    instruction: "dispose of glass"
+    max_steps: 13792
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: freeze_fruit
+  task:
+    id: behavior/freeze_fruit
+    scene_id: behavior
+    instruction: "freeze fruit"
+    max_steps: 18928
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: freeze_pies
+  task:
+    id: behavior/freeze_pies
+    scene_id: behavior
+    instruction: "freeze pies"
+    max_steps: 18682
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: getting_organized_for_work
+  task:
+    id: behavior/getting_organized_for_work
+    scene_id: behavior
+    instruction: "getting organized for work"
+    max_steps: 23506
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: halve_an_egg
+  task:
+    id: behavior/halve_an_egg
+    scene_id: behavior
+    instruction: "halve an egg"
+    max_steps: 9565
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: hanging_pictures
+  task:
+    id: behavior/hanging_pictures
+    scene_id: behavior
+    instruction: "hanging pictures"
+    max_steps: 3581
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: hiding_Easter_eggs
+  task:
+    id: behavior/hiding_Easter_eggs
+    scene_id: behavior
+    instruction: "hiding Easter eggs"
+    max_steps: 11429
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: installing_a_fax_machine
+  task:
+    id: behavior/installing_a_fax_machine
+    scene_id: behavior
+    instruction: "installing a fax machine"
+    max_steps: 6115
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: installing_a_modem
+  task:
+    id: behavior/installing_a_modem
+    scene_id: behavior
+    instruction: "installing a modem"
+    max_steps: 3619
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: installing_a_scanner
+  task:
+    id: behavior/installing_a_scanner
+    scene_id: behavior
+    instruction: "installing a scanner"
+    max_steps: 6387
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: installing_smoke_detectors
+  task:
+    id: behavior/installing_smoke_detectors
+    scene_id: behavior
+    instruction: "installing smoke detectors"
+    max_steps: 3853
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: laying_tile_floors
+  task:
+    id: behavior/laying_tile_floors
+    scene_id: behavior
+    instruction: "laying tile floors"
+    max_steps: 21526
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: loading_the_car
+  task:
+    id: behavior/loading_the_car
+    scene_id: behavior
+    instruction: "loading the car"
+    max_steps: 28839
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: make_cabinet_doors
+  task:
+    id: behavior/make_cabinet_doors
+    scene_id: behavior
+    instruction: "make cabinet doors"
+    max_steps: 5163
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: make_gift_bags_for_baby_showers
+  task:
+    id: behavior/make_gift_bags_for_baby_showers
+    scene_id: behavior
+    instruction: "make gift bags for baby showers"
+    max_steps: 14476
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: make_microwave_popcorn
+  task:
+    id: behavior/make_microwave_popcorn
+    scene_id: behavior
+    instruction: "make microwave popcorn"
+    max_steps: 4856
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: make_pizza
+  task:
+    id: behavior/make_pizza
+    scene_id: behavior
+    instruction: "make pizza"
+    max_steps: 28780
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: make_rose_centerpieces
+  task:
+    id: behavior/make_rose_centerpieces
+    scene_id: behavior
+    instruction: "make rose centerpieces"
+    max_steps: 6798
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: moving_boxes_to_storage
+  task:
+    id: behavior/moving_boxes_to_storage
+    scene_id: behavior
+    instruction: "moving boxes to storage"
+    max_steps: 21894
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: organizing_art_supplies
+  task:
+    id: behavior/organizing_art_supplies
+    scene_id: behavior
+    instruction: "organizing art supplies"
+    max_steps: 9291
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: organizing_school_stuff
+  task:
+    id: behavior/organizing_school_stuff
+    scene_id: behavior
+    instruction: "organizing school stuff"
+    max_steps: 21887
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: outfit_a_basic_toolbox
+  task:
+    id: behavior/outfit_a_basic_toolbox
+    scene_id: behavior
+    instruction: "outfit a basic toolbox"
+    max_steps: 15956
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: packing_meal_for_delivery
+  task:
+    id: behavior/packing_meal_for_delivery
+    scene_id: behavior
+    instruction: "packing meal for delivery"
+    max_steps: 13289
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: picking_up_toys
+  task:
+    id: behavior/picking_up_toys
+    scene_id: behavior
+    instruction: "picking up toys"
+    max_steps: 28335
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: picking_up_trash
+  task:
+    id: behavior/picking_up_trash
+    scene_id: behavior
+    instruction: "picking up trash"
+    max_steps: 7901
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: polishing_shoes
+  task:
+    id: behavior/polishing_shoes
+    scene_id: behavior
+    instruction: "polishing shoes"
+    max_steps: 16106
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: preparing_lunch_box
+  task:
+    id: behavior/preparing_lunch_box
+    scene_id: behavior
+    instruction: "preparing lunch box"
+    max_steps: 12367
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: put_together_a_basic_pruning_kit
+  task:
+    id: behavior/put_together_a_basic_pruning_kit
+    scene_id: behavior
+    instruction: "put together a basic pruning kit"
+    max_steps: 16896
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_away_Halloween_decorations
+  task:
+    id: behavior/putting_away_Halloween_decorations
+    scene_id: behavior
+    instruction: "putting away Halloween decorations"
+    max_steps: 20682
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_away_toys
+  task:
+    id: behavior/putting_away_toys
+    scene_id: behavior
+    instruction: "putting away toys"
+    max_steps: 16945
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_dirty_dishes_in_sink
+  task:
+    id: behavior/putting_dirty_dishes_in_sink
+    scene_id: behavior
+    instruction: "putting dirty dishes in sink"
+    max_steps: 18222
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_dishes_away_after_cleaning
+  task:
+    id: behavior/putting_dishes_away_after_cleaning
+    scene_id: behavior
+    instruction: "putting dishes away after cleaning"
+    max_steps: 16430
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_shoes_on_rack
+  task:
+    id: behavior/putting_shoes_on_rack
+    scene_id: behavior
+    instruction: "putting shoes on rack"
+    max_steps: 11589
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: putting_up_Christmas_decorations_inside
+  task:
+    id: behavior/putting_up_Christmas_decorations_inside
+    scene_id: behavior
+    instruction: "putting up Christmas decorations inside"
+    max_steps: 20578
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: re_shelving_library_books
+  task:
+    id: behavior/re_shelving_library_books
+    scene_id: behavior
+    instruction: "re shelving library books"
+    max_steps: 14292
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: rearrange_your_room
+  task:
+    id: behavior/rearrange_your_room
+    scene_id: behavior
+    instruction: "rearrange your room"
+    max_steps: 19282
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: rearranging_kitchen_furniture
+  task:
+    id: behavior/rearranging_kitchen_furniture
+    scene_id: behavior
+    instruction: "rearranging kitchen furniture"
+    max_steps: 13414
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: scrubbing_bathroom_floor
+  task:
+    id: behavior/scrubbing_bathroom_floor
+    scene_id: behavior
+    instruction: "scrubbing bathroom floor"
+    max_steps: 4730
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: set_up_a_coffee_station_in_your_kitchen
+  task:
+    id: behavior/set_up_a_coffee_station_in_your_kitchen
+    scene_id: behavior
+    instruction: "set up a coffee station in your kitchen"
+    max_steps: 9399
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: setting_mousetraps
+  task:
+    id: behavior/setting_mousetraps
+    scene_id: behavior
+    instruction: "setting mousetraps"
+    max_steps: 15294
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: setting_the_fire
+  task:
+    id: behavior/setting_the_fire
+    scene_id: behavior
+    instruction: "setting the fire"
+    max_steps: 13677
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: setting_the_table
+  task:
+    id: behavior/setting_the_table
+    scene_id: behavior
+    instruction: "setting the table"
+    max_steps: 26712
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: setup_a_bar_for_a_cocktail_party
+  task:
+    id: behavior/setup_a_bar_for_a_cocktail_party
+    scene_id: behavior
+    instruction: "setup a bar for a cocktail party"
+    max_steps: 20128
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: slicing_vegetables
+  task:
+    id: behavior/slicing_vegetables
+    scene_id: behavior
+    instruction: "slicing vegetables"
+    max_steps: 22267
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: sorting_books_on_shelf
+  task:
+    id: behavior/sorting_books_on_shelf
+    scene_id: behavior
+    instruction: "sorting books on shelf"
+    max_steps: 11609
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: sorting_bottles_cans_and_paper
+  task:
+    id: behavior/sorting_bottles_cans_and_paper
+    scene_id: behavior
+    instruction: "sorting bottles cans and paper"
+    max_steps: 15395
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: sorting_household_items
+  task:
+    id: behavior/sorting_household_items
+    scene_id: behavior
+    instruction: "sorting household items"
+    max_steps: 23711
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: sorting_vegetables
+  task:
+    id: behavior/sorting_vegetables
+    scene_id: behavior
+    instruction: "sorting vegetables"
+    max_steps: 17855
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: spraying_for_bugs
+  task:
+    id: behavior/spraying_for_bugs
+    scene_id: behavior
+    instruction: "spraying for bugs"
+    max_steps: 9719
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: spraying_fruit_trees
+  task:
+    id: behavior/spraying_fruit_trees
+    scene_id: behavior
+    instruction: "spraying fruit trees"
+    max_steps: 12518
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: stacking_wood
+  task:
+    id: behavior/stacking_wood
+    scene_id: behavior
+    instruction: "stacking wood"
+    max_steps: 23909
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: store_batteries
+  task:
+    id: behavior/store_batteries
+    scene_id: behavior
+    instruction: "store batteries"
+    max_steps: 11556
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: store_honey
+  task:
+    id: behavior/store_honey
+    scene_id: behavior
+    instruction: "store honey"
+    max_steps: 10150
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: store_produce
+  task:
+    id: behavior/store_produce
+    scene_id: behavior
+    instruction: "store produce"
+    max_steps: 14283
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: storing_food
+  task:
+    id: behavior/storing_food
+    scene_id: behavior
+    instruction: "storing food"
+    max_steps: 29803
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: sweeping_garage
+  task:
+    id: behavior/sweeping_garage
+    scene_id: behavior
+    instruction: "sweeping garage"
+    max_steps: 6709
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: thawing_frozen_food
+  task:
+    id: behavior/thawing_frozen_food
+    scene_id: behavior
+    instruction: "thawing frozen food"
+    max_steps: 12344
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: tidying_bathroom
+  task:
+    id: behavior/tidying_bathroom
+    scene_id: behavior
+    instruction: "tidying bathroom"
+    max_steps: 19504
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: tidying_bedroom
+  task:
+    id: behavior/tidying_bedroom
+    scene_id: behavior
+    instruction: "tidying bedroom"
+    max_steps: 16556
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: tidying_living_room
+  task:
+    id: behavior/tidying_living_room
+    scene_id: behavior
+    instruction: "tidying living room"
+    max_steps: 18848
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: turning_out_all_lights_before_sleep
+  task:
+    id: behavior/turning_out_all_lights_before_sleep
+    scene_id: behavior
+    instruction: "turning out all lights before sleep"
+    max_steps: 15009
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: unloading_the_car
+  task:
+    id: behavior/unloading_the_car
+    scene_id: behavior
+    instruction: "unloading the car"
+    max_steps: 16985
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: vacuuming_floors
+  task:
+    id: behavior/vacuuming_floors
+    scene_id: behavior
+    instruction: "vacuuming floors"
+    max_steps: 3617
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: wash_a_baseball_cap
+  task:
+    id: behavior/wash_a_baseball_cap
+    scene_id: behavior
+    instruction: "wash a baseball cap"
+    max_steps: 12524
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta
+- scene:
+    <<: *scene
+    backend_options:
+      <<: *opts
+      task: wash_dog_toys
+  task:
+    id: behavior/wash_dog_toys
+    scene_id: behavior
+    instruction: "wash dog toys"
+    max_steps: 16834
+    success_key: is_success
+  robot_id: r1pro
+  n_episodes: 1
+  seed: 0
+  metadata: *meta

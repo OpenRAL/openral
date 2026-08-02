@@ -1,0 +1,281 @@
+# Simulated Galaxea R1 Pro used by the 2026 BEHAVIOR-1K challenge.
+# Joint limits come from behavior-1k/omnigibson-robot-assets r1pro.urdf.
+
+name: "r1pro"
+embodiment_kind: "mobile_manipulator"
+base_frame: "base_link"
+odom_frame: "odom"
+
+joints:
+  - name: "torso_joint1"
+    joint_type: "revolute"
+    parent_link: "base_link"
+    child_link: "torso_link1"
+    position_limits: [-1.1345, 1.8326]
+    velocity_limit: 2.5
+    effort_limit: 100.0
+    actuator_kind: "bldc"
+  - name: "torso_joint2"
+    joint_type: "revolute"
+    parent_link: "torso_link1"
+    child_link: "torso_link2"
+    position_limits: [-2.7925, 2.5307]
+    velocity_limit: 2.5
+    effort_limit: 100.0
+    actuator_kind: "bldc"
+  - name: "torso_joint3"
+    joint_type: "revolute"
+    parent_link: "torso_link2"
+    child_link: "torso_link3"
+    position_limits: [-1.8326, 1.5708]
+    velocity_limit: 2.5
+    effort_limit: 100.0
+    actuator_kind: "bldc"
+  - name: "torso_joint4"
+    joint_type: "revolute"
+    parent_link: "torso_link3"
+    child_link: "torso_link4"
+    position_limits: [-3.0543, 3.0543]
+    velocity_limit: 2.5
+    effort_limit: 100.0
+    actuator_kind: "bldc"
+
+  - name: "left_arm_joint1"
+    joint_type: "revolute"
+    parent_link: "left_arm_base_link"
+    child_link: "left_arm_link1"
+    position_limits: [-4.4506, 1.3090]
+    velocity_limit: 7.1209
+    effort_limit: 55.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint2"
+    joint_type: "revolute"
+    parent_link: "left_arm_link1"
+    child_link: "left_arm_link2"
+    position_limits: [-0.1745, 3.1416]
+    velocity_limit: 7.1209
+    effort_limit: 55.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint3"
+    joint_type: "revolute"
+    parent_link: "left_arm_link2"
+    child_link: "left_arm_link3"
+    position_limits: [-2.356196, 2.356196]
+    velocity_limit: 8.3776
+    effort_limit: 25.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint4"
+    joint_type: "revolute"
+    parent_link: "left_arm_link3"
+    child_link: "left_arm_link4"
+    position_limits: [-2.0944, 0.3491]
+    velocity_limit: 8.3776
+    effort_limit: 25.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint5"
+    joint_type: "revolute"
+    parent_link: "left_arm_link4"
+    child_link: "left_arm_link5"
+    position_limits: [-2.356196, 2.356196]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint6"
+    joint_type: "revolute"
+    parent_link: "left_arm_link5"
+    child_link: "left_arm_link6"
+    position_limits: [-1.047198, 1.047198]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "left_arm_joint7"
+    joint_type: "revolute"
+    parent_link: "left_arm_link6"
+    child_link: "left_arm_link7"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "left_gripper_finger_joint1"
+    joint_type: "prismatic"
+    parent_link: "left_gripper_link"
+    child_link: "left_gripper_finger_link1"
+    position_limits: [0.0, 0.05]
+    velocity_limit: 0.25
+    effort_limit: 100.0
+    actuator_kind: "servo"
+    role: "gripper"
+  - name: "left_gripper_finger_joint2"
+    joint_type: "prismatic"
+    parent_link: "left_gripper_link"
+    child_link: "left_gripper_finger_link2"
+    position_limits: [0.0, 0.05]
+    velocity_limit: 0.25
+    effort_limit: 100.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+  - name: "right_arm_joint1"
+    joint_type: "revolute"
+    parent_link: "right_arm_base_link"
+    child_link: "right_arm_link1"
+    position_limits: [-4.4506, 1.3090]
+    velocity_limit: 7.1209
+    effort_limit: 55.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint2"
+    joint_type: "revolute"
+    parent_link: "right_arm_link1"
+    child_link: "right_arm_link2"
+    position_limits: [-3.1416, 0.1745]
+    velocity_limit: 7.1209
+    effort_limit: 55.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint3"
+    joint_type: "revolute"
+    parent_link: "right_arm_link2"
+    child_link: "right_arm_link3"
+    position_limits: [-2.356196, 2.356196]
+    velocity_limit: 8.3776
+    effort_limit: 25.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint4"
+    joint_type: "revolute"
+    parent_link: "right_arm_link3"
+    child_link: "right_arm_link4"
+    position_limits: [-2.0944, 0.3491]
+    velocity_limit: 8.3776
+    effort_limit: 25.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint5"
+    joint_type: "revolute"
+    parent_link: "right_arm_link4"
+    child_link: "right_arm_link5"
+    position_limits: [-2.356196, 2.356196]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint6"
+    joint_type: "revolute"
+    parent_link: "right_arm_link5"
+    child_link: "right_arm_link6"
+    position_limits: [-1.047198, 1.047198]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "right_arm_joint7"
+    joint_type: "revolute"
+    parent_link: "right_arm_link6"
+    child_link: "right_arm_link7"
+    position_limits: [-1.5708, 1.5708]
+    velocity_limit: 10.472
+    effort_limit: 18.0
+    actuator_kind: "bldc"
+  - name: "right_gripper_finger_joint1"
+    joint_type: "prismatic"
+    parent_link: "right_gripper_link"
+    child_link: "right_gripper_finger_link1"
+    position_limits: [0.0, 0.05]
+    velocity_limit: 0.25
+    effort_limit: 100.0
+    actuator_kind: "servo"
+    role: "gripper"
+  - name: "right_gripper_finger_joint2"
+    joint_type: "prismatic"
+    parent_link: "right_gripper_link"
+    child_link: "right_gripper_finger_link2"
+    position_limits: [0.0, 0.05]
+    velocity_limit: 0.25
+    effort_limit: 100.0
+    actuator_kind: "servo"
+    role: "gripper"
+
+end_effectors:
+  - name: "left_gripper"
+    kind: "parallel_gripper"
+    parent_link: "left_gripper_link"
+    actuated: true
+  - name: "right_gripper"
+    kind: "parallel_gripper"
+    parent_link: "right_gripper_link"
+    actuated: true
+
+capabilities:
+  locomotion: ["wheeled"]
+  can_lift_kg: 3.5
+  has_dexterous_hands: false
+  has_tactile: false
+  has_force_control: true
+  has_vision: true
+  has_lidar: false
+  bimanual: true
+  supported_control_modes:
+    - "body_twist"
+    - "joint_position"
+    - "gripper_position"
+  embodiment_tags:
+    - "r1pro"
+    - "mobile_base"
+
+safety:
+  max_ee_speed_m_s: 0.5
+  max_joint_speed_factor: 0.5
+  max_force_n: 50.0
+  max_torque_nm: 10.0
+  deadman_required: true
+  max_base_linear_speed_m_s: 0.7
+  max_base_angular_speed_rad_s: 0.3
+
+sensors:
+  - name: "head"
+    modality: "rgb"
+    frame_id: "zed_link"
+    rate_hz: 30.0
+    intrinsics:
+      width: 720
+      height: 720
+      fx: 306.0
+      fy: 306.0
+      cx: 360.0
+      cy: 360.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.head"
+    vendor: "sim"
+    model: "zed"
+  - name: "left_wrist"
+    modality: "rgb"
+    frame_id: "left_realsense_link"
+    rate_hz: 30.0
+    intrinsics:
+      width: 480
+      height: 480
+      fx: 388.6639
+      fy: 388.6639
+      cx: 240.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.left_wrist"
+    vendor: "sim"
+    model: "realsense"
+  - name: "right_wrist"
+    modality: "rgb"
+    frame_id: "right_realsense_link"
+    rate_hz: 30.0
+    intrinsics:
+      width: 480
+      height: 480
+      fx: 388.6639
+      fy: 388.6639
+      cx: 240.0
+      cy: 240.0
+    encoding: "rgb8"
+    vla_feature_key: "observation.images.right_wrist"
+    vendor: "sim"
+    model: "realsense"
+
+sdk_kind: "open"
+hal:
+  sim: null
+  real: null
+schema_version: "0.1"
+

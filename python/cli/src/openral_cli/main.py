@@ -14,6 +14,7 @@ Sub-commands
 doctor              Diagnose the host environment (Python, OS, ROS 2, GPU, USB).
 detect              Probe hardware and write a full RobotDescription robot.yaml.
 connect             Open a HAL connection to a robot and verify it responds.
+behavior serve      Serve an rSkill to the official BEHAVIOR evaluator.
 calibrate camera    Calibrate a camera sensor using ros2 camera_calibration.
 install             Install opt-in dependency groups (sim, ros, libero, …).
 rskill search       Find installable rSkills on the OpenRAL HF Hub org.
@@ -368,6 +369,7 @@ def _run_repl() -> None:
 
 _RUN_MODE_BY_SUBCOMMAND: dict[str, str] = {
     "sim": semconv.RUN_MODE_SIM,
+    "behavior": semconv.RUN_MODE_SIM,
     "benchmark": semconv.RUN_MODE_BENCHMARK,
     "deploy": semconv.RUN_MODE_HARDWARE,
     "connect": semconv.RUN_MODE_HARDWARE,
@@ -2924,6 +2926,24 @@ def benchmark_run(
             "Disable for read-only paper-number runs."
         ),
     ),
+    video: bool = typer.Option(
+        True,
+        "--video/--no-video",
+        help=(
+            "Record per-step world frames and write one MP4 per episode "
+            "(named <task>[_seed<n>]_<rskill>_<success|fail>.mp4 plus a "
+            "videos.json manifest). On by default; frames are written and "
+            "freed per episode. Disable for allocation-light CI runs."
+        ),
+    ),
+    video_dir: Path | None = typer.Option(
+        None,
+        "--video-dir",
+        help=(
+            "Destination directory for --video MP4s. Defaults to "
+            "<eval JSON dir>/videos/<suite_id> next to the RSkillEvalResult."
+        ),
+    ),
     dashboard: bool = typer.Option(
         False,
         "--dashboard",
@@ -3001,6 +3021,11 @@ def benchmark_run(
 
     out_path = out if out is not None else _default_benchmark_out_path(vla_spec, suite_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    effective_video_dir: Path | None = None
+    if video:
+        effective_video_dir = (
+            video_dir if video_dir is not None else (out_path.parent / "videos" / suite_id)
+        )
 
     from openral_observability.dashboard import attached_dashboard
     from openral_sim.benchmark import run_benchmark
@@ -3014,7 +3039,10 @@ def benchmark_run(
             vla=vla_spec,
             device=device,
             save_dir=str(save_dir) if save_dir is not None else None,
+            video_dir=str(effective_video_dir) if effective_video_dir is not None else None,
         )
+    if effective_video_dir is not None:
+        console.print(f"[cyan]videos[/cyan] {effective_video_dir}")
 
     out_path.write_text(result.model_dump_json(indent=2))
     avg = result.results.get("avg_success_rate", 0.0)
@@ -3573,6 +3601,79 @@ def _summarize_results(results: dict[str, object]) -> str:
 # `openral_sim.policies/backends`, which `_run()` imports lazily.
 # `tests/unit/test_cli_eval.py::test_bh_cli_import_is_light` guards this.
 app.add_typer(sim_app, name="sim")
+
+# `openral behavior serve` — expose an rSkill through the official BEHAVIOR
+# Challenge WebSocket policy protocol. OmniGibson remains in its own conda
+# environment and owns task loading, metrics, and video recording.
+behavior_app = typer.Typer(
+    name="behavior",
+    help="BEHAVIOR Challenge integration — serve OpenRAL rSkills to OmniGibson.",
+    no_args_is_help=True,
+)
+app.add_typer(behavior_app, name="behavior")
+
+
+@behavior_app.command("serve")
+def behavior_serve(
+    rskill: str = typer.Option(
+        ...,
+        "--rskill",
+        help="rSkill reference: local name/path or Hugging Face repo id.",
+    ),
+    task: str = typer.Option(
+        ...,
+        "--task",
+        help="BEHAVIOR task name, e.g. turning_on_radio.",
+    ),
+    instruction: str | None = typer.Option(
+        None,
+        "--instruction",
+        help="Policy language instruction. Defaults to the task name with underscores replaced.",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="WebSocket bind address.",
+    ),
+    port: int = typer.Option(
+        8000,
+        "--port",
+        min=1,
+        max=65535,
+        help="WebSocket port used by omnigibson.eval.eval.",
+    ),
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        help="Policy device override, e.g. auto, cuda:0, or cpu.",
+    ),
+    state_dim: int = typer.Option(
+        61,
+        "--state-dim",
+        min=1,
+        help="Expected R1Pro proprioception width.",
+    ),
+    action_dim: int = typer.Option(
+        23,
+        "--action-dim",
+        min=1,
+        help="Expected R1Pro action width.",
+    ),
+) -> None:
+    """Serve one OpenRAL rSkill to BEHAVIOR's official evaluator."""
+    from openral_cli.behavior import _serve_behavior_policy
+
+    vla_spec = _parse_rskill_cli_arg(rskill).model_copy(update={"device": device})
+    _serve_behavior_policy(
+        vla_spec,
+        task=task,
+        instruction=instruction or task.replace("_", " "),
+        host=host,
+        port=port,
+        state_dim=state_dim,
+        action_dim=action_dim,
+    )
+
 
 # `openral install <group>` — post-install escape hatch for the
 # Tier-0 curl-bash installer (`scripts/install.sh`). The base install puts

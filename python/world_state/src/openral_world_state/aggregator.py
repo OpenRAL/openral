@@ -102,6 +102,13 @@ DEFAULT_RATE_HZ: float = 30.0
 # flagging a genuinely dead component. This is a freshness indicator, not a
 # safety gate (the C++ kernel owns enforcement).
 DEFAULT_STALENESS_S: float = 0.5
+# policy_state is step-locked, not rate-locked: the HAL publishes it once per
+# env.step capture (never a latched republish, so the wedged-sim case IS
+# observable), and a heavy sidecar sim (BEHAVIOR-1K on the 8 GB reference
+# host) legitimately steps at ~1 s wall per step. 5 s covers the slowest
+# normal stepping with margin while still flagging a wedged sidecar in
+# seconds rather than its 120 s ZMQ timeout.
+DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0
 
 
 class WorldStateAggregator:
@@ -119,6 +126,10 @@ class WorldStateAggregator:
         staleness_limit_s: Maximum age (seconds) for a component reading
             before it is classified as ``"stale"``.  Default ``0.1 s``
             (3 frames at 30 Hz).
+        policy_state_staleness_limit_s: Separate window for the step-locked
+            ``policy_state`` component, published once per simulator step
+            rather than at a fixed rate. Default ``5.0 s`` — see
+            :data:`DEFAULT_POLICY_STATE_STALENESS_S`.
         clock_fn: Callable returning the current time in nanoseconds.
             Defaults to ``time.time_ns``.  Override in tests to control time.
 
@@ -162,11 +173,13 @@ class WorldStateAggregator:
         description: RobotDescription,
         *,
         staleness_limit_s: float = DEFAULT_STALENESS_S,
+        policy_state_staleness_limit_s: float = DEFAULT_POLICY_STATE_STALENESS_S,
         clock_fn: Callable[[], int] | None = None,
     ) -> None:
         """Initialise the aggregator; does not open any connection."""
         self.description = description
         self._staleness_limit_ns: int = int(staleness_limit_s * 1e9)
+        self._policy_state_staleness_limit_ns: int = int(policy_state_staleness_limit_s * 1e9)
         self._clock_fn: Callable[[], int] = clock_fn or time.time_ns
         self._lock = threading.RLock()
 
@@ -188,6 +201,8 @@ class WorldStateAggregator:
         self._base_pose: Pose6D | None = None
         self._base_pose_stamp_ns: int = 0
         self._base_twist: tuple[float, float, float, float, float, float] | None = None
+        self._policy_state: list[float] | None = None
+        self._policy_state_stamp_ns: int = 0
         # battery
         self._battery_pct: float | None = None
         # latest object-memory snapshot (already deduped/evicted by
@@ -254,6 +269,17 @@ class WorldStateAggregator:
         with self._lock:
             self._images[sensor_name] = (topic, self._clock_fn())
         log.debug("world_state.image.updated", sensor=sensor_name)
+
+    def update_policy_state(self, values: list[float]) -> None:
+        """Record the simulator-native policy proprioception vector."""
+        with self._lock:
+            self._policy_state = [float(value) for value in values]
+            self._policy_state_stamp_ns = self._clock_fn()
+        log.debug(
+            "world_state.policy_state.updated",
+            robot=self.description.name,
+            dim=len(values),
+        )
 
     def update_image_frame(self, sensor_name: str, frame: SensorFrame) -> None:
         """Record an inline pixel payload for a named sensor.
@@ -431,6 +457,13 @@ class WorldStateAggregator:
                 diag["joint_state"] = "ok" if age_ns <= self._staleness_limit_ns else "stale"
                 ages_ms["joint_state"] = age_ns / 1e6
 
+            if self._policy_state is not None:
+                policy_age_ns = now_ns - self._policy_state_stamp_ns
+                diag["policy_state"] = (
+                    "ok" if policy_age_ns <= self._policy_state_staleness_limit_ns else "stale"
+                )
+                ages_ms["policy_state"] = policy_age_ns / 1e6
+
             # Images — topic refs from last received frames
             images: dict[str, str] = {}
             for sensor_name in self._sensor_names:
@@ -490,6 +523,7 @@ class WorldStateAggregator:
                 joint_state=js,
                 base_pose=self._base_pose,
                 base_twist=self._base_twist,
+                policy_state=list(self._policy_state) if self._policy_state is not None else None,
                 ee_poses=ee_poses,
                 images=images,
                 image_frames=image_frames,

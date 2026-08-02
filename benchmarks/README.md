@@ -59,6 +59,7 @@ for the pattern.
 | `gr1_tabletop.yaml`                | gr1            | robocasa/gr1/PnPCupToDrawerClose (MuJoCo via robosuite + GR1 fork)       |  1 | 10 | `is_success` | 720 |  10 |
 | `robotwin.yaml`                    | aloha_agilex   | robotwin (SAPIEN via lerobot, py3.10 sidecar)                           |  5 | 100 | `is_success` | 300 | 500 |
 | `rlbench.yaml`                     | franka_panda   | RLBench PerAct subset: open_drawer / meat_off_grill / close_jar (CoppeliaSim/PyRep, py3.10 sidecar) |  3 | 25 | `is_success` | 25 |  75 |
+| `behavior.yaml`                    | r1pro          | BEHAVIOR-1K 2026 challenge, all 100 public tasks (OmniGibson / Isaac Sim, sidecar) | 100 |  1 | `is_success` | 3224–39090 | 100 |
 
 Per-suite `max_steps` mirrors the upstream `lerobot.envs.libero.TASK_SUITE_MAX_STEPS`
 table for the LIBERO suites and the ACT / Diffusion Policy paper protocols for
@@ -101,6 +102,24 @@ needs `uv sync --group rlbench` (pyzmq + msgpack). The scene factory raises a
 typed `ROSConfigError` with the full provisioning recipe when the sidecar venv /
 `COPPELIASIM_ROOT` are absent. Verified live on an 8 GB Ada GPU host
 (open_drawer 4/4, meat_off_grill 3/3, close_jar solved).
+
+`behavior.yaml` carries **all 100 public tasks of the BEHAVIOR-1K 2026
+challenge** on **OmniGibson / Isaac Sim** (BEHAVIOR-1K defines 1,000
+activities; the challenge evaluator exposes this 100-task subset). The
+official environment lives in its own venv (never vendored) and the scene
+runs out-of-process through `tools/behavior_scene_sidecar.py`; the organizer
+GR00T N1.7 baseline policy (`rskills/gr00t-n17-b1k-turning-on-radio`) runs
+in a second sidecar (`tools/behavior_groot_sidecar.py`, whole-model NF4 to
+co-reside with the simulator on 8 GB). The openral side needs
+`just sync --group behavior-groot`. Like `maniskill3_panda`, `--rskill`
+auto-filters the suite to a policy's `evaluated_tasks` — the only released
+organizer checkpoint covers `turning_on_radio`, so today's runs execute that
+single task; the suite stays runnable as multi-task BEHAVIOR policies land.
+Per-task `max_steps` is the official cap (`int(1.5 x mean human-demo
+length)`) read from the installed challenge stats. One instance, one episode
+per task: closed-loop protocol at ~1 step/s makes an episode ~1–2 h
+wall-clock; the official leaderboard metric is q_score partial credit
+averaged over all public instances, which this suite does not reproduce.
 
 ## Adding a new benchmark
 

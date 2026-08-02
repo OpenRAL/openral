@@ -52,6 +52,7 @@ class ProprioFrame:
             step (`SimAttachedHAL.sim_time_ns`), or ``None`` for a
             clock-less / wall-clock HAL. Captured here so the publisher
             thread can emit ``/clock`` without touching the simulator.
+        policy_state: Optional simulator-native checkpoint state vector.
     """
 
     state: JointState
@@ -59,6 +60,7 @@ class ProprioFrame:
     base_pose_6dof: Pose6Dof | None
     base_twist: tuple[float, ...]
     sim_time_ns: int | None = None
+    policy_state: tuple[float, ...] | None = None
 
 
 class ProprioSnapshot:

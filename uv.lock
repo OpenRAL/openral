@@ -2628,6 +2628,8 @@ name = "openral-cli"
 version = "0.1.0"
 source = { editable = "python/cli" }
 dependencies = [
+    { name = "fastapi" },
+    { name = "msgpack" },
     { name = "opencv-python-headless" },
     { name = "openral-core" },
     { name = "openral-detect" },
@@ -2638,10 +2640,13 @@ dependencies = [
     { name = "pyudev" },
     { name = "rich" },
     { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.110" },
+    { name = "msgpack", specifier = ">=1" },
     { name = "opencv-python-headless", specifier = ">=4.9,<5" },
     { name = "openral-core", editable = "python/core" },
     { name = "openral-detect", editable = "python/detect" },
@@ -2652,6 +2657,7 @@ requires-dist = [
     { name = "pyudev", specifier = ">=0.24.4" },
     { name = "rich", specifier = ">=13.7" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
 ]
 
 [[package]]
@@ -2996,6 +3002,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+behavior-groot = [
+    { name = "msgpack" },
+    { name = "pyzmq" },
+]
 clip = [
     { name = "open-clip-torch" },
 ]
@@ -3144,6 +3154,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+behavior-groot = [
+    { name = "msgpack", specifier = ">=1" },
+    { name = "pyzmq", specifier = ">=25" },
+]
 clip = [{ name = "open-clip-torch", specifier = ">=2.24" }]
 dataset = [{ name = "openral-dataset", extras = ["lerobot"], editable = "python/dataset" }]
 dev = [

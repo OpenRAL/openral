@@ -1142,6 +1142,34 @@ def _has_isaac_client() -> bool:
     return _has_module("zmq") and _has_module("msgpack")
 
 
+def _behavior_groot_client_plan() -> BackendInstallPlan:
+    uv = _uv()
+    return BackendInstallPlan(
+        backend_id="behavior_groot_client",
+        display_name="BEHAVIOR GR00T adapter wire (pyzmq + msgpack)",
+        license_note=(
+            "Pulls pyzmq (LGPL+ZeroMQ exception) and msgpack (Apache-2.0). "
+            "The official Isaac-GR00T behavior runtime and checkpoint remain in "
+            "an externally-provisioned Python 3.10 sidecar."
+        ),
+        probe=_has_isaac_client,
+        steps=(
+            InstallStep(
+                description="uv sync --group behavior-groot --inexact",
+                argv=[
+                    uv,
+                    "sync",
+                    "--all-packages",
+                    "--group",
+                    "behavior-groot",
+                    "--inexact",
+                ],
+            ),
+        ),
+        manual_hint="just sync --all-packages --group behavior-groot --inexact",
+    )
+
+
 def _isaac_client_plan() -> BackendInstallPlan:
     uv = _uv()
     return BackendInstallPlan(
@@ -1746,6 +1774,7 @@ _PLANS: dict[str, Callable[[], BackendInstallPlan]] = {
     "openarm_robosuite": _openarm_robosuite_plan,
     "rldx_client": _rldx_client_plan,
     "rldx_sidecar_setup": _rldx_sidecar_setup_plan,
+    "behavior_groot_client": _behavior_groot_client_plan,
     "isaac_client": _isaac_client_plan,
     "rlbench_client": _rlbench_client_plan,
     "robotwin_client": _robotwin_client_plan,
