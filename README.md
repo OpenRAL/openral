@@ -4,8 +4,9 @@
 
 # OpenRAL
 
-**An open-source operating layer for embodied AI**, OpenRAL unifies fast policies, slow reasoning, perception AI and classical control into one typed, traceable, safety-first runtime for deployable robot agents.
+**The open harness for physical AI.** OpenRAL is the open-source **Robot Agentic Layer** (harness) for embodied AI — it unifies fast policies, slow reasoning, reward signals, perception AI and classical control into one typed, traceable, safety-first runtime for deployable robot agents. One fixed harness, swappable **rSkills**.
 
+[![Website](https://img.shields.io/badge/openral.com-white?logo=googlechrome&logoColor=black)](https://openral.com)
 [![CI](https://img.shields.io/badge/CI%2FCD-passing-4CAF50?logo=github&logoColor=white)](https://github.com/OpenRAL/openral/actions)
 [![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
@@ -35,10 +36,10 @@
 
 ## What is OpenRAL?
 
-OpenRAL is a typed, layered runtime that sits between a robot's motor API and a task planner. It is four things in one:
+A VLA alone is not an agent — OpenRAL wraps it in the loop it needs. It is a typed, layered runtime that sits between a robot's motor API and a task planner, four things in one:
 
 - **Typed runtime** — eight well-defined layers (HAL → Sensors → World State → rSkill → Reasoning → WAM → Safety → Observability) with Pydantic v2 contracts at every boundary.
-- **rSkill packaging format** — Hugging Face Hub artifacts containing weights, a `rskill.yaml` manifest, quantization hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
+- **rSkill packaging format** — every capability the agent has is an rSkill, not just VLAs: detectors, scene VLMs, reward monitors, classical MoveIt 2 / Nav2 actions and reasoner playbooks. Each is a Hugging Face Hub artifact containing weights, a `rskill.yaml` manifest, quantization hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
 - **Planning kernel** — a slow, provider-agnostic LLM reasoner (S2) emitting typed `ReasonerToolCall` tool-calls (`ExecuteRskillTool`, `LifecycleTransition`, `EmitPrompt`, plus read-only `locate_in_view` / `query_scene` / `query_task_progress` / `recall_object` query tools), and a fast visuomotor policy (S1, 30–200 Hz) executing dispatched skills. Replanning is bounded and explicit. See the **[Reasoner reference](docs/reference/reasoner.md)**.
 - **Safety kernel** — a C++ separate process, deny-by-default. An allocation-free validator enforces joint position / velocity / torque limits, a global torque cap, Cartesian workspace and end-effector-speed limits, NaN/Inf rejection, and self / world / voxel-grid collision — backed by independent deadman and hardware-E-stop watchdog processes. Python proposes actions; C++ disposes them; `ROSSafetyViolation` is never silently caught. Formal certification is the remaining work.
 
@@ -46,7 +47,7 @@ We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** pla
 
 **Shipped today** (all workspace packages at `0.1.0`):
 - `openral_core` schemas + the `openral` CLI (bare `openral` drops into a REPL)
-- HAL adapters for [18 robot platforms](docs/reference/robots.md) — manipulators, mobile manipulators, bimanual arms, humanoids
+- HAL adapters for [15+ robot platforms](docs/reference/robots.md) — manipulators, mobile manipulators, bimanual arms, humanoids
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
 - `WorldStateAggregator` — 30 Hz tf2-aware snapshot with lifted object detections
 - [rSkill packages](docs/reference/rskills.md) spanning every kind — VLA policies (SmolVLA, π0.5, xVLA, MolmoAct2, ACT, Diffusion Policy, 3D Diffuser Actor, RLDX-1, OpenVLA-OFT, GR00T N1.7), open-vocabulary detectors (RT-DETR, OmDet-Turbo, LocateAnything), the Qwen3.5-4B scene VLM (`kind: vlm`), the Robometer-4B reward/progress monitor (`kind: reward`), MoveIt / Nav2 classical-control skills (`kind: ros_action`), and human-authored reasoner playbooks (`kind: playbook`)
@@ -218,7 +219,7 @@ flowchart TB
         RSKILL["<b>3 · rSkill</b><br/>VLA visuomotor policy<br/>SmolVLA · π0.5 · GR00T N1.7 · ACT · DP"]
     end
 
-    HAL["<b>0 · HAL</b> — 17 robot adapters<br/>SO-100 · Franka · UR5e · ALOHA · G1"]
+    HAL["<b>0 · HAL</b> — 15+ robot adapters<br/>SO-100 · Franka · UR5e · ALOHA · G1"]
     SENSORS["<b>1 · Sensors</b> — RGB-D · F/T · IMU → ROS 2 topics"]
     WORLD["<b>2 · World State</b> — tf2 snapshot @ 30 Hz<br/>+ lifted detected_objects"]
     SAFETY["<b>6 · Safety</b> — C++ kernel, deny-by-default<br/>E-stop on fault"]
@@ -305,7 +306,7 @@ Full toolchain: [docs/contributing/toolchain.md](docs/contributing/toolchain.md)
 
 ## Robot descriptions
 
-17 robot platforms are supported, from low-cost manipulators to mobile manipulators, bimanual arms and humanoids. Each is a typed `RobotDescription` manifest under `robots/<robot_id>/robot.yaml`.
+15+ robot platforms are supported, from low-cost manipulators to mobile manipulators, bimanual arms and humanoids. Each is a typed `RobotDescription` manifest under `robots/<robot_id>/robot.yaml`.
 
 → **Full table:** [docs/reference/robots.md](docs/reference/robots.md)
 
