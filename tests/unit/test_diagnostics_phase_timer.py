@@ -21,6 +21,7 @@ processor to capture events.
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -149,3 +150,25 @@ def test_exception_inside_block_still_emits_done(cap: _CaptureProcessor) -> None
     assert names == ["unit_phase_fail_start", "unit_phase_fail_done"]
     elapsed = cap.events[-1][1].get("elapsed_s")
     assert isinstance(elapsed, float)
+
+
+def test_switch_interval_raised_inside_and_restored(cap: _CaptureProcessor) -> None:
+    """The GIL switch interval is raised while the block runs and restored after.
+
+    Regression test for the SO-101 deploy cold-start starvation: load
+    phases share runtime_node with two 30 fps camera threads, and at the
+    default 5 ms switch interval the loading thread was starved to ~12%
+    of a core (a 6 s SmolVLA import stretched past 15 minutes).
+    """
+    before = sys.getswitchinterval()
+    with phase_timer("phase_gil", prefix="unit"):
+        assert sys.getswitchinterval() == pytest.approx(0.05)
+    assert sys.getswitchinterval() == pytest.approx(before)
+
+
+def test_switch_interval_restored_on_exception() -> None:
+    """A raising block must not leak the raised switch interval."""
+    before = sys.getswitchinterval()
+    with pytest.raises(RuntimeError, match="synthetic"), phase_timer("phase_gil2", prefix="unit"):
+        raise RuntimeError("synthetic")
+    assert sys.getswitchinterval() == pytest.approx(before)

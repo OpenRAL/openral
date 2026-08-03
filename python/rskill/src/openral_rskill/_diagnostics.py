@@ -32,6 +32,7 @@ Example:
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -142,9 +143,24 @@ def phase_timer(
 
     thread = threading.Thread(target=_tick, daemon=True, name=f"{prefix}_{name}_heartbeat")
     thread.start()
+    # GIL relief: load phases run inside the same process as the deploy
+    # graph's high-rate threads (two 30 fps opencv camera readers + the HAL's
+    # joint-state publisher in runtime_node). At the default 5 ms switch
+    # interval those threads preempt the loading thread constantly and the
+    # convoy effect starves it: measured live on an SO-101 deploy, the
+    # SmolVLA import phase got ~12% of one core and a 6 s import stretched
+    # past 15 minutes. Raising the interval to 50 ms for the phase lets the
+    # loader run in long slices while every peer thread still gets the GIL
+    # ~20x/s — cameras drop to a reduced rate for a few seconds and the HAL
+    # publisher stays far inside the safety kernel's 1 s staleness deadline.
+    # Load phases are rare, operator-initiated events; steady-state rates are
+    # untouched. Restored in the same finally that stops the heartbeat.
+    prev_switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.05)
     try:
         yield
     finally:
+        sys.setswitchinterval(prev_switch_interval)
         stop_event.set()
         thread.join(timeout=interval_s)
         logger.info(event_done, elapsed_s=round(time.monotonic() - start, 1), **fields)
