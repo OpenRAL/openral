@@ -457,7 +457,14 @@ def _check_ros2() -> list[CheckResult]:
 
     ros2_path = shutil.which("ros2")
     if not ros2_path:
-        results.append(CheckResult("ROS 2 binary", "missing", "not found"))
+        # `absent`, not `missing`: a Tier-0 install (the curl-bash installer)
+        # deliberately ships no ROS 2 — it takes no sudo and touches no apt.
+        # Reporting this as fatal made `curl … | bash && openral doctor` exit 1
+        # on a *correct* install, which breaks scripted/CI use of the documented
+        # quick-start. ROS 2 is an opt-in escalation, so point at it instead.
+        results.append(
+            CheckResult("ROS 2 binary", "absent", "not found — run: openral install ros")
+        )
         return results
     results.append(CheckResult("ROS 2 binary", "ok", ros2_path))
 
@@ -493,8 +500,12 @@ def _check_ros2() -> list[CheckResult]:
 
 
 def _check_colcon() -> CheckResult:
+    # `absent` when unavailable for the same reason as the ROS 2 binary above:
+    # colcon arrives with the ROS 2 bootstrap, which Tier-0 does not run.
     path = shutil.which("colcon")
-    return CheckResult("colcon", "ok" if path else "missing", path or "")
+    if path:
+        return CheckResult("colcon", "ok", path)
+    return CheckResult("colcon", "absent", "not found — run: openral install ros")
 
 
 def _check_gpu(result: GpuProbeResult, warnings: list[str]) -> list[CheckResult]:
