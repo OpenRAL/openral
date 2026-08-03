@@ -154,6 +154,74 @@ def test_predicted_chunk_actually_moves(rollout: tuple[_Chunk, _Chunk]) -> None:
     assert np.abs(predicted[-1] - predicted[0]).max() > 0.5
 
 
+def test_home_pose_matches_the_dataset(manifest: RSkillManifest) -> None:
+    """``starting_pose`` must stay the dataset's home, in the right units.
+
+    Re-derives the home pose from the training data (median over every
+    episode's first frame) and checks the manifest against it. Two things this
+    would have caught, and did:
+
+    * the **median** matters — ``wrist_flex`` has long-start outliers that pull
+      the mean 2.3 deg off the true home;
+    * the **gripper channel is normalised [0, 1], not radians** — using
+      ``math.radians`` on it commands a slightly open jaw instead of a closed
+      one (see the units note in rskill.yaml).
+    """
+    pytest.importorskip("datasets", reason="lerobot[dataset] extra not installed")
+    pytest.importorskip("pyarrow", reason="pyarrow not installed")
+    import glob
+    import math
+
+    import pyarrow.parquet as pq
+    from huggingface_hub import snapshot_download
+
+    assert manifest.dataset_uri is not None
+    try:
+        root = snapshot_download(
+            manifest.dataset_uri.removeprefix("hf://"),
+            repo_type="dataset",
+            allow_patterns=["data/**", "meta/**"],
+        )
+    except OSError as exc:
+        pytest.skip(f"cannot reach the Hub for the dataset: {exc}")
+
+    states, episodes, frames = [], [], []
+    for path in sorted(glob.glob(root + "/data/**/*.parquet", recursive=True)):
+        # reason: pyarrow ships inline types but leaves parquet.read_table untyped
+        table = pq.read_table(path)  # type: ignore[no-untyped-call]
+        states.append(np.stack([np.asarray(x) for x in table["observation.state"].to_pylist()]))
+        episodes.append(np.asarray(table["episode_index"]))
+        frames.append(np.asarray(table["frame_index"]))
+    state = np.concatenate(states)
+    episode = np.concatenate(episodes)
+    frame = np.concatenate(frames)
+
+    home = np.median(
+        np.stack([state[(episode == e) & (frame == 0)][0] for e in np.unique(episode)]), axis=0
+    )
+
+    robot_limits = [
+        (-1.9199, 1.9199),  # shoulder_pan
+        (-1.7453, 1.7453),  # shoulder_lift
+        (-1.7453, 1.5708),  # elbow_flex
+        (-1.6581, 1.6581),  # wrist_flex
+        (-2.7925, 2.7925),  # wrist_roll
+    ]
+    pose = manifest.starting_pose
+    assert pose is not None
+
+    for i, (low, high) in enumerate(robot_limits):
+        expected = min(max(math.radians(float(home[i])), low), high)
+        assert pose[i] == pytest.approx(expected, abs=1e-3), (
+            f"arm joint {i}: manifest {pose[i]} != dataset home {expected}"
+        )
+
+    # Gripper: normalised [0, 1], NOT radians. radians(1.95) == 0.034 would pass
+    # a naive range check, so assert against the actual /100 conversion.
+    assert pose[5] == pytest.approx(float(home[5]) / 100.0, abs=1e-3)
+    assert 0.0 <= pose[5] <= 1.0, "gripper channel must be normalised [0, 1]"
+
+
 def test_starting_pose_is_inside_the_robot_joint_limits(manifest: RSkillManifest) -> None:
     """``starting_pose`` is clamped to so101 limits — verify it stayed there.
 

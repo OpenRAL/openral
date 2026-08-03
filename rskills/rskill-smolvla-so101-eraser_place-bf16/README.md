@@ -140,15 +140,39 @@ boundary. The manifest declares `action_contract.joint_units: degrees`
 explicitly rather than relying on the stats-magnitude heuristic — a wrong guess
 here drives the arm into its joint limits.
 
-### Starting pose
+### Home pose
 
-`starting_pose` is derived from the training data, not from the SRDF: the mean
-first-frame state over all 25 episodes is
-`[-6.59, -102.70, +95.03, +59.02, +5.94, +2.08]` (degrees) with per-joint std
-≤ 7 — `shoulder_lift` has std 0.09, i.e. a hard mechanical home. Two channels
-are clamped to the SO-101 manifest limits (see below); both clamps are ≤ 5° and
-stay inside the observed spread, so the first VLA tick still sees an
-in-distribution pose.
+`starting_pose` is a real **home** pose recovered from the training data, not
+an SRDF default and not "wherever episode 0 began". The operator both starts
+and returns to it — per-joint medians over all 25 episodes' first frames and
+last frames agree to two decimals:
+
+| | `shoulder_pan` | `shoulder_lift` | `elbow_flex` | `wrist_flex` | `wrist_roll` | `gripper` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame median | −7.21 | −102.68 | 95.12 | 56.70 | 6.15 | 1.95 |
+| last-frame median | −7.21 | −102.68 | 94.59 | 56.70 | 6.15 | 1.95 |
+
+(lerobot units.) The **median** is used rather than the mean: `wrist_flex` has a
+few long-start outliers reaching 74.46 that drag the mean to 59.02, while the
+median sits at 56.70 — and the last-frame median independently agrees.
+`shoulder_lift` has std 0.09, i.e. a hard mechanical home stop.
+
+**Units are mixed**, per the OpenRAL joint-channel contract:
+
+- the five arm joints convert degrees → radians;
+- the **gripper channel is normalised `[0, 1]`, not an angle** —
+  `SO100FollowerHAL._obs_to_positions` divides the lerobot 0–100 reading by 100,
+  and `MujocoArmHAL`'s `AFFINE_LOW_HIGH` read mode documents the same `[0, 1]`
+  public surface. So lerobot 1.95 → `0.0195` (jaws essentially closed), **not**
+  `radians(1.95) = 0.034`, which would command a slightly open jaw.
+
+Two arm channels are clamped to the SO-101 manifest limits (see below); both
+clamps are ≤ 5° and stay inside the observed home spread, so the first VLA tick
+still sees an in-distribution pose.
+
+```yaml
+starting_pose: [-0.1258, -1.7453, 1.5708, 0.9897, 0.1074, 0.0195]
+```
 
 ### Known limitation — the training envelope overshoots the SO-101 limits
 
