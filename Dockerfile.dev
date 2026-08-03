@@ -42,7 +42,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-octomap-msgs \
     ros-${ROS_DISTRO}-octomap-server \
     ros-${ROS_DISTRO}-tf2-geometry-msgs \
+    # Foxglove dashboard — the four exec_depends of
+    # `packages/openral_foxglove_bringup` (bridge + the image_transport pair
+    # its camera panels subscribe through + joint_state_publisher for the
+    # URDF panel). The package builds without them and then dies at launch on
+    # a missing executable, so the dev shell could not bring up the dashboard
+    # it exists to debug. image-transport and joint-state-publisher happen to
+    # arrive transitively via moveit/nav2 today; all four are listed together
+    # because they are one package's declared contract, not four accidents.
+    ros-${ROS_DISTRO}-foxglove-bridge \
+    ros-${ROS_DISTRO}-image-transport \
+    ros-${ROS_DISTRO}-compressed-image-transport \
+    ros-${ROS_DISTRO}-joint-state-publisher \
+    # Cyclone is OpenRAL's default RMW (CLAUDE.md §2) and is NOT in
+    # `ros-base` — the base ships Fast DDS only, and nothing else in this
+    # apt list pulls Cyclone in. Fast DDS' SHM transport SIGSEGVs in rclpy
+    # once pydantic v2's Rust core has run in the same process, which is
+    # every OpenRAL node. `bootstrap_ubuntu.sh` and
+    # `docker/inference/Dockerfile.x86` both install it; the dev shell must
+    # match or it debugs a different transport than it deploys.
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
+
+# Cyclone is the default RMW (see the apt block above). Override at run time
+# with `-e RMW_IMPLEMENTATION=...`. Matches docker/inference/Dockerfile.x86.
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 # F9 (LTTng opt-in): the distro's ``python3-lttngust`` installs into
 # /usr/lib/python3/dist-packages — outside the uv venv. Surface it on

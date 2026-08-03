@@ -151,7 +151,8 @@ fmt:
 # backend; inference through pytorch/onnxruntime. The proprietary media
 # stack (GStreamer + NVMM + DeepStream + TensorRT) lives in OpenRAL Pro's
 # `docker/Dockerfile.pro`, which FROMs this image. This is the ONLY
-# supported open deployment surface. ENTRYPOINT is `/entrypoint.sh openral deploy`.
+# supported open deployment surface. ENTRYPOINT is `/entrypoint.sh openral`
+# (bare CLI — `docker run img doctor|detect|deploy run …` all work).
 docker-build-x86:
     docker buildx build -f docker/inference/Dockerfile.x86 \
         -t openral:x86 .
