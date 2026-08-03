@@ -46,6 +46,39 @@ except ImportError:
     pass
 
 
+def _prewarm_vla_imports() -> None:
+    """Import the shared VLA framework stack while no camera thread exists.
+
+    On a real deploy the lazy per-goal VLA import inside this process is
+    crushed by the camera reader threads: ``transformers``' import runs
+    ``importlib.metadata.packages_distributions()`` — a stat() per file of
+    every installed distribution — and every stat releases the GIL, which a
+    30 fps reader thread then snatches. Measured live on an SO-101 bench:
+    the identical import chain takes 23 s in a quiet process and 8+ minutes
+    (unfinished) once two camera readers are up; neither bytecode
+    precompilation nor a raised GIL switch interval rescues it, because the
+    convoy is on GIL *re-acquisition* after each syscall, not on compute
+    slices. So pay the 23 s exactly once here, single-threaded, before
+    ``open_deploy_sensor_readers`` spawns the first reader — the per-goal
+    import then hits ``sys.modules`` and completes in milliseconds.
+
+    Best-effort: hosts without the VLA stack (slim installs) skip cleanly;
+    the per-goal lazy import still raises its own typed error.
+    """
+    from openral_rskill._diagnostics import phase_timer
+
+    try:
+        with phase_timer("vla_framework", prefix="prewarm"):
+            import torch  # noqa: F401  # reason: prewarm only
+
+            # Pulls transformers (the packages_distributions stat storm) and
+            # every lerobot policy family module — the shared ~95% of any
+            # VLA adapter's import phase.
+            from lerobot.policies import factory  # noqa: F401  # reason: prewarm only
+    except ImportError:
+        pass
+
+
 def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstrap entry point — splitting obscures the launch contract
     try:
         import rclpy
@@ -211,6 +244,14 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         print(f"runtime_node: compose_runtime failed: {exc!s}", file=sys.stderr)
         rclpy.try_shutdown()
         return 3
+
+    # Real deploys: pre-warm the heavy VLA imports BEFORE the first camera
+    # reader thread exists (see _prewarm_vla_imports — the readers' GIL
+    # churn stretches the same import from 23 s to 8+ min). Emits
+    # prewarm_vla_framework_{start,heartbeat,done} so the operator sees the
+    # one-time bring-up cost.
+    if deploy_config:
+        _prewarm_vla_imports()
 
     # Real deploys: open the deploy config's camera readers and publish
     # them onto the WorldState image topics. Fail loudly — a real run
