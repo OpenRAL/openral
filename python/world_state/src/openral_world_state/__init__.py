@@ -101,4 +101,4 @@ __all__ = [
     "rotation_to_quat_wxyz",
     "scene_objects_payload",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

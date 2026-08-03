@@ -53,4 +53,4 @@ __all__ = [
     "realsense_d435_bundle",
     "realsense_d435i_bundle",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -1,6 +1,6 @@
 """openral auto-provisioning — `openral detect` machinery."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from openral_detect.assemble import assemble_robot_description, build_compute_spec
 from openral_detect.compatibility import (

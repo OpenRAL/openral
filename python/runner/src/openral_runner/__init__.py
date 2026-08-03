@@ -72,7 +72,7 @@ __all__ = [
     "precise_sleep",
     "sleep_until",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {

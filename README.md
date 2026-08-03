@@ -45,7 +45,7 @@ A VLA alone is not an agent — OpenRAL wraps it in the loop it needs. It is a t
 
 We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** planning), Nav2, NVIDIA Isaac ROS (**cuVSLAM + nvblox** vision SLAM), and `ros2_control` — we don't reinvent them.
 
-**Shipped today** (all workspace packages at `0.1.0`):
+**Shipped today** (all workspace packages at `0.2.0`):
 - `openral_core` schemas + the `openral` CLI (bare `openral` drops into a REPL)
 - HAL adapters for [15+ robot platforms](docs/reference/robots.md) — manipulators, mobile manipulators, bimanual arms, humanoids
 - [Sensor catalog](docs/reference/sensors_landscape.md) — RGB-D, F/T, and USB-UVC adapters
@@ -167,7 +167,7 @@ The `openral` CLI lives in `.venv/bin/openral`. Run via `uv run openral ...` or 
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ Python             │ ok      │ 3.12.9                         │
 │ Platform           │ info    │ Linux 6.14.0                   │
-│ openral-core       │ ok      │ 0.1.0                          │
+│ openral-core       │ ok      │ 0.2.0                          │
 │ ROS 2 binary       │ ok      │ /opt/ros/jazzy/bin/ros2        │
 │ ROS 2 distro       │ ok      │ jazzy                          │
 │ RMW                │ info    │ rmw_fastrtps_cpp (default)     │

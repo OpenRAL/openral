@@ -1,0 +1,34 @@
+name: changelog
+# Regenerates CHANGELOG.md from tags + merged PRs + closed issues
+# (github-changelog-generator) after every GitHub release, and commits it
+# straight to master. workflow_dispatch covers backfills / manual refreshes.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: master
+      - name: Generate CHANGELOG.md
+        uses: janheinrichmerker/action-github-changelog-generator@e60b5a2bd9fcd88dadf6345ff8327863fb8b490f  # v2.4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet && exit 0
+          git commit -s -m "docs(changelog): regenerate for ${TAG:-manual refresh}"
+          git push origin master
+        env:
+          TAG: ${{ github.event.release.tag_name }}

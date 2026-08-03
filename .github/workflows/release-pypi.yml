@@ -26,7 +26,8 @@ name: release-pypi
 #     the individual account, then dispatch target=pypi (or push a v*.*.* tag).
 #     Projects transfer into the OpenRAL org later with no re-publish.
 #
-# Every workspace package is pinned to 0.1.x — see CLAUDE.md.
+# Every workspace package shares one lockstep version — bump all pyprojects
+# (root + python/*) together for a release.
 
 on:
   workflow_dispatch:

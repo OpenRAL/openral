@@ -1,6 +1,6 @@
 [project]
 name = "openral-reasoner"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenRAL S2 reasoner — typed LLM client + Plan → BT XML emission"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
