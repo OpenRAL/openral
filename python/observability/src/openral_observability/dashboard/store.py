@@ -37,6 +37,8 @@ from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
 
+from openral_observability import semconv
+
 __all__ = ["TelemetryEvent", "TelemetryStore"]
 
 _EVENT_RING_SIZE = 200
@@ -53,6 +55,22 @@ _METRIC_SAMPLE_RING_SIZE = 600  # ~5 min at one sample per 500 ms
 _SUBSCRIBER_QUEUE_SIZE = 256
 # OTLP Status.code values per opentelemetry-proto: 0=UNSET, 1=OK, 2=ERROR.
 _STATUS_ERROR = 2
+
+# Spans emitted once per control tick (30 Hz on a real arm, and one
+# `sensors.read_latest` per camera on top). They land in the event log's
+# `debug` band rather than `info`: at 30 Hz they were ~99% of the rows, so the
+# Event Log's INFO view showed nothing but `hal.read_state` and every
+# meaningful lifecycle line scrolled past in well under a second. Operators
+# who want the per-tick stream flip the DEBUG filter on. They are still
+# indexed as full spans for `openral replay` — this only changes the
+# event-log band. Anything rarer than per-tick stays `info`.
+_PER_TICK_SPANS = frozenset(
+    {
+        semconv.SPAN_HAL_READ_STATE,
+        semconv.SPAN_HAL_SEND_ACTION,
+        semconv.SPAN_SENSORS_READ_LATEST,
+    }
+)
 
 # OTLP SeverityNumber bands (opentelemetry-proto logs/v1): four numbers per
 # level — TRACE 1-4, DEBUG 5-8, INFO 9-12, WARN 13-16, ERROR 17-20, FATAL
@@ -580,8 +598,15 @@ class TelemetryStore:
             self._index_span(span, trace_id_hex, ts_unix, attrs)
 
         # Always append a one-line event so the operator sees the
-        # most recent activity. Severity escalates on ERROR status.
-        severity = "error" if span.status.code == _STATUS_ERROR else "info"
+        # most recent activity. Severity escalates on ERROR status; per-tick
+        # spans land in the `debug` band so they stay filterable instead of
+        # burying everything else (see _PER_TICK_SPANS).
+        if span.status.code == _STATUS_ERROR:
+            severity = "error"
+        elif span.name in _PER_TICK_SPANS:
+            severity = "debug"
+        else:
+            severity = "info"
         title = _summarise_span(span.name, attrs, duration_ms)
         self._append_event(
             TelemetryEvent(

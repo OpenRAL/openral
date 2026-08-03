@@ -24,6 +24,8 @@ camera handling, and post-processor pipelines stay where they are.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from time import perf_counter_ns
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -895,3 +897,105 @@ __all__ = [
     "run_inference",
     "to_numpy_action",
 ]
+
+
+@contextmanager
+def suppress_hf_weight_init() -> Iterator[None]:
+    """Skip HF's random weight init while a checkpoint is being loaded.
+
+    ``transformers`` fills every parameter with its per-module init
+    distribution at construction time, then ``from_pretrained`` immediately
+    overwrites all of it with the stored tensors — the init is pure waste. HF
+    knows this and skips it internally, but only on its own
+    ``from_pretrained`` path. lerobot's SmolVLA builds the backbone by calling
+    the model class *directly*
+    (``SmolVLMForConditionalGeneration(config=...)`` in
+    ``smolvlm_with_expert.py``, taken whenever the checkpoint sets
+    ``load_vlm_weights=False`` — which every SmolVLA finetune does), so it pays
+    the full init. Worse, it then truncates the text stack to
+    ``num_vlm_layers`` and throws half those freshly-initialised layers away.
+
+    Measured on the SO-101 eraser-place checkpoint (SmolVLM2-500M backbone,
+    507 M params built, 16 of 32 layers kept):
+
+    ==========================================  ========
+    construction                                  wall
+    ==========================================  ========
+    baseline (allocate + init)                   8.45 s
+    with this context (allocate only)            2.38 s
+    meta device (allocate nothing)               0.03 s
+    ==========================================  ========
+
+    i.e. ~6 s of the ~15 s cold load is init math for values nothing reads.
+    (The remaining 2.4 s is allocation; reclaiming that needs a meta-device
+    build plus an assign-mode state-dict load — a deeper change into lerobot's
+    construction path, not attempted here.)
+
+    Safety: only sound when the checkpoint supplies **every** parameter —
+    otherwise a param that would have been randomly initialised is left as
+    whatever ``malloc`` returned. Callers must therefore validate the loaded
+    model; :func:`assert_all_parameters_finite` is the guard used by the
+    SmolVLA adapter.
+
+    Process-global for the duration (it patches the ``PreTrainedModel``
+    class), so it must not wrap a block that loads models on several threads
+    at once. The skill runner serialises loads behind its resident-skill lock,
+    which is the only in-process caller.
+
+    Yields:
+        Nothing; the caller's construction runs with init suppressed.
+
+    Example:
+        >>> from openral_rskill._vla_core import suppress_hf_weight_init
+        >>> with suppress_hf_weight_init():
+        ...     pass  # SmolVLAPolicy.from_pretrained(...) goes here
+    """
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except ImportError:  # transformers is an opt-in extra
+        yield
+        return
+
+    original = PreTrainedModel._init_weights  # reason: documented monkeypatch
+
+    def _skip(self: Any, module: Any) -> None:  # reason: matches HF signature
+        return
+
+    PreTrainedModel._init_weights = _skip  # type: ignore[method-assign]  # reason: restored in finally
+    try:
+        yield
+    finally:
+        PreTrainedModel._init_weights = original  # type: ignore[method-assign]  # reason: restore
+
+
+def assert_all_parameters_finite(
+    policy: Any, *, repo_id: str
+) -> None:  # reason: torch.nn.Module without importing torch here
+    """Raise if any parameter is NaN/Inf — the guard for suppressed init.
+
+    Uninitialised memory read as float is overwhelmingly NaN or a wild
+    magnitude, so this catches a checkpoint that failed to cover the graph
+    while :func:`suppress_hf_weight_init` was active. Without the check a
+    partially-loaded policy would silently emit garbage actions; the safety
+    kernel would clamp them, but the robot would still move wrongly.
+
+    Args:
+        policy: The loaded ``torch.nn.Module``.
+        repo_id: Checkpoint id, for the error message.
+
+    Raises:
+        ROSConfigError: If any floating-point parameter is non-finite.
+    """
+    import torch  # reason: torch is an opt-in extra
+
+    bad = [
+        name
+        for name, tensor in policy.named_parameters()
+        if tensor.is_floating_point() and not torch.isfinite(tensor).all()
+    ]
+    if bad:
+        raise ROSConfigError(
+            f"{repo_id!r}: {len(bad)} parameter tensor(s) are NaN/Inf after load "
+            f"(first: {bad[0]!r}). The checkpoint does not cover the whole graph, "
+            "so weight-init suppression left them uninitialised."
+        )

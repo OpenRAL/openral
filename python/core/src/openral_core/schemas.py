@@ -5206,6 +5206,19 @@ class RSkillManifest(BaseModel):
             scores tools primarily on this text; keep it specific to what
             the skill does (objects, scenes, task type), not how it was
             trained.
+        default_prompt: Optional. The task string this checkpoint was
+            trained on, VERBATIM. Single-task finetunes are conditioned on
+            one exact string (typos included) and degrade on a paraphrase,
+            but nothing in the graph carried it: ``ExecuteRskill.prompt``
+            was the only source, so an operator dispatching by hand had to
+            retype it out of the README and a near-miss silently produced a
+            worse policy. When the goal's ``prompt`` is empty the runner
+            falls back to this field. Leave unset for generalist
+            checkpoints that take arbitrary instructions — an empty goal
+            prompt on those is genuinely a caller error. Not a substitute
+            for :attr:`description`: that is prose for the LLM to *choose*
+            the skill, this is the literal conditioning string fed to the
+            policy.
         actions: REQUIRED. Closed-vocabulary list (≥1) of high-level
             action verbs this skill performs (see :class:`RSkillAction`).
             Generalist / foundation checkpoints declare ``[GENERALIST]``;
@@ -5312,6 +5325,9 @@ class RSkillManifest(BaseModel):
     dataset_uri: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)
     source_repo: str | None = Field(default=None, pattern=_HF_DATASET_URI_PATTERN)
     description: str = Field(min_length=1, max_length=500)
+    # The literal task string the checkpoint was conditioned on. Used only
+    # when an ExecuteRskill goal carries an empty `prompt`.
+    default_prompt: str | None = Field(default=None, min_length=1, max_length=500)
     # Per-skill action vocabulary surfaced to the reasoner LLM
     # tool palette so it can pick the right skill for a given goal.
     actions: list[RSkillAction] = Field(min_length=1)

@@ -549,7 +549,20 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
             )
 
             sanitize_smolvla_config(repo_id, revision=revision)
-            policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+            # Skip HF's random weight init: lerobot builds the SmolVLM2
+            # backbone by calling the model class directly (every SmolVLA
+            # finetune sets load_vlm_weights=False), so it initialises 507 M
+            # params, truncates half the text layers away, and then overwrites
+            # the rest from the checkpoint. ~6 s of the ~15 s cold load, for
+            # values nothing reads. Guarded below — see suppress_hf_weight_init.
+            from openral_rskill._vla_core import (
+                assert_all_parameters_finite,
+                suppress_hf_weight_init,
+            )
+
+            with suppress_hf_weight_init():
+                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+            assert_all_parameters_finite(policy, repo_id=repo_id)
         with _smolvla_phase("to_device", device=device):
             policy = policy.to(device)
     finally:

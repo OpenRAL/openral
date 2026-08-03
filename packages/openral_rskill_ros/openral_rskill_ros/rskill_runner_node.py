@@ -1831,6 +1831,20 @@ def _build_runtime_skill_from_manifest(
     )
 
     manifest = RSkillManifest.from_yaml(str(yaml_path))
+    # An empty goal prompt falls back to the checkpoint's own training string.
+    # Single-task finetunes are conditioned on one exact phrase (upstream typos
+    # included) and degrade on a paraphrase; before `default_prompt` existed the
+    # only source was `ExecuteRskill.prompt`, so a hand-dispatched goal with no
+    # prompt fed the policy "" and an operator retyping it from the README could
+    # silently mis-condition it. Generalist checkpoints leave the field unset
+    # and keep the old behaviour (empty prompt stays empty).
+    if not prompt and manifest.default_prompt:
+        log.info(
+            "rskill_runner.default_prompt_applied",
+            rskill=manifest.name,
+            prompt=manifest.default_prompt,
+        )
+        prompt = manifest.default_prompt
     # Defensive guard: this helper builds a VLA policy adapter shim;
     # wrapped-ROS rSkills (kind: ros_action / ros_service) must NOT come
     # through here because they have no model weights to bind. The

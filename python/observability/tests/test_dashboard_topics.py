@@ -463,3 +463,51 @@ def test_reasoner_tick_without_mission_leaves_mission_none() -> None:
     store = TelemetryStore()
     store.ingest_spans(_wrap([_make_span("reasoner.tick", attrs={"reasoner.tick.idx": 1})]))
     assert store.snapshot()["topics"]["reasoner"]["mission"] is None
+
+
+# ── event-log severity banding ────────────────────────────────────────────────
+
+
+def test_per_tick_spans_land_in_the_debug_band() -> None:
+    """30 Hz spans must not drown the Event Log's INFO view.
+
+    Before this banding every span appended at `info`, so on a real 30 Hz arm
+    `hal.read_state` was ~99% of the rows and every lifecycle line scrolled
+    past in well under a second.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span("hal.read_state", attrs={"openral.hal.adapter": "so100"}),
+                _make_span("hal.send_action", attrs={"openral.hal.adapter": "so100"}),
+                _make_span("sensors.read_latest", attrs={"openral.sensors.sensor_id": "top"}),
+            ]
+        )
+    )
+    events = store.snapshot()["events"]
+    per_tick = [
+        e
+        for e in events
+        if e["kind"] in {"hal.read_state", "hal.send_action", "sensors.read_latest"}
+    ]
+    assert len(per_tick) == 3
+    assert {e["severity"] for e in per_tick} == {"debug"}
+
+
+def test_non_per_tick_spans_stay_info() -> None:
+    """Only the per-tick stream is demoted; lifecycle spans keep their INFO band."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("rskill.execute", attrs={"openral.rskill.id": "x/y"})]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "rskill.execute"]
+    assert events and events[0]["severity"] == "info"
+
+
+def test_errored_per_tick_span_still_reports_error() -> None:
+    """A failing read_state must NOT be hidden in the debug band."""
+    store = TelemetryStore()
+    span = _make_span("hal.read_state", attrs={"openral.hal.adapter": "so100"})
+    span.status.code = 2  # ERROR
+    store.ingest_spans(_wrap([span]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "hal.read_state"]
+    assert events and events[0]["severity"] == "error"

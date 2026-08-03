@@ -467,3 +467,67 @@ class TestCloneChunkOutput:
         assert _clone_chunk_output(None, torch) is None
         assert _clone_chunk_output(3.5, torch) == 3.5
         assert _clone_chunk_output({"n": 7}, torch) == {"n": 7}
+
+
+# ── suppress_hf_weight_init / assert_all_parameters_finite ────────────────────
+
+
+class TestSuppressHfWeightInit:
+    """The load-time optimisation that skips HF's throwaway random init."""
+
+    def test_init_is_suppressed_inside_and_restored_after(self) -> None:
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        before = PreTrainedModel._init_weights
+        with suppress_hf_weight_init():
+            assert PreTrainedModel._init_weights is not before
+        assert PreTrainedModel._init_weights is before
+
+    def test_restored_on_exception(self) -> None:
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        before = PreTrainedModel._init_weights
+        with pytest.raises(RuntimeError, match="synthetic"), suppress_hf_weight_init():
+            raise RuntimeError("synthetic")
+        assert PreTrainedModel._init_weights is before
+
+    def test_suppressed_init_is_a_noop(self) -> None:
+        """The patched hook must accept HF's (self, module) signature and do nothing."""
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        layer = torch.nn.Linear(4, 4)
+        with torch.no_grad():
+            layer.weight.fill_(1.5)
+        with suppress_hf_weight_init():
+            PreTrainedModel._init_weights(None, layer)  # type: ignore[arg-type]
+        assert torch.allclose(layer.weight, torch.full_like(layer.weight, 1.5))
+
+
+class TestAssertAllParametersFinite:
+    """The guard that makes suppressed init safe."""
+
+    def test_passes_on_finite_module(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        assert_all_parameters_finite(torch.nn.Linear(3, 3), repo_id="unit/finite")
+
+    def test_raises_on_nan_parameter(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.weight[0, 0] = float("nan")
+        with pytest.raises(ROSConfigError, match="NaN/Inf"):
+            assert_all_parameters_finite(module, repo_id="unit/broken")
+
+    def test_raises_on_inf_parameter(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.bias[1] = float("inf")
+        with pytest.raises(ROSConfigError, match="unit/broken"):
+            assert_all_parameters_finite(module, repo_id="unit/broken")
