@@ -70,11 +70,14 @@ def test_check_openral_core_missing() -> None:
 # ── _check_ros2 ───────────────────────────────────────────────────────────────
 
 
-def test_check_ros2_binary_missing() -> None:
+def test_check_ros2_binary_absent() -> None:
+    # `absent`, not `missing`: Tier-0 (the curl-bash installer) ships no ROS 2
+    # by design, and `missing` is fatal to `openral doctor`'s exit code.
     with patch("openral_cli.main.shutil.which", return_value=None):
         results = _check_ros2()
     assert len(results) == 1
-    assert results[0].status == "missing"
+    assert results[0].status == "absent"
+    assert "openral install ros" in results[0].details
 
 
 def test_check_ros2_binary_found_distro_set(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,9 +124,13 @@ def test_check_colcon_present() -> None:
         assert _check_colcon().status == "ok"
 
 
-def test_check_colcon_missing() -> None:
+def test_check_colcon_absent() -> None:
+    # Same reasoning as test_check_ros2_binary_absent: colcon arrives with the
+    # ROS 2 bootstrap, which Tier-0 does not run.
     with patch("openral_cli.main.shutil.which", return_value=None):
-        assert _check_colcon().status == "missing"
+        result = _check_colcon()
+    assert result.status == "absent"
+    assert "openral install ros" in result.details
 
 
 # ── _check_gpu ────────────────────────────────────────────────────────────────
@@ -671,5 +678,30 @@ def test_doctor_exits_0_on_all_ok() -> None:
         CheckResult("Platform", "info", "Linux 6.0"),
     ]
     with patch("openral_cli.main._gather_checks", return_value=happy):
+        result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0
+
+
+def test_doctor_exits_0_on_tier0_host() -> None:
+    """A Tier-0 install (curl-bash: no sudo, no apt, so no ROS 2) is healthy.
+
+    `scripts/install.sh` advertises `openral doctor` as the first quick-start
+    command, so exiting non-zero here turned the documented
+    `curl … | bash && openral doctor` sequence red in CI on a host where
+    nothing is actually wrong. Regression test for that: ROS 2 and colcon are
+    opt-in escalations (`openral install ros`), not failures.
+    """
+    with patch("openral_cli.main.shutil.which", return_value=None):
+        ros_rows = _check_ros2()
+        colcon_row = _check_colcon()
+
+    tier0 = [
+        CheckResult("Python", "ok", "3.12.13"),
+        *ros_rows,
+        colcon_row,
+    ]
+    assert {r.status for r in tier0} <= {"ok", "absent", "info", "warn"}
+
+    with patch("openral_cli.main._gather_checks", return_value=tier0):
         result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
