@@ -20,12 +20,14 @@ suite by accident.
 
 from __future__ import annotations
 
+import importlib.metadata
+
 import openral_core as core
 
 
 def test_version_is_set() -> None:
-    """Verify the package version is set."""
-    assert core.__version__ == "0.1.0"
+    """Verify the package version is set and matches the installed distribution."""
+    assert core.__version__ == importlib.metadata.version("openral-core")
 
 
 def test_can_construct_minimal_robot_description() -> None:
