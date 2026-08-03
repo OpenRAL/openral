@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ``time.clock()``); the distro package routes through ``lttngust.compat._clock``
 # and is the only working install path. ``OPENRAL_ROS2_TRACING`` is left
 # unset by default; setting it to ``1`` at runtime activates the tracer.
-ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH}"
+ENV PYTHONPATH="/usr/lib/python3/dist-packages:${PYTHONPATH:-}"
 
 # uv (fast Python package manager)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -63,19 +63,29 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash 
 
 WORKDIR /workspace
 
-# Copy dependency manifests first so Docker layer-caches the uv install step.
-# We need the full workspace layout so uv can resolve all member packages.
+# Copy the whole Python workspace before syncing. This used to copy only
+# python/{core,cli}/pyproject.toml plus hand-written stub src trees, on the
+# theory that a smaller context made the uv layer cache better. That broke:
+# the uv workspace is `members = ["python/*"]` (14 members) and openral-cli
+# declares `tool.uv.sources` workspace refs to openral-detect / openral-dataset
+# / …, so uv failed both the `--frozen` attempt and the fallback with
+# "references a workspace ... but is not a workspace member" — i.e. the image
+# did not build at all. A hand-maintained stub list drifts from the member
+# glob the moment a package is added, so copy the real tree instead of
+# curating a fake one.
+#
+# The cache win this cost us is small: docker-compose bind-mounts the repo
+# over /workspace at run time, which shadows this .venv entirely, so the sync
+# exists to prove the lockfile resolves and to populate the build host's uv
+# cache — not to ship a venv.
 COPY pyproject.toml uv.lock* ./
-COPY python/core/pyproject.toml ./python/core/pyproject.toml
-COPY python/cli/pyproject.toml  ./python/cli/pyproject.toml
+COPY python/ python/
 
-# Create minimal package src dirs so uv workspace resolution doesn't error
-# on missing src trees (the real source is mounted at runtime via docker-compose).
-RUN mkdir -p python/core/src/openral_core \
-             python/cli/src/openral_cli && \
-    touch python/core/src/openral_core/__init__.py \
-          python/cli/src/openral_cli/__init__.py
-
-RUN uv sync --frozen --all-packages || uv sync --all-packages
+# --mount=type=cache keeps /root/.cache/uv on the build host (shared across
+# rebuilds) instead of baking it into a layer. Without it this image is
+# 13.7 GB, 7.9 GB of which is a uv cache nothing in the running container
+# reads. Same pattern as docker/inference/Dockerfile.x86.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --all-packages || uv sync --all-packages
 
 CMD ["bash"]
