@@ -27,7 +27,9 @@ name: release-pypi
 #     Projects transfer into the OpenRAL org later with no re-publish.
 #
 # Every workspace package shares one lockstep version — bump all pyprojects
-# (root + python/*) together for a release.
+# (root + python/*) together for a release. Versioning is SemVer: pick the
+# segment by content — fixes only → patch (0.2.1), features → minor (0.3.0),
+# breaking change / stable API → major (1.0.0). Not every release is a minor.
 
 on:
   workflow_dispatch:
