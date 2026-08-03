@@ -130,6 +130,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # uv installs to /usr/local/bin so it's on the default PATH.
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
+# Precompile bytecode at install time. uv skips .pyc generation by default, so
+# without this the FIRST import of the torch/lerobot/transformers stack inside
+# a fresh container byte-compiles the whole tree at runtime — measured live on
+# an SO-101 deploy: the lazy SmolVLA import inside runtime_node crawled for
+# 15+ minutes, GIL-starved to ~12% of a core by the two 30 fps camera threads
+# sharing its process. Compiling at build time costs a few minutes once and
+# moves cold-start skill loads back to seconds.
+ENV UV_COMPILE_BYTECODE=1
+
 WORKDIR /workspace
 
 # Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
