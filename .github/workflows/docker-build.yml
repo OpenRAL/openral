@@ -2,34 +2,34 @@ name: docker-build
 # Builds the open GStreamer-free deploy image (`openral:x86`) from
 # docker/inference/Dockerfile.x86.
 #
-# Auto-triggers are DISABLED (repo is out of GitHub Actions credits — same as
-# every other workflow here). The intended path-filtered triggers are written
-# out below, commented, ready to flip on once billing is restored:
+# Path-filtered auto-triggers (re-enabled 2026-08-03 — the earlier "out of
+# Actions credits" freeze is over; every other workflow has been running for
+# weeks):
 #   * pull_request → build + smoke only (no push)
 #   * push to master → build + push openral:x86 to GHCR
 # The `paths:` filter means it only runs when the image's build inputs change,
-# not on every commit. Until then, run it by hand via workflow_dispatch.
+# not on every commit. workflow_dispatch stays for manual runs (no push).
 on:
   workflow_dispatch:
-  # pull_request:
-  #   paths:
-  #     - docker/inference/**
-  #     - pyproject.toml
-  #     - uv.lock
-  #     - packages/**
-  #     - cpp/**
-  #     - python/**
-  #     - .github/workflows/docker-build.yml
-  # push:
-  #   branches: [master]
-  #   paths:
-  #     - docker/inference/**
-  #     - pyproject.toml
-  #     - uv.lock
-  #     - packages/**
-  #     - cpp/**
-  #     - python/**
-  #     - .github/workflows/docker-build.yml
+  pull_request:
+    paths:
+      - docker/inference/**
+      - pyproject.toml
+      - uv.lock
+      - packages/**
+      - cpp/**
+      - python/**
+      - .github/workflows/docker-build.yml
+  push:
+    branches: [master]
+    paths:
+      - docker/inference/**
+      - pyproject.toml
+      - uv.lock
+      - packages/**
+      - cpp/**
+      - python/**
+      - .github/workflows/docker-build.yml
 
 permissions:
   contents: read
@@ -77,6 +77,17 @@ jobs:
             openral deploy run --config scenes/deploy/so101_bench.yaml --dry-run | grep -q "hal_mode:=real"
             echo "OK: deploy run --dry-run resolves"
           '
+
+      # Default-entrypoint smoke: the steps above override --entrypoint, so
+      # they never exercise what `docker run openral:x86 …` actually does.
+      # The entrypoint is the bare `openral` CLI — `doctor` must exit 0 on a
+      # GPU-less runner (GPU/USB report `absent`/`info`, both non-fatal), and
+      # a bare run lands on the deploy help.
+      - name: Smoke test (default entrypoint)
+        run: |
+          docker run --rm openral:x86 doctor
+          docker run --rm openral:x86 | grep -qi "deploy"
+          echo "OK: bare-openral entrypoint (doctor + default CMD)"
 
       # Push only on merge to master (never on PRs).
       - name: Log in to GHCR
