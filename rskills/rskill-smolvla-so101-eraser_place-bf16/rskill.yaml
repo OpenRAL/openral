@@ -84,20 +84,36 @@ actuators_required:
     control_mode_semantics:
       mode: "absolute"
 
-# ── Starting pose ────────────────────────────────────────────────────────
-# Joint order = robots/so101_follower manifest joints (radians):
+# ── Home / starting pose ─────────────────────────────────────────────────
+# Joint order = robots/so101_follower manifest joints:
 # [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper].
 #
-# Derived from the TRAINING DATA, not from the SRDF: the mean over all 25
-# episodes' frame_index==0 states is
-#   [-6.59, -102.70, +95.03, +59.02, +5.94, +2.08]  (lerobot units / degrees)
-#   [-0.115, -1.7924, +1.6586, +1.0301, +0.1037, +0.0363]  (radians)
-# with per-joint std <= 7 (shoulder_lift std 0.09 — a hard mechanical home).
-# Two channels are CLAMPED to the so101 manifest limits (see JOINT ENVELOPE
-# above): shoulder_lift -1.7924 -> -1.7453, elbow_flex +1.6586 -> +1.5708.
-# Both clamps are <= 5 deg and stay well inside the observed start spread, so
-# the first VLA tick still sees an in-distribution pose.
-starting_pose: [-0.115, -1.7453, 1.5708, 1.0301, 0.1037, 0.0363]
+# THIS IS A REAL HOME POSE, not just "where episode 0 happened to begin". The
+# teleop operator both STARTS and RETURNS to it: per-joint medians over all 25
+# episodes' first frames and last frames agree to 2 decimals
+# (lerobot units):
+#            shoulder_pan  shoulder_lift  elbow_flex  wrist_flex  wrist_roll  gripper
+#   first        -7.21        -102.68        95.12       56.70        6.15      1.95
+#   last         -7.21        -102.68        94.59       56.70        6.15      1.95
+# MEDIAN is used, not mean: wrist_flex has a few long-start outliers (up to
+# 74.46) that drag the mean to 59.02 while the median sits at 56.70 — and the
+# last-frame median independently agrees at 56.70. shoulder_lift std is 0.09,
+# i.e. a hard mechanical home stop.
+#
+# UNITS — mixed, per the OpenRAL joint-channel contract:
+#   * 5 arm joints: DEGREES -> RADIANS (math.radians).
+#   * gripper: the SO-101 gripper channel is NORMALISED [0, 1], NOT an angle
+#     (SO100FollowerHAL._obs_to_positions divides the lerobot 0-100 reading by
+#     100; MujocoArmHAL's AFFINE_LOW_HIGH read mode documents the same [0, 1]
+#     public surface). So lerobot 1.95 -> 0.0195, i.e. jaws essentially closed
+#     — NOT radians(1.95) = 0.034, which would command a slightly OPEN jaw. The
+#     sibling SO-101 skills' gripper 0.5 is likewise "half open" on this scale.
+#
+# Two arm channels are CLAMPED to the so101 manifest limits (see JOINT ENVELOPE
+# above): shoulder_lift -1.7921 -> -1.7453, elbow_flex +1.6602 -> +1.5708.
+# Both clamps are <= 5 deg and stay inside the observed home spread, so the
+# first VLA tick still sees an in-distribution pose.
+starting_pose: [-0.1258, -1.7453, 1.5708, 0.9897, 0.1074, 0.0195]
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
