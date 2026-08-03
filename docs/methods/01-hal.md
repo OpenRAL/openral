@@ -165,17 +165,18 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L246)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L288)
-  - `connect() -> None` — Open USB serial connection. (L330)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L440)
-  - `read_state() -> JointState` — Joint state in radians. (L453)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L481)
-  - `estop() -> None` — Disconnect motors then raise. (L504)
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L260)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L302)
+  - `connect() -> None` — Open USB serial connection. (L344)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L454)
+  - `read_state() -> JointState` — Joint state in radians. (L467)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L495)
+  - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L518)
+  - `estop() -> None` — Disconnect motors then raise. (L587)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-- `_deg_to_rad(deg) -> float` (L233)
-- `_rad_to_deg(rad) -> float` (L238)
-- const `SO100_DESCRIPTION = RobotDescription(...)` (L88)
+- `_deg_to_rad(deg) -> float` (L247)
+- `_rad_to_deg(rad) -> float` (L252)
+- const `SO100_DESCRIPTION = RobotDescription(...)` (L102)
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's

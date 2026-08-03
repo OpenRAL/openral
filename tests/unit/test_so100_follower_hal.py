@@ -402,3 +402,60 @@ class TestSO100FollowerHALFullLifecycle:
             assert state.position[0] == pytest.approx(rad, abs=1e-4)
 
         hal.disconnect()
+
+
+# ── reset_to_pose (real-arm starting-pose ramp) ───────────────────────────────
+
+
+class TestSO100FollowerHALResetToPose:
+    """The slow-ramp real-hardware counterpart of the sim arms' qpos snap."""
+
+    def test_reaches_target_pose(
+        self, hal: SO100FollowerHAL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(time, "sleep", lambda _s: None)  # ramp without wall time
+        target = [0.2, -0.4, 0.6, 0.3, -0.1, 0.8]
+        hal.reset_to_pose(target)
+        state = hal.read_state()
+        for got, want in zip(state.position, target, strict=True):
+            assert got == pytest.approx(want, abs=1e-3)
+
+    def test_ramp_is_interpolated_not_snapped(
+        self, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The twin must receive many intermediate waypoints, not one snap."""
+        monkeypatch.setattr(time, "sleep", lambda _s: None)
+        hal = SO100FollowerHAL(robot=twin)
+        hal.connect()
+        seen: list[float] = []
+        original = twin.send_action
+
+        def _recording(action: dict[str, float]) -> dict[str, float]:
+            seen.append(action["shoulder_pan.pos"])
+            return original(action)
+
+        monkeypatch.setattr(twin, "send_action", _recording)
+        hal.reset_to_pose([1.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+        # 1 rad at 0.5 rad/s → 2 s → ~60 steps at 30 Hz; monotone ramp.
+        assert len(seen) >= 30
+        assert seen == sorted(seen)
+        # First waypoint is a small step from 0, NOT the full target.
+        assert seen[0] < math.degrees(1.0) / 2
+
+    def test_noop_when_already_at_pose(
+        self, hal: SO100FollowerHAL, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        current = hal.read_state().position
+        calls: list[object] = []
+        monkeypatch.setattr(twin, "send_action", lambda a: calls.append(a) or a)
+        hal.reset_to_pose(current)
+        assert calls == []
+
+    def test_wrong_length_raises(self, hal: SO100FollowerHAL) -> None:
+        with pytest.raises(ROSConfigError, match="expects 6"):
+            hal.reset_to_pose([0.0, 0.0, 0.0])
+
+    def test_not_connected_raises(self, twin: SO100DigitalTwin) -> None:
+        h = SO100FollowerHAL(robot=twin)
+        with pytest.raises(ROSRuntimeError, match="reset_to_pose"):
+            h.reset_to_pose([0.0] * 6)
