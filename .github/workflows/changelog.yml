@@ -30,6 +30,17 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
       - name: Generate CHANGELOG.md
         run: uvx git-cliff==2.13.1 -o CHANGELOG.md
+      - name: Rewrite release notes with the grouped changelog
+        # Replaces GitHub's flat auto-generated notes with the same grouped,
+        # noise-free format the changelog uses. Curate by hand on top if the
+        # release deserves a narrative (highlights, migration notes).
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uvx git-cliff==2.13.1 --latest --strip all -o /tmp/release-notes.md
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md
       - name: Open changelog PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
