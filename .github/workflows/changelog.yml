@@ -1,7 +1,8 @@
 name: changelog
-# Regenerates CHANGELOG.md from tags + merged PRs + closed issues
-# (github-changelog-generator) after every GitHub release, then opens a PR.
-# workflow_dispatch covers backfills / manual refreshes.
+# Regenerates CHANGELOG.md with git-cliff (config: cliff.toml) after every
+# GitHub release, then opens a PR. Conventional Commits are grouped by
+# importance — breaking/features at the top, housekeeping at the bottom,
+# dependency-bot churn skipped. workflow_dispatch covers backfills.
 #
 # It opens a PR rather than pushing to master because the `protect_default_branch`
 # ruleset requires a pull request there and only bypasses for org admins — a
@@ -25,10 +26,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: master
+          fetch-depth: 0  # git-cliff needs full history + tags
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
       - name: Generate CHANGELOG.md
-        uses: janheinrichmerker/action-github-changelog-generator@e60b5a2bd9fcd88dadf6345ff8327863fb8b490f  # v2.4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: uvx git-cliff==2.13.1 -o CHANGELOG.md
       - name: Open changelog PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
