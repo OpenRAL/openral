@@ -56,4 +56,4 @@ __all__ = [
     "rSkillBase",
     "resolve_runtime_backend",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

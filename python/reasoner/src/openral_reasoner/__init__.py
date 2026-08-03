@@ -125,4 +125,4 @@ __all__ = [
     "save_ladder_state",
     "should_rebuild_mission",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

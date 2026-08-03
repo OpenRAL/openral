@@ -31,7 +31,7 @@ Example output on a well-configured Ubuntu 24.04 machine with an NVIDIA GPU:
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ Python             │ ok      │ 3.12.3                         │
 │ Platform           │ info    │ Linux 6.8.0-47-generic         │
-│ openral-core   │ ok      │ 0.1.0                          │
+│ openral-core   │ ok      │ 0.2.0                          │
 │ ROS 2 binary       │ ok      │ /opt/ros/jazzy/bin/ros2        │
 │ ROS 2 distro       │ ok      │ jazzy                          │
 │ RMW                │ info    │ rmw_fastrtps_cpp (default)     │
@@ -69,7 +69,7 @@ openral doctor --json
 [
   {"check": "Python",           "status": "ok",   "details": "3.12.3"},
   {"check": "Platform",         "status": "info", "details": "Linux 6.8.0"},
-  {"check": "openral-core", "status": "ok",   "details": "0.1.0"},
+  {"check": "openral-core", "status": "ok",   "details": "0.2.0"},
   {"check": "ROS 2 binary",     "status": "ok",   "details": "/opt/ros/jazzy/bin/ros2"},
   {"check": "ROS 2 distro",     "status": "ok",   "details": "jazzy"},
   {"check": "RMW",              "status": "info", "details": "rmw_fastrtps_cpp (default)"},

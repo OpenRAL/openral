@@ -1,6 +1,6 @@
 [project]
 name = "openral-wam"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenRAL World Action Model layer — WorldModel Protocol + Rollout schema (CLAUDE.md §6.3)"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

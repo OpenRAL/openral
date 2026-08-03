@@ -64,4 +64,4 @@ __all__ = [
     "save_episode_mp4",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

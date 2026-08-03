@@ -419,4 +419,4 @@ __all__ = [
     "scene_task_space_compatible",
     "task_space_compatible",
 ]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

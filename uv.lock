@@ -2625,7 +2625,7 @@ wheels = [
 
 [[package]]
 name = "openral-cli"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/cli" }
 dependencies = [
     { name = "fastapi" },
@@ -2662,7 +2662,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-core"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/core" }
 dependencies = [
     { name = "numpy" },
@@ -2679,7 +2679,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-dataset"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/dataset" }
 dependencies = [
     { name = "mcap" },
@@ -2715,7 +2715,7 @@ provides-extras = ["lerobot", "ros"]
 
 [[package]]
 name = "openral-detect"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/detect" }
 dependencies = [
     { name = "openral-cli" },
@@ -2755,7 +2755,7 @@ provides-extras = ["nvidia", "jetson", "realsense"]
 
 [[package]]
 name = "openral-hal"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/hal" }
 dependencies = [
     { name = "lerobot", extra = ["feetech"] },
@@ -2793,7 +2793,7 @@ provides-extras = ["so100", "arm-sim"]
 
 [[package]]
 name = "openral-observability"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/observability" }
 dependencies = [
     { name = "mcap" },
@@ -2837,7 +2837,7 @@ provides-extras = ["dashboard", "mdns"]
 
 [[package]]
 name = "openral-reasoner"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/reasoner" }
 dependencies = [
     { name = "anthropic" },
@@ -2860,7 +2860,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-rskill"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/rskill" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -2881,7 +2881,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-runner"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/runner" }
 dependencies = [
     { name = "msgpack" },
@@ -2917,7 +2917,7 @@ provides-extras = ["opencv", "gstreamer"]
 
 [[package]]
 name = "openral-sensors"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/sensors" }
 dependencies = [
     { name = "openral-core" },
@@ -2928,7 +2928,7 @@ requires-dist = [{ name = "openral-core", editable = "python/core" }]
 
 [[package]]
 name = "openral-sim"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/sim" }
 dependencies = [
     { name = "imageio", extra = ["ffmpeg"] },
@@ -2959,7 +2959,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-state-adapter"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/state_adapter" }
 dependencies = [
     { name = "numpy" },
@@ -2974,7 +2974,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-wam"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/wam" }
 dependencies = [
     { name = "openral-core" },
@@ -2993,7 +2993,7 @@ requires-dist = [
 
 [[package]]
 name = "openral-workspace"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "matplotlib" },
@@ -3290,7 +3290,7 @@ simpler-env = [
 
 [[package]]
 name = "openral-world-state"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "python/world_state" }
 dependencies = [
     { name = "numpy" },
