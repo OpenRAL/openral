@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "openral_core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "schemas": {
     "EmbodimentKind": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
