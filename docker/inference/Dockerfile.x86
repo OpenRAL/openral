@@ -37,7 +37,13 @@
 #       -v "$(pwd)/rskills:/workspace/rskills:ro" \
 #       -v "$(pwd)/robots:/workspace/robots:ro" \
 #       openral:x86 \
-#       --config scenes/deploy/so101_bench.yaml
+#       deploy run --config scenes/deploy/so101_bench.yaml
+#
+# The entrypoint is the bare `openral` CLI (see the final stage), so the
+# pre-deploy setup commands work the same way:
+#
+#   docker run --rm openral:x86 doctor
+#   docker run --rm --device /dev/ttyACM0 openral:x86 detect
 #
 # `deploy run` is real-hardware only: a DeployScene under `scenes/deploy/`
 # (with `opencv_thread` camera bindings) + a connected robot are required.
@@ -256,6 +262,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-octomap-msgs \
         ros-${ROS_DISTRO}-octomap-server \
         ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        # Foxglove dashboard — the exec_depends of openral_foxglove_bringup,
+        # which the builder stage colcon-builds (see --packages-select below).
+        # The package builds fine without them and then dies at launch on a
+        # missing executable, so `deploy run` with the dashboard enabled failed
+        # in this image. image-transport / joint-state-publisher arrive
+        # transitively via moveit today; listed together as one package's
+        # declared contract rather than relying on that.
+        ros-${ROS_DISTRO}-foxglove-bridge \
+        ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-compressed-image-transport \
+        ros-${ROS_DISTRO}-joint-state-publisher \
         # Runtime libs the C++ safety kernel + opentelemetry-cpp pull at start.
         # Versioned names on noble: libabsl20220623t64, libprotobuf32t64.
         libabsl20220623t64 \
@@ -309,7 +326,16 @@ FROM runtime-base AS final
 
 WORKDIR /workspace
 
-# Default CMD runs `openral deploy run --help`; override with the desired config,
-# e.g. `docker run img --config scenes/deploy/so101_bench.yaml`.
-ENTRYPOINT ["/entrypoint.sh", "openral", "deploy", "run"]
-CMD ["--help"]
+# Entrypoint is the bare `openral` CLI, not a hardcoded `deploy run`:
+# deploying on real hardware starts with `doctor` / `detect` / calibration
+# checks before the first `deploy run`, and hardcoding the subcommand made
+# every one of those unreachable without --entrypoint gymnastics.
+#
+#   docker run --rm img doctor                                # host diagnosis
+#   docker run --rm --device /dev/ttyACM0 img detect          # robot.yaml wizard
+#   docker run --rm --gpus all ... img deploy run --config scenes/deploy/so101_bench.yaml
+#
+# Default CMD shows the deploy help so a bare `docker run img` still lands on
+# the image's primary purpose.
+ENTRYPOINT ["/entrypoint.sh", "openral"]
+CMD ["deploy", "run", "--help"]

@@ -11,6 +11,21 @@ services:
     container_name: openral-dev
     privileged: true
     network_mode: host
+    # GPU passthrough. `privileged: true` + the /dev bind exposes the device
+    # nodes but NOT the driver user-space libs, so CUDA stays invisible
+    # without this — the dev shell was CPU-only while the deploy image
+    # (docker/inference/Dockerfile.x86) had the GPU. Needs the NVIDIA
+    # Container Toolkit on the host; `count: all` is a no-op reservation that
+    # compose ignores gracefully on GPU-less hosts, so this stays portable.
+    # CUDA itself comes from the torch wheels in .venv, which is why the base
+    # image does not need to be an nvidia/cuda one.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     volumes:
       - .:/workspace
       - /dev:/dev

@@ -64,6 +64,16 @@ sudo apt-get install -y "ros-${ROS_DISTRO}-rmw-zenoh-cpp" || \
 #   * slam-toolbox                        — reasoner-managed lifecycle peer
 #   * control-msgs                        — control_msgs/GripperCommand (ALOHA HIL gripper transport)
 #   * nav-msgs                            — Odometry/OccupancyGrid (panda_mobile HAL + slam bridge)
+#   * octomap + octomap-msgs + octomap-server + tf2-geometry-msgs
+#                                         — openral_octomap_bridge (octree →
+#                                           OccupancyVoxels feeding the C++
+#                                           safety kernel's voxel check)
+#   * foxglove-bridge + image-transport + compressed-image-transport +
+#     joint-state-publisher               — exec_depends of
+#                                           openral_foxglove_bringup (the
+#                                           dashboard); the package builds
+#                                           without them and then dies at
+#                                           launch on a missing executable
 #
 # `|| true` because some of these may not be in the apt repo for every
 # combination of (Ubuntu, ROS distro); the missing ones surface as
@@ -77,7 +87,15 @@ sudo apt-get install -y \
   "ros-${ROS_DISTRO}-nav2-msgs" \
   "ros-${ROS_DISTRO}-slam-toolbox" \
   "ros-${ROS_DISTRO}-control-msgs" \
-  "ros-${ROS_DISTRO}-nav-msgs" || \
+  "ros-${ROS_DISTRO}-nav-msgs" \
+  "ros-${ROS_DISTRO}-octomap" \
+  "ros-${ROS_DISTRO}-octomap-msgs" \
+  "ros-${ROS_DISTRO}-octomap-server" \
+  "ros-${ROS_DISTRO}-tf2-geometry-msgs" \
+  "ros-${ROS_DISTRO}-foxglove-bridge" \
+  "ros-${ROS_DISTRO}-image-transport" \
+  "ros-${ROS_DISTRO}-compressed-image-transport" \
+  "ros-${ROS_DISTRO}-joint-state-publisher" || \
   echo "(one or more wrapped-ROS rSkill apt deps unavailable on this distro — " \
        "rSkills that need them will surface a typed runtime error)"
 

@@ -5,10 +5,13 @@ name: release-pypi
 # workspace root has no [build-system], so it fell back to legacy setuptools
 # and errored on multi-package discovery — and its PyPI half duplicated this
 # matrix while building the wrong artifact (the meta-package). The ghcr
-# runtime-image + cosign path it also carried was non-functional
-# (Dockerfile.runtime COPYs the gitignored colcon `install/` space) and is
-# deferred until ROS-in-CI infra exists; it returns as a purpose-built
-# release-image.yml then. This file is the single source of truth for releases.
+# runtime-image + cosign path it also carried was non-functional — it built
+# the root `Dockerfile.runtime`, which COPYd the gitignored colcon `install/`
+# space and was broken in several other ways besides; that file was deleted
+# rather than repaired, since `docker/inference/Dockerfile.x86` is the real
+# deploy image. The release-image path is deferred until ROS-in-CI infra
+# exists and returns as a purpose-built release-image.yml then. This file is
+# the single source of truth for releases.
 #
 # Two ways to publish — both via Trusted Publishing (OIDC, no API token):
 #   • workflow_dispatch → choose `target`:

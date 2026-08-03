@@ -113,6 +113,28 @@ CPU-only, no-ROS, and Jetson/L4T deploy images are not shipped here. `openral do
 
 ## Quick start
 
+Three ways in, by what you're here to do:
+
+| You want to… | Use | Get it with |
+|---|---|---|
+| Try the CLI / probe a host / drive a robot ad hoc | `openral` CLI (Tier-0) | the curl one-liner below |
+| Test, evaluate, benchmark, run sims, contribute | the git repo | `git clone` + `just quickstart` |
+| **Deploy on real hardware** | the Docker image (`openral:x86`) | `just docker-build-x86`, then `docker run` |
+
+The repo is where the sim suites and the LIBERO ↔ RoboCasa group-swap live;
+the image deliberately excludes them and bakes exactly the real-hardware
+deploy graph (CUDA, ROS 2, safety kernel, VLA runtime). Its entrypoint is the
+bare `openral` CLI:
+
+```bash
+just docker-build-x86
+docker run --rm --gpus all openral:x86 doctor          # host diagnosis
+docker run --rm --device /dev/ttyACM0 openral:x86 detect   # robot.yaml wizard
+docker run --rm --gpus all --network host \
+    --device /dev/ttyACM0 --device /dev/video0 \
+    openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
+```
+
 One-liner install (no clone, no sudo):
 
 ```bash
@@ -125,12 +147,6 @@ openral install ros             # opt-in: ROS 2 + apt (needs sudo)
 The base install is **CPU-only** (~1.6 GB — torch `+cpu`, no NVIDIA wheels), matching Tier-0's CPU harness. On an NVIDIA GPU host, pull CUDA torch into the base venv instead by prepending `OPENRAL_TORCH_BACKEND=auto` (uv auto-detects the driver) — or a specific `cu130` — to the install line. `openral doctor` reports the GPU either way.
 
 Heavy extras (LIBERO, RoboCasa, MetaWorld, ManiSkill3, SimplerEnv, ROS 2) are installed on demand via `openral install <group>` or automatically on first `openral sim run` against a scene that needs them. See `openral install list` for the full menu.
-
-> **Pre-PyPI gap.** `openral-cli` is not yet on PyPI. Until then:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/OpenRAL/openral/master/scripts/install.sh \
->   | OPENRAL_INSTALL_SOURCE=git+https://github.com/OpenRAL/openral bash
-> ```
 
 For contributors (full clone + ROS 2 + `colcon`):
 
