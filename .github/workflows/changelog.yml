@@ -62,7 +62,5 @@ jobs:
           if [ -z "$(gh pr list --head chore/changelog --state open --json number --jq '.[].number')" ]; then
             gh pr create --base master --head chore/changelog \
               --title "docs(changelog): regenerate for ${TAG:-manual refresh}" \
-              --body "Automated \`CHANGELOG.md\` regeneration from tags, merged PRs, and closed issues.
-
-Required checks stay \`Expected\` because GitHub does not run \`pull_request\` workflows for PRs opened by \`GITHUB_TOKEN\`. Merge with the org-admin ruleset bypass."
+              --body "Automated \`CHANGELOG.md\` regeneration. Required checks stay \`Expected\` because GitHub does not run \`pull_request\` workflows for PRs opened by \`GITHUB_TOKEN\`; merge with the org-admin ruleset bypass."
           fi
