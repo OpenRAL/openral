@@ -306,6 +306,15 @@ hal-twin-sweep:
 test-integration:
     PYTHONPATH="$(pwd)/packages/world_state:${PYTHONPATH}" uv run pytest tests/integration/ -v --tb=short
 
+# Real rclpy + a real DDS graph + the colcon overlay; no GPU needed. Requires
+#     source /opt/ros/jazzy/setup.bash && just ros2-build && source install/setup.bash
+# scripts/ros_live_tests.sh owns the target list, and the `docker-build`
+# workflow runs that same script inside `openral:x86` — so this recipe and CI
+# can never select a different set of tests. `-k <expr>` narrows the run.
+# Live-ROS suite (OPENRAL_TEST_ROS_LIVE=1) — see docs/contributing/development.md
+test-ros-live *args:
+    uv run bash scripts/ros_live_tests.sh -q {{args}}
+
 # Subset by keyword
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
 # `just test` — the launch_testing pytest plugin silently aborts
