@@ -444,7 +444,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
                              {
                                  {"safety.check_name", "envelope"},
                                  {"safety.kernel", otel::kSafetyKernelValue},
-                                 {"safety.clamped", false},
                                  // msg lives for the whole callback; its rskill_id storage
                                  // outlives span->End() below so the c_str() pointer is valid.
                                  // Key is `rskill.id` (semconv.RSKILL_ID) — the dashboard's

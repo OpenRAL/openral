@@ -1,7 +1,7 @@
 """Guard the "declared but never emitted" telemetry inventory.
 
 ``semconv`` is read as the inventory of what OpenRAL reports, but four
-span-event names and three metric instruments have no producer anywhere in
+span-event names and one metric instrument have no producer anywhere in
 the tree. A name that exists and never fires is worse than a missing one:
 the dashboard's ``e-stops`` counter was wired to
 ``openral.event.estop_requested`` and read 0 no matter how many e-stops
@@ -49,8 +49,6 @@ _EXPECTED_UNEMITTED_EVENTS = {
 
 _EXPECTED_UNRECORDED_METRICS = {
     "get_inference_timeouts",
-    "get_safety_clamps",
-    "get_observability_export_failures",
 }
 
 
@@ -126,7 +124,7 @@ def test_unemitted_span_events_are_exactly_the_documented_set(
 def test_unrecorded_metrics_are_exactly_the_documented_set(
     sources: list[tuple[Path, str]],
 ) -> None:
-    """These three instruments exist but nothing ever calls ``.add()`` on them."""
+    """This instrument exists but nothing ever calls ``.add()`` on it."""
     all_getters = {n for n in metrics.__all__ if n.startswith("get_") and n != "get_meter"}
 
     produced = _names_with_producers(sources, all_getters, literal_by_name={})

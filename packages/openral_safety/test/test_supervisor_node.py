@@ -361,7 +361,6 @@ def test_pass_through_emits_safety_check_span(
     assert attrs.get("safety.kernel") == "passthrough"
     assert attrs.get("safety.severity") == "info"
     assert attrs.get("safety.check_name") == "envelope"
-    assert attrs.get("safety.clamped") is False
 
 
 def test_envelope_violation_emits_safety_check_span_with_violation_severity(
