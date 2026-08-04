@@ -87,11 +87,13 @@ Both views were **trained at 640×480** (checkpoint `config.json`:
 resize step and this checkpoint's `policy_preprocessor.json` is
 rename→batch→device→normalize only (no resize stage), so the ResNet-18
 backbone sees each frame at the sensor's native resolution. The manifest
-minima reflect that: `camera1` requires the full 640×480, `camera2` requires
-256×256 (the `wrist` rig's declared intrinsics in
-`robots/so101_follower/robot.yaml` — a 640×480 minimum there would fail the
-sensor gate on this skill's own robot). The wrist view therefore runs below
-its training resolution; see the in-distribution note below.
+minima reflect that: **both** `camera1` and `camera2` require the full
+640×480. The `top` OAK-D Pro and the `wrist` icSpring rig each deliver 640×480
+(confirmed with `v4l2-ctl --get-fmt-video`; `scenes/deploy/so101_bench.yaml`
+binds both at that size). `camera2` previously declared only 256×256 because
+`robots/so101_follower/robot.yaml` carried a stale 256×256 wrist intrinsics
+block that a higher floor would have failed the sensor gate against; that
+manifest now records the measured resolution.
 Proprioception is the 6-D joint-position vector.
 
 **In-distribution requirement (important).** ACT is a from-scratch imitation

@@ -46,15 +46,13 @@ embodiment_tags:
 #
 # The runner matches each entry against the robot's SensorSpec.vla_feature_key
 # declared in robots/so101_follower/robot.yaml (top→camera1, wrist→camera2).
-# camera1 is pinned to the full 640x480 training resolution, which the `top`
-# OAK-D Pro supplies (robot.yaml intrinsics: 640x480). camera2 is pinned to
-# 256x256 — the `wrist` rig's declared intrinsics — NOT the 640x480 it was
-# trained at: raising it to 640x480 would make this rSkill fail
-# rSkill.check_sensors against its own robot (robots/so101_follower/robot.yaml
-# declares the wrist camera at only 256x256). That gap is a genuine
-# out-of-distribution risk on the wrist view (see README, "In-distribution
-# requirement"), tracked separately from this manifest rather than papered
-# over here.
+# BOTH are now pinned to the full 640x480 training resolution: the `top` OAK-D
+# Pro and the `wrist` icSpring rig each deliver 640x480 (v4l2-ctl confirms, and
+# scenes/deploy/so101_bench.yaml binds both at 640x480). camera2 previously
+# declared 256x256 only because robot.yaml's wrist intrinsics were stale at
+# 256x256 and a higher floor would have failed rSkill.check_sensors against
+# this skill's own robot; that manifest now records the measured resolution, so
+# the honest in-distribution gate can be declared directly.
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
@@ -62,8 +60,8 @@ sensors_required:
     min_height: 480
   - modality: "rgb"
     vla_feature_key: "observation.images.camera2"
-    min_width: 256
-    min_height: 256
+    min_width: 640
+    min_height: 480
 
 # Output side. The loader auto-fills n_dof + vla_action_key from
 # robots/so101_follower/robot.yaml. Absolute joint-position targets.
