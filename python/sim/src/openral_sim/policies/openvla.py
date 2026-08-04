@@ -650,7 +650,7 @@ class _OpenVLAAdapter:
         else:
             autocast_ctx = contextlib.nullcontext()
 
-        with inference_span(kind="chunk"), torch.no_grad(), autocast_ctx:
+        with inference_span(kind="foreground"), torch.no_grad(), autocast_ctx:
             if self._generation_method == _GENERATE_ACTION_VERL:
                 if not hasattr(self._model, _GENERATE_ACTION_VERL):
                     raise ROSConfigError(

@@ -132,7 +132,7 @@ attributes and are stripped by the store so they cannot fragment a series.
 | Metric | Type | Unit | Recorded at | Frequency |
 |---|---|---|---|---|
 | `openral.tick.duration` | Histogram | ms | `runner/base.py` | 30 Hz — **library-runner path only**, see below |
-| `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per inference, **every adapter** |
+| `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per inference, **every adapter**; label `kind` ∈ `foreground` \| `prefetch` \| `single` (`InferenceKind`, mypy-enforced) — a timing axis; chunk *shape* rides the span's `inference.chunk_size`, not the label |
 | `openral.hal.read_state.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | 30 Hz, **both paths** |
 | `openral.hal.send_action.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | per chunk, **both paths** |
 | `openral.sensors.age_ms` | Histogram | ms | `deploy_runner.py:377` | 30 Hz × camera |

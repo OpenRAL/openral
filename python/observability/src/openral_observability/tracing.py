@@ -19,14 +19,36 @@ import functools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, Literal, ParamSpec, TypeVar
 
 from opentelemetry import trace
 from opentelemetry.trace import Span
 
 from openral_observability import semconv
 
-__all__ = ["inference_span", "reasoner_span", "rskill_span", "safety_span", "traced"]
+__all__ = [
+    "InferenceKind",
+    "inference_span",
+    "reasoner_span",
+    "rskill_span",
+    "safety_span",
+    "traced",
+]
+
+# The closed value set for the `kind` label on `rskill.chunk_inference` spans
+# and the `openral.inference.duration` histogram (design §9: labels are closed
+# sets). `kind` is a TIMING axis: was the compute on the control loop's critical
+# path (`foreground`), overlapped in a background thread (`prefetch`), or a
+# per-step eval adapter with no chunking at all (`single`)?
+#
+# There is deliberately no `"chunk"` member. Four adapters used to pass it via
+# the then-untyped `kind: str`, so mypy never saw the drift — and it conflated
+# a SHAPE axis (one action vs a chunk) into the timing label: a chunked adapter
+# computing on the critical path is `foreground` whether or not it routes
+# through `ChunkedExecutor`, and filtering `kind=foreground` silently excluded
+# four adapters doing exactly that. Chunk shape already rides the span as
+# `inference.chunk_size` / `inference.chunk_index`, where it belongs.
+InferenceKind = Literal["foreground", "prefetch", "single"]
 
 _TRACER_NAME = "openral"
 
@@ -73,7 +95,7 @@ def inference_span(
     name: str = semconv.SPAN_RSKILL_CHUNK_INFERENCE,
     *,
     chunk_index: int | None = None,
-    kind: str = "foreground",
+    kind: InferenceKind = "foreground",
     **attrs: Any,
 ) -> Iterator[Span]:
     """Span around one VLA chunk inference — and its duration metric.
@@ -97,7 +119,10 @@ def inference_span(
     Args:
         name: Span name.
         chunk_index: Sequence number of the chunk being computed.
-        kind: ``"foreground"`` or ``"prefetch"``.
+        kind: Timing of the compute — ``"foreground"`` (on the control loop's
+            critical path, chunked or not), ``"prefetch"`` (overlapped in a
+            background thread), or ``"single"`` (per-step eval adapter). See
+            :data:`InferenceKind` for why there is no ``"chunk"``.
         **attrs: Extra attributes recorded with an ``inference.`` prefix.
 
     Yields:

@@ -311,7 +311,7 @@ class _GrootAdapter:
         # GR00T select_action() rejects native relative actions, so call
         # predict_action_chunk directly (it is @torch.no_grad) and decode the
         # whole chunk while the pack-step raw state is still cached.
-        with inference_span(kind="chunk", engine="torch", device=str(self.device)):
+        with inference_span(kind="foreground", engine="torch", device=str(self.device)):
             chunk = self._policy.predict_action_chunk(batch)
         chunk = self._postprocessor(chunk)
         chunk_np = chunk.detach().to("cpu").float().numpy()

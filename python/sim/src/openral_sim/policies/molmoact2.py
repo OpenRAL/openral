@@ -414,7 +414,7 @@ class _MolmoAct2Adapter:
             if self._source_repo is not None
             else contextlib.nullcontext()
         )
-        with inference_span(kind="chunk"), torch.no_grad(), autocast_ctx, offline_ctx:
+        with inference_span(kind="foreground"), torch.no_grad(), autocast_ctx, offline_ctx:
             out = self._model.predict_action(**predict_kwargs)
 
         actions = out.actions if hasattr(out, "actions") else out

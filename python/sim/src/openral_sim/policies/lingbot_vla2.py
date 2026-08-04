@@ -267,7 +267,7 @@ class _LingBotVla2Adapter:
                 f"(arm_l6+grip1+arm_r6+grip1), got {state_arr.shape[0]}-D."
             )
 
-        with inference_span(kind="chunk", engine="sidecar"):
+        with inference_span(kind="foreground", engine="sidecar"):
             reply = self._client.call(
                 "get_action",
                 {

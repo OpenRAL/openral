@@ -303,12 +303,12 @@ _Idempotent OTel SDK setup + flush helper._
 ### `python/observability/src/openral_observability/tracing.py`
 _Span-context-manager helpers; safe to call before `configure_observability`._
 
-- `rskill_span(name, *, rskill_id=None, role=None, **attrs)` — Span for a Skill lifecycle phase; emits `rskill.id` / `rskill.role` from `semconv`. (L42)
-- `inference_span(name="skill.chunk_inference", *, chunk_index=None, kind="foreground", **attrs)` — Span for one VLA chunk inference; emits `inference.kind` / `inference.chunk_index`. (L72)
-- `safety_span(name="safety.check", *, check_name=None, severity="info", **attrs)` — Span for a safety check; the C++ kernel parents its own `safety.check` to the Python tick via the propagator. (L129)
-- `reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs)` — Span for one `ReasonerCore.tick`. Sets `reasoner.{tick.idx, model, force}` and accepts any extra `reasoner.*` attribute via `**attrs`. (L163)
-- `start_reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs) -> Span` — Non-attaching variant for the phased tick (#21): returns a started span **without** attaching it to the calling thread's context, so `prepare_tick` → off-thread `run_prepared_llm` → `finish_tick` can carry it between phases (each re-attaching via `opentelemetry.trace.use_span`) and intermediate executor callbacks never see it as current. Caller owns `span.end()`. Used by `openral_reasoner.core` to record `reasoner.{tool, rskill_id, suppressed_reason, error_kind}` over the LLM call. (L234)
-- `traced(name=None)` — Decorator that wraps a sync function in a span named after it. (L262)
+- `rskill_span(name, *, rskill_id=None, role=None, **attrs)` — Span for a Skill lifecycle phase; emits `rskill.id` / `rskill.role` from `semconv`. (L64)
+- `inference_span(name="skill.chunk_inference", *, chunk_index=None, kind: InferenceKind="foreground", **attrs)` — Span for one VLA inference **and** the `openral.inference.duration` histogram (emitted from the helper so span and metric cannot diverge); emits `inference.kind` / `inference.chunk_index`. `InferenceKind = Literal["foreground", "prefetch", "single"]` is the closed label set (design §9) — a timing axis, deliberately without `"chunk"` (shape rides `inference.chunk_size`). (L94)
+- `safety_span(name="safety.check", *, check_name=None, severity="info", **attrs)` — Span for a safety check; the C++ kernel parents its own `safety.check` to the Python tick via the propagator. (L154)
+- `reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs)` — Span for one `ReasonerCore.tick`. Sets `reasoner.{tick.idx, model, force}` and accepts any extra `reasoner.*` attribute via `**attrs`. (L188)
+- `start_reasoner_span(name="reasoner.tick", *, tick_idx=None, model=None, force=None, **attrs) -> Span` — Non-attaching variant for the phased tick (#21): returns a started span **without** attaching it to the calling thread's context, so `prepare_tick` → off-thread `run_prepared_llm` → `finish_tick` can carry it between phases (each re-attaching via `opentelemetry.trace.use_span`) and intermediate executor callbacks never see it as current. Caller owns `span.end()`. Used by `openral_reasoner.core` to record `reasoner.{tool, rskill_id, suppressed_reason, error_kind}` over the LLM call. (L259)
+- `traced(name=None)` — Decorator that wraps a sync function in a span named after it. (L287)
 
 ### `python/observability/src/openral_observability/cli.py`
 _Root-span helper for the ``openral`` CLI._
