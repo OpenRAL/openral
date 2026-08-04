@@ -57,6 +57,7 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `smolvla-robotwin` | smolvla | aloha_agilex |
 | `smolvla-so101-pen` | smolvla | so101_follower |
 | `smolvla-so101-pick-place-pen` | smolvla | so101_follower |
+| `rskill-smolvla-so101-eraser_place-bf16` | smolvla | so101_follower |
 | `smolvla-vlabench` | smolvla | franka_panda |
 | `xvla-libero` | xvla | franka_panda |
 
