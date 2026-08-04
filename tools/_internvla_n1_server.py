@@ -160,7 +160,10 @@ def _build_agent(args: argparse.Namespace) -> Any:
     # inference only, so no-op it before the model builds.
     import diffusers.models.modeling_utils as _dm
 
-    _dm.ModelMixin.enable_gradient_checkpointing = lambda self, *a, **k: None
+    # reason: deliberate monkeypatch of a third-party training-only method
+    _dm.ModelMixin.enable_gradient_checkpointing = (  # type: ignore[method-assign]
+        lambda self, *a, **k: None
+    )
 
     import internnav
     from internnav.model.basemodel.internvla_n1.internvla_n1 import InternVLAN1ForCausalLM
