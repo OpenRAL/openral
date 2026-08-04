@@ -172,3 +172,24 @@ def test_switch_interval_restored_on_exception() -> None:
     with pytest.raises(RuntimeError, match="synthetic"), phase_timer("phase_gil2", prefix="unit"):
         raise RuntimeError("synthetic")
     assert sys.getswitchinterval() == pytest.approx(before)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs accounting is Linux-only")
+def test_done_carries_rss_and_major_fault_delta(cap: _CaptureProcessor) -> None:
+    """``_done`` reports live RSS and major faults counted from phase entry.
+
+    This is the attribution seam for a load phase that is slow while
+    burning no CPU: page reclaim shows up here and nowhere in CPU time.
+    Allocating inside the block must move ``rss_mb`` upward, and the
+    fault counter is a delta (>= 0), never the process-lifetime total.
+    """
+    with phase_timer("phase_mem", prefix="unit"):
+        ballast = bytearray(64 * 1024 * 1024)
+        ballast[::4096] = b"\x01" * len(ballast[::4096])  # fault the pages in
+    payload = cap.events[-1][1]
+    assert payload["rss_mb"] > 64.0
+    assert payload["major_faults"] >= 0
+    # Lifetime totals for a pytest process are far larger than a delta
+    # taken across a sub-second block; this is what catches a missing
+    # baseline subtraction.
+    assert payload["major_faults"] < 10_000

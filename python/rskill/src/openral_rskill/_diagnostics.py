@@ -18,10 +18,15 @@ plumbing (CLAUDE.md §1.13).
 Output shape per phase::
 
     <prefix>_<name>_start {**fields}
-    <prefix>_<name>_heartbeat {elapsed_s, [gpu_mb], **fields}    # every interval_s
-    <prefix>_<name>_heartbeat {...}
+    <prefix>_<name>_heartbeat {elapsed_s, [gpu_mb], rss_mb, major_faults, **fields}
+    <prefix>_<name>_heartbeat {...}                          # every interval_s
     ...
-    <prefix>_<name>_done {elapsed_s, **fields}
+    <prefix>_<name>_done {elapsed_s, rss_mb, major_faults, **fields}
+
+``rss_mb`` / ``major_faults`` (the latter counted from phase entry) are
+Linux-only and simply absent elsewhere. They exist to attribute a load
+phase that is slow while burning no CPU — the signature of page reclaim,
+which no CPU-time metric can show.
 
 Example:
 -------
@@ -32,6 +37,7 @@ Example:
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -42,6 +48,8 @@ from typing import Any
 import structlog
 
 __all__ = ["phase_timer"]
+
+_PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 
 def _gpu_mb() -> float | None:
@@ -61,6 +69,27 @@ def _gpu_mb() -> float | None:
         return torch.cuda.memory_allocated() / 1024 / 1024
     except Exception:
         return None
+
+
+def _rss_majflt() -> tuple[float, int] | None:
+    """Return ``(rss_mb, major_faults)`` for this process, or ``None``.
+
+    Two small ``/proc`` reads, no psutil. Present on every heartbeat because
+    a load phase that is neither CPU-bound nor I/O-bound is almost always
+    stalled in page reclaim — a state that shows up nowhere in CPU
+    accounting. A 2 GB model build on a host under memory pressure inflates
+    wall-time with a rising ``major_faults`` and a flat ``elapsed_s``-per-MB,
+    which is the signature this exists to capture. Non-Linux hosts get
+    ``None`` and the fields are simply absent.
+    """
+    try:
+        with open("/proc/self/statm") as f:  # reason: procfs, not a path op
+            rss_pages = int(f.read().split()[1])
+        with open("/proc/self/stat") as f:  # reason: procfs, not a path op
+            majflt = int(f.read().rsplit(") ", 1)[1].split()[9])
+    except (OSError, IndexError, ValueError):
+        return None
+    return rss_pages * _PAGE_SIZE / 1024 / 1024, majflt
 
 
 @contextmanager
@@ -131,6 +160,17 @@ def phase_timer(
 
     logger.info(event_start, **fields)
 
+    # Baseline for the major-fault delta reported on every heartbeat and on
+    # ``_done`` — see :func:`_rss_majflt`.
+    baseline = _rss_majflt()
+    majflt_0 = baseline[1] if baseline is not None else 0
+
+    def _mem_fields() -> dict[str, Any]:
+        snap = _rss_majflt()
+        if snap is None:
+            return {}
+        return {"rss_mb": round(snap[0], 1), "major_faults": snap[1] - majflt_0}
+
     def _tick() -> None:
         while not stop_event.wait(interval_s):
             elapsed = time.monotonic() - start
@@ -139,7 +179,7 @@ def phase_timer(
                 mb = _gpu_mb()
                 if mb is not None:
                     extra["gpu_mb"] = round(mb, 1)
-            logger.info(event_heartbeat, **extra, **fields)
+            logger.info(event_heartbeat, **extra, **_mem_fields(), **fields)
 
     thread = threading.Thread(target=_tick, daemon=True, name=f"{prefix}_{name}_heartbeat")
     thread.start()
@@ -163,4 +203,9 @@ def phase_timer(
         sys.setswitchinterval(prev_switch_interval)
         stop_event.set()
         thread.join(timeout=interval_s)
-        logger.info(event_done, elapsed_s=round(time.monotonic() - start, 1), **fields)
+        logger.info(
+            event_done,
+            elapsed_s=round(time.monotonic() - start, 1),
+            **_mem_fields(),
+            **fields,
+        )

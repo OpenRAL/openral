@@ -116,8 +116,9 @@ _GpuPassthroughSkill — minimal rSkill whose per-step image processing provably
 ### `python/rskill/src/openral_rskill/_diagnostics.py`
 _Shared load-phase instrumentation seam — generalises the inline `_heartbeat` originally inside `openral_sim.policies.pi05` so every VLA adapter's `_build_*` factory uses the same `<prefix>_<name>_{start,heartbeat,done}` event shape (CLAUDE.md §1.13 — single seam, no duplicates)._
 
-- `phase_timer(name, *, prefix="phase", interval_s=15.0, log=None, gpu_mb=False, **fields) -> Iterator[None]` [@contextmanager] — Emits `<prefix>_<name>_start` / `..._heartbeat` every `interval_s` / `..._done` with `elapsed_s`. `gpu_mb=True` attaches `torch.cuda.memory_allocated()` to the heartbeat for phases that move tensors to/from the GPU. Lazy torch import so CPU-only hosts still work. Consumed by `_pi05_phase` + `_smolvla_phase` in the sim adapters and by `tools/profile_policy_load.py`. (L67)
-- `_gpu_mb() -> float | None` — Cheap helper. (L47)
+- `phase_timer(name, *, prefix="phase", interval_s=15.0, log=None, gpu_mb=False, **fields) -> Iterator[None]` [@contextmanager] — Emits `<prefix>_<name>_start` / `..._heartbeat` every `interval_s` / `..._done` with `elapsed_s`. Heartbeat and done also carry `rss_mb` + `major_faults` (Linux, delta from phase entry) so a load that is slow while burning no CPU is attributable to page reclaim. `gpu_mb=True` attaches `torch.cuda.memory_allocated()` to the heartbeat for phases that move tensors to/from the GPU. Lazy torch import so CPU-only hosts still work. Consumed by `_pi05_phase` + `_smolvla_phase` in the sim adapters and by `tools/profile_policy_load.py`. (L96)
+- `_gpu_mb() -> float | None` — Cheap helper. (L55)
+- `_rss_majflt() -> tuple[float, int] | None` — Process RSS (MB) + lifetime major-fault count from `/proc/self/{statm,stat}`; `None` off Linux. (L74)
 
 ### `python/rskill/src/openral_rskill/executor.py`
 _Action-chunk executor — promoted from `smolvla` so every chunked VLA family reuses one implementation._
