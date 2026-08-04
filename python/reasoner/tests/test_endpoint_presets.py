@@ -98,3 +98,27 @@ def test_explicit_dialect_overrides_a_preset(monkeypatch: pytest.MonkeyPatch) ->
     client = build_tool_use_client_from_env()
 
     assert type(client).__name__ == "AnthropicToolUseClient"
+
+
+def test_no_choices_reports_the_provider_error() -> None:
+    """A gateway 200 with ``choices: null`` must name the upstream failure.
+
+    OpenRouter answers HTTP 200 with ``choices: null`` when the backing
+    provider rate-limits or 5xxs; ``list(None)`` used to surface as
+    ``TypeError: 'NoneType' object is not iterable``, which tells an operator
+    nothing about a transient provider outage.
+    """
+    from openral_core.exceptions import ROSPlanningError
+    from openral_reasoner.tool_use import _openai_choices
+
+    class _GatewayError:
+        choices = None
+        error = {"code": 429, "message": "rate-limited upstream"}
+
+    with pytest.raises(ROSPlanningError, match="rate-limited upstream"):
+        _openai_choices(_GatewayError())
+
+    class _Ok:
+        choices = ["c0"]
+
+    assert _openai_choices(_Ok()) == ["c0"]
