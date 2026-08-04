@@ -414,6 +414,34 @@ def test_check_reasoner_curated_model_resolves_named_endpoint(
     assert "endpoint=http://localhost:8000/v1" in summary.details
 
 
+def test_check_reasoner_dialect_clash_fails(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A named endpoint cannot re-dialect a curated model — doctor says so too.
+
+    The factory refuses this outright; reporting `ok` would tell the operator
+    their config is fine right up until the reasoner refuses to configure.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-ant-secret")
+    rows = _check_reasoner_llm()
+    assert len(rows) == 1
+    assert rows[0].status == "fail"
+    assert "dialect" in rows[0].details
+
+
+def test_check_reasoner_named_endpoint_auth_posture_wins(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A no-auth named endpoint clears the key requirement for a curated model."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "vllm")
+    rows = _check_reasoner_llm()
+    assert next(r for r in rows if r.check == "Reasoner LLM").status == "ok"
+    assert not any(r.check == "Reasoner API_KEY" for r in rows)
+
+
 def test_check_reasoner_curated_model_ok_redacts_key(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
