@@ -498,9 +498,23 @@ def test_per_tick_spans_land_in_the_debug_band() -> None:
 def test_non_per_tick_spans_stay_info() -> None:
     """Only the per-tick stream is demoted; lifecycle spans keep their INFO band."""
     store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("rskill.configure", attrs={"openral.rskill.id": "x/y"})]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "rskill.configure"]
+    assert events and events[0]["severity"] == "info"
+
+
+def test_rskill_execute_is_debug_because_the_name_is_per_tick_too() -> None:
+    """One name, two rates — so it cannot be a headline.
+
+    `rskill_runner_node` opens a `rskill.execute` per dispatched goal, but
+    `rSkillBase.step()` opens one per *tick*. Measured on a live deploy sim:
+    promoting it put 60 rows into a 20 s window, reproducing the exact flood
+    the allow-list exists to prevent.
+    """
+    store = TelemetryStore()
     store.ingest_spans(_wrap([_make_span("rskill.execute", attrs={"openral.rskill.id": "x/y"})]))
     events = [e for e in store.snapshot()["events"] if e["kind"] == "rskill.execute"]
-    assert events and events[0]["severity"] == "info"
+    assert events and events[0]["severity"] == "debug"
 
 
 def test_the_thirty_hz_spans_the_deny_list_missed_are_also_debug() -> None:
@@ -597,3 +611,39 @@ def test_errored_per_tick_span_still_reports_error() -> None:
     store.ingest_spans(_wrap([span]))
     events = [e for e in store.snapshot()["events"] if e["kind"] == "hal.read_state"]
     assert events and events[0]["severity"] == "error"
+
+
+def test_a_rare_info_row_survives_the_debug_flood() -> None:
+    """Demoting the per-tick spans is not enough on its own.
+
+    Measured on a live `deploy sim`: the 200-slot main ring held 193
+    `hal.read_state` rows — ~7 s of history at 30 Hz — so a `deploy.bringup`
+    or `rskill.execute` row was evicted within seconds of being emitted.
+    Only the ERROR bringup row survived, because errors were the only thing
+    mirrored into the protected lane. An info row that cannot outlive the
+    flood is no more useful than one that was never emitted.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "deploy.bringup",
+                    attrs={
+                        "openral.bringup.node": "openral_hal_so100",
+                        "openral.bringup.transition": "on_activate",
+                    },
+                )
+            ]
+        )
+    )
+
+    # Two full main rings of per-tick debug traffic.
+    for _ in range(4):
+        store.ingest_spans(_wrap([_make_span("hal.read_state") for _ in range(100)]))
+
+    kinds = [e["kind"] for e in store.snapshot()["events"]]
+    assert "deploy.bringup" in kinds, (
+        "the bringup row was evicted by routine debug traffic — an operator "
+        "debugging a slow start would never see which node held the graph up"
+    )
