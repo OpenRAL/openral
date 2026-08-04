@@ -97,6 +97,7 @@ nav:
     - Reasoner design & decisions: reference/reasoner-design.md
     - Cosmos 3 Edge reasoner: reference/cosmos3-edge-reasoner.md
     - Sim environments: reference/sim-environments.md
+    - Telemetry (spans, metrics, logs): reference/telemetry.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md
