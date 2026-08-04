@@ -160,8 +160,11 @@ def _build_agent(args: argparse.Namespace) -> Any:
     # inference only, so no-op it before the model builds.
     import diffusers.models.modeling_utils as _dm
 
-    # reason: deliberate monkeypatch of a third-party training-only method
-    _dm.ModelMixin.enable_gradient_checkpointing = (  # type: ignore[method-assign]
+    # reason: deliberate monkeypatch of a third-party training-only method.
+    # `unused-ignore` is paired deliberately: with diffusers installed mypy
+    # resolves ModelMixin and needs `method-assign`; without it (the base CI
+    # job) the attribute is Any and the ignore would itself error as unused.
+    _dm.ModelMixin.enable_gradient_checkpointing = (  # type: ignore[method-assign,unused-ignore]
         lambda self, *a, **k: None
     )
 

@@ -366,6 +366,10 @@ def test_camera_info_intrinsics_scale_with_a_downscaled_image() -> None:
     resized image would ship full-resolution intrinsics against reduced
     dimensions with nothing in the graph to flag it.
     """
+    # `_publish_camera_info` builds a real `sensor_msgs/CameraInfo`, so this
+    # one needs the IDL on the path even though it never touches the network.
+    pytest.importorskip("sensor_msgs", reason="rclpy / sensor_msgs not on PYTHONPATH")
+
     from openral_core import IntrinsicsPinhole
     from openral_sensors.ros_publisher import SensorRosPublisher
 

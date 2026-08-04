@@ -473,7 +473,20 @@ class TestCloneChunkOutput:
 
 
 class TestSuppressHfWeightInit:
-    """The load-time optimisation that skips HF's throwaway random init."""
+    """The load-time optimisation that skips HF's throwaway random init.
+
+    Every case patches ``transformers.modeling_utils.PreTrainedModel``
+    directly, so the whole class needs the real library — there is nothing
+    meaningful left to assert without it (CLAUDE.md §1.11: skip, never fake).
+    The base CI job installs the workspace without the VLA extras.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_transformers(self) -> None:
+        pytest.importorskip(
+            "transformers",
+            reason="install the VLA stack to exercise the HF init suppression",
+        )
 
     def test_init_is_suppressed_inside_and_restored_after(self) -> None:
         from openral_rskill._vla_core import suppress_hf_weight_init
