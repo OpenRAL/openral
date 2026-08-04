@@ -291,12 +291,13 @@ def get_observability_export_failures() -> Counter:
 
     Labels: ``signal_kind`` (``trace`` | ``metric`` | ``log``).
 
-    .. warning::
-       **Declared but never recorded.** Nothing increments it, so a
-       collector that is silently dropping batches looks identical to one
-       that is healthy — the failure mode this counter exists to expose is
-       exactly the one it cannot currently expose. Wiring it means hooking
-       the SDK's exporter failure path, not just adding an ``add(1)``.
+    Recorded by ``openral_observability._sdk._FailureCountingSpanExporter``,
+    which wraps the configured OTLP span exporter and counts every non-SUCCESS
+    result. Traces only so far: the metric and log pipelines have no equivalent
+    wrapper yet, so ``signal_kind`` is always ``trace`` in practice.
+
+    Without it a collector that is silently dropping batches looks identical to
+    a healthy one — the failure mode the counter exists to expose.
     """
     return _cached(
         semconv.METRIC_OBSERVABILITY_EXPORT_FAILURES,

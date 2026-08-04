@@ -79,6 +79,27 @@ quiet until deliberately promoted. Every span is still indexed in full for
 > an operator needed scrolled away before it could be read. Inverted, routine
 > traffic contributes **0** info rows.
 
+### The three event rings
+
+Demoting the noisy spans stopped info being *generated*, but the main ring is
+one FIFO shared with the debug stream, so the rows that remained were still
+evicted within seconds. The store therefore keeps two protected lanes beside it,
+and `snapshot()` merges all three deduped:
+
+| ring | size | holds |
+|---|---|---|
+| `_events` | 200 | everything, including debug |
+| `_error_events` | 64 | errors + fatals, plus `skill_failure` even when downgraded to warn |
+| `_headline_events` | 64 | the remaining non-debug rows (`deploy.bringup`, `reasoner.tick`, `world.scene_objects` …) |
+
+**The two lanes are separate on purpose.** Mirroring all non-debug traffic into
+the single error lane let routine info evict the safety events those 64 slots
+exist to preserve: `world.scene_objects` alone runs at ~0.10/s, so the shared
+lane fully cycled in ~11 minutes of an otherwise idle scene and a minute-one
+`safety.violation` was gone by minute twelve — the exact "counter goes up, no
+trace" failure the protected lane was added to prevent. One budget each means
+neither class can starve the other.
+
 ---
 
 ## Span events
@@ -141,6 +162,15 @@ attributes and are stripped by the store so they cannot fragment a series.
 > diverge. `openral.tick.duration` is deliberately left alone: its unit is the
 > library runner's whole tick (sensors + HAL + skill + safety) and no such unit
 > exists on the ROS graph, where those are four separate processes.
+>
+> `InferenceRunnerBase` used to record `inference.duration` **as well**, from
+> `result.inference_ms`. That was removed: `inference_ms` is `Skill.step`
+> wall-time — the chunk *dispatch* cost, near-zero on the ticks a
+> `ChunkedExecutor` spends replaying a cached action — not the inference. Same
+> instrument, two meanings, two disjoint label sets (`{rskill.id}` vs `{kind}`),
+> so the eval/sim path doubled its sample count and computed p95 over a mixed
+> population. The dispatch cost stays on the tick span as `rskill.inference_ms`
+> and in the run summary's avg/p99, where it is unambiguous.
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
