@@ -41,6 +41,8 @@ _ENV_VARS = (
     "OPENRAL_REASONER_DIALECT",
     "OPENRAL_REASONER_MAX_TOKENS",
     "OPENRAL_REASONER_TIMEOUT_S",
+    # Retired provider-first spelling (removed in 0.3.0); still cleared so a
+    # stale developer env cannot influence a test.
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
     "OPENRAL_REASONER_LLM_API_KEY",
@@ -72,8 +74,8 @@ def _empty_palette() -> ToolPalette:
 
 
 def test_cosmos_builds_client_with_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`cosmos` is the one provider that needs no MODEL — Cosmos3-Edge is canonical."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    """`cosmos3-edge` is a curated key: the registry supplies the served id."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
     assert client.model_id == DEFAULT_COSMOS3_MODEL == "nvidia/Cosmos3-Edge"
@@ -85,14 +87,18 @@ def test_cosmos_builds_client_with_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert client._tool_choice == "required"
 
 
-def test_cosmos_explicit_model_and_base_url_win(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Any Cosmos 3 tier (or a remote endpoint) is selectable via the std envs."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "nvidia/Cosmos3-Nano")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://thor.lan:8000/v1")
+def test_cosmos_explicit_endpoint_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A remote endpoint is selectable, and disengages the managed autostart.
+
+    The served model id comes from the registry entry — pointing the managed
+    client at a different Cosmos tier is a registry change (a new curated
+    model), not an env one.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://thor.lan:8000/v1")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
-    assert client.model_id == "nvidia/Cosmos3-Nano"
+    assert client.model_id == DEFAULT_COSMOS3_MODEL
     assert client._base_url == "http://thor.lan:8000/v1"
     # Non-loopback endpoint → the managed autostart must disengage.
     assert client._auto_start is False
@@ -102,7 +108,7 @@ def test_cosmos_explicit_model_and_base_url_win(monkeypatch: pytest.MonkeyPatch)
 def test_cosmos_autostart_env_disables_spawn(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
     """Every common falsy spelling disables the managed spawn — an operator
     who writes AUTOSTART=false must not get a surprise multi-GB server."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     monkeypatch.setenv("OPENRAL_COSMOS3_AUTOSTART", value)
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
@@ -115,15 +121,15 @@ def test_cosmos_portless_loopback_disables_autostart(
     """A loopback URL without an explicit port can't be managed: the spawned
     server and the readiness probe would target different ports (reverse-proxy
     on :80 case) — treat it as self-managed instead."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://127.0.0.1/v1")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
     assert client._auto_start is False
 
 
 def test_cosmos_boot_timeout_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     monkeypatch.setenv("OPENRAL_COSMOS3_BOOT_TIMEOUT_S", "45")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
@@ -131,17 +137,18 @@ def test_cosmos_boot_timeout_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cosmos_timeout_env_still_wins(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_TIMEOUT_S", "15")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    monkeypatch.setenv("OPENRAL_REASONER_TIMEOUT_S", "15")
     client = build_tool_use_client_from_env()
     assert isinstance(client, Cosmos3ToolUseClient)
     assert client._timeout_s == 15.0
 
 
-def test_provider_menu_lists_cosmos() -> None:
+def test_curated_menu_lists_cosmos() -> None:
+    """An unconfigured reasoner names cosmos3-edge among the curated models."""
     with pytest.raises(ROSConfigError) as excinfo:
         build_tool_use_client_from_env()
-    assert "cosmos" in str(excinfo.value)
+    assert "cosmos3-edge" in str(excinfo.value)
 
 
 # ── Sidecar script resolution ──────────────────────────────────────────────────
@@ -327,7 +334,7 @@ def test_warm_starts_the_sidecar_without_a_tick(monkeypatch: pytest.MonkeyPatch)
     waiting. On a cold host that is a venv provision plus a ~9 GB download;
     bringup has minutes of unrelated work to overlap it with.
     """
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     client = build_tool_use_client_from_env()
 
     calls: list[int] = []
@@ -344,7 +351,7 @@ def test_warm_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     ``_ensure_server`` short-circuits on ``_server_ready`` and reuses a
     still-booting child, so calling ``warm()`` more than once is safe.
     """
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     client = build_tool_use_client_from_env()
 
     calls: list[int] = []

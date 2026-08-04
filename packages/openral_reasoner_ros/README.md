@@ -142,16 +142,33 @@ a self-managed vLLM/NIM endpoint.
 ### Legacy migration
 
 The old `OPENRAL_REASONER_LLM_{PROVIDER,MODEL,API_KEY,BASE_URL,...}` contract
-is accepted for one release and emits a deprecation warning. New config wins
-when `OPENRAL_REASONER_MODEL` is set.
+was **removed in 0.3.0** (deprecated in 0.2.0 per ADR-0088). It is no longer
+read at all: an environment that sets only the old vars now fails with
+"`OPENRAL_REASONER_MODEL` is unset" rather than silently selecting a model.
+
+Each var maps across directly:
 
 | Legacy | Model-first |
 |---|---|
-| `OPENRAL_REASONER_LLM_PROVIDER` + `OPENRAL_REASONER_LLM_MODEL` | `OPENRAL_REASONER_MODEL` |
+| `OPENRAL_REASONER_LLM_PROVIDER` + `OPENRAL_REASONER_LLM_MODEL` | `OPENRAL_REASONER_MODEL` (+ `OPENRAL_REASONER_ENDPOINT`) |
 | `OPENRAL_REASONER_LLM_BASE_URL` | `OPENRAL_REASONER_ENDPOINT` |
 | `OPENRAL_REASONER_LLM_API_KEY` | `OPENRAL_REASONER_API_KEY` |
 | `OPENRAL_REASONER_LLM_MAX_TOKENS` | `OPENRAL_REASONER_MAX_TOKENS` |
 | `OPENRAL_REASONER_LLM_TIMEOUT_S` | `OPENRAL_REASONER_TIMEOUT_S` |
+
+`PROVIDER` split into two axes — *which model* and *where it runs* — so each
+old provider value maps onto a model plus an endpoint:
+
+| Legacy `PROVIDER=` | Model-first replacement |
+|---|---|
+| `anthropic` | curated `claude-opus-4-8`, or `ENDPOINT=anthropic` + a raw model id |
+| `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` | `ENDPOINT=<name>` + `API_KEY` |
+| `ollama` / `vllm` | `ENDPOINT=<name>` (no key) |
+| `cosmos` | curated `cosmos3-edge` (managed autostart included) |
+| `openai-compatible` | `ENDPOINT=<url>` + `DIALECT=openai` |
+
+A named endpoint carries its own base URL, dialect, auth posture, cold-start
+timeout and `tool_choice` quirk, so `DIALECT` is needed only for a bare URL.
 
 Tests use a deterministic `FakeToolUseClient` under
 [`tests/integration/fakes/`](../../tests/integration/fakes/) — the only test

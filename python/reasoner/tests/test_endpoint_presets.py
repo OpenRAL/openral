@@ -1,8 +1,9 @@
 """Named ``OPENRAL_REASONER_ENDPOINT`` values (ADR-0088 escape hatch).
 
-The point of the presets is that everything the deprecated
+The point of the presets is that everything the retired
 ``OPENRAL_REASONER_LLM_PROVIDER`` shim could express is expressible
-model-first — otherwise the shim is load-bearing, not deprecated.
+model-first. That is what made the shim deletable in 0.3.0 rather than
+load-bearing, so these tests guard the replacement contract.
 """
 
 from __future__ import annotations
