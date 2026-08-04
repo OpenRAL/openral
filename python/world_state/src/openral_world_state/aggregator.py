@@ -580,10 +580,33 @@ class WorldStateAggregator:
         # Transition-only events: stale on this tick that wasn't stale last
         # tick, error latched this tick that wasn't latched last tick.
         for component in sorted(stale_now - self._prev_stale_components):
-            attrs: dict[str, str | float] = {semconv.WORLD_STATE_COMPONENT: component}
-            if component in ages_ms:
-                attrs[semconv.SENSORS_AGE_MS] = ages_ms[component]
-            span.add_event(semconv.EVENT_STALENESS_LATCHED, attributes=attrs)
+            if component not in ages_ms:
+                # NEVER RECEIVED, which is not the same as "went stale" — and
+                # this event means the latter. All three component families
+                # above classify a component with no data as `"stale"` while
+                # leaving it out of `ages_ms` (there is no age to report), so
+                # `ages_ms` membership is exactly "has had data at least once".
+                #
+                # Without this guard every bringup emitted a WARN nobody can
+                # act on: `world_state` subscribes before the HAL publishes its
+                # first `joint_state`, so on a real SO-101 the row landed at
+                # T+0.00 and the HAL activated 0.25 s later. WARNING is the one
+                # band an operator cannot filter away, which makes a
+                # guaranteed-every-run warning the most expensive kind of noise.
+                #
+                # A component that never arrives at all is still visible — it
+                # holds `diag[...] = "stale"` on the world-state card and keeps
+                # `openral.world_state.components_stale` above zero — it just
+                # does not claim to have *latched*, because it never had a
+                # fresh state to fall from.
+                continue
+            span.add_event(
+                semconv.EVENT_STALENESS_LATCHED,
+                attributes={
+                    semconv.WORLD_STATE_COMPONENT: component,
+                    semconv.SENSORS_AGE_MS: ages_ms[component],
+                },
+            )
 
         for component in sorted(errors_now - self._prev_latched_errors):
             span.add_event(

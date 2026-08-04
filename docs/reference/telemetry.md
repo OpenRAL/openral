@@ -113,7 +113,7 @@ where noted.
 | `openral.event.deadline_missed` | `runner/base.py:427` | Tick overran its cadence budget | error, counted |
 | `openral.event.skill_failure` | `reasoner_node.py:4887` | Reasoner-published skill failure | error (→ warn while e-stop-latched), counted |
 | `openral.event.sensor_stale` | `deploy_runner.py:387` | Sensor older than its age budget | counted |
-| `openral.event.staleness_latched` | `world_state/aggregator.py:586` | World-state component went stale | — |
+| `openral.event.staleness_latched` | `world_state/aggregator.py` | World-state component **went** stale — only for a component that has had data. A never-received one is stale in `diag` and counted in `components_stale`, but has not latched: it never had a fresh state to fall from. Suppressing it removes a WARN that fired on every bringup (`world_state` subscribes before the HAL's first `joint_state`). | — |
 | `openral.event.error_latched` | `world_state/aggregator.py:589` | World-state component latched an error | — |
 | `openral.event.estop_requested` | `hal/lifecycle.py::_emit_estop_telemetry` | E-stop latched at the HAL | error, counted, protected lane |
 | `openral.event.action_dropped` | — | **[not emitted](#declared-but-not-emitted)** | — |
