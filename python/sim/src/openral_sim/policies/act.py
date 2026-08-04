@@ -25,6 +25,7 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
     call_make_processors_cached_first,
@@ -235,6 +236,17 @@ class _ACTAdapter:
 _log = structlog.get_logger(__name__)
 
 
+def _act_phase(name: str, **fields: Any) -> Any:
+    """Shortcut for ``phase_timer(name, prefix="act", log=_log)``.
+
+    Mirrors the smolvla / pi05 adapters so a ACT load emits the same
+    ``act_<name>_{start,heartbeat,done}`` shape. Without it
+    ``tools/profile_policy_load.py`` had nothing to render for this family
+    and reported "no phase_timer events captured".
+    """
+    return phase_timer(name, prefix="act", log=_log, **fields)
+
+
 def _maybe_build_act_nvmm(
     policy: Any, repo_id: str, device: str, manifest: Any
 ) -> Any:  # reason: lerobot policy + ActNvmmExecutor are untyped
@@ -302,15 +314,16 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     spec = env_cfg.vla
     device = resolve_device(spec)
 
-    try:
-        import torch
-        from lerobot.policies.act.modeling_act import ACTPolicy
-        from openral_rskill import _lerobot_compat  # noqa: F401
-    except ImportError as exc:  # pragma: no cover - opt-in
-        raise ROSConfigError(
-            "ACT adapter requires torch + lerobot; install with: "
-            "just sync --all-packages --group sim"
-        ) from exc
+    with _act_phase("imports"):
+        try:
+            import torch
+            from lerobot.policies.act.modeling_act import ACTPolicy
+            from openral_rskill import _lerobot_compat  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - opt-in
+            raise ROSConfigError(
+                "ACT adapter requires torch + lerobot; install with: "
+                "just sync --all-packages --group sim"
+            ) from exc
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="ACT")
     manifest = _load_manifest_for_spec(spec)
@@ -320,11 +333,15 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     # ``n_state_dim`` on ``JunnDooChoi/act_libero_spatial_finetuned_kaf_64``).
     from huggingface_hub import snapshot_download
 
-    pretrained_path = snapshot_download(
-        repo_id=repo_id, revision=revision, ignore_patterns=["*.md"]
-    )
+    with _act_phase("snapshot", repo=repo_id):
+        pretrained_path = snapshot_download(
+            repo_id=repo_id, revision=revision, ignore_patterns=["*.md"]
+        )
     _sanitize_act_config_json(pretrained_path)
-    policy = ACTPolicy.from_pretrained(pretrained_path).to(device)
+    with _act_phase("from_pretrained", repo=repo_id):
+        policy = ACTPolicy.from_pretrained(pretrained_path)
+    with _act_phase("to_device", device=device, gpu_mb=True):
+        policy = policy.to(device)
     policy.eval()
 
     # ACT predicts ``chunk_size=100`` actions per heavy forward. The paper
