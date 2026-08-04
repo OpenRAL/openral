@@ -199,7 +199,17 @@ def get_tick_deadline_misses() -> Counter:
 
 
 def get_inference_timeouts() -> Counter:
-    """``openral.inference.timeouts`` — ``ROSInferenceTimeout`` occurrences."""
+    """``openral.inference.timeouts`` — ``ROSInferenceTimeout`` occurrences.
+
+    .. warning::
+       **Declared but never recorded.** No caller increments this, because
+       nothing raises ``ROSInferenceTimeout``: the exception appears only in
+       docstrings (``openral_wam.protocol``, ``openral_rskill.runtime``) as
+       part of a contract no backend enforces yet. Wiring the counter
+       therefore means implementing the timeout first, not just adding an
+       ``add(1)``. Kept so the intended contract stays visible; see the
+       "declared, not emitted" section of ``docs/reference/telemetry.md``.
+    """
     return _cached(
         semconv.METRIC_INFERENCE_TIMEOUTS,
         lambda meter, name: meter.create_counter(
@@ -224,7 +234,17 @@ def get_safety_violations() -> Counter:
 
 
 def get_safety_clamps() -> Counter:
-    """``openral.safety.clamps`` — safety-driven action clamps (no violation raised)."""
+    """``openral.safety.clamps`` — safety-driven action clamps (no violation raised).
+
+    .. warning::
+       **Declared but never recorded.** The signal exists — the C++ kernel
+       sets a ``safety.clamped`` span attribute (``lifecycle_kernel.cpp``)
+       and ``supervisor_node`` clamps gripper width — but nothing feeds this
+       counter, so "how often is the kernel silently correcting the policy?"
+       has no answer in the metrics. Wiring it crosses the safety boundary
+       (CLAUDE.md §3: safety-WG reviewer + hazard-log update), so it belongs
+       in a safety PR, not a perf one.
+    """
     return _cached(
         semconv.METRIC_SAFETY_CLAMPS,
         lambda meter, name: meter.create_counter(
@@ -235,7 +255,21 @@ def get_safety_clamps() -> Counter:
 
 
 def get_hal_estop_count() -> Counter:
-    """``openral.hal.estop.count`` — :meth:`HAL.estop` invocations."""
+    """``openral.hal.estop.count`` — :meth:`HAL.estop` invocations.
+
+    .. warning::
+       **Declared but never recorded — and it has a visible consequence.**
+       The dashboard's Command band renders an ``e-stops`` counter fed by
+       ``openral.event.estop_requested``, which no emitter produces either,
+       so that widget reads **0 no matter how many e-stops fire**. A safety
+       indicator that cannot leave zero is worse than an absent one: it
+       reads as "no e-stops have occurred".
+
+       Wiring both is a safety change (CLAUDE.md §3: safety-WG reviewer,
+       hazard-log update, tests proving the behaviour is at least as
+       conservative) and is deliberately NOT bundled into perf work. See
+       ``docs/reference/telemetry.md``.
+    """
     return _cached(
         semconv.METRIC_HAL_ESTOP_COUNT,
         lambda meter, name: meter.create_counter(
@@ -282,6 +316,13 @@ def get_observability_export_failures() -> Counter:
     """``openral.observability.export_failures`` — dropped OTLP batches.
 
     Labels: ``signal_kind`` (``trace`` | ``metric`` | ``log``).
+
+    .. warning::
+       **Declared but never recorded.** Nothing increments it, so a
+       collector that is silently dropping batches looks identical to one
+       that is healthy — the failure mode this counter exists to expose is
+       exactly the one it cannot currently expose. Wiring it means hooking
+       the SDK's exporter failure path, not just adding an ``add(1)``.
     """
     return _cached(
         semconv.METRIC_OBSERVABILITY_EXPORT_FAILURES,

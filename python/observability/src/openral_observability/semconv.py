@@ -213,12 +213,29 @@ SPAN_SIM_STEP: Final[str] = "sim.step"
 SPAN_PHYSICS_STEP: Final[str] = "physics.step"
 
 # ── Span-event names ───────────────────────────────────────────────────────
+#
+# Five of these are DECLARED BUT NEVER EMITTED — nothing in python/,
+# packages/ or cpp/ adds them to a span: EVENT_ESTOP_REQUESTED,
+# EVENT_ACTION_DROPPED, EVENT_CHUNK_PREFETCH_HIT, EVENT_CHUNK_PREFETCH_MISS
+# and EVENT_EPISODE_CLOSED. They are annotated individually below and
+# tabulated in `docs/reference/telemetry.md`. They are kept rather than
+# deleted because each records an intended contract, and because
+# `dashboard/store.py` already consumes two of them — but a name that
+# exists and never fires is a trap for anyone reading this file as an
+# inventory of what the system actually reports.
 
+# NOT EMITTED. The dashboard's Command band renders an `e-stops` counter
+# from this event (index.html), so that widget reads 0 no matter how many
+# e-stops fire — a safety indicator that cannot leave zero reads as "no
+# e-stops have occurred". Wiring it is a safety change (CLAUDE.md §3:
+# safety-WG reviewer + hazard-log update), tracked separately.
 EVENT_ESTOP_REQUESTED: Final[str] = "openral.event.estop_requested"
 EVENT_SENSOR_STALE: Final[str] = "openral.event.sensor_stale"
 EVENT_STALENESS_LATCHED: Final[str] = "openral.event.staleness_latched"
 EVENT_ERROR_LATCHED: Final[str] = "openral.event.error_latched"
 EVENT_SAFETY_VIOLATION: Final[str] = "openral.event.safety_violation"
+# NOT EMITTED. `DeadlineOverrunPolicy.DROP` does drop the action, but it
+# reports via `deadline_missed` + the WARN line, never this event.
 EVENT_ACTION_DROPPED: Final[str] = "openral.event.action_dropped"
 EVENT_DEADLINE_MISSED: Final[str] = "openral.event.deadline_missed"
 # A Reasoner-published skill failure. The single
@@ -228,10 +245,15 @@ EVENT_DEADLINE_MISSED: Final[str] = "openral.event.deadline_missed"
 # ``vram_insufficient`` refusal and the reward-plateau abort. The
 # concrete failure state rides on the ``SKILL_FAILURE_STATE`` attribute.
 EVENT_SKILL_FAILURE: Final[str] = "openral.event.skill_failure"
+# NOT EMITTED (both). Action-chunk prefetch exists on the rSkill path but
+# never reports its hit rate, so "is the prefetch actually helping?" is
+# unanswerable from a trace — the one question these two exist to answer.
 EVENT_CHUNK_PREFETCH_HIT: Final[str] = "openral.event.chunk_prefetch_hit"
 EVENT_CHUNK_PREFETCH_MISS: Final[str] = "openral.event.chunk_prefetch_miss"
-# Emitted by RolloutRecorder.episode_end() so a Jaeger query
-# can pivot from a successful skill execution to the produced dataset row.
+# NOT EMITTED. Intended for RolloutRecorder.episode_end() so a Jaeger query
+# could pivot from a successful skill execution to the produced dataset
+# row; the recorder closes episodes without adding it, so that pivot does
+# not work today.
 EVENT_EPISODE_CLOSED: Final[str] = "openral.event.episode_closed"
 
 # ── Metric instrument names ────────────────────────────────────────────────
