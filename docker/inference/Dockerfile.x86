@@ -139,21 +139,6 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 # moves cold-start skill loads back to seconds.
 ENV UV_COMPILE_BYTECODE=1
 
-# Pin the Hugging Face cache to a stable, mountable path.
-#
-# Without this it defaults to ``$HOME/.cache/huggingface`` inside the
-# container's writable layer, which is discarded on every ``docker run --rm``
-# — so each run re-downloads the rSkill's weights from scratch. That is
-# gigabytes and minutes per launch for a real deploy (SmolVLA ~1.4 GB,
-# Robometer-4B ~3.5 GB), repeated forever, and it is invisible in a
-# `phase_timer` breakdown because the cost lands inside `from_pretrained`.
-#
-# Naming the path does not by itself persist anything — the operator still
-# has to mount it (`-v ~/.cache/huggingface:/opt/openral/hf-cache`) — but it
-# makes the mount point stable and documentable instead of depending on
-# whatever $HOME the container runs as. See docker/inference/README.md.
-ENV HF_HOME=/opt/openral/hf-cache
-
 WORKDIR /workspace
 
 # Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
@@ -349,6 +334,27 @@ ENV PATH=/workspace/.venv/bin:$PATH \
 FROM runtime-base AS final
 
 WORKDIR /workspace
+
+# Pin the Hugging Face cache to a stable, mountable path.
+#
+# Without this it defaults to ``$HOME/.cache/huggingface`` inside the
+# container's writable layer, which is discarded on every ``docker run --rm``
+# — so each run re-downloads the rSkill's weights from scratch. That is
+# gigabytes and minutes per launch for a real deploy (SmolVLA ~1.4 GB,
+# Robometer-4B ~3.5 GB), repeated forever, and it is invisible in a
+# `phase_timer` breakdown because the cost lands inside `from_pretrained`.
+#
+# This MUST live in the final stage. An `ENV` in `builder` does not reach the
+# runtime image — verified the hard way: the first cut set it next to
+# `UV_COMPILE_BYTECODE` in the builder and `docker run ... env` showed
+# `HF_HOME=` empty. (`UV_COMPILE_BYTECODE` is correctly builder-only: it
+# only affects install-time .pyc generation.)
+#
+# Naming the path does not by itself persist anything — the operator still
+# has to mount it (`-v ~/.cache/huggingface:/opt/openral/hf-cache`) — but it
+# makes the mount point stable and documentable instead of depending on
+# whatever $HOME the container runs as. See docker/inference/README.md.
+ENV HF_HOME=/opt/openral/hf-cache
 
 # Entrypoint is the bare `openral` CLI, not a hardcoded `deploy run`:
 # deploying on real hardware starts with `doctor` / `detect` / calibration

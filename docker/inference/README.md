@@ -146,6 +146,24 @@ both are easy to drop in a refactor without noticing:
   and the cost is invisible in a `phase_timer` breakdown because it lands
   inside `from_pretrained`.
 
+## Driving the container's ROS graph from the host
+
+The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with
+`RMW_IMPLEMENTATION` unset gets Fast-DDS on Jazzy, so host-side `ros2` tooling
+**cannot see the container's nodes even with `--network host`** — an
+`ros2 action send_goal` just hangs until its timeout against a running action
+server. Either dispatch from inside the container:
+
+```bash
+docker exec <name> bash -lc 'source /workspace/install/setup.bash && ros2 action send_goal …'
+```
+
+or match the middleware on the host:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+```
+
 ## CI
 
 `.github/workflows/docker-build.yml` builds this image **only when its inputs
