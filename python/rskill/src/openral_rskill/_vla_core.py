@@ -969,6 +969,17 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
         channels, height, width = (int(v) for v in feature.shape)
         batch[key] = torch.zeros(1, channels, height, width, dtype=image_dtype, device=device)
 
+    # Run the batch through the adapter's own preprocessor first, exactly as
+    # `step()` does. Skipping it warms the wrong thing — or nothing at all:
+    # SmolVLA's `select_action` reads `observation.language.tokens`, which the
+    # preprocessor produces by tokenising `task`, so a raw batch raises
+    # KeyError and the warm-up is silently lost. Found on a live deploy sim;
+    # the guard downgraded it to a warning, which is exactly why it went
+    # unnoticed until the log was read.
+    preprocessor = getattr(adapter, "_preprocessor", None)
+    if callable(preprocessor):
+        batch = preprocessor(batch)
+
     with contextlib.suppress(AttributeError, TypeError):
         policy.reset()
     with torch.no_grad():
