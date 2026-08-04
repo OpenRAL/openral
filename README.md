@@ -132,8 +132,13 @@ docker run --rm --gpus all openral:x86 doctor          # host diagnosis
 docker run --rm --device /dev/ttyACM0 openral:x86 detect   # robot.yaml wizard
 docker run --rm --gpus all --network host \
     --device /dev/ttyACM0 --device /dev/video0 \
+    -v ~/.cache/huggingface:/opt/openral/hf-cache \
     openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
 ```
+
+> Mount the Hugging Face cache (`-v ~/.cache/huggingface:/opt/openral/hf-cache`,
+> the image's pinned `HF_HOME`). Without it every `--rm` run re-downloads the
+> rSkill weights into a discarded layer — gigabytes and minutes per launch.
 
 One-liner install (no clone, no sudo):
 
