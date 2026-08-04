@@ -74,6 +74,7 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import inference_span
 
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -266,16 +267,17 @@ class _LingBotVla2Adapter:
                 f"(arm_l6+grip1+arm_r6+grip1), got {state_arr.shape[0]}-D."
             )
 
-        reply = self._client.call(
-            "get_action",
-            {
-                "observation": {
-                    "images": payload_images,
-                    "state": state_arr,
-                    "task": instruction,
-                }
-            },
-        )
+        with inference_span(kind="chunk", engine="sidecar"):
+            reply = self._client.call(
+                "get_action",
+                {
+                    "observation": {
+                        "images": payload_images,
+                        "state": state_arr,
+                        "task": instruction,
+                    }
+                },
+            )
         chunk = np.asarray(self._client.require(reply, "action"), dtype=np.float32)
         if chunk.ndim != _CHUNK_RANK_2D:
             raise ROSConfigError(
