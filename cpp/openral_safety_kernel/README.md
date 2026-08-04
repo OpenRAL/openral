@@ -77,7 +77,6 @@ carry:
 | `safety.check_name` | `"envelope"` |
 | `safety.kernel` | `"cpp"` (closed-set; surfaces in Identity card) |
 | `safety.severity` | `"info"` (pass), `"warn"` (latched / unconfigured), `"violation"` |
-| `safety.clamped` | `false` (kernel rejects, never clamps) |
 | `safety.drop_reason` | `estop_latched`, `envelope_unconfigured`, `force`, `workspace`, or `controller` |
 | `safety.violation_{reason,joint,value,limit}` | populated on `violation` |
 | `rskill.id` | `ActionChunk.rskill_id` (short-prefix form the dashboard latches) |
