@@ -148,7 +148,6 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.system.ram.used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py:189-190` | 1 Hz |
 | `openral.system.gpu.memory_used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py:191-192` | 1 Hz |
 | `openral.system.gpu.utilization_pct` | UpDownCounter | % | `system_metrics.py:193` | 1 Hz |
-| `openral.inference.timeouts` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
 | `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
 | `openral.observability.export_failures` | Counter | — | `_sdk._FailureCountingSpanExporter` | per failed span-export batch (label `signal_kind=trace`) |
 
@@ -259,7 +258,8 @@ uv run tools/profile_policy_load.py --rskill rskills/<dir>
 
 ## Declared but not emitted
 
-These names exist in `semconv` / `metrics` but **nothing produces them** (seven, after `estop_requested` / `hal.estop.count` were wired). They
+These names exist in `semconv` / `metrics` but **nothing produces them** (six, after `estop_requested` / `hal.estop.count` were wired and the
+`inference.timeouts` contract was deleted with `ROSInferenceTimeout`, issue #49). They
 are kept because each records an intended contract, and annotated in-place so
 the modules do not read as an inventory of what actually works. A source-scanning
 test (`python/observability/tests/test_declared_not_emitted.py`) pins this list
@@ -268,7 +268,6 @@ updated.
 
 | Signal | Why it is not just a missing `add(1)` |
 |---|---|
-| `openral.inference.timeouts` | Nothing raises `ROSInferenceTimeout` — it appears only in docstrings as a contract no backend enforces. Wiring the counter means implementing the timeout first. |
 | `openral.event.action_dropped` | `DeadlineOverrunPolicy.DROP` does drop the action, but reports via `deadline_missed` instead. |
 | `openral.event.chunk_prefetch_hit` / `_miss` | Action-chunk prefetch runs but never reports its hit rate, so "is the prefetch helping?" cannot be answered from a trace. |
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
