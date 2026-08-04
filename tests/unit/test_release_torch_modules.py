@@ -110,3 +110,39 @@ def test_cuda_memory_is_actually_reclaimed() -> None:
     assert torch.cuda.memory_allocated() <= before, (
         f"VRAM not reclaimed: {torch.cuda.memory_allocated()} > {before}"
     )
+
+
+# ── eviction VRAM probe ──────────────────────────────────────────────────────
+
+
+def test_cuda_allocated_mb_tracks_a_real_allocation() -> None:
+    """The probe the skill runner logs its `freed_mb` from.
+
+    An eviction that frees nothing is the failure mode a live run cannot
+    otherwise see — `empty_cache()` returns only already-free blocks, so an
+    adapter that flushes without dropping its reference reports success
+    while the card stays full. This is the measurement that makes that
+    visible.
+    """
+    import importlib
+
+    runner = importlib.import_module("openral_rskill_ros.rskill_runner_node")
+    probe = runner._cuda_allocated_mb
+
+    if not torch.cuda.is_available():
+        assert probe() is None
+        return
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    baseline = probe()
+    assert baseline is not None
+
+    holder = torch.nn.Linear(2048, 2048).cuda()  # ~16 MiB fp32
+    grown = probe()
+    assert grown is not None and grown > baseline
+
+    del holder
+    gc.collect()
+    torch.cuda.empty_cache()
+    assert (probe() or 0.0) <= baseline + 0.5

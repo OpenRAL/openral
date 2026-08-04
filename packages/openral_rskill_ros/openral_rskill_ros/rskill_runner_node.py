@@ -55,6 +55,28 @@ __all__ = ["RskillRunnerNode", "main"]
 log = structlog.get_logger(__name__)
 
 
+def _cuda_allocated_mb() -> float | None:
+    """Currently-allocated CUDA memory in MiB, or ``None`` off-GPU.
+
+    Deliberately reads ``torch.cuda.memory_allocated`` (live tensors) rather
+    than ``memory_reserved`` (the caching allocator's pool): the question an
+    eviction has to answer is "did the weights actually go away", and reserved
+    bytes stay put by design after a free.
+
+    Never raises and never imports torch just to answer — a host without it
+    simply gets ``None``.
+    """
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        if not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.memory_allocated()) / (1024 * 1024)
+    except Exception:  # reason: a telemetry probe must never break eviction
+        return None
+
+
 # Type for the injected skill resolver. Takes the goal's rskill_id /
 # revision / prompt / prompt_metadata_json and returns a *configured +
 # activated* rSkill ready to receive `step` calls. Production deployments
@@ -546,10 +568,26 @@ if _ROS2_AVAILABLE:
             shutdown = getattr(skill, "shutdown", None)
             if not callable(shutdown):
                 return
+            before_mb = _cuda_allocated_mb()
             try:
                 shutdown()
             except Exception as exc:  # reason: eviction must never block the next goal
                 self.get_logger().warning(f"rskill_runner.evict_failed: {exc!s}")
+            after_mb = _cuda_allocated_mb()
+            if before_mb is not None and after_mb is not None:
+                # An eviction that frees nothing is the failure mode this run
+                # cannot otherwise see: `torch.cuda.empty_cache()` returns only
+                # already-free blocks, so an adapter that flushes without
+                # dropping its model reference reports success while the card
+                # stays full — and the next skill OOMs on an 8 GB machine even
+                # though each fits alone. Logging the delta makes a silent
+                # regression of that fix visible in one line.
+                log.info(
+                    "rskill_runner.evicted",
+                    freed_mb=round(before_mb - after_mb, 1),
+                    resident_mb_before=round(before_mb, 1),
+                    resident_mb_after=round(after_mb, 1),
+                )
 
         # ── Action callbacks ─────────────────────────────────────────────────
 

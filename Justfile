@@ -618,6 +618,29 @@ sim-act-libero *args: _strip-hf-libero-egg _ensure-libero-config
 sim-audit *args:
     uv run python tools/audit_sim_configs.py {{args}}
 
+# The load path is where deploy latency actually lives — imports,
+# from_pretrained, quantisation, to_device — and the phases are already
+# instrumented (`phase_timer`), but nothing surfaced them outside a live
+# deploy's logs. This renders them as a table with each phase's share, so a
+# regression is one command away instead of a bisect. Real weights, real
+# device; pass any in-tree rSkill:
+#
+#   just profile-load rskills/act-so101-pen
+#   just profile-load rskills/smolvla-libero --device cpu
+#
+# Measured on an RTX 4070 (act-so101-pen, warm cache): imports 4.6 s (54%),
+# snapshot 0.3 s, from_pretrained 0.7 s, to_device 0.0 s, 8.5 s end-to-end.
+#
+# HF_HUB_OFFLINE=1 additionally skips the per-file HEAD revalidation inside
+# lerobot/transformers that `_hf_download_cached_first` cannot wrap — worth
+# setting for a clean warm-cache number. Families whose adapter has no
+# `_<family>_phase` helper (xvla, diffusion) still report "no phase_timer
+# events captured"; the end-to-end total is valid regardless.
+#
+# Phase-by-phase breakdown of one rSkill's load, on the real GPU.
+profile-load rskill *args:
+    uv run python tools/profile_policy_load.py --rskill {{rskill}} {{args}}
+
 # Hardware-in-loop (requires connected robot + permissions)
 # HIL test driver. When no hardware is attached, the per-file module-level
 # `pytestmark = pytest.mark.skipif(...)` fires before any test is collected,
