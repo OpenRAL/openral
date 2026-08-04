@@ -14,9 +14,11 @@ and design §3 (semantic-convention namespace).
 
 from __future__ import annotations
 
+import contextlib
 import functools
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from time import perf_counter
 from typing import Any, ParamSpec, TypeVar
 
 from opentelemetry import trace
@@ -74,7 +76,23 @@ def inference_span(
     kind: str = "foreground",
     **attrs: Any,
 ) -> Iterator[Span]:
-    """Span around one VLA chunk inference.
+    """Span around one VLA chunk inference — and its duration metric.
+
+    **The metric is emitted here, not by the caller.** ``openral.inference.
+    duration`` used to be recorded only by
+    :class:`openral_runner.InferenceRunnerBase`, which the ROS deploy graph
+    does not use — ``rskill_runner_node`` runs its own tick loop and opens
+    this span directly. The result was that a real `openral deploy run`
+    produced per-chunk inference *spans* but no inference *histogram*: no
+    p95, no threshold line, nothing in the Metrics panel, for the single
+    number an operator most wants. Measured live on an SO-101 before the
+    fix: the panel carried `openral.system.*` and the OTel SDK's own
+    counters, and not one latency instrument.
+
+    Emitting the histogram from the span helper makes the two impossible to
+    diverge: any code path that produces a `rskill.chunk_inference` span
+    necessarily produces the matching metric, on the eval path and the
+    deploy path alike.
 
     Args:
         name: Span name.
@@ -90,8 +108,21 @@ def inference_span(
         tagged[semconv.INFERENCE_CHUNK_INDEX] = chunk_index
     for k, v in attrs.items():
         tagged[f"inference.{k}"] = v
+    started = perf_counter()
     with _tracer().start_as_current_span(name, attributes=tagged) as span:
-        yield span
+        try:
+            yield span
+        finally:
+            # Label set stays closed (design §9): `kind` only. Device/engine
+            # ride the span, where cardinality does not matter.
+            with contextlib.suppress(Exception):
+                from openral_observability import metrics as _metrics
+
+                _metrics.record_histogram_ms(
+                    _metrics.get_inference_duration(),
+                    (perf_counter() - started) * 1000.0,
+                    {semconv.LABEL_KIND: kind},
+                )
 
 
 @contextmanager

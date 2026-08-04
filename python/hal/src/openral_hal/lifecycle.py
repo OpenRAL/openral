@@ -81,9 +81,12 @@ Example (SO-100 / franka — manifest-driven, the preferred path)::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -189,6 +192,39 @@ except ImportError:
 
 
 HALFactory = Callable[..., "HAL"]
+
+
+@contextmanager
+def _hal_duration_metric(metric_name: str, hal_adapter: str) -> Iterator[None]:
+    """Time a HAL call and record it on the matching duration histogram.
+
+    Pairs with the `hal.read_state` / `hal.send_action` spans so trace and
+    metric are emitted from one place. Both instruments were previously
+    recorded only by :class:`openral_runner.DeployRunner`, which the ROS
+    deploy graph does not instantiate — `rskill_runner_node` runs its own
+    tick loop — so a live `openral deploy run` produced the spans and no
+    latency histogram whatsoever.
+
+    Never raises: an observability probe must not be able to disturb the
+    control loop (CLAUDE.md §1.1).
+    """
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            from openral_observability import metrics as _metrics
+            from openral_observability import semconv
+
+            getter = {
+                semconv.METRIC_HAL_READ_STATE_DURATION: _metrics.get_hal_read_state_duration,
+                semconv.METRIC_HAL_SEND_ACTION_DURATION: _metrics.get_hal_send_action_duration,
+            }[metric_name]
+            _metrics.record_histogram_ms(
+                getter(),
+                (perf_counter() - started) * 1000.0,
+                {semconv.LABEL_HAL_ADAPTER: hal_adapter},
+            )
 
 
 def _hal_service_name(node_name: str) -> str:
@@ -834,14 +870,22 @@ if _ROS2_AVAILABLE:
             tracer = trace.get_tracer("openral_hal.lifecycle")
             hal_adapter_label = type(self._hal).__name__.lower()
             robot_model = getattr(self._hal.description, "name", self._node_name)
-            with tracer.start_as_current_span(
-                semconv.SPAN_HAL_READ_STATE,
-                attributes={
-                    semconv.HAL_ADAPTER: hal_adapter_label,
-                    semconv.HAL_ROBOT_MODEL: str(robot_model),
-                    semconv.TICK_IDX: tick_idx,
-                },
-            ) as hal_read_span:
+            # Record the duration histogram alongside the span. These two
+            # instruments used to live only in `openral_runner.DeployRunner`,
+            # which the ROS deploy graph never instantiates — so a real
+            # `deploy run` emitted HAL spans and no HAL latency metric at all.
+            # Emitting both from the one site is what keeps them consistent.
+            with (
+                _hal_duration_metric(semconv.METRIC_HAL_READ_STATE_DURATION, hal_adapter_label),
+                tracer.start_as_current_span(
+                    semconv.SPAN_HAL_READ_STATE,
+                    attributes={
+                        semconv.HAL_ADAPTER: hal_adapter_label,
+                        semconv.HAL_ROBOT_MODEL: str(robot_model),
+                        semconv.TICK_IDX: tick_idx,
+                    },
+                ) as hal_read_span,
+            ):
                 if self._proprio is not None:
                     # Read the post-step snapshot (plain data), never
                     # the simulator: this callback runs on the control thread
@@ -935,15 +979,18 @@ if _ROS2_AVAILABLE:
             tracer = trace.get_tracer("openral_hal.lifecycle")
             hal_adapter_label = type(self._hal).__name__.lower()
             applied = True
-            with tracer.start_as_current_span(
-                semconv.SPAN_HAL_SEND_ACTION,
-                attributes={
-                    semconv.HAL_ADAPTER: hal_adapter_label,
-                    semconv.HAL_CONTROL_MODE: action.control_mode.value,
-                    semconv.TICK_IDX: tick_idx,
-                    "openral.hal.action.source": source,
-                },
-            ) as hal_send_span:
+            with (
+                _hal_duration_metric(semconv.METRIC_HAL_SEND_ACTION_DURATION, hal_adapter_label),
+                tracer.start_as_current_span(
+                    semconv.SPAN_HAL_SEND_ACTION,
+                    attributes={
+                        semconv.HAL_ADAPTER: hal_adapter_label,
+                        semconv.HAL_CONTROL_MODE: action.control_mode.value,
+                        semconv.TICK_IDX: tick_idx,
+                        "openral.hal.action.source": source,
+                    },
+                ) as hal_send_span,
+            ):
                 try:
                     self._hal.send_action(action)
                 except Exception as exc:  # reason: HAL surfaces typed errors; log + skip

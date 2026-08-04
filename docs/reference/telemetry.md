@@ -110,10 +110,10 @@ attributes and are stripped by the store so they cannot fragment a series.
 
 | Metric | Type | Unit | Recorded at | Frequency |
 |---|---|---|---|---|
-| `openral.tick.duration` | Histogram | ms | `runner/base.py:291` | 30 Hz |
-| `openral.inference.duration` | Histogram | ms | `runner/base.py:293` | 30 Hz |
-| `openral.hal.read_state.duration` | Histogram | ms | `deploy_runner.py:427` | 30 Hz |
-| `openral.hal.send_action.duration` | Histogram | ms | `deploy_runner.py:535` | 30 Hz |
+| `openral.tick.duration` | Histogram | ms | `runner/base.py` | 30 Hz — **library-runner path only**, see below |
+| `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per chunk, **both paths** |
+| `openral.hal.read_state.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | 30 Hz, **both paths** |
+| `openral.hal.send_action.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | per chunk, **both paths** |
 | `openral.sensors.age_ms` | Histogram | ms | `deploy_runner.py:377` | 30 Hz × camera |
 | `openral.world_state.staleness_ms` | Histogram | ms | `world_state/aggregator.py:560` | 30 Hz × component |
 | `openral.tick.budget_violations` | Counter | — | `runner/base.py:352` | on breach |
@@ -130,6 +130,17 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.inference.timeouts` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
 | `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
 | `openral.observability.export_failures` | Counter | — | `_sdk._FailureCountingSpanExporter` | per failed span-export batch (label `signal_kind=trace`) |
+
+> **Latency metrics are emitted by the span helpers, not their callers.**
+> `inference.duration` comes from `inference_span`; the two `hal.*.duration`
+> histograms from `_hal_duration_metric`, paired with the spans in the shared
+> HAL lifecycle base. They used to be recorded only inside
+> `openral_runner.InferenceRunnerBase` / `DeployRunner`, which the ROS deploy
+> graph never instantiates — so a live `deploy run` produced the spans and no
+> histograms at all. Emitting both from one seam makes them impossible to
+> diverge. `openral.tick.duration` is deliberately left alone: its unit is the
+> library runner's whole tick (sensors + HAL + skill + safety) and no such unit
+> exists on the ROS graph, where those are four separate processes.
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
