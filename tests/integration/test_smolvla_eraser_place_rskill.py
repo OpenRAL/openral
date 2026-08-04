@@ -55,6 +55,7 @@ def rollout(manifest: RSkillManifest) -> tuple[_Chunk, _Chunk]:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from lerobot.policies.factory import make_pre_post_processors
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    from openral_rskill.loader import resolve_rskill_to_hf_with_revision
 
     assert manifest.weights_uri is not None
     assert manifest.dataset_uri is not None
@@ -67,18 +68,29 @@ def rollout(manifest: RSkillManifest) -> tuple[_Chunk, _Chunk]:
         "cuda:0" if torch.cuda.is_available() else "cpu"
     )
 
-    repo_id = manifest.weights_uri.removeprefix("hf://")
+    # Resolve exactly the way a deploy does: hand the loader the rSkill
+    # reference (the manifest dir) and let it read `weights_uri` and split the
+    # `@<sha>` pin off. A naive `removeprefix("hf://")` would pass the pin
+    # inside the repo id, where HF silently DROPS it (loader.py, finding H4) —
+    # the revision must travel as its own kwarg.
+    repo_id, revision = resolve_rskill_to_hf_with_revision(str(_MANIFEST_PATH.parent))
+    assert revision, "weights_uri must stay pinned to a commit SHA (CLAUDE.md 1.8)"
     try:
         dataset = LeRobotDataset(manifest.dataset_uri.removeprefix("hf://"))
-        config = PreTrainedConfig.from_pretrained(repo_id)
+        config = PreTrainedConfig.from_pretrained(repo_id, revision=revision)
         config.device = device
-        policy = SmolVLAPolicy.from_pretrained(repo_id, config=config).to(device).eval()
+        policy = (
+            SmolVLAPolicy.from_pretrained(repo_id, config=config, revision=revision)
+            .to(device)
+            .eval()
+        )
     except OSError as exc:  # network down / repo gated — skip, never fake
         pytest.skip(f"cannot reach the Hub for {repo_id!r}: {exc}")
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=policy.config,
         pretrained_path=repo_id,
+        revision=revision,
         preprocessor_overrides={"device_processor": {"device": device}},
     )
 

@@ -2181,12 +2181,27 @@ class ReasonerNode(LifecycleNode):
         loaded_paths: list[pathlib.Path] = []
         for path in manifest_paths:
             try:
-                manifests.append(RSkillManifest.from_yaml(str(path)))
-                loaded_paths.append(path)
+                manifest = RSkillManifest.from_yaml(str(path))
             except (OSError, ValueError) as exc:
                 self.get_logger().warning(
                     f"palette seed: skipping unloadable rskill {path!s}: {exc}",
                 )
+                continue
+            manifests.append(manifest)
+            loaded_paths.append(path)
+            # Feed the pre-dispatch VRAM gate from the SAME manifests the LLM is
+            # being offered. `_manifest_for_rskill` otherwise falls back to the
+            # install registry (`~/.local/share/openral/rskills.json`), which a
+            # search-path-seeded palette never populates: on the reference host
+            # the palette carried 48 manifests while the registry held 3 detector
+            # skills and no VLA at all, so `_refuse_unfittable_vla` early-returned
+            # `False` for EVERY VLA and both its tiers were dead. Observed live
+            # 2026-08-04: `molmoact2-multi-so101-nf4` (4.0 GB + 5.5 GB reward on
+            # an 8 GB card) was named "will be refused at dispatch" by the CLI
+            # preflight, then dispatched, loaded its processor, and burned the
+            # full 20 s patience ceiling before being cancelled as KIND_TIMEOUT —
+            # a VRAM refusal reported as a timeout.
+            self._manifests_by_id.setdefault(manifest.name, manifest)
 
         # Reasoner playbooks, Phase 3 — collect installed, capability-matched `kind: playbook`
         # rSkills and render their PLAYBOOK.md bodies into the `## PLAYBOOKS`
@@ -3977,12 +3992,18 @@ class ReasonerNode(LifecycleNode):
         self._reprompt_memory(text, traceparent=traceparent)
 
     def _manifest_for_rskill(self, rskill_id: str) -> RSkillManifest | None:
-        """The installed :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
+        """The :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
 
-        VLA/reward VRAM-fit pairing — the pre-dispatch pair check needs the VLA's manifest (for its
-        ``min_vram_gb``), but the palette path does not retain manifests. Load
-        them once on first miss (``rSkill`` pulls torch, so lazy-imported) and
-        cache by name. Returns ``None`` when the id is not installed / unloadable.
+        VLA/reward VRAM-fit pairing — the pre-dispatch gate needs the VLA's
+        ``min_vram_gb``. The cache is primed by :meth:`_seed_palette` from the
+        very manifests the LLM is offered, so **every** palette skill resolves;
+        the ``rSkill.list_installed()`` fallback below covers only ids that
+        reached the graph some other way (a Hub-installed skill not on any
+        ``rskill_search_paths`` root). ``rSkill`` pulls torch, so it stays lazy.
+
+        Returning ``None`` disables the VRAM gate for that dispatch, which is
+        why the priming matters: the registry alone left the gate dead for
+        every VLA on a search-path-seeded palette.
         """
         if rskill_id in self._manifests_by_id:
             return self._manifests_by_id[rskill_id]
