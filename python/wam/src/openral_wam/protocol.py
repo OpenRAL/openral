@@ -67,8 +67,5 @@ class WorldModel(Protocol):
 
         Raises:
             ROSConfigError: When ``horizon`` exceeds :attr:`max_horizon`.
-            ROSInferenceTimeout: When the model exceeds its declared
-                latency budget. Per CLAUDE.md §10 every WAM error is
-                typed.
         """
         ...

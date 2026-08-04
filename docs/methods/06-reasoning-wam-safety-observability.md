@@ -154,7 +154,7 @@ surface only (`WorldModel`, `Rollout`, `NullWorldModel`); concrete generative WA
 (Cosmos Predict, UnifoLM-WMA-0, IRASim) ship as separate downstream packages in the private
 OpenRAL Pro monorepo._
 
-- `class WorldModel(Protocol)` — Generative simulator used by the planning layer for the three integration patterns (gating / failure anticipation / replanning). Attribute: `max_horizon`. Method: `rollout(world_state, action_chunk, horizon) -> Rollout` — predict `horizon` steps of future state; raises `ROSConfigError` (horizon exceeds max) / `ROSInferenceTimeout` (budget exceeded). (L31)
+- `class WorldModel(Protocol)` — Generative simulator used by the planning layer for the three integration patterns (gating / failure anticipation / replanning). Attribute: `max_horizon`. Method: `rollout(world_state, action_chunk, horizon) -> Rollout` — predict `horizon` steps of future state; raises `ROSConfigError` (horizon exceeds max). (L31)
 
 ### `python/wam/src/openral_wam/rollout.py`
 _Pydantic v2 schema for a WAM's predicted trajectory._
@@ -334,22 +334,21 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names._
 ### `python/observability/src/openral_observability/metrics.py`
 _Cached OTel meter instruments — safe to call before `configure_observability`._
 
-- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L65)
-- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L100)
-- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L115)
-- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L127)
-- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L139)
-- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L151)
-- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L163)
-- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L178)
-- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L189)
-- `get_inference_timeouts() -> Counter` — `openral.inference.timeouts`. (L200)
-- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L221)
-- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L235)
-- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L256)
-- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L289)
-- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L314)
-- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L403)
+- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L64)
+- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L99)
+- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L114)
+- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L126)
+- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L138)
+- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L150)
+- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L162)
+- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L177)
+- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L188)
+- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L199)
+- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L213)
+- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L234)
+- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L267)
+- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L292)
+- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L381)
 
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._
