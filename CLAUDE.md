@@ -117,7 +117,7 @@ Re-read this file if >1 day or >1 PR since last; check [`docs/decisions.md`](doc
 ROSError                            # base
 ├─ ROSConfigError                   # bad manifest, missing weights, invalid YAML
 ├─ ROSCapabilityMismatch            # skill needs lidar; robot lacks it
-├─ ROSRuntimeError                  # ROSInferenceTimeout, ROSQuantizationError, ROSGPUMemoryError
+├─ ROSRuntimeError                  # ROSQuantizationError, ROSGPUMemoryError
 ├─ ROSSafetyViolation               # ROSWorkspaceViolation, ROSForceLimitExceeded, ROSEStopRequested
 ├─ ROSPerceptionStale               # sensor older than deadline
 ├─ ROSPlanningError                 # ROSReasonerInvalidPlan

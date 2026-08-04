@@ -29,10 +29,10 @@ _Runtime Protocol and NullRuntime — inference backend contract._
   - `is_loaded -> bool` [@property] / `device -> str` [@property]
   - `load(path) -> None` (L49)
   - `infer(inputs) -> dict[str, Any]` (L61)
-  - `quantize(config: QuantizationConfig) -> None` (L77)
-  - `warmup(inputs) -> None` (L89)
-  - `unload() -> None` (L97)
-- `class NullRuntime` — No-op backend for testing. (L102) — same surface as `Runtime`.
+  - `quantize(config: QuantizationConfig) -> None` (L76)
+  - `warmup(inputs) -> None` (L88)
+  - `unload() -> None` (L96)
+- `class NullRuntime` — No-op backend for testing. (L101) — same surface as `Runtime`.
 
 ### `python/rskill/src/openral_rskill/runtime_pytorch.py`
 - `class PyTorchRuntime` — `torch`-backed `Runtime`. (L41)

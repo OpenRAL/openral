@@ -275,7 +275,6 @@ METRIC_TICK_DURATION: Final[str] = "openral.tick.duration"
 METRIC_INFERENCE_DURATION: Final[str] = "openral.inference.duration"
 METRIC_TICK_BUDGET_VIOLATIONS: Final[str] = "openral.tick.budget_violations"
 METRIC_TICK_DEADLINE_MISSES: Final[str] = "openral.tick.deadline_misses"
-METRIC_INFERENCE_TIMEOUTS: Final[str] = "openral.inference.timeouts"
 METRIC_SAFETY_VIOLATIONS: Final[str] = "openral.safety.violations"
 METRIC_HAL_READ_STATE_DURATION: Final[str] = "openral.hal.read_state.duration"
 METRIC_HAL_SEND_ACTION_DURATION: Final[str] = "openral.hal.send_action.duration"
@@ -405,7 +404,6 @@ __all__ = [
     "METRIC_HAL_READ_STATE_DURATION",
     "METRIC_HAL_SEND_ACTION_DURATION",
     "METRIC_INFERENCE_DURATION",
-    "METRIC_INFERENCE_TIMEOUTS",
     "METRIC_OBSERVABILITY_EXPORT_FAILURES",
     "METRIC_SAFETY_VIOLATIONS",
     "METRIC_SENSORS_AGE_MS",

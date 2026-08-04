@@ -70,7 +70,6 @@ class Runtime(Protocol):
 
         Raises:
             ROSRuntimeError: If no model is loaded or the forward pass fails.
-            ROSInferenceTimeout: If the backend exceeds its wall-clock budget.
         """
         ...
 

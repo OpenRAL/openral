@@ -178,15 +178,24 @@ jobs:
               except Exception as exc:  # noqa: BLE001 — best-effort warm
                   print(f"skip rd:{m}: {exc}")
 
-          # openarm: refs use a separate fetcher + cache (~/.cache/openral),
-          # not robot_descriptions — warm it too so partitions don't race it.
-          try:
-              from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
+          # `openarm:<variant>` refs use per-variant fetchers + a separate cache
+          # (~/.cache/openral), not robot_descriptions — warm them too so the
+          # partitions don't race a clone. DERIVED from the manifests and routed
+          # through resolve_asset, which dispatches to the right fetcher: each
+          # variant clones a DIFFERENT upstream (bimanual → enactic/openarm_mujoco,
+          # anvil_v2_bimanual → bensonlee5/anvil-openarm-mujoco + its mesh
+          # submodule), so hand-listing one silently leaves the other racing.
+          from openral_core.assets import resolve_asset
 
-              ensure_openarm_v2_mjcf()
-              print("warmed openarm v2")
-          except Exception as exc:  # noqa: BLE001 — best-effort warm
-              print(f"skip openarm v2: {exc}")
+          openarm_refs: set[str] = set()
+          for mf in manifests:
+              openarm_refs.update(re.findall(r"openarm:[a-z0-9_]+", mf.read_text()))
+          for ref in sorted(openarm_refs):
+              try:
+                  resolve_asset(ref, "mjcf")
+                  print(f"warmed {ref}")
+              except Exception as exc:  # noqa: BLE001 — best-effort warm
+                  print(f"skip {ref}: {exc}")
           PY
 
       - name: Run full suite (blast-radius change)

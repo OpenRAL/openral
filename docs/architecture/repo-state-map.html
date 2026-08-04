@@ -1396,7 +1396,7 @@ const LAYERS = [
         title: "Metric instruments",
         pkg: "python/observability",
         status: "green",
-        desc: "Cached accessors for openral.tick.duration / openral.inference.duration / openral.hal.{read_state,send_action}.duration / openral.sensors.age_ms / openral.world_state.staleness_ms histograms, openral.{tick.budget_violations,tick.deadline_misses,inference.timeouts,safety.violations,safety.clamps,hal.estop.count,sensors.stale_reads,sim.episode.count,sim.episode.success} counters, and openral.world_state.components_stale up-down counter. Labels restricted to the closed-set whitelist in design §9.",
+        desc: "Cached accessors for openral.tick.duration / openral.inference.duration / openral.hal.{read_state,send_action}.duration / openral.sensors.age_ms / openral.world_state.staleness_ms histograms, openral.{tick.budget_violations,tick.deadline_misses,safety.violations,safety.clamps,hal.estop.count,sensors.stale_reads,sim.episode.count,sim.episode.success} counters, and openral.world_state.components_stale up-down counter. Labels restricted to the closed-set whitelist in design §9.",
       },
       {
         title: "W3C TraceContext propagation",
@@ -1477,7 +1477,7 @@ const CROSS = [
     title: "openral_core exceptions",
     pkg: "python/core · exceptions.py",
     status: "green",
-    desc: "Single ROSError tree. ROSSafetyViolation and subclasses — never silently caught. ROSConfigError, ROSCapabilityMismatch, ROSInferenceTimeout, etc.",
+    desc: "Single ROSError tree. ROSSafetyViolation and subclasses — never silently caught. ROSConfigError, ROSCapabilityMismatch, ROSRuntimeError, etc.",
   },
   {
     title: "openral_msgs (ROS 2 IDL)",

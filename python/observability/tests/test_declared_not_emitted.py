@@ -47,9 +47,7 @@ _EXPECTED_UNEMITTED_EVENTS = {
     "EVENT_EPISODE_CLOSED",
 }
 
-_EXPECTED_UNRECORDED_METRICS = {
-    "get_inference_timeouts",
-}
+_EXPECTED_UNRECORDED_METRICS: set[str] = set()
 
 
 def _source_files() -> list[Path]:

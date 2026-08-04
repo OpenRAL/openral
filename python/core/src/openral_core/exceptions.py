@@ -23,7 +23,6 @@ __all__ = [
     "ROSFleetError",
     "ROSForceLimitExceeded",
     "ROSGPUMemoryError",
-    "ROSInferenceTimeout",
     "ROSObjectNotInMemory",
     "ROSPerceptionStale",
     "ROSPlanningError",
@@ -59,10 +58,6 @@ class ROSCapabilityMismatch(ROSError):
 
 class ROSRuntimeError(ROSError):
     """General runtime failure during skill execution or HAL operation."""
-
-
-class ROSInferenceTimeout(ROSRuntimeError):
-    """VLA inference did not complete within its latency budget."""
 
 
 class ROSQuantizationError(ROSRuntimeError):
