@@ -62,6 +62,16 @@ def _prewarm_vla_imports() -> None:
     ``open_deploy_sensor_readers`` spawns the first reader — the per-goal
     import then hits ``sys.modules`` and completes in milliseconds.
 
+    **The call must stay ahead of ``open_deploy_sensor_readers``.** That
+    ordering is the entire fix; moving it after the readers reinstates the
+    8-minute stall. It is the same class of ordering constraint as the
+    ``gi``/``Gst.init()`` block at the top of this file.
+
+    Also runs on the sim path, where there are no in-process reader threads
+    and so no convoy: there the point is to overlap ~7 s of import with the
+    HAL's concurrent ``on_configure`` instead of charging it to the first
+    ``ExecuteRskill`` goal.
+
     Best-effort: hosts without the VLA stack (slim installs) skip cleanly;
     the per-goal lazy import still raises its own typed error.
     """
@@ -245,13 +255,20 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         rclpy.try_shutdown()
         return 3
 
-    # Real deploys: pre-warm the heavy VLA imports BEFORE the first camera
-    # reader thread exists (see _prewarm_vla_imports — the readers' GIL
-    # churn stretches the same import from 23 s to 8+ min). Emits
+    # Pre-warm the heavy VLA imports BEFORE the first camera reader thread
+    # exists (see _prewarm_vla_imports — the readers' GIL churn stretches the
+    # same import from 23 s to 8+ min). Emits
     # prewarm_vla_framework_{start,heartbeat,done} so the operator sees the
     # one-time bring-up cost.
-    if deploy_config:
-        _prewarm_vla_imports()
+    #
+    # Runs on the SIM path too, even though sim spawns no in-process reader
+    # threads and so has no convoy to avoid. The win there is different: the
+    # import is ~7 s of pure single-threaded work that the first
+    # ``ExecuteRskill`` goal used to pay in the operator's critical path,
+    # whereas here it overlaps the HAL's own ``on_configure`` (~6 s on a
+    # MuJoCo arm, ~27 s on a cold robocasa kitchen) happening concurrently in
+    # another process. Same total work, moved off the goal.
+    _prewarm_vla_imports()
 
     # Real deploys: open the deploy config's camera readers and publish
     # them onto the WorldState image topics. Fail loudly — a real run
