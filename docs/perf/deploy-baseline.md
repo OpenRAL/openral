@@ -202,24 +202,72 @@ confirmation the Dockerfile setting is doing its job.
 
 ---
 
-## Gap: the runner latency metrics never fire on the deploy path
+## Latency metrics — unified with their spans (was a gap)
 
-`openral.tick.duration`, `openral.inference.duration`,
-`openral.hal.read_state.duration` and `openral.hal.send_action.duration` are
-recorded in `openral_runner.InferenceRunnerBase` / `DeployRunner` — but
-`rskill_runner_node` does **not** use them. Its own comments say so: it
-"mirrors `DeployRunner._tick_impl` but trims … focused on the topic-shape
-contract". The ROS deploy graph therefore runs its own tick loop, and those
-four instruments are dead on the one path that matters most.
+All four were recorded only inside `openral_runner.InferenceRunnerBase` /
+`DeployRunner`, which the ROS deploy graph never instantiates:
+`rskill_runner_node` runs its own tick loop ("mirrors `DeployRunner._tick_impl`
+but trims", per its own comment). A live `deploy run` therefore produced
+per-chunk inference *spans* and **no latency histograms at all** — no p95, no
+threshold line, nothing in the Metrics panel for the number an operator most
+wants.
 
-What the dashboard *does* show is complete and correct: `openral.system.*`,
-`openral.world_state.*`, the OTel SDK self-metrics, and every span-fed card
-(inference, robot state, commands, perception, safety ledger). Per-chunk
-inference latency is available — as a **span attribute**, not a metric — so
-there is no histogram, no p95, and no threshold line for it in the Metrics
-panel.
+Three of the four now come from the same seam as their span, which is what
+makes them impossible to diverge:
 
-Closing it means either routing the ROS runner through `DeployRunner` or
-recording the four instruments in `rskill_runner_node`. Not attempted here:
-it is a behavioural change to the actuation path, not an instrumentation
-tweak.
+| metric | now emitted by |
+|---|---|
+| `openral.inference.duration` | `inference_span` — covers eval *and* deploy, since both open that span |
+| `openral.hal.read_state.duration` | `_hal_duration_metric`, paired with the span in the shared HAL base |
+| `openral.hal.send_action.duration` | same |
+
+Verified live on the real SO-101 with the ollama reasoner up. Before a skill
+dispatch the panel carried only `hal.read_state.duration` (50 samples — the HAL
+ticks without a skill). After one dispatch:
+
+    openral.inference.duration        14 samples
+    openral.hal.read_state.duration   63 samples
+    openral.hal.send_action.duration   6 samples
+
+`openral.tick.duration` is deliberately **not** unified. Its unit is the
+library runner's whole tick — sensors + HAL + skill + safety — and no such unit
+exists on the ROS graph, where those are four separate processes. Recording the
+skill step under that name would give one metric two meanings, the same trap as
+`rskill.execute`.
+
+---
+
+## Reasoner verified end to end with ollama
+
+The earlier rounds ran with no LLM key, so `openral_reasoner.on_configure`
+failed by design and the reasoner path was never exercised. Re-run against a
+local ollama (`qwen3:4b`, pulled because the two `*:cloud` models on this host
+return `requires a subscription`):
+
+* `deploy.bringup · node=openral_reasoner · transition=on_configure · 336.9 ms`
+  — **info**, i.e. a successful configure, with "6 skills in palette". That
+  336.9 ms includes the palette seed, which now uses the fast dependency probe.
+* `reasoner.tick` fired at **52.1 s** then **8.9 s** — the first tick pays
+  ollama's cold model load.
+* The mission state populated correctly (`t1: "place the erase on the blue
+  square"`, active).
+* `qwen3:4b` then returned `error_kind: ROSReasonerInvalidPlan` with
+  `tool=null`. That is a model-capability limit, not a wiring fault — a 4 B
+  model against the full tool palette, consistent with the earlier note that
+  glm-4.6v thrashes where glm-5.2 drives. The infrastructure works; the model
+  is too small to plan.
+
+Configured via the deprecated-but-supported legacy shim
+(`OPENRAL_REASONER_LLM_PROVIDER=ollama`, `OPENRAL_REASONER_LLM_MODEL=qwen3:4b`).
+Note the model-first path cannot express this today: the launch forwards
+`OPENRAL_REASONER_MODEL` and `OPENRAL_REASONER_ENDPOINT` into the reasoner's
+`additional_env` but **not** `OPENRAL_REASONER_DIALECT`, which an uncurated
+model id requires.
+
+## A promotion that measurement did *not* condemn
+
+`world.scene_objects` looked like it was flooding the info band — ~20 rows in
+one snapshot, the same shape as the `rskill.execute` mistake. Measured over a
+20 s window it fires at **0.10/s**; the rows had simply accumulated over
+several minutes. Left as a headline span. Worth recording that the check was
+run, because the two preceding rounds each found a real one.
