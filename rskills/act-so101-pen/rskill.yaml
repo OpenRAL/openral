@@ -34,18 +34,36 @@ model_family: "act"
 embodiment_tags:
   - "so101_follower"
 
-# Two RGB streams, trained at 640x480. The runner matches each entry against
-# the robot's SensorSpec.vla_feature_key declared in
-# robots/so101_follower/robot.yaml (top→camera1, wrist→camera2).
+# Two RGB streams. BOTH were trained at 640x480 — the checkpoint's
+# config.json declares observation.images.front and observation.images.wrist
+# as shape [3, 480, 640] (verified against the cached checkpoint snapshot).
+# Unlike smolvla / pi05 / gr00t, ACT does NOT resize: lerobot's
+# modeling_act.py has no resize step and this checkpoint's
+# policy_preprocessor.json is rename→batch→device→normalize only (no resize
+# stage), so the ResNet-18 backbone consumes each frame at whatever
+# resolution the sensor delivers. The minima below are therefore a real
+# in-distribution gate, not a nominal floor.
+#
+# The runner matches each entry against the robot's SensorSpec.vla_feature_key
+# declared in robots/so101_follower/robot.yaml (top→camera1, wrist→camera2).
+# camera1 is pinned to the full 640x480 training resolution, which the `top`
+# OAK-D Pro supplies (robot.yaml intrinsics: 640x480). camera2 is pinned to
+# 256x256 — the `wrist` rig's declared intrinsics — NOT the 640x480 it was
+# trained at: raising it to 640x480 would make this rSkill fail
+# rSkill.check_sensors against its own robot (robots/so101_follower/robot.yaml
+# declares the wrist camera at only 256x256). That gap is a genuine
+# out-of-distribution risk on the wrist view (see README, "In-distribution
+# requirement"), tracked separately from this manifest rather than papered
+# over here.
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
-    min_width: 224
-    min_height: 224
+    min_width: 640
+    min_height: 480
   - modality: "rgb"
     vla_feature_key: "observation.images.camera2"
-    min_width: 224
-    min_height: 224
+    min_width: 256
+    min_height: 256
 
 # Output side. The loader auto-fills n_dof + vla_action_key from
 # robots/so101_follower/robot.yaml. Absolute joint-position targets.
