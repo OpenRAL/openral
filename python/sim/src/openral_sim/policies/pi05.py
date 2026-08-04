@@ -562,7 +562,8 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     torch.set_default_dtype(torch_dtype)
     try:
         if use_fast_meta_init:
-            from accelerate import init_empty_weights  # type: ignore[import-not-found]
+            # reason: accelerate ships no py.typed; the exact code differs by install state
+            from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
 
             # Setting cfg.device='meta' suppresses the internal
             # ``self.model.to(config.device)`` call inside

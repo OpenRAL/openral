@@ -232,8 +232,13 @@ def _import_molmoact2() -> tuple[Any, Any, Any]:
     AutoImageProcessor.register(
         MolmoAct2Config, slow_image_processor_class=MolmoAct2ImageProcessor, exist_ok=True
     )
-    AutoVideoProcessor.register(MolmoAct2Config, MolmoAct2VideoProcessor, exist_ok=True)
-    AutoProcessor.register(MolmoAct2Config, MolmoAct2Processor, exist_ok=True)
+    # reason: transformers ships the Auto*.register classmethods unannotated
+    AutoVideoProcessor.register(  # type: ignore[no-untyped-call]
+        MolmoAct2Config, MolmoAct2VideoProcessor, exist_ok=True
+    )
+    AutoProcessor.register(  # type: ignore[no-untyped-call]
+        MolmoAct2Config, MolmoAct2Processor, exist_ok=True
+    )
     return MolmoAct2ForConditionalGeneration, MolmoAct2Config, MolmoAct2Processor
 
 
@@ -555,7 +560,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # caches are rebuilt lazily inside ``build_cache``).
     prequant_repo = detect_prequantized_nf4(spec) if use_nf4 and device.startswith("cuda") else None
     if prequant_repo is not None:
-        from accelerate import init_empty_weights  # type: ignore[import-not-found]
+        # reason: accelerate ships no py.typed; the exact code differs by install state
+        from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
 
         fast_state_keys = peek_safetensors_keys(prequant_repo)
         with (
