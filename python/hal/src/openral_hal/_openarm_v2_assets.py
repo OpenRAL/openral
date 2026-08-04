@@ -30,9 +30,11 @@ tracked as a TODO at the call site.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
@@ -64,7 +66,7 @@ def _cache_dir() -> Path:
 def ensure_openarm_v2_mjcf() -> str:
     """Return the on-disk path to the v2 bimanual MJCF, fetching if needed.
 
-    Idempotent: subsequent calls re-use the cached clone.  The repo
+    Idempotent: subsequent calls reuse the cached clone.  The repo
     is checked out at :data:`_OPENARM_V2_PINNED_SHA` so the
     in-tree sim contract doesn't drift with upstream master.
 
@@ -94,26 +96,39 @@ def ensure_openarm_v2_mjcf() -> str:
     if repo_dir.exists():
         shutil.rmtree(repo_dir, ignore_errors=True)
 
+    # Fetch into a per-call staging dir, then atomically rename into place.
+    # Concurrent callers share this cache (CI runs pytest partitions as
+    # parallel processes); cloning straight into `repo_dir` let one worker
+    # rmtree another's in-flight clone. With the rename, `repo_dir` either
+    # does not exist or is a complete tree — never partial.
+    staging = cache / f".staging-{_OPENARM_V2_PINNED_SHA}-{uuid.uuid4().hex}"
     try:
-        # Shallow clone of the pinned commit, mirrors the
-        # `robot_descriptions` convention (small, no full history).
-        subprocess.run(
-            ["git", "clone", "--filter=blob:none", _OPENARM_REPO_URL, str(repo_dir)],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(repo_dir), "checkout", _OPENARM_V2_PINNED_SHA],
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        # `subprocess.CalledProcessError` carries stderr as bytes.
-        stderr = (exc.stderr or b"").decode(errors="replace").strip()
-        raise ROSConfigError(
-            f"Failed to fetch OpenArm v2 (pin {_OPENARM_V2_PINNED_SHA[:10]}) "
-            f"from {_OPENARM_REPO_URL}: {stderr or exc}"
-        ) from exc
+        try:
+            # Shallow clone of the pinned commit, mirrors the
+            # `robot_descriptions` convention (small, no full history).
+            subprocess.run(
+                ["git", "clone", "--filter=blob:none", _OPENARM_REPO_URL, str(staging)],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(staging), "checkout", _OPENARM_V2_PINNED_SHA],
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # `subprocess.CalledProcessError` carries stderr as bytes.
+            stderr = (exc.stderr or b"").decode(errors="replace").strip()
+            raise ROSConfigError(
+                f"Failed to fetch OpenArm v2 (pin {_OPENARM_V2_PINNED_SHA[:10]}) "
+                f"from {_OPENARM_REPO_URL}: {stderr or exc}"
+            ) from exc
+        # A concurrent fetch may have renamed its tree first; keep the
+        # winner's, which the validation below vouches for.
+        with contextlib.suppress(OSError):
+            os.rename(staging, repo_dir)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
     if not mjcf.is_file():
         raise ROSConfigError(
