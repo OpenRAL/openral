@@ -353,12 +353,12 @@ _Cached OTel meter instruments — safe to call before `configure_observability`
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._
 
-- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L83)
-- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L131)
-- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L162)
-- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L188)
-- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L229)
-- `encode_frame_thumbnail(frame) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L254)
+- `record_joint_state(span, *, names, positions, velocities=None, efforts=None, position_limits=None, velocity_limits=None, effort_limits=None, stamp_ns=None) -> None` — Attach per-joint attributes to a `hal.read_state` span. (L97)
+- `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L145)
+- `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L176)
+- `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L202)
+- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L243)
+- `encode_frame_thumbnail(frame) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L268)
 - `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` (or its string value) to the dashboard's modality label (`rgb` / `mono` / `depth` / `raw` / `unknown`). Reused by `DeployRunner._tick_impl` and `world_state_ros/lifecycle_node._on_image` so both surfaces produce identical modality labels for the same encoding. (L51)
 - `_MODALITY_BY_ENCODING: dict[str, str]` (L39) — Canonical encoding → modality lookup table.
 

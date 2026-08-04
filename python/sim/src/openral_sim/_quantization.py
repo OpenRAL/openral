@@ -126,7 +126,8 @@ def quantize_nf4_in_place(
     # allocation saving without touching the data path.
     if new_modules_on_meta:
         try:
-            from accelerate import init_empty_weights  # type: ignore[import-not-found]
+            # reason: accelerate ships no py.typed; the exact code differs by install state
+            from accelerate import init_empty_weights  # type: ignore[import-untyped,unused-ignore]
         except ImportError as exc:  # pragma: no cover
             raise ROSConfigError(
                 "nf4 quantization on meta requires accelerate; install with: uv add accelerate"

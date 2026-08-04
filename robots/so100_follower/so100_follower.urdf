@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <!-- Vendored by hand from rd:so_arm100_description (Apache-2.0). Joints renamed to HAL convention; meshes in ./assets/. -->
 <robot name="so_arm100">
-  
+
   <!-- Materials -->
   <material name="3d_printed">
     <color rgba="1.0 0.82 0.12 1.0"/>
@@ -298,4 +298,4 @@
     </actuator>
   </transmission>
 
-</robot> 
+</robot>

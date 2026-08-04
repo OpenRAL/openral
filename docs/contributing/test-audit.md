@@ -279,4 +279,3 @@ These neither `assert` nor make a recognised validation call. Some are real (a s
 - `tests/unit/test_spatial_memory_contracts.py::test_recall_object_query_requires_a_term` (line 166)
 - `tests/unit/test_world_state.py::test_clear_nonexistent_is_noop` (line 413)
 - `python/observability/tests/test_sdk_init.py::test_shutdown_is_safe_when_unconfigured` (line 51)
-

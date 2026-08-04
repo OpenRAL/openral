@@ -174,13 +174,31 @@ sensors:
       target: [-0.0074, -0.091, -0.1886]
       up: [0.0, 0.0, -1.0]
       fovy_deg: 90.0
+    # 640x480 is MEASURED, not nominal: `v4l2-ctl --get-fmt-video` on the
+    # icSpring rig reports 640/480 MJPG, and every scene binding
+    # (scenes/deploy/so101_bench.yaml) requests the same. The previous 256x256
+    # entry described no real configuration — and it is load-bearing twice
+    # over: `rSkill.check_sensors` gates `min_width`/`min_height` against these
+    # intrinsics (openral_rskill/loader.py `_check_resolution`) while the
+    # pixels come from the binding, and `SensorRosPublisher._publish_camera_info`
+    # takes `width`/`height` from the frame but `fx/fy/cx/cy` from here. A stale
+    # resolution therefore both mis-gates skill compatibility and desynchronises
+    # CameraInfo for any geometric consumer.
+    #
+    # The focal lengths are NOMINAL, not calibrated: fx=fy (square pixels) and a
+    # centred principal point, scaled from the old entry so the declared
+    # horizontal FOV is preserved (2*atan(128/192) = 67.4°, so fx = 320/tan(33.7°)
+    # = 480). Run a real checkerboard calibration before this camera feeds
+    # cuVSLAM / nvblox / object-lift. Note `sim_placement.fovy_deg: 90` implies a
+    # wider lens than these intrinsics do; that disagreement predates this entry
+    # and is left alone rather than silently changing how the MuJoCo twin renders.
     intrinsics:
-      width: 256
-      height: 256
-      fx: 192.0
-      fy: 192.0
-      cx: 128.0
-      cy: 128.0
+      width: 640
+      height: 480
+      fx: 480.0
+      fy: 480.0
+      cx: 320.0
+      cy: 240.0
     encoding: "rgb8"
     vla_feature_key: "observation.images.camera2"
     catalog_id: "generic/usb_uvc_rgb"

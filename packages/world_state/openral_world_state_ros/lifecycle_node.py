@@ -562,6 +562,17 @@ if _ROS2_AVAILABLE:
             """Force cleanup on shutdown."""
             return self.on_cleanup(state)
 
+        def _direct_image_frame_sensors(self) -> set[str]:
+            """Cameras the co-located sensor leg feeds straight to the aggregator.
+
+            NVMM zero-copy vision path Phase 3: these keep their zero-copy handle
+            frames and never round-trip through ROS for the policy. The leg also
+            owns their dashboard span, so ``_on_image`` skips them entirely.
+            """
+            return {
+                str(s) for s in (self.get_parameter("direct_image_frame_sensors").value or []) if s
+            }
+
         def _on_image(self, sensor_name: str, topic: str, msg: object) -> None:
             """Convert ROS Image → SensorFrame and hand to aggregator.
 
@@ -576,6 +587,14 @@ if _ROS2_AVAILABLE:
             from openral_observability import semconv
 
             if self._aggregator is None:
+                return
+
+            # Pump-fed cameras (zero-copy vision path) are handled end-to-end by
+            # the sensor leg: it writes the aggregator directly AND emits this
+            # span itself, at the reader's full cadence. This ROS tee is
+            # rate-capped, so re-emitting here would only add a slower,
+            # redundant copy of a span the dashboard already has.
+            if sensor_name in self._direct_image_frame_sensors():
                 return
 
             _ENCODING_MAP = {  # noqa: N806  # reason: ALL-CAPS preserved because this maps to module-level FrameEncoding enum constants
@@ -678,16 +697,7 @@ if _ROS2_AVAILABLE:
                     age_ms=age_ms,
                     thumbnail_bytes=thumb,
                 )
-                # NVMM zero-copy vision path Phase 3: sensors fed straight into the aggregator by
-                # the co-located sensor leg keep their zero-copy handle frames —
-                # this ROS reconstruction serves observability only for them.
-                direct = {
-                    str(s)
-                    for s in (self.get_parameter("direct_image_frame_sensors").value or [])
-                    if s
-                }
-                if sensor_name not in direct:
-                    self._aggregator.update_image_frame(sensor_name, frame)
+                self._aggregator.update_image_frame(sensor_name, frame)
 
         def _on_joint_state(self, msg: object) -> None:
             """Convert ROS JointState → Pydantic JointState and update aggregator."""

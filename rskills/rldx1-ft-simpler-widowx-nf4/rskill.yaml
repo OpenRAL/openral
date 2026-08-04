@@ -20,10 +20,19 @@ model_family: "rldx"
 embodiment_tags:
   - "widowx"
 
+# NON-SQUARE input: the sidecar adapter resizes every frame to
+# _SIMPLER_WIDOWX_IMAGE_HW = (256, 320) — i.e. height=256, width=320 — before
+# it reaches the SIMPLER WidowX (bridge_orig) wire schema. See
+# python/sim/src/openral_sim/policies/rldx.py:314 (the (H, W) tuple; do not
+# swap the order) and its use in _build_simpler_widowx_obs via
+# _resize_to_hw. A square 256x256 floor under-declared the width by 64px;
+# min_width/min_height are a resize target floor here (rldx resizes down to
+# this shape, so any camera >= these minima works), not an exact-match gate
+# like ACT's (see rskills/act-so101-pen/rskill.yaml).
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
-    min_width: 256
+    min_width: 320
     min_height: 256
 
 actuators_required:

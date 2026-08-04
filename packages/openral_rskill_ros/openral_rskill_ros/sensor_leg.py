@@ -34,9 +34,11 @@ which both re-serializes every pixel and destroys the zero-copy NVMM
 ``SensorFrame.handle``. When the caller passes the shared ``aggregator``,
 an :class:`_AggregatorPump` per reader writes ``read_latest()`` frames
 straight into ``WorldStateAggregator.update_image_frame`` — handles intact.
-The ROS tee stays on for observability (dashboard thumbnails, detectors);
-WorldState's ``direct_image_frame_sensors`` parameter stops ``_on_image``
-from double-writing those sensors into the aggregator.
+The pump also emits each frame's dashboard span, so pump-fed cameras own
+their display path end to end at full reader cadence; WorldState's
+``direct_image_frame_sensors`` parameter makes ``_on_image`` skip them
+entirely rather than re-doing both at the tee's capped rate. The ROS tee
+stays on for its remaining subscribers (detector, reward monitor, reasoner).
 
 The caller starts the prepared pumps with :meth:`SensorLeg.start` only after
 the composed ROS lifecycle nodes are configured, then owns teardown through
@@ -47,19 +49,26 @@ bridge as its single camera source).
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import structlog
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Collection, Iterable
 
     from openral_core import SensorSpec
 
-__all__ = ["SensorLeg", "merge_deploy_sensors", "open_deploy_sensor_readers"]
+__all__ = [
+    "SensorLeg",
+    "merge_deploy_sensors",
+    "open_deploy_sensor_readers",
+    "slam_camera_names",
+    "topic_frame_size",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -70,11 +79,104 @@ DEFAULT_TOPIC_PREFIX = "/openral/cameras"
 #: Matches the WorldStateAggregator staleness-gate expectation (10 Hz cameras).
 _DEFAULT_PUBLISH_RATE_HZ = 10.0
 
+#: Channel count of an interleaved colour frame — the only layout the 180°
+#: dashboard flip knows how to reshape.
+_RGB_CHANNELS: Final[int] = 3
+
+# Cap on the ROS topic cadence for the PYTHON FALLBACK publisher only.
+#
+# Each tick of that publisher hands a full-resolution `sensor_msgs/Image` to
+# rclpy, whose Python->C message conversion holds the GIL for the whole
+# 900 KiB copy. Profiled on the SO-101 bench with the reward monitor
+# co-resident (so the topic has a real remote subscriber and Cyclone must
+# actually serialise): `py-spy record --gil` put **89.5% of all GIL-holding
+# samples in that one publish call**, against 0.3% for the thread loading the
+# VLA — which is why a 13 s SmolVLA load stretched to 86 s while the process
+# used a quarter of one core on a 22-core host.
+#
+# Nothing needs 30 Hz on this topic. The policy does NOT read it at all: on a
+# real deploy `open_deploy_sensor_readers` pumps frames straight into the
+# shared aggregator and registers them in WorldState's
+# `direct_image_frame_sensors`, so `_on_image` skips them. Nor does the
+# dashboard — `_emit_frame_observability` produces its thumbnails from the same
+# pump, at full cadence. What is left on this topic is the reward monitor
+# (~1 Hz), the object detector, and the reasoner's completion camera (0.2 Hz).
+#
+# The NATIVE GStreamer tee is deliberately NOT capped — it publishes from
+# inside the pipeline without the Python conversion, so it does not pay this
+# cost and downsampling it would only lose frames.
+#
+# 3 Hz, not 5: re-profiling after the first cap still put 52.75 % of GIL
+# samples in `_publish_frame` (22.7 s of the 43 s the GIL was held over 75 s
+# ≈ 30 % of wall time — ~30 ms per 640x480 publish). Once the dashboard moved
+# to `_emit_frame_observability`, nothing left on this topic runs faster than
+# the reward monitor's ~1 Hz. The floor is `WorldStateAggregator`'s
+# `staleness_limit_s` (0.5 s): 2 Hz sits exactly on it and would flap the
+# per-sensor diagnostics, so 3 Hz (0.33 s) is as low as this can safely go.
+_MAX_FALLBACK_TOPIC_RATE_HZ = 3.0
+
+#: Resolution ceiling for the Python fallback topic when no launch-time
+#: consumer needs native pixels. 320x240 clears every remaining subscriber —
+#: Robometer and TOPReward declare a 224x224 minimum and the reasoner's
+#: completion VLM resizes internally — while cutting the per-publish GIL cost
+#: ~4x with the payload. The policy is untouched: it reads the aggregator
+#: in-process at full capture resolution, which is what ACT (no resize at all,
+#: 640x480 exact) and SmolVLA (its own 512x512 pad-resize) actually consume.
+_DEFAULT_TOPIC_MAX_SIZE: Final[tuple[int, int]] = (320, 240)
+
 
 class _Closeable(Protocol):
     """Structural type for anything with a no-arg close/stop."""
 
     def close(self) -> None: ...  # pragma: no cover — Protocol
+
+
+def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> None:
+    """Emit the dashboard's ``sensors.read_latest`` span for a pump-fed frame.
+
+    WorldState's ``_on_image`` normally produces this span, but it is driven by
+    the ROS tee — which :data:`_MAX_FALLBACK_TOPIC_RATE_HZ` caps at 5 Hz, so the
+    dashboard's camera tiles would stutter at 5 fps. Pump-fed cameras emit here
+    instead, at the reader's full cadence, and ``_on_image`` skips them.
+
+    Affordable because the thumbnail is small and Pillow drops the GIL for the
+    resize/encode: measured 2.42 ms/frame at 320x240 q60, and 60 thumbnails/s
+    costs **4.5 %** of a competing thread's GIL time — against the **89.5 %**
+    that the uncapped full-resolution image topic held. Display-only; this
+    never touches the frame the policy reads.
+    """
+    from openral_observability import producer as ral_producer
+    from openral_observability import semconv
+    from opentelemetry import trace
+
+    display_frame = frame
+    if flip_180 and frame.data and frame.channels == _RGB_CHANNELS:
+        import numpy as np  # reason: lazy — only on the camera display path
+
+        expected = frame.width * frame.height * _RGB_CHANNELS
+        if len(frame.data) == expected:
+            flipped = (
+                np.frombuffer(frame.data, dtype=np.uint8)
+                .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
+                .tobytes()
+            )
+            display_frame = frame.model_copy(update={"data": flipped})
+
+    tracer = trace.get_tracer("openral_rskill_ros.sensor_leg")
+    with tracer.start_as_current_span(
+        semconv.SPAN_SENSORS_READ_LATEST,
+        attributes={semconv.SENSORS_SOURCE: sensor_name},
+    ) as span:
+        ral_producer.record_sensor_frame_attrs(
+            span,
+            modality=ral_producer.modality_for_encoding(frame.encoding),
+            encoding=frame.encoding.value,
+            width=frame.width,
+            height=frame.height,
+            channels=frame.channels,
+            age_ms=max(0.0, (time.monotonic_ns() - frame.stamp_monotonic_ns) / 1e6),
+            thumbnail_bytes=ral_producer.encode_frame_thumbnail(display_frame),
+        )
 
 
 class _AggregatorPump:
@@ -99,6 +201,14 @@ class _AggregatorPump:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_stamp_ns: int | None = None
+        # Read once, same env var WorldState's ``_on_image`` and the sim
+        # sensor bridge honour — display orientation, never the policy frame.
+        self._flip_180 = os.environ.get("OPENRAL_DASHBOARD_FLIP_180", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
 
     def start(self) -> None:
         """Spawn the polling daemon thread. Idempotent."""
@@ -127,6 +237,15 @@ class _AggregatorPump:
                 continue
             self._last_stamp_ns = frame.stamp_monotonic_ns
             self._aggregator.update_image_frame(self._sensor_name, frame)
+            # The policy already has the frame; everything below is display.
+            # A broken thumbnail must never stop the aggregator being fed, so
+            # this is best-effort — but it is logged, never swallowed silently.
+            try:
+                _emit_frame_observability(self._sensor_name, frame, self._flip_180)
+            except Exception:
+                log.warning(
+                    "sensor_leg.thumbnail_failed", sensor_id=self._sensor_name, exc_info=True
+                )
 
 
 @dataclass
@@ -145,8 +264,9 @@ class SensorLeg:
     readers: list[object] = field(default_factory=list)
     publishers: list[object] = field(default_factory=list)
     #: Sensors written straight into the shared aggregator (zero-copy vision path).
-    #: WorldState's ``direct_image_frame_sensors`` parameter must list these
-    #: so ``_on_image`` doesn't double-write them from the ROS tee.
+    #: WorldState's ``direct_image_frame_sensors`` parameter must list these so
+    #: ``_on_image`` skips them: the pump already owns both their aggregator
+    #: write and their dashboard span.
     direct_sensors: list[str] = field(default_factory=list)
 
     def start(self) -> None:
@@ -209,6 +329,122 @@ def _publish_rate_hz(spec: SensorSpec) -> float:
     return _DEFAULT_PUBLISH_RATE_HZ
 
 
+#: The camera names visual SLAM tracks when the scene does not name them.
+#: ``DeployRuntime.slam_stereo_cameras=None`` means "the impl's built-in
+#: left/right default", so an implicit stereo rig must be exempted too — a
+#: scene that never mentions camera names would otherwise be silently capped.
+_DEFAULT_SLAM_STEREO_CAMERAS: Final[tuple[str, str]] = ("left", "right")
+
+
+def slam_camera_names(runtime: object | None) -> frozenset[str]:
+    """Camera names feeding visual SLAM, which must never be rate-capped.
+
+    cuVSLAM / PyCuVSLAM track frame-to-frame motion and lose the track on a
+    starved stream, so these cameras keep their full cadence regardless of
+    :data:`_MAX_FALLBACK_TOPIC_RATE_HZ`. Derived from the scene's
+    ``DeployRuntime`` rather than left to a hand-written per-binding
+    override: a stereo deploy that forgot the override would degrade
+    silently, and silent degradation of a tracking input is exactly the
+    failure this cap must not cause.
+
+    Both spellings are covered: the explicit ``slam_stereo_cameras`` /
+    ``slam_mono_camera`` names, and the implicit ``left``/``right`` pair
+    that a ``None`` stereo field resolves to downstream.
+
+    Args:
+        runtime: A ``DeployRuntime`` (or ``None`` when the scene pins no
+            runtime block). Duck-typed so this module keeps no schema import.
+
+    Returns:
+        Lower-cost-to-be-wrong-in-this-direction set of camera names. Empty
+        when SLAM is off — the cap then applies to every camera.
+
+    Example:
+        >>> slam_camera_names(None)
+        frozenset()
+    """
+    if runtime is None or not getattr(runtime, "enable_slam", False):
+        return frozenset()
+    names: set[str] = set()
+    stereo = getattr(runtime, "slam_stereo_cameras", None)
+    names.update(stereo if stereo else _DEFAULT_SLAM_STEREO_CAMERAS)
+    mono = getattr(runtime, "slam_mono_camera", None)
+    if mono:
+        names.add(str(mono))
+    return frozenset(names)
+
+
+def topic_frame_size(runtime: object | None) -> tuple[int, int] | None:
+    """Resolution ceiling for the fallback topic, or ``None`` for native pixels.
+
+    Derived from the scene's ``DeployRuntime`` at launch — deliberately NOT
+    per-rSkill. The reasoner picks skills at runtime, so a size chosen for the
+    active skill would be wrong the moment it switched; and the topic's
+    subscribers (detector, reward monitor, reasoner camera) are fixed by launch
+    flags, not by which policy is loaded. The policy never reads this topic.
+
+    Returns ``None`` whenever a subscriber needs full pixels:
+
+    * **object detector** — its node declares ``input_size`` 640, and which
+      camera it watches is a runtime detail, so the whole topic stays native.
+    * **visual SLAM** — cuVSLAM triangulates against calibrated intrinsics;
+      per-camera exemption is handled alongside the rate cap via
+      :func:`slam_camera_names`, but a SLAM scene keeps every camera native
+      rather than betting on the name list being complete.
+
+    Args:
+        runtime: A ``DeployRuntime`` (or ``None`` when the scene pins no
+            runtime block). Duck-typed so this module keeps no schema import.
+
+    Returns:
+        ``(width, height)`` ceiling, or ``None`` to publish at capture size.
+    """
+    if runtime is None:
+        return None
+    if getattr(runtime, "enable_object_detector", False):
+        return None
+    if getattr(runtime, "enable_slam", False):
+        return None
+    return _DEFAULT_TOPIC_MAX_SIZE
+
+
+def _fallback_topic_rate_hz(spec: SensorSpec, uncapped: Collection[str] = ()) -> float:
+    """ROS cadence for the Python fallback publisher — capped, with an opt-out.
+
+    The capture rate and the topic rate are different things. Readers keep
+    running at the camera's full fps (the policy reads the freshest frame
+    in-process), but republishing every one of those frames through rclpy
+    costs a GIL-held 900 KiB conversion per camera per tick — see
+    :data:`_MAX_FALLBACK_TOPIC_RATE_HZ`. A scene asking for a *slower* rate
+    than the cap is honoured as-is; the cap only ever lowers.
+
+    Two ways out of the cap, in precedence order:
+
+    1. ``uncapped`` — camera names that must keep full cadence. The runtime
+       fills this from :func:`slam_camera_names`, so visual SLAM is exempt
+       **automatically**; nobody has to remember a per-binding flag.
+    2. ``backend_params["topic_rate_hz"]`` — a binding demanding an exact
+       cadence, for any other rate-sensitive out-of-process consumer.
+
+    Args:
+        spec: A sensor spec carrying a ``deploy_binding``.
+        uncapped: Camera names exempt from the cap (see
+            :func:`slam_camera_names`).
+
+    Returns:
+        The full configured rate when the sensor is exempt, else
+        ``backend_params["topic_rate_hz"]`` when set and positive, else
+        ``min(configured rate, _MAX_FALLBACK_TOPIC_RATE_HZ)``.
+    """
+    assert spec.deploy_binding is not None  # reason: caller filters on binding
+    if spec.name in uncapped:
+        return _publish_rate_hz(spec)
+    explicit = spec.deploy_binding.backend_params.get("topic_rate_hz")
+    if isinstance(explicit, (int, float)) and explicit > 0:
+        return float(explicit)
+    return min(_publish_rate_hz(spec), _MAX_FALLBACK_TOPIC_RATE_HZ)
+
+
 def _await_first_frame(
     reader: Any, sensor_id: str, *, attempts: int = 3, timeout_s: float = 6.0
 ) -> None:
@@ -263,6 +499,8 @@ def open_deploy_sensor_readers(
     topic_prefix: str = DEFAULT_TOPIC_PREFIX,
     aggregator: Any | None = None,  # reason: WorldStateAggregator — deferred import
     ros_node: Any | None = None,  # reason: composed rclpy node — deferred import
+    uncapped_sensors: Collection[str] = (),
+    topic_max_size: tuple[int, int] | None = None,
 ) -> SensorLeg:
     """Open deploy-bound sensors and prepare their ROS publishing resources.
 
@@ -281,6 +519,15 @@ def open_deploy_sensor_readers(
             WorldState's ``direct_image_frame_sensors`` parameter.
         ros_node: Existing composed ROS node that owns image publishers. When
             omitted, each fallback publisher owns its historical private node.
+        uncapped_sensors: Camera names exempt from the fallback publisher's
+            rate cap (:data:`_MAX_FALLBACK_TOPIC_RATE_HZ`). ``runtime_node``
+            fills this from :func:`slam_camera_names` so visual SLAM keeps
+            full cadence without anyone hand-setting a per-binding flag.
+        topic_max_size: Optional ``(width, height)`` ceiling for the fallback
+            topic; ``CameraInfo`` intrinsics are rescaled to match. Cameras in
+            ``uncapped_sensors`` are exempt — visual SLAM needs native pixels
+            as well as native cadence. ``runtime_node`` fills this from
+            :func:`topic_frame_size`. ``None`` publishes at capture size.
 
     Returns:
         A :class:`SensorLeg` holding open readers and prepared publishers.
@@ -362,7 +609,8 @@ def open_deploy_sensor_readers(
                 publisher = SensorRosPublisher(
                     reader=reader,
                     topic=topic,
-                    rate_hz=_publish_rate_hz(spec),
+                    rate_hz=_fallback_topic_rate_hz(spec, uncapped_sensors),
+                    max_size=None if spec.name in uncapped_sensors else topic_max_size,
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
                     info_topic=f"{topic_prefix}/{spec.name}/camera_info",

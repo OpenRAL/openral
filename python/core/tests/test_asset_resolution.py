@@ -57,10 +57,24 @@ def _load(mf: Path) -> RobotDescription:
     return RobotDescription.model_validate(yaml.safe_load(mf.read_text()))
 
 
+#: Floor for the robot-manifest glob. A LOWER BOUND, not an exact count: the
+#: failure this guards against is the glob silently matching nothing (wrong
+#: cwd, moved/renamed ``robots/``), which collapses every parametrized test
+#: below into zero cases. Pinning the exact number instead turned every added
+#: robot into a red CI run on an unrelated PR — it did, three times over, which
+#: is how this comment came to exist. Raise the floor when a batch of robots
+#: lands; deliberately removing one is a reviewed act, not something a magic
+#: number should police.
+_MIN_ROBOT_MANIFESTS = 21
+
+
 def test_manifest_glob_is_nonempty() -> None:
     """Guard against a silent zero-parametrization (wrong cwd / moved robots/)."""
     assert MANIFESTS, f"no robots/*/robot.yaml under {_REPO_ROOT}"
-    assert len(MANIFESTS) == 18, f"expected 18 robots, found {len(MANIFESTS)}"
+    assert len(MANIFESTS) >= _MIN_ROBOT_MANIFESTS, (
+        f"expected at least {_MIN_ROBOT_MANIFESTS} robots, found {len(MANIFESTS)} "
+        f"under {_REPO_ROOT / 'robots'} — the glob is matching too few manifests."
+    )
 
 
 @pytest.mark.parametrize("mf", MANIFESTS, ids=lambda p: p.parent.name)

@@ -11,6 +11,7 @@ camera hardware); ROS-touching paths skip when ``rclpy`` isn't importable
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ from openral_core import (
     SensorSpec,
 )
 from openral_rskill_ros.sensor_leg import (
+    _MAX_FALLBACK_TOPIC_RATE_HZ,
     SensorLeg,
+    _fallback_topic_rate_hz,
     _publish_rate_hz,
     merge_deploy_sensors,
     open_deploy_sensor_readers,
@@ -54,6 +57,52 @@ def test_publish_rate_falls_back_to_spec_rate_then_10hz() -> None:
     assert _publish_rate_hz(spec) == 30.0
     bare = _spec("top", binding=SensorDeployBinding(), rate_hz=0.0)
     assert _publish_rate_hz(bare) == 10.0
+
+
+def test_fallback_topic_rate_is_capped_below_camera_rate() -> None:
+    """A 30 fps camera must NOT drive the Python fallback publisher at 30 Hz.
+
+    Each of those ticks is a GIL-held rclpy Python->C conversion of a
+    900 KiB Image; profiling put 89.5% of all GIL-holding samples in that
+    single call while a VLA was loading. Capture stays at 30 fps (the
+    policy reads the freshest frame in-process); only the ROS cadence is
+    capped.
+    """
+    spec = _spec(
+        "top",
+        binding=SensorDeployBinding(backend_params={"device": "/dev/video0", "fps": 30}),
+        rate_hz=30.0,
+    )
+    assert _publish_rate_hz(spec) == 30.0, "capture rate must be untouched"
+    assert _fallback_topic_rate_hz(spec) == _MAX_FALLBACK_TOPIC_RATE_HZ
+    assert _fallback_topic_rate_hz(spec) < 30.0
+
+
+def test_fallback_topic_rate_never_raises_a_slower_request() -> None:
+    """The cap only ever lowers — a scene asking for 2 Hz keeps 2 Hz."""
+    slow = _spec(
+        "wrist",
+        binding=SensorDeployBinding(backend_params={"device": "/dev/video4", "fps": 2}),
+    )
+    assert _fallback_topic_rate_hz(slow) == 2.0
+
+
+def test_explicit_topic_rate_overrides_the_cap() -> None:
+    """A rate-sensitive consumer can demand full cadence, cap included.
+
+    Visual SLAM is the case that forces this: ``cuvslam`` / ``pycuvslam``
+    subscribe to ``/openral/cameras/{left,right}/image`` and lose tracking
+    on a starved stream, so a stereo deploy must be able to pin 30 Hz.
+    Without the override the cap would silently degrade it.
+    """
+    stereo = _spec(
+        "left",
+        binding=SensorDeployBinding(
+            backend_params={"device": "/dev/video2", "fps": 30, "topic_rate_hz": 30}
+        ),
+    )
+    assert _fallback_topic_rate_hz(stereo) == 30.0
+    assert _fallback_topic_rate_hz(stereo) > _MAX_FALLBACK_TOPIC_RATE_HZ
 
 
 def test_merge_scene_entry_wins_on_name_collision() -> None:
@@ -289,3 +338,231 @@ print("SENSOR_LEG_PROBE_OK")
     )
     assert result.returncode == 0, f"probe failed:\nstdout={result.stdout}\nstderr={result.stderr}"
     assert "SENSOR_LEG_PROBE_OK" in result.stdout
+
+
+def test_slam_cameras_are_never_capped_even_when_unnamed() -> None:
+    """Visual SLAM keeps full cadence automatically — no per-binding flag.
+
+    ``DeployRuntime.slam_stereo_cameras=None`` means "the impl's built-in
+    left/right default", so a scene that enables SLAM without naming its
+    cameras must STILL exempt them. cuVSLAM loses tracking on a starved
+    stream, and a silent degradation of a tracking input is precisely what
+    this cap must never cause.
+    """
+    from openral_rskill_ros.sensor_leg import slam_camera_names
+
+    class _Runtime:
+        enable_slam = True
+        slam_stereo_cameras = None
+        slam_mono_camera = None
+
+    names = slam_camera_names(_Runtime())
+    assert names == frozenset({"left", "right"})
+
+    left = _spec(
+        "left",
+        binding=SensorDeployBinding(backend_params={"device": "/dev/video2", "fps": 30}),
+    )
+    assert _fallback_topic_rate_hz(left, names) == 30.0
+    # A non-SLAM camera in the same scene is still capped.
+    top = _spec(
+        "top", binding=SensorDeployBinding(backend_params={"device": "/dev/video0", "fps": 30})
+    )
+    assert _fallback_topic_rate_hz(top, names) == _MAX_FALLBACK_TOPIC_RATE_HZ
+
+
+def test_slam_camera_names_covers_explicit_stereo_and_mono() -> None:
+    """Explicitly named stereo rigs and the mono-RGBD camera are both exempt."""
+    from openral_rskill_ros.sensor_leg import slam_camera_names
+
+    class _Stereo:
+        enable_slam = True
+        slam_stereo_cameras = ("front_left", "front_right")
+        slam_mono_camera = None
+
+    class _Mono:
+        enable_slam = True
+        slam_stereo_cameras = None
+        slam_mono_camera = "front"
+
+    assert slam_camera_names(_Stereo()) == frozenset({"front_left", "front_right"})
+    assert slam_camera_names(_Mono()) == frozenset({"left", "right", "front"})
+
+
+def test_slam_off_means_every_camera_is_capped() -> None:
+    """SLAM disabled (both in-tree deploy scenes) → no exemptions at all."""
+    from openral_rskill_ros.sensor_leg import slam_camera_names
+
+    class _NoSlam:
+        enable_slam = False
+        slam_stereo_cameras = None
+        slam_mono_camera = None
+
+    assert slam_camera_names(_NoSlam()) == frozenset()
+    assert slam_camera_names(None) == frozenset()
+
+
+# ── Dashboard span emission from the pump ──────────────────────────────────
+#
+# The 5 Hz cap on the ROS tee (`_MAX_FALLBACK_TOPIC_RATE_HZ`) would otherwise
+# drop the dashboard's camera tiles to 5 fps, because WorldState's `_on_image`
+# — their historical source — is driven by that tee. The pump emits the span
+# instead, at full reader cadence. These tests pin the two properties that
+# make that safe: a real thumbnail comes out, and a failure there can never
+# stop the aggregator being fed.
+
+
+def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0):
+    """A real ``SensorFrame`` with inline RGB8 pixels (no mocks, §1.11)."""
+    from openral_core.schemas import FrameEncoding, SensorFrame
+
+    return SensorFrame(
+        sensor_id="top",
+        stamp_monotonic_ns=1,
+        stamp_wall_ns=2,
+        encoding=FrameEncoding.RGB8,
+        width=width,
+        height=height,
+        channels=3,
+        data=bytes([value]) * (width * height * 3),
+    )
+
+
+def test_pump_emits_a_real_jpeg_thumbnail_for_the_dashboard() -> None:
+    """The span carries a decodable JPEG, not an empty attribute."""
+    from openral_observability import producer as ral_producer
+    from openral_rskill_ros.sensor_leg import _emit_frame_observability
+
+    frame = _rgb_frame()
+    thumb = ral_producer.encode_frame_thumbnail(frame)
+    assert thumb is not None and thumb[:2] == b"\xff\xd8", "expected a JPEG SOI marker"
+
+    # The emit path itself must complete against the real tracer/producer.
+    _emit_frame_observability("top", frame, flip_180=False)
+
+
+def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame() -> None:
+    """``OPENRAL_DASHBOARD_FLIP_180`` is display-only, and it really does flip.
+
+    Guards the failure recorded in the dashboard-flip incident: flipping the
+    frame the policy reads double-flips it against the VLA's own
+    ``image_preprocessing.flip_180`` and collapses the rollout.
+    """
+    import numpy as np
+    from openral_observability import producer as ral_producer
+    from openral_rskill_ros.sensor_leg import _emit_frame_observability
+
+    # Asymmetric content — a uniform frame is flip-invariant and would make
+    # this test pass even if the flip were a no-op.
+    arr = np.zeros((48, 64, 3), dtype=np.uint8)
+    arr[:24, :, 0] = 255  # bright top half, dark bottom half
+    frame = _rgb_frame().model_copy(update={"data": arr.tobytes()})
+    original = frame.data
+
+    upright = ral_producer.encode_frame_thumbnail(frame)
+    flipped_arr = arr[::-1, ::-1]
+    flipped = ral_producer.encode_frame_thumbnail(
+        frame.model_copy(update={"data": flipped_arr.tobytes()})
+    )
+    assert upright != flipped, "test frame is flip-invariant; it cannot detect a no-op flip"
+
+    _emit_frame_observability("top", frame, flip_180=True)
+    assert frame.data == original, "flip leaked into the frame the policy reads"
+
+
+def test_pump_feeds_aggregator_even_when_the_thumbnail_path_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken display path must degrade the dashboard, never the policy."""
+    from openral_rskill_ros import sensor_leg as leg_mod
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("thumbnail encoder exploded")
+
+    monkeypatch.setattr(leg_mod, "_emit_frame_observability", _boom)
+
+    written: list[tuple[str, object]] = []
+
+    class _Agg:
+        def update_image_frame(self, name: str, frame: object) -> None:
+            written.append((name, frame))
+
+    class _Reader:
+        """Advances the stamp each poll — the pump dedups identical stamps."""
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def read_latest(self, max_age_ms: float | None = None) -> object:
+            self.n += 1
+            return _rgb_frame().model_copy(update={"stamp_monotonic_ns": self.n})
+
+    pump = leg_mod._AggregatorPump(_Reader(), "top", _Agg(), rate_hz=1000.0)
+    pump.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        # Three writes, not one: the first would survive even an unguarded
+        # raise (the aggregator is written before the emit), so only a pump
+        # that is still alive on later polls proves the guard works.
+        while len(written) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        pump.stop()
+
+    assert len(written) >= 3, (
+        f"pump thread died on a failing thumbnail encode after {len(written)} frame(s)"
+    )
+    assert written[0][0] == "top"
+
+
+# ── Topic resolution ceiling ───────────────────────────────────────────────
+#
+# Re-profiling after the rate cap still put 52.75 % of GIL-holding samples in
+# `_publish_frame` (~30 ms per 640x480 publish). Resolution is the remaining
+# lever, but it is only safe while every launch-time subscriber that needs
+# native pixels opts out — and while CameraInfo scales with the image.
+
+
+def test_topic_size_capped_when_no_consumer_needs_native_pixels() -> None:
+    from openral_rskill_ros.sensor_leg import _DEFAULT_TOPIC_MAX_SIZE, topic_frame_size
+
+    class _Runtime:
+        enable_object_detector = False
+        enable_slam = False
+
+    assert topic_frame_size(_Runtime()) == _DEFAULT_TOPIC_MAX_SIZE
+
+
+@pytest.mark.parametrize("flag", ["enable_object_detector", "enable_slam"])
+def test_topic_size_stays_native_for_pixel_hungry_consumers(flag: str) -> None:
+    """The detector declares input_size 640; cuVSLAM triangulates on intrinsics."""
+    from openral_rskill_ros.sensor_leg import topic_frame_size
+
+    runtime = type(
+        "_Runtime",
+        (),
+        {"enable_object_detector": False, "enable_slam": False, flag: True},
+    )()
+    assert topic_frame_size(runtime) is None
+
+
+def test_topic_size_is_native_without_a_runtime_block() -> None:
+    from openral_rskill_ros.sensor_leg import topic_frame_size
+
+    assert topic_frame_size(None) is None
+
+
+def test_topic_rate_cap_stays_above_the_staleness_limit() -> None:
+    """2 Hz would sit exactly on WorldStateAggregator's 0.5 s staleness window.
+
+    Sitting on the limit flapped the per-sensor diagnostics OK<->STALE, which
+    is why the cap floor is 3 Hz and not lower.
+    """
+    from openral_world_state import DEFAULT_STALENESS_S
+
+    staleness_s = DEFAULT_STALENESS_S
+
+    assert staleness_s > 1.0 / _MAX_FALLBACK_TOPIC_RATE_HZ, (
+        f"cap {_MAX_FALLBACK_TOPIC_RATE_HZ} Hz has period "
+        f"{1.0 / _MAX_FALLBACK_TOPIC_RATE_HZ:.3f}s >= staleness {staleness_s}s"
+    )

@@ -65,14 +65,28 @@ def modality_for_encoding(encoding: object) -> str:
 # stay readable in Jaeger and the dashboard ring stays bounded.
 _MAX_JOINTS = 64
 _MAX_EE_FRAMES = 8
-# Thumbnail target — capped at VGA so the dashboard shows native-resolution
-# frames (the largest rskill camera contract is 640x480; PIL.thumbnail only
-# ever shrinks, so this never upscales). Emitted at a throttled rate
-# (DeployRunner private 25 Hz cadence), not faster than tick rate — so q90 stays
-# cheap over OTLP even at 2-3 cameras on localhost.
-_THUMB_MAX_WIDTH = 640
-_THUMB_MAX_HEIGHT = 480
-_THUMB_JPEG_QUALITY = 90
+# Thumbnail target. This is a DASHBOARD CARD, not a policy input — no VLA
+# ever reads it (policies get frames in-process from the aggregator), so it
+# is sized for the UI and nothing else.
+#
+# Previously 640x480 @ q90, justified by "emitted at a throttled rate ...
+# not faster than tick rate". That assumption did not hold: WorldState's
+# `_on_image` encodes on EVERY camera callback with no throttle, so on the
+# SO-101 bench this ran at 60 frames/s (2 cameras x 30 Hz) — and because
+# `PIL.thumbnail` only ever SHRINKS, a 640x480 target was a no-op resize on
+# a 640x480 camera. Every frame went out at full resolution, q90, then
+# base64 (+33%). Measured on a representative frame:
+#
+#   640x480 q90 -> 99.0 KiB JPEG -> 132.0 KiB base64 -> 8.11 MB/s at 60/s
+#   320x240 q60 ->  3.2 KiB JPEG ->   4.2 KiB base64 -> 0.26 MB/s at 60/s
+#
+# i.e. ~31x less OTLP traffic, plus the PIL encode itself gets far cheaper —
+# and that encode runs in the deploy process, under the GIL, competing with
+# model loads and inference. q60 matches what this module's own docstrings
+# already claimed ("~60").
+_THUMB_MAX_WIDTH = 320
+_THUMB_MAX_HEIGHT = 240
+_THUMB_JPEG_QUALITY = 60
 
 
 def _r3(values: Iterable[float]) -> list[float]:

@@ -981,6 +981,67 @@ class TestCheckCompatibility:
         with pytest.raises(ROSCapabilityMismatch, match="vla_feature_key"):
             rSkill.check_compatibility(m, robot)
 
+    def test_act_so101_pen_declares_its_real_training_resolution(self) -> None:
+        """The ACT pen rSkill must declare the resolution its backbone truly needs.
+
+        ACT is the one in-tree family that performs no resize: lerobot's
+        ``modeling_act.py`` has no resize step and this checkpoint's
+        ``policy_preprocessor.json`` is rename/batch/device/normalize only
+        (no resize stage), so the ResNet-18 backbone consumes each frame at
+        the sensor's native resolution. The checkpoint trained both views at
+        640x480, so a nominal 224x224 floor under-declared the overhead view
+        by ~3x and let an out-of-distribution camera clear the gate.
+
+        Pins both halves of the fix against the real in-tree fixtures
+        (CLAUDE.md §1.11): ``camera1`` carries the full training resolution,
+        and the pairing still loads on so101_follower — the naive correction
+        (raising ``camera2`` to 640 as well) makes this rSkill fail the
+        sensor gate on its own robot, because the ``wrist`` rig is 256x256.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        m = RSkillManifest.from_yaml(str(repo / "rskills" / "act-so101-pen" / "rskill.yaml"))
+        robot = RobotDescription.from_yaml(str(repo / "robots" / "so101_follower" / "robot.yaml"))
+
+        by_key = {r.vla_feature_key: r for r in m.sensors_required}
+        cam1 = by_key["observation.images.camera1"]
+        assert (cam1.min_width, cam1.min_height) == (640, 480)
+
+        # camera2 is pinned to the wrist rig's declared intrinsics, not the
+        # 640x480 it was trained at — see the manifest comment.
+        cam2 = by_key["observation.images.camera2"]
+        wrist = next(s for s in robot.sensors if s.vla_feature_key == cam2.vla_feature_key)
+        assert wrist.intrinsics is not None
+        assert (cam2.min_width, cam2.min_height) == (
+            wrist.intrinsics.width,
+            wrist.intrinsics.height,
+        )
+
+        rSkill.check_compatibility(m, robot)  # must not raise
+
+    def test_rldx1_simpler_widowx_declares_its_real_non_square_resolution(self) -> None:
+        """The RLDX-1 SIMPLER-WidowX rSkill must declare its true 320x256 input.
+
+        The sidecar adapter resizes every frame to
+        ``_SIMPLER_WIDOWX_IMAGE_HW = (256, 320)`` — an (H, W) tuple, i.e.
+        height=256, width=320 — before building the SIMPLER WidowX
+        (bridge_orig) wire obs (see
+        ``python/sim/src/openral_sim/policies/rldx.py``,
+        ``_build_simpler_widowx_obs`` / ``_resize_to_hw``). A square 256x256
+        floor under-declared the width by 64px. Pinned against the real
+        in-tree fixtures (CLAUDE.md §1.11): the widowx robot's `top` camera
+        (640x480) clears the corrected, non-square floor.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        m = RSkillManifest.from_yaml(
+            str(repo / "rskills" / "rldx1-ft-simpler-widowx-nf4" / "rskill.yaml")
+        )
+        robot = RobotDescription.from_yaml(str(repo / "robots" / "widowx" / "robot.yaml"))
+
+        (req,) = m.sensors_required
+        assert (req.min_width, req.min_height) == (320, 256)
+
+        rSkill.check_compatibility(m, robot)  # must not raise
+
 
 # ── InstalledRSkillEntry schema round-trip ──────────────────────────────────────
 
