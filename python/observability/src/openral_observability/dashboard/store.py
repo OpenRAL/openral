@@ -50,6 +50,17 @@ _EVENT_RING_SIZE = 200
 # gone from the ring. Errors ALSO land here so they survive the flood; the
 # snapshot merges both lanes.
 _ERROR_EVENT_RING_SIZE = 64
+# A THIRD ring, same size, for headline `info` rows (deploy.bringup,
+# rskill.execute, reasoner.tick …). These need to outlive the main ring's flood
+# for the same reason errors do, but they must not share the error lane's
+# budget: mirroring all non-debug traffic into the 64 error slots let routine
+# info evict the safety events that lane exists to preserve. `world.scene_objects`
+# alone runs at ~0.10/s (measured live), so the shared lane fully cycled in ~11
+# minutes of an otherwise idle scene and a minute-one `safety.violation` was
+# gone by minute twelve — the exact "counter goes up, no trace" failure the
+# protected lane was added to prevent. Two rings, one budget each, so neither
+# class can starve the other.
+_HEADLINE_EVENT_RING_SIZE = 64
 _ERROR_SEVERITIES = ("error", "fatal")
 _METRIC_SAMPLE_RING_SIZE = 600  # ~5 min at one sample per 500 ms
 _SUBSCRIBER_QUEUE_SIZE = 256
@@ -405,6 +416,9 @@ class TelemetryStore:
         # Protected lane: error/fatal events, immune to the high-rate flood that
         # cycles the main ring in seconds (see _ERROR_EVENT_RING_SIZE).
         self._error_events: deque[TelemetryEvent] = deque(maxlen=_ERROR_EVENT_RING_SIZE)
+        # Headline lane: `info`/`warn` rows worth keeping, on their own budget so
+        # they cannot evict the error lane (see _HEADLINE_EVENT_RING_SIZE).
+        self._headline_events: deque[TelemetryEvent] = deque(maxlen=_HEADLINE_EVENT_RING_SIZE)
         self._counters: dict[str, int] = defaultdict(int)
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
@@ -697,19 +711,27 @@ class TelemetryStore:
         main ring, so a bringup line / skill_failure / estop / safety.violation
         always leaves a trace the operator can still find seconds later.
 
-        **Everything above debug is mirrored, not just errors.** Measured on a
-        live `deploy sim`: the main ring held 201 rows of which 193 were
-        `hal.read_state`, i.e. ~7 s of history at 30 Hz. Demoting the per-tick
-        spans took info *generation* to zero, but the rows an operator actually
-        wants — `deploy.bringup`, `rskill.execute` — still share one FIFO with
-        the debug stream, so they were evicted within seconds of being emitted.
-        Only the reasoner's ERROR bringup row survived, because errors were the
-        only thing mirrored here. An info row that cannot outlive the flood is
-        no more useful than one that was never emitted.
+        **Everything above debug is mirrored, but into two separate lanes.**
+        Measured on a live `deploy sim`: the main ring held 201 rows of which
+        193 were `hal.read_state`, i.e. ~7 s of history at 30 Hz. Demoting the
+        per-tick spans took info *generation* to zero, but the rows an operator
+        actually wants — `deploy.bringup`, `rskill.execute` — still shared one
+        FIFO with the debug stream, so they were evicted within seconds. An info
+        row that cannot outlive the flood is no more useful than one that was
+        never emitted.
+
+        Mirroring them into the *error* lane fixed that and broke something
+        worse: routine info then evicted the safety events those 64 slots exist
+        to preserve (`world.scene_objects` alone at ~0.10/s cycles the lane in
+        ~11 minutes of an idle scene). So the two classes get one ring each —
+        errors, e-stops, safety violations and skill failures here, headline
+        info there — and neither can starve the other.
         """
         self._events.append(ev)
-        if ev.severity != "debug" or ev.kind in _PROTECTED_EVENT_KINDS:
+        if ev.severity in _ERROR_SEVERITIES or ev.kind in _PROTECTED_EVENT_KINDS:
             self._error_events.append(ev)
+        elif ev.severity != "debug":
+            self._headline_events.append(ev)
 
     def _record_log(self, record: LogRecord, scope_name: str) -> None:
         """Append one bridged OTLP ``LogRecord`` to the event ring (issue #318)."""
@@ -1156,17 +1178,20 @@ class TelemetryStore:
         return sorted(self._services)[0]
 
     def _merged_events(self) -> list[TelemetryEvent]:
-        """Main ring + protected error lane, deduped, most-recent first.
+        """Main ring + both protected lanes, deduped, most-recent first.
 
-        Error events evicted from the fast-cycling main ring survive in
-        ``_error_events`` and are merged back here, so the event log always
-        carries the last ``_ERROR_EVENT_RING_SIZE`` errors no matter how hard the
-        info/debug stream floods the main ring. Dedup is by object identity (the
-        same event object is appended to both lanes).
+        Events evicted from the fast-cycling main ring survive in
+        ``_error_events`` (errors, e-stops, safety violations, skill failures)
+        or ``_headline_events`` (the `info` rows an operator reads), so the log
+        always carries the last ``_ERROR_EVENT_RING_SIZE`` of the former and
+        ``_HEADLINE_EVENT_RING_SIZE`` of the latter no matter how hard the debug
+        stream floods the main ring. The lanes are separate so routine `info`
+        cannot evict a safety event. Dedup is by object identity (the same event
+        object is appended to the main ring and at most one lane).
         """
         seen: set[int] = set()
         merged: list[TelemetryEvent] = []
-        for ev in (*self._events, *self._error_events):
+        for ev in (*self._events, *self._error_events, *self._headline_events):
             if id(ev) in seen:
                 continue
             seen.add(id(ev))
