@@ -77,3 +77,33 @@ def test_the_canary_covers_every_shipped_adapter() -> None:
         f"only {len(instrumented)} adapters have a step(); the discovery glob or "
         "the _NOT_ADAPTERS exclusion list has drifted"
     )
+
+
+def test_every_adapter_releases_all_its_module_fields() -> None:
+    """`close()` must drop every torch-module field, not just `_policy`.
+
+    `release_torch_modules` exists because `empty_cache()` only returns
+    *already-free* blocks — a field the adapter still references pins its VRAM.
+    xVLA released only `_policy` while holding four on-device lerobot
+    processors (`_env_pre`/`_policy_pre`/`_policy_post`/`_env_post`), so its
+    normalizer buffers survived every skill swap.
+    """
+    import re
+
+    # Dataclass fields that hold a torch module tree and therefore must appear
+    # in the adapter's `release_torch_modules(...)` call.
+    module_field = re.compile(r"^\s{4}(_(?:policy|model|env|processor)\w*):\s", re.MULTILINE)
+
+    offenders: list[str] = []
+    for path in _adapter_modules():
+        src = path.read_text(encoding="utf-8")
+        call = re.search(r"release_torch_modules\((.*?)\n\s*\)", src, re.DOTALL)
+        if call is None:
+            continue  # adapters with no torch modules to release (sidecars)
+        released = set(re.findall(r'"(_\w+)"', call.group(1)))
+        declared = {m.group(1) for m in module_field.finditer(src)}
+        missing = declared - released
+        if missing:
+            offenders.append(f"{path.name}: declares {sorted(missing)} but never releases them")
+
+    assert not offenders, "adapters pin VRAM across a skill swap:\n  " + "\n  ".join(offenders)

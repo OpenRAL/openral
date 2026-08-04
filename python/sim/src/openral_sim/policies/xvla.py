@@ -106,7 +106,22 @@ class _XVLAAdapter:
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
-        release_torch_modules(self, "_policy", device=self.device, torch=self._torch)
+        release_torch_modules(
+            self,
+            "_policy",
+            # The four processors are separate module trees, not children of
+            # `_policy`: xVLA runs env_pre -> policy_pre -> policy -> policy_post
+            # -> env_post, and the lerobot pre/post steps carry normalizer
+            # buffers on-device. Dropping only `_policy` left them referenced,
+            # so `empty_cache()` could not return their blocks. Every sibling
+            # adapter releases its pre/post processors; this one was missed.
+            "_env_pre",
+            "_policy_pre",
+            "_policy_post",
+            "_env_post",
+            device=self.device,
+            torch=self._torch,
+        )
 
     def _build_raw_batch(
         self,
