@@ -384,3 +384,74 @@ transient, provider-side, retry-in-a-minute condition.
 `describe_image`, and surfaces `response.error`. Unit-tested; the live rerun
 did not reproduce the upstream failure, so the guard itself is not
 live-exercised.
+
+### The VRAM pre-dispatch gate was dead for every VLA
+
+The Round-3 log carried `skill_failure · timeout after 20s patience ceiling
+(OpenRAL/rskill-molmoact2-multi-so101-nf4)` — for a skill the CLI preflight had
+already named:
+
+> `molmoact2-multi-so101-nf4` … 9.50 GB + 0.50 GB margin exceeds GPU VRAM
+> 7.61 GB … **will be refused at dispatch**
+
+It was not refused. The runner loaded its processor (`MolmoAct2Processor`,
+`rope_config_validation` in the log) and burned the full 20 s patience ceiling,
+so a VRAM refusal surfaced as `KIND_TIMEOUT`.
+
+`_refuse_unfittable_vla` opens with `vla = self._manifest_for_rskill(...)` and
+returns `False` — dispatch proceeds, **both** tiers skipped — when that is
+`None`. And `_manifest_for_rskill` consulted only `rSkill.list_installed()`,
+i.e. `~/.local/share/openral/rskills.json`. On the reference host:
+
+| source | count | contents |
+|---|---|---|
+| palette (`rskill_search_paths` glob) | 48 manifests, 6 capability-matched | the VLAs the LLM is offered |
+| install registry | **3** | `omdet-turbo-indoor`, `rtdetr-coco-r18`, `rtdetr-v2-r50vd` — no VLA |
+
+So the gate was dead for **every VLA in the palette**; molmoact2 was simply the
+one the reasoner picked on retry. Fixed by priming `_manifests_by_id` from the
+manifests `_seed_palette` already loads — the palette had them in hand and
+discarded them. The registry lookup stays as the fallback for ids that reach
+the graph some other way.
+
+**Why no test caught it.** `tests/integration/test_reasoner_vram_pair_refusal.py`
+did this:
+
+```python
+reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest
+```
+
+It stubbed out the exact method that was broken, so it could only ever exercise
+the refusal *arithmetic*. A structurally dead gate passed its own test for as
+long as it existed. The stub is now an injection at the cache seam, so the
+production lookup runs inside the assertion.
+
+`test_reasoner_palette_primes_vram_gate.py` is the missing test: it drives the
+real seed against the repo's `rskills/` tree and asserts every VLA resolves.
+Falsified against the unfixed code — 31 unresolvable VLAs, cache empty despite
+"palette seeded from 48 manifest(s)".
+
+> **Both are gated on `OPENRAL_TEST_ROS_LIVE=1`, which appears in no CI
+> workflow and no `Justfile` recipe.** These tests run only when someone runs
+> them by hand. That is the standing reason a gate like this can rot unnoticed,
+> and it is not fixed by adding another test to the same gate.
+
+### `staleness_latched` — a bringup artifact, not a stuck latch
+
+The same run warned `openral.event.staleness_latched · component=joint_state`.
+Checked, because the e-stop latch in Round 2 *was* a real stuck-latch bug. This
+one is not:
+
+* the event is edge-triggered (`stale_now - self._prev_stale_components`), so it
+  fires once on entry, not every tick;
+* it fired at `…739.552`, and the HAL activated at `…739.801` — **0.25 s
+  later**. `world_state` was up and subscribing before the HAL published its
+  first `joint_state`;
+* `openral.world_state.components_stale` read **0.0** for the rest of the run,
+  so it cleared.
+
+The cause is that `aggregator.py` cannot tell *never received* from *went
+stale*: with `self._joint_state is None` it hard-codes `diag["joint_state"] =
+"stale"`. Distinguishing them is a debounce whose threshold is a judgement call
+("never seen after 60 s" is worth a WARN; "never seen 0.25 s before the HAL
+activates" is not), so it is recorded here rather than patched.
