@@ -397,14 +397,14 @@ _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `
 
 _**Event-log severity band** (distinct from `_HEADLINE_FAMILIES`, which routes spans to *cards*). `_is_headline_span(name)` decides the band of a span's Event Log row: ERROR status → `error`; else `name in _HEADLINE_SPANS` or `name.startswith(_HEADLINE_SPAN_PREFIXES)` → `info`; else → **`debug`**. `_HEADLINE_SPANS` is `cli.command`, `rskill.execute`, `rskill.configure`, `rskill.activate`, `reasoner.tick`, `world.scene_objects`, `sim.run`, plus the `detect.probe.` prefix. This is an **allow-list on purpose**: it replaced a deny-list (`_PER_TICK_SPANS`) that named only `hal.read_state` / `hal.send_action` / `sensors.read_latest` and missed four more families ticking at the same 30 Hz rate — `world_state.snapshot`, `rskill.tick`, `safety.check` (one per candidate chunk, from three emitters including the C++ kernel) and `rskill.chunk_inference`. Measured on one second of a real 30 Hz two-camera deploy: **121 info rows/s, cycling the 200-slot ring every 1.65 s**; inverted, routine traffic contributes **0**. A deny-list makes "noisy" the thing you must remember to declare, and that memory failed four times — so a new span is now quiet until deliberately promoted here. Unaffected: ERROR spans still escalate, and every span is still indexed in full for `openral replay`. This changes the event-log band only._
 
-- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). `.to_json()` returns a plain dict. (L222)
-- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L374)
-  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. Routes by span name into per-topic buckets, incl. `world.scene_objects` → `topics["scene_objects"]` (durable spatial-memory objects for the scene-objects card + SLAM-map overlay; the `world_state.scene_objects.list` JSON attr is decoded via `_parse_object_list`). (L453)
-  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. (L487)
+- `class TelemetryEvent` — Frozen dataclass holding one event log row (`ts_unix`, `kind`, `title`, `attrs`, `severity`). `.to_json()` returns a plain dict. (L229)
+- `class TelemetryStore` — Read-side aggregator over OTLP signals. (L381)
+  - `ingest_spans(payload: list[ResourceSpans]) -> int` — Decode + record spans; populates headline cards, increments span-event counters, publishes a delta to every subscriber queue. Returns the number of spans recorded. Routes by span name into per-topic buckets, incl. `world.scene_objects` → `topics["scene_objects"]` (durable spatial-memory objects for the scene-objects card + SLAM-map overlay; the `world_state.scene_objects.list` JSON attr is decoded via `_parse_object_list`). (L460)
+  - `ingest_metrics(payload: list[ResourceMetrics]) -> int` — Decode + record metric data points; appends per-series samples and tracks cumulative sums. (L494)
   - `ingest_logs(payload: list[ResourceLogs]) -> int` — Decode + record OTLP `ResourceLogs` (the structlog→OTel bridge) as event-log rows (issue #318): body → title, instrumentation scope (logger) name → kind, `severity_number` → `debug`/`info`/`warn`/`error`/`fatal` via `_log_level`. Records share the bounded event ring with spans/span-events; the UI defaults the Debug chip off so high-rate DEBUG stays opt-in. Returns the number of log records recorded.
-  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L547)
-  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L570)
-  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L586)
+  - `snapshot() -> dict[str, Any]` — One-shot view: service identity, headline cards, event ring, counters, metric series with p50/p95. (L554)
+  - `subscribe() -> asyncio.Queue` — Register an SSE subscriber. The queue is bounded; on overflow the oldest payload is dropped so the producer never blocks. (L577)
+  - `unsubscribe(queue) -> None` — Drop a subscriber's queue. (L593)
 
 ### `python/observability/src/openral_observability/dashboard/discovery.py`
 _mDNS advertise + browse for the live dashboard (issue #75b). Optional — requires the `mdns` extra (`zeroconf>=0.131`, LGPL-2.1, TSC-approved 2026-06-21). When `zeroconf` is not importable, `Discovery` stays disabled and the dashboard runs exactly as before._
@@ -431,7 +431,7 @@ _mDNS advertise + browse for the live dashboard (issue #75b). Optional — requi
 ### `python/observability/src/openral_observability/dashboard/store.py` — F7 trace index additions
 _Bounded per-trace_id span index for query-time bag↔OTel join._
 
-- `class _IndexedSpan` (L260) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
+- `class _IndexedSpan` (L267) — Frozen-ish record retained by `trace_id`: `name`, `trace_id`, `span_id`, `parent_span_id`, `start_ns`, `end_ns`, `attrs`, `status_code`, `status_message`, `events`. `.to_json()` returns a plain dict carrying `duration_ms`.
 - `TelemetryStore.list_traces() -> list[dict]` — One row per indexed trace_id (`trace_id`, `span_count`, `last_seen_unix`), most-recent first. Backs `GET /api/traces`.
 - `TelemetryStore.lookup_trace(trace_id: str) -> list[dict] | None` — Every indexed span for `trace_id`, sorted ascending by `start_unix_ns`. `None` when the trace is not (or no longer) in the bounded index. Backs `GET /api/spans/{trace_id}`.
 - `_TRACE_INDEX_MAX_TRACES = 64` / `_TRACE_INDEX_MAX_SPANS = 2048` — Memory caps. Older trace_ids evict FIFO on insertion.
