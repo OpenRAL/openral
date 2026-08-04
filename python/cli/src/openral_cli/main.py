@@ -803,11 +803,27 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
             )
         return hatch_rows
 
+    if preset is not None and preset[1] != entry.dialect:
+        # The factory refuses this outright — a named endpoint cannot re-dialect
+        # a curated model. Reporting `ok` here would tell the operator their
+        # config is fine right up until the reasoner refuses to configure.
+        return [
+            CheckResult(
+                "Reasoner LLM",
+                "fail",
+                f"OPENRAL_REASONER_ENDPOINT speaks the {preset[1]!r} dialect but model "
+                f"{model_key!r} speaks {entry.dialect!r}; a named endpoint cannot "
+                "re-dialect a curated model. Use a URL for a proxy that translates.",
+            )
+        ]
+
     endpoint = _resolve_reasoner_endpoint(entry, endpoint_override)
-    # OpenAI-compatible endpoint overrides may be unauthenticated (local vLLM,
-    # proxy-owned auth). Anthropic's SDK path still requires a key.
-    auth_required = bool(entry.auth_required) and not (
-        endpoint_override and entry.dialect == "openai"
+    # A named endpoint states its own auth posture; a bare URL means the operator
+    # owns the endpoint (local vLLM, proxy-owned auth), so auth is not forced there.
+    auth_required = (
+        preset[2]
+        if preset is not None
+        else bool(entry.auth_required) and not (endpoint_override and entry.dialect == "openai")
     )
     summary = (
         f"model={model_key} dialect={entry.dialect} hosting={entry.hosting} "
