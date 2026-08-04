@@ -182,6 +182,9 @@ if _ROS2_AVAILABLE:
             self._active_skill: Any = None
             self._active_skill_id: str = ""
             self._active_skill_revision: str = ""
+            # True elapsed time when the execution budget last lapsed, so an
+            # aborted goal's failure_reason can quote the overrun.
+            self._last_deadline_elapsed_s: float | None = None
             # Single GPU-resident skill. The runner keeps exactly one
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
@@ -601,6 +604,9 @@ if _ROS2_AVAILABLE:
                 self._active_skill_revision = revision
                 self._chunks_published = 0
                 self._cancel_requested = False
+                # True elapsed time when the execution budget lapsed, so the
+                # abort reason can quote the overrun rather than the budget.
+                self._last_deadline_elapsed_s: float | None = None
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
 
@@ -693,7 +699,7 @@ if _ROS2_AVAILABLE:
                 self._publish_episode_start(task_string=episode_task)
                 try:
                     try:
-                        self._run_until_done_or_deadline(
+                        exit_reason = self._run_until_done_or_deadline(
                             goal_handle=goal_handle,
                             skill=skill,
                             deadline_s=deadline_s,
@@ -753,6 +759,25 @@ if _ROS2_AVAILABLE:
                         result.success = False
                         result.failure_reason = "cancelled"
                         self._finalize_goal(goal_handle, "canceled")
+                        self._reset_active_goal()
+                        return result
+
+                    # A lapsed budget is a FAILURE, not a quiet success. Every
+                    # exit from the loop used to be a bare `return`, so this
+                    # fell through to `success = True` and the reasoner's
+                    # replanning ladder never saw the miss (CLAUDE.md §3 —
+                    # deadline fallback is mandatory). Aborted with a typed
+                    # reason, matching the ROSError path the ladder already
+                    # parses.
+                    if exit_reason == "deadline":
+                        _over = self._last_deadline_elapsed_s
+                        _elapsed_txt = f"{_over:.1f}" if _over is not None else "?"
+                        self._drain_and_idle_hold(skill)
+                        result.success = False
+                        result.failure_reason = (
+                            f"deadline_exceeded: elapsed={_elapsed_txt}s budget={deadline_s:.1f}s"
+                        )
+                        self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
 
@@ -839,14 +864,75 @@ if _ROS2_AVAILABLE:
             _device = getattr(_adapter, "device", None) or getattr(skill, "device", None)
             return engine, (str(_device) if _device is not None else None)
 
+        def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
+            """Return True once the execution budget has lapsed, reporting the miss.
+
+            Owns the whole check so the step loop reads as one line. Reports
+            the REAL elapsed time rather than the budget — a blocking
+            ``skill.step()`` can overshoot by a lot (144.5 s against a 45 s
+            budget on the SO-101 bench, since the budget can only be tested
+            between steps) and rounding that down to the limit hides the
+            thing worth seeing. Emits ``openral.event.deadline_missed``,
+            which the dashboard already counts, and stashes the elapsed so
+            the goal's ``failure_reason`` can quote it.
+
+            Args:
+                start: ``time.monotonic()`` captured when execution began.
+                budget_s: Resolved deadline; ``<= 0`` disables the check.
+                chunks: Chunks published so far, for the operator log.
+
+            Returns:
+                ``True`` if the budget has lapsed and the loop must stop.
+            """
+            if budget_s <= 0.0:
+                return False
+            elapsed_s = time.monotonic() - start
+            if elapsed_s <= budget_s:
+                return False
+            from openral_observability import semconv
+            from opentelemetry import trace
+
+            self.get_logger().warning(
+                f"rskill_runner.deadline_exceeded: elapsed={elapsed_s:.1f}s "
+                f"budget={budget_s:.1f}s chunks={chunks}"
+            )
+            trace.get_current_span().add_event(
+                semconv.EVENT_DEADLINE_MISSED,
+                {"elapsed_s": round(elapsed_s, 1), "budget_s": budget_s},
+            )
+            self._last_deadline_elapsed_s = elapsed_s
+            return True
+
         def _run_until_done_or_deadline(
             self,
             *,
             goal_handle: ServerGoalHandle,
             skill: rSkillBase,
             deadline_s: float,
-        ) -> None:
+        ) -> str:
             """Drive ``skill.step(snapshot)`` until done / cancelled / deadline.
+
+            Returns:
+                Why the loop exited — ``"completed"`` (the skill signalled
+                :class:`ROSRskillGoalSatisfied`, or an open-loop VLA ran to
+                the caller's satisfaction), ``"deadline"`` (the budget
+                lapsed), or ``"cancelled"``. The caller MUST distinguish
+                these: every exit used to be a bare ``return``, so a goal
+                that blew its deadline was indistinguishable from one that
+                achieved its task and was reported ``success=True``.
+                Observed on the SO-101 bench — a 144.5 s first inference
+                against a resolved 45 s budget still closed SUCCEEDED,
+                which also denies the reasoner's replanning ladder the
+                signal it needs (CLAUDE.md §3, "deadline fallback
+                mandatory").
+
+            Note:
+                The budget is checked *between* steps, so a single blocking
+                ``skill.step()`` overruns it by up to one step duration —
+                the loop cannot preempt a synchronous inference call. The
+                reported ``elapsed_s`` is therefore the true elapsed time,
+                not the budget, so the overrun is visible rather than
+                rounded down to the limit.
 
             Mirrors the inner loop of
             :meth:`openral_runner.DeployRunner._tick_impl` but trims
@@ -878,9 +964,9 @@ if _ROS2_AVAILABLE:
                 if self._estop_latched:
                     raise ROSEStopRequested("/openral/estop received during goal")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
-                    return
-                if deadline_s > 0.0 and time.monotonic() - start > deadline_s:
-                    return
+                    return "cancelled"
+                if self._deadline_lapsed(start, deadline_s, chunk_index):
+                    return "deadline"
 
                 snapshot = self._aggregator.snapshot()
                 # Wrap inference so the Inference card and the rskill.id /
@@ -915,7 +1001,7 @@ if _ROS2_AVAILABLE:
                             f"rskill_runner.rskill_goal_satisfied: {completion!s}"
                         )
                         inf_span.set_attribute("rskill.completion", "goal_satisfied")
-                        return
+                        return "completed"
                     # ``step()`` may return a single ``Action``
                     # (legacy single-surface rskills) or ``list[Action]``
                     # (slot-dispatched multi-surface output, e.g. the

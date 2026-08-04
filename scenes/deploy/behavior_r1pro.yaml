@@ -14,4 +14,3 @@ scene:
     env_wrapper: "omnigibson.eval.wrappers.DefaultWrapper"
     boot_timeout_s: 1200
     timeout_ms: 120000
-

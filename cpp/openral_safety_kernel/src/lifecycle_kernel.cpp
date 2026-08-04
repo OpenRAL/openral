@@ -146,8 +146,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // OBB primitive for blocky links (e.g. SO-ARM base; issue #84).
   this->declare_parameter<std::vector<std::int64_t>>("collision_box_link",
                                                      std::vector<std::int64_t>{});
-  this->declare_parameter<std::vector<double>>("collision_box_half_extents",
-                                               std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("collision_box_half_extents", std::vector<double>{});
   this->declare_parameter<std::vector<double>>("collision_box_origin_xyzrpy",
                                                std::vector<double>{});
   this->declare_parameter<std::vector<std::int64_t>>("collision_allowed_pairs",
@@ -1073,8 +1072,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       return false;
     }
     m.box_link[b] = link;
-    m.boxes[b].half_extents =
-        Vec3{box_he[3 * b + 0], box_he[3 * b + 1], box_he[3 * b + 2]};
+    m.boxes[b].half_extents = Vec3{box_he[3 * b + 0], box_he[3 * b + 1], box_he[3 * b + 2]};
     m.boxes[b].origin =
         transform_from_xyz_rpy(box_o[6 * b + 0], box_o[6 * b + 1], box_o[6 * b + 2],
                                box_o[6 * b + 3], box_o[6 * b + 4], box_o[6 * b + 5]);

@@ -16,4 +16,3 @@ The scene sidecar requires the official BEHAVIOR environment via
 `OPENRAL_BEHAVIOR_SIDECAR_PYTHON`. The GR00T policy sidecar requires the pinned
 Isaac-GR00T environment and organizer checkpoint documented in
 `rskills/gr00t-n17-b1k-turning-on-radio/README.md`.
-

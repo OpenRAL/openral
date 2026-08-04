@@ -2092,10 +2092,10 @@ def test_deploy_scene_runtime_block_parses_from_so101_bench() -> None:
     assert rt.enable_nav2 is False
     assert rt.enable_octomap is False
     assert rt.enable_octomap_kernel_check is True
-    # Detector-off is deliberate on this rig, not an oversight: the two
-    # detector processes hold ~2.2 GB and Robometer another ~5.3 GB, which
-    # left the VLA's own load with 125 MiB free and OOM'd on the 8 GB bench
-    # card. See the VRAM budget note in scenes/deploy/so101_bench.yaml.
+    # Detector-off is the committed default for this scene: on the 8 GB bench
+    # card the two detector processes (0.9 + 1.3 GB) alongside the reward
+    # monitor left 125 MiB and the VLA load OOM'd. Pass
+    # ``--enable-object-detector`` to opt back in on a larger card.
     assert rt.enable_object_detector is False
     assert rt.enable_reward_monitor is True
     assert rt.enable_critic is False

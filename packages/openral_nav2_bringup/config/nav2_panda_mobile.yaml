@@ -360,7 +360,6 @@ planner_server:
       # global_costmap (above) so the cost grid carries free cells
       # rather than unknown ones in the first place.
       allow_unknown: true
-      allow_unknown: true
 
 smoother_server:
   ros__parameters:

@@ -81,8 +81,20 @@ Two RGB streams, aliased to the checkpoint's `observation.images.*` inputs:
 | `observation.images.camera1` | `top` | front / overview |
 | `observation.images.camera2` | `wrist` | wrist |
 
-Both are ≥224×224 (trained at 640×480). Proprioception is the 6-D
-joint-position vector.
+Both views were **trained at 640×480** (checkpoint `config.json`:
+`observation.images.front` and `observation.images.wrist` are both
+`[3, 480, 640]`). ACT does **not** resize — lerobot's `modeling_act.py` has no
+resize step and this checkpoint's `policy_preprocessor.json` is
+rename→batch→device→normalize only (no resize stage), so the ResNet-18
+backbone sees each frame at the sensor's native resolution. The manifest
+minima reflect that: **both** `camera1` and `camera2` require the full
+640×480. The `top` OAK-D Pro and the `wrist` icSpring rig each deliver 640×480
+(confirmed with `v4l2-ctl --get-fmt-video`; `scenes/deploy/so101_bench.yaml`
+binds both at that size). `camera2` previously declared only 256×256 because
+`robots/so101_follower/robot.yaml` carried a stale 256×256 wrist intrinsics
+block that a higher floor would have failed the sensor gate against; that
+manifest now records the measured resolution.
+Proprioception is the 6-D joint-position vector.
 
 **In-distribution requirement (important).** ACT is a from-scratch imitation
 policy (ResNet-18, no language grounding) and is overfit to its exact training

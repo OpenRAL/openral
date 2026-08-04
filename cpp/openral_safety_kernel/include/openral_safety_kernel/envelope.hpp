@@ -75,8 +75,8 @@ struct EnvelopeIntersection {
 /// Outcome of `load_envelope_from_ros_parameters`.
 enum class EnvelopeLoadStatus : std::uint8_t {
   kOk = 0,
-  kInvalidShape = 1,    ///< joint arrays disagree with `n_dof`
-  kUnconfigured = 2,    ///< `n_dof` is 0 — no envelope supplied
+  kInvalidShape = 1,  ///< joint arrays disagree with `n_dof`
+  kUnconfigured = 2,  ///< `n_dof` is 0 — no envelope supplied
 };
 
 /// Build the envelope from this node's ROS parameters.
@@ -93,9 +93,8 @@ enum class EnvelopeLoadStatus : std::uint8_t {
 /// supplied — caller MUST refuse to activate the node). `out` is reset
 /// on entry so a stale partial value can never leak into the
 /// validator. CLAUDE.md §1.4 — explicit failure, no fallback.
-EnvelopeLoadStatus load_envelope_from_ros_parameters(
-    rclcpp_lifecycle::LifecycleNode& node,
-    EnvelopeIntersection& out,
-    std::string& error_message);
+EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::LifecycleNode& node,
+                                                     EnvelopeIntersection& out,
+                                                     std::string& error_message);
 
 }  // namespace openral_safety_kernel

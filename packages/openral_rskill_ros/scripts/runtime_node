@@ -281,6 +281,8 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         from openral_rskill_ros.sensor_leg import (
             merge_deploy_sensors,
             open_deploy_sensor_readers,
+            slam_camera_names,
+            topic_frame_size,
         )
 
         try:
@@ -291,10 +293,16 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             # aggregator gets frames straight from the readers (the
             # zero-copy vision path — zero-copy NVMM handles survive; no intra-process ROS
             # round trip on the policy leg).
+            # Visual SLAM tracks frame-to-frame motion and loses the track on
+            # a starved stream, so its cameras are exempted from the fallback
+            # publisher's rate cap automatically — derived from the scene, not
+            # from a per-binding flag somebody has to remember (§1.4).
             sensor_leg = open_deploy_sensor_readers(
                 merge_deploy_sensors(runtime.description.sensors, scene.sensors),
                 aggregator=runtime.aggregator,
                 ros_node=runtime.world_state_node,
+                uncapped_sensors=slam_camera_names(scene.runtime),
+                topic_max_size=topic_frame_size(scene.runtime),
             )
             if sensor_leg.direct_sensors:
                 from rclpy.parameter import Parameter

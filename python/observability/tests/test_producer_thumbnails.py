@@ -62,8 +62,8 @@ def test_mono8_frame_encodes_as_rgb_jpeg() -> None:
 
 
 def test_jpeg_input_passes_through_pipeline() -> None:
-    # Build a real >VGA JPEG via PIL and feed it as encoding=jpeg. The source
-    # is larger than the 640x480 cap so the thumbnail is genuinely downscaled.
+    # Build a real JPEG via PIL and feed it as encoding=jpeg. The source is
+    # larger than the 320x240 cap so the thumbnail is genuinely downscaled.
     from PIL import Image
 
     img = Image.new("RGB", (1280, 960), color=(120, 200, 80))
@@ -72,9 +72,9 @@ def test_jpeg_input_passes_through_pipeline() -> None:
     frame = _make_frame(FrameEncoding.JPEG, w=1280, h=960, data=buf.getvalue())
     out = encode_frame_thumbnail(frame)
     assert out is not None and _is_jpeg(out)
-    # Downscaled to the 640x480 cap.
+    # Downscaled to the 320x240 cap.
     decoded = Image.open(io.BytesIO(out))
-    assert (decoded.width, decoded.height) == (640, 480)
+    assert (decoded.width, decoded.height) == (320, 240)
 
 
 def test_depth16_returns_none() -> None:
@@ -96,34 +96,48 @@ def test_missing_data_returns_none() -> None:
     assert encode_frame_thumbnail(frame) is None
 
 
-def test_constants_are_vga_q90() -> None:
+def test_thumbnail_is_actually_a_thumbnail() -> None:
+    """The target must sit BELOW the common camera size, or it is a no-op.
+
+    ``PIL.Image.thumbnail`` only ever shrinks. The previous 640x480 @ q90
+    target was therefore a no-op on the 640x480 bench cameras: every frame
+    went to the dashboard at full resolution and near-lossless quality, at
+    camera rate (WorldState's ``_on_image`` encodes on every callback),
+    costing ~8 MB/s of base64 over OTLP and a full JPEG encode under the
+    GIL in the deploy process. This is a dashboard card, not a policy
+    input — no VLA reads it.
+    """
     from openral_observability import producer
 
-    assert producer._THUMB_MAX_WIDTH == 640
-    assert producer._THUMB_MAX_HEIGHT == 480
-    assert producer._THUMB_JPEG_QUALITY == 90
+    assert producer._THUMB_MAX_WIDTH == 320
+    assert producer._THUMB_MAX_HEIGHT == 240
+    assert producer._THUMB_JPEG_QUALITY == 60
+    # The guard that actually matters: strictly smaller than the 640x480
+    # cameras this repo's deploy scenes bind, so the resize is real.
+    assert producer._THUMB_MAX_WIDTH < 640
+    assert producer._THUMB_MAX_HEIGHT < 480
 
 
-def test_large_source_is_capped_to_vga() -> None:
+def test_large_source_is_capped() -> None:
     from PIL import Image
 
-    # 1280x960 RGB source -> fits within the 640x480 cap, aspect preserved.
+    # 1280x960 RGB source -> fits within the 320x240 cap, aspect preserved.
     w, h = 1280, 960
     frame = _make_frame(FrameEncoding.RGB8, w=w, h=h, data=bytes([128, 64, 32] * (w * h)))
     out = encode_frame_thumbnail(frame)
     assert out is not None
     decoded = Image.open(io.BytesIO(out))
-    assert decoded.width <= 640 and decoded.height <= 480
-    assert (decoded.width, decoded.height) == (640, 480)
+    assert decoded.width <= 320 and decoded.height <= 240
+    assert (decoded.width, decoded.height) == (320, 240)
 
 
-def test_sub_vga_source_is_not_upscaled() -> None:
+def test_sub_cap_source_is_not_upscaled() -> None:
     from PIL import Image
 
-    # 320x240 source stays native; thumbnail() only ever shrinks.
-    w, h = 320, 240
+    # 160x120 source stays native; thumbnail() only ever shrinks.
+    w, h = 160, 120
     frame = _make_frame(FrameEncoding.RGB8, w=w, h=h, data=bytes([10, 20, 30] * (w * h)))
     out = encode_frame_thumbnail(frame)
     assert out is not None
     decoded = Image.open(io.BytesIO(out))
-    assert (decoded.width, decoded.height) == (320, 240)
+    assert (decoded.width, decoded.height) == (160, 120)
