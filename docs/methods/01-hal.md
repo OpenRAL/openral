@@ -461,14 +461,14 @@ _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured 
 ### `python/hal/src/openral_hal/_anvil_openarm_v2_assets.py`
 _Vendor the Anvil OpenARM 2.0 MJCF from `bensonlee5/anvil-openarm-mujoco` — no upstream package ships the Anvil variant._
 
-- `ensure_anvil_openarm_v2_mjcf() -> str` — Idempotently clones `bensonlee5/anvil-openarm-mujoco` at a pinned SHA into `$OPENRAL_CACHE_DIR/anvil_openarm_v2/<sha>/`, initialises its `upstream/openarm_mujoco` mesh submodule (the generated MJCF's meshdir points into it), and returns the bimanual MJCF path.  Raises `ROSConfigError` when `git` is missing or the clone / submodule init fails.  Mirrors `_openarm_v2_assets.ensure_openarm_v2_mjcf` plus the submodule step. (L60)
-- module const `_ANVIL_PINNED_SHA: str` (L40) — bump when the generator or the local Anvil spec changes.
+- `ensure_anvil_openarm_v2_mjcf() -> str` — Idempotently clones `bensonlee5/anvil-openarm-mujoco` at a pinned SHA into `$OPENRAL_CACHE_DIR/anvil_openarm_v2/<sha>/`, initialises its `upstream/openarm_mujoco` mesh submodule (the generated MJCF's meshdir points into it), and returns the bimanual MJCF path.  Raises `ROSConfigError` when `git` is missing or the clone / submodule init fails.  Mirrors `_openarm_v2_assets.ensure_openarm_v2_mjcf` plus the submodule step. (L62)
+- module const `_ANVIL_PINNED_SHA: str` (L42) — bump when the generator or the local Anvil spec changes.
 
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its pin past PR #19._
 
-- `ensure_openarm_v2_mjcf() -> str` — Idempotently clones `enactic/openarm_mujoco` at a pinned v2 SHA into `$OPENRAL_CACHE_DIR/openarm_v2/<sha>/`, returns the bimanual MJCF path. Raises `ROSConfigError` when `git` is missing or the clone fails. Mirrors the pattern used by `python/sim/src/openral_sim/backends/so100_robosuite/_assets.py`. (L64)
-- module const `_OPENARM_V2_PINNED_SHA: str` (L47) — bump to track upstream v2 updates.
+- `ensure_openarm_v2_mjcf() -> str` — Idempotently clones `enactic/openarm_mujoco` at a pinned v2 SHA into `$OPENRAL_CACHE_DIR/openarm_v2/<sha>/`, returns the bimanual MJCF path. Raises `ROSConfigError` when `git` is missing or the clone fails. Mirrors the pattern used by `python/sim/src/openral_sim/backends/so100_robosuite/_assets.py`. (L66)
+- module const `_OPENARM_V2_PINNED_SHA: str` (L49) — bump to track upstream v2 updates.
 
 ### `python/hal/src/openral_hal/g1.py`
 _MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
