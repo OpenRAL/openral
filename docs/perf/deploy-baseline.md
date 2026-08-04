@@ -257,8 +257,10 @@ return `requires a subscription`):
   glm-4.6v thrashes where glm-5.2 drives. The infrastructure works; the model
   is too small to plan.
 
-Configured via the deprecated-but-supported legacy shim
+Configured via the then-still-supported legacy shim
 (`OPENRAL_REASONER_LLM_PROVIDER=ollama`, `OPENRAL_REASONER_LLM_MODEL=qwen3:4b`).
+That contract was removed in 0.3.0; the equivalent today is
+`OPENRAL_REASONER_MODEL=qwen3:4b` + `OPENRAL_REASONER_ENDPOINT=ollama`.
 
 > **Correction.** This round concluded that the model-first path could not
 > express an ollama model because "the launch forwards `OPENRAL_REASONER_MODEL`
@@ -291,7 +293,7 @@ shared host.
 ### What the model-first gap actually was
 
 Not the launch (see the correction above): the **uncurated escape hatch only
-accepted a bare URL**. The deprecated `OPENRAL_REASONER_LLM_PROVIDER` shim knew
+accepted a bare URL**. The then-deprecated `OPENRAL_REASONER_LLM_PROVIDER` shim knew
 each vendor's base URL, dialect, auth posture, cold-start timeout and
 `tool_choice` quirk; model-first knew none of them, so anything off the curated
 menu meant retyping a URL the codebase already held as a constant *and*

@@ -87,18 +87,25 @@ def _import_launch_module() -> object:
 
 
 def _make_launch_context(robot_yaml: Path) -> object:
-    """Return a :class:`launch.LaunchContext` pre-populated with the defaults.
+    """Return a :class:`launch.LaunchContext` populated from the launch itself.
 
-    Mirrors the ``DeclareLaunchArgument(default_value=…)`` block at the
-    bottom of ``sim_e2e.launch.py`` so ``compose_runtime_graph`` can
-    resolve every ``LaunchConfiguration(...).perform(context)``. Only
-    ``robot_yaml`` / ``hal_*`` lack defaults (they are CLI-required for
-    real launches) so we set them by hand to a representative HAL.
+    The defaults come from executing the launch's own
+    ``DeclareLaunchArgument`` entities, as ``test_no_dashboard_otlp_env.py``
+    does. A hand-copied mirror of that block drifts silently: every new launch
+    arg breaks these tests with ``SubstitutionFailure: launch configuration
+    '<name>' does not exist``, which is invisible in CI because the whole
+    module is ``ROS_DISTRO``-gated. Only ``robot_yaml`` / ``hal_*`` lack
+    defaults (they are CLI-required for real launches), so those are set by
+    hand to a representative HAL.
     """
     from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument
 
+    module = _import_launch_module()
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
+    # The required (default-less) arguments must be present before the
+    # declarations execute, or each one raises for a missing value.
     cfg["robot_yaml"] = str(robot_yaml)
     # Use the openarm HAL string regardless of the robot — compose_runtime_graph
     # never imports the HAL package at parse time; only the executable
@@ -108,23 +115,18 @@ def _make_launch_context(robot_yaml: Path) -> object:
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
-    # Defaults that ship with the launch file.
-    cfg["reset_to_pose_service"] = ""
-    cfg["dashboard_port"] = "4318"
-    cfg["reasoner_provider"] = ""
-    cfg["reasoner_model"] = "gpt-5.5"
-    cfg["reasoner_endpoint"] = ""
-    cfg["spatial_memory_path"] = ""
-    cfg["spatial_memory_ingest"] = "false"
+
+    for entity in module.generate_launch_description().entities:
+        if isinstance(entity, DeclareLaunchArgument):
+            entity.execute(ctx)
+
+    # Pin the knobs these tests actually depend on, independent of any
+    # environment-derived launch default.
     cfg["hal_mode"] = "sim"
     cfg["enable_slam"] = "false"
     cfg["enable_nav2"] = "false"
     cfg["enable_octomap"] = "false"
-    cfg["octomap_cloud_topic"] = "/openral/cameras/front_depth/points"
     cfg["enable_object_detector"] = "false"
-    # Detector path is only read when enable_object_detector is true, but
-    # the LaunchConfiguration must resolve regardless.
-    cfg["object_detector_onnx"] = str(_REPO_ROOT / "rskills" / "rtdetr-coco-r18" / "model.onnx")
     cfg["enable_dashboard"] = "false"
     return ctx
 

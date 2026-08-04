@@ -542,10 +542,10 @@ class ToolUseClient(Protocol):
         """
 
 
-# OpenRouter's OpenAI-compatible base URL; pre-filled by the
-# ``OPENRAL_REASONER_LLM_PROVIDER=openrouter`` shortcut so users don't
-# have to memorise it. An explicit ``OPENRAL_REASONER_LLM_BASE_URL``
-# still wins (so a proxy / staging gateway can be substituted).
+# Base URLs for the named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts.
+# Exported so a deployment can reference the same constant the factory does
+# instead of retyping a URL; the properties each one implies (dialect, auth,
+# cold-start timeout, tool_choice) live in :data:`_ENDPOINT_PRESETS` below.
 OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 
 # Anthropic's own API host — the value the SDK defaults to when no base_url is
@@ -553,31 +553,13 @@ OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 # instead of ``None`` (see :class:`_EndpointPreset.url`).
 ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
 
-# Local Ollama's OpenAI-compatible base URL; pre-filled by the
-# ``OPENRAL_REASONER_LLM_PROVIDER=ollama`` shortcut. Ollama does not
-# enforce auth by default, so the ``ollama`` provider also drops the
-# API-key requirement that ``anthropic`` / ``openrouter`` insist on.
-# A hosted Ollama-compatible gateway with auth can still set
-# ``OPENRAL_REASONER_LLM_API_KEY`` and ``OPENRAL_REASONER_LLM_BASE_URL``
-# to override both defaults.
+# Ollama and vLLM are loopback daemons that enforce no auth unless fronted by a
+# gateway (or started with ``vllm serve --api-key``); ``vllm serve`` listens on
+# :8000, Ollama on :11434.
 OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-
-# Local vLLM's OpenAI-compatible base URL; pre-filled by the
-# ``OPENRAL_REASONER_LLM_PROVIDER=vllm`` shortcut (``vllm serve`` listens
-# on ``:8000`` by default). Like Ollama it is a self-hosted endpoint that
-# does not enforce auth unless started with ``--api-key``; the preset
-# therefore drops the API-key requirement, and an explicit
-# ``OPENRAL_REASONER_LLM_{BASE_URL,API_KEY}`` still overrides both.
 VLLM_BASE_URL: str = "http://localhost:8000/v1"
-
-# Named cloud presets reachable through Google / xAI / DeepSeek's own
-# OpenAI-compatible endpoints. Each is a thin convenience on top of the
-# generic ``openai-compatible`` client: the ``PROVIDER=<name>`` shortcut
-# pre-fills the base URL below so users don't hand-configure it. All
-# three enforce auth, so the factory requires
-# ``OPENRAL_REASONER_LLM_API_KEY`` (an explicit
-# ``OPENRAL_REASONER_LLM_BASE_URL`` still wins for a proxy / gateway).
-# Gemini's OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
+# Google / xAI / DeepSeek's own OpenAI-compatible endpoints. Gemini's
+# OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
 GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 XAI_BASE_URL: str = "https://api.x.ai/v1"
 DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
@@ -585,60 +567,16 @@ DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
 # models, e.g. ``Qwen/Qwen3-8B``). Auth via an HF access token.
 HUGGINGFACE_BASE_URL: str = "https://router.huggingface.co/v1"
 
-# Auth-required named presets that wrap :class:`OpenAICompatibleToolUseClient`
-# with a pre-filled base URL. ``openrouter`` is the original member;
-# ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` mirror it for the direct
-# vendor endpoints. Keyed by PROVIDER value → default base URL.
-_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
-    "openrouter": OPENROUTER_BASE_URL,
-    "gemini": GEMINI_BASE_URL,
-    "xai": XAI_BASE_URL,
-    "deepseek": DEEPSEEK_BASE_URL,
-    "huggingface": HUGGINGFACE_BASE_URL,
-}
-
-# Providers whose endpoint rejects ``tool_choice="required"`` and only honours
-# ``"auto"``/``"none"`` (the HF router returns 400 INVALID_TOOL_CHOICE on
-# ``required``). The client falls back to ``"auto"`` for these and retries once
-# with an explicit nudge if the model answers in prose instead of a tool call.
-_AUTO_TOOL_CHOICE_PROVIDERS: frozenset[str] = frozenset({"huggingface"})
-
-# Local self-hosted OpenAI-compatible presets. Same wrapper as the cloud
-# presets above, but these point at a loopback daemon and do NOT require
-# an API key (the endpoint enforces none by default). Keyed by PROVIDER
-# value → default base URL; the factory also gives this class a longer
-# default timeout to absorb a cold-model first call.
-_LOCAL_OPENAI_COMPATIBLE_PRESETS: dict[str, str] = {
-    "ollama": OLLAMA_BASE_URL,
-    "vllm": VLLM_BASE_URL,
-}
-
-# All accepted PROVIDER values; surfaced in error messages and reused by
-# the ``openral doctor`` reasoner check so the two stay in sync. ``cosmos``
-# (the NVIDIA Cosmos 3 reasoner tower with a managed local vLLM server) is
-# registered here but implemented in :mod:`openral_reasoner.cosmos3`.
-_KNOWN_PROVIDERS: frozenset[str] = frozenset(
-    {
-        "anthropic",
-        "cosmos",
-        "openai-compatible",
-        *_LOCAL_OPENAI_COMPATIBLE_PRESETS,
-        *_OPENAI_COMPATIBLE_PRESETS,
-    },
-)
-
 
 # ── Model-first env contract (ADR-0088) ───────────────────────────────────────
 # Selection pivots from the location-leaking PROVIDER enum to the *model*; where
-# it runs is the orthogonal ENDPOINT axis. The legacy OPENRAL_REASONER_LLM_*
-# contract is honoured for one release via a deprecation shim below.
+# it runs is the orthogonal ENDPOINT axis.
 REASONER_MODEL_ENV: str = "OPENRAL_REASONER_MODEL"
 REASONER_ENDPOINT_ENV: str = "OPENRAL_REASONER_ENDPOINT"
 REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
-_LEGACY_PROVIDER_ENV: str = "OPENRAL_REASONER_LLM_PROVIDER"
 
 
 def _openai_choices(response: object) -> list[Any]:
@@ -690,15 +628,11 @@ class _EndpointPreset(NamedTuple):
 
 # ``OPENRAL_REASONER_ENDPOINT`` accepts one of these NAMES as well as a URL.
 #
-# Without them the uncurated escape hatch is a downgrade from the deprecated
-# ``OPENRAL_REASONER_LLM_PROVIDER`` contract it replaces: that shim knew each
-# vendor's base URL, dialect, auth posture, cold-start timeout and
-# ``tool_choice`` quirk, while model-first made the operator retype the URL and
-# hand-declare a dialect for endpoints the codebase already had constants for.
-# So the shim stayed load-bearing for anything off the curated menu (Ollama,
-# OpenRouter, a local vLLM) instead of being the pure duplicate a one-release
-# deprecation needs to be. Presets close that gap; removing the shim is now a
-# deletion rather than a feature loss.
+# These carry everything the retired ``OPENRAL_REASONER_LLM_PROVIDER`` enum used
+# to know — each vendor's base URL, dialect, auth posture, cold-start timeout and
+# ``tool_choice`` quirk — so every provider that contract could reach is
+# expressible model-first, without making the operator retype a URL and
+# hand-declare a dialect for endpoints the codebase already has constants for.
 _ENDPOINT_PRESETS: dict[str, _EndpointPreset] = {
     "anthropic": _EndpointPreset(ANTHROPIC_BASE_URL, "anthropic", True, 10.0, "required"),
     "openrouter": _EndpointPreset(OPENROUTER_BASE_URL, "openai", True, 10.0, "required"),
@@ -739,8 +673,7 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     A raw model id that is not in the registry takes the escape hatch: it
     requires ``OPENRAL_REASONER_ENDPOINT`` + ``OPENRAL_REASONER_DIALECT`` and
     logs an ``reasoner.model.uncurated`` warning (untested for robotics tool
-    calling). The legacy ``OPENRAL_REASONER_LLM_PROVIDER`` contract still works
-    for one release, with a deprecation warning.
+    calling).
 
     Returns:
         A constructed :class:`ToolUseClient`.
@@ -756,26 +689,14 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         >>> _ = os.environ  # placeholder for doctest discovery
     """
     model_key = os.environ.get(REASONER_MODEL_ENV, "").strip()
-    legacy_provider = os.environ.get(_LEGACY_PROVIDER_ENV, "").strip().lower()
     if not model_key:
-        if legacy_provider:
-            log.warning(
-                "reasoner.env.deprecated",
-                detail=(
-                    f"{_LEGACY_PROVIDER_ENV} is deprecated (ADR-0088); "
-                    f"set {REASONER_MODEL_ENV} to a curated model "
-                    f"({sorted(REASONER_MODELS)}) instead."
-                ),
-            )
-            return _build_from_legacy_env(legacy_provider)
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV} is unset; set it to a curated model "
             f"({sorted(REASONER_MODELS)}), or to a raw model id plus "
             f"{REASONER_ENDPOINT_ENV} (a named endpoint "
             f"{sorted(_ENDPOINT_PRESETS)}, or a URL plus {REASONER_DIALECT_ENV}) "
             "for an uncurated endpoint. The open-core path has no default — tests use "
-            "FakeToolUseClient. (Legacy OPENRAL_REASONER_LLM_PROVIDER is "
-            "deprecated but still honoured this release.)"
+            "FakeToolUseClient."
         )
     entry = REASONER_MODELS.get(model_key)
     if entry is None:
@@ -987,140 +908,6 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
         timeout_s=timeout_s,
         tool_choice=preset.tool_choice if preset is not None else "required",
         max_tokens=max_tokens,
-    )
-
-
-def _build_from_legacy_env(provider: str) -> ToolUseClient:
-    """Deprecated ``OPENRAL_REASONER_LLM_*`` contract (ADR-0088 shim).
-
-    Preserved verbatim for one release so existing deployments keep working;
-    :func:`build_tool_use_client_from_env` logs a deprecation warning before
-    delegating here. Reads ``OPENRAL_REASONER_LLM_{MODEL,API_KEY,BASE_URL,
-    TIMEOUT_S,MAX_TOKENS}``.
-    """
-    if not provider:
-        msg = (
-            "OPENRAL_REASONER_LLM_PROVIDER is unset; "
-            "set to one of 'anthropic' / 'openai-compatible' / 'openrouter' / 'ollama' / "
-            "'vllm' / 'gemini' / 'xai' / 'deepseek' / 'huggingface' / 'cosmos' to enable "
-            "the reasoner. The open-core path has no default — tests use FakeToolUseClient."
-        )
-        raise ROSConfigError(msg)
-    model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
-    if not model and provider != "cosmos":
-        # ``cosmos`` is the one provider with a canonical checkpoint
-        # (nvidia/Cosmos3-Edge) — everything else must name a model.
-        raise ROSConfigError(
-            "OPENRAL_REASONER_LLM_MODEL is unset; required to construct a ToolUseClient.",
-        )
-    api_key = os.environ.get("OPENRAL_REASONER_LLM_API_KEY", "").strip() or None
-    # Local self-hosted models do tool-use slowly on a cold first call
-    # (qwen3:0.6b under Ollama needs ~30 s warm-up; vLLM can be mid-load);
-    # the cloud providers stay tight on the 10 s default. An explicit env
-    # wins for either side.
-    timeout_env = os.environ.get("OPENRAL_REASONER_LLM_TIMEOUT_S", "").strip()
-    # The HF router can cold-start a serverless model on the first call, so it
-    # gets the same generous default as the local self-hosted presets.
-    slow_first_call = provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS or provider == "huggingface"
-    default_timeout_s = 60.0 if slow_first_call else 10.0
-    if provider == "cosmos":
-        # An on-device 4B VLM's first inference after server boot compiles
-        # kernels and runs well below steady-state speed; give it headroom.
-        default_timeout_s = 120.0
-    timeout_s = float(timeout_env) if timeout_env else default_timeout_s
-    # Optional completion-token cap (OpenAI-compatible providers only). Unset →
-    # the endpoint default; set it to fit a low-balance metered key or to bound
-    # cost/latency (a tick needs just one tool call). The Anthropic path keeps
-    # its own 1024 default.
-    max_tokens_env = os.environ.get("OPENRAL_REASONER_LLM_MAX_TOKENS", "").strip()
-    max_tokens = int(max_tokens_env) if max_tokens_env else None
-    if provider == "anthropic":
-        if api_key is None:
-            raise ROSConfigError(
-                "OPENRAL_REASONER_LLM_API_KEY is unset; required for provider=anthropic.",
-            )
-        return AnthropicToolUseClient(model_id=model, api_key=api_key, timeout_s=timeout_s)
-    if provider == "openai-compatible":
-        base_url = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or None
-        return OpenAICompatibleToolUseClient(
-            model_id=model,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_s=timeout_s,
-            max_tokens=max_tokens,
-        )
-    if provider == "cosmos":
-        # NVIDIA Cosmos 3 reasoner tower (default checkpoint: the 4B Edge
-        # tier) behind an OpenAI-compatible endpoint, with a managed local
-        # `vllm serve` autostart. Implementation lives in cosmos3.py; the
-        # import is function-local because cosmos3 imports this module.
-        from openral_reasoner.cosmos3 import (  # noqa: PLC0415  # reason: avoid a module-level import cycle (cosmos3 subclasses OpenAICompatibleToolUseClient)
-            AUTOSTART_ENV,
-            BOOT_TIMEOUT_ENV,
-            COSMOS3_BASE_URL,
-            DEFAULT_BOOT_TIMEOUT_S,
-            DEFAULT_COSMOS3_MODEL,
-            Cosmos3ToolUseClient,
-        )
-
-        base_url = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip() or COSMOS3_BASE_URL
-        # Accept the common falsy spellings, not just "0" — an operator who
-        # writes AUTOSTART=false means "do not spawn a multi-GB server".
-        auto_start = os.environ.get(AUTOSTART_ENV, "").strip().lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-        boot_env = os.environ.get(BOOT_TIMEOUT_ENV, "").strip()
-        return Cosmos3ToolUseClient(
-            model_id=model or DEFAULT_COSMOS3_MODEL,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_s=timeout_s,
-            max_tokens=max_tokens,
-            auto_start=auto_start,
-            boot_timeout_s=float(boot_env) if boot_env else DEFAULT_BOOT_TIMEOUT_S,
-        )
-    if provider in _OPENAI_COMPATIBLE_PRESETS:
-        # openrouter / gemini / xai / deepseek — thin auth-required presets
-        # that pre-fill the vendor's OpenAI-compatible base URL. An explicit
-        # OPENRAL_REASONER_LLM_BASE_URL still wins (proxy / staging gateway).
-        if api_key is None:
-            raise ROSConfigError(
-                f"OPENRAL_REASONER_LLM_API_KEY is unset; required for provider={provider}.",
-            )
-        base_url = (
-            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
-            or _OPENAI_COMPATIBLE_PRESETS[provider]
-        )
-        return OpenAICompatibleToolUseClient(
-            model_id=model,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_s=timeout_s,
-            tool_choice="auto" if provider in _AUTO_TOOL_CHOICE_PROVIDERS else "required",
-            max_tokens=max_tokens,
-        )
-    if provider in _LOCAL_OPENAI_COMPATIBLE_PRESETS:
-        # ollama / vllm — local self-hosted OpenAI-compatible servers whose
-        # endpoint does not enforce auth by default; an explicit env value
-        # still passes through for users who front them with a gateway (or
-        # `vllm serve --api-key`) that does.
-        base_url = (
-            os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
-            or _LOCAL_OPENAI_COMPATIBLE_PRESETS[provider]
-        )
-        return OpenAICompatibleToolUseClient(
-            model_id=model,
-            api_key=api_key,
-            base_url=base_url,
-            timeout_s=timeout_s,
-            max_tokens=max_tokens,
-        )
-    raise ROSConfigError(
-        f"OPENRAL_REASONER_LLM_PROVIDER={provider!r} is unknown; "
-        f"expected one of {sorted(_KNOWN_PROVIDERS)!r}.",
     )
 
 
@@ -1797,7 +1584,7 @@ class OpenAICompatibleToolUseClient:
             but reasoning models (GPT-5.x) default that to their full window
             (65k), which a metered gateway (OpenRouter) *reserves* up front and
             may reject on a low-balance key (HTTP 402). Set a cap (env
-            ``OPENRAL_REASONER_LLM_MAX_TOKENS``) to bound cost/latency; a tick
+            ``OPENRAL_REASONER_MAX_TOKENS``) to bound cost/latency; a tick
             only needs one tool call, so a few thousand tokens (plus reasoning
             headroom) suffices.
     """

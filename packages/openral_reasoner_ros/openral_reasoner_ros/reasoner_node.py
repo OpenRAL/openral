@@ -573,7 +573,7 @@ class ReasonerNode(LifecycleNode):
             ``suppressed_reason="heartbeat_idle"``.
         client: Optional pre-built :class:`ToolUseClient`. When ``None``
             :meth:`on_configure` builds one from the
-            ``OPENRAL_REASONER_LLM_*`` env vars via
+            ``OPENRAL_REASONER_*`` env vars via
             :func:`build_tool_use_client_from_env`. Tests pass a
             :class:`FakeToolUseClient` here.
         palette: Optional pre-built :class:`ToolPalette`. When ``None``

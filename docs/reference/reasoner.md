@@ -201,8 +201,10 @@ export OPENRAL_REASONER_ENDPOINT=http://10.0.0.5:11434/v1
 export OPENRAL_REASONER_DIALECT=openai
 ```
 
-The old `OPENRAL_REASONER_LLM_*` provider-first contract remains a deprecated
-one-release shim. `openral doctor` resolves the model registry directly,
+The old `OPENRAL_REASONER_LLM_*` provider-first contract was removed in 0.3.0;
+see the migration table in
+[`packages/openral_reasoner_ros/README.md`](../../packages/openral_reasoner_ros/README.md).
+`openral doctor` resolves the model registry directly,
 checks auth, and probes loopback endpoints; a down managed-local endpoint is
 informational only while autostart is enabled. Tests use the deterministic
 `FakeToolUseClient` process-boundary double (CLAUDE.md §1.11).

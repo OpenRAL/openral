@@ -11,12 +11,12 @@ tags:
 - lerobot
 - vision-language-action
 - so101_follower
-datasets:
-- makermods/eraser_place_unblurry_real
-inference: false
 base_model:
 - makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54
 base_model_relation: finetune
+datasets:
+- makermods/eraser_place_unblurry_real
+inference: false
 ---
 
 # rskill-smolvla-so101-eraser_place-bf16
