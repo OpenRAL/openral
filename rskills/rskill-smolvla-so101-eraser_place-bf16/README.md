@@ -25,12 +25,12 @@ base_model_relation: finetune
 > **place an eraser on a blue square** with a **real SO-101 follower arm**,
 > packaged for `openral deploy run`.
 
-This package wraps
+This package ships an OpenRAL **mirror** of
 [`makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`](https://huggingface.co/makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54)
-(Apache-2.0) with an `rskill.yaml` manifest that adds capability checking,
-license surfacing, the camera-slot aliasing, the joint-units contract, a
-training-derived starting pose, latency budgets, and local registry
-integration. It does **not** copy model weights.
+(Apache-2.0) — byte-identical weights, pinned to a commit SHA — plus an
+`rskill.yaml` manifest that adds capability checking, license surfacing, the
+camera-slot aliasing, the joint-units contract, a training-derived home pose,
+latency budgets, and local registry integration.
 
 ## Preview
 
@@ -196,6 +196,7 @@ with a hazard-log entry (CLAUDE.md §3 "Safety"), not a packaging change.
 
 | Field | Value |
 | --- | --- |
+| Weights repo | [`OpenRAL/rskill-smolvla-so101-eraser_place-bf16`](https://huggingface.co/OpenRAL/rskill-smolvla-so101-eraser_place-bf16) (mirror, pinned `@7a9a8a0`) |
 | Source repo | [`makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`](https://huggingface.co/makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54) |
 | Base model | [`lerobot/smolvla_base`](https://huggingface.co/lerobot/smolvla_base) |
 | Paper | [arXiv:2506.01844](https://arxiv.org/abs/2506.01844) — *SmolVLA* |
@@ -205,12 +206,25 @@ with a hazard-log entry (CLAUDE.md §3 "Safety"), not a packaging change.
 | Training | 20 000 steps, batch 32, AdamW lr 1e-4, cosine decay, seed 1000, lerobot 0.6.0 |
 | Precision | fp32 at rest (1.2 GB `model.safetensors`); loaded bf16 |
 
-Weights stay **upstream** — this rSkill does not mirror them. Every OpenRAL
-fetch path for this manifest is a per-file `hf_hub_download`
-(`config.json`, `model.safetensors`, the two processor JSONs and their
-normalizer `.safetensors`), never a `snapshot_download`, so the 20
-`checkpoints/<step>/` training snapshots in that repo (≈ 21 GB with optimizer
-state) are never pulled.
+### Why the weights are mirrored
+
+`weights_uri` points at this repo, not at the upstream one, per the catalog
+standard (`rskills/README.md` — *"One rSkill ⇄ one HF repo"*). The
+`model.safetensors` here is **byte-identical** to upstream — sha256
+`58d656e494a3143c00b19261a14f2b312656751cedd98253ab8a5f3fbcc73609`, checked
+against the upstream LFS digest before upload — and the URI is pinned to a
+commit SHA so loads are reproducible (CLAUDE.md §1.8).
+
+This isn't ceremony. The sibling
+[`rskill-smolvla-so101-pen-bf16`](../smolvla-so101-pen/) points at a
+third-party repo that went **gated after packaging**; it now needs
+`HF_HUB_OFFLINE=1` and a warm cache to deploy at all. Mirroring removes that
+failure mode.
+
+The mirror carries only the **7 root inference files**, not the 20
+`checkpoints/<step>/` training snapshots (≈ 21 GB with optimizer state) that
+the upstream repo also holds. Every OpenRAL fetch path here is a per-file
+`hf_hub_download`, never a `snapshot_download`.
 
 ## Supported robots
 
@@ -237,7 +251,7 @@ state) are never pulled.
 | `model_family` | `smolvla` |
 | `embodiment_tags` | `so101_follower` |
 | `runtime` / `quantization.dtype` | `pytorch` / `bf16` |
-| `weights_uri` | `hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54` |
+| `weights_uri` | `hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0` (pinned mirror) |
 | `chunk_size` / `n_action_steps` | 50 / 50 |
 | `action_contract` | 6-D `joint_positions`, `joint_units: degrees` |
 | `latency_budget.per_chunk_ms` | 400 (**191 ms measured**, RTX 4070 Laptop) |
@@ -267,10 +281,10 @@ against the training distribution, **not** a task success rate.
 ## License
 
 This rSkill package (`rskill.yaml`, `README.md`, `media/`) is **Apache-2.0**.
-The wrapped weights at
-`hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`
-are **Apache-2.0** as published by the author, as is the training dataset.
-Commercial use is allowed.
+The mirrored weights in this repo are byte-identical to
+`makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`
+and remain **Apache-2.0** as published by the author, as is the training
+dataset. Commercial use is allowed.
 
 ## See also
 
