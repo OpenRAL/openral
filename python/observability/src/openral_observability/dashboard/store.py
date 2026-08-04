@@ -82,7 +82,14 @@ _HEADLINE_SPANS = frozenset(
     {
         semconv.SPAN_CLI_COMMAND,  # one per CLI invocation
         semconv.SPAN_DEPLOY_BRINGUP,  # one per lifecycle transition
-        semconv.SPAN_RSKILL_EXECUTE,  # one per dispatched goal
+        # NOTE: `rskill.execute` is deliberately NOT here. The name is
+        # emitted at two very different rates by two different sites —
+        # `rskill_runner_node` opens one per dispatched goal, but
+        # `rSkillBase.step()` opens one per *tick*. Promoting it put 60
+        # rows into a 20 s live deploy-sim window (measured), reproducing
+        # the exact flood this allow-list exists to prevent. It can only
+        # become a headline once the per-step emitter is renamed; until
+        # then the goal-level line is not worth the per-tick stream.
         semconv.SPAN_RSKILL_CONFIGURE,  # skill lifecycle
         semconv.SPAN_RSKILL_ACTIVATE,  # skill lifecycle
         semconv.SPAN_REASONER_TICK,  # one per LLM round-trip
@@ -683,17 +690,25 @@ class TelemetryStore:
                 self._counters[event.name] += 1
 
     def _append_event(self, ev: TelemetryEvent) -> None:
-        """Append to the main ring, and mirror durable events into the protected lane.
+        """Append to the main ring, and mirror non-debug events into the protected lane.
 
-        The protected lane keeps the last :data:`_ERROR_EVENT_RING_SIZE` events
-        alive even when the high-rate info/debug stream cycles the main ring, so
-        a skill_failure / estop / safety.violation always leaves a trace the
-        operator can still find seconds later. Mirrored when the severity is
-        error/fatal OR the kind is in :data:`_PROTECTED_EVENT_KINDS` (a
-        skill_failure downgraded to "warn" while latched must still survive).
+        The protected lane keeps the last :data:`_ERROR_EVENT_RING_SIZE`
+        non-debug events alive even when the high-rate debug stream cycles the
+        main ring, so a bringup line / skill_failure / estop / safety.violation
+        always leaves a trace the operator can still find seconds later.
+
+        **Everything above debug is mirrored, not just errors.** Measured on a
+        live `deploy sim`: the main ring held 201 rows of which 193 were
+        `hal.read_state`, i.e. ~7 s of history at 30 Hz. Demoting the per-tick
+        spans took info *generation* to zero, but the rows an operator actually
+        wants — `deploy.bringup`, `rskill.execute` — still share one FIFO with
+        the debug stream, so they were evicted within seconds of being emitted.
+        Only the reasoner's ERROR bringup row survived, because errors were the
+        only thing mirrored here. An info row that cannot outlive the flood is
+        no more useful than one that was never emitted.
         """
         self._events.append(ev)
-        if ev.severity in _ERROR_SEVERITIES or ev.kind in _PROTECTED_EVENT_KINDS:
+        if ev.severity != "debug" or ev.kind in _PROTECTED_EVENT_KINDS:
             self._error_events.append(ev)
 
     def _record_log(self, record: LogRecord, scope_name: str) -> None:
