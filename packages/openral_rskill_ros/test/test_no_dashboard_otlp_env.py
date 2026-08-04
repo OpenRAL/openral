@@ -207,7 +207,6 @@ def test_reasoner_uses_model_first_env() -> None:
     reasoner_env = next(env for pkg, env in envs if pkg == "openral_reasoner_ros")
     assert reasoner_env["OPENRAL_REASONER_MODEL"] == "gpt-5.5"
     assert reasoner_env["OPENRAL_REASONER_MAX_TOKENS"] == "16384"
-    assert "OPENRAL_REASONER_LLM_PROVIDER" not in reasoner_env
 
 
 def test_direct_rskill_mode_omits_reasoner_and_prompt_router() -> None:

@@ -8130,8 +8130,9 @@ class ReasonerModel(BaseModel):
     with a warning.
 
     This model reorganises reasoner selection away from the location-leaking
-    ``OPENRAL_REASONER_LLM_PROVIDER`` enum (ADR-0088): the primary choice is the
-    *model*; *where* it runs is the orthogonal, honest ``endpoint`` axis.
+    ``OPENRAL_REASONER_LLM_PROVIDER`` enum it replaced (ADR-0088; that spelling
+    was removed in 0.3.0): the primary choice is the *model*; *where* it runs is
+    the orthogonal, honest ``endpoint`` axis.
 
     Attributes:
         id: Catalog key (``"cosmos3-edge"``, ``"claude-opus-4-8"``). The value of

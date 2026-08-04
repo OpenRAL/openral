@@ -18,8 +18,7 @@ reach ``LifecycleNode(package=, executable=, name=)``:
                             with the HAL's per-robot knobs (``/**``
                             wildcard).
 * ``reset_to_pose_service``, ``dashboard_port``, ``reasoner_model``,
-  ``reasoner_endpoint`` — shared knobs. ``reasoner_provider`` is retained for
-  the one-release legacy env shim only.
+  ``reasoner_endpoint`` — shared knobs.
 
 Spawned processes: dashboard + safety_kernel + runtime + reasoner +
 prompt_router + HAL. Lifecycle nodes auto-transition UNCONFIGURED →
@@ -477,7 +476,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # publishes each as /openral/cameras/<name>/image.
     deploy_config = LaunchConfiguration("deploy_config").perform(context)
     dashboard_port = LaunchConfiguration("dashboard_port").perform(context)
-    reasoner_provider = LaunchConfiguration("reasoner_provider").perform(context)
     reasoner_model = LaunchConfiguration("reasoner_model").perform(context)
     reasoner_endpoint = LaunchConfiguration("reasoner_endpoint").perform(context)
     spatial_memory_path = LaunchConfiguration("spatial_memory_path").perform(context)
@@ -789,25 +787,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     if enable_dashboard:
         otel_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{dashboard_port}"
         otel_env["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
-    reasoner_env = {**otel_env}
-    if reasoner_provider:
-        # One-release compatibility for callers still passing the old launch arg.
-        reasoner_env.update(
-            {
-                "OPENRAL_REASONER_LLM_PROVIDER": reasoner_provider,
-                "OPENRAL_REASONER_LLM_MODEL": reasoner_model,
-                "OPENRAL_REASONER_LLM_MAX_TOKENS": (
-                    os.environ.get("OPENRAL_REASONER_LLM_MAX_TOKENS") or "16384"
-                ),
-            }
-        )
-    else:
-        reasoner_env["OPENRAL_REASONER_MODEL"] = reasoner_model
-        max_tokens = os.environ.get("OPENRAL_REASONER_MAX_TOKENS")
-        if max_tokens or reasoner_model in {"gpt-5.5", "gpt-5.6"}:
-            reasoner_env["OPENRAL_REASONER_MAX_TOKENS"] = max_tokens or "16384"
-        if reasoner_endpoint:
-            reasoner_env["OPENRAL_REASONER_ENDPOINT"] = reasoner_endpoint
+    reasoner_env = {**otel_env, "OPENRAL_REASONER_MODEL": reasoner_model}
+    max_tokens = os.environ.get("OPENRAL_REASONER_MAX_TOKENS")
+    if max_tokens or reasoner_model in {"gpt-5.5", "gpt-5.6"}:
+        reasoner_env["OPENRAL_REASONER_MAX_TOKENS"] = max_tokens or "16384"
+    if reasoner_endpoint:
+        reasoner_env["OPENRAL_REASONER_ENDPOINT"] = reasoner_endpoint
 
     dashboard = ExecuteProcess(
         cmd=[_RAL_EXECUTABLE, "dashboard", "--port", dashboard_port],
@@ -1842,41 +1827,23 @@ def generate_launch_description() -> LaunchDescription:
             description="OTLP/HTTP port for the dashboard child.",
         ),
         DeclareLaunchArgument(
-            "reasoner_provider",
-            default_value=(
-                ""
-                if os.environ.get("OPENRAL_REASONER_MODEL")
-                else os.environ.get("OPENRAL_REASONER_LLM_PROVIDER") or ""
-            ),
-            description=(
-                "Deprecated one-release compatibility: OPENRAL_REASONER_LLM_PROVIDER "
-                "for the reasoner node. Prefer reasoner_model/reasoner_endpoint."
-            ),
-        ),
-        DeclareLaunchArgument(
             "reasoner_model",
             # Default to the curated gpt-5.5 registry entry: in live deploy testing it
             # was the most reliable at decomposing a collective operator goal into
             # grounded subtasks (glm-5.2 over-located and never decomposed). Needs
             # OPENRAL_REASONER_API_KEY in the environment; an explicit model-first env
-            # still wins. The legacy model env is read only when its provider is set.
-            default_value=(
-                os.environ.get("OPENRAL_REASONER_MODEL")
-                or (
-                    os.environ.get("OPENRAL_REASONER_LLM_MODEL")
-                    if os.environ.get("OPENRAL_REASONER_LLM_PROVIDER")
-                    else None
-                )
-                or "gpt-5.5"
-            ),
+            # still wins.
+            default_value=os.environ.get("OPENRAL_REASONER_MODEL") or "gpt-5.5",
             description="OPENRAL_REASONER_MODEL registry key for the reasoner node.",
         ),
         DeclareLaunchArgument(
             "reasoner_endpoint",
             default_value=os.environ.get("OPENRAL_REASONER_ENDPOINT") or "",
             description=(
-                "Optional OPENRAL_REASONER_ENDPOINT URL override. Empty uses the "
-                "curated model's registry default."
+                "Optional OPENRAL_REASONER_ENDPOINT override — a named endpoint "
+                "(openrouter / ollama / vllm / gemini / xai / deepseek / huggingface "
+                "/ anthropic) or a URL. Empty uses the curated model's registry "
+                "default."
             ),
         ),
         DeclareLaunchArgument(
