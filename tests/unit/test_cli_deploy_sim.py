@@ -1590,6 +1590,78 @@ def test_bh_run_launch_invocation_sets_expandable_segments(
     assert captured["env"]["PYTORCH_ALLOC_CONF"] == "garbage_collection_threshold:0.9"
 
 
+def test_deploy_run_preflight_reaps_orphans_and_checks_the_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``deploy run`` must run the same preflights as ``deploy sim``.
+
+    The overlay check and the orphan reap used to live only in the
+    ``deploy sim`` command body, so a crashed ``deploy run`` left graph
+    processes holding GPU memory and ``/dev/shm/fastrtps_*`` lockfiles until
+    someone happened to run ``deploy sim`` — and the next ``deploy run``
+    failed with a terse ``Failed init_port fastrtps_port7000`` rather than
+    reaping them. Real hardware is where a stale HAL matters most.
+    """
+    import openral_cli.deploy_sim as _ds
+
+    inv = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    called: list[str] = []
+
+    monkeypatch.setattr(
+        _ds,
+        "assert_ros2_packages_discoverable",
+        lambda *_a, **_kw: called.append("overlay_check"),
+    )
+    monkeypatch.setattr(
+        _ds,
+        "_kill_orphan_openral_graph_processes",
+        lambda *_a, **_kw: (called.append("reap"), 0)[1],
+    )
+    monkeypatch.setattr(
+        _ds,
+        "_preflight_palette_deps",
+        lambda **_kw: called.append("palette"),
+    )
+    monkeypatch.setattr(_ds, "_run_launch", lambda *_a, **_kw: 0)
+
+    assert run_launch_invocation(inv, run_preflight=True) == 0
+
+    assert called == ["overlay_check", "reap", "palette"], (
+        f"expected the deploy-sim preflight order, got {called}"
+    )
+
+
+def test_deploy_run_preflight_can_still_be_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run_preflight=False`` stays a full bypass — nothing probes or reaps."""
+    import openral_cli.deploy_sim as _ds
+
+    inv = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    called: list[str] = []
+
+    monkeypatch.setattr(
+        _ds, "assert_ros2_packages_discoverable", lambda *_a, **_kw: called.append("overlay_check")
+    )
+    monkeypatch.setattr(
+        _ds, "_kill_orphan_openral_graph_processes", lambda *_a, **_kw: called.append("reap")
+    )
+    monkeypatch.setattr(_ds, "_run_launch", lambda *_a, **_kw: 0)
+
+    assert run_launch_invocation(inv, run_preflight=False) == 0
+    assert called == []
+
+
 # ── Launch process-group teardown (orphan-reap hardening) ───────────────────
 #
 # These exercise the real teardown path with real child processes (no
