@@ -1358,13 +1358,7 @@ class ReasonerNode(LifecycleNode):
         # Async LLM phase (#21) teardown — a still-running worker call is not
         # interruptible (provider SDKs have their own timeouts); shutdown
         # without waiting and let the generation bump drop its completion.
-        self._llm_generation += 1
-        if self._llm_pool is not None:
-            self._llm_pool.shutdown(wait=False, cancel_futures=True)
-            self._llm_pool = None
-        if self._vlm_pool is not None:
-            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
-            self._vlm_pool = None
+        self._shutdown_worker_pools()
         if self._inbox_guard is not None:
             self.destroy_guard_condition(self._inbox_guard)
             self._inbox_guard = None
@@ -1372,9 +1366,37 @@ class ReasonerNode(LifecycleNode):
         self.get_logger().info("on_cleanup: state cleared")
         return TransitionCallbackReturn.SUCCESS
 
+    def _shutdown_worker_pools(self) -> None:
+        """Drop the LLM / VLM worker pools and abandon any in-flight call.
+
+        A still-running worker call is not interruptible (provider SDKs own
+        their timeouts), so shut down without waiting and let the generation
+        bump drop its completion.
+
+        Called from BOTH ``on_cleanup`` and ``on_shutdown``. ``on_cleanup``
+        alone is not enough: ``_submit_client_warmup`` starts the managed vLLM
+        sidecar early in ``on_configure``, and ``@log_lifecycle_errors`` turns a
+        later raise in that same transition into ``FAILURE`` — which leaves the
+        node ``unconfigured``, a state ``on_cleanup`` is never entered from. The
+        pool's non-daemon thread and the child it spawned would then outlive the
+        node with nothing left to reap them.
+        """
+        self._llm_generation += 1
+        if self._llm_pool is not None:
+            self._llm_pool.shutdown(wait=False, cancel_futures=True)
+            self._llm_pool = None
+        if self._vlm_pool is not None:
+            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
+            self._vlm_pool = None
+
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Final shutdown."""
+        """Final shutdown.
+
+        Reaps the worker pools unconditionally — this is the only teardown hook
+        a node that failed ``on_configure`` will ever reach.
+        """
         del state
+        self._shutdown_worker_pools()
         self.get_logger().info("on_shutdown")
         return TransitionCallbackReturn.SUCCESS
 
