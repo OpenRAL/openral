@@ -1035,6 +1035,22 @@ class ReasonerNode(LifecycleNode):
         self._vlm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-vlm")
         self._inbox_guard = self.create_guard_condition(self._drain_executor_inbox)
 
+        # Start a managed LLM sidecar NOW rather than on the first tick.
+        # Clients that own one (the Cosmos 3 Edge local vLLM) otherwise boot
+        # it lazily from ``select_tool``, i.e. after the whole graph is up
+        # and an operator is already waiting on a decision — a vLLM model
+        # load at best, a venv provision plus a ~9 GB download on a cold
+        # host. Bringup has minutes of unrelated work (HAL ``on_configure``,
+        # MuJoCo, camera first-frame gating) to overlap it with.
+        #
+        # On the LLM pool, so ``on_configure`` still returns promptly and
+        # the lifecycle transition is not held open by a model load. Cloud
+        # clients expose no ``warm`` and are untouched. Failure is
+        # non-fatal: the lazy path in ``select_tool`` remains the source of
+        # truth for whether the server is actually usable, and it will
+        # report the real error at the point it matters.
+        self._submit_client_warmup(client)
+
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
         # robot-context system prompt (option B) reflects the capabilities
         # loaded from ``robot_yaml``. Nothing between here and then dispatches
@@ -1255,6 +1271,31 @@ class ReasonerNode(LifecycleNode):
             f"({len(self._palette.execute_rskill_ids)} skills in palette)",
         )
         return TransitionCallbackReturn.SUCCESS
+
+    def _submit_client_warmup(self, client: object) -> None:
+        """Kick a managed LLM sidecar's boot onto the LLM pool, if it has one.
+
+        No-op for clients without a ``warm()`` — every cloud provider.
+        Runs off the executor thread so ``on_configure`` returns promptly
+        and the lifecycle transition is not held open by a model load.
+
+        A failure here is not the deploy's problem: the lazy path in
+        ``select_tool`` still owns whether the server is usable and
+        surfaces the real error where an operator can act on it. Logging at
+        warning keeps a silent sidecar failure visible during bringup
+        rather than only at the first tick.
+        """
+        warm = getattr(client, "warm", None)
+        if not callable(warm):
+            return
+
+        def _run() -> None:
+            try:
+                warm()
+            except Exception as exc:  # reason: pre-warm is an optimisation, never a gate
+                self.get_logger().warning(f"on_configure: LLM sidecar pre-warm failed: {exc!s}")
+
+        self._llm_pool.submit(_run)
 
     @log_lifecycle_errors
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:

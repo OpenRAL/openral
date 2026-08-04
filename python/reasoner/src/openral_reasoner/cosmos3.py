@@ -331,6 +331,25 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
 
     # -- ToolUseClient ------------------------------------------------------
 
+    def warm(self) -> None:
+        """Start the managed sidecar now instead of on the first tick.
+
+        ``_ensure_server`` is otherwise reached only from
+        :meth:`select_tool` / :meth:`describe_image`, i.e. on the
+        reasoner's *first tick* — after the whole graph is already up and
+        an operator is waiting on a decision. On a cold host that call
+        provisions a venv and downloads ~9 GB before vLLM even starts
+        loading; on a warm one it is still a vLLM model load. Meanwhile
+        bringup has minutes of unrelated work (HAL ``on_configure``,
+        MuJoCo, camera first-frame gating) it could have overlapped with.
+
+        Callers run this off the executor thread — see
+        ``ReasonerNode.on_configure``. Safe to call more than once:
+        ``_ensure_server`` short-circuits on ``_server_ready`` and reuses
+        a child that is still booting rather than double-spawning.
+        """
+        self._ensure_server()
+
     def select_tool(
         self,
         *,

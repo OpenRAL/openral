@@ -314,3 +314,43 @@ def _install_fake_openai(monkeypatch: pytest.MonkeyPatch, *, arguments: str) -> 
     import openai  # reason: network-boundary double per §1.11
 
     monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+
+
+# ── Sidecar pre-warm ─────────────────────────────────────────────────────────
+
+
+def test_warm_starts_the_sidecar_without_a_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``warm()`` reaches ``_ensure_server`` — the whole point of the seam.
+
+    Without it the sidecar boots lazily from ``select_tool``, i.e. on the
+    reasoner's first tick, after the graph is already up and an operator is
+    waiting. On a cold host that is a venv provision plus a ~9 GB download;
+    bringup has minutes of unrelated work to overlap it with.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    client = build_tool_use_client_from_env()
+
+    calls: list[int] = []
+    monkeypatch.setattr(type(client), "_ensure_server", lambda _self: calls.append(1))
+
+    client.warm()  # type: ignore[attr-defined]
+
+    assert calls == [1]
+
+
+def test_warm_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-warm plus the lazy path in select_tool must not double-spawn.
+
+    ``_ensure_server`` short-circuits on ``_server_ready`` and reuses a
+    still-booting child, so calling ``warm()`` more than once is safe.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    client = build_tool_use_client_from_env()
+
+    calls: list[int] = []
+    monkeypatch.setattr(type(client), "_ensure_server", lambda _self: calls.append(1))
+
+    client.warm()  # type: ignore[attr-defined]
+    client.warm()  # type: ignore[attr-defined]
+
+    assert calls == [1, 1], "warm() delegates every time; _ensure_server owns the de-dup"
