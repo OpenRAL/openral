@@ -54,7 +54,6 @@ INFERENCE_DURATION_MS: Final[str] = "inference.duration_ms"
 SAFETY_SEVERITY: Final[str] = "safety.severity"
 SAFETY_CHECK_NAME: Final[str] = "safety.check_name"
 SAFETY_KERNEL: Final[str] = "safety.kernel"
-SAFETY_CLAMPED: Final[str] = "safety.clamped"
 
 # ── reward.* — task-progress reward monitor scores ──────────────────────────
 REWARD_PROGRESS: Final[str] = "reward.progress"
@@ -278,7 +277,6 @@ METRIC_TICK_BUDGET_VIOLATIONS: Final[str] = "openral.tick.budget_violations"
 METRIC_TICK_DEADLINE_MISSES: Final[str] = "openral.tick.deadline_misses"
 METRIC_INFERENCE_TIMEOUTS: Final[str] = "openral.inference.timeouts"
 METRIC_SAFETY_VIOLATIONS: Final[str] = "openral.safety.violations"
-METRIC_SAFETY_CLAMPS: Final[str] = "openral.safety.clamps"
 METRIC_HAL_READ_STATE_DURATION: Final[str] = "openral.hal.read_state.duration"
 METRIC_HAL_SEND_ACTION_DURATION: Final[str] = "openral.hal.send_action.duration"
 METRIC_HAL_ESTOP_COUNT: Final[str] = "openral.hal.estop.count"
@@ -409,7 +407,6 @@ __all__ = [
     "METRIC_INFERENCE_DURATION",
     "METRIC_INFERENCE_TIMEOUTS",
     "METRIC_OBSERVABILITY_EXPORT_FAILURES",
-    "METRIC_SAFETY_CLAMPS",
     "METRIC_SAFETY_VIOLATIONS",
     "METRIC_SENSORS_AGE_MS",
     "METRIC_SENSORS_STALE_READS",
@@ -470,7 +467,6 @@ __all__ = [
     "RUN_MODE_HARDWARE",
     "RUN_MODE_SIM",
     "SAFETY_CHECK_NAME",
-    "SAFETY_CLAMPED",
     "SAFETY_KERNEL",
     "SAFETY_KERNEL_CPP",
     "SAFETY_KERNEL_NULL",

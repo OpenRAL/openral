@@ -930,25 +930,40 @@ class TelemetryStore:
         elif span_name == "safety.check":
             check_name = attrs.get("safety.check_name") or "(unknown)"
             severity = attrs.get("safety.severity", "info")
-            clamped = attrs.get("safety.clamped", False)
             ledger: dict[str, dict[str, Any]] = self._topics["safety"].setdefault("checks", {})
             ledger[str(check_name)] = {
                 "ts_unix": ts_unix,
                 "severity": severity,
-                "clamped": clamped,
                 "kernel": attrs.get("safety.kernel"),
                 "duration_ms": duration_ms,
             }
             self._topics["safety"]["latest_ts_unix"] = ts_unix
             # E-stop latch state for the UI's E-STOP / Reset control. The kernel
-            # drops every chunk with severity "violation" while latched (a
-            # violation, an /openral/estop, or a subsequent estop_latched drop)
-            # and reports "ok" once running clean again — so this self-corrects
-            # after a reset without the dashboard needing an rclpy node. A clamp
+            # drops every chunk while latched and reports a clean pass once
+            # running clean again — so this self-corrects after a reset
+            # without the dashboard needing an rclpy node. A clamp
             # ("warning") is not a latch and leaves the flag untouched.
+            #
+            # The clean-pass value is "info", NOT "ok". This used to test for
+            # "ok", which no emitter has ever produced: the C++ kernel sends
+            # `info` on a pass (lifecycle_kernel.cpp:721), `warn` while
+            # latched (:461) and `violation` on a drop (:583, :748), and the
+            # Python passthrough supervisor matches it. So the latch could
+            # only ever be set, never cleared, and the "self-corrects" claim
+            # above was false — `estopped` stuck true until an explicit
+            # POST /api/estop_reset.
+            #
+            # A pass from a real kernel is proof it is not latched: the
+            # kernel cannot publish a passing chunk while `fault_latch_` is
+            # set, it returns early with `estop_latched`. The null client is
+            # excluded because it emits "info" unconditionally without
+            # checking anything (runner/safety.py) — treating that as
+            # evidence of a clear would let a no-op client unlatch the UI.
             if severity == "violation":
                 self._topics["safety"]["estopped"] = True
-            elif severity == "ok":
+            elif severity == "info" and attrs.get(semconv.SAFETY_KERNEL) != (
+                semconv.SAFETY_KERNEL_NULL
+            ):
                 self._topics["safety"]["estopped"] = False
             if severity == "violation":
                 # A violation must SURVIVE and STAND OUT. The generic

@@ -128,9 +128,8 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.system.gpu.memory_used_mb` / `.total_mb` | UpDownCounter | MBy | `system_metrics.py:191-192` | 1 Hz |
 | `openral.system.gpu.utilization_pct` | UpDownCounter | % | `system_metrics.py:193` | 1 Hz |
 | `openral.inference.timeouts` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
-| `openral.safety.clamps` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
 | `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
-| `openral.observability.export_failures` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
+| `openral.observability.export_failures` | Counter | — | `_sdk._FailureCountingSpanExporter` | per failed span-export batch (label `signal_kind=trace`) |
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
@@ -218,23 +217,32 @@ updated.
 
 | Signal | Why it is not just a missing `add(1)` |
 |---|---|
-| `openral.safety.clamps` | The signal exists (`safety.clamped` span attribute in the C++ kernel; gripper-width clamping in `supervisor_node`) but nothing feeds the counter, so "how often is the kernel silently correcting the policy?" is unanswerable. Also a safety-boundary change. |
 | `openral.inference.timeouts` | Nothing raises `ROSInferenceTimeout` — it appears only in docstrings as a contract no backend enforces. Wiring the counter means implementing the timeout first. |
-| `openral.observability.export_failures` | Requires hooking the SDK exporter failure path. Until then a collector silently dropping batches looks identical to a healthy one — the exact failure this counter exists to expose. |
 | `openral.event.action_dropped` | `DeadlineOverrunPolicy.DROP` does drop the action, but reports via `deadline_missed` instead. |
 | `openral.event.chunk_prefetch_hit` / `_miss` | Action-chunk prefetch runs but never reports its hit rate, so "is the prefetch helping?" cannot be answered from a trace. |
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
 
-**Still open — the e-stop latch cannot self-clear.** `store.py` clears
-`topics.safety.estopped` only on `safety.severity == "ok"`, and no emitter ever
-produces `"ok"`: the C++ kernel emits `warn` / `violation` / `info`
-(`lifecycle_kernel.cpp:462,473,530,584,722,749`) and the two Python emitters
-send `"info"`. So the latch stays true until an explicit
-`POST /api/estop_reset`, and the code comment claiming it "self-corrects after
-a reset" is wrong. Fixing it means changing what the safety kernel reports,
-which is a safety change: CLAUDE.md §3 requires a safety-WG reviewer, a
-hazard-log update, and tests proving the behaviour is at least as
-conservative.
+**Removed: `openral.safety.clamps` / `safety.clamped`.** OpenRAL never clamps.
+The attribute was written in four places and was a literal `False` in every one;
+no code path ever set it `True`. That is not an oversight — the safety layer is
+deny-by-default and `compute_intersection` "rejects (never clamps)" any envelope
+field that would loosen the robot ceiling. The counter therefore measured an
+operation the system does not perform, and the attribute cost a constant on
+every `safety.check` span at 30 Hz. (HAL adapters *do* saturate commands into an
+actuator's physical range — the Franka gripper maps `[0, 1]` onto its travel —
+but that is device range-mapping, not a safety correction.)
+
+**Fixed: the e-stop latch now self-clears.** `store.py` cleared
+`topics.safety.estopped` only on `safety.severity == "ok"`, which no emitter has
+ever produced — the C++ kernel sends `info` on a pass, `warn` while latched and
+`violation` on a drop. The latch could only be set, never cleared, so the code
+comment claiming it "self-corrects after a reset" was false and `estopped` stuck
+true until an explicit `POST /api/estop_reset`. It now clears on a clean pass
+from a real kernel, which is proof the kernel is not latched (it returns early
+with `estop_latched` while `fault_latch_` is set). The null client is excluded:
+it emits `info` unconditionally without checking anything, so treating that as
+evidence of a clear would let a no-op client unlatch the UI. Dashboard-side
+only — no safety code changed.
 
 ---
 

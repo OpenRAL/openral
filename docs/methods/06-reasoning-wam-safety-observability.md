@@ -169,14 +169,14 @@ _Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a p
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 6, §7.7). No enforcement logic._
 
-- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L611)
+- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L616)
   - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L99)
   - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L149)
   - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L224)
   - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L232)
   - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L239)
   - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L262)
-- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L614)
+- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L619)
 
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._
@@ -293,10 +293,10 @@ _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto 
 ### `python/observability/src/openral_observability/_sdk.py`
 _Idempotent OTel SDK setup + flush helper._
 
-- `configure_observability(*, service_name="openral", endpoint=None, sample_ratio=None) -> bool` — Install OTLP/gRPC tracer + meter + logger providers; reads `OTEL_EXPORTER_OTLP_ENDPOINT` when `endpoint` is None; returns `True` if exporters were installed, `False` for the no-op path. On a successful install also kicks off `start_system_metrics_collector` so the dashboard's System health card receives CPU / RAM / GPU gauges. Registers `shutdown_observability` via `atexit` on first install. Metric reader interval is configurable via `OPENRAL_OTEL_METRIC_INTERVAL_MS` (default 5 s); the `BatchSpanProcessor` flush interval via `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` (default 30 ms ≈ 33 Hz — set ~1.3× the 25 Hz thumbnail rate so the dashboard captures every frame without flush-aliasing; raise it for coarser production batching). `sample_ratio` selects the trace sampler — `None` / `1.0` → `ALWAYS_ON`, values in `(0, 1)` → `ParentBased(TraceIdRatioBased(ratio))`; honors `OPENRAL_OTEL_SAMPLE_RATIO` env var when arg is None. (L111)
-- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker (dispatcher, future fleet supervisor): calls `configure_observability` (OTLP pipeline + structlog bridge) then `attach_traceparent_from_env` so the worker's root context is the parent trace; returns whatever `configure_observability` returned. Parent must spawn the child with `env={**os.environ, **traceparent_env()}` (R2 multiprocess log/trace correlation). (L227)
-- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to `ALWAYS_ON`. Garbage env values fall back to always-on so a typo never drops every span. (L291)
-- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe to call when no exporter was installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L348)
+- `configure_observability(*, service_name="openral", endpoint=None, sample_ratio=None) -> bool` — Install OTLP/gRPC tracer + meter + logger providers; reads `OTEL_EXPORTER_OTLP_ENDPOINT` when `endpoint` is None; returns `True` if exporters were installed, `False` for the no-op path. On a successful install also kicks off `start_system_metrics_collector` so the dashboard's System health card receives CPU / RAM / GPU gauges. Registers `shutdown_observability` via `atexit` on first install. Metric reader interval is configurable via `OPENRAL_OTEL_METRIC_INTERVAL_MS` (default 5 s); the `BatchSpanProcessor` flush interval via `OPENRAL_OTEL_SPAN_SCHEDULE_DELAY_MS` (default 30 ms ≈ 33 Hz — set ~1.3× the 25 Hz thumbnail rate so the dashboard captures every frame without flush-aliasing; raise it for coarser production batching). `sample_ratio` selects the trace sampler — `None` / `1.0` → `ALWAYS_ON`, values in `(0, 1)` → `ParentBased(TraceIdRatioBased(ratio))`; honors `OPENRAL_OTEL_SAMPLE_RATIO` env var when arg is None. (L115)
+- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker (dispatcher, future fleet supervisor): calls `configure_observability` (OTLP pipeline + structlog bridge) then `attach_traceparent_from_env` so the worker's root context is the parent trace; returns whatever `configure_observability` returned. Parent must spawn the child with `env={**os.environ, **traceparent_env()}` (R2 multiprocess log/trace correlation). (L231)
+- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to `ALWAYS_ON`. Garbage env values fall back to always-on so a typo never drops every span. (L344)
+- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe to call when no exporter was installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L401)
 
 ### `python/observability/src/openral_observability/tracing.py`
 _Span-context-manager helpers; safe to call before `configure_observability`._
@@ -332,23 +332,22 @@ _Single source of truth for OpenRAL OTel attribute / span / metric names._
 ### `python/observability/src/openral_observability/metrics.py`
 _Cached OTel meter instruments — safe to call before `configure_observability`._
 
-- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L66)
-- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L101)
-- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L116)
-- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L128)
-- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L140)
-- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L152)
-- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L164)
-- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L179)
-- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L190)
-- `get_inference_timeouts() -> Counter` — `openral.inference.timeouts`. (L201)
-- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L222)
-- `get_safety_clamps() -> Counter` — `openral.safety.clamps`, label `check_name`. (L236)
-- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L257)
-- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L278)
-- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L311)
-- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L335)
-- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L424)
+- `get_meter() -> Meter` — Resolve the OpenRAL meter against the current `MeterProvider`. (L65)
+- `get_tick_duration() -> Histogram` — `openral.tick.duration`, unit `ms`. (L100)
+- `get_inference_duration() -> Histogram` — `openral.inference.duration`, unit `ms`. (L115)
+- `get_hal_read_state_duration() -> Histogram` — `openral.hal.read_state.duration`, unit `ms`. (L127)
+- `get_hal_send_action_duration() -> Histogram` — `openral.hal.send_action.duration`, unit `ms`. (L139)
+- `get_sensors_age_ms() -> Histogram` — `openral.sensors.age_ms`, unit `ms`. (L151)
+- `get_world_state_staleness_ms() -> Histogram` — `openral.world_state.staleness_ms`, unit `ms`. (L163)
+- `get_tick_budget_violations() -> Counter` — `openral.tick.budget_violations`. (L178)
+- `get_tick_deadline_misses() -> Counter` — `openral.tick.deadline_misses`. (L189)
+- `get_inference_timeouts() -> Counter` — `openral.inference.timeouts`. (L200)
+- `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L221)
+- `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L235)
+- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L256)
+- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L289)
+- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L313)
+- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L402)
 
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._
