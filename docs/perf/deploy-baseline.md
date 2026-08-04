@@ -259,10 +259,17 @@ return `requires a subscription`):
 
 Configured via the deprecated-but-supported legacy shim
 (`OPENRAL_REASONER_LLM_PROVIDER=ollama`, `OPENRAL_REASONER_LLM_MODEL=qwen3:4b`).
-Note the model-first path cannot express this today: the launch forwards
-`OPENRAL_REASONER_MODEL` and `OPENRAL_REASONER_ENDPOINT` into the reasoner's
-`additional_env` but **not** `OPENRAL_REASONER_DIALECT`, which an uncurated
-model id requires.
+
+> **Correction.** This round concluded that the model-first path could not
+> express an ollama model because "the launch forwards `OPENRAL_REASONER_MODEL`
+> and `OPENRAL_REASONER_ENDPOINT` but not `OPENRAL_REASONER_DIALECT`". That
+> diagnosis was wrong, in the way plausible reasoning about launch files
+> usually is. `additional_env` is *additive* over the inherited environment
+> (`launch.actions.execute_process`: "If 'env' is None, this is added to the
+> current environment"), and the CLI builds the launch env with
+> `os.environ.copy()` — so `DIALECT` and `API_KEY` already reached the node
+> without being named anywhere. The real gap was one level up and is recorded
+> in the next section.
 
 ## A promotion that measurement did *not* condemn
 
@@ -271,3 +278,109 @@ one snapshot, the same shape as the `rskill.execute` mistake. Measured over a
 20 s window it fires at **0.10/s**; the rows had simply accumulated over
 several minutes. Left as a headline span. Worth recording that the check was
 run, because the two preceding rounds each found a real one.
+
+---
+
+## Round 3 — reasoner on a free cloud model, with Robometer live
+
+`openral deploy run --config scenes/deploy/so101_bench.yaml
+--enable-reward-monitor`, real SO-101 on `/dev/ttyACM0`, both bench cameras
+live, `ROS_DOMAIN_ID=42` to isolate from another agent's MoveIt demo on the
+shared host.
+
+### What the model-first gap actually was
+
+Not the launch (see the correction above): the **uncurated escape hatch only
+accepted a bare URL**. The deprecated `OPENRAL_REASONER_LLM_PROVIDER` shim knew
+each vendor's base URL, dialect, auth posture, cold-start timeout and
+`tool_choice` quirk; model-first knew none of them, so anything off the curated
+menu meant retyping a URL the codebase already held as a constant *and*
+hand-declaring a dialect. That made the shim load-bearing rather than a
+duplicate — a deprecation that cannot be deleted is not a deprecation.
+
+`OPENRAL_REASONER_ENDPOINT` now accepts a preset **name**. Verified live:
+
+```
+OPENRAL_REASONER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+OPENRAL_REASONER_ENDPOINT=openrouter
+OPENRAL_REASONER_API_KEY=sk-or-...
+# no OPENRAL_REASONER_DIALECT, no OPENRAL_REASONER_LLM_*
+```
+
+→ `deploy.bringup · openral_reasoner · on_configure · 385.9 ms` (info, 6 skills
+in palette) and `reasoner.model.uncurated` warned as designed.
+
+### Free OpenRouter models that can actually drive the reasoner
+
+Of 14 `:free` models advertising `tools` support, 4 emitted a real tool call
+against a palette-shaped schema, and only these 3 also accepted the `anyOf`
+that optional palette fields (`patience_s: number|null`) render as:
+
+| model | ctx | vision | notes |
+|---|---|---|---|
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 1 M | no | used for this run |
+| `inclusionai/ling-3.0-flash:free` | 262 k | no | |
+| `openai/gpt-oss-20b:free` | 131 k | no | |
+| `google/gemma-4-26b-a4b-it:free` | 262 k | **yes** | rejected below |
+
+`gemma-4-26b` is the only free tool-calling model with image input, so it is
+the only one that could serve `describe_image` — but its free tier is
+rate-limited upstream at Google AI Studio, and OpenRouter's fallback provider
+rejects the palette outright: `…patience_s uses anyOf`. Unusable today.
+
+### Robometer receives the operator's prompt verbatim
+
+The question was whether the prompt survives operator → reasoner → runner →
+reward monitor. It does, and the reward card carries the proof:
+
+```json
+{"reward.progress": 0.237, "reward.success": 0.136, "reward.stalled": true,
+ "reward.frames": 32, "reward.camera": "top",
+ "reward.task": "place the erase on the blue square"}
+```
+
+`reward.task` is the exact `/openral/prompt` text. The chain is
+`/openral/prompt` → reasoner mission (`t1`) → `execute_rskill` instruction →
+`rskill_runner_node._publish_active_task` → `/openral/reward/active_task` →
+`gate_scoring_on_execution` scores *that* string. The default
+`reward_monitor_task` scene parameter is never consulted while a goal runs.
+
+The full supervision loop ran: dispatch → 30 s patience ceiling →
+`KIND_TIMEOUT` → cancel → `query_task_progress` verify (progress 0.24, success
+0.14, not verified) → retry attempt 2/3. Four reasoner ticks, two dispatches.
+Sparse ticks are normal, not a stall — suppressed ticks short-circuit before
+span creation.
+
+### rSkill inference, measured on the deploy path
+
+| instrument | value |
+|---|---|
+| `rskill.chunk_inference` span | 19.4 ms, `engine=pytorch`, `device=cuda:0`, chunk 291 |
+| `openral.inference.duration{kind=foreground}` | 23.5 ms, 16 samples |
+| `openral.inference.duration{kind=single}` | 12.1 ms, 16 samples |
+| `openral.hal.read_state.duration` | 1.35 ms, 37 samples |
+| `openral.hal.send_action.duration` | 0.69 ms, 15 samples |
+| GPU (SmolVLA bf16 + Robometer NF4) | 398 → 6079 MiB peak of 8188 |
+
+This is the first deploy run to confirm the Round-2 metric unification against
+a real rSkill: all three latency histograms carry samples, where before the
+Metrics panel had only `openral.system.*` and the OTel SDK's own counters.
+
+`reward.score` appears on the rSkill card and **not** in the event log — the
+debug-band placement from Round 2, confirmed against a live run.
+
+### A bug the run surfaced: `choices: null`
+
+The first attempt died with `tick error: OpenAI-compatible call failed:
+'NoneType' object is not iterable`. That is ours, not the model's. An
+OpenAI-compatible *gateway* that fails upstream still answers HTTP 200 with
+`choices: null` and the real reason under a non-standard `error` key; the SDK
+models that as `choices=None`, `list(None)` raised `TypeError`, and the
+provider-SDK boundary re-wrapped the `TypeError` as the tick error. The
+operator saw a Python type error instead of "rate-limited upstream" — for a
+transient, provider-side, retry-in-a-minute condition.
+
+`_openai_choices()` now guards both `select_tool` call sites and
+`describe_image`, and surfaces `response.error`. Unit-tested; the live rerun
+did not reproduce the upstream failure, so the guard itself is not
+live-exercised.

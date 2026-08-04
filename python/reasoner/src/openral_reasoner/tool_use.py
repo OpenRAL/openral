@@ -635,6 +635,29 @@ REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
 _LEGACY_PROVIDER_ENV: str = "OPENRAL_REASONER_LLM_PROVIDER"
 
 
+def _openai_choices(response: object) -> list[Any]:
+    """``response.choices``, or a legible error when the provider sent none.
+
+    An OpenAI-compatible *gateway* that fails upstream — OpenRouter when the
+    backing provider rate-limits, 5xxs, or times out — still answers HTTP 200
+    with ``choices: null`` and the real reason under a non-standard ``error``
+    key. The SDK models that as ``choices=None``, so ``list(response.choices)``
+    raised ``TypeError: 'NoneType' object is not iterable``, the provider-SDK
+    boundary re-wrapped *that* as the tick error, and the operator saw
+    ``OpenAI-compatible call failed: 'NoneType' object is not iterable``
+    instead of "rate-limited upstream" (observed live on a free OpenRouter
+    model, 2026-08-04). The failure is transient and provider-side; the
+    message has to say so.
+    """
+    choices = getattr(response, "choices", None)
+    if choices is not None:
+        return list(choices)
+    detail = getattr(response, "error", None)
+    raise ROSPlanningError(
+        f"provider returned no choices — upstream error: {detail or '<none reported>'}"
+    )
+
+
 class _EndpointPreset(NamedTuple):
     """Everything a named endpoint implies beyond its URL.
 
@@ -1808,7 +1831,7 @@ class OpenAICompatibleToolUseClient:
                 tool_choice=self._tool_choice,
                 **cap,
             )
-            choices = list(response.choices)
+            choices = _openai_choices(response)
             no_tool_call = not choices or not choices[0].message.tool_calls
             if no_tool_call and self._tool_choice != "required":
                 # ``tool_choice="auto"`` endpoints (HF router) may answer in prose;
@@ -1823,7 +1846,7 @@ class OpenAICompatibleToolUseClient:
                     tool_choice=self._tool_choice,
                     **cap,
                 )
-                choices = list(response.choices)
+                choices = _openai_choices(response)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
         if not choices or not choices[0].message.tool_calls:
@@ -1897,7 +1920,7 @@ class OpenAICompatibleToolUseClient:
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible describe_image failed: {exc!s}") from exc
-        message = response.choices[0].message
+        message = _openai_choices(response)[0].message
         text: str = message.content or ""
         if not text:
             text = getattr(message, "reasoning", "") or ""
