@@ -1103,7 +1103,7 @@ class _Gr00tFamilySidecarAdapter:
             obs = self._build_libero_obs(observation, instruction)
 
         t0 = time.monotonic()
-        with inference_span(kind="chunk"):
+        with inference_span(kind="foreground"):
             response = self._call("get_action", {"observation": obs, "options": None})
         elapsed = time.monotonic() - t0
 

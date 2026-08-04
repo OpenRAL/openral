@@ -29,18 +29,21 @@ import gc
 from collections.abc import Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import InferenceKind as _InferenceKind
 from openral_observability import inference_span, semconv
 
 if TYPE_CHECKING:
     from openral_core import ImagePreprocessing, RSkillManifest, VLASpec
 
-InferenceKind = Literal["foreground", "prefetch", "single"]
+# Re-exported from the span helper that owns the label (design §9 closed set);
+# kept in `__all__` here for the adapters that import it from _vla_core.
+InferenceKind = _InferenceKind
 
 
 def resolve_device(spec: VLASpec) -> str:

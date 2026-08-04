@@ -5,7 +5,7 @@ Public API:
     configure_worker_observability — SDK setup + parent-trace attach for a spawned worker.
     shutdown_observability  — drain and shut down providers.
     rskill_span             — span for Skill lifecycle (configure / activate / execute).
-    inference_span          — span for one VLA chunk inference (foreground or prefetch).
+    inference_span          — span + duration histogram for one VLA inference.
     reasoner_span           — span for one ReasonerCore.tick.
     start_reasoner_span     — non-attaching tick span for phased (async) ticks.
     safety_span             — span for one safety check.
@@ -46,6 +46,7 @@ from openral_observability.failure_bus import (
 )
 from openral_observability.lifecycle import log_lifecycle_errors
 from openral_observability.tracing import (
+    InferenceKind,
     inference_span,
     reasoner_span,
     rskill_span,
@@ -58,6 +59,7 @@ __all__ = [
     "DiagnosticsHeartbeat",
     "FailureBusPublisher",
     "FailureSource",
+    "InferenceKind",
     "Level",
     "cli_command_span",
     "configure_observability",
