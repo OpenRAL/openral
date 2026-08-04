@@ -33,7 +33,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 import structlog
 from openral_core import (
@@ -635,6 +635,51 @@ REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
 _LEGACY_PROVIDER_ENV: str = "OPENRAL_REASONER_LLM_PROVIDER"
 
 
+class _EndpointPreset(NamedTuple):
+    """Everything a named endpoint implies beyond its URL.
+
+    ``dialect`` makes :data:`REASONER_DIALECT_ENV` unnecessary for a named
+    endpoint — a preset knows its own wire format, and the escape hatch only
+    has to ask when the operator supplies a bare URL nobody can classify.
+    """
+
+    url: str | None
+    dialect: str
+    auth_required: bool
+    #: Cold-start allowance. A self-hosted daemon (Ollama/vLLM) or the HF
+    #: serverless router can spend ~a minute materialising the model on the
+    #: first call; a warm cloud endpoint should stay on the tight default.
+    timeout_s: float
+    tool_choice: str
+
+
+# ``OPENRAL_REASONER_ENDPOINT`` accepts one of these NAMES as well as a URL.
+#
+# Without them the uncurated escape hatch is a downgrade from the deprecated
+# ``OPENRAL_REASONER_LLM_PROVIDER`` contract it replaces: that shim knew each
+# vendor's base URL, dialect, auth posture, cold-start timeout and
+# ``tool_choice`` quirk, while model-first made the operator retype the URL and
+# hand-declare a dialect for endpoints the codebase already had constants for.
+# So the shim stayed load-bearing for anything off the curated menu (Ollama,
+# OpenRouter, a local vLLM) instead of being the pure duplicate a one-release
+# deprecation needs to be. Presets close that gap; removing the shim is now a
+# deletion rather than a feature loss.
+_ENDPOINT_PRESETS: dict[str, _EndpointPreset] = {
+    # base_url=None → the Anthropic SDK's own default host.
+    "anthropic": _EndpointPreset(None, "anthropic", True, 10.0, "required"),
+    "openrouter": _EndpointPreset(OPENROUTER_BASE_URL, "openai", True, 10.0, "required"),
+    "gemini": _EndpointPreset(GEMINI_BASE_URL, "openai", True, 10.0, "required"),
+    "xai": _EndpointPreset(XAI_BASE_URL, "openai", True, 10.0, "required"),
+    "deepseek": _EndpointPreset(DEEPSEEK_BASE_URL, "openai", True, 10.0, "required"),
+    # The HF router 400s on tool_choice="required" (INVALID_TOOL_CHOICE).
+    "huggingface": _EndpointPreset(HUGGINGFACE_BASE_URL, "openai", True, 60.0, "auto"),
+    # Loopback daemons enforce no auth unless fronted by a gateway, so an
+    # API key stays optional rather than required.
+    "ollama": _EndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "required"),
+    "vllm": _EndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
+}
+
+
 def build_tool_use_client_from_env() -> ToolUseClient:
     """Build a :class:`ToolUseClient` from the model-first env (ADR-0088).
 
@@ -644,13 +689,16 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       (:data:`~openral_core.REASONER_MODELS`: ``claude-opus-4-8`` / ``gpt-5.5``
       / ``gpt-5.6`` / ``cosmos3-edge``), or a raw model id for the uncurated
       escape hatch.
-    * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a URL, the ``managed``
-      sentinel, or unset (the model's registry default). The only axis that
-      carries local-vs-cloud, and it does so literally.
+    * ``OPENRAL_REASONER_ENDPOINT`` (optional) — a named endpoint
+      (:data:`_ENDPOINT_PRESETS`: ``openrouter`` / ``ollama`` / ``vllm`` /
+      ``gemini`` / ``xai`` / ``deepseek`` / ``huggingface`` / ``anthropic``), a
+      URL, the ``managed`` sentinel, or unset (the model's registry default).
+      The only axis that carries local-vs-cloud, and it does so literally.
     * ``OPENRAL_REASONER_API_KEY`` (conditional) — required iff the resolved
       endpoint needs auth.
     * ``OPENRAL_REASONER_DIALECT`` (escape hatch only) — ``anthropic`` |
-      ``openai``.
+      ``openai``. Needed only for an uncurated model on a **bare URL**; a
+      named endpoint already knows its wire format.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
 
@@ -689,8 +737,9 @@ def build_tool_use_client_from_env() -> ToolUseClient:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV} is unset; set it to a curated model "
             f"({sorted(REASONER_MODELS)}), or to a raw model id plus "
-            f"{REASONER_ENDPOINT_ENV} + {REASONER_DIALECT_ENV} for an uncurated "
-            "endpoint. The open-core path has no default — tests use "
+            f"{REASONER_ENDPOINT_ENV} (a named endpoint "
+            f"{sorted(_ENDPOINT_PRESETS)}, or a URL plus {REASONER_DIALECT_ENV}) "
+            "for an uncurated endpoint. The open-core path has no default — tests use "
             "FakeToolUseClient. (Legacy OPENRAL_REASONER_LLM_PROVIDER is "
             "deprecated but still honoured this release.)"
         )
@@ -724,6 +773,12 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
     """Build the client for a registry model from its resolved properties."""
     api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
     endpoint_override = os.environ.get(REASONER_ENDPOINT_ENV, "").strip() or None
+    # A named endpoint resolves the same way here as on the uncurated path;
+    # otherwise `ENDPOINT=ollama` would be handed to the SDK as a literal URL.
+    if endpoint_override is not None:
+        preset = _ENDPOINT_PRESETS.get(endpoint_override.lower())
+        if preset is not None:
+            endpoint_override = preset.url
     timeout_s = _reasoner_timeout_s(entry.hosting)
     max_tokens = _reasoner_max_tokens(entry)
 
@@ -806,19 +861,32 @@ def _build_managed_local(
 
 
 def _build_uncurated_model(model_key: str) -> ToolUseClient:
-    """Escape hatch: a non-registry model id + explicit endpoint/dialect.
+    """Escape hatch: a non-registry model id + a named or raw endpoint.
+
+    ``OPENRAL_REASONER_ENDPOINT`` takes either a :data:`_ENDPOINT_PRESETS` name
+    (``openrouter`` / ``ollama`` / ``vllm`` / ``anthropic`` / …), which carries
+    its own URL, dialect, auth posture and cold-start timeout, or a bare URL —
+    which nothing can classify, so that spelling still needs
+    ``OPENRAL_REASONER_DIALECT``. An explicit dialect always wins, so a preset
+    fronted by a translating proxy stays configurable.
 
     Warns that the model is untested for robotics tool calling (ADR-0088);
     nothing is blocked, the curated menu is simply first-class.
     """
-    endpoint = os.environ.get(REASONER_ENDPOINT_ENV, "").strip()
+    raw_endpoint = os.environ.get(REASONER_ENDPOINT_ENV, "").strip()
     dialect = os.environ.get(REASONER_DIALECT_ENV, "").strip().lower()
-    if not endpoint or dialect not in {"anthropic", "openai"}:
+    preset = _ENDPOINT_PRESETS.get(raw_endpoint.lower())
+    if preset is not None:
+        endpoint, dialect = preset.url, dialect or preset.dialect
+    else:
+        endpoint = raw_endpoint or None
+    if endpoint is None or dialect not in {"anthropic", "openai"}:
         raise ROSConfigError(
             f"{REASONER_MODEL_ENV}={model_key!r} is not a curated model "
-            f"({sorted(REASONER_MODELS)}); for an uncurated endpoint also set "
-            f"{REASONER_ENDPOINT_ENV} (a URL) and {REASONER_DIALECT_ENV} "
-            "(anthropic|openai)."
+            f"({sorted(REASONER_MODELS)}); for an uncurated endpoint set "
+            f"{REASONER_ENDPOINT_ENV} to a named endpoint "
+            f"({sorted(_ENDPOINT_PRESETS)}) or to a URL plus "
+            f"{REASONER_DIALECT_ENV} (anthropic|openai)."
         )
     log.warning(
         "reasoner.model.uncurated",
@@ -829,7 +897,17 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
         ),
     )
     api_key = os.environ.get(REASONER_API_KEY_ENV, "").strip() or None
-    timeout_s = _reasoner_timeout_s("byo_local")
+    if preset is not None and preset.auth_required and api_key is None:
+        raise ROSConfigError(
+            f"{REASONER_API_KEY_ENV} is unset; required for "
+            f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r}."
+        )
+    env_timeout = os.environ.get(REASONER_TIMEOUT_ENV, "").strip()
+    timeout_s = (
+        float(env_timeout)
+        if env_timeout
+        else (preset.timeout_s if preset is not None else _reasoner_timeout_s("byo_local"))
+    )
     max_tokens_env = os.environ.get(REASONER_MAX_TOKENS_ENV, "").strip()
     max_tokens = int(max_tokens_env) if max_tokens_env else None
     if dialect == "anthropic":
@@ -849,6 +927,7 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
+        tool_choice=preset.tool_choice if preset is not None else "required",
         max_tokens=max_tokens,
     )
 
