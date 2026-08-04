@@ -236,6 +236,11 @@ def test_configure_http_protobuf_installs_http_span_processor(
     found_http = False
     for proc in tracer_provider._active_span_processor._span_processors:  # type: ignore[attr-defined]
         exporter = getattr(proc, "span_exporter", None)
+        # The OTLP exporter is wrapped by _FailureCountingSpanExporter so
+        # dropped batches feed openral.observability.export_failures; unwrap
+        # one level. The assertion below is unchanged — it still checks that
+        # the HTTP transport is the one actually installed.
+        exporter = getattr(exporter, "wrapped", exporter)
         if isinstance(exporter, HttpSpan):
             found_http = True
             break
