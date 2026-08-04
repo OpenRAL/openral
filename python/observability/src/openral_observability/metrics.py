@@ -40,7 +40,6 @@ __all__ = [
     "get_inference_timeouts",
     "get_meter",
     "get_observability_export_failures",
-    "get_safety_clamps",
     "get_safety_violations",
     "get_sensors_age_ms",
     "get_sensors_stale_reads",
@@ -229,27 +228,6 @@ def get_safety_violations() -> Counter:
         lambda meter, name: meter.create_counter(
             name=name,
             description="ROSSafetyViolation family occurrences.",
-        ),
-    )
-
-
-def get_safety_clamps() -> Counter:
-    """``openral.safety.clamps`` — safety-driven action clamps (no violation raised).
-
-    .. warning::
-       **Declared but never recorded.** The signal exists — the C++ kernel
-       sets a ``safety.clamped`` span attribute (``lifecycle_kernel.cpp``)
-       and ``supervisor_node`` clamps gripper width — but nothing feeds this
-       counter, so "how often is the kernel silently correcting the policy?"
-       has no answer in the metrics. Wiring it crosses the safety boundary
-       (CLAUDE.md §3: safety-WG reviewer + hazard-log update), so it belongs
-       in a safety PR, not a perf one.
-    """
-    return _cached(
-        semconv.METRIC_SAFETY_CLAMPS,
-        lambda meter, name: meter.create_counter(
-            name=name,
-            description="Safety-driven action clamps that did not raise a violation.",
         ),
     )
 

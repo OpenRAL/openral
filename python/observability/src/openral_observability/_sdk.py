@@ -24,8 +24,10 @@ non-zero exit code on flush failures.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import threading
+from typing import Any
 
 from opentelemetry import metrics, trace
 from opentelemetry._logs import set_logger_provider
@@ -35,13 +37,15 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.sampling import (
     ALWAYS_ON,
     ParentBased,
     Sampler,
     TraceIdRatioBased,
 )
+
+from openral_observability import semconv
 
 __all__ = [
     "configure_observability",
@@ -177,7 +181,7 @@ def configure_observability(
         tracer_provider = TracerProvider(resource=resource, sampler=sampler)
         tracer_provider.add_span_processor(
             BatchSpanProcessor(
-                span_exporter,
+                _FailureCountingSpanExporter(span_exporter),
                 schedule_delay_millis=_resolve_span_schedule_delay_ms(),
             )
         )
@@ -286,6 +290,55 @@ def configure_worker_observability(
 
     attach_traceparent_from_env()
     return installed
+
+
+class _FailureCountingSpanExporter(SpanExporter):
+    """Wrap a span exporter and count the batches it fails to deliver.
+
+    A collector that is silently dropping batches looks identical to a
+    healthy one: the SDK swallows the failure, the dashboard just shows
+    fewer spans, and there is no signal anywhere saying why. That is the
+    exact failure ``openral.observability.export_failures`` exists to
+    expose, and nothing was feeding it.
+
+    Traces only, deliberately:
+
+    * **Metrics** would be self-referential — the counter is itself
+      exported by the reader whose failures it counts, so a total collector
+      outage produces a count that can never be delivered.
+    * **Logs** ride the same OTLP endpoint as traces, so a transport
+      failure already shows up on the trace signal; a second counter would
+      double-report one fault.
+
+    Delegates every other method to the wrapped exporter, so it is
+    transparent to ``BatchSpanProcessor`` (shutdown / force_flush).
+    """
+
+    def __init__(self, wrapped: SpanExporter) -> None:
+        self._wrapped = wrapped
+
+    @property
+    def wrapped(self) -> SpanExporter:
+        """The underlying exporter. Introspection unwraps one level here."""
+        return self._wrapped
+
+    def export(self, spans: Any) -> SpanExportResult:
+        """Export, counting a non-SUCCESS result. Never raises on the count."""
+        result = self._wrapped.export(spans)
+        if result is not SpanExportResult.SUCCESS:
+            with contextlib.suppress(Exception):
+                from openral_observability import metrics as ral_metrics
+
+                ral_metrics.get_observability_export_failures().add(
+                    1, {semconv.LABEL_SIGNAL_KIND: "trace"}
+                )
+        return result
+
+    def shutdown(self) -> None:
+        self._wrapped.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return bool(self._wrapped.force_flush(timeout_millis))
 
 
 def _resolve_sampler(sample_ratio: float | None) -> Sampler:

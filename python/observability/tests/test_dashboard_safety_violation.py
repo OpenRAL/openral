@@ -183,7 +183,6 @@ def test_ok_check_does_not_overwrite_last_violation() -> None:
                     "safety.check_name": "envelope",
                     "safety.kernel": "cpp",
                     "safety.severity": "ok",
-                    "safety.clamped": False,
                 }
             )
         )
@@ -193,9 +192,15 @@ def test_ok_check_does_not_overwrite_last_violation() -> None:
     assert safety["last_violation"]["drop_reason"] == "collision"  # slot survives
 
 
-def _ok_span() -> Span:
+def _clean_pass_span(kernel: str = "cpp") -> Span:
+    """A passing safety check.
+
+    The value is ``"info"``. This fixture used to send ``"ok"`` — which no
+    emitter has ever produced — so it validated a fiction: the test passed
+    while the real latch could only ever be set, never cleared.
+    """
     return _safety_span(
-        {"safety.check_name": "envelope", "safety.kernel": "cpp", "safety.severity": "ok"}
+        {"safety.check_name": "envelope", "safety.kernel": kernel, "safety.severity": "info"}
     )
 
 
@@ -204,7 +209,7 @@ def test_estopped_flag_defaults_false() -> None:
     assert TelemetryStore().snapshot()["topics"]["safety"]["estopped"] is False
 
 
-def test_estopped_flag_latches_on_violation_and_clears_on_ok() -> None:
+def test_estopped_flag_latches_on_violation_and_clears_on_a_clean_pass() -> None:
     """The e-stop button's mode follows the kernel latch.
 
     A violation (self-collision, envelope, or an /openral/estop drop) latches
@@ -212,11 +217,16 @@ def test_estopped_flag_latches_on_violation_and_clears_on_ok() -> None:
     A subsequent passing check means the kernel is running clean again →
     ``estopped`` False → the button switches back to E-STOP. Self-corrects after
     a reset with no rclpy node.
+
+    That last sentence was aspirational until the clean-pass value was
+    corrected from ``"ok"`` to ``"info"``: the kernel cannot publish a
+    passing chunk while ``fault_latch_`` is set (it returns early with
+    ``estop_latched`` at ``warn``), so a pass is proof of a clear.
     """
     store = TelemetryStore()
     store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
     assert store.snapshot()["topics"]["safety"]["estopped"] is True
-    store.ingest_spans(_wrap(_ok_span()))
+    store.ingest_spans(_wrap(_clean_pass_span()))
     assert store.snapshot()["topics"]["safety"]["estopped"] is False
 
 
@@ -308,3 +318,47 @@ def test_skill_failure_survives_flood_even_when_warn() -> None:
     assert "aborted" in sf[0]["title"]  # the reason is carried on the surviving row
     # Counter still tallies it too.
     assert snap["counters"]["openral.event.skill_failure"] == 1
+
+
+# ── e-stop latch self-clear ──────────────────────────────────────────────────
+#
+# The latch was set on "violation" and cleared only on "ok" — a value no
+# emitter has ever produced. The C++ kernel sends `info` on a pass, `warn`
+# while latched and `violation` on a drop; the Python passthrough matches it.
+# So `estopped` stuck true until an explicit POST /api/estop_reset, and the
+# store's own comment claiming it "self-corrects after a reset" was false.
+
+
+def test_estop_latched_drops_do_not_clear_the_latch() -> None:
+    """While latched the kernel emits `warn`/`estop_latched` — still stopped."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
+
+    store.ingest_spans(
+        _wrap(
+            _safety_span(
+                {
+                    "safety.check_name": "envelope",
+                    "safety.kernel": "cpp",
+                    "safety.severity": "warn",
+                    "safety.drop_reason": "estop_latched",
+                }
+            )
+        )
+    )
+
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
+
+
+def test_the_null_client_cannot_unlatch_the_ui() -> None:
+    """The null client emits "info" unconditionally without checking anything.
+
+    Treating that as evidence of a clear would let a no-op safety client
+    silently unlatch the operator's E-STOP indicator.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap(_safety_span(_VIOLATION_ATTRS)))
+
+    store.ingest_spans(_wrap(_clean_pass_span(kernel="null")))
+
+    assert store.snapshot()["topics"]["safety"]["estopped"] is True
