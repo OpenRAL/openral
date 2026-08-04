@@ -37,7 +37,6 @@ __all__ = [
     "get_hal_read_state_duration",
     "get_hal_send_action_duration",
     "get_inference_duration",
-    "get_inference_timeouts",
     "get_meter",
     "get_observability_export_failures",
     "get_safety_violations",
@@ -193,27 +192,6 @@ def get_tick_deadline_misses() -> Counter:
         lambda meter, name: meter.create_counter(
             name=name,
             description="Ticks that overran the runner cadence period.",
-        ),
-    )
-
-
-def get_inference_timeouts() -> Counter:
-    """``openral.inference.timeouts`` — ``ROSInferenceTimeout`` occurrences.
-
-    .. warning::
-       **Declared but never recorded.** No caller increments this, because
-       nothing raises ``ROSInferenceTimeout``: the exception appears only in
-       docstrings (``openral_wam.protocol``, ``openral_rskill.runtime``) as
-       part of a contract no backend enforces yet. Wiring the counter
-       therefore means implementing the timeout first, not just adding an
-       ``add(1)``. Kept so the intended contract stays visible; see the
-       "declared, not emitted" section of ``docs/reference/telemetry.md``.
-    """
-    return _cached(
-        semconv.METRIC_INFERENCE_TIMEOUTS,
-        lambda meter, name: meter.create_counter(
-            name=name,
-            description="ROSInferenceTimeout occurrences on the inference path.",
         ),
     )
 

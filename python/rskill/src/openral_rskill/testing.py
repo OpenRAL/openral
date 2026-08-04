@@ -13,9 +13,9 @@ Public surface
 - :class:`LatencyBudgetExceededError` — raised on overrun.
 
 The helper is intentionally a plain ``AssertionError`` subclass (not
-``ROSRuntimeError`` / ``ROSInferenceTimeout``).  At test time we want a
-crisp pytest failure with the budget delta, not the operational exception
-that the safety supervisor would catch.
+``ROSRuntimeError``).  At test time we want a crisp pytest failure with the
+budget delta, not the operational exception that the safety supervisor would
+catch.
 
 Example:
     >>> from openral_core import RSkillLatencyBudget
