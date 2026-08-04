@@ -2020,7 +2020,11 @@ def test_deploy_scene_runtime_block_parses_from_so101_bench() -> None:
     assert rt.enable_nav2 is False
     assert rt.enable_octomap is False
     assert rt.enable_octomap_kernel_check is True
-    assert rt.enable_object_detector is True
+    # Detector-off is deliberate on this rig, not an oversight: the two
+    # detector processes hold ~2.2 GB and Robometer another ~5.3 GB, which
+    # left the VLA's own load with 125 MiB free and OOM'd on the 8 GB bench
+    # card. See the VRAM budget note in scenes/deploy/so101_bench.yaml.
+    assert rt.enable_object_detector is False
     assert rt.enable_reward_monitor is True
     assert rt.enable_critic is False
     assert rt.spatial_memory_ingest is True
