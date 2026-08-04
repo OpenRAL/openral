@@ -1061,9 +1061,17 @@ def suppress_hf_weight_init() -> Iterator[None]:
     ==========================================  ========
 
     i.e. ~6 s of the ~15 s cold load is init math for values nothing reads.
-    (The remaining 2.4 s is allocation; reclaiming that needs a meta-device
-    build plus an assign-mode state-dict load — a deeper change into lerobot's
-    construction path, not attempted here.)
+
+    The remaining time is allocation. Reclaiming it needs a meta-device build
+    plus an assign-mode state-dict load — a deeper change into lerobot's
+    construction path, deliberately not attempted here. **Measured ceiling on
+    an RTX 4070 host: ~1.6 s** (508 M params in transformer-shaped blocks —
+    1.79 s allocated on CPU vs 0.21 s under ``accelerate.init_empty_weights``),
+    so the win is smaller than the 2.4 s this note used to imply. Against a
+    SmolVLA load that is ~10 s in-graph that is 15-20%, bought by taking
+    ownership of construction code lerobot owns and re-validating it on every
+    lerobot bump. π0.5 does take that path (``pi05.py``) because there the same
+    change is worth 157 s → 14 s on a 3.4 B model; at 500 M it is not.
 
     Safety: only sound when the checkpoint supplies **every** parameter —
     otherwise a param that would have been randomly initialised is left as

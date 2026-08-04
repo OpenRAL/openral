@@ -1384,6 +1384,12 @@ def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str
         "safety.check_name",
         "openral.tick.idx",
         "inference.chunk_index",
+        # Without these a bringup row reads "deploy.bringup · 6203.4ms" and
+        # does not say WHICH node held the graph up — the one question the
+        # span exists to answer. With them the Event Log row is the whole
+        # answer, which is why there is no separate bringup panel.
+        semconv.BRINGUP_NODE,
+        semconv.BRINGUP_TRANSITION,
     ):
         if key in attrs:
             parts.append(f"{key.rsplit('.', 1)[-1]}={attrs[key]}")

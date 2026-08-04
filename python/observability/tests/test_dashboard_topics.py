@@ -553,6 +553,34 @@ def test_bringup_spans_stay_info() -> None:
     assert events and events[0]["severity"] == "info"
 
 
+def test_bringup_row_names_the_node_that_held_the_graph_up() -> None:
+    """The row must answer "which node", not just "something took 6 s".
+
+    This is why there is no separate bringup panel: the Event Log row is
+    already the whole answer.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "deploy.bringup",
+                    duration_ms=6203.4,
+                    attrs={
+                        "openral.bringup.node": "openral_hal_so100",
+                        "openral.bringup.transition": "on_configure",
+                        "openral.bringup.result": "SUCCESS",
+                    },
+                )
+            ]
+        )
+    )
+    title = next(e for e in store.snapshot()["events"] if e["kind"] == "deploy.bringup")["title"]
+    assert "openral_hal_so100" in title
+    assert "on_configure" in title
+    assert "6203.4ms" in title
+
+
 def test_detect_probe_spans_stay_info() -> None:
     """`detect.probe.*` is a handful of one-shot rows, not a stream."""
     store = TelemetryStore()
