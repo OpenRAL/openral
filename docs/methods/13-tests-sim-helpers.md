@@ -13,4 +13,3 @@ _Shared lifecycle helpers for kernel-twin tests._
 - `activate_kernel_node(domain_id, *, node_name="openral_safety_kernel") -> None` — Run the configure → activate lifecycle transitions against the spawned kernel node (uses `ros2 lifecycle set …`). New in this branch; extracted from the four kernel-twin tests so the lifecycle ceremony lives once. (L230)
 - `kernel_param_args_from_dict(params) -> list[str]` — Format a dict of kernel parameters as `-p key:=value` argv pairs, for tests that hand-roll specific envelope values rather than drive the kernel from a real `RobotDescription`. (L86)
 - `kernel_param_args(robot_description) -> list[str]` — Synthesise the safety envelope from a robot manifest and emit each canonical field as a `--ros-args -p key:=value` argv list (mirrors `sim_e2e.launch.py` in-process). (L101)
-

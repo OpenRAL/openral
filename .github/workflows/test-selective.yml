@@ -444,4 +444,3 @@ jobs:
           run_lane opencv "$OPENCV_TARGETS" || rc=1
           run_lane lowering "$LOWERING_TARGETS" || rc=1
           exit $rc
-

@@ -36,8 +36,21 @@ repos:
     rev: v2.3.0
     hooks:
       - id: codespell
+        # Vendored third-party bundles are generated artefacts: their minified
+        # identifiers (`ot`, `Ue`, `ue`, `Ot`) trip every short-word rule and
+        # must never be "corrected" — that would corrupt the bundle.
+        exclude: ^python/observability/src/openral_observability/dashboard/static/vendor/
         args:
-          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers"
+          # Additions beyond the original list, all verified false positives:
+          #   ot / mis / ans  — local variable names (odom translation,
+          #     identity mismatch, model answer), not prose.
+          #   childrens       — VERBATIM in a BEHAVIOR-1K task instruction
+          #     ("collecting childrens toys"); the benchmark matches on the
+          #     exact string, so fixing the grammar would break task lookup.
+          #   froms           — plural of Docker's `FROM` keyword.
+          #   unparseable / overrideable / re-use / re-declaring — accepted
+          #     variant spellings already used consistently in the tree.
+          - "--ignore-words-list=som,deques,nd,socio-economic,implementors,te,theses,empy,alph,crashers,ot,mis,ans,childrens,froms,unparseable,overrideable,re-use,re-declaring"
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.4.0
     hooks:

@@ -3,11 +3,11 @@
 // validator must complete inside the chunk-deadline so multi-threaded
 // dispatch would only add latency.
 
+#include "openral_safety_kernel/lifecycle_kernel.hpp"
+
 #include <memory>
 
 #include <rclcpp/rclcpp.hpp>
-
-#include "openral_safety_kernel/lifecycle_kernel.hpp"
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);

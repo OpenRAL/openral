@@ -573,9 +573,9 @@ CollisionHit check_world_collision(const CollisionModel& model, const CollisionS
     const Transform box_w =
         compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
     for (std::size_t w = 0; w < n_world; ++w) {
-      const double d = box_capsule_distance(box_w, model.boxes[b].half_extents,
-                                            world.capsules[w].origin, world.capsules[w].radius,
-                                            world.capsules[w].half_length);
+      const double d =
+          box_capsule_distance(box_w, model.boxes[b].half_extents, world.capsules[w].origin,
+                               world.capsules[w].radius, world.capsules[w].half_length);
       if (d < result.min_distance) {
         result.min_distance = d;
       }
@@ -657,12 +657,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
         compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
     const Vec3 he = model.boxes[b].half_extents;
     // World-AABB half-size of the oriented box: |R| * half_extents (row-major R).
-    const double ex = std::fabs(box_w.r[0]) * he.x + std::fabs(box_w.r[1]) * he.y +
-                      std::fabs(box_w.r[2]) * he.z;
-    const double ey = std::fabs(box_w.r[3]) * he.x + std::fabs(box_w.r[4]) * he.y +
-                      std::fabs(box_w.r[5]) * he.z;
-    const double ez = std::fabs(box_w.r[6]) * he.x + std::fabs(box_w.r[7]) * he.y +
-                      std::fabs(box_w.r[8]) * he.z;
+    const double ex =
+        std::fabs(box_w.r[0]) * he.x + std::fabs(box_w.r[1]) * he.y + std::fabs(box_w.r[2]) * he.z;
+    const double ey =
+        std::fabs(box_w.r[3]) * he.x + std::fabs(box_w.r[4]) * he.y + std::fabs(box_w.r[5]) * he.z;
+    const double ez =
+        std::fabs(box_w.r[6]) * he.x + std::fabs(box_w.r[7]) * he.y + std::fabs(box_w.r[8]) * he.z;
     const double reach = margin + half_diag;
     const auto [ix0, ix1] =
         rng(box_w.t.x - ex - reach, box_w.t.x + ex + reach, grid.origin.x, grid.sx);

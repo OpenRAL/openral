@@ -6,8 +6,8 @@
   </mujoco>
 
 
-  
-  
+
+
 
 
   <link name="pelvis">
@@ -618,5 +618,5 @@
   </joint>
 
 
-  
+
 </robot>

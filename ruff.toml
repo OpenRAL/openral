@@ -31,7 +31,7 @@ convention = "google"
 "python/rskill/src/openral_rskill/base.py" = ["B027"]  # on_load_weights/on_quantize/on_warmup are intentional no-op defaults; subclasses may override
 "python/rskill/src/openral_rskill/smolvla.py" = ["PLC0415", "ANN401"]  # lerobot/torch/hf are optional heavy deps deferred until use; Any is correct for untyped lerobot API
 "python/rskill/src/openral_rskill/_vla_core.py" = ["PLC0415", "ANN401"]  # torch/loader imports are deferred; Any is correct for untyped lerobot policy + tensor
-"python/rskill/src/openral_rskill/executor.py" = ["PLC0415", "ANN401", "RUF002"]  # torch is deferred; Any is correct for untyped lerobot policy + tensor; Unicode math symbols (× / —) intentional in architecture doc 
+"python/rskill/src/openral_rskill/executor.py" = ["PLC0415", "ANN401", "RUF002"]  # torch is deferred; Any is correct for untyped lerobot policy + tensor; Unicode math symbols (× / —) intentional in architecture doc
 "python/runner/src/openral_runner/backends/opencv_thread.py" = ["PLC0415", "ANN401"]  # cv2 is the `opencv` optional-extra and imported lazily; Any types VideoCapture / ndarray frames before lerobot-style narrowing
 "python/runner/src/openral_runner/factory.py" = ["PLC0415"]  # SO100DigitalTwin defers lerobot import — only loaded when transport.digital_twin=true
 "python/runner/src/openral_runner/backends/__init__.py" = ["F401"]  # __init__ re-exports
@@ -54,7 +54,7 @@ convention = "google"
 "python/dataset/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
 "python/hal/src/openral_hal/lifecycle.py" = ["PLC0415"]  # ROS 2 / sensor_msgs / trajectory_msgs are deferred to avoid requiring rclpy at parse time
 "python/hal/src/openral_hal/_mujoco_arm.py" = ["PLC0415"]  # mujoco is an optional sim-only dep deferred to keep the module importable without it
-"python/hal/src/openral_hal/resolver.py" = ["PLC0415"]  # openral_sim / sim_attached / sim_bringup are deferred so openral_hal stays import-safe without the sim group 
+"python/hal/src/openral_hal/resolver.py" = ["PLC0415"]  # openral_sim / sim_attached / sim_bringup are deferred so openral_hal stays import-safe without the sim group
 "python/hal/src/openral_hal/depth_cloud.py" = ["PLC0415", "ANN401"]  # sensor_msgs / mujoco deferred to keep the module import-safe without a sourced ROS 2 / sim install; Any duck-types the untyped SensorSpec + MjModel/MjData handles (matches lifecycle.py + python/sim backends)
 "python/hal/src/openral_hal/sim_sensor_bridge.py" = ["PLC0415", "ANN401"]  # rclpy / sensor_msgs / mujoco deferred to keep the module import-safe without a sourced ROS 2 / sim install; Any duck-types the node + HAL (mirrors depth_cloud.py / lifecycle.py)
 "python/hal/src/openral_hal/mobile_base_bridge.py" = ["PLC0415", "ANN401"]  # issue #191 Phase 3: rclpy / nav_msgs / geometry_msgs / tf2 deferred to keep the module import-safe without a sourced ROS 2 install; Any duck-types the node + HAL (mirrors sim_sensor_bridge.py)
