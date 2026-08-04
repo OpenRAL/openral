@@ -2,6 +2,10 @@
 
 Measured on the reference host, `refactor/deployment_optimization` @ 2026-08-04.
 
+Re-run end to end after a **clean rebuild** — worktree venv via `just sync`, full
+`colcon build --cmake-clean-cache` (12 packages incl. the C++ safety kernel),
+and a fresh `openral:x86` image — on **both host and Docker**.
+
 **Host:** RTX 4070 Laptop (8 GB), SO-101 follower on `/dev/ttyACM0`, two USB
 bench cameras, ROS 2 Jazzy, warm HF cache.
 
@@ -119,3 +123,103 @@ just profile-load rskills/rskill-smolvla-so101-eraser_place-bf16
 
 Also not covered here: the reasoner tick path (this host has no LLM key, so
 `on_configure` fails by design) and the reward-monitor leg.
+
+
+---
+
+# Round 2 — clean rebuild, host **and** Docker
+
+The numbers above came from a worktree that borrowed the main repo's venv via a
+`PYTHONPATH` shadow. Redone properly: own venv (8.5 GB), own colcon overlay
+(12 packages, `--cmake-clean-cache`, C++ safety kernel included), and a fresh
+image built from this branch.
+
+## Bringup — host vs container (real SO-101, reward monitor off)
+
+| node · transition | host | docker |
+|---|---|---|
+| `openral_hal_so100` · on_configure | 111.7 ms | **91.7 ms** |
+| `openral_hal_so100` · on_activate | 43.2 ms | 45.0 ms |
+| `openral_world_state` · on_configure | 32.3 ms | 39.0 ms |
+| `openral_skill_runner` · on_configure | 18.1 ms | 9.4 ms |
+| `openral_reasoner` · on_configure | 0.8 ms (FAILURE) | 0.6 ms (FAILURE) |
+
+Event log on both: ~200 debug / 6-9 info / 1 error, every info row a bringup
+line. Cards populated identically — 6 joints, 2 camera thumbnails (8-10 KB),
+system card (CPU / RAM / GPU 2058 MiB of 8188).
+
+## rSkill inference — SmolVLA on the real arm
+
+167 distinct `rskill.chunk_inference` chunks sampled on the host, `pytorch` /
+`cuda:0`, `chunk_size=1`:
+
+| | ms |
+|---|---|
+| min | 6.05 |
+| **p50** | **8.80** |
+| p95 | 15.63 |
+| max | 426.62 |
+
+Sustained ~114 Hz against the 33.3 ms budget at 30 Hz — the policy is roughly
+3.4x faster than the control loop needs. The 426 ms max is the cold first
+chunk. Docker's card sampled 7.30 ms, consistent with the host p50.
+
+## Skill load: the image is faster than the host
+
+| | wall | load |
+|---|---|---|
+| host | 51.4 s (30 s budget) | **~21 s** |
+| docker | 32 s (20 s budget) | **~12 s** |
+
+The image wins because `UV_COMPILE_BYTECODE=1` ships precompiled `.pyc`; the
+host venv byte-compiles the torch/lerobot tree on first import. That is direct
+confirmation the Dockerfile setting is doing its job.
+
+---
+
+## Three more defects, found only by building and running properly
+
+1. **`HF_HOME` never reached the runtime image.** The pin was added next to
+   `UV_COMPILE_BYTECODE` in the **builder** stage, and `ENV` does not cross
+   stages — `docker run … env` showed `HF_HOME=` empty. So the fix shipped in
+   the previous commit did nothing at all. Moved to the `final` stage;
+   verified `HF_HOME=/opt/openral/hf-cache` at runtime, and the mounted cache
+   produced **zero re-downloads**. (`UV_COMPILE_BYTECODE` is correctly
+   builder-only — it only affects install-time `.pyc` generation.)
+
+2. **Host tooling cannot drive the container graph.** The image sets
+   `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`; a host shell with `RMW` unset gets
+   Fast-DDS, so `ros2 action send_goal` from the host hangs to its timeout
+   against a container action server even with `--network host`. Dispatch from
+   inside the container, or export the matching RMW on the host.
+
+3. **A stale HAL node silently poisons the serial bus.** Two `deploy run`
+   attempts failed with `Failed to write 'Lock' on id_=2 … id_=4 … There is no
+   status packet!`, a different servo each time. All six servos answered a
+   direct probe; the cause was a leftover `lifecycle_node.py` from a killed
+   run still holding the Feetech bus. Worth knowing that the symptom points at
+   the hardware and the cause is a process.
+
+---
+
+## Gap: the runner latency metrics never fire on the deploy path
+
+`openral.tick.duration`, `openral.inference.duration`,
+`openral.hal.read_state.duration` and `openral.hal.send_action.duration` are
+recorded in `openral_runner.InferenceRunnerBase` / `DeployRunner` — but
+`rskill_runner_node` does **not** use them. Its own comments say so: it
+"mirrors `DeployRunner._tick_impl` but trims … focused on the topic-shape
+contract". The ROS deploy graph therefore runs its own tick loop, and those
+four instruments are dead on the one path that matters most.
+
+What the dashboard *does* show is complete and correct: `openral.system.*`,
+`openral.world_state.*`, the OTel SDK self-metrics, and every span-fed card
+(inference, robot state, commands, perception, safety ledger). Per-chunk
+inference latency is available — as a **span attribute**, not a metric — so
+there is no histogram, no p95, and no threshold line for it in the Metrics
+panel.
+
+Closing it means either routing the ROS runner through `DeployRunner` or
+recording the four instruments in `rskill_runner_node`. Not attempted here:
+it is a behavioural change to the actuation path, not an instrumentation
+tweak.
