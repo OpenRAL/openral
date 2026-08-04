@@ -503,6 +503,50 @@ def test_non_per_tick_spans_stay_info() -> None:
     assert events and events[0]["severity"] == "info"
 
 
+def test_the_thirty_hz_spans_the_deny_list_missed_are_also_debug() -> None:
+    """Four more span families tick at the control rate, and all were `info`.
+
+    The original deny-list named only `hal.read_state` / `hal.send_action` /
+    `sensors.read_latest`. These four tick just as fast — `world_state.snapshot`
+    once per runner tick, `safety.check` once per candidate action chunk from
+    three separate emitters — so the Event Log's INFO view was still ~120
+    rows/s and the 200-slot ring still cycled in under two seconds.
+    """
+    store = TelemetryStore()
+    missed = [
+        "world_state.snapshot",
+        "rskill.tick",
+        "safety.check",
+        "rskill.chunk_inference",
+    ]
+    store.ingest_spans(_wrap([_make_span(name) for name in missed]))
+
+    events = {e["kind"]: e for e in store.snapshot()["events"] if e["kind"] in set(missed)}
+
+    assert set(events) == set(missed)
+    assert {e["severity"] for e in events.values()} == {"debug"}
+
+
+def test_an_unrecognised_span_defaults_to_debug() -> None:
+    """New spans are quiet until deliberately promoted.
+
+    This is the point of inverting the rule: a deny-list makes "noisy" the
+    thing you have to remember to declare, and that memory failed four times.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("some.brand.new.span")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "some.brand.new.span"]
+    assert events and events[0]["severity"] == "debug"
+
+
+def test_detect_probe_spans_stay_info() -> None:
+    """`detect.probe.*` is a handful of one-shot rows, not a stream."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("detect.probe.gpu")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "detect.probe.gpu"]
+    assert events and events[0]["severity"] == "info"
+
+
 def test_errored_per_tick_span_still_reports_error() -> None:
     """A failing read_state must NOT be hidden in the debug band."""
     store = TelemetryStore()

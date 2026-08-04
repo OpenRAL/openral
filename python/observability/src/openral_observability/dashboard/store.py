@@ -56,21 +56,43 @@ _SUBSCRIBER_QUEUE_SIZE = 256
 # OTLP Status.code values per opentelemetry-proto: 0=UNSET, 1=OK, 2=ERROR.
 _STATUS_ERROR = 2
 
-# Spans emitted once per control tick (30 Hz on a real arm, and one
-# `sensors.read_latest` per camera on top). They land in the event log's
-# `debug` band rather than `info`: at 30 Hz they were ~99% of the rows, so the
-# Event Log's INFO view showed nothing but `hal.read_state` and every
-# meaningful lifecycle line scrolled past in well under a second. Operators
-# who want the per-tick stream flip the DEBUG filter on. They are still
-# indexed as full spans for `openral replay` — this only changes the
-# event-log band. Anything rarer than per-tick stays `info`.
-_PER_TICK_SPANS = frozenset(
+# Spans that earn an `info` row in the operator's Event Log. EVERYTHING
+# ELSE lands in the `debug` band.
+#
+# This is an allow-list on purpose. It used to be a deny-list
+# (`_PER_TICK_SPANS`) naming the three obvious 30 Hz offenders — but four
+# more span families tick at the same rate and were never added to it:
+# `world_state.snapshot` (once per runner tick), `rskill.tick`,
+# `safety.check` (once per candidate action chunk, from three separate
+# emitters including the C++ kernel), and `rskill.chunk_inference`. At
+# ~120 info rows/s the 200-slot ring cycles in under two seconds, so every
+# lifecycle line an operator actually needs scrolled past before it could
+# be read — the exact problem the deny-list was introduced to fix, still
+# unfixed because the list was incomplete.
+#
+# A deny-list makes "noisy" the thing you must remember to declare, and
+# that memory failed four times. Inverted, a new span is quiet until
+# someone deliberately promotes it, which is the safer default for a
+# panel whose whole value is signal density.
+#
+# Two things are unaffected: an ERROR-status span still escalates to
+# `error` regardless of this set, and every span is still indexed in full
+# for `openral replay`. This changes the event-log band only.
+_HEADLINE_SPANS = frozenset(
     {
-        semconv.SPAN_HAL_READ_STATE,
-        semconv.SPAN_HAL_SEND_ACTION,
-        semconv.SPAN_SENSORS_READ_LATEST,
+        semconv.SPAN_CLI_COMMAND,  # one per CLI invocation
+        semconv.SPAN_RSKILL_EXECUTE,  # one per dispatched goal
+        semconv.SPAN_RSKILL_CONFIGURE,  # skill lifecycle
+        semconv.SPAN_RSKILL_ACTIVATE,  # skill lifecycle
+        semconv.SPAN_REASONER_TICK,  # one per LLM round-trip
+        semconv.SPAN_WORLD_SCENE_OBJECTS,  # ~0.2 Hz spatial-memory graph
+        semconv.SPAN_SIM_RUN,  # one per sim run (held open)
     }
 )
+
+# Span-name prefixes that are also headline-worthy. `detect.probe.*` is a
+# handful of one-shot rows per `openral detect`, not a stream.
+_HEADLINE_SPAN_PREFIXES = ("detect.probe.",)
 
 # OTLP SeverityNumber bands (opentelemetry-proto logs/v1): four numbers per
 # level — TRACE 1-4, DEBUG 5-8, INFO 9-12, WARN 13-16, ERROR 17-20, FATAL
@@ -97,6 +119,15 @@ _ANY_VALUE_DECODERS: dict[str, Any] = {
     "double_value": lambda av: av.double_value,
     "bytes_value": lambda av: av.bytes_value,
 }
+
+
+def _is_headline_span(name: str) -> bool:
+    """True when ``name`` earns an ``info`` row in the Event Log.
+
+    See :data:`_HEADLINE_SPANS` for why this is an allow-list rather than a
+    list of known-noisy spans.
+    """
+    return name in _HEADLINE_SPANS or name.startswith(_HEADLINE_SPAN_PREFIXES)
 
 
 def _attr_value(av: AnyValue) -> Any:
@@ -597,16 +628,16 @@ class TelemetryStore:
             # Index full spans by trace_id for `openral replay` (bag↔OTel replay).
             self._index_span(span, trace_id_hex, ts_unix, attrs)
 
-        # Always append a one-line event so the operator sees the
-        # most recent activity. Severity escalates on ERROR status; per-tick
-        # spans land in the `debug` band so they stay filterable instead of
-        # burying everything else (see _PER_TICK_SPANS).
+        # Always append a one-line event so the operator sees the most recent
+        # activity. Severity escalates on ERROR status; otherwise only the
+        # headline spans get `info` and everything else lands in the
+        # `debug` band, filterable and out of the way (see _HEADLINE_SPANS).
         if span.status.code == _STATUS_ERROR:
             severity = "error"
-        elif span.name in _PER_TICK_SPANS:
-            severity = "debug"
-        else:
+        elif _is_headline_span(span.name):
             severity = "info"
+        else:
+            severity = "debug"
         title = _summarise_span(span.name, attrs, duration_ms)
         self._append_event(
             TelemetryEvent(
