@@ -10,6 +10,13 @@ name: docker-build
 # The `paths:` filter means it only runs when the image's build inputs change
 # (or the live-ROS tests it hosts), not on every commit. workflow_dispatch stays
 # for manual runs (no push).
+#
+# The paths deliberately include python/**, packages/**, cpp/** and the lock
+# files: the image BAKES the code in (COPY + uv sync + colcon build), it does
+# not mount it, so code changes are real build inputs. Rebuild cost is kept
+# down by a registry-backed BuildKit layer cache on GHCR ($IMAGE:buildcache):
+# master pushes write it, every run reads it, so a typical PR reuses the
+# CUDA/apt/venv layers and only re-runs the layers its diff invalidates.
 on:
   workflow_dispatch:
   pull_request:
@@ -68,11 +75,47 @@ jobs:
           docker image prune -af || true
           df -h /
 
+      # Registry-backed layer cache: runners are ephemeral, so without this
+      # every run re-pulls the CUDA base, re-apt-installs ROS Jazzy, and
+      # re-resolves the full torch venv from zero (~30+ min). The docker-
+      # container driver is required — the default docker driver cannot
+      # export a registry cache.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      # Cache reads need auth on pull_request runs too (the GHCR package may
+      # be private); GITHUB_TOKEN carries packages:read for same-repo PRs.
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PRs only READ the cache (a PR cannot poison it); master pushes also
+      # WRITE it. mode=max exports the builder stage's layers too — that is
+      # where the expensive apt + uv-sync work lives in the multi-stage
+      # Dockerfile, and mode=min would only cache the final stage.
       - name: Build openral:x86 (GStreamer-free)
         run: |
+          cache_to=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            cache_to="--cache-to type=registry,ref=$IMAGE:buildcache,mode=max"
+          fi
+          # shellcheck disable=SC2086 -- intentional word-splitting of $cache_to.
           docker buildx build --progress=plain \
             -f docker/inference/Dockerfile.x86 \
+            --cache-from type=registry,ref=$IMAGE:buildcache \
+            $cache_to \
             -t openral:x86 --load .
+
+      # `--load` copies the image out of the buildkit container into dockerd,
+      # so both stores briefly hold it. Drop the buildkit copy before the
+      # smoke tests to keep the tight runner disk from filling.
+      - name: Reclaim buildkit store
+        run: |
+          docker buildx prune -af || true
+          df -h /
 
       # GStreamer-free deploy smoke: gi absent; cv2 / feetech / onnxruntime /
       # omdet present; `deploy run --dry-run` resolves the real launch.
@@ -125,15 +168,8 @@ jobs:
           docker run --rm openral:x86 | grep -qi "deploy"
           echo "OK: bare-openral entrypoint (doctor + default CMD)"
 
-      # Push only on merge to master (never on PRs).
-      - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
+      # Push only on merge to master (never on PRs). GHCR login already
+      # happened above (it is needed unconditionally for the layer cache).
       - name: Tag + push to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: |
