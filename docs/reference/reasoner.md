@@ -158,11 +158,30 @@ The library has no default; `openral deploy sim` defaults to `gpt-5.5`.
 | `gpt-5.6` | `openai/gpt-5.6` | OpenRouter cloud |
 | `cosmos3-edge` | `nvidia/Cosmos3-Edge` | managed local vLLM |
 
-Other env: `OPENRAL_REASONER_ENDPOINT` (optional URL override),
+Other env: `OPENRAL_REASONER_ENDPOINT` (optional location override),
 `OPENRAL_REASONER_API_KEY` (conditional), and
-`OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`. A raw uncurated model id requires
-both `OPENRAL_REASONER_ENDPOINT` and
-`OPENRAL_REASONER_DIALECT=anthropic|openai`; doctor reports it as unverified.
+`OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`. A raw uncurated model id also needs
+`OPENRAL_REASONER_ENDPOINT`; doctor reports it as unverified.
+
+`ENDPOINT` takes a **named endpoint** as well as a URL:
+
+| name | base URL | dialect | key | first-call timeout |
+|---|---|---|---|---|
+| `anthropic` | SDK default | anthropic | required | 10 s |
+| `openrouter` | `https://openrouter.ai/api/v1` | openai | required | 10 s |
+| `gemini` | `…/v1beta/openai/` | openai | required | 10 s |
+| `xai` | `https://api.x.ai/v1` | openai | required | 10 s |
+| `deepseek` | `https://api.deepseek.com` | openai | required | 10 s |
+| `huggingface` | `https://router.huggingface.co/v1` | openai | required | 60 s |
+| `ollama` | `http://localhost:11434/v1` | openai | optional | 60 s |
+| `vllm` | `http://localhost:8000/v1` | openai | optional | 60 s |
+
+A name carries its own dialect, so `OPENRAL_REASONER_DIALECT=anthropic|openai`
+is needed only for a **bare URL** — nothing can classify one. Set it anyway to
+override a preset sitting behind a translating proxy. The 60 s rows are the
+endpoints that materialise a model on the first call (a cold Ollama/vLLM
+daemon, the HF serverless router); `huggingface` additionally downgrades
+`tool_choice` to `auto`, which is the only value its router accepts.
 
 ```bash
 # Curated cloud
@@ -172,9 +191,13 @@ export OPENRAL_REASONER_API_KEY=sk-or-...
 # Curated managed local
 export OPENRAL_REASONER_MODEL=cosmos3-edge
 
-# Explicit uncurated local endpoint
+# Uncurated on a named endpoint — no dialect needed
 export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
+export OPENRAL_REASONER_ENDPOINT=ollama
+
+# Uncurated on a bare URL — dialect required
+export OPENRAL_REASONER_MODEL=qwen3:8b
+export OPENRAL_REASONER_ENDPOINT=http://10.0.0.5:11434/v1
 export OPENRAL_REASONER_DIALECT=openai
 ```
 
