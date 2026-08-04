@@ -56,6 +56,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
@@ -359,9 +360,13 @@ class _MolmoAct2Adapter:
         return self._action_queue.pop(0)
 
     def close(self) -> None:
-        if self.device.startswith("cuda"):
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        """Drop the loaded modules, then reclaim their VRAM.
+
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the model frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
+        release_torch_modules(self, "_model", "_processor", device=self.device, torch=self._torch)
 
     def _predict_chunk(
         self, observation: Observation, instruction: str

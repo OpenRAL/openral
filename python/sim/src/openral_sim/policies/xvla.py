@@ -32,6 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill._vla_core import (
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_rskill_repo_revision,
@@ -99,11 +100,13 @@ class _XVLAAdapter:
         return to_numpy_action(action_tensor)
 
     def close(self) -> None:
-        if self.device.startswith("cuda"):
-            import contextlib
+        """Drop the loaded modules, then reclaim their VRAM.
 
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the policy frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
+        release_torch_modules(self, "_policy", device=self.device, torch=self._torch)
 
     def _build_raw_batch(
         self,

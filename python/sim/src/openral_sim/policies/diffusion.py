@@ -28,6 +28,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_rskill._vla_core import (
     call_make_processors_cached_first,
+    release_torch_modules,
     resolve_device,
     resolve_rskill_repo_revision,
     run_inference,
@@ -105,11 +106,20 @@ class _DiffusionAdapter:
             batch["observation.state"] = normed * 2.0 - 1.0
 
     def close(self) -> None:
-        if self.device.startswith("cuda"):
-            import contextlib
+        """Drop the loaded modules, then reclaim their VRAM.
 
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the policy frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
+        release_torch_modules(
+            self,
+            "_policy",
+            "_preprocessor",
+            "_postprocessor",
+            device=self.device,
+            torch=self._torch,
+        )
 
     def _build_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
         torch = self._torch

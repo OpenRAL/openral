@@ -24,6 +24,8 @@ camera handling, and post-processor pipelines stay where they are.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 from collections.abc import Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
@@ -888,6 +890,7 @@ __all__ = [
     "materialize_processor_dir",
     "maybe_compile_chunk_forward",
     "parse_hf_file_uri",
+    "release_torch_modules",
     "resolve_camera_keys",
     "resolve_device",
     "resolve_image_preprocessing",
@@ -897,6 +900,61 @@ __all__ = [
     "run_inference",
     "to_numpy_action",
 ]
+
+
+def release_torch_modules(owner: object, *attrs: str, device: str = "", torch: Any = None) -> None:
+    """Drop references to loaded torch modules, then reclaim their VRAM.
+
+    **Order is the whole point.** ``torch.cuda.empty_cache()`` returns
+    *already-free* cached blocks to the driver; it cannot free memory the
+    allocator still considers live. So calling it while the adapter still
+    holds the policy frees exactly nothing. Measured on an RTX 4070 with a
+    768 MiB module resident::
+
+        after load                       768.2 MiB allocated
+        empty_cache() alone              768.2 MiB allocated   <- unchanged
+        drop the reference, then flush     0.0 MiB allocated   <- reclaimed
+
+    Every VLA adapter's ``close()`` used to do the second thing, which is
+    why an rSkill swap did not actually give the card back and a second
+    skill OOM'd on an 8 GB machine even though each fits alone.
+
+    ``gc.collect()`` is not optional here either: a policy is typically part
+    of a reference cycle (module ↔ parameters ↔ hooks), so dropping the last
+    named reference does not necessarily run its finaliser on the spot.
+
+    Best-effort by contract — teardown must always reach the code behind it,
+    so a missing attribute or a torch that will not import is swallowed.
+
+    Args:
+        owner: The adapter holding the modules.
+        *attrs: Attribute names to clear (e.g. ``"_policy"``, ``"_processor"``).
+        device: The adapter's device string. The cache flush is skipped
+            unless it names CUDA; dropping the references still happens.
+        torch: The caller's already-imported torch module. Adapters pass
+            their own ``self._torch`` handle — the same one they use
+            everywhere else — rather than have this helper re-import it.
+
+    Example:
+        >>> class _Adapter:
+        ...     def __init__(self) -> None:
+        ...         self._policy = object()
+        >>> a = _Adapter()
+        >>> release_torch_modules(a, "_policy", device="cpu")
+        >>> a._policy is None
+        True
+    """
+    for attr in attrs:
+        with contextlib.suppress(AttributeError):
+            setattr(owner, attr, None)
+    with contextlib.suppress(Exception):
+        gc.collect()
+        if device.startswith("cuda"):
+            if torch is None:
+                import torch as torch_mod
+
+                torch = torch_mod
+            torch.cuda.empty_cache()
 
 
 @contextmanager

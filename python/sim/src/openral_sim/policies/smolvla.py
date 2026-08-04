@@ -29,6 +29,7 @@ from openral_rskill._vla_core import (
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
@@ -251,16 +252,23 @@ class _SmolVLAAdapter:
         return to_numpy_action(action_tensor)
 
     def close(self) -> None:
-        # lerobot policies do not expose an explicit close — rely on GC.
-        # Free GPU memory on CUDA to avoid leaks across configs in long-running drivers.
+        """Tear down the NVMM encoder, drop the modules, then reclaim VRAM.
+
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the policy frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
         if self._nvmm_encoder is not None:
             self._nvmm_encoder.close()
             self._nvmm_encoder = None
-        if self.device.startswith("cuda"):
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        release_torch_modules(
+            self,
+            "_policy",
+            "_preprocessor",
+            "_postprocessor",
+            device=self.device,
+            torch=self._torch,
+        )
 
     def _maybe_encode_image_handles(self, observation: Observation) -> bool:
         """Run the zero-copy NVMM vision leg when the observation carries it.
