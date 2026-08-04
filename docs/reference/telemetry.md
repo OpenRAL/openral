@@ -50,6 +50,7 @@ quiet until deliberately promoted. Every span is still indexed in full for
 | Span | Layer | Emitted at | Frequency | Band | Surfaces in |
 |---|---|---|---|---|---|
 | `cli.command` | CLI | `observability/cli.py:91` | 1 / invocation | **info** | Event Log |
+| `deploy.bringup` | all lifecycle nodes | `observability/lifecycle.py` (via `@log_lifecycle_errors`) | 1 / transition | **info** | Event Log |
 | `rskill.execute` | rSkill | `rskill/base.py:266`, `rskill_runner_node.py:608` | 1 / goal | **info** | Event Log, rSkill card |
 | `rskill.configure` | rSkill | `rskill/base.py:159` | per lifecycle | **info** | Event Log, rSkill card |
 | `rskill.activate` | rSkill | `rskill/base.py:183` | per lifecycle | **info** | Event Log, rSkill card |

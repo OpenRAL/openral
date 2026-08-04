@@ -418,7 +418,18 @@ def main(args: Any = None) -> None:
             return cameras
 
         def _build_detector(self, onnx_path: str, manifest_path: str) -> Any:
-            """Build the detector backend (manifest-driven, or legacy ONNX)."""
+            """Build the detector backend (manifest-driven, or legacy ONNX).
+
+            Wrapped in ``phase_timer`` because this is where the detector
+            acquires its VRAM — 0.9-1.3 GB per process on the SO-101 bench,
+            enough that it is the reason that scene ships detector-off. It
+            was the one GPU load on the deploy path with no start / 15 s
+            heartbeat / done trace, so a slow or wedged detector build was
+            indistinguishable from a slow bringup. `gpu_mb=True` puts the
+            acquisition on the same footing as the VLA adapters' load phases.
+            """
+            from openral_rskill._diagnostics import phase_timer
+
             if manifest_path:
                 from openral_core.schemas import RSkillManifest
                 from openral_runner.backends.gstreamer.detector_factory import (
@@ -426,7 +437,8 @@ def main(args: Any = None) -> None:
                 )
 
                 manifest = RSkillManifest.from_yaml(manifest_path)
-                detector, tier = build_manifest_detector(manifest, onnx_path=onnx_path or None)
+                with phase_timer("build", prefix="detector", gpu_mb=True, model=str(manifest.name)):
+                    detector, tier = build_manifest_detector(manifest, onnx_path=onnx_path or None)
                 self.get_logger().info(f"detector tier={tier.value} model={manifest.name}")
                 return detector
 
@@ -435,13 +447,14 @@ def main(args: Any = None) -> None:
             gp = self.get_parameter
             labels = [s for s in gp("labels").get_parameter_value().string_array_value if s]
             input_size = gp("input_size").get_parameter_value().integer_value
-            return ObjectsDetector(
-                onnx_path,
-                labels=labels,
-                model_id=gp("model_id").get_parameter_value().string_value,
-                input_size=(input_size, input_size),
-                score_threshold=gp("score_threshold").get_parameter_value().double_value,
-            )
+            with phase_timer("build", prefix="detector", gpu_mb=True, model="rtdetr-onnx"):
+                return ObjectsDetector(
+                    onnx_path,
+                    labels=labels,
+                    model_id=gp("model_id").get_parameter_value().string_value,
+                    input_size=(input_size, input_size),
+                    score_threshold=gp("score_threshold").get_parameter_value().double_value,
+                )
 
         def _make_cache_cb(self, cid: str) -> Callable[[Any], None]:
             def _cb(msg: Any) -> None:

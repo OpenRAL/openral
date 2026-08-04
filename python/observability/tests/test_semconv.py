@@ -50,6 +50,7 @@ def test_safety_span_emits_semconv_keys(memory_exporter: InMemorySpanExporter) -
 def test_namespace_invariants() -> None:
     """Every ``openral.*`` constant lives under its declared sub-namespace."""
     sub_namespaces = (
+        "openral.bringup.",
         "openral.run.",
         "openral.tick.",
         "openral.skill.",
