@@ -7,9 +7,12 @@ model-first — otherwise the shim is load-bearing, not deprecated.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from openral_core.exceptions import ROSConfigError
 from openral_reasoner.tool_use import (
+    ANTHROPIC_BASE_URL,
     OLLAMA_BASE_URL,
     OPENROUTER_BASE_URL,
     OpenAICompatibleToolUseClient,
@@ -112,13 +115,81 @@ def test_no_choices_reports_the_provider_error() -> None:
     from openral_reasoner.tool_use import _openai_choices
 
     class _GatewayError:
-        choices = None
-        error = {"code": 429, "message": "rate-limited upstream"}
+        choices: ClassVar[None] = None
+        error: ClassVar[dict[str, object]] = {"code": 429, "message": "rate-limited upstream"}
 
     with pytest.raises(ROSPlanningError, match="rate-limited upstream"):
         _openai_choices(_GatewayError())
 
     class _Ok:
-        choices = ["c0"]
+        choices: ClassVar[list[str]] = ["c0"]
 
     assert _openai_choices(_Ok()) == ["c0"]
+
+
+def test_anthropic_preset_is_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ENDPOINT=anthropic` must build a client, not reject its own name.
+
+    The preset's `url` was `None` ("SDK default host"), which collided with the
+    `endpoint is None` sentinel meaning "not configured" — so the only preset
+    with no explicit URL was the only one that could never be used.
+    """
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "anthropic")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+
+    client = build_tool_use_client_from_env()
+
+    assert type(client).__name__ == "AnthropicToolUseClient"
+    assert client._base_url == ANTHROPIC_BASE_URL
+
+
+def test_curated_model_takes_the_whole_preset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A named endpoint contributes tool_choice + timeout too, not only its URL.
+
+    Taking `preset.url` alone built `gpt-5.5` against the HF router with
+    `tool_choice="required"` — the 400 the preset exists to avoid.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "huggingface")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "hf-test")
+
+    client = build_tool_use_client_from_env()
+
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._base_url == "https://router.huggingface.co/v1"
+    assert client._tool_choice == "auto"  # endpoint property, not the registry's "required"
+    assert client._timeout_s == 60.0  # HF router cold-starts serverless models
+
+
+def test_curated_model_rejects_a_dialect_clash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A named endpoint cannot re-dialect a curated model.
+
+    This previously built an `AnthropicToolUseClient` pointed at Ollama's
+    OpenAI-only endpoint: it configured cleanly and failed on every tick.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+
+    with pytest.raises(ROSConfigError, match="cannot re-dialect"):
+        build_tool_use_client_from_env()
+
+
+def test_bare_url_still_waives_auth_for_a_curated_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unchanged: a URL means the operator owns the endpoint, so no key is forced.
+
+    A named endpoint states its own auth posture, so that path still demands one.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "https://my-proxy.internal/v1")
+
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._base_url == "https://my-proxy.internal/v1"
+
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openrouter")
+    monkeypatch.delenv("OPENRAL_REASONER_API_KEY", raising=False)
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_API_KEY"):
+        build_tool_use_client_from_env()

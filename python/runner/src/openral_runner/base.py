@@ -289,11 +289,19 @@ class InferenceRunnerBase(ABC):
         if self._latency_budget_ms is not None:
             tick_attrs[semconv.METRIC_THRESHOLD_MS] = self._latency_budget_ms
         ral_metrics.record_histogram_ms(ral_metrics.get_tick_duration(), result.tick_ms, tick_attrs)
-        ral_metrics.record_histogram_ms(
-            ral_metrics.get_inference_duration(),
-            result.inference_ms,
-            base_attrs,
-        )
+        # `openral.inference.duration` is NOT recorded here. It is emitted by
+        # `openral_observability.inference_span`, which every VLA adapter opens
+        # around the real chunk compute.
+        #
+        # This line used to record it too, and the two were not the same
+        # quantity: `result.inference_ms` is `Skill.step` wall-time — the chunk
+        # *dispatch* cost, which for a ChunkedExecutor is near-zero on the ticks
+        # that just replay a cached action — while the span times the inference
+        # itself. Same instrument, two meanings, and two disjoint label sets
+        # (`{rskill.id}` here vs `{kind}` on the span), so the eval/sim path
+        # doubled its sample count and computed p95 over a mixed population.
+        # The dispatch cost is still on the tick span as `rskill.inference_ms`
+        # and in the run summary's avg/p99, where it is unambiguous.
         if result.safety_violations:
             # ``safety_violations`` is a list of human-readable strings on
             # ``TickResult``; the counter just records that the tick had
