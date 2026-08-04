@@ -81,6 +81,7 @@ _STATUS_ERROR = 2
 _HEADLINE_SPANS = frozenset(
     {
         semconv.SPAN_CLI_COMMAND,  # one per CLI invocation
+        semconv.SPAN_DEPLOY_BRINGUP,  # one per lifecycle transition
         semconv.SPAN_RSKILL_EXECUTE,  # one per dispatched goal
         semconv.SPAN_RSKILL_CONFIGURE,  # skill lifecycle
         semconv.SPAN_RSKILL_ACTIVATE,  # skill lifecycle

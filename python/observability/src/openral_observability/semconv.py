@@ -184,6 +184,21 @@ SPAN_REWARD_SCORE: Final[str] = "reward.score"
 """One span per reward-monitor assessment (service query or critic tick)."""
 SPAN_REASONER_TICK: Final[str] = "reasoner.tick"
 """One span per :meth:`openral_reasoner.ReasonerCore.tick`."""
+SPAN_DEPLOY_BRINGUP: Final[str] = "deploy.bringup"
+"""One span per managed-lifecycle transition callback.
+
+Emitted by the :func:`openral_observability.log_lifecycle_errors` decorator,
+so every node that already uses it is covered without a call-site change.
+Until this existed nothing measured bringup at all: the "HAL ``on_configure``
+takes ~6 s, or ~27 s on a cold robocasa kitchen" figures that justify the
+300 s lifecycle-autostart timeouts lived only in launch-file comments, which
+means they could neither be verified nor detected when they regressed.
+"""
+
+# Bringup span attributes.
+BRINGUP_NODE: Final[str] = "openral.bringup.node"
+BRINGUP_TRANSITION: Final[str] = "openral.bringup.transition"
+BRINGUP_RESULT: Final[str] = "openral.bringup.result"
 
 # Reasoner span attributes (rendered with the ``reasoner.`` prefix).
 REASONER_MODEL: Final[str] = "reasoner.model"
@@ -330,6 +345,9 @@ SAFETY_KERNEL_NULL: Final[str] = "null"
 SAFETY_KERNEL_CPP: Final[str] = "cpp"
 
 __all__ = [
+    "BRINGUP_NODE",
+    "BRINGUP_RESULT",
+    "BRINGUP_TRANSITION",
     "DATASET_EPISODE_IDX",
     "DATASET_EPISODE_SUCCESS",
     "DATASET_FRAME_IDX",
@@ -467,6 +485,7 @@ __all__ = [
     "SENSORS_WIDTH",
     "SKILL_FAILURE_STATE",
     "SPAN_CLI_COMMAND",
+    "SPAN_DEPLOY_BRINGUP",
     "SPAN_HAL_READ_STATE",
     "SPAN_HAL_SEND_ACTION",
     "SPAN_PHYSICS_STEP",

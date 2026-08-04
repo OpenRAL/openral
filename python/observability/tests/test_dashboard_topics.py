@@ -539,6 +539,20 @@ def test_an_unrecognised_span_defaults_to_debug() -> None:
     assert events and events[0]["severity"] == "debug"
 
 
+def test_bringup_spans_stay_info() -> None:
+    """Lifecycle transitions are rare and are the point of the bringup trace.
+
+    A `deploy.bringup` row per node is exactly what an operator needs when a
+    deploy is slow to come up — the case that previously had no telemetry at
+    all, only launch-file comments claiming "~6 s, or ~27 s on a cold
+    robocasa kitchen".
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("deploy.bringup")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "deploy.bringup"]
+    assert events and events[0]["severity"] == "info"
+
+
 def test_detect_probe_spans_stay_info() -> None:
     """`detect.probe.*` is a handful of one-shot rows, not a stream."""
     store = TelemetryStore()
