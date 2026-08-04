@@ -345,10 +345,10 @@ _Cached OTel meter instruments — safe to call before `configure_observability`
 - `get_safety_violations() -> Counter` — `openral.safety.violations`, labels `check_name` / `severity`. (L222)
 - `get_safety_clamps() -> Counter` — `openral.safety.clamps`, label `check_name`. (L236)
 - `get_hal_estop_count() -> Counter` — `openral.hal.estop.count`. (L257)
-- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L282)
-- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L315)
-- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L339)
-- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L428)
+- `get_sensors_stale_reads() -> Counter` — `openral.sensors.stale_reads`. (L278)
+- `get_observability_export_failures() -> Counter` — `openral.observability.export_failures`, label `signal_kind`. (L311)
+- `get_world_state_components_stale() -> UpDownCounter` — `openral.world_state.components_stale`. (L335)
+- `record_histogram_ms(instrument, value_ms, attributes=None) -> None` — Record a millisecond value, skipping negatives and `NaN`. (L424)
 
 ### `python/observability/src/openral_observability/producer.py`
 _Producer-side helpers for recording rich span attributes on OpenRAL hot-path spans. Safe to call on no-op spans; lists are truncated to `_MAX_JOINTS` / `_MAX_EE_FRAMES` and floats rounded to 3 decimals._

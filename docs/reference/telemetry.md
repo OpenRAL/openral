@@ -93,7 +93,7 @@ where noted.
 | `openral.event.sensor_stale` | `deploy_runner.py:387` | Sensor older than its age budget | counted |
 | `openral.event.staleness_latched` | `world_state/aggregator.py:586` | World-state component went stale | — |
 | `openral.event.error_latched` | `world_state/aggregator.py:589` | World-state component latched an error | — |
-| `openral.event.estop_requested` | — | **[not emitted](#declared-but-not-emitted)** | counted (always 0) |
+| `openral.event.estop_requested` | `hal/lifecycle.py::_emit_estop_telemetry` | E-stop latched at the HAL | error, counted, protected lane |
 | `openral.event.action_dropped` | — | **[not emitted](#declared-but-not-emitted)** | — |
 | `openral.event.chunk_prefetch_hit` | — | **[not emitted](#declared-but-not-emitted)** | — |
 | `openral.event.chunk_prefetch_miss` | — | **[not emitted](#declared-but-not-emitted)** | — |
@@ -128,7 +128,7 @@ attributes and are stripped by the store so they cannot fragment a series.
 | `openral.system.gpu.utilization_pct` | UpDownCounter | % | `system_metrics.py:193` | 1 Hz |
 | `openral.inference.timeouts` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
 | `openral.safety.clamps` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
-| `openral.hal.estop.count` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
+| `openral.hal.estop.count` | Counter | — | `hal/lifecycle.py::_emit_estop_telemetry` | per e-stop (label `hal.adapter`) |
 | `openral.observability.export_failures` | Counter | — | — | **[not recorded](#declared-but-not-emitted)** |
 
 The system metrics come from a 1 Hz daemon thread
@@ -208,7 +208,7 @@ uv run tools/profile_policy_load.py --rskill rskills/<dir>
 
 ## Declared but not emitted
 
-These names exist in `semconv` / `metrics` but **nothing produces them**. They
+These names exist in `semconv` / `metrics` but **nothing produces them** (seven, after `estop_requested` / `hal.estop.count` were wired). They
 are kept because each records an intended contract, and annotated in-place so
 the modules do not read as an inventory of what actually works. A source-scanning
 test (`python/observability/tests/test_declared_not_emitted.py`) pins this list
@@ -217,7 +217,6 @@ updated.
 
 | Signal | Why it is not just a missing `add(1)` |
 |---|---|
-| `openral.event.estop_requested`<br>`openral.hal.estop.count` | ⚠️ **The dashboard renders an `e-stops` counter from the event, so that widget reads 0 no matter how many e-stops fire.** A safety indicator that cannot leave zero reads as "no e-stops have occurred". Wiring it is a safety change: CLAUDE.md §3 requires a safety-WG reviewer, a hazard-log update, and tests proving the behaviour is at least as conservative. |
 | `openral.safety.clamps` | The signal exists (`safety.clamped` span attribute in the C++ kernel; gripper-width clamping in `supervisor_node`) but nothing feeds the counter, so "how often is the kernel silently correcting the policy?" is unanswerable. Also a safety-boundary change. |
 | `openral.inference.timeouts` | Nothing raises `ROSInferenceTimeout` — it appears only in docstrings as a contract no backend enforces. Wiring the counter means implementing the timeout first. |
 | `openral.observability.export_failures` | Requires hooking the SDK exporter failure path. Until then a collector silently dropping batches looks identical to a healthy one — the exact failure this counter exists to expose. |
@@ -225,11 +224,16 @@ updated.
 | `openral.event.chunk_prefetch_hit` / `_miss` | Action-chunk prefetch runs but never reports its hit rate, so "is the prefetch helping?" cannot be answered from a trace. |
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
 
-There is a second, related gap worth recording here: the dashboard's e-stop
-latch (`store.py:919-920`) clears only on `safety.severity == "ok"`, and no
-emitter ever produces `"ok"` — the three `safety.check` emitters all send
-`"info"`. So `estopped` latches true until an explicit `POST /api/estop_reset`.
-Same safety-WG scope as the counter above.
+**Still open — the e-stop latch cannot self-clear.** `store.py` clears
+`topics.safety.estopped` only on `safety.severity == "ok"`, and no emitter ever
+produces `"ok"`: the C++ kernel emits `warn` / `violation` / `info`
+(`lifecycle_kernel.cpp:462,473,530,584,722,749`) and the two Python emitters
+send `"info"`. So the latch stays true until an explicit
+`POST /api/estop_reset`, and the code comment claiming it "self-corrects after
+a reset" is wrong. Fixing it means changing what the safety kernel reports,
+which is a safety change: CLAUDE.md §3 requires a safety-WG reviewer, a
+hazard-log update, and tests proving the behaviour is at least as
+conservative.
 
 ---
 

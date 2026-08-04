@@ -255,20 +255,16 @@ def get_safety_clamps() -> Counter:
 
 
 def get_hal_estop_count() -> Counter:
-    """``openral.hal.estop.count`` — :meth:`HAL.estop` invocations.
+    """``openral.hal.estop.count`` — e-stops received at the HAL.
 
-    .. warning::
-       **Declared but never recorded — and it has a visible consequence.**
-       The dashboard's Command band renders an ``e-stops`` counter fed by
-       ``openral.event.estop_requested``, which no emitter produces either,
-       so that widget reads **0 no matter how many e-stops fire**. A safety
-       indicator that cannot leave zero is worse than an absent one: it
-       reads as "no e-stops have occurred".
+    Recorded by ``openral_hal.lifecycle._emit_estop_telemetry`` on every
+    ``/openral/estop`` message the shared HAL lifecycle node latches, with
+    a ``hal.adapter`` label. Counts e-stop *receptions* on the actuation
+    side rather than ``HAL.estop()`` invocations specifically, so HALs that
+    opt out of the vendor stop path still register — an uncounted e-stop is
+    the blind spot this closes.
 
-       Wiring both is a safety change (CLAUDE.md §3: safety-WG reviewer,
-       hazard-log update, tests proving the behaviour is at least as
-       conservative) and is deliberately NOT bundled into perf work. See
-       ``docs/reference/telemetry.md``.
+    Labels: ``hal.adapter``.
     """
     return _cached(
         semconv.METRIC_HAL_ESTOP_COUNT,

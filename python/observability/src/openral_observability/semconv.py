@@ -214,9 +214,9 @@ SPAN_PHYSICS_STEP: Final[str] = "physics.step"
 
 # ── Span-event names ───────────────────────────────────────────────────────
 #
-# Five of these are DECLARED BUT NEVER EMITTED — nothing in python/,
-# packages/ or cpp/ adds them to a span: EVENT_ESTOP_REQUESTED,
-# EVENT_ACTION_DROPPED, EVENT_CHUNK_PREFETCH_HIT, EVENT_CHUNK_PREFETCH_MISS
+# Four of these are DECLARED BUT NEVER EMITTED — nothing in python/,
+# packages/ or cpp/ adds them to a span: EVENT_ACTION_DROPPED,
+# EVENT_CHUNK_PREFETCH_HIT, EVENT_CHUNK_PREFETCH_MISS
 # and EVENT_EPISODE_CLOSED. They are annotated individually below and
 # tabulated in `docs/reference/telemetry.md`. They are kept rather than
 # deleted because each records an intended contract, and because
@@ -224,11 +224,10 @@ SPAN_PHYSICS_STEP: Final[str] = "physics.step"
 # exists and never fires is a trap for anyone reading this file as an
 # inventory of what the system actually reports.
 
-# NOT EMITTED. The dashboard's Command band renders an `e-stops` counter
-# from this event (index.html), so that widget reads 0 no matter how many
-# e-stops fire — a safety indicator that cannot leave zero reads as "no
-# e-stops have occurred". Wiring it is a safety change (CLAUDE.md §3:
-# safety-WG reviewer + hazard-log update), tracked separately.
+# Emitted by the shared HAL lifecycle node's `/openral/estop` callback
+# (`openral_hal.lifecycle._emit_estop_telemetry`) — the actuation-side
+# chokepoint every robot HAL runs on. Feeds the dashboard's Command-band
+# `e-stops` counter, which read 0 for every e-stop until it was wired.
 EVENT_ESTOP_REQUESTED: Final[str] = "openral.event.estop_requested"
 EVENT_SENSOR_STALE: Final[str] = "openral.event.sensor_stale"
 EVENT_STALENESS_LATCHED: Final[str] = "openral.event.staleness_latched"

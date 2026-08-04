@@ -1,11 +1,11 @@
 """Guard the "declared but never emitted" telemetry inventory.
 
-``semconv`` is read as the inventory of what OpenRAL reports, but five
-span-event names and four metric instruments have no producer anywhere in
+``semconv`` is read as the inventory of what OpenRAL reports, but four
+span-event names and three metric instruments have no producer anywhere in
 the tree. A name that exists and never fires is worse than a missing one:
-the dashboard's ``e-stops`` counter is wired to
-``openral.event.estop_requested`` and therefore reads 0 no matter how many
-e-stops fire.
+the dashboard's ``e-stops`` counter was wired to
+``openral.event.estop_requested`` and read 0 no matter how many e-stops
+fired, until the HAL lifecycle node was made to emit it.
 
 This test pins the set both ways, by scanning the real source tree:
 
@@ -41,7 +41,6 @@ _NON_EMITTER_FILES = {
 }
 
 _EXPECTED_UNEMITTED_EVENTS = {
-    "EVENT_ESTOP_REQUESTED",
     "EVENT_ACTION_DROPPED",
     "EVENT_CHUNK_PREFETCH_HIT",
     "EVENT_CHUNK_PREFETCH_MISS",
@@ -51,7 +50,6 @@ _EXPECTED_UNEMITTED_EVENTS = {
 _EXPECTED_UNRECORDED_METRICS = {
     "get_inference_timeouts",
     "get_safety_clamps",
-    "get_hal_estop_count",
     "get_observability_export_failures",
 }
 
@@ -109,7 +107,7 @@ def _names_with_producers(
 def test_unemitted_span_events_are_exactly_the_documented_set(
     sources: list[tuple[Path, str]],
 ) -> None:
-    """No producer for these five; a producer for anything else."""
+    """No producer for these four; a producer for anything else."""
     all_events = {n for n in dir(semconv) if n.startswith("EVENT_")}
     literals = {n: getattr(semconv, n) for n in all_events}
 
@@ -128,7 +126,7 @@ def test_unemitted_span_events_are_exactly_the_documented_set(
 def test_unrecorded_metrics_are_exactly_the_documented_set(
     sources: list[tuple[Path, str]],
 ) -> None:
-    """These four instruments exist but nothing ever calls ``.add()`` on them."""
+    """These three instruments exist but nothing ever calls ``.add()`` on them."""
     all_getters = {n for n in metrics.__all__ if n.startswith("get_") and n != "get_meter"}
 
     produced = _names_with_producers(sources, all_getters, literal_by_name={})
