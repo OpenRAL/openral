@@ -132,7 +132,7 @@ attributes and are stripped by the store so they cannot fragment a series.
 | Metric | Type | Unit | Recorded at | Frequency |
 |---|---|---|---|---|
 | `openral.tick.duration` | Histogram | ms | `runner/base.py` | 30 Hz — **library-runner path only**, see below |
-| `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per chunk, **both paths** |
+| `openral.inference.duration` | Histogram | ms | `observability/tracing.py::inference_span` | per inference, **every adapter** |
 | `openral.hal.read_state.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | 30 Hz, **both paths** |
 | `openral.hal.send_action.duration` | Histogram | ms | `hal/lifecycle.py::_hal_duration_metric` + `deploy_runner.py` | per chunk, **both paths** |
 | `openral.sensors.age_ms` | Histogram | ms | `deploy_runner.py:377` | 30 Hz × camera |
@@ -171,6 +171,16 @@ attributes and are stripped by the store so they cannot fragment a series.
 > so the eval/sim path doubled its sample count and computed p95 over a mixed
 > population. The dispatch cost stays on the tick span as `rskill.inference_ms`
 > and in the run summary's avg/p99, where it is unambiguous.
+>
+> **A single seam is only safe while it is universal.** Removing the runner's
+> record exposed five sidecar adapters that never opened the span at all —
+> `behavior_groot`, `internvla_n1`, `lingbot_va_a1`, `lingbot_vla2`,
+> `rlbench_3dda`, all of whose inference is one `SidecarClient.call()` — so
+> they had been reporting latency only through the runner's proxy. They are now
+> instrumented (`engine="sidecar"`), and
+> `tests/unit/test_every_adapter_is_instrumented.py` is a source-level canary
+> that fails if a future adapter defines `step()` without reaching
+> `inference_span` or `run_inference`.
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
