@@ -899,7 +899,83 @@ __all__ = [
     "resolve_state_dim",
     "run_inference",
     "to_numpy_action",
+    "warm_up_lerobot_policy",
 ]
+
+
+def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = None) -> bool:
+    """Run one dummy forward so the first *real* tick doesn't blow its deadline.
+
+    The first inference on a CUDA policy pays cuDNN autotune, kernel JIT and
+    lazy-module materialisation. Measured on an RTX 4070 with the ACT
+    so101-pen checkpoint (resnet18 + transformer, two 480x640 cameras)::
+
+        call 1   330.4 ms      <- 10x the 33.3 ms budget at 30 Hz
+        call 2+   14.9 ms
+
+    Charged to tick 1 that is a guaranteed deadline miss, and under
+    ``DeadlineOverrunPolicy.DROP`` the robot's first commanded action is
+    discarded. Paying it during ``activate()`` instead costs the same
+    wall-clock but lands where an operator is already waiting.
+
+    Shapes come from the policy's own ``config``
+    (``image_features[k].shape``, ``input_features["observation.state"]``),
+    so the warm-up exercises the exact kernels the real ticks will — a
+    guessed resolution would autotune the wrong ones and waste the pass.
+
+    Best-effort and non-fatal by contract: a policy this cannot introspect
+    is skipped, and any failure is swallowed. A warm-up is an optimisation;
+    it must never be the reason a skill fails to activate.
+
+    Args:
+        adapter: The policy adapter. Must expose ``_policy`` holding a
+            lerobot policy (all six in-tree lerobot families do); anything
+            else returns ``False`` unchanged.
+        prompt: Task string for language-conditioned families.
+        torch: The caller's torch module; imported on demand when omitted.
+
+    Returns:
+        ``True`` when a dummy forward actually ran, ``False`` when skipped.
+    """
+    policy = getattr(adapter, "_policy", None)
+    config = getattr(policy, "config", None)
+    if policy is None or config is None:
+        return False
+    image_features = getattr(config, "image_features", None)
+    input_features = getattr(config, "input_features", None)
+    if not image_features or not input_features:
+        return False
+
+    if torch is None:
+        import torch as torch_mod
+
+        torch = torch_mod
+
+    device = str(getattr(adapter, "device", "") or "cpu")
+    state_feature = input_features.get("observation.state")
+    if state_feature is None:
+        return False
+    # SmolVLA casts images to a non-default dtype; warming in the wrong one
+    # autotunes kernels the real path will not use.
+    image_dtype = getattr(adapter, "_image_dtype", None) or torch.float32
+
+    batch: dict[str, Any] = {
+        "observation.state": torch.zeros(
+            1, int(state_feature.shape[0]), dtype=torch.float32, device=device
+        ),
+        "task": [prompt],
+    }
+    for key, feature in image_features.items():
+        channels, height, width = (int(v) for v in feature.shape)
+        batch[key] = torch.zeros(1, channels, height, width, dtype=image_dtype, device=device)
+
+    with contextlib.suppress(AttributeError, TypeError):
+        policy.reset()
+    with torch.no_grad():
+        policy.select_action(batch)
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    return True
 
 
 def release_torch_modules(owner: object, *attrs: str, device: str = "", torch: Any = None) -> None:

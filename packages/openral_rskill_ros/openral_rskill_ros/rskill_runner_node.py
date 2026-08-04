@@ -2427,6 +2427,32 @@ def _make_policy_adapter_skill(
         def _configure_impl(self) -> None:
             """No-op — `make_policy` already built the adapter."""
 
+        def on_warmup(self) -> None:
+            """Run one dummy forward before the first real tick.
+
+            ``rSkillBase.activate()`` calls this ahead of ``_activate_impl``.
+            The first CUDA inference pays cuDNN autotune and kernel JIT —
+            measured at 330 ms against a 33 ms budget on the ACT so101-pen
+            checkpoint, so tick 1 was a guaranteed deadline miss and, under
+            ``DeadlineOverrunPolicy.DROP``, the robot's first commanded
+            action was discarded. Same wall-clock either way; this just
+            moves it to where the operator is already waiting.
+
+            Non-fatal by contract: a warm-up is an optimisation and must
+            never be why a skill fails to activate. Adapters whose policy
+            cannot be introspected (the HF-based molmoact2 / openvla) are
+            skipped silently by the helper.
+            """
+            from openral_rskill._vla_core import warm_up_lerobot_policy
+
+            try:
+                warmed = warm_up_lerobot_policy(self._adapter, prompt=self._prompt or "")
+            except Exception as exc:  # reason: an optimisation must never block activate
+                log.warning("rskill_runner.warmup_failed", skill=self.name, error=str(exc))
+                return
+            if warmed:
+                log.info("rskill_runner.warmed_up", skill=self.name)
+
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
             if hasattr(self._adapter, "reset"):
