@@ -5,7 +5,7 @@ and where it surfaces. If a signal is not in this file, it does not exist; if it
 is here and marked **not emitted**, the name exists but nothing produces it.
 
 Names are normative and live in
-[`openral_observability.semconv`](../../python/observability/src/openral_observability/semconv.py) —
+[`openral_observability.semconv`](https://github.com/OpenRAL/openral/blob/master/python/observability/src/openral_observability/semconv.py) —
 that module is the single source of truth, this page is its annotated index.
 
 **Contents:** [How it flows](#how-it-flows) · [Spans](#spans) ·
@@ -338,4 +338,4 @@ Service names on the wire: `openral` (CLI), `openral.runtime`,
 
 - [`docs/methods/06-reasoning-wam-safety-observability.md`](../methods/06-reasoning-wam-safety-observability.md) — per-symbol observability inventory
 - [`docs/methods/05-inference-runner.md`](../methods/05-inference-runner.md) — runner tick + deadline contract
-- [`python/observability/README.md`](../../python/observability/README.md) — package overview
+- [`python/observability/README.md`](https://github.com/OpenRAL/openral/blob/master/python/observability/README.md) — package overview
