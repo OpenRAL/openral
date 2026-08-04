@@ -364,6 +364,52 @@ def test_check_reasoner_uncurated_model_needs_escape_hatch(
     assert "OPENRAL_REASONER_DIALECT" in rows[0].details
 
 
+def test_check_reasoner_named_endpoint_supplies_dialect(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A named endpoint carries its own dialect, so DIALECT stays optional.
+
+    doctor must resolve `ENDPOINT=<name>` the way the factory does; reporting
+    `fail` for config that builds a client at runtime is worse than silence.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    assert "dialect=openai" in summary.details
+    assert "endpoint=http://localhost:11434/v1" in summary.details
+    # Loopback daemons enforce no auth, so an unset key is not a gap here.
+    assert not any(r.status == "fail" for r in rows)
+    assert not any(r.check == "Reasoner API_KEY" for r in rows)
+
+
+def test_check_reasoner_named_endpoint_enforces_auth(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """An auth-required named endpoint still reports the missing key."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openrouter")
+    rows = _check_reasoner_llm()
+    assert next(r for r in rows if r.check == "Reasoner LLM").status == "warn"
+    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
+    assert key_row.status == "missing"
+
+
+def test_check_reasoner_curated_model_resolves_named_endpoint(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A curated model pointed at a named endpoint resolves it to the URL too.
+
+    Left unresolved the literal name reaches the SDK as a base URL, and the
+    loopback probe never fires because "ollama" has no hostname.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "vllm")
+    summary = next(r for r in _check_reasoner_llm() if r.check == "Reasoner LLM")
+    assert "endpoint=http://localhost:8000/v1" in summary.details
+
+
 def test_check_reasoner_llm_anthropic_ok_redacts_key(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:

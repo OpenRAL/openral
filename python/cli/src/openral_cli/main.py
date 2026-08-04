@@ -667,6 +667,24 @@ _REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
 }
 
 
+# Named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts in place of a URL,
+# as ``(url, dialect, auth_required)``. Mirrors ``_ENDPOINT_PRESETS`` in
+# ``openral_reasoner.tool_use`` but kept local for the same reason as the table
+# above: `openral doctor` must not import the optionally-installed reasoner
+# package. ``anthropic`` shows the SDK's own default host, which the factory
+# spells as ``url=None``.
+_REASONER_ENDPOINT_PRESETS: dict[str, tuple[str, str, bool]] = {
+    "anthropic": ("https://api.anthropic.com", "anthropic", True),
+    "openrouter": ("https://openrouter.ai/api/v1", "openai", True),
+    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "openai", True),
+    "xai": ("https://api.x.ai/v1", "openai", True),
+    "deepseek": ("https://api.deepseek.com", "openai", True),
+    "huggingface": ("https://router.huggingface.co/v1", "openai", True),
+    "ollama": ("http://localhost:11434/v1", "openai", False),
+    "vllm": ("http://localhost:8000/v1", "openai", False),
+}
+
+
 def _cosmos_autostart_enabled() -> bool:
     """Mirror the reasoner client's OPENRAL_COSMOS3_AUTOSTART parsing.
 
@@ -762,16 +780,26 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     api_key = os.environ.get("OPENRAL_REASONER_API_KEY", "").strip()
     key_status = "set" if api_key else "unset"
 
+    # A named endpoint carries its own URL, dialect and auth posture, so it has
+    # to resolve here exactly as it does in the factory — otherwise doctor
+    # reports `ENDPOINT=ollama` as invalid config that runs fine.
+    preset = _REASONER_ENDPOINT_PRESETS.get(endpoint_override.lower())
+    if preset is not None:
+        endpoint_override = preset[0]
+
     if entry is None:
         dialect = os.environ.get("OPENRAL_REASONER_DIALECT", "").strip().lower()
+        if preset is not None:
+            dialect = dialect or preset[1]
         if not endpoint_override or dialect not in {"anthropic", "openai"}:
             return [
                 CheckResult(
                     "Reasoner LLM",
                     "fail",
                     f"OPENRAL_REASONER_MODEL={model_key!r} is not a curated model "
-                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT (a URL) "
-                    "and OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
+                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT to a named "
+                    f"endpoint ({', '.join(sorted(_REASONER_ENDPOINT_PRESETS))}) or to a "
+                    "URL plus OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
                     "uncurated endpoint.",
                 )
             ]
@@ -784,6 +812,15 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                 "robotics tool calling.",
             )
         ]
+        if preset is not None and preset[2] and not api_key:
+            hatch_rows.append(
+                CheckResult(
+                    "Reasoner API_KEY",
+                    "missing",
+                    "OPENRAL_REASONER_API_KEY unset — required for "
+                    f"OPENRAL_REASONER_ENDPOINT={endpoint_override}.",
+                )
+            )
         if _is_local_base_url(endpoint_override):
             hatch_rows.append(
                 _reasoner_endpoint_probe_row(
