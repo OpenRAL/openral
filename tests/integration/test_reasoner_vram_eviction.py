@@ -12,14 +12,13 @@ This exercises the real reasoner node + a real active ``LifecycleNode`` standing
 in for the detector + a real ``ExecuteRskill`` ``ActionServer``; the only test
 double is ``FakeToolUseClient`` at the LLM process boundary (CLAUDE.md §1.11).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of
-``tests/integration/test_reasoner_node_end_to_end.py``. Run with::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
+(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
+``docker-build`` workflow). Locally::
 
-    just ros2-build
+    source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest \\
-        tests/integration/test_reasoner_vram_eviction.py -v \\
-        -p no:launch_testing -p no:launch_ros
+    just test-ros-live            # whole suite; `-k <expr>` narrows it
 """
 
 from __future__ import annotations

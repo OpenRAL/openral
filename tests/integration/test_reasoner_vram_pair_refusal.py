@@ -14,13 +14,14 @@ three guard inputs set directly on the node (``__init__`` reads the reward /
 gpu-total params at construction, before a test can set them — the param→attr
 plumbing is covered live by the VRAM-pair-refusal ARMED log).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
+(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
+``docker-build`` workflow) — this file is the falsification test for issue #46:
+a structurally dead ``_refuse_unfittable_vla`` turns it red. Locally::
 
-    just ros2-build
+    source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest \\
-        tests/integration/test_reasoner_vram_pair_refusal.py -v \\
-        -p no:launch_testing -p no:launch_ros
+    just test-ros-live            # whole suite; `-k <expr>` narrows it
 """
 
 from __future__ import annotations

@@ -27,11 +27,10 @@ failure mode. The only doubles: the free-VRAM reading is pinned via
 monkeypatch (process boundary — ``nvidia-smi``) and the fixture manifest is
 injected at the guard's seam.
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite::
-
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest \\
-        tests/integration/test_reasoner_dispatch_robustness.py -v \\
-        -p no:launch_testing -p no:launch_ros
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
+(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
+``docker-build`` workflow); locally, after ``just ros2-build &&
+source install/setup.bash``, run ``just test-ros-live`` (``-k <expr>`` narrows).
 """
 
 from __future__ import annotations
