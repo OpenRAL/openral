@@ -459,6 +459,10 @@ _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured 
 - `_anvil_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_anvil_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_anvil_joint_specs() -> list[JointSpec]` (L160, L184, L204)
 - const `ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(...)` (L215) — sim baseline (`name="anvil_openarm_v2"`, all 16 joints revolute, hinge grippers; J1/J6 carry the Anvil ranges on both arms, J2 keeps the v2 mirrored asymmetry; two wrist RGB `SensorSpec`s rendering the MJCF's `camera_wrist_{left,right}` at 640×400).  `sdk_kind="open"`, `hal.sim="openral_hal.anvil_openarm_v2:AnvilOpenArmV2MujocoHAL"` + `hal.real=None` (sim-only; a wrapper around Anvil's driver stack is a tracked follow-up).  Drift-guarded against `robots/anvil_openarm_v2/robot.yaml`.
 
+### `python/hal/src/openral_hal/_pinned_clone.py`
+
+- `fetch_pinned_clone(repo_url, sha, repo_dir, *, submodule=None, what=…) -> None` — THE shared staged-clone + atomic-rename dance for the pinned-SHA asset fetchers (shallow `--filter=blob:none` clone into a per-call staging dir, checkout of the pinned SHA, optional single-submodule init, `os.rename` into place with the loser of a concurrent race discarded). Extracted from the two OpenArm fetchers, which carried ~30 identical concurrency-critical lines each; a future fix (e.g. `EXDEV` on cross-filesystem rename) now lands once. Raises `ROSConfigError` when `git` is missing or any git step fails. (L30)
+
 ### `python/hal/src/openral_hal/_anvil_openarm_v2_assets.py`
 _Vendor the Anvil OpenARM 2.0 MJCF from `bensonlee5/anvil-openarm-mujoco` — no upstream package ships the Anvil variant._
 

@@ -20,14 +20,12 @@ that submodule.
 
 from __future__ import annotations
 
-import contextlib
 import os
-import shutil
-import subprocess
-import uuid
 from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
+
+from openral_hal._pinned_clone import fetch_pinned_clone
 
 __all__ = ["ensure_anvil_openarm_v2_mjcf"]
 
@@ -81,63 +79,17 @@ def ensure_anvil_openarm_v2_mjcf() -> str:
     if mjcf.is_file() and meshes.is_dir():
         return str(mjcf)
 
-    if shutil.which("git") is None:
-        raise ROSConfigError(
-            "Anvil OpenARM 2.0 needs `git` on the PATH to clone "
-            f"{_ANVIL_REPO_URL} (pin {_ANVIL_PINNED_SHA[:10]}).  "
-            f"Install git or pre-populate {repo_dir!s}."
-        )
-
-    # Clean any half-finished clone from a previous failed attempt so
-    # we never inherit a partial tree.
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir, ignore_errors=True)
-
-    # Fetch into a per-call staging dir, then atomically rename into place.
-    # Concurrent callers share this cache (CI runs pytest partitions as
-    # parallel processes); cloning straight into `repo_dir` let one worker
-    # rmtree another's in-flight clone. With the rename, `repo_dir` either
-    # does not exist or is a complete tree — never partial. The submodule's
-    # gitdir/worktree links are relative, so the tree survives the rename.
-    staging = cache / f".staging-{_ANVIL_PINNED_SHA}-{uuid.uuid4().hex}"
-    try:
-        try:
-            subprocess.run(
-                ["git", "clone", "--filter=blob:none", _ANVIL_REPO_URL, str(staging)],
-                check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(staging), "checkout", _ANVIL_PINNED_SHA],
-                check=True,
-                capture_output=True,
-            )
-            # The MJCF's meshdir points into the pristine enactic submodule.
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(staging),
-                    "submodule",
-                    "update",
-                    "--init",
-                    _ANVIL_MESH_SUBMODULE,
-                ],
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            stderr = (exc.stderr or b"").decode(errors="replace").strip()
-            raise ROSConfigError(
-                f"Failed to fetch Anvil OpenARM 2.0 (pin {_ANVIL_PINNED_SHA[:10]}) "
-                f"from {_ANVIL_REPO_URL}: {stderr or exc}"
-            ) from exc
-        # A concurrent fetch may have renamed its tree first; keep the
-        # winner's, which the validation below vouches for.
-        with contextlib.suppress(OSError):
-            os.rename(staging, repo_dir)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+    # Staged clone + atomic rename (shared with the enactic v2 fetcher). The
+    # MJCF's meshdir points into the pristine enactic submodule, so it is
+    # initialised in staging; its gitdir/worktree links are relative and
+    # survive the rename.
+    fetch_pinned_clone(
+        _ANVIL_REPO_URL,
+        _ANVIL_PINNED_SHA,
+        repo_dir,
+        submodule=_ANVIL_MESH_SUBMODULE,
+        what="Anvil OpenARM 2.0",
+    )
 
     if not mjcf.is_file() or not meshes.is_dir():
         raise ROSConfigError(
