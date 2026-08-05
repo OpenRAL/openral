@@ -185,7 +185,19 @@ class _ACTAdapter:
         Order matters: ``empty_cache()`` only returns already-free blocks,
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
+
+        The TRT/NVMM device executor is released first and explicitly — its
+        engine + activation workspace live outside torch's caching allocator,
+        so ``release_torch_modules`` cannot reclaim them and a skill swap
+        would otherwise leave them resident until GC (mirrors the SmolVLA
+        adapter's ``_nvmm_encoder`` teardown).
         """
+        executor = self._nvmm_executor
+        self._nvmm_executor = None
+        if executor is not None:
+            closer = getattr(executor, "close", None)
+            if callable(closer):  # the Pro executor's contract; duck-typed here
+                closer()
         release_torch_modules(
             self,
             "_policy",
