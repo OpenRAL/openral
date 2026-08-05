@@ -478,6 +478,7 @@ class SensorRosPublisher:
         be silently wrong for every geometric consumer (cuVSLAM, nvblox, the
         depth provider, object-lift) with nothing in the graph to flag it.
         """
+        from openral_core import scale_intrinsics_to
         from sensor_msgs.msg import CameraInfo
 
         assert self._info_publisher is not None
@@ -485,13 +486,17 @@ class SensorRosPublisher:
         spec = self._camera_info_spec
 
         # Scale from the resolution the intrinsics were calibrated at to the
-        # one actually being published. Equal in x and y whenever the resize
-        # preserved aspect ratio, but computed per-axis so a spec whose
-        # declared geometry disagrees with the sensor still lands correctly.
-        sx = width / spec.width if spec.width else 1.0
-        sy = height / spec.height if spec.height else 1.0
-        fx, fy = spec.fx * sx, spec.fy * sy
-        cx, cy = spec.cx * sx, spec.cy * sy
+        # one actually being published — via the SAME helper the sim HAL uses
+        # (openral_core.scale_intrinsics_to), so real-hardware and sim
+        # CameraInfo can never drift apart on the linear rescale rule.
+        # Per-axis by construction, so a spec whose declared geometry
+        # disagrees with the sensor still lands correctly. A degenerate spec
+        # (zero width/height) is published verbatim rather than divided by.
+        if spec.width > 0 and spec.height > 0:
+            scaled = scale_intrinsics_to(spec, width, height)
+            fx, fy, cx, cy = scaled.fx, scaled.fy, scaled.cx, scaled.cy
+        else:
+            fx, fy, cx, cy = spec.fx, spec.fy, spec.cx, spec.cy
 
         info = CameraInfo()
         info.header.stamp = stamp
