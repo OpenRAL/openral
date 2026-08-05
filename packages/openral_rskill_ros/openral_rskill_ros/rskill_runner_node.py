@@ -881,19 +881,33 @@ if _ROS2_AVAILABLE:
                 )
             return skill
 
-        def _resolve_inference_labels(self, skill: rSkillBase) -> tuple[str, str | None]:
-            """Resolve the inference engine + device labels for the chunk span.
+        def _resolve_inference_labels(
+            self, skill: rSkillBase
+        ) -> tuple[str, str | None, int | None]:
+            """Resolve engine + device + consumed-per-inference for the chunk span.
 
             Engine comes from the manifest runtime (torch / onnx / tensorrt);
-            device from the policy adapter (lerobot ``.device`` convention).
-            Both best-effort — a missing attribute renders "—" on the dashboard.
+            device from the policy adapter (lerobot ``.device`` convention);
+            the third element is the manifest's ``n_action_steps`` — the
+            number of actions the robot consumes before the next VLA
+            inference, which is what ``inference.chunk_size`` means. All
+            best-effort — a missing attribute renders "—" on the dashboard.
             """
             _manifest = getattr(skill, "manifest", None)
             _runtime = getattr(_manifest, "runtime", None)
             engine = str(getattr(_runtime, "value", _runtime) or "") or "torch"
+            # Normalise the manifest RuntimeKind vocabulary (pytorch /
+            # tensorrt) to the `_vla_core.run_inference` engine vocabulary
+            # (torch / trt). The two span families feed the same dashboard
+            # Identity latch, and mixed vocabularies made the engine label
+            # flip "pytorch" ↔ "torch" every chunk.
+            engine = {"pytorch": "torch", "tensorrt": "trt"}.get(engine, engine)
             _adapter = getattr(skill, "_adapter", None)
             _device = getattr(_adapter, "device", None) or getattr(skill, "device", None)
-            return engine, (str(_device) if _device is not None else None)
+            consumed = getattr(_manifest, "n_action_steps", None) or getattr(
+                _manifest, "chunk_size", None
+            )
+            return engine, (str(_device) if _device is not None else None), consumed
 
         def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
             """Return True once the execution budget has lapsed, reporting the miss.
@@ -984,13 +998,22 @@ if _ROS2_AVAILABLE:
             rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
-            chunk_index = 0
+            # Absolute tick deadline (perf_counter domain, matching
+            # ``sleep_until``). The loop previously slept ``period_s``
+            # unconditionally AFTER each tick's work, so the real cadence was
+            # ``work + period`` — an 11 ms pop step ran at ~22 Hz and a
+            # chunk-boundary inference stretched the tick to ~0.5 s. Pacing to
+            # an absolute deadline restores the configured rate; a tick that
+            # overruns just re-anchors instead of bursting to catch up.
+            chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
             skill_role = str(getattr(skill_info, "role", "")) if skill_info is not None else ""
             # Resolve inference engine + device once so the dashboard's Inference
             # card + the `inference.engine`/`inference.device` Identity latches
             # populate (best-effort — omitted attrs render "—").
-            inference_engine, inference_device = self._resolve_inference_labels(skill)
+            inference_engine, inference_device, consumed_per_inference = (
+                self._resolve_inference_labels(skill)
+            )
             while True:
                 if self._estop_latched:
                     raise ROSEStopRequested("/openral/estop received during goal")
@@ -1044,8 +1067,8 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if actions and actions[0].horizon:
-                        inf_span.set_attribute("inference.chunk_size", int(actions[0].horizon))
+                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
+                        inf_span.set_attribute("inference.chunk_size", int(_cs))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
@@ -1072,11 +1095,9 @@ if _ROS2_AVAILABLE:
                     )
                     return
 
-                # Sleep until the next tick boundary — the loop's
-                # rate-limiting is intentionally minimal here; production
-                # use composes the full DeployRunner via the compose
-                # factory when F2's typed WorldStateStamped lands.
-                time.sleep(period_s)
+                # Sleep until the next tick boundary (absolute deadline —
+                # see the ``next_tick_deadline`` note above).
+                next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
 
         def _apply_starting_pose_or_abort(self, skill: Any, goal_handle: Any, result: Any) -> bool:
             """Move to ``starting_pose``; abort the goal on a fatal failure.
@@ -1846,6 +1867,35 @@ def _required_vla_camera_slots(
         if req.modality == "rgb" and req.vla_feature_key
     }
     return tuple(slot for slot in slots if slot in required) if required else slots
+
+
+def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
+    """Sleep to the next absolute tick deadline; return the deadline that gated it.
+
+    The goal loop previously slept ``period_s`` unconditionally AFTER each
+    tick's work, so the real cadence was ``work + period`` — an 11 ms pop
+    step ran at ~22 Hz instead of the configured 30 Hz, and a chunk-boundary
+    inference stretched its tick to ~0.5 s. Deadline pacing restores the
+    configured rate; a tick that overran its budget re-anchors to *now*
+    instead of firing a burst of zero-sleep catch-up ticks (which would slam
+    the HAL with stale-batched actions).
+
+    Args:
+        prev_deadline_s: The deadline (``time.perf_counter`` domain) that
+            gated the previous tick.
+        period_s: Tick period in seconds.
+
+    Returns:
+        The deadline that gated this tick — pass back in on the next call.
+    """
+    from openral_runner.clock import sleep_until
+
+    deadline = prev_deadline_s + period_s
+    now = time.perf_counter()
+    if deadline < now:
+        return now
+    sleep_until(deadline)
+    return deadline
 
 
 def _decode_image_frames(

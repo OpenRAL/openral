@@ -118,3 +118,52 @@ def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
     """Strictly-greater comparison: at the budget the loop may still step."""
     assert budget.deadline_lapsed(time.monotonic() - 1.0, 45.0, 0) is False
     assert budget._last_deadline_elapsed_s is None
+
+
+# ── _pace_tick — absolute-deadline loop cadence ──────────────────────────────
+
+
+def test_pace_tick_enforces_configured_cadence() -> None:
+    """N paced ticks take ~N x period, not N x (work + period).
+
+    Regression for the goal loop's unconditional ``time.sleep(period_s)``:
+    with per-tick work w the old cadence was ``w + period`` (measured live:
+    ~16 Hz at a configured 30 Hz on the SO-101 eraser deploy). Deadline
+    pacing absorbs the work into the period. Bounds are 2x-generous to stay
+    CI-safe.
+    """
+    mod = _load_skill_runner_module()
+    period_s = 0.02
+    n_ticks = 5
+    work_s = 0.01  # half the period — must be absorbed, not added
+
+    t0 = time.perf_counter()
+    deadline = t0
+    for _ in range(n_ticks):
+        time.sleep(work_s)  # simulated tick work
+        deadline = mod._pace_tick(deadline, period_s)
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed >= n_ticks * period_s * 0.9, f"paced too fast: {elapsed:.3f}s"
+    # Old behaviour: n * (work + period) = 0.15 s. Require clearly better.
+    assert elapsed < n_ticks * (work_s + period_s) * 0.9, (
+        f"work was added to the period instead of absorbed: {elapsed:.3f}s"
+    )
+
+
+def test_pace_tick_overrun_reanchors_without_burst() -> None:
+    """A tick that blew its deadline returns immediately, re-anchored to now.
+
+    No sleep (the loop is already late) and no stale deadline carried
+    forward (which would make every subsequent sleep a zero — a burst of
+    catch-up ticks slamming the HAL).
+    """
+    mod = _load_skill_runner_module()
+    t0 = time.perf_counter()
+    stale_deadline = t0 - 1.0  # long-lapsed (e.g. chunk-boundary inference)
+
+    new_deadline = mod._pace_tick(stale_deadline, 0.02)
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed < 0.005, f"overrun tick must not sleep, waited {elapsed:.3f}s"
+    assert new_deadline >= t0, "deadline must re-anchor to now, not stay stale"
