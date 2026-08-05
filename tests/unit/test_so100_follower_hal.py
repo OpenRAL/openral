@@ -459,3 +459,40 @@ class TestSO100FollowerHALResetToPose:
         h = SO100FollowerHAL(robot=twin)
         with pytest.raises(ROSRuntimeError, match="reset_to_pose"):
             h.reset_to_pose([0.0] * 6)
+
+
+class TestJointValuesToLerobot:
+    """The SINGLE unit conversion both send_action and the reset ramp share."""
+
+    def test_gripper_and_arm_units(self) -> None:
+        from openral_hal.so100_follower import _joint_values_to_lerobot
+
+        out = _joint_values_to_lerobot([math.pi, 0.0, -math.pi / 2, 0.0, 0.0, 0.5])
+        assert out["shoulder_pan.pos"] == pytest.approx(180.0)
+        assert out["elbow_flex.pos"] == pytest.approx(-90.0)
+        assert out["gripper.pos"] == pytest.approx(50.0)  # [0, 1] → [0, 100]
+
+    def test_send_action_and_ramp_agree(
+        self, hal: SO100FollowerHAL, twin: SO100DigitalTwin, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: the ramp used to re-implement the conversion inline, so
+        a calibration change in _action_to_lerobot silently would not apply to
+        the pre-episode reset. The final ramp waypoint must now be
+        byte-identical to a send_action of the same pose."""
+        monkeypatch.setattr(time, "sleep", lambda _s: None)
+        target = [0.2, -0.4, 0.6, 0.3, -0.1, 0.8]
+
+        sent: list[dict[str, float]] = []
+        original = twin.send_action
+        monkeypatch.setattr(twin, "send_action", lambda a: sent.append(a) or original(a))
+
+        hal.reset_to_pose(target)
+        ramp_final = sent[-1]
+
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[target],
+            )
+        )
+        assert sent[-1] == ramp_final

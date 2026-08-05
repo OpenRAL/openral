@@ -33,6 +33,7 @@ import contextlib
 import math
 import os
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import structlog
@@ -247,6 +248,26 @@ def so100_with_sensors(
 def _deg_to_rad(deg: float) -> float:
     """Convert degrees to radians."""
     return deg * math.pi / 180.0
+
+
+def _joint_values_to_lerobot(step: Sequence[float]) -> dict[str, float]:
+    """Manifest-order joint values → lerobot's ``{"<joint>.pos": float}`` dict.
+
+    THE single unit conversion on the SO-100/101 actuation path — radians →
+    degrees for the five arm joints, ``[0, 1]`` → ``[0, 100]`` for the gripper
+    channel. Both ``send_action`` (via ``_action_to_lerobot``) and the
+    ``reset_to_pose`` ramp route through here so a calibration offset or
+    range change can never apply to one path and not the other. Callers
+    validate ``len(step) == len(_SO100_JOINT_NAMES)``.
+    """
+    out: dict[str, float] = {}
+    for i, name in enumerate(_SO100_JOINT_NAMES):
+        val = step[i]
+        if name == "gripper":
+            out[f"{name}.pos"] = val * 100.0  # [0, 1] → [0, 100]
+        else:
+            out[f"{name}.pos"] = _rad_to_deg(val)
+    return out
 
 
 def _rad_to_deg(rad: float) -> float:
@@ -572,14 +593,8 @@ class SO100FollowerHAL(HALBase):
         for i in range(1, steps + 1):
             alpha = i / steps
             waypoint = [c + d * alpha for c, d in zip(current, deltas, strict=True)]
-            out: dict[str, float] = {}
-            for j, name in enumerate(_SO100_JOINT_NAMES):
-                if name == "gripper":
-                    out[f"{name}.pos"] = waypoint[j] * 100.0  # [0, 1] → [0, 100]
-                else:
-                    out[f"{name}.pos"] = _rad_to_deg(waypoint[j])
             try:
-                self._robot.send_action(out)
+                self._robot.send_action(_joint_values_to_lerobot(waypoint))
             except Exception as exc:
                 raise ROSRuntimeError(f"reset_to_pose send_action failed: {exc}") from exc
             time.sleep(1.0 / _RESET_STEP_HZ)
@@ -638,12 +653,4 @@ class SO100FollowerHAL(HALBase):
             raise ROSConfigError(
                 f"action.joint_targets[0] has {len(step)} values; SO-100 has {n} joints."
             )
-
-        out: dict[str, float] = {}
-        for i, name in enumerate(_SO100_JOINT_NAMES):
-            val = step[i]
-            if name == "gripper":
-                out[f"{name}.pos"] = val * 100.0  # [0, 1] → [0, 100]
-            else:
-                out[f"{name}.pos"] = _rad_to_deg(val)
-        return out
+        return _joint_values_to_lerobot(step)

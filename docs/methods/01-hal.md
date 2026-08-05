@@ -174,6 +174,7 @@ _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
   - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L518)
   - `estop() -> None` — Disconnect motors then raise. (L587)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
+  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L252)
 - `_deg_to_rad(deg) -> float` (L247)
 - `_rad_to_deg(rad) -> float` (L252)
 - const `SO100_DESCRIPTION = RobotDescription(...)` (L102)
