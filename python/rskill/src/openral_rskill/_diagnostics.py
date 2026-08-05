@@ -72,18 +72,18 @@ def _gpu_mb(*, no_import: bool = False) -> float | None:
             answers ``None``.
     """
     if no_import:
-        torch = sys.modules.get("torch")
-        if torch is None:
-            return None
+        torch_mod = sys.modules.get("torch")
     else:
         try:
-            import torch  # noqa: PLC0415
+            import torch as torch_mod  # noqa: PLC0415
         except ImportError:
             return None
+    if torch_mod is None:
+        return None
     try:
-        if not torch.cuda.is_available():
+        if not torch_mod.cuda.is_available():
             return None
-        return float(torch.cuda.memory_allocated()) / 1024 / 1024
+        return float(torch_mod.cuda.memory_allocated()) / 1024 / 1024
     except Exception:
         return None
 
