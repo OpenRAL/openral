@@ -29,6 +29,7 @@ from openral_rskill._vla_core import (
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
+    queued_action_count,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -219,6 +220,21 @@ class _SmolVLAAdapter:
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        # Fast pop path: while the policy's internal action queue still holds
+        # chunk actions, ``select_action`` ignores the observation entirely —
+        # so skip batch build / preprocess / H2D copies (~11 ms of GIL-held
+        # 16-thread CPU fan-out per tick on the SO-101 deploy, wasted 49 of 50
+        # ticks and starving co-resident threads). ``adapt_to_pi_aloha``
+        # checkpoints DO read ``observation.state`` inside ``_prepare_batch``
+        # on every call, so they keep the full path.
+        if queued_action_count(self._policy) > 0 and not getattr(
+            self._policy.config, "adapt_to_pi_aloha", False
+        ):
+            self._update_input_preview(observation)
+            action_tensor = run_inference(self._policy, {})
+            action_tensor = self._postprocessor(action_tensor)
+            return to_numpy_action(action_tensor)
+
         used_handles = self._maybe_encode_image_handles(observation)
         batch = self._build_batch(observation, instruction, gpu_frames=used_handles)
         batch = self._preprocessor(batch)
@@ -360,6 +376,28 @@ class _SmolVLAAdapter:
                 return None
             ordered.append(handles[cam_key])
         return ordered if ordered else None
+
+    def _update_input_preview(self, observation: Observation) -> None:
+        """Refresh ``_last_input_frame`` from raw numpy frames (no tensor work).
+
+        The fast pop path skips ``_build_batch`` (which normally records the
+        preview), but the eval-layer debug video samples
+        :meth:`last_input_frame` every env step — without this it would show
+        one frozen frame per chunk.
+        """
+        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+
+        images = observation.get("images", {})
+        preview_frames: list[NDArray[np.uint8]] = []
+        for cam_key in self._camera_keys:
+            img = images.get(cam_key)
+            if img is None:
+                continue
+            preview = to_input_frame(img, flip_180=self._flip_images_180)
+            if preview is not None:
+                preview_frames.append(preview)
+        if preview_frames:
+            self._last_input_frame = tile_input_frames(preview_frames)
 
     def _build_batch(
         self, observation: Observation, instruction: str, *, gpu_frames: bool = False
