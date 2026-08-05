@@ -32,8 +32,12 @@ TARGETS=(
     tests/integration/test_reasoner_async_llm.py
     tests/integration/test_reasoner_vram_pair_refusal.py
     tests/integration/test_reasoner_vram_eviction.py
+    tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_critic_producer_node.py
 )
+# tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
+# file under tests/integration/ appears above — a gated test missing from this
+# list runs on NO CI surface.
 
 export OPENRAL_TEST_ROS_LIVE=1
 
