@@ -361,3 +361,57 @@ def test_warm_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     client.warm()  # type: ignore[attr-defined]
 
     assert calls == [1, 1], "warm() delegates every time; _ensure_server owns the de-dup"
+
+
+def test_concurrent_ensure_server_spawns_exactly_one_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """warm() (llm pool) and describe_image (vlm pool) racing on a cold host
+    must not double-spawn `vllm serve`.
+
+    Regression: `_ensure_server`'s check-then-act on `_child`/`_server_ready`
+    was unlocked, so two threads could both see `_child is None` and both
+    Popen — two 4B servers fighting for the port and doubling VRAM, with the
+    first handle orphaned. Doubles here are Popen + the HTTP probe, both
+    process/network boundaries (§1.11).
+    """
+    import threading
+
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, Cosmos3ToolUseClient)
+
+    spawns: list[list[str]] = []
+    barrier = threading.Barrier(2, timeout=10.0)
+
+    class _FakeChild:
+        def poll(self) -> None:
+            return None  # still running
+
+    def _fake_popen(argv: list[str]) -> _FakeChild:
+        spawns.append(argv)
+        return _FakeChild()
+
+    # Endpoint is down until a spawn happened; up right after (instant boot).
+    monkeypatch.setattr(cosmos3, "_endpoint_is_up", lambda _url: bool(spawns))
+    monkeypatch.setattr(cosmos3.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(cosmos3.atexit, "register", lambda _fn: None)
+
+    errors: list[BaseException] = []
+
+    def _race() -> None:
+        barrier.wait()  # maximise overlap of the two callers
+        try:
+            client._ensure_server()
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_race) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+
+    assert not errors, f"_ensure_server raised under contention: {errors!r}"
+    assert len(spawns) == 1, f"expected exactly one sidecar spawn, got {len(spawns)}"
+    assert client._server_ready is True
