@@ -55,7 +55,7 @@ quiet until deliberately promoted. Every span is still indexed in full for
 | `rskill.configure` | rSkill | `rskill/base.py:159` | per lifecycle | **info** | Event Log, rSkill card |
 | `rskill.activate` | rSkill | `rskill/base.py:183` | per lifecycle | **info** | Event Log, rSkill card |
 | `reasoner.tick` | Reasoning | `reasoner/core.py:392` | per LLM round-trip (~0.2 Hz cap) | **info** | Reasoner card |
-| `world.scene_objects` | World state | `world_state/scene_objects_span.py:94` | ~0.2 Hz | **info** | World-state card, SLAM overlay |
+| `world.scene_objects` | World state | `world_state/scene_objects_span.py:94` | on scene change (+60 s keepalive; checked at 0.2 Hz) | **info** | World-state card, SLAM overlay |
 | `sim.run` | Sim | `sim/sim_runner.py:436` | 1 / run (held open) | **info** | Event Log |
 | `detect.probe.*` | Detect | `detect/detect.py:85-108` | 1 / `openral detect` | **info** | Event Log |
 | `hal.read_state` | HAL | `hal/lifecycle.py:837`, `deploy_runner.py:415` | **30 Hz** | debug | Robot-state card |
@@ -94,7 +94,9 @@ and `snapshot()` merges all three deduped:
 
 **The two lanes are separate on purpose.** Mirroring all non-debug traffic into
 the single error lane let routine info evict the safety events those 64 slots
-exist to preserve: `world.scene_objects` alone runs at ~0.10/s, so the shared
+exist to preserve: `world.scene_objects` alone ran at ~0.10/s (it is
+change-gated with a 60 s keepalive now, but the isolation argument stands for
+any headline span), so the shared
 lane fully cycled in ~11 minutes of an otherwise idle scene and a minute-one
 `safety.violation` was gone by minute twelve — the exact "counter goes up, no
 trace" failure the protected lane was added to prevent. One budget each means

@@ -629,6 +629,11 @@ class ReasonerNode(LifecycleNode):
         # snapshot into it. Stays None for an externally-injected read-only
         # querier (we don't mutate a backend we don't own).
         self._spatial_memory_writer: SpatialMemory | None = None
+        # Emit-on-change gate for the ``world.scene_objects`` span (see
+        # ``_emit_scene_objects_span``): the last emitted semantic key and
+        # the monotonic time of the last emission (keepalive anchor).
+        self._scene_objects_key: tuple[object, ...] | None = None
+        self._scene_objects_emitted_monotonic: float = 0.0
         # Occupancy-grid-refined approach phase — latest decoded occupancy grid (an
         # ``openral_world_state.grid.OccupancyGridIndex``), from the latched
         # ``occupancy_map_topic`` subscription. ``None`` until a map arrives;
@@ -2059,6 +2064,12 @@ class ReasonerNode(LifecycleNode):
         # before the first heartbeat tick (which re-emits on the 0.2 Hz cadence).
         self._emit_scene_objects_span()
 
+    # Re-emit an UNCHANGED scene at most this often. A keepalive (rather than
+    # pure suppression) keeps two consumers alive: the dashboard card's age
+    # readout, and a collector restarted mid-deploy (its ``_topics`` state is
+    # in-process, so it would otherwise show no map until the next real change).
+    _SCENE_OBJECTS_KEEPALIVE_S: float = 60.0
+
     def _emit_scene_objects_span(self) -> None:
         """Publish the remembered objects as a ``world.scene_objects`` span.
 
@@ -2068,16 +2079,43 @@ class ReasonerNode(LifecycleNode):
         preloaded ``spatial_memory_path`` map; post-producer (once the
         perception → spatial-memory object lift lands, PR #229) the World-State
         node becomes the canonical emitter of the same span.
+
+        Emit-on-change: this is called on every 0.2 Hz heartbeat, but an
+        unchanged scene re-emits only every ``_SCENE_OBJECTS_KEEPALIVE_S`` —
+        a static map produced 720 zero-information event rows per hour, each
+        dragging the full object list JSON along. The change key is SEMANTIC
+        (id / label / pose to 1 cm / is_container): detector ingest bumps
+        ``last_seen_ns`` / ``observation_count`` and jitters ``pose`` on every
+        snapshot, so an exact-payload hash would never suppress anything.
         """
         if self._spatial_memory is None:
             return
         try:
-            from openral_world_state import emit_scene_objects_span
+            import time as _time
 
-            emit_scene_objects_span(
-                self._spatial_memory.to_scene_graph(),
-                source_node=self.get_name(),
+            from openral_world_state import emit_scene_objects_span, scene_objects_payload
+
+            graph = self._spatial_memory.to_scene_graph()
+            key: tuple[object, ...] = tuple(
+                (
+                    o["id"],
+                    o["label"],
+                    round(float(o["x"]), 2),
+                    round(float(o["y"]), 2),
+                    round(float(o["z"]), 2),
+                    o["is_container"],
+                )
+                for o in scene_objects_payload(graph)
             )
+            now = _time.monotonic()
+            if (
+                key == self._scene_objects_key
+                and now - self._scene_objects_emitted_monotonic < self._SCENE_OBJECTS_KEEPALIVE_S
+            ):
+                return
+            self._scene_objects_key = key
+            self._scene_objects_emitted_monotonic = now
+            emit_scene_objects_span(graph, source_node=self.get_name())
         except Exception as exc:  # reason: telemetry must never break the tick
             self.get_logger().debug(f"scene-objects span emit failed: {exc!s}")
 
