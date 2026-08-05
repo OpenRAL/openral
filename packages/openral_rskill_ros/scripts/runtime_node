@@ -155,6 +155,16 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # HAL's SimSensorBridge.
     # Empty (sim deploys) leaves the HAL bridge as the only camera source.
     bootstrap.declare_parameter("deploy_config", "")
+    # The launch's RESOLVED consumer flags (tri-state strings; "" = "no
+    # launch opinion, honour the scene"). The scene YAML's own
+    # enable_object_detector / enable_slam can be None ("auto") and only the
+    # deploy CLI resolves that — these carry the resolution across so the
+    # sensor leg's topic rate/resolution exemptions key off the consumers
+    # that actually launched (see sensor_leg.apply_launch_overrides).
+    bootstrap.declare_parameter("resolved_enable_object_detector", "")
+    bootstrap.declare_parameter("resolved_enable_slam", "")
+    bootstrap.declare_parameter("resolved_slam_stereo_cameras", "")
+    bootstrap.declare_parameter("resolved_slam_mono_camera", "")
     robot_yaml: str = bootstrap.get_parameter("robot_yaml").get_parameter_value().string_value
     search_paths: list[str] = [
         p
@@ -191,6 +201,23 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         bootstrap.get_parameter("dataset_license").get_parameter_value().string_value
     )
     deploy_config: str = bootstrap.get_parameter("deploy_config").get_parameter_value().string_value
+
+    def _tristate(name: str) -> bool | None:
+        raw = bootstrap.get_parameter(name).get_parameter_value().string_value.strip().lower()
+        return None if not raw else raw in ("1", "true", "yes", "on")
+
+    resolved_enable_object_detector = _tristate("resolved_enable_object_detector")
+    resolved_enable_slam = _tristate("resolved_enable_slam")
+    _stereo_csv = (
+        bootstrap.get_parameter("resolved_slam_stereo_cameras").get_parameter_value().string_value
+    )
+    resolved_slam_stereo_cameras: tuple[str, ...] | None = (
+        tuple(s.strip() for s in _stereo_csv.split(",") if s.strip()) or None
+    )
+    resolved_slam_mono_camera: str | None = (
+        bootstrap.get_parameter("resolved_slam_mono_camera").get_parameter_value().string_value
+        or None
+    )
     bootstrap.destroy_node()
 
     if not robot_yaml:
@@ -279,6 +306,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     if deploy_config:
         from openral_core import DeployScene
         from openral_rskill_ros.sensor_leg import (
+            apply_launch_overrides,
             merge_deploy_sensors,
             open_deploy_sensor_readers,
             slam_camera_names,
@@ -287,6 +315,17 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
 
         try:
             scene = DeployScene.from_yaml(deploy_config)
+            # The scene's raw runtime block can say None ("auto") where the
+            # launch already resolved on/off — fold the launch's answer over
+            # it so the rate/resolution exemptions match the consumers that
+            # actually exist in this graph.
+            effective_runtime = apply_launch_overrides(
+                scene.runtime,
+                enable_object_detector=resolved_enable_object_detector,
+                enable_slam=resolved_enable_slam,
+                slam_stereo_cameras=resolved_slam_stereo_cameras,
+                slam_mono_camera=resolved_slam_mono_camera,
+            )
             # Robot-manifest ∪ scene sensors (scene wins on name collision —
             # a same-named scene entry is that robot sensor's deploy binding);
             # the leg opens only those carrying a `deploy_binding`. The shared
@@ -301,8 +340,8 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
                 merge_deploy_sensors(runtime.description.sensors, scene.sensors),
                 aggregator=runtime.aggregator,
                 ros_node=runtime.world_state_node,
-                uncapped_sensors=slam_camera_names(scene.runtime),
-                topic_max_size=topic_frame_size(scene.runtime),
+                uncapped_sensors=slam_camera_names(effective_runtime),
+                topic_max_size=topic_frame_size(effective_runtime),
             )
             if sensor_leg.direct_sensors:
                 from rclpy.parameter import Parameter

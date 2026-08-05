@@ -53,6 +53,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import structlog
@@ -372,6 +373,66 @@ def slam_camera_names(runtime: object | None) -> frozenset[str]:
     if mono:
         names.add(str(mono))
     return frozenset(names)
+
+
+def apply_launch_overrides(
+    runtime: object | None,
+    *,
+    enable_object_detector: bool | None = None,
+    enable_slam: bool | None = None,
+    slam_stereo_cameras: tuple[str, ...] | None = None,
+    slam_mono_camera: str | None = None,
+) -> object | None:
+    """Fold the launch's RESOLVED consumer flags over the scene's runtime block.
+
+    :func:`slam_camera_names` and :func:`topic_frame_size` decide the fallback
+    topic's rate/resolution from ``DeployRuntime`` — but the scene YAML's
+    ``enable_object_detector`` / ``enable_slam`` are tri-state (``None`` =
+    "auto"), and the deploy CLI resolves the auto at launch time (detector
+    defaults ON when a backend exists; SLAM auto-enables from the robot
+    manifest). The runtime node re-reads the *original* YAML, so consuming the
+    raw block would treat an auto-enabled leg as OFF and silently starve the
+    exact cameras the detector/SLAM nodes subscribe to.
+
+    Each ``None`` override keeps the scene's value (bare ``runtime_node`` runs
+    without the launch parameters behave as before); a launch that performs its
+    flags always passes them, and those values gate the actual detector/SLAM
+    nodes — the ground truth of which subscribers exist in the graph.
+
+    Args:
+        runtime: The scene's ``DeployRuntime`` (or ``None``). Duck-typed so
+            this module keeps no schema import.
+        enable_object_detector: Launch-resolved detector flag, or ``None``.
+        enable_slam: Launch-resolved SLAM flag, or ``None``.
+        slam_stereo_cameras: Launch-resolved stereo camera names, or ``None``.
+        slam_mono_camera: Launch-resolved mono camera name, or ``None``.
+
+    Returns:
+        A duck-typed object carrying exactly the four attributes the two
+        consumers read, with overrides applied.
+
+    Example:
+        >>> merged = apply_launch_overrides(None, enable_slam=True)
+        >>> sorted(slam_camera_names(merged))
+        ['left', 'right']
+    """
+    if runtime is None and all(
+        v is None
+        for v in (enable_object_detector, enable_slam, slam_stereo_cameras, slam_mono_camera)
+    ):
+        # No runtime block AND no launch opinion: preserve the callers'
+        # conservative ``None`` contract (native pixels, cap-only rates).
+        return None
+
+    def _pick(override: object | None, attr: str) -> object | None:
+        return override if override is not None else getattr(runtime, attr, None)
+
+    return SimpleNamespace(
+        enable_object_detector=_pick(enable_object_detector, "enable_object_detector"),
+        enable_slam=_pick(enable_slam, "enable_slam"),
+        slam_stereo_cameras=_pick(slam_stereo_cameras, "slam_stereo_cameras"),
+        slam_mono_camera=_pick(slam_mono_camera, "slam_mono_camera"),
+    )
 
 
 def topic_frame_size(runtime: object | None) -> tuple[int, int] | None:

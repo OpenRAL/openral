@@ -999,6 +999,20 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # config's camera readers (sensor_leg.py) and publishes
                 # them onto the WorldState image topics.
                 "deploy_config": deploy_config,
+                # The RESOLVED consumer flags, not the scene's raw (tri-state)
+                # ones. The scene YAML may leave enable_object_detector /
+                # enable_slam as None ("auto") and the deploy CLI resolves
+                # those to on/off at launch time — but the runtime node
+                # re-reads the original YAML, so without this forward it
+                # would treat an auto-enabled detector/SLAM leg as OFF and
+                # rate-cap + downscale the very cameras those nodes consume
+                # (sensor_leg.apply_launch_overrides). These launch values
+                # gate the actual detector/SLAM nodes above, so they are the
+                # ground truth of which subscribers exist in this graph.
+                "resolved_enable_object_detector": "true" if enable_object_detector else "false",
+                "resolved_enable_slam": "true" if enable_slam else "false",
+                "resolved_slam_stereo_cameras": slam_stereo_cameras,
+                "resolved_slam_mono_camera": slam_mono_camera,
             }
         ],
         additional_env=otel_env,

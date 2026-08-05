@@ -552,6 +552,66 @@ def test_topic_size_is_native_without_a_runtime_block() -> None:
     assert topic_frame_size(None) is None
 
 
+def test_launch_overrides_resolve_the_scene_auto_flags() -> None:
+    """The real ``DeployRuntime`` tri-state: ``None`` means "auto", and the CLI
+    resolves it at launch time — the raw block must NOT be trusted alone.
+
+    Regression: a scene leaving ``enable_object_detector`` / ``enable_slam``
+    unset had its detector/SLAM cameras rate-capped to 3 Hz and downscaled to
+    320x240 even though the CLI auto-enabled those legs, because the runtime
+    node re-read the original YAML where the flags were still ``None``.
+    """
+    from openral_core import DeployRuntime
+    from openral_rskill_ros.sensor_leg import (
+        _DEFAULT_TOPIC_MAX_SIZE,
+        apply_launch_overrides,
+        slam_camera_names,
+        topic_frame_size,
+    )
+
+    raw = DeployRuntime()  # all None — the "auto" default every field ships with
+    # Un-overridden, the raw block reads as "everything off" (the old bug).
+    assert topic_frame_size(raw) == _DEFAULT_TOPIC_MAX_SIZE
+    assert slam_camera_names(raw) == frozenset()
+
+    # Launch resolved detector ON → the topic must stay native.
+    merged = apply_launch_overrides(raw, enable_object_detector=True, enable_slam=False)
+    assert topic_frame_size(merged) is None
+
+    # Launch resolved SLAM ON with no camera names → implicit stereo pair exempt.
+    merged = apply_launch_overrides(raw, enable_object_detector=False, enable_slam=True)
+    assert topic_frame_size(merged) is None
+    assert slam_camera_names(merged) == frozenset({"left", "right"})
+
+    # Launch-resolved camera names win over the (unset) scene names.
+    merged = apply_launch_overrides(
+        raw, enable_slam=True, slam_stereo_cameras=("front_left", "front_right")
+    )
+    assert slam_camera_names(merged) == frozenset({"front_left", "front_right"})
+
+
+def test_launch_overrides_keep_scene_values_when_absent() -> None:
+    """``None`` overrides (bare runtime_node, no launch params) keep the scene's
+    answer — including a scene that explicitly enabled its consumers."""
+    from openral_core import DeployRuntime
+    from openral_rskill_ros.sensor_leg import (
+        apply_launch_overrides,
+        slam_camera_names,
+        topic_frame_size,
+    )
+
+    scene = DeployRuntime(enable_slam=True, slam_mono_camera="front")
+    merged = apply_launch_overrides(scene)
+    assert topic_frame_size(merged) is None
+    assert slam_camera_names(merged) == frozenset({"left", "right", "front"})
+
+    # And with no runtime block at all, overrides alone drive the decision —
+    # but no block AND no opinion preserves the conservative None contract.
+    merged = apply_launch_overrides(None, enable_object_detector=True)
+    assert topic_frame_size(merged) is None
+    assert apply_launch_overrides(None) is None
+
+
 def test_topic_rate_cap_stays_above_the_staleness_limit() -> None:
     """2 Hz would sit exactly on WorldStateAggregator's 0.5 s staleness window.
 
