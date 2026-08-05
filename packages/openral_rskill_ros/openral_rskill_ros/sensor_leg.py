@@ -136,8 +136,8 @@ def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> N
     """Emit the dashboard's ``sensors.read_latest`` span for a pump-fed frame.
 
     WorldState's ``_on_image`` normally produces this span, but it is driven by
-    the ROS tee — which :data:`_MAX_FALLBACK_TOPIC_RATE_HZ` caps at 5 Hz, so the
-    dashboard's camera tiles would stutter at 5 fps. Pump-fed cameras emit here
+    the ROS tee — which :data:`_MAX_FALLBACK_TOPIC_RATE_HZ` caps at 3 Hz, so the
+    dashboard's camera tiles would stutter at 3 fps. Pump-fed cameras emit here
     instead, at the reader's full cadence, and ``_on_image`` skips them.
 
     Affordable because the thumbnail is small and Pillow drops the GIL for the
@@ -501,7 +501,9 @@ def _fallback_topic_rate_hz(spec: SensorSpec, uncapped: Collection[str] = ()) ->
     if spec.name in uncapped:
         return _publish_rate_hz(spec)
     explicit = spec.deploy_binding.backend_params.get("topic_rate_hz")
-    if isinstance(explicit, (int, float)) and explicit > 0:
+    # bool is an int subclass: YAML `topic_rate_hz: true` would otherwise
+    # parse as 1.0 Hz — below the staleness floor — instead of being ignored.
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool) and explicit > 0:
         return float(explicit)
     return min(_publish_rate_hz(spec), _MAX_FALLBACK_TOPIC_RATE_HZ)
 

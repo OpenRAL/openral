@@ -87,6 +87,21 @@ def test_fallback_topic_rate_never_raises_a_slower_request() -> None:
     assert _fallback_topic_rate_hz(slow) == 2.0
 
 
+def test_boolean_topic_rate_is_ignored_not_one_hz() -> None:
+    """`topic_rate_hz: true` must not parse as 1.0 Hz via bool-as-int.
+
+    An operator writing `true` means "keep full cadence"; float(True) = 1 Hz
+    sits below the 0.5 s staleness floor and would flap the diagnostics. A
+    bool is ignored (the cap applies) rather than honoured as a rate.
+    """
+    spec = _spec(
+        "cam",
+        rate_hz=30,
+        binding=SensorDeployBinding(backend_params={"topic_rate_hz": True}),
+    )
+    assert _fallback_topic_rate_hz(spec) == _MAX_FALLBACK_TOPIC_RATE_HZ
+
+
 def test_explicit_topic_rate_overrides_the_cap() -> None:
     """A rate-sensitive consumer can demand full cadence, cap included.
 
