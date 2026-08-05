@@ -887,16 +887,30 @@ class TelemetryStore:
                 "channels": attrs.get("openral.sensors.channels"),
                 "age_ms": attrs.get("openral.sensors.age_ms"),
             }
+            existing = per_camera.get(source, {})
             thumb = attrs.get("openral.sensors.thumbnail_jpeg_b64")
             if thumb:
                 # Persist the thumb until a newer one arrives so the
                 # card doesn't flicker between high-rate frames without
                 # one and the low-rate frames that carry one.
                 entry["thumbnail_jpeg_b64"] = thumb
-            else:
-                existing = per_camera.get(source, {})
-                if "thumbnail_jpeg_b64" in existing:
-                    entry["thumbnail_jpeg_b64"] = existing["thumbnail_jpeg_b64"]
+            elif "thumbnail_jpeg_b64" in existing:
+                entry["thumbnail_jpeg_b64"] = existing["thumbnail_jpeg_b64"]
+            # Effective read rate as an EMA over inter-span intervals. The
+            # tile's `age_ms` is frame age sampled at an arbitrary phase
+            # against a free-running camera, so it sawtooths 0→period — a
+            # smoothed rate is the steady number an operator actually wants.
+            prev_ts = existing.get("ts_unix")
+            if isinstance(prev_ts, (int, float)):
+                dt = ts_unix - float(prev_ts)
+                if dt > 0:
+                    inst = 1.0 / dt
+                    prev_fps = existing.get("fps")
+                    entry["fps"] = (
+                        0.8 * float(prev_fps) + 0.2 * inst
+                        if isinstance(prev_fps, (int, float))
+                        else inst
+                    )
             per_camera[source] = entry
         elif span_name == "slam.occupancy_grid":
             # Live 2D SLAM occupancy map from slam_toolbox.
@@ -1266,9 +1280,11 @@ _IDENTITY_KEYS: frozenset[str] = frozenset(
         "openral.hal.adapter",
         "openral.hal.robot.model",
         "openral.hal.control_mode",
-        # The policy's action-chunk horizon is identity-stable for a run;
-        # it rides in on every `hal.send_action` span (producer.record_action
-        # → semconv.HAL_ACTION_HORIZON) so we latch it for the Identity card.
+        # Wire-level rows-per-ActionChunk message; NOT the policy chunk
+        # length — every shipped adapter emits single-step Actions, so this
+        # is structurally 1 on the ROS deploy path. Kept latched for
+        # completeness but no longer rendered (the Identity strip shows
+        # `inference.chunk_size` instead).
         "openral.hal.action.horizon",
         # rSkill identity ships under both the short `rskill.*` prefix
         # (semconv.RSKILL_ID / RSKILL_ROLE, emitted by every rskill span)
@@ -1286,6 +1302,11 @@ _IDENTITY_KEYS: frozenset[str] = frozenset(
         "safety.kernel",
         "inference.engine",
         "inference.device",
+        # Actions the robot consumes per VLA inference (manifest
+        # n_action_steps) — identity-stable per skill; rides on the runner's
+        # per-tick inference span. This is the number the Identity strip's
+        # "chunk size" pair renders.
+        "inference.chunk_size",
     }
 )
 
@@ -1439,6 +1460,9 @@ def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str
         "safety.check_name",
         "openral.tick.idx",
         "inference.chunk_index",
+        # A scene-objects row without the count reads as a bare name; with
+        # it, a surviving (change-gated) row says what changed size-wise.
+        semconv.WORLD_SCENE_OBJECTS_COUNT,
         # Without these a bringup row reads "deploy.bringup · 6203.4ms" and
         # does not say WHICH node held the graph up — the one question the
         # span exists to answer. With them the Event Log row is the whole

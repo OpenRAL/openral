@@ -39,7 +39,10 @@
     const eng = id["inference.engine"];
     const dev = id["inference.device"];
     setId($("id-engine"), eng || dev ? `${eng || "—"} · ${dev || "—"}` : "");
-    setId($("id-horizon"), id["openral.rskill.action_horizon"] || id["openral.hal.action.horizon"]);
+    // Actions consumed per VLA inference (manifest n_action_steps). The old
+    // key here was the wire horizon (rows per ActionChunk message) — always 1
+    // on the deploy path, a structural constant with no signal.
+    setId($("id-horizon"), id["inference.chunk_size"]);
     setId($("id-kernel"), id["safety.kernel"]);
   }
 
@@ -250,7 +253,10 @@
              onerror="this.replaceWith(Object.assign(document.createElement('div'),
                {className:'camera-placeholder',textContent:'stream unavailable'}))" />`
         : `<div class="camera-placeholder">no frames · ${cam.modality || "?"}</div>`;
-      const ageMs = cam.age_ms != null ? num(cam.age_ms, 0) + " ms" : "—";
+      // Frame AGE at read time — sampled at arbitrary phase against a
+      // free-running camera it legitimately sawtooths 0→frame period, so
+      // label it; the steady number is the EMA fps (bottom-right).
+      const ageMs = cam.age_ms != null ? "age " + num(cam.age_ms, 0) + " ms" : "—";
       const label = (cam.role || cam.modality || "cam").toString();
       const dims = `${cam.width || "?"} × ${cam.height || "?"} · ${cam.encoding || cam.modality || "?"}`;
       const fps = cam.fps != null ? num(cam.fps, 0) + " fps" : "";
