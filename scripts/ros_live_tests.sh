@@ -34,6 +34,16 @@ TARGETS=(
     tests/integration/test_reasoner_vram_eviction.py
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_critic_producer_node.py
+    # ROS_DISTRO-gated rather than OPENRAL_TEST_ROS_LIVE-gated: the composed
+    # runner/world-state/safety action-protocol suite needs the colcon
+    # openral_msgs overlay, which only this image has — without this entry it
+    # ran on NO CI surface, and the deadline-abort semantics change shipped
+    # with a stale success assertion nobody could see; caught on a dev host
+    # with the overlay sourced. Baked into the image via `COPY packages/`,
+    # so PR builds run the PR's version. NOTE: keep comments in this array
+    # free of close-parens — the guard test parses the block with a
+    # non-greedy regex.
+    packages/openral_rskill_ros/test/test_rskill_runner_node.py
 )
 # tests/unit/test_ros_live_targets.py asserts every OPENRAL_TEST_ROS_LIVE-gated
 # file under tests/integration/ appears above — a gated test missing from this

@@ -25,10 +25,14 @@ _INTEGRATION = _REPO_ROOT / "tests" / "integration"
 def _script_targets() -> set[str]:
     """The repo-relative paths inside the TARGETS=( … ) block."""
     body = _SCRIPT.read_text(encoding="utf-8")
-    block = re.search(r"TARGETS=\((.*?)\)", body, flags=re.DOTALL)
+    # Anchor the closing paren to its own line so a parenthesis inside an
+    # array comment can never truncate the parse.
+    block = re.search(r"TARGETS=\((.*?)^\)$", body, flags=re.DOTALL | re.MULTILINE)
     assert block is not None, f"no TARGETS=() block in {_SCRIPT}"
     return {
-        line.strip() for line in block.group(1).splitlines() if line.strip().startswith("tests/")
+        stripped
+        for line in block.group(1).splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
     }
 
 
