@@ -193,3 +193,43 @@ def test_done_carries_rss_and_major_fault_delta(cap: _CaptureProcessor) -> None:
     # taken across a sub-second block; this is what catches a missing
     # baseline subtraction.
     assert payload["major_faults"] < 10_000
+
+
+def test_overlapping_phase_timers_restore_the_original_interval() -> None:
+    """Two overlapping contexts must not leave 50 ms installed forever.
+
+    Regression: the save/restore was non-reentrant on the process-global
+    switch interval — A enters saving 5 ms, B enters saving A's 50 ms, A
+    exits restoring 5 ms, B exits re-installing 50 ms permanently. The
+    depth-counted guard makes the OUTERMOST holder own both transitions,
+    in whichever order the contexts unwind.
+    """
+    import threading
+
+    before = sys.getswitchinterval()
+
+    a_entered = threading.Event()
+    b_entered = threading.Event()
+    a_exited = threading.Event()
+
+    def _a() -> None:
+        with phase_timer("phase_gil_a", prefix="unit"):
+            a_entered.set()
+            assert b_entered.wait(timeout=10.0)
+        a_exited.set()
+
+    def _b() -> None:
+        assert a_entered.wait(timeout=10.0)
+        with phase_timer("phase_gil_b", prefix="unit"):
+            b_entered.set()
+            # B outlives A — the interleaving that used to leak 0.05.
+            assert a_exited.wait(timeout=10.0)
+            assert sys.getswitchinterval() == pytest.approx(0.05)
+
+    threads = [threading.Thread(target=_a), threading.Thread(target=_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+
+    assert sys.getswitchinterval() == pytest.approx(before)

@@ -92,6 +92,42 @@ def _rss_majflt() -> tuple[float, int] | None:
     return rss_pages * _PAGE_SIZE / 1024 / 1024, majflt
 
 
+class _SwitchIntervalGuard:
+    """Depth-counted owner of the process-global GIL switch interval.
+
+    The switch interval is PROCESS-GLOBAL, so its save/restore must have
+    exactly one owner. Two overlapping ``phase_timer`` contexts on different
+    threads would otherwise interleave their restores — A enters saving 5 ms,
+    B enters saving A's 50 ms, A exits restoring 5 ms, B exits re-installing
+    50 ms — leaving the deploy graph's camera pumps and HAL publisher at a
+    50 ms switch interval for the rest of the session. The outermost
+    acquire sets 0.05 and the matching outermost release restores the saved
+    value; nested/concurrent phases ride along. (Deliberate module-level
+    singleton: it guards a resource that is itself a process global.)
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._depth = 0
+        self._prev = 0.005  # overwritten by the outermost holder on acquire
+
+    def acquire(self) -> None:
+        with self._lock:
+            self._depth += 1
+            if self._depth == 1:
+                self._prev = sys.getswitchinterval()
+                sys.setswitchinterval(0.05)
+
+    def release(self) -> None:
+        with self._lock:
+            self._depth -= 1
+            if self._depth == 0:
+                sys.setswitchinterval(self._prev)
+
+
+_switch_interval_guard = _SwitchIntervalGuard()
+
+
 @contextmanager
 def phase_timer(
     name: str,
@@ -194,13 +230,14 @@ def phase_timer(
     # ~20x/s — cameras drop to a reduced rate for a few seconds and the HAL
     # publisher stays far inside the safety kernel's 1 s staleness deadline.
     # Load phases are rare, operator-initiated events; steady-state rates are
-    # untouched. Restored in the same finally that stops the heartbeat.
-    prev_switch_interval = sys.getswitchinterval()
-    sys.setswitchinterval(0.05)
+    # untouched. Restored in the same finally that stops the heartbeat —
+    # depth-counted so overlapping phases (see _SwitchIntervalGuard) restore
+    # exactly once, from the outermost saved value.
+    _switch_interval_guard.acquire()
     try:
         yield
     finally:
-        sys.setswitchinterval(prev_switch_interval)
+        _switch_interval_guard.release()
         stop_event.set()
         thread.join(timeout=interval_s)
         logger.info(
