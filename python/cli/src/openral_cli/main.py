@@ -642,23 +642,6 @@ def _check_just() -> CheckResult:
     return CheckResult("just", "ok" if path else "warn", path or "not found")
 
 
-# Named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts in place of a URL,
-# as ``(url, dialect, auth_required)``. Mirrors ``_ENDPOINT_PRESETS`` in
-# ``openral_reasoner.tool_use``, but kept local so `openral doctor` never
-# imports the optionally-installed reasoner package. ``anthropic`` shows the
-# SDK's own default host, which the factory spells as ``url=None``.
-_REASONER_ENDPOINT_PRESETS: dict[str, tuple[str, str, bool]] = {
-    "anthropic": ("https://api.anthropic.com", "anthropic", True),
-    "openrouter": ("https://openrouter.ai/api/v1", "openai", True),
-    "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "openai", True),
-    "xai": ("https://api.x.ai/v1", "openai", True),
-    "deepseek": ("https://api.deepseek.com", "openai", True),
-    "huggingface": ("https://router.huggingface.co/v1", "openai", True),
-    "ollama": ("http://localhost:11434/v1", "openai", False),
-    "vllm": ("http://localhost:8000/v1", "openai", False),
-}
-
-
 def _cosmos_autostart_enabled() -> bool:
     """Mirror the reasoner client's OPENRAL_COSMOS3_AUTOSTART parsing.
 
@@ -746,7 +729,12 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     Resolve the registry entry and check each real precondition (curated? auth?
     endpoint reachable / managed?).
     """
-    from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
+    # Local imports: keep the doctor import graph flat. The preset table is
+    # the SAME object the factory uses (openral_core, no reasoner-package
+    # import needed) — a hand-mirrored copy here drifted twice (2fe732a,
+    # 131a489: doctor rejected valid named endpoints, then passed a dialect
+    # clash the factory refuses).
+    from openral_core import REASONER_ENDPOINT_PRESETS, REASONER_MODELS
 
     curated = sorted(REASONER_MODELS)
     entry = REASONER_MODELS.get(model_key)
@@ -757,14 +745,14 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     # A named endpoint carries its own URL, dialect and auth posture, so it has
     # to resolve here exactly as it does in the factory — otherwise doctor
     # reports `ENDPOINT=ollama` as invalid config that runs fine.
-    preset = _REASONER_ENDPOINT_PRESETS.get(endpoint_override.lower())
+    preset = REASONER_ENDPOINT_PRESETS.get(endpoint_override.lower())
     if preset is not None:
-        endpoint_override = preset[0]
+        endpoint_override = preset.url
 
     if entry is None:
         dialect = os.environ.get("OPENRAL_REASONER_DIALECT", "").strip().lower()
         if preset is not None:
-            dialect = dialect or preset[1]
+            dialect = dialect or preset.dialect
         if not endpoint_override or dialect not in {"anthropic", "openai"}:
             return [
                 CheckResult(
@@ -772,7 +760,7 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                     "fail",
                     f"OPENRAL_REASONER_MODEL={model_key!r} is not a curated model "
                     f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT to a named "
-                    f"endpoint ({', '.join(sorted(_REASONER_ENDPOINT_PRESETS))}) or to a "
+                    f"endpoint ({', '.join(sorted(REASONER_ENDPOINT_PRESETS))}) or to a "
                     "URL plus OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
                     "uncurated endpoint.",
                 )
@@ -786,7 +774,7 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                 "robotics tool calling.",
             )
         ]
-        if preset is not None and preset[2] and not api_key:
+        if preset is not None and preset.auth_required and not api_key:
             hatch_rows.append(
                 CheckResult(
                     "Reasoner API_KEY",
@@ -803,7 +791,7 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
             )
         return hatch_rows
 
-    if preset is not None and preset[1] != entry.dialect:
+    if preset is not None and preset.dialect != entry.dialect:
         # The factory refuses this outright — a named endpoint cannot re-dialect
         # a curated model. Reporting `ok` here would tell the operator their
         # config is fine right up until the reasoner refuses to configure.
@@ -811,7 +799,7 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
             CheckResult(
                 "Reasoner LLM",
                 "fail",
-                f"OPENRAL_REASONER_ENDPOINT speaks the {preset[1]!r} dialect but model "
+                f"OPENRAL_REASONER_ENDPOINT speaks the {preset.dialect!r} dialect but model "
                 f"{model_key!r} speaks {entry.dialect!r}; a named endpoint cannot "
                 "re-dialect a curated model. Use a URL for a proxy that translates.",
             )
@@ -821,7 +809,7 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     # A named endpoint states its own auth posture; a bare URL means the operator
     # owns the endpoint (local vLLM, proxy-owned auth), so auth is not forced there.
     auth_required = (
-        preset[2]
+        preset.auth_required
         if preset is not None
         else bool(entry.auth_required) and not (endpoint_override and entry.dialect == "openai")
     )

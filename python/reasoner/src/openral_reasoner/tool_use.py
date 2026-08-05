@@ -33,12 +33,22 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 from openral_core import (
+    ANTHROPIC_BASE_URL,
+    DEEPSEEK_BASE_URL,
+    GEMINI_BASE_URL,
+    HUGGINGFACE_BASE_URL,
+    OLLAMA_BASE_URL,
+    OPENROUTER_BASE_URL,
+    REASONER_ENDPOINT_PRESETS,
     REASONER_MANAGED_ENDPOINT,
     REASONER_MODELS,
+    VLLM_BASE_URL,
+    XAI_BASE_URL,
+    ReasonerEndpointPreset,
     ReasonerModel,
     ReasonerToolCall,
     RobotCapabilities,
@@ -58,6 +68,7 @@ __all__ = [
     "DEEPSEEK_BASE_URL",
     "DEFAULT_SYSTEM_PROMPT",
     "GEMINI_BASE_URL",
+    "HUGGINGFACE_BASE_URL",
     "OLLAMA_BASE_URL",
     "OPENROUTER_BASE_URL",
     "SYSTEM_PROMPT_ENV_VAR",
@@ -542,30 +553,11 @@ class ToolUseClient(Protocol):
         """
 
 
-# Base URLs for the named endpoints ``OPENRAL_REASONER_ENDPOINT`` accepts.
-# Exported so a deployment can reference the same constant the factory does
-# instead of retyping a URL; the properties each one implies (dialect, auth,
-# cold-start timeout, tool_choice) live in :data:`_ENDPOINT_PRESETS` below.
-OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-
-# Anthropic's own API host — the value the SDK defaults to when no base_url is
-# passed. Spelled out so the ``anthropic`` endpoint preset can carry a real URL
-# instead of ``None`` (see :class:`_EndpointPreset.url`).
-ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
-
-# Ollama and vLLM are loopback daemons that enforce no auth unless fronted by a
-# gateway (or started with ``vllm serve --api-key``); ``vllm serve`` listens on
-# :8000, Ollama on :11434.
-OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
-VLLM_BASE_URL: str = "http://localhost:8000/v1"
-# Google / xAI / DeepSeek's own OpenAI-compatible endpoints. Gemini's
-# OpenAI-compat shim lives under a ``/v1beta/openai/`` path.
-GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-XAI_BASE_URL: str = "https://api.x.ai/v1"
-DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
-# Hugging Face's OpenAI-compatible inference router (serverless / provider-routed
-# models, e.g. ``Qwen/Qwen3-8B``). Auth via an HF access token.
-HUGGINGFACE_BASE_URL: str = "https://router.huggingface.co/v1"
+# Base URLs + named-endpoint presets live in ``openral_core`` next to
+# ``REASONER_MODELS`` (imported at the top of this module and re-exported via
+# ``__all__`` for back-compat — this module was their public home), so the
+# factory and ``openral doctor`` consume the SAME table. Doctor used to
+# hand-mirror it and the mirror drifted twice (commits 2fe732a, 131a489).
 
 
 # ── Model-first env contract (ADR-0088) ───────────────────────────────────────
@@ -602,50 +594,11 @@ def _openai_choices(response: object) -> list[Any]:
     )
 
 
-class _EndpointPreset(NamedTuple):
-    """Everything a named endpoint implies beyond its URL.
-
-    ``dialect`` makes :data:`REASONER_DIALECT_ENV` unnecessary for a named
-    endpoint — a preset knows its own wire format, and the escape hatch only
-    has to ask when the operator supplies a bare URL nobody can classify.
-    """
-
-    #: Always a real URL, never ``None``. The ``anthropic`` preset used to carry
-    #: ``None`` for "let the SDK pick its default host", which collided with the
-    #: ``endpoint is None`` sentinel meaning "no endpoint configured" and made
-    #: that preset unreachable: it raised an error telling the operator to set
-    #: the variable they had just set. Spelling the default host out keeps one
-    #: meaning per value.
-    url: str
-    dialect: str
-    auth_required: bool
-    #: Cold-start allowance. A self-hosted daemon (Ollama/vLLM) or the HF
-    #: serverless router can spend ~a minute materialising the model on the
-    #: first call; a warm cloud endpoint should stay on the tight default.
-    timeout_s: float
-    tool_choice: str
-
-
-# ``OPENRAL_REASONER_ENDPOINT`` accepts one of these NAMES as well as a URL.
-#
-# These carry everything the retired ``OPENRAL_REASONER_LLM_PROVIDER`` enum used
-# to know — each vendor's base URL, dialect, auth posture, cold-start timeout and
-# ``tool_choice`` quirk — so every provider that contract could reach is
-# expressible model-first, without making the operator retype a URL and
-# hand-declare a dialect for endpoints the codebase already has constants for.
-_ENDPOINT_PRESETS: dict[str, _EndpointPreset] = {
-    "anthropic": _EndpointPreset(ANTHROPIC_BASE_URL, "anthropic", True, 10.0, "required"),
-    "openrouter": _EndpointPreset(OPENROUTER_BASE_URL, "openai", True, 10.0, "required"),
-    "gemini": _EndpointPreset(GEMINI_BASE_URL, "openai", True, 10.0, "required"),
-    "xai": _EndpointPreset(XAI_BASE_URL, "openai", True, 10.0, "required"),
-    "deepseek": _EndpointPreset(DEEPSEEK_BASE_URL, "openai", True, 10.0, "required"),
-    # The HF router 400s on tool_choice="required" (INVALID_TOOL_CHOICE).
-    "huggingface": _EndpointPreset(HUGGINGFACE_BASE_URL, "openai", True, 60.0, "auto"),
-    # Loopback daemons enforce no auth unless fronted by a gateway, so an
-    # API key stays optional rather than required.
-    "ollama": _EndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "required"),
-    "vllm": _EndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
-}
+# Back-compat aliases: the class and table moved to openral_core (single
+# source shared with `openral doctor`); every internal reference below keeps
+# its historical name.
+_EndpointPreset = ReasonerEndpointPreset
+_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = REASONER_ENDPOINT_PRESETS
 
 
 def build_tool_use_client_from_env() -> ToolUseClient:

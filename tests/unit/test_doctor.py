@@ -699,3 +699,22 @@ def test_doctor_exits_0_on_tier0_host() -> None:
     with patch("openral_cli.main._gather_checks", return_value=tier0):
         result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
+
+
+def test_doctor_and_factory_share_one_preset_table() -> None:
+    """Doctor must consume the factory's endpoint presets, not a mirror.
+
+    A hand-mirrored copy in openral_cli.main drifted twice (2fe732a: doctor
+    rejected valid named endpoints; 131a489: doctor passed a dialect clash
+    the factory refuses). The table now lives in openral_core and both sides
+    import THE SAME object, so a third drift is impossible by construction.
+    """
+    from openral_core import REASONER_ENDPOINT_PRESETS
+    from openral_reasoner.tool_use import _ENDPOINT_PRESETS
+
+    assert _ENDPOINT_PRESETS is REASONER_ENDPOINT_PRESETS
+    import openral_cli.main as doctor_module
+
+    assert not hasattr(doctor_module, "_REASONER_ENDPOINT_PRESETS"), (
+        "openral_cli.main regrew a local mirror of the endpoint presets"
+    )
