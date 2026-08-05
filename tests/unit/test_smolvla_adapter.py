@@ -62,34 +62,38 @@ class _FakeConfig:
 class _NullPolicy:
     """Minimal lerobot policy stub for unit tests.
 
-    ``select_action`` returns a (1, n_dof) zero tensor and increments an
-    internal call counter.  A ``chunk_size``-step internal queue is simulated
-    so :class:`ChunkedExecutor` behaves correctly.
+    ``predict_action_chunk`` returns a (1, chunk_size, n_dof) tensor whose
+    chunk axis is stamped with a monotonically increasing chunk id, so tests
+    can assert WHICH inference produced each action the executor hands out.
+    ``select_action`` (the legacy single-step interface) is instrumented too,
+    so tests can assert the executor never falls back to it.
     """
 
     def __init__(self, chunk_size: int = 10, n_dof: int = 6) -> None:
         self.config = _FakeConfig(chunk_size=chunk_size, n_dof=n_dof)
-        self._call_count = 0
-        self._queue: int = 0  # remaining steps in the current chunk
+        self._call_count = 0  # predict_action_chunk invocations
+        self._select_action_calls = 0
+        self._reset_calls = 0
 
     def reset(self) -> None:
-        """Reset internal queue (simulates policy.reset())."""
-        self._queue = 0
+        """Count resets (the executor must never call this from prefetch)."""
+        self._reset_calls += 1
 
-    def select_action(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Return a zero action tensor; simulate internal queue depletion.
+    def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Return a (1, chunk_size, n_dof) tensor filled with the chunk id.
 
         Args:
             batch: Ignored (no real inference performed).
-
-        Returns:
-            (1, n_dof) float32 zero tensor.
         """
         self._call_count += 1
-        if self._queue == 0:
-            self._queue = self.config.n_action_steps
-        self._queue -= 1
-        return torch.zeros(1, self.config.n_dof)  # shape: (1, n_dof)
+        return torch.full(
+            (1, self.config.n_action_steps, self.config.n_dof), float(self._call_count)
+        )
+
+    def select_action(self, batch: dict[str, Any]) -> torch.Tensor:
+        """Legacy single-step interface — the executor must not use it."""
+        self._select_action_calls += 1
+        return torch.zeros(1, self.config.n_dof)
 
 
 def _make_world_state(n_joints: int = 6) -> WorldState:
@@ -155,7 +159,7 @@ def _make_patched_adapter(
 
 class TestChunkedExecutor:
     def test_first_call_hits_policy(self) -> None:
-        """The very first select_action call must invoke the policy (no cache)."""
+        """The very first select_action call must run a chunk inference."""
         p = _NullPolicy(chunk_size=5)
         ex = ChunkedExecutor(p, prefetch_at=2)
         ex.start()
@@ -163,33 +167,78 @@ class TestChunkedExecutor:
         ex.select_action(batch)
         assert p._call_count == 1
 
-    def test_subsequent_calls_hit_policy_queue(self) -> None:
-        """Calls 2..chunk_size must drain the internal queue (call_count stays at 1).
+    def test_subsequent_calls_pop_executor_buffer(self) -> None:
+        """Calls 2..chunk_size pop the executor buffer — no policy calls at all.
 
-        We use prefetch_at=chunk_size+1 so the background pre-fetch never fires
-        within the tested range, giving us a clean call-count check.
+        prefetch_at=0 keeps the background pre-fetch out of the tested window.
         """
         chunk_size = 8
         p = _NullPolicy(chunk_size=chunk_size)
-        # prefetch_at > chunk_size disables prefetching in this window.
-        ex = ChunkedExecutor(p, prefetch_at=chunk_size + 1)
+        ex = ChunkedExecutor(p, prefetch_at=0)
         ex.start()
         batch: dict[str, Any] = {}
-        for _ in range(chunk_size - 1):  # steps 1..7, no prefetch triggered
+        for _ in range(chunk_size):
             ex.select_action(batch)
-        # Each step calls select_action exactly once — no extra background calls.
-        assert p._call_count == chunk_size - 1
+        assert p._call_count == 1  # exactly one chunk inference for the whole chunk
+        assert p._select_action_calls == 0  # legacy per-step interface unused
+
+    def test_lazy_batch_only_materialised_on_inference(self) -> None:
+        """A callable batch must be invoked only when an inference launches."""
+        chunk_size = 6
+        p = _NullPolicy(chunk_size=chunk_size)
+        ex = ChunkedExecutor(p, prefetch_at=0)
+        ex.start()
+        calls = 0
+
+        def batch_fn() -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            return {}
+
+        for _ in range(chunk_size):
+            ex.select_action(batch_fn)
+        assert calls == 1  # cold start only — pops never build a batch
+
+    def test_prefetch_never_resets_policy_or_reinfers_foreground(self) -> None:
+        """Regression: the pre-fetch must not clear live policy state.
+
+        The old implementation called ``policy.reset()`` from the background
+        thread, emptying the live action queue — the foreground then ran a
+        SECOND full inference racing the pre-fetch. With the executor-owned
+        buffer: exactly one inference per chunk, zero policy resets, and the
+        actions handed out during chunk N all carry chunk N's stamp.
+        """
+        chunk_size = 6
+        prefetch_at = 2
+        p = _NullPolicy(chunk_size=chunk_size)
+        ex = ChunkedExecutor(p, prefetch_at=prefetch_at)
+        ex.start()
+        batch: dict[str, Any] = {}
+
+        first_chunk = [ex.select_action(batch) for _ in range(chunk_size)]
+        # Every action of chunk 1 must come from inference #1 — the old bug
+        # served the tail of the chunk from a racing second inference.
+        assert all(float(a[0, 0]) == 1.0 for a in first_chunk)
+
+        # Crossing into chunk 2 consumes the pre-fetched result: total
+        # inferences == 2 (one per chunk), and the policy was never reset.
+        nxt = ex.select_action(batch)
+        assert float(nxt[0, 0]) == 2.0
+        assert p._call_count == 2
+        assert p._reset_calls == 0
+        ex.stop()
 
     def test_reset_clears_state(self) -> None:
-        """reset() must set step_in_chunk back to 0 and call policy.reset()."""
+        """reset() must clear the buffer and reset the policy."""
         p = _NullPolicy(chunk_size=5)
-        ex = ChunkedExecutor(p, prefetch_at=1)
+        ex = ChunkedExecutor(p, prefetch_at=0)
         ex.start()
         ex.select_action({})
         ex.select_action({})
-        assert ex._step_in_chunk == 2
+        assert len(ex._buffer) == 3
         ex.reset()
-        assert ex._step_in_chunk == 0
+        assert len(ex._buffer) == 0
+        assert p._reset_calls == 1
 
     def test_stop_is_idempotent(self) -> None:
         """stop() must be callable multiple times without error."""
@@ -200,27 +249,28 @@ class TestChunkedExecutor:
         ex.stop()  # second stop must not raise
 
     def test_background_error_propagates_as_ros_runtime_error(self) -> None:
-        """If the pre-fetch thread raises, the next foreground call must re-raise."""
+        """If the pre-fetch thread raises, the next blocking call must re-raise."""
         chunk_size = 4
         p = _NullPolicy(chunk_size=chunk_size)
         ex = ChunkedExecutor(p, prefetch_at=2)
         ex.start()
         batch: dict[str, Any] = {}
 
-        # Drain through step chunk_size - prefetch_at to trigger the BG thread.
-        for _ in range(chunk_size - 2):
+        # Drain the whole chunk so the next call must consume the BG result.
+        for _ in range(chunk_size):
             ex.select_action(batch)
 
         # Inject a pre-baked error into the executor state (simulates BG failure).
         ex._bg_event.set()
         ex._bg_error = ValueError("simulated GPU OOM")
-        ex._step_in_chunk = chunk_size  # exhaust the chunk so next call reads BG result
+        ex._bg_pending = True
+        ex._buffer.clear()
 
         with pytest.raises(ROSRuntimeError, match="simulated GPU OOM"):
             ex.select_action(batch)
 
     def test_prefetch_triggers_background_thread(self) -> None:
-        """A background thread must be launched when remaining steps == prefetch_at."""
+        """A background thread must launch when the buffer falls to prefetch_at."""
         chunk_size = 6
         prefetch_at = 2
         p = _NullPolicy(chunk_size=chunk_size)
@@ -228,9 +278,8 @@ class TestChunkedExecutor:
         ex.start()
         batch: dict[str, Any] = {}
 
-        # Advance to the trigger point (chunk_size - prefetch_at steps drained).
-        trigger_step = chunk_size - prefetch_at
-        for _ in range(trigger_step):
+        # Pop until the buffer depth reaches prefetch_at.
+        for _ in range(chunk_size - prefetch_at):
             ex.select_action(batch)
 
         # Allow the daemon thread to start.

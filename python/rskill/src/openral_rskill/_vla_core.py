@@ -492,6 +492,7 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
+    method: str = "select_action",
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
 
@@ -514,9 +515,14 @@ def run_inference(
             ``"onnx"`` / ``"jit"`` / …). Defaults to ``"torch"`` since
             every shipped adapter dispatches through PyTorch today; TRT
             and ONNX adapters pass their own value.
+        method: Policy method to invoke. ``"select_action"`` (default) pops
+            one action via the policy's internal queue;
+            ``"predict_action_chunk"`` computes a full chunk tensor without
+            touching the queue — used by :class:`ChunkedExecutor`, whose
+            background pre-fetch must not mutate live policy state.
 
     Returns:
-        The raw action tensor returned by ``policy.select_action``.
+        The raw tensor returned by the invoked policy method.
     """
     import torch
 
@@ -534,10 +540,41 @@ def run_inference(
     ):
         started_ns = perf_counter_ns()
         try:
-            return policy.select_action(batch)
+            return getattr(policy, method)(batch)
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
+
+
+def queued_action_count(policy: Any) -> int:
+    """Number of already-computed actions in a lerobot policy's internal queue.
+
+    Lerobot chunked policies (SmolVLA, π0.x, ACT with ``n_action_steps>1``, …)
+    keep a ``_queues["action"]`` deque and ``select_action`` pops from it,
+    ignoring the observation batch entirely, until the queue drains. Adapters
+    use this to skip observation preprocessing (image tensorisation, H2D
+    copies, tokenisation) on pop ticks — measured at ~11 ms of GIL-held CPU
+    fan-out per tick on the SO-101 deploy, thrown away 49 of 50 ticks.
+
+    This is the single place that touches the private queue layout, so a
+    lerobot upgrade that renames it breaks one helper, not every adapter.
+    Returns 0 for policies without the queue convention (they pay the full
+    preprocessing path, which is the status quo).
+
+    Args:
+        policy: A lerobot-style policy instance.
+
+    Returns:
+        Queue depth, or 0 when the policy has no recognisable action queue.
+    """
+    queues = getattr(policy, "_queues", None)
+    if not isinstance(queues, dict):
+        return 0
+    queue = queues.get("action")
+    try:
+        return len(queue) if queue is not None else 0
+    except TypeError:
+        return 0
 
 
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:
