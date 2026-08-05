@@ -86,7 +86,7 @@ import logging
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -780,6 +780,12 @@ if _ROS2_AVAILABLE:
                 self._clock_pub.publish(msg)
 
             def _loop() -> None:
+                # Deadline-paced (same shape as openral_sensors.ros_publisher):
+                # `stop.wait(period)` AFTER the publishes made the real cadence
+                # work + period, so the 30 Hz proprio lane — and /clock in sim
+                # mode, i.e. the whole use_sim_time graph — ran slow by the
+                # publish cost.
+                next_deadline = monotonic() + period
                 while not stop.is_set():
                     try:
                         _publish_clock()
@@ -789,7 +795,14 @@ if _ROS2_AVAILABLE:
                             mobile.publish_from_snapshot()
                     except Exception as exc:  # reason: a publish hiccup must not kill the thread
                         self.get_logger().warn(f"proprio publisher thread: {exc}")
-                    stop.wait(period)
+                    remaining = next_deadline - monotonic()
+                    if remaining > 0 and stop.wait(timeout=remaining):
+                        return
+                    next_deadline += period
+                    # Way behind (a publish blocked for periods) — re-anchor
+                    # instead of firing a catch-up burst.
+                    if monotonic() > next_deadline + period:
+                        next_deadline = monotonic() + period
 
             self._pub_thread = threading.Thread(
                 target=_loop, name="openral_hal_proprio_pub", daemon=True

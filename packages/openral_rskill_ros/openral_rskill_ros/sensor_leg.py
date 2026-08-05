@@ -209,25 +209,40 @@ class _AggregatorPump:
             self._thread = None
 
     def _run(self) -> None:
-        """Poll ``read_latest`` at the configured rate; write new frames only."""
-        while not self._stop_event.wait(self._period_s):
+        """Poll ``read_latest`` at the configured rate; write new frames only.
+
+        Deadline-paced (same shape as ``openral_sensors.ros_publisher``):
+        the old ``stop_event.wait(period)``-then-work loop ran at
+        work + period, so the thumbnail-encode cost pushed the effective
+        pump rate below the camera rate and every read sampled a slightly
+        staler frame.
+        """
+        next_deadline = time.monotonic() + self._period_s
+        while not self._stop_event.is_set():
             try:
                 frame = self._reader.read_latest(max_age_ms=None)
             except Exception:  # reason: no frame yet / transient staleness — keep polling
-                continue
-            if frame.stamp_monotonic_ns == self._last_stamp_ns:
-                continue
-            self._last_stamp_ns = frame.stamp_monotonic_ns
-            self._aggregator.update_image_frame(self._sensor_name, frame)
-            # The policy already has the frame; everything below is display.
-            # A broken thumbnail must never stop the aggregator being fed, so
-            # this is best-effort — but it is logged, never swallowed silently.
-            try:
-                _emit_frame_observability(self._sensor_name, frame, self._flip_180)
-            except Exception:
-                log.warning(
-                    "sensor_leg.thumbnail_failed", sensor_id=self._sensor_name, exc_info=True
-                )
+                frame = None
+            if frame is not None and frame.stamp_monotonic_ns != self._last_stamp_ns:
+                self._last_stamp_ns = frame.stamp_monotonic_ns
+                self._aggregator.update_image_frame(self._sensor_name, frame)
+                # The policy already has the frame; everything below is display.
+                # A broken thumbnail must never stop the aggregator being fed,
+                # so this is best-effort — logged, never swallowed silently.
+                try:
+                    _emit_frame_observability(self._sensor_name, frame, self._flip_180)
+                except Exception:
+                    log.warning(
+                        "sensor_leg.thumbnail_failed", sensor_id=self._sensor_name, exc_info=True
+                    )
+            remaining = next_deadline - time.monotonic()
+            if remaining > 0 and self._stop_event.wait(timeout=remaining):
+                return
+            next_deadline += self._period_s
+            # Way behind (reader/thumbnail blocked for periods) — re-anchor
+            # instead of firing a catch-up burst.
+            if time.monotonic() > next_deadline + self._period_s:
+                next_deadline = time.monotonic() + self._period_s
 
 
 @dataclass
