@@ -144,40 +144,21 @@ def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> N
     resize/encode: measured 2.42 ms/frame at 320x240 q60, and 60 thumbnails/s
     costs **4.5 %** of a competing thread's GIL time — against the **89.5 %**
     that the uncapped full-resolution image topic held. Display-only; this
-    never touches the frame the policy reads.
+    never touches the frame the policy reads. The flip/span/thumbnail
+    pipeline itself is the shared
+    :func:`openral_observability.producer.emit_sensor_frame_span`, so
+    pump-fed and tee-fed (``_on_image``) cameras can never render
+    differently.
     """
     from openral_observability import producer as ral_producer
-    from openral_observability import semconv
-    from opentelemetry import trace
 
-    display_frame = frame
-    if flip_180 and frame.data and frame.channels == _RGB_CHANNELS:
-        import numpy as np  # reason: lazy — only on the camera display path
-
-        expected = frame.width * frame.height * _RGB_CHANNELS
-        if len(frame.data) == expected:
-            flipped = (
-                np.frombuffer(frame.data, dtype=np.uint8)
-                .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
-                .tobytes()
-            )
-            display_frame = frame.model_copy(update={"data": flipped})
-
-    tracer = trace.get_tracer("openral_rskill_ros.sensor_leg")
-    with tracer.start_as_current_span(
-        semconv.SPAN_SENSORS_READ_LATEST,
-        attributes={semconv.SENSORS_SOURCE: sensor_name},
-    ) as span:
-        ral_producer.record_sensor_frame_attrs(
-            span,
-            modality=ral_producer.modality_for_encoding(frame.encoding),
-            encoding=frame.encoding.value,
-            width=frame.width,
-            height=frame.height,
-            channels=frame.channels,
-            age_ms=max(0.0, (time.monotonic_ns() - frame.stamp_monotonic_ns) / 1e6),
-            thumbnail_bytes=ral_producer.encode_frame_thumbnail(display_frame),
-        )
+    ral_producer.emit_sensor_frame_span(
+        frame,
+        sensor_name=sensor_name,
+        age_ms=max(0.0, (time.monotonic_ns() - frame.stamp_monotonic_ns) / 1e6),
+        flip_180=flip_180,
+        tracer_name="openral_rskill_ros.sensor_leg",
+    )
 
 
 class _AggregatorPump:

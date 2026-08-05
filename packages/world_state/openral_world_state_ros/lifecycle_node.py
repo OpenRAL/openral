@@ -50,8 +50,6 @@ from __future__ import annotations
 
 import logging
 
-from opentelemetry import trace
-
 log = logging.getLogger(__name__)
 
 try:
@@ -584,7 +582,6 @@ if _ROS2_AVAILABLE:
             """
             from openral_core.schemas import FrameEncoding, SensorFrame
             from openral_observability import producer as ral_producer
-            from openral_observability import semconv
 
             if self._aggregator is None:
                 return
@@ -622,27 +619,6 @@ if _ROS2_AVAILABLE:
                 return
 
             data = bytes(getattr(msg, "data", b"") or b"")
-            # OPENRAL_DASHBOARD_FLIP_180: LIBERO/robosuite renders bottom-up, so the
-            # dashboard shows the scene upside-down. Flip ONLY the dashboard thumbnail
-            # (``display_data`` below) — ``SensorFrame.data`` fed to the aggregator (and
-            # from there to the rSkill runner's policy observation via
-            # ``_decode_image_frames``) MUST stay in the raw publisher orientation. The
-            # VLA adapter applies its own ``image_preprocessing.flip_180``; flipping the
-            # policy frame here too double-flips it, so the policy sees an upside-down
-            # scene and the rollout collapses. Display-only; never touches actuation.
-            display_data = data
-            if (
-                self._dashboard_flip_180
-                and encoding in (FrameEncoding.RGB8, FrameEncoding.BGR8)
-                and len(data) == width * height * 3
-            ):
-                import numpy as np  # reason: lazy — only on the camera path
-
-                display_data = (
-                    np.frombuffer(data, dtype=np.uint8)
-                    .reshape(height, width, 3)[::-1, ::-1]
-                    .tobytes()
-                )
             # ROS clock, NOT time.time_ns(): under deploy-sim every node runs on
             # use_sim_time and the camera's header.stamp is sim time, so a wall
             # `now` minus a sim stamp yields a nonsensical age (~1e8-1e12 ms on the
@@ -671,33 +647,22 @@ if _ROS2_AVAILABLE:
                 data=data,
             )
             age_ms = max(0.0, (now_ns - stamp_wall_ns) / 1e6)
-            tracer = trace.get_tracer("openral_world_state_ros")
-            with tracer.start_as_current_span(
-                semconv.SPAN_SENSORS_READ_LATEST,
-                attributes={
-                    semconv.SENSORS_SOURCE: sensor_name,
-                },
-            ) as sensor_span:
-                modality = ral_producer.modality_for_encoding(encoding)
-                # Thumbnail is display-only — encode it from the (possibly flipped)
-                # display copy; the raw ``frame`` is what reaches the policy.
-                thumb_frame = (
-                    frame
-                    if display_data is data
-                    else frame.model_copy(update={"data": display_data})
-                )
-                thumb = ral_producer.encode_frame_thumbnail(thumb_frame)
-                ral_producer.record_sensor_frame_attrs(
-                    sensor_span,
-                    modality=modality,
-                    encoding=encoding.value,
-                    width=width,
-                    height=height,
-                    channels=frame.channels,
-                    age_ms=age_ms,
-                    thumbnail_bytes=thumb,
-                )
-                self._aggregator.update_image_frame(sensor_name, frame)
+            # Dashboard span + thumbnail via the SHARED producer helper —
+            # `OPENRAL_DASHBOARD_FLIP_180` rotates only the display copy
+            # inside it (LIBERO/robosuite render bottom-up); the raw `frame`
+            # fed to the aggregator (and from there to the policy via
+            # `_decode_image_frames`) MUST keep the publisher orientation,
+            # because the VLA adapter applies its own
+            # `image_preprocessing.flip_180` and flipping here too would
+            # double-flip the policy input. Display-only; never actuation.
+            ral_producer.emit_sensor_frame_span(
+                frame,
+                sensor_name=sensor_name,
+                age_ms=age_ms,
+                flip_180=self._dashboard_flip_180,
+                tracer_name="openral_world_state_ros",
+            )
+            self._aggregator.update_image_frame(sensor_name, frame)
 
         def _on_joint_state(self, msg: object) -> None:
             """Convert ROS JointState → Pydantic JointState and update aggregator."""
