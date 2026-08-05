@@ -400,3 +400,27 @@ def test_max_tokens_env_caps_completion(monkeypatch: pytest.MonkeyPatch) -> None
     client = build_tool_use_client_from_env()
     assert isinstance(client, OpenAICompatibleToolUseClient)
     assert client._max_tokens == 8000
+
+
+@pytest.mark.parametrize(
+    ("env", "value"),
+    [
+        ("OPENRAL_REASONER_TIMEOUT_S", "10s"),
+        ("OPENRAL_REASONER_MAX_TOKENS", "8k"),
+    ],
+)
+def test_malformed_numeric_env_raises_typed_config_error(
+    monkeypatch: pytest.MonkeyPatch, env: str, value: str
+) -> None:
+    """A typo'd numeric env var is a config error, not a ValueError traceback.
+
+    The factory used to call bare float()/int() on the env value, so
+    OPENRAL_REASONER_TIMEOUT_S=10s crashed reasoner bring-up untyped and the
+    lifecycle/replanning machinery keyed on ROSError never saw it (§5).
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "openai/gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openrouter")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
+    monkeypatch.setenv(env, value)
+    with pytest.raises(ROSConfigError, match=env):
+        build_tool_use_client_from_env()

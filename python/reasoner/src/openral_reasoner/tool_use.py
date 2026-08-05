@@ -704,23 +704,54 @@ def build_tool_use_client_from_env() -> ToolUseClient:
     return _build_curated_model(entry)
 
 
+def _env_float(name: str) -> float | None:
+    """A float env override, or ``None`` when unset/empty.
+
+    Raises:
+        ROSConfigError: When set but not parseable — a typo in an env var is
+            a configuration error, not an untyped ``ValueError`` traceback.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ROSConfigError(f"{name}={raw!r} is not a number.") from exc
+
+
+def _env_int(name: str) -> int | None:
+    """An int env override, or ``None`` when unset/empty.
+
+    Raises:
+        ROSConfigError: When set but not parseable (see :func:`_env_float`).
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ROSConfigError(f"{name}={raw!r} is not an integer.") from exc
+
+
 def _reasoner_timeout_s(hosting: str) -> float:
     """Per-call timeout: env override, else a hosting-aware default.
 
     ``managed_local`` gets 120 s (an on-device model's first inference after
     server boot compiles kernels); cloud/byo get the tight 10 s default.
     """
-    env = os.environ.get(REASONER_TIMEOUT_ENV, "").strip()
-    if env:
-        return float(env)
+    env = _env_float(REASONER_TIMEOUT_ENV)
+    if env is not None:
+        return env
     return 120.0 if hosting == "managed_local" else 10.0
 
 
 def _reasoner_max_tokens(entry: ReasonerModel) -> int | None:
     """Completion cap: env override, else the model's registry default."""
-    env = os.environ.get(REASONER_MAX_TOKENS_ENV, "").strip()
-    if env:
-        return int(env)
+    env = _env_int(REASONER_MAX_TOKENS_ENV)
+    if env is not None:
+        return env
     return entry.max_tokens_default
 
 
@@ -750,10 +781,10 @@ def _build_curated_model(entry: ReasonerModel) -> ToolUseClient:
             f"model. Use a URL for a proxy that translates."
         )
     endpoint_override = preset.url if preset is not None else raw_endpoint
-    env_timeout = os.environ.get(REASONER_TIMEOUT_ENV, "").strip()
+    env_timeout = _env_float(REASONER_TIMEOUT_ENV)
     timeout_s = (
-        float(env_timeout)
-        if env_timeout
+        env_timeout
+        if env_timeout is not None
         else (preset.timeout_s if preset is not None else _reasoner_timeout_s(entry.hosting))
     )
     max_tokens = _reasoner_max_tokens(entry)
@@ -881,14 +912,13 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             f"{REASONER_API_KEY_ENV} is unset; required for "
             f"{REASONER_ENDPOINT_ENV}={raw_endpoint!r}."
         )
-    env_timeout = os.environ.get(REASONER_TIMEOUT_ENV, "").strip()
+    env_timeout = _env_float(REASONER_TIMEOUT_ENV)
     timeout_s = (
-        float(env_timeout)
-        if env_timeout
+        env_timeout
+        if env_timeout is not None
         else (preset.timeout_s if preset is not None else _reasoner_timeout_s("byo_local"))
     )
-    max_tokens_env = os.environ.get(REASONER_MAX_TOKENS_ENV, "").strip()
-    max_tokens = int(max_tokens_env) if max_tokens_env else None
+    max_tokens = _env_int(REASONER_MAX_TOKENS_ENV)
     if dialect == "anthropic":
         if api_key is None:
             raise ROSConfigError(
