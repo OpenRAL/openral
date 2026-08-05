@@ -23,7 +23,7 @@ Architecture
                                     │                                             │
                                     │  ┌──────────────────────────────────────┐  │
                                     │  │  Background thread (daemon)          │  │
-                                    │  │  • _policy.select_action(batch)      │  │
+                                    │  │  • _policy.predict_action_chunk(...) │  │
                                     │  │  • result → _next_chunk (threading.  │  │
                                     │  │             Event + storage)         │  │
                                     │  └──────────────────────────────────────┘  │
