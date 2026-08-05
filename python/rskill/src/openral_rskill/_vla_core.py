@@ -1135,23 +1135,45 @@ def assert_all_parameters_finite(
     partially-loaded policy would silently emit garbage actions; the safety
     kernel would clamp them, but the robot would still move wrongly.
 
+    Freshly-mapped pages are the other uninitialised state: all ZEROS, which
+    are finite and would sail through the isfinite check. A trained weight
+    *matrix* (ndim >= 2) is never exactly all-zero, so those are rejected
+    too; 1-D parameters (biases, norms) are exempt — zero-init biases are
+    legitimate and common.
+
     Args:
         policy: The loaded ``torch.nn.Module``.
         repo_id: Checkpoint id, for the error message.
 
     Raises:
-        ROSConfigError: If any floating-point parameter is non-finite.
+        ROSConfigError: If any floating-point parameter is non-finite, or a
+            floating-point weight matrix is entirely zero.
     """
     import torch  # reason: torch is an opt-in extra
 
-    bad = [
-        name
-        for name, tensor in policy.named_parameters()
-        if tensor.is_floating_point() and not torch.isfinite(tensor).all()
-    ]
+    # 1-D parameters (biases, norms) are legitimately zero-init; only
+    # matrices/convs (>= this many dims) are held to the all-zero check.
+    matrix_min_dims = 2
+    bad: list[str] = []
+    zeroed: list[str] = []
+    for name, tensor in policy.named_parameters():
+        if not tensor.is_floating_point():
+            continue
+        if not torch.isfinite(tensor).all():
+            bad.append(name)
+        elif tensor.dim() >= matrix_min_dims and tensor.numel() > 0 and not tensor.count_nonzero():
+            zeroed.append(name)
     if bad:
         raise ROSConfigError(
             f"{repo_id!r}: {len(bad)} parameter tensor(s) are NaN/Inf after load "
             f"(first: {bad[0]!r}). The checkpoint does not cover the whole graph, "
             "so weight-init suppression left them uninitialised."
+        )
+    if zeroed:
+        raise ROSConfigError(
+            f"{repo_id!r}: {len(zeroed)} weight matrix(es) are entirely zero after "
+            f"load (first: {zeroed[0]!r}). A trained checkpoint never ships an "
+            "all-zero weight matrix — a non-strict load most likely skipped the "
+            "key (renamed after a dependency bump?) and weight-init suppression "
+            "left the tensor on fresh zero pages."
         )

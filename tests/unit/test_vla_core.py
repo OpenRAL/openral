@@ -544,3 +544,28 @@ class TestAssertAllParametersFinite:
             module.bias[1] = float("inf")
         with pytest.raises(ROSConfigError, match="unit/broken"):
             assert_all_parameters_finite(module, repo_id="unit/broken")
+
+    def test_raises_on_all_zero_weight_matrix(self) -> None:
+        """Fresh zero pages are finite — the other uninitialised state.
+
+        A parameter a non-strict load skipped (key renamed after a
+        dependency bump) lands on freshly-mapped all-zero memory under
+        suppressed init; isfinite passes and the policy would silently emit
+        wrong actions. A trained weight MATRIX is never exactly all-zero.
+        """
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.weight.zero_()
+        with pytest.raises(ROSConfigError, match="entirely zero"):
+            assert_all_parameters_finite(module, repo_id="unit/zeroed")
+
+    def test_zero_bias_is_legitimate(self) -> None:
+        """1-D parameters (biases, norms) are commonly zero-init — never flagged."""
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.bias.zero_()
+        assert_all_parameters_finite(module, repo_id="unit/zero-bias")
