@@ -176,6 +176,41 @@ if TYPE_CHECKING:
     from openral_sim.rollout import Observation
 
 
+def maybe_enable_chunk_prefetch(adapter: _SmolVLAAdapter, spec_extra: dict[str, Any]) -> bool:
+    """Attach a started :class:`ChunkedExecutor` when ``chunk_prefetch`` is set.
+
+    Opt-in via ``VLASpec.extra["chunk_prefetch"]`` — the deploy runtime sets
+    it (real-time cadence beats obs freshness at the boundary; this is
+    SmolVLA's async inference mode), while the eval path leaves it unset so
+    benchmark rollouts keep the synchronous, paper-faithful chunk replay.
+    Requires ``n_action_steps > 1`` — a per-step policy (ACT default) has no
+    chunk to overlap.
+
+    Args:
+        adapter: A built :class:`_SmolVLAAdapter` (policy already on-device).
+        spec_extra: The ``VLASpec.extra`` dict.
+
+    Returns:
+        ``True`` when the executor was attached and started.
+    """
+    if not spec_extra.get("chunk_prefetch"):
+        return False
+    n_action_steps = int(getattr(adapter._policy.config, "n_action_steps", 1) or 1)
+    if n_action_steps <= 1:
+        _log.info("smolvla.chunk_prefetch_skipped", reason="n_action_steps<=1")
+        return False
+    from openral_rskill.executor import ChunkedExecutor
+
+    adapter._chunk_executor = ChunkedExecutor(adapter._policy)
+    adapter._chunk_executor.start()
+    _log.info(
+        "smolvla.chunk_prefetch_enabled",
+        n_action_steps=n_action_steps,
+        prefetch_at=adapter._chunk_executor._prefetch_at,
+    )
+    return True
+
+
 @dataclass
 class _SmolVLAAdapter:
     """Lerobot-style policy adapter that returns per-step actions."""
@@ -211,15 +246,35 @@ class _SmolVLAAdapter:
     # observation carrying image_handles; shares the TRT runtime's cached
     # vision engine.
     _nvmm_encoder: Any = None
+    # ChunkedExecutor when the deploy runtime enables ``chunk_prefetch``
+    # (see :func:`maybe_enable_chunk_prefetch`); ``None`` keeps the
+    # synchronous, paper-faithful eval behaviour.
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        if hasattr(self._policy, "reset"):
+        if self._chunk_executor is not None:
+            # Stops the pre-fetch thread, clears the buffer, resets the policy.
+            self._chunk_executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        # Prefetch path (deploy runtime, ``chunk_prefetch`` in VLASpec.extra):
+        # the ChunkedExecutor owns the action buffer and computes chunk N+1 in
+        # a background thread while the last ``prefetch_at`` actions of chunk
+        # N execute — the chunk-boundary inference disappears from the tick
+        # cadence (SmolVLA's async inference mode). Batch build is lazy: it
+        # runs only on the tick that actually launches an inference.
+        if self._chunk_executor is not None:
+            self._update_input_preview(observation)
+            action_tensor = self._chunk_executor.select_action(
+                lambda: self._prepared_batch(observation, instruction)
+            )
+            return to_numpy_action(self._postprocessor(action_tensor))
+
         # Fast pop path: while the policy's internal action queue still holds
         # chunk actions, ``select_action`` ignores the observation entirely —
         # so skip batch build / preprocess / H2D copies (~11 ms of GIL-held
@@ -235,9 +290,16 @@ class _SmolVLAAdapter:
             action_tensor = self._postprocessor(action_tensor)
             return to_numpy_action(action_tensor)
 
+        batch = self._prepared_batch(observation, instruction)
+        action_tensor = run_inference(self._policy, batch)
+        action_tensor = self._postprocessor(action_tensor)
+        return to_numpy_action(action_tensor)
+
+    def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
+        """Build the full on-device, dtype-cast batch for one chunk inference."""
         used_handles = self._maybe_encode_image_handles(observation)
         batch = self._build_batch(observation, instruction, gpu_frames=used_handles)
-        batch = self._preprocessor(batch)
+        batch = cast("dict[str, Any]", self._preprocessor(batch))
         # Belt-and-suspenders device move (preprocessor sometimes returns CPU tensors).
         device_kind = self.device.split(":", 1)[0]
         for k, v in list(batch.items()):
@@ -263,9 +325,7 @@ class _SmolVLAAdapter:
                 tensor = tensor.to(self._image_dtype)
             batch[k] = tensor
 
-        action_tensor = run_inference(self._policy, batch)
-        action_tensor = self._postprocessor(action_tensor)
-        return to_numpy_action(action_tensor)
+        return batch
 
     def close(self) -> None:
         """Tear down the NVMM encoder, drop the modules, then reclaim VRAM.
@@ -274,6 +334,9 @@ class _SmolVLAAdapter:
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()  # join the pre-fetch thread first
+            self._chunk_executor = None
         if self._nvmm_encoder is not None:
             self._nvmm_encoder.close()
             self._nvmm_encoder = None
@@ -681,7 +744,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     ip = resolve_image_preprocessing(manifest, spec.extra)
     state_dim = resolve_state_dim(manifest, spec.extra)
 
-    return _SmolVLAAdapter(
+    adapter = _SmolVLAAdapter(
         spec=spec,
         device=device,
         _policy=policy,
@@ -695,3 +758,5 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,
     )
+    maybe_enable_chunk_prefetch(adapter, spec.extra)
+    return adapter

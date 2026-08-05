@@ -2029,6 +2029,14 @@ def _build_runtime_skill_from_manifest(
         )
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
+    # Deploy-runtime default: overlap chunk N+1 inference with the tail of
+    # chunk N (ChunkedExecutor / SmolVLA async mode) so the chunk-boundary
+    # forward doesn't stall the tick cadence (~250 ms every n_action_steps
+    # ticks on the SO-101 bench = 25 Hz at a configured 30). setdefault so a
+    # manifest's ``policy_extras.chunk_prefetch: false`` pins it off; the eval
+    # path (`openral sim run`) never sets it and stays synchronous /
+    # paper-faithful. Adapters that don't know the flag ignore it.
+    policy_extra.setdefault("chunk_prefetch", True)
     vla = VLASpec(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that
