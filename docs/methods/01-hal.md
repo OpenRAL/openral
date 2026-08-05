@@ -165,19 +165,19 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L260)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L302)
-  - `connect() -> None` — Open USB serial connection. (L344)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L454)
-  - `read_state() -> JointState` — Joint state in radians. (L467)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L495)
-  - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L518)
-  - `estop() -> None` — Disconnect motors then raise. (L587)
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L281)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L323)
+  - `connect() -> None` — Open USB serial connection. (L365)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L475)
+  - `read_state() -> JointState` — Joint state in radians. (L488)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L516)
+  - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L539)
+  - `estop() -> None` — Disconnect motors then raise. (L602)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L252)
-- `_deg_to_rad(deg) -> float` (L247)
-- `_rad_to_deg(rad) -> float` (L252)
-- const `SO100_DESCRIPTION = RobotDescription(...)` (L102)
+  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L253)
+- `_deg_to_rad(deg) -> float` (L248)
+- `_rad_to_deg(rad) -> float` (L273)
+- const `SO100_DESCRIPTION = RobotDescription(...)` (L103)
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's
@@ -466,14 +466,14 @@ _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured 
 ### `python/hal/src/openral_hal/_anvil_openarm_v2_assets.py`
 _Vendor the Anvil OpenARM 2.0 MJCF from `bensonlee5/anvil-openarm-mujoco` — no upstream package ships the Anvil variant._
 
-- `ensure_anvil_openarm_v2_mjcf() -> str` — Idempotently clones `bensonlee5/anvil-openarm-mujoco` at a pinned SHA into `$OPENRAL_CACHE_DIR/anvil_openarm_v2/<sha>/`, initialises its `upstream/openarm_mujoco` mesh submodule (the generated MJCF's meshdir points into it), and returns the bimanual MJCF path.  Raises `ROSConfigError` when `git` is missing or the clone / submodule init fails.  Mirrors `_openarm_v2_assets.ensure_openarm_v2_mjcf` plus the submodule step. (L62)
-- module const `_ANVIL_PINNED_SHA: str` (L42) — bump when the generator or the local Anvil spec changes.
+- `ensure_anvil_openarm_v2_mjcf() -> str` — Idempotently clones `bensonlee5/anvil-openarm-mujoco` at a pinned SHA into `$OPENRAL_CACHE_DIR/anvil_openarm_v2/<sha>/`, initialises its `upstream/openarm_mujoco` mesh submodule (the generated MJCF's meshdir points into it), and returns the bimanual MJCF path.  Raises `ROSConfigError` when `git` is missing or the clone / submodule init fails.  Mirrors `_openarm_v2_assets.ensure_openarm_v2_mjcf` plus the submodule step. (L60)
+- module const `_ANVIL_PINNED_SHA: str` (L40) — bump when the generator or the local Anvil spec changes.
 
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its pin past PR #19._
 
-- `ensure_openarm_v2_mjcf() -> str` — Idempotently clones `enactic/openarm_mujoco` at a pinned v2 SHA into `$OPENRAL_CACHE_DIR/openarm_v2/<sha>/`, returns the bimanual MJCF path. Raises `ROSConfigError` when `git` is missing or the clone fails. Mirrors the pattern used by `python/sim/src/openral_sim/backends/so100_robosuite/_assets.py`. (L66)
-- module const `_OPENARM_V2_PINNED_SHA: str` (L49) — bump to track upstream v2 updates.
+- `ensure_openarm_v2_mjcf() -> str` — Idempotently clones `enactic/openarm_mujoco` at a pinned v2 SHA into `$OPENRAL_CACHE_DIR/openarm_v2/<sha>/`, returns the bimanual MJCF path. Raises `ROSConfigError` when `git` is missing or the clone fails. Mirrors the pattern used by `python/sim/src/openral_sim/backends/so100_robosuite/_assets.py`. (L64)
+- module const `_OPENARM_V2_PINNED_SHA: str` (L47) — bump to track upstream v2 updates.
 
 ### `python/hal/src/openral_hal/g1.py`
 _MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie path provides joint-contract validation + ADR-0087 kinematic glide; explicit `walking_enabled=True` selects ADR-0089's pinned MuJoCo Playground ONNX policy and matching gravity-on dynamics._
