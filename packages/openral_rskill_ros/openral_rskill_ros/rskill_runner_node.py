@@ -58,23 +58,16 @@ log = structlog.get_logger(__name__)
 def _cuda_allocated_mb() -> float | None:
     """Currently-allocated CUDA memory in MiB, or ``None`` off-GPU.
 
-    Deliberately reads ``torch.cuda.memory_allocated`` (live tensors) rather
-    than ``memory_reserved`` (the caching allocator's pool): the question an
-    eviction has to answer is "did the weights actually go away", and reserved
-    bytes stay put by design after a free.
-
-    Never raises and never imports torch just to answer — a host without it
-    simply gets ``None``.
+    Thin wrapper over the shared ``openral_rskill._diagnostics._gpu_mb``
+    probe (memory_allocated, never memory_reserved — "did the weights
+    actually go away"), in ``no_import`` mode: this path must never import
+    torch just to answer, and a host without it simply gets ``None``. One
+    probe means eviction logs and phase-timer heartbeats can never disagree
+    about how much VRAM a swap freed.
     """
-    torch = sys.modules.get("torch")
-    if torch is None:
-        return None
-    try:
-        if not torch.cuda.is_available():
-            return None
-        return float(torch.cuda.memory_allocated()) / (1024 * 1024)
-    except Exception:  # reason: a telemetry probe must never break eviction
-        return None
+    from openral_rskill._diagnostics import _gpu_mb
+
+    return _gpu_mb(no_import=True)
 
 
 # Type for the injected skill resolver. Takes the goal's rskill_id /

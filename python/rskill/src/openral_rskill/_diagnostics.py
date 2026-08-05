@@ -52,21 +52,38 @@ __all__ = ["phase_timer"]
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 
-def _gpu_mb() -> float | None:
+def _gpu_mb(*, no_import: bool = False) -> float | None:
     """Return current CUDA allocator usage in MB, or ``None`` if unavailable.
 
-    Cheap: a single ``torch.cuda.memory_allocated()`` call. Imports
-    torch lazily so a CPU-only host that wraps a phase with
-    ``gpu_mb=True`` still works (returns ``None``).
+    Cheap: a single ``torch.cuda.memory_allocated()`` call — deliberately
+    ``memory_allocated`` (live tensors), not ``memory_reserved`` (the caching
+    allocator's pool): the question both callers ask is "did the weights
+    actually go away", and reserved bytes stay put by design after a free.
+    THE single GPU-memory probe — eviction accounting in
+    ``rskill_runner_node`` and the phase-timer heartbeats read this same
+    number, so their logs can never disagree about how much VRAM a swap
+    freed.
+
+    Args:
+        no_import: When True, only consult an already-imported torch
+            (``sys.modules``) — for callers on paths where importing
+            torch just to answer would itself be the heavy operation.
+            Default imports torch lazily, so a CPU-only host still
+            answers ``None``.
     """
+    if no_import:
+        torch = sys.modules.get("torch")
+        if torch is None:
+            return None
+    else:
+        try:
+            import torch  # noqa: PLC0415
+        except ImportError:
+            return None
     try:
-        import torch  # noqa: PLC0415
-    except ImportError:
-        return None
-    if not torch.cuda.is_available():
-        return None
-    try:
-        return torch.cuda.memory_allocated() / 1024 / 1024
+        if not torch.cuda.is_available():
+            return None
+        return float(torch.cuda.memory_allocated()) / 1024 / 1024
     except Exception:
         return None
 
