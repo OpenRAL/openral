@@ -472,3 +472,52 @@ class TestSO100SmolVLASkill:
         assert "observation.images.camera1" in batch
         assert batch["task"] == ["pick up the cube"]
         assert batch["observation.state"].shape == (1, 6)
+
+
+class TestChunkedExecutorChunkFn:
+    """Generalised chunk_fn mode — custom producers, sequence chunks."""
+
+    def test_requires_policy_or_chunk_fn_with_size(self) -> None:
+        with pytest.raises(ValueError, match="chunk_fn together with chunk_size"):
+            ChunkedExecutor()
+        with pytest.raises(ValueError, match="chunk_fn together with chunk_size"):
+            ChunkedExecutor(chunk_fn=lambda payload: [])
+
+    def test_sequence_chunks_are_not_truncated(self) -> None:
+        """A custom producer owns its chunk length; chunk_size is nominal."""
+        ex = ChunkedExecutor(
+            chunk_fn=lambda payload: [torch.full((1, 6), 7.0)] * 5, chunk_size=3, prefetch_at=0
+        )
+        ex.start()
+        for _ in range(5):  # 5 actions from ONE inference despite chunk_size=3
+            assert float(ex.select_action({})[0, 0]) == 7.0
+        assert len(ex._buffer) == 0
+
+    def test_short_chunk_prefetches_right_after_first_pop(self) -> None:
+        """chunks shorter than prefetch_at trigger at chunk_size - 1."""
+        calls = 0
+
+        def chunk_fn(payload: Any) -> list[torch.Tensor]:
+            nonlocal calls
+            calls += 1
+            return [torch.zeros(1, 6)] * 4
+
+        ex = ChunkedExecutor(chunk_fn=chunk_fn, chunk_size=4, prefetch_at=15)
+        ex.start()
+        ex.select_action({})  # cold start; buffer 3 == min(15, 4-1) → prefetch fires
+        time.sleep(0.05)
+        assert ex._bg_thread is not None
+        assert calls == 2  # cold start + prefetch
+        ex.stop()
+
+    def test_chunk_fn_with_policy_delegates_reset(self) -> None:
+        """policy passed alongside chunk_fn is used for reset() only."""
+        p = _NullPolicy(chunk_size=4)
+        ex = ChunkedExecutor(
+            p, chunk_fn=lambda payload: [torch.zeros(1, 6)] * 4, chunk_size=4, prefetch_at=0
+        )
+        ex.start()
+        ex.select_action({})
+        ex.reset()
+        assert p._reset_calls == 1
+        assert p._call_count == 0  # producer used, not policy.predict_action_chunk

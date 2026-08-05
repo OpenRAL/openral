@@ -26,10 +26,10 @@ from __future__ import annotations
 
 import contextlib
 import gc
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
 import structlog
@@ -493,6 +493,7 @@ def run_inference(
     chunk_size: int | None = None,
     engine: str | None = None,
     method: str = "select_action",
+    call: Callable[[Any], Any] | None = None,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
 
@@ -520,9 +521,15 @@ def run_inference(
             ``"predict_action_chunk"`` computes a full chunk tensor without
             touching the queue — used by :class:`ChunkedExecutor`, whose
             background pre-fetch must not mutate live policy state.
+        call: Custom inference callable invoked as ``call(batch)`` INSTEAD of
+            ``getattr(policy, method)`` — the seam stays the single
+            instrumented entry point for adapters whose forward is not a bare
+            policy method (autocast contexts, chunk-level decode, non-lerobot
+            APIs). ``policy`` may be ``None`` in this mode (device label is
+            then omitted).
 
     Returns:
-        The raw tensor returned by the invoked policy method.
+        The raw tensor returned by the invoked callable / policy method.
     """
     import torch
 
@@ -540,41 +547,106 @@ def run_inference(
     ):
         started_ns = perf_counter_ns()
         try:
-            return getattr(policy, method)(batch)
+            return call(batch) if call is not None else getattr(policy, method)(batch)
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
 
 
-def queued_action_count(policy: Any) -> int:
-    """Number of already-computed actions in a lerobot policy's internal queue.
+def build_chunk_executor(
+    spec_extra: dict[str, Any],
+    *,
+    policy: Any = None,
+    chunk_fn: Callable[[Any], Any] | None = None,
+    chunk_size: int | None = None,
+    adapter_name: str = "policy",
+) -> Any | None:
+    """Build + start a :class:`ChunkedExecutor` for a chunked adapter.
 
-    Lerobot chunked policies (SmolVLA, π0.x, ACT with ``n_action_steps>1``, …)
-    keep a ``_queues["action"]`` deque and ``select_action`` pops from it,
-    ignoring the observation batch entirely, until the queue drains. Adapters
-    use this to skip observation preprocessing (image tensorisation, H2D
-    copies, tokenisation) on pop ticks — measured at ~11 ms of GIL-held CPU
-    fan-out per tick on the SO-101 deploy, thrown away 49 of 50 ticks.
+    The ONE wiring seam every chunked adapter shares, so the executor's
+    buffer semantics, the ``chunk_prefetch`` flag, and the per-family chunk
+    producers stay in a single place instead of being re-implemented per
+    adapter:
 
-    This is the single place that touches the private queue layout, so a
-    lerobot upgrade that renames it breaks one helper, not every adapter.
-    Returns 0 for policies without the queue convention (they pay the full
-    preprocessing path, which is the status quo).
+    - Pop ticks come from the executor-owned buffer — no observation batch
+      is built, no policy call happens (this replaced the earlier per-adapter
+      "fast pop" guards, which were coupled to each policy's private queue
+      layout).
+    - ``spec_extra["chunk_prefetch"]`` (set by the deploy runtime via
+      ``policy_extra.setdefault``; a manifest's ``policy_extras`` can pin it
+      off) only controls WHETHER the boundary inference overlaps execution:
+      truthy → background pre-fetch (``prefetch_at=15``), falsy →
+      ``prefetch_at=0``, a plain synchronous chunk buffer with action
+      semantics identical to lerobot's internal queue — the eval path stays
+      paper-faithful.
+
+    NOT for policies whose ``select_action`` consumes the observation on
+    every call (Diffusion Policy keeps ``n_obs_steps`` of observation
+    history) — those cannot use a chunk buffer at all and must keep the
+    plain per-tick path.
 
     Args:
-        policy: A lerobot-style policy instance.
+        spec_extra: The ``VLASpec.extra`` dict.
+        policy: lerobot-style policy (default chunk producer + reset target).
+        chunk_fn: Custom chunk producer for adapters whose forward is not a
+            bare ``predict_action_chunk`` — see :class:`ChunkedExecutor`.
+        chunk_size: Actions consumed per inference; defaults to
+            ``policy.config.n_action_steps``.
+        adapter_name: Label for the enable log line.
 
     Returns:
-        Queue depth, or 0 when the policy has no recognisable action queue.
+        A STARTED executor, or ``None`` when the effective chunk size is <= 1
+        (per-step policies like the shipped ACT manifests have no chunk to
+        buffer).
     """
-    queues = getattr(policy, "_queues", None)
-    if not isinstance(queues, dict):
-        return 0
-    queue = queues.get("action")
-    try:
-        return len(queue) if queue is not None else 0
-    except TypeError:
-        return 0
+    from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
+
+    n = int(
+        chunk_size
+        if chunk_size is not None
+        else getattr(getattr(policy, "config", None), "n_action_steps", 1) or 1
+    )
+    if n <= 1:
+        return None
+    prefetch = bool(spec_extra.get("chunk_prefetch"))
+    executor = ChunkedExecutor(
+        policy,
+        chunk_fn=chunk_fn,
+        chunk_size=n,
+        prefetch_at=15 if prefetch else 0,
+    )
+    executor.start()
+    log = structlog.get_logger("openral_rskill._vla_core")
+    log.info(
+        "vla.chunk_executor_enabled",
+        adapter=adapter_name,
+        n_action_steps=n,
+        prefetch=prefetch,
+    )
+    return executor
+
+
+_AdapterT = TypeVar("_AdapterT")
+
+
+def attach_chunk_executor(
+    adapter: _AdapterT, spec_extra: dict[str, Any], **kwargs: Any
+) -> _AdapterT:
+    """Attach :func:`build_chunk_executor`'s result to ``adapter._chunk_executor``.
+
+    Returns the adapter, so a policy factory's tail stays one statement::
+
+        return attach_chunk_executor(adapter, spec.extra, policy=policy, adapter_name="pi05")
+
+    Args:
+        adapter: A built policy adapter with a ``_chunk_executor`` field.
+        spec_extra: The ``VLASpec.extra`` dict.
+        **kwargs: Forwarded to :func:`build_chunk_executor`.
+    """
+    # reason: adapters are duck-typed dataclasses sharing the `_chunk_executor`
+    # field by convention; a Protocol for one attribute is not worth the ceremony.
+    adapter._chunk_executor = build_chunk_executor(spec_extra, **kwargs)  # type: ignore[attr-defined]
+    return adapter
 
 
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:

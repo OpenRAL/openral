@@ -56,6 +56,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    attach_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -349,20 +350,29 @@ class _MolmoAct2Adapter:
     # flow-matching expert materialises some intermediates in fp32 even with
     # bf16 / nf4 params, so autocast keeps mixed-precision matmuls valid.
     _autocast_dtype: Any = None
-    # Closed-loop replay queue: predict_action returns a chunk of actions;
-    # step() pops them one at a time and re-infers when empty.
-    _action_queue: list[NDArray[np.float32]] = field(default_factory=list)
+    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`,
+    # producer `_chunk_forward`); replaces the adapter-private replay
+    # list so pop/prefetch semantics live in one shared place.
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        self._action_queue = []
+        if self._chunk_executor is not None:
+            self._chunk_executor.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        if not self._action_queue:
-            self._action_queue = self._predict_chunk(observation, instruction)
-        return self._action_queue.pop(0)
+        if self._chunk_executor is not None:
+            action = self._chunk_executor.select_action(lambda: (observation, instruction))
+            return np.asarray(action, dtype=np.float32)
+        # Per-step fallback (chunk length <= 1).
+        return np.asarray(self._chunk_forward((observation, instruction))[0], dtype=np.float32)
+
+    def _chunk_forward(self, payload: tuple[Observation, str]) -> list[NDArray[np.float32]]:
+        """Chunk producer for the executor — one `_predict_chunk` call."""
+        observation, instruction = payload
+        return self._predict_chunk(observation, instruction)
 
     def close(self) -> None:
         """Drop the loaded modules, then reclaim their VRAM.
@@ -371,6 +381,9 @@ class _MolmoAct2Adapter:
         so flushing while this adapter still holds the model frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()  # join any pre-fetch thread first
+            self._chunk_executor = None
         release_torch_modules(self, "_model", "_processor", device=self.device, torch=self._torch)
 
     def _predict_chunk(
@@ -751,7 +764,7 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         else (torch.float16 if torch_dtype == torch.float16 else None)
     )
 
-    return _MolmoAct2Adapter(
+    adapter = _MolmoAct2Adapter(
         spec=spec,
         device=device,
         _model=model,
@@ -770,4 +783,13 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         ),
         _camera_keys=cam_keys,
         _autocast_dtype=autocast_dtype,
+    )
+    # chunk_size is nominal for the trigger/telemetry when the manifest
+    # doesn't pin n_action_steps — the producer sizes the actual chunk.
+    return attach_chunk_executor(
+        adapter,
+        spec.extra,
+        chunk_fn=adapter._chunk_forward,
+        chunk_size=int(n_action_steps) if n_action_steps else 8,
+        adapter_name="molmoact2",
     )

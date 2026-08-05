@@ -89,18 +89,51 @@ class ChunkedExecutor:
         >>> pass
     """
 
-    def __init__(self, policy: Any, *, prefetch_at: int = 15) -> None:
+    def __init__(
+        self,
+        policy: Any = None,
+        *,
+        chunk_fn: Callable[[Any], Any] | None = None,
+        chunk_size: int | None = None,
+        prefetch_at: int = 15,
+    ) -> None:
         """Initialise without starting any threads.
 
         Args:
             policy: lerobot-style policy with ``predict_action_chunk`` and
-                ``config.n_action_steps``.
+                ``config.n_action_steps``. Optional when ``chunk_fn`` +
+                ``chunk_size`` are given; still useful alongside ``chunk_fn``
+                for ``reset()`` delegation and the span's device label.
+            chunk_fn: Custom chunk producer ``payload -> chunk`` for adapters
+                whose forward is not a bare ``policy.predict_action_chunk``
+                (extra autocast contexts, chunk-level decode/postprocessing,
+                non-lerobot APIs). The payload is whatever
+                :meth:`select_action` was given — the executor treats it
+                opaquely, so it need not be a lerobot batch dict. The chunk
+                may be a ``(batch, chunk, dof)`` tensor OR any sequence of
+                per-step actions. Instrumented by the same
+                ``run_inference`` seam as the default path.
+            chunk_size: Actions consumed per inference. Defaults to
+                ``policy.config.n_action_steps``; required with a bare
+                ``chunk_fn``.
             prefetch_at: Pre-fetch trigger threshold (remaining buffered
-                actions).
+                actions). ``0`` disables the background thread entirely —
+                the executor is then a plain synchronous chunk buffer
+                (identical action semantics to lerobot's internal queue,
+                minus the wasted per-tick batch builds).
+
+        Raises:
+            ValueError: Neither a policy nor ``chunk_fn`` + ``chunk_size``
+                was provided.
         """
+        if policy is None and (chunk_fn is None or chunk_size is None):
+            raise ValueError("ChunkedExecutor needs a policy, or chunk_fn together with chunk_size")
         self._policy = policy
+        self._chunk_fn = chunk_fn
         self._prefetch_at = prefetch_at
-        self._chunk_size: int = policy.config.n_action_steps
+        self._chunk_size: int = (
+            int(chunk_size) if chunk_size is not None else int(policy.config.n_action_steps)
+        )
 
         # Executor-owned per-step action buffer. The policy's internal queue
         # is deliberately NOT used: sharing it with a background pre-fetch is
@@ -145,7 +178,8 @@ class ChunkedExecutor:
         self._buffer.clear()
         self._chunk_index = 0
         self._running = True
-        self._policy.reset()
+        if self._policy is not None and hasattr(self._policy, "reset"):
+            self._policy.reset()
 
     def select_action(self, batch: dict[str, Any] | Callable[[], dict[str, Any]]) -> Any:
         """Return the next action, pre-fetching the following chunk if needed.
@@ -182,14 +216,7 @@ class ChunkedExecutor:
                 executor was stopped while waiting on a pre-fetch.
         """
         if self._buffer:
-            action = self._buffer.popleft()
-            if (
-                0 < self._prefetch_at == len(self._buffer)
-                and self._running
-                and not self._bg_pending
-            ):
-                self._launch_prefetch(self._materialize(batch))
-            return action
+            return self._pop_and_maybe_prefetch(batch)
 
         if self._bg_pending:
             # Buffer drained before the pre-fetch finished — block for it.
@@ -206,38 +233,65 @@ class ChunkedExecutor:
             if result is None:
                 raise ROSRuntimeError("ChunkedExecutor stopped while waiting on pre-fetch")
             self._extend_buffer(result)
-            return self._buffer.popleft()
+            return self._pop_and_maybe_prefetch(batch)
 
         # Cold start (first call after reset) — synchronous foreground chunk.
         self._chunk_index += 1
-        chunk = run_inference(
-            self._policy,
-            self._materialize(batch),
-            chunk_index=self._chunk_index,
-            kind="foreground",
-            chunk_size=self._chunk_size,
-            method="predict_action_chunk",
-        )
+        chunk = self._produce(self._materialize(batch), self._chunk_index, "foreground")
         self._extend_buffer(chunk)
-        return self._buffer.popleft()
+        return self._pop_and_maybe_prefetch(batch)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
+    def _pop_and_maybe_prefetch(self, batch: Any) -> Any:
+        """Pop one action; launch the pre-fetch when the buffer is low.
+
+        Every pop routes through here — cold start, buffered, and
+        bg-consume alike — so the trigger cannot be skipped by which branch
+        served the action (a chunk shorter than ``prefetch_at`` triggers
+        right after its first pop, the maximum lead it can give).
+        """
+        action = self._buffer.popleft()
+        trigger = min(self._prefetch_at, self._chunk_size - 1)
+        if 0 < trigger >= len(self._buffer) and self._running and not self._bg_pending:
+            self._launch_prefetch(self._materialize(batch))
+        return action
+
+    def _produce(self, payload: Any, chunk_index: int, kind: str) -> Any:
+        """Run one chunk inference through the instrumented ``run_inference`` seam."""
+        return run_inference(
+            self._policy,
+            payload,
+            chunk_index=chunk_index,
+            kind=kind,  # type: ignore[arg-type]  # reason: executor only passes valid InferenceKind values
+            chunk_size=self._chunk_size,
+            method="predict_action_chunk",
+            call=self._chunk_fn,
+        )
+
     @staticmethod
-    def _materialize(batch: dict[str, Any] | Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        """Resolve a lazy batch factory to a concrete batch dict."""
+    def _materialize(batch: dict[str, Any] | Callable[[], Any]) -> Any:
+        """Resolve a lazy payload factory to the concrete payload."""
         return batch() if callable(batch) else batch
 
     def _extend_buffer(self, chunk: Any) -> None:
-        """Slice a ``(batch, chunk, dof)`` chunk tensor into per-step actions.
+        """Slice one produced chunk into per-step actions.
 
-        Matches lerobot's own queue layout: ``chunk.transpose(0, 1)`` yields
-        ``chunk_size`` tensors of shape ``(batch, dof)``, truncated to
-        ``n_action_steps``.
+        A torch ``(batch, chunk, dof)`` tensor follows lerobot's own queue
+        layout — ``chunk.transpose(0, 1)`` yields ``chunk_size`` tensors of
+        shape ``(batch, dof)``, truncated to ``chunk_size`` (lerobot's
+        ``n_action_steps`` semantics). Anything else is treated as a sequence
+        of ready per-step actions from a custom ``chunk_fn`` producer that
+        decodes / sizes the chunk itself — NOT truncated, so ``chunk_size``
+        can be nominal (trigger + telemetry) for models whose chunk length is
+        only known at inference time.
         """
-        self._buffer.extend(chunk.transpose(0, 1)[: self._chunk_size])
+        if hasattr(chunk, "transpose") and hasattr(chunk, "dim"):  # torch tensor
+            self._buffer.extend(chunk.transpose(0, 1)[: self._chunk_size])
+        else:
+            self._buffer.extend(list(chunk))
 
-    def _launch_prefetch(self, batch: dict[str, Any]) -> None:
+    def _launch_prefetch(self, batch: Any) -> None:
         """Start the background pre-fetch thread (no live policy state touched)."""
         if self._bg_thread is not None and self._bg_thread.is_alive():
             return  # already running
@@ -250,14 +304,7 @@ class ChunkedExecutor:
 
         def _run() -> None:
             try:
-                result = run_inference(
-                    self._policy,
-                    batch,
-                    chunk_index=prefetch_index,
-                    kind="prefetch",
-                    chunk_size=self._chunk_size,
-                    method="predict_action_chunk",
-                )
+                result = self._produce(batch, prefetch_index, "prefetch")
                 with self._bg_lock:
                     self._bg_result = result
             except Exception as exc:  # reason: propagate to foreground via event

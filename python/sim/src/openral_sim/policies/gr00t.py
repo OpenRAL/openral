@@ -54,7 +54,6 @@ fallback when a manifest omits them.
 from __future__ import annotations
 
 import os
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -62,9 +61,9 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
-from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    attach_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -288,31 +287,45 @@ class _GrootAdapter:
     _image_input_keys: tuple[str, ...] = _GR00T_LIBERO_IMAGE_KEYS
     # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
     _state_dim: int = _GR00T_LIBERO_STATE_DIM
-    _queue: deque[NDArray[np.float32]] = field(default_factory=deque)
+    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`,
+    # ``chunk_size=_replan_steps``, custom ``_chunk_forward`` producer);
+    # replaces the adapter-private deque + refill so pop/prefetch semantics
+    # live in ONE place across all chunked adapters.
+    _chunk_executor: Any = None
     _last_input_frame: NDArray[np.uint8] | None = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        self._queue.clear()
-        if hasattr(self._policy, "reset"):
+        if self._chunk_executor is not None:
+            # Stops any pre-fetch, clears the buffer, resets the policy.
+            self._chunk_executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        if not self._queue:
-            self._refill_queue(observation, instruction)
-        return np.asarray(self._queue.popleft(), dtype=np.float32)
+        if self._chunk_executor is not None:
+            action = self._chunk_executor.select_action(lambda: (observation, instruction))
+            return np.asarray(action, dtype=np.float32)
+        # Per-step fallback (replan_steps <= 1): fresh chunk every tick,
+        # first action executed.
+        return np.asarray(self._chunk_forward((observation, instruction))[0], dtype=np.float32)
 
-    def _refill_queue(self, observation: Observation, instruction: str) -> None:
-        """Predict + decode a fresh chunk, queue the first ``_replan_steps`` actions."""
+    def _chunk_forward(self, payload: tuple[Observation, str]) -> list[NDArray[np.float32]]:
+        """Chunk producer for the executor — predict + decode one fresh chunk.
+
+        Returns the first ``_replan_steps`` DECODED per-step actions (GR00T's
+        8-of-16 execution horizon): ``select_action`` rejects native relative
+        actions, so ``predict_action_chunk`` is called directly (it is
+        ``@torch.no_grad``) and the whole chunk decodes while the pack-step
+        raw state is still cached. Instrumented by the executor's
+        ``run_inference`` seam.
+        """
+        observation, instruction = payload
         batch = self._build_batch(observation, instruction)
         batch = self._preprocessor(batch)
-        # GR00T select_action() rejects native relative actions, so call
-        # predict_action_chunk directly (it is @torch.no_grad) and decode the
-        # whole chunk while the pack-step raw state is still cached.
-        with inference_span(kind="foreground", engine="torch", device=str(self.device)):
-            chunk = self._policy.predict_action_chunk(batch)
+        chunk = self._policy.predict_action_chunk(batch)
         chunk = self._postprocessor(chunk)
         chunk_np = chunk.detach().to("cpu").float().numpy()
         # predict_action_chunk returns (B=1, T, action_dim); squeeze the batch.
@@ -320,8 +333,7 @@ class _GrootAdapter:
             chunk_np = chunk_np[0]
         elif chunk_np.ndim == 1:
             chunk_np = chunk_np[None, :]
-        for action in chunk_np[: self._replan_steps]:
-            self._queue.append(np.asarray(action, dtype=np.float32))
+        return [np.asarray(action, dtype=np.float32) for action in chunk_np[: self._replan_steps]]
 
     def close(self) -> None:
         """Drop the loaded modules, then reclaim their VRAM.
@@ -330,6 +342,9 @@ class _GrootAdapter:
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()  # join any pre-fetch thread first
+            self._chunk_executor = None
         release_torch_modules(
             self,
             "_policy",
@@ -549,7 +564,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:
     # many decoded actions per inference before replanning.
     replan_steps = int(getattr(policy, "_action_queue_steps", 8)) or 8
 
-    return _GrootAdapter(
+    adapter = _GrootAdapter(
         spec=spec,
         device=device,
         _policy=policy,
@@ -562,4 +577,14 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:
         _camera_keys=tuple(cam_keys),
         _image_input_keys=image_input_keys,
         _state_dim=state_dim,
+    )
+    # Chunk buffer sized to GR00T's execution horizon (8-of-16 replan), fed by
+    # the adapter's decode-carrying producer.
+    return attach_chunk_executor(
+        adapter,
+        spec.extra,
+        policy=policy,
+        chunk_fn=adapter._chunk_forward,
+        chunk_size=replan_steps,
+        adapter_name="gr00t",
     )
