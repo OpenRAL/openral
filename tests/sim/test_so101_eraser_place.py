@@ -182,8 +182,9 @@ def test_reset_lays_out_the_bench(env_cfg) -> None:
         assert eraser[1] == pytest.approx(-opts.eraser_offset_y, abs=2e-3)
         assert tape[0] - eraser[0] == pytest.approx(-opts.tape_offset_x, abs=2e-3)
         assert tape[1] - eraser[1] == pytest.approx(opts.tape_offset_y, abs=2e-3)
-        # Resting on the desk, not floating or sunk.
-        assert eraser[2] == pytest.approx(opts.eraser_size[2], abs=2e-3)
+        # STANDING on its end (every training episode starts that way), so
+        # the centre rests a half-LENGTH above the desk.
+        assert eraser[2] == pytest.approx(opts.eraser_size[0], abs=2e-3)
     finally:
         rollout.close()
 
@@ -316,10 +317,13 @@ def test_success_check_fires_only_on_the_tape(env_cfg) -> None:
         _, data = rollout.mujoco_handles()
         tape = np.asarray(data.site_xpos[rollout._tape_site_id])
 
+        from openral_sim.backends.so101_eraser import _eraser_quat_wxyz
+
+        standing = _eraser_quat_wxyz(0.0)
         rollout._write_freejoint(
             qpos_addr=rollout._eraser_qpos_addr,
-            xyz=(float(tape[0]), float(tape[1]), rollout.options.eraser_size[2]),
-            yaw=0.0,
+            xyz=(float(tape[0]), float(tape[1]), rollout.options.eraser_size[0]),
+            quat_wxyz=standing,
         )
         mujoco.mj_forward(rollout._model, data)
         assert rollout._check_placed() is True
@@ -327,8 +331,8 @@ def test_success_check_fires_only_on_the_tape(env_cfg) -> None:
         off = rollout.options.place_xy_tol_m * 3.0
         rollout._write_freejoint(
             qpos_addr=rollout._eraser_qpos_addr,
-            xyz=(float(tape[0]) + off, float(tape[1]), rollout.options.eraser_size[2]),
-            yaw=0.0,
+            xyz=(float(tape[0]) + off, float(tape[1]), rollout.options.eraser_size[0]),
+            quat_wxyz=standing,
         )
         mujoco.mj_forward(rollout._model, data)
         assert rollout._check_placed() is False

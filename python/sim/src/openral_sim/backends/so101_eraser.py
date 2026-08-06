@@ -87,7 +87,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
-from openral_world_state.geometry import look_at_quat_wxyz, yaw_to_quat_wxyz
+from openral_world_state.geometry import look_at_quat_wxyz
 
 from openral_sim.backends.so101_box._assets import (
     _reanchor_robot_base,
@@ -152,7 +152,14 @@ class _LightingPreset(NamedTuple):
 # bench: use them to check the policy is not keying on the exposure it was
 # trained under.
 _LIGHTING_PRESETS: dict[str, _LightingPreset] = {
-    "bench": _LightingPreset(0.42, 0.168, 0.52, (0.25, -0.23, 0.30), 0.185, (1.0, 1.0, 1.02)),
+    # Re-calibrated 2026-08-06 against the OpenBooth frames THROUGH the fitted
+    # cameras (the original numbers were tuned on the discredited low/close
+    # overview camera): targets front-desk-centre 145 / front-far-strip 153 /
+    # wrist-far 152 / wrist-mid 150; this preset renders 147/154/138/150.
+    # The real booth brightens toward the FAR edge, so the fill carries more
+    # of the exposure (0.37) and sits far forward (see _render_desk), with the
+    # near-field lamp eased to 0.143.
+    "bench": _LightingPreset(0.42, 0.143, 0.52, (0.25, -0.23, 0.30), 0.37, (1.0, 1.0, 1.02)),
     "bright": _LightingPreset(0.60, 0.30, 0.40, (0.25, -0.23, 0.45), 0.30, (1.0, 1.0, 1.0)),
     "dim": _LightingPreset(0.20, 0.10, 0.40, (0.25, -0.23, 0.28), 0.09, (1.0, 0.99, 1.0)),
     "warm": _LightingPreset(0.40, 0.17, 0.52, (0.25, -0.23, 0.30), 0.19, (1.10, 1.0, 0.86)),
@@ -193,11 +200,10 @@ class EraserSceneOptions:
             40 × 20 × 10 mm at the default (the earlier frame-measured
             42 × 17 estimate agreed to a few mm).
         eraser_mass: Eraser mass, kg.
-        eraser_yaw_deg: Spawn yaw of the block, degrees. Default +45° matches
-            the frames: long axis running lower-left to upper-right in the
-            overview image, with the exposed white end toward the near left.
-            (The wrapper texture puts the white end at local +x, so this is
-            the old two-tone -135° flipped by 180°.)
+        eraser_yaw_deg: Spawn yaw of the STANDING block about the vertical,
+            degrees. Zero points the label face (local +z) at world -X;
+            the default turns it toward the fitted overview camera, as in
+            the training frames where the label is always legible.
         jaw_rgba: Colour for the two gripper jaw meshes, or ``None`` to keep
             the upstream off-white. Defaults to near-black: the real rig prints
             its jaws in black filament, and they occupy the bottom third of
@@ -284,7 +290,7 @@ class EraserSceneOptions:
     eraser_size: tuple[float, float, float] = (0.020, 0.010, 0.005)
     eraser_mass: float = 0.015
     # Long axis points away from the camera, canted ~15° off the depth axis.
-    eraser_yaw_deg: float = 45.0
+    eraser_yaw_deg: float = -60.0
 
     # The real rig prints its two jaw fingers in BLACK filament while the
     # upstream MJCF paints the whole arm off-white. The jaws fill the bottom
@@ -422,11 +428,12 @@ def _render_desk(opts: EraserSceneOptions) -> str:
         f'dir="{-lx} {-ly} {-lz}" diffuse="{_scaled(light.lamp_diffuse)}" '
         f'specular="{_scaled(light.lamp_specular)}" castshadow="true"/>'
     )
-    # The fill sits high and out to the arm's LEFT, not straight overhead: the
-    # real frames are brightest along the left edge at every depth, which a
-    # centred fill cannot reproduce (it leaves the far corners too dark).
+    # The fill sits high, out to the arm's LEFT and FAR FORWARD: the OpenBooth
+    # frames brighten toward the far edge of the desk (the booth's lit back
+    # wall), which a near-centred fill cannot reproduce — it left the far
+    # strip ~30 counts too dark through the fitted overview camera.
     fill = (
-        f'<light name="desk_fill" pos="{bx + 0.32} {by - 0.42} 0.95" '
+        f'<light name="desk_fill" pos="{bx + 0.32} {by - 0.85} 0.95" '
         f'dir="-0.30 0.18 -1" diffuse="{_scaled(light.fill_diffuse)}" '
         'specular="0 0 0" castshadow="false"/>'
     )
@@ -608,13 +615,34 @@ def _render_eraser_asset(out_dir: Path) -> str:
     )
 
 
+def _eraser_quat_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
+    """Spawn orientation: STANDING on its end, white cap up, then world-yawed.
+
+    Every one of the 25 training episodes starts (and ends) with the eraser
+    standing upright on its 20 x 10 mm end — the label wraps vertically and
+    the white rubber cap faces the ceiling. A lying spawn is out of
+    distribution AND ~2.5 cm shorter: the operator grips the standing block's
+    upper half, so a policy replaying that grasp against a lying block closes
+    in the air above it.
+
+    The rotation is pitch(-90 deg about Y), mapping the box's local +x (the
+    white end) to world +z, composed with a world-frame yaw that turns the
+    label face. Quaternion product written out for the two single-axis terms.
+    """
+    half_yaw = math.radians(yaw_deg) / 2.0
+    w1, z1 = math.cos(half_yaw), math.sin(half_yaw)
+    w2, y2 = math.cos(-math.pi / 4.0), math.sin(-math.pi / 4.0)
+    return (w1 * w2, -z1 * y2, w1 * y2, w2 * z1)
+
+
 def _render_eraser(opts: EraserSceneOptions) -> str:
     """The eraser: one box collider wearing the product-photo cube texture.
 
     A single free body / single geom: the texture (``eraser_mat``, spliced
     into ``<asset>`` by the composer) carries the label on the top and bottom
     faces and the white/blue sleeve bands on the sides, so contacts and
-    inertia are exactly those of the plain block.
+    inertia are exactly those of the plain block. It spawns STANDING on its
+    end (see :func:`_eraser_quat_wxyz`), as in every training episode.
 
     The spawn pose is baked into the BODY element, not just written by
     ``reset``. The sim tier does call ``reset`` (and re-rolls the jitter there),
@@ -628,9 +656,9 @@ def _render_eraser(opts: EraserSceneOptions) -> str:
     sx, sy, sz = opts.eraser_size
     m = opts.eraser_mass
     ex, ey = opts.eraser_xy
-    quat = yaw_to_quat_wxyz(math.radians(opts.eraser_yaw_deg))
+    quat = _eraser_quat_wxyz(opts.eraser_yaw_deg)
     return (
-        f'<body name="eraser" pos="{ex} {ey} {sz}" '
+        f'<body name="eraser" pos="{ex} {ey} {sx}" '
         f'quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}">\n'
         '          <freejoint name="eraser_joint"/>\n'
         f'          <inertial pos="0 0 0" mass="{m}" '
@@ -894,8 +922,10 @@ class _So101EraserRollout:
             yaw += float(self._rng.uniform(-yaw_j, yaw_j))
         self._write_freejoint(
             qpos_addr=self._eraser_qpos_addr,
-            xyz=(ex, ey, self.options.eraser_size[2]),
-            yaw=float(yaw),
+            # Standing on its end: rest height is the half-LENGTH, and the
+            # quat is the standing orientation (white cap up) + this yaw.
+            xyz=(ex, ey, self.options.eraser_size[0]),
+            quat_wxyz=_eraser_quat_wxyz(float(np.degrees(yaw))),
         )
         self._apply_lighting_jitter()
 
@@ -1058,16 +1088,14 @@ class _So101EraserRollout:
         *,
         qpos_addr: int,
         xyz: tuple[float, float, float],
-        yaw: float,
+        quat_wxyz: tuple[float, float, float, float],
     ) -> None:
-        """Write a 7-D freejoint slot (position + pure-yaw quaternion)."""
+        """Write a 7-D freejoint slot (position + orientation quaternion)."""
         self._data.qpos[qpos_addr + 0] = xyz[0]
         self._data.qpos[qpos_addr + 1] = xyz[1]
         self._data.qpos[qpos_addr + 2] = xyz[2]
-        self._data.qpos[qpos_addr + 3] = float(np.cos(yaw / 2.0))
-        self._data.qpos[qpos_addr + 4] = 0.0
-        self._data.qpos[qpos_addr + 5] = 0.0
-        self._data.qpos[qpos_addr + 6] = float(np.sin(yaw / 2.0))
+        for k, v in enumerate(quat_wxyz):
+            self._data.qpos[qpos_addr + 3 + k] = float(v)
 
     # ----------------------------------------------------------- success check
 
@@ -1082,9 +1110,11 @@ class _So101EraserRollout:
         tape_xyz = np.asarray(self._data.site_xpos[self._tape_site_id], dtype=np.float64)
         if float(np.linalg.norm(eraser_xyz[:2] - tape_xyz[:2])) > self.options.place_xy_tol_m:
             return False
-        # Resting height: the eraser's own half-height above the tape surface,
-        # plus 5 mm of settle slack. Anything higher is still in the gripper.
-        rest_z = float(tape_xyz[2] + self.options.eraser_size[2])
+        # Resting height: STANDING on its end (as the operator places it), the
+        # centre sits a half-LENGTH above the tape, plus 5 mm settle slack.
+        # Anything higher is still in the gripper; a toppled block is lower
+        # and still counts as resting.
+        rest_z = float(tape_xyz[2] + self.options.eraser_size[0])
         return bool(eraser_xyz[2] <= rest_z + 0.005)
 
 
