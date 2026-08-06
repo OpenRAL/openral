@@ -39,6 +39,7 @@ from openral_rskill._vla_core import (
     to_numpy_action,
 )
 from openral_rskill.backend_registry import maybe_attach_pro_hooks
+from openral_rskill.executor import ChunkedExecutor
 
 from openral_sim.policies._policy_loading import (
     lazy_import_lerobot,
@@ -203,6 +204,10 @@ class _SmolVLAAdapter:
     # image_preprocessing + state_contract + n_action_steps".
     _cam_alias: dict[str, str] = field(default_factory=dict)
     _image_input_template: str = "observation.images.{cam}"
+    # Zero keeps benchmark/eval semantics synchronous and boundary-fresh.
+    # Real-time deploy explicitly injects a positive overlap window.
+    _prefetch_at: int = 0
+    _executor: ChunkedExecutor | None = None
     # Last image fed to the policy, post-flip — populated by step() for the
     # eval-layer video helper. Not part of the public API.
     _last_input_frame: NDArray[np.uint8] | None = None
@@ -215,7 +220,9 @@ class _SmolVLAAdapter:
         return self._last_input_frame
 
     def reset(self) -> None:
-        if hasattr(self._policy, "reset"):
+        if self._executor is not None:
+            self._executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
@@ -247,7 +254,19 @@ class _SmolVLAAdapter:
                 tensor = tensor.to(self._image_dtype)
             batch[k] = tensor
 
-        action_tensor = run_inference(self._policy, batch)
+        if used_handles:
+            # The Pro NVMM hook stores precomputed embeddings as sampler side
+            # state; overlapping ticks could overwrite them under a background
+            # inference. Serialize this path until embeddings travel in batch.
+            if self._executor is not None:
+                self._executor.stop()
+                self._executor = None
+            action_tensor = run_inference(self._policy, batch)
+        else:
+            if self._executor is None:
+                self._executor = ChunkedExecutor(self._policy, prefetch_at=self._prefetch_at)
+                self._executor.start()
+            action_tensor = self._executor.select_action(batch)
         action_tensor = self._postprocessor(action_tensor)
         return to_numpy_action(action_tensor)
 
@@ -261,6 +280,9 @@ class _SmolVLAAdapter:
         if self._nvmm_encoder is not None:
             self._nvmm_encoder.close()
             self._nvmm_encoder = None
+        if self._executor is not None:
+            self._executor.stop()
+            self._executor = None
         release_torch_modules(
             self,
             "_policy",
@@ -656,4 +678,5 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _camera_keys=cam_keys,
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,
+        _prefetch_at=int(spec.extra.get("prefetch_at", 0)),
     )

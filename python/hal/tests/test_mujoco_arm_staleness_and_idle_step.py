@@ -134,3 +134,62 @@ def test_last_action_ns_updates_on_send_action() -> None:
     assert int(hal.last_action_ns) > 0  # type: ignore[attr-defined]  # stamped by send_action
     assert before is not None and after is not None
     assert after > before
+
+
+def test_reset_to_pose_preserves_normalized_so101_gripper() -> None:
+    """The mixed-unit starting pose keeps gripper 0.0195 as 0.0195, not raw radians."""
+    from openral_core import RobotDescription
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    hal = MujocoArmHAL.from_description(desc)
+    hal.connect()
+    pose = [-0.1258, -1.7453, 1.5708, 0.9897, 0.1074, 0.0195]
+
+    hal.reset_to_pose(pose)
+    state = hal.read_state()
+
+    assert state.position[-1] == pytest.approx(0.0195, abs=1e-4)
+    _, data = hal.mujoco_handles()
+    low, high = desc.sim.grippers[0].ctrl_range  # type: ignore[union-attr]
+    assert float(data.ctrl[5]) == pytest.approx(low + 0.0195 * (high - low), abs=1e-5)
+
+
+def test_idle_step_advances_a_wall_time_slice() -> None:
+    """One idle tick advances that tick's worth of SIM time, not one step.
+
+    Regression, caught on a live ``openral deploy sim`` run: ``idle_step()``
+    used to run a single ``mj_step`` per tick, so at the bridge's 10 Hz idle
+    rate sim time advanced at ``0.002 * 10`` = 2% of wall. Every other timer on
+    the HAL node runs on the node clock — which under ``use_sim_time`` IS that
+    sim clock — so the camera republisher fired every ~5 s instead of every
+    100 ms, the world-state aggregator latched ``top`` / ``wrist`` STALE
+    against their wall-clock arrival stamps, and the policy was fed
+    seconds-old pixels.
+    """
+    from openral_core import RobotDescription
+    from openral_hal._mujoco_arm import MujocoArmHAL
+
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    hal = MujocoArmHAL.from_description(desc)
+    hal.connect()
+    assert hal._step_while_active is True
+    model, data = hal.mujoco_handles()
+    tick_s = 0.1  # the bridge's 10 Hz idle rate
+
+    t0 = float(data.time)
+    assert hal.idle_step(wall_dt_s=tick_s) is True
+    advanced = float(data.time) - t0
+    assert advanced == pytest.approx(tick_s, rel=0.5), (
+        f"one idle tick advanced {advanced * 1e3:.1f} ms of sim time for a "
+        f"{tick_s * 1e3:.0f} ms wall tick; sim time must track wall time while idle"
+    )
+
+    # Legacy call shape still means one step, and a stall cannot fast-forward
+    # the world by an unbounded amount.
+    t1 = float(data.time)
+    hal.idle_step()
+    assert float(data.time) - t1 == pytest.approx(float(model.opt.timestep), rel=1e-6)
+    t2 = float(data.time)
+    hal.idle_step(wall_dt_s=1000.0)
+    assert float(data.time) - t2 < 1000.0

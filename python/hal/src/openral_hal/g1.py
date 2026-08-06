@@ -563,7 +563,9 @@ class G1MujocoHAL(MujocoArmHAL):
             body_twist=self._last_body_twist,
         )
 
-    def idle_step(self) -> bool:
+    _step_while_active = False
+
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """HOLD-step with the glide base pinned (it would free-fall otherwise)."""
         if self._connected and self._data is not None:
             self._last_body_twist = (0.0,) * 6
@@ -573,7 +575,7 @@ class G1MujocoHAL(MujocoArmHAL):
                 self._base_pin = None
                 self._walking_controller.reset_state()
             self._pin_base()
-        return super().idle_step()
+        return super().idle_step(wall_dt_s=wall_dt_s)
 
     def reset_to_pose(self, pose: list[float]) -> None:
         """Reset the joint pose and walking policy state."""

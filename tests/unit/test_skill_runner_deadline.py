@@ -118,3 +118,12 @@ def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
     """Strictly-greater comparison: at the budget the loop may still step."""
     assert budget.deadline_lapsed(time.monotonic() - 1.0, 45.0, 0) is False
     assert budget._last_deadline_elapsed_s is None
+
+
+def test_tick_sleep_subtracts_processing_time() -> None:
+    """A 30 Hz runner sleeps only the unspent part of its 33.3 ms period."""
+    mod = _load_skill_runner_module()
+    period_s = 1.0 / 30.0
+
+    assert mod._remaining_tick_sleep_s(period_s, 0.010) == pytest.approx(0.023333, abs=1e-6)
+    assert mod._remaining_tick_sleep_s(period_s, 0.050) == 0.0

@@ -447,6 +447,40 @@ class TestSmolVLAAdapterBuildBatch:
         adapter = self._make_adapter(_policy=_NoReset())
         adapter.reset()  # must be a no-op
 
+    def test_step_replays_executor_owned_chunk_in_order(self) -> None:
+        """Deploy/eval SmolVLA uses the shared chunk executor, not synchronous queue pops."""
+        import torch
+
+        class _Config:
+            n_action_steps = 4
+
+        class _Policy:
+            config = _Config()
+
+            def __init__(self) -> None:
+                self.inferences = 0
+
+            def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
+                self.inferences += 1
+                values = torch.arange(4, dtype=torch.float32) + self.inferences * 10
+                return values.view(1, 4, 1).repeat(1, 1, 6)
+
+            def reset(self) -> None:
+                pass
+
+        policy = _Policy()
+        adapter = self._make_adapter(_policy=policy, _prefetch_at=1)
+        observation = {"images": {}, "state": np.zeros(6, dtype=np.float32)}
+
+        got = [float(adapter.step(observation, "do thing")[0]) for _ in range(4)]
+
+        assert got == [10.0, 11.0, 12.0, 13.0]
+        assert policy.inferences in (1, 2)  # prefetch may complete before this assertion
+
+    def test_default_prefetch_is_disabled_for_benchmark_freshness(self) -> None:
+        """Sim/eval keeps boundary observations fresh unless real-time deploy opts in."""
+        assert self._make_adapter()._prefetch_at == 0
+
     def test_close_on_cuda_calls_empty_cache(self) -> None:
         fake_torch = MagicMock()
         adapter = self._make_adapter(device="cuda:0", _torch=fake_torch)

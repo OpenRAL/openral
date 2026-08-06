@@ -492,8 +492,10 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
+    method_name: str = "select_action",
+    synchronize: bool = False,
 ) -> Any:
-    """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
+    """Call one policy inference method inside an OTel span and ``no_grad``.
 
     This is the single seam where every VLA inference call is instrumented;
     every adapter on both the eval and skill paths must go through here so
@@ -514,9 +516,15 @@ def run_inference(
             ``"onnx"`` / ``"jit"`` / …). Defaults to ``"torch"`` since
             every shipped adapter dispatches through PyTorch today; TRT
             and ONNX adapters pass their own value.
+        method_name: Policy method to call. Defaults to ``select_action``;
+            chunk executors use ``predict_action_chunk`` so they own the
+            returned queue instead of mutating lerobot's internal queue.
+        synchronize: Wait for CUDA completion before returning. Background
+            chunk prefetch enables this so its ready event means the tensor is
+            actually usable, not merely queued on a CUDA stream.
 
     Returns:
-        The raw action tensor returned by ``policy.select_action``.
+        The raw tensor returned by the selected policy method.
     """
     import torch
 
@@ -534,7 +542,11 @@ def run_inference(
     ):
         started_ns = perf_counter_ns()
         try:
-            return policy.select_action(batch)
+            method = getattr(policy, method_name)
+            result = method(batch)
+            if synchronize and bool(getattr(result, "is_cuda", False)):
+                torch.cuda.synchronize(getattr(result, "device", None))
+            return result
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)

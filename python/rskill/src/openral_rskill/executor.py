@@ -1,11 +1,8 @@
 """Action-chunk executor — overlap inference for chunk N+1 with execution of chunk N.
 
-This module provides :class:`ChunkedExecutor`, a generic background-thread
-pre-fetcher that wraps any lerobot-style policy's ``select_action`` /
-``config.n_action_steps`` interface. The same executor is reused by every
-chunked VLA family (SmolVLA, π0 / π0.5, ACT, Diffusion Policy, OpenVLA-OFT, …)
-— the class previously lived inside ``openral_rskill.smolvla`` and
-was effectively SmolVLA-private.
+This module provides :class:`ChunkedExecutor`, a background-thread pre-fetcher
+for lerobot action-chunk policies exposing ``predict_action_chunk`` and
+``config.n_action_steps``.
 
 Architecture
 ------------
@@ -18,12 +15,12 @@ Architecture
                                 │                                                 │
                                 │  ┌──────────────────────────────────────────┐  │
                                 │  │  Background thread (daemon)              │  │
-                                │  │  • _policy.select_action(batch)          │  │
+                                │  │  • _policy.predict_action_chunk(batch)   │  │
                                 │  │  • result → _bg_result (threading.Event) │  │
                                 │  └──────────────────────────────────────────┘  │
                                 │                                                 │
                                 │  Foreground (step N):                           │
-                                │  • pop from _policy internal queue              │
+                                │  • pop from executor-owned action deque         │
                                 │  • if queue nearly empty → trigger BG           │
                                 └─────────────────────────────────────────────────┘
                                                           │
@@ -33,25 +30,28 @@ Timing contract (RTX 4070 reference host, SmolVLA-base)
 -------------------------------------------------------
 - Full chunk inference: ~313 ms.
 - Queue pop: ~3 ms.
-- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 5),
-  giving a 5 × 3 ms = 15 ms window — well within the 313 ms inference time.
+- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 20),
+  giving ~667 ms at a 30 Hz controller — enough to cover the measured
+  313–600 ms chunk inference without a boundary pause.
 - Result: the background thread always finishes before the queue drains,
   keeping per-step latency in the cached-pop regime for all but the very first
   inference of a session.
 
-The class is policy-agnostic. Any policy with ``select_action(batch) -> Tensor``
-and ``config.n_action_steps`` (the chunk size) is supported.
+The executor owns its action deque. It calls the lerobot
+``predict_action_chunk`` surface directly; it never resets or consumes the
+policy's internal ``select_action`` queue from two threads.
 """
 
 from __future__ import annotations
 
 import threading
+from collections import deque
 from typing import Any
 
 import structlog
-from openral_core.exceptions import ROSRuntimeError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 
-from openral_rskill._vla_core import run_inference
+from openral_rskill._vla_core import InferenceKind, run_inference
 
 __all__ = ["ChunkedExecutor"]
 
@@ -61,11 +61,11 @@ log = structlog.get_logger(__name__)
 class ChunkedExecutor:
     """Overlaps GPU chunk inference with robot execution via a background thread.
 
-    The executor wraps a lerobot-style policy's ``select_action`` call. After
-    the first call triggers a full ``chunk_size``-step inference, it monitors
-    the remaining steps in the policy's internal queue and automatically
-    pre-fetches the next chunk in a background daemon thread when the queue
-    depth falls to ``prefetch_at``.
+    The executor calls ``predict_action_chunk`` and owns the resulting action
+    deque. The foreground only pops tensors from that deque while the background
+    computes the next independent chunk. This is deliberately separate from
+    lerobot's mutable ``select_action`` queue: resetting that shared queue in a
+    prefetch thread reordered live robot commands.
 
     This means chunk N+1 is computed while the robot is executing the last
     ``prefetch_at`` steps of chunk N, keeping the observable per-step latency
@@ -73,27 +73,37 @@ class ChunkedExecutor:
     for a full ~313 ms re-inference.
 
     Args:
-        policy: A lerobot-style policy instance with a ``select_action`` method
-            and a ``config.n_action_steps`` attribute (the chunk size).
-        prefetch_at: Number of steps before the queue empties at which the
-            background pre-fetch is triggered. Default 5.
+        policy: A lerobot-style action-chunk policy exposing
+            ``predict_action_chunk(batch)`` and ``config.n_action_steps``.
+        prefetch_at: Number of remaining steps at which background prefetch
+            starts. Default 20, providing ~667 ms at a 30 Hz control rate.
 
     Example:
         >>> # (doctest requires torch + lerobot — skipped in fast unit tests)
         >>> pass
     """
 
-    def __init__(self, policy: Any, *, prefetch_at: int = 5) -> None:
+    def __init__(self, policy: Any, *, prefetch_at: int = 20) -> None:
         """Initialise without starting any threads.
 
         Args:
-            policy: lerobot-style policy with ``select_action`` and
+            policy: lerobot-style policy with ``predict_action_chunk`` and
                 ``config.n_action_steps``.
             prefetch_at: Pre-fetch trigger threshold (steps before queue empty).
         """
         self._policy = policy
-        self._prefetch_at = prefetch_at
         self._chunk_size: int = policy.config.n_action_steps
+        if prefetch_at < 0:
+            raise ROSConfigError(f"prefetch_at must be >= 0; got {prefetch_at}.")
+        self._prefetch_at = min(prefetch_at, max(0, self._chunk_size - 1))
+        if self._prefetch_at != prefetch_at:
+            log.warning(
+                "chunked_executor.prefetch_clamped",
+                requested=prefetch_at,
+                applied=self._prefetch_at,
+                chunk_size=self._chunk_size,
+            )
+        self._actions: deque[Any] = deque()
 
         # Background pre-fetch state.
         self._bg_thread: threading.Thread | None = None
@@ -102,12 +112,8 @@ class ChunkedExecutor:
         self._bg_lock = threading.Lock()
         self._bg_error: Exception | None = None
 
-        # Step counter within the current chunk (0 = just about to call).
-        self._step_in_chunk: int = 0
-        # Monotonic chunk counter (foreground inferences only) used as the
-        # ``inference.chunk_index`` span attribute for trace correlation.
+        # Monotonic index of the chunk currently being replayed.
         self._chunk_index: int = 0
-        self._last_batch: dict[str, Any] | None = None
 
         self._running = False
 
@@ -130,23 +136,18 @@ class ChunkedExecutor:
         self._bg_result = None
         self._bg_event.clear()
         self._bg_error = None
-        self._step_in_chunk = 0
+        self._actions.clear()
         self._chunk_index = 0
-        self._last_batch = None
         self._running = True
         self._policy.reset()
 
     def select_action(self, batch: dict[str, Any]) -> Any:
         """Return the next action, pre-fetching the following chunk if needed.
 
-        On the first call after a :meth:`reset`, this triggers a full GPU
-        chunk inference and blocks until it completes (~313 ms on RTX 4070).
-        On subsequent calls within the same chunk, it pops from the policy's
-        internal action queue (< 3 ms) and, when the queue depth reaches
-        ``prefetch_at``, launches a background thread to pre-fetch the next
-        chunk. When the queue is exhausted, the foreground call blocks for the
-        background result if it is not yet ready (should be 0 ms wait in the
-        steady state).
+        The first call computes a full chunk. Subsequent calls pop the
+        executor-owned deque; when ``prefetch_at`` actions remain, a background
+        thread computes the next chunk from that tick's observation. At the
+        boundary, the completed chunk replaces the empty deque.
 
         Args:
             batch: Pre-processed observation dict on the inference device.
@@ -157,52 +158,63 @@ class ChunkedExecutor:
         Raises:
             ROSRuntimeError: If the background pre-fetch thread raised.
         """
-        import torch  # lazy: not required until inference time
+        if not self._actions:
+            self._load_next_chunk(batch)
 
-        self._last_batch = batch
-        self._step_in_chunk += 1
-
-        # If we just started a new chunk (step 1 of N), the foreground call
-        # goes straight to the policy — the internal queue is empty.
-        # The policy blocks until the GPU completes the full chunk inference.
-        if self._step_in_chunk == 1:
-            self._bg_event.clear()
-            self._bg_result = None
-            self._chunk_index += 1
-            action = run_inference(
-                self._policy,
-                batch,
-                chunk_index=self._chunk_index,
-                kind="foreground",
-                chunk_size=self._chunk_size,
-            )
-        elif self._step_in_chunk <= self._chunk_size:
-            # Pop from the policy's internal queue.
-            with torch.no_grad():
-                action = self._policy.select_action(batch)
-
-            # Trigger pre-fetch when approaching end of chunk.
-            remaining = self._chunk_size - self._step_in_chunk
-            if remaining == self._prefetch_at and self._running:
-                self._launch_prefetch(batch)
-        else:
-            # Queue exhausted — wait for pre-fetched result.
-            self._step_in_chunk = 1  # start of new chunk
-            self._chunk_index += 1
-            self._bg_event.wait()
-            with self._bg_lock:
-                if self._bg_error is not None:
-                    raise ROSRuntimeError(
-                        f"VLA pre-fetch thread raised: {self._bg_error}"
-                    ) from self._bg_error
-                action = self._bg_result
-            # Trigger next pre-fetch immediately for the chunk after this one.
-            self._bg_event.clear()
-            self._bg_result = None
-
+        action = self._actions.popleft()
+        if self._prefetch_at > 0 and len(self._actions) == self._prefetch_at and self._running:
+            self._launch_prefetch(batch)
         return action
 
     # ── Internal ─────────────────────────────────────────────────────────────
+
+    def _infer_chunk(
+        self,
+        batch: dict[str, Any],
+        *,
+        index: int,
+        kind: InferenceKind,
+    ) -> Any:
+        """Run one full chunk inference without touching the policy action queue."""
+        return run_inference(
+            self._policy,
+            batch,
+            chunk_index=index,
+            kind=kind,
+            chunk_size=self._chunk_size,
+            method_name="predict_action_chunk",
+            synchronize=True,
+        )
+
+    def _load_next_chunk(self, batch: dict[str, Any]) -> None:
+        """Fill the foreground deque from prefetch, or infer synchronously."""
+        next_index = self._chunk_index + 1
+        if self._bg_thread is None:
+            chunk = self._infer_chunk(batch, index=next_index, kind="foreground")
+        else:
+            self._bg_event.wait()
+            with self._bg_lock:
+                error = self._bg_error
+                chunk = self._bg_result
+            self._bg_thread = None
+            self._bg_event.clear()
+            self._bg_result = None
+            self._bg_error = None
+            if error is not None:
+                raise ROSRuntimeError(f"VLA pre-fetch thread raised: {error}") from error
+            if chunk is None:
+                raise ROSRuntimeError("VLA pre-fetch stopped without producing an action chunk.")
+
+        try:
+            actions = chunk.transpose(0, 1)[: self._chunk_size]
+        except (AttributeError, IndexError, TypeError) as exc:
+            raise ROSRuntimeError(
+                "VLA predict_action_chunk must return shape (batch, steps, action_dim)."
+            ) from exc
+        if len(actions) == 0:
+            raise ROSRuntimeError("VLA predict_action_chunk returned an empty action chunk.")
+        self._actions.extend(actions)
+        self._chunk_index = next_index
 
     def _launch_prefetch(self, batch: dict[str, Any]) -> None:
         """Start or restart the background pre-fetch thread."""
@@ -215,14 +227,7 @@ class ChunkedExecutor:
 
         def _run() -> None:
             try:
-                self._policy.reset()
-                result = run_inference(
-                    self._policy,
-                    batch,
-                    chunk_index=prefetch_index,
-                    kind="prefetch",
-                    chunk_size=self._chunk_size,
-                )
+                result = self._infer_chunk(batch, index=prefetch_index, kind="prefetch")
                 with self._bg_lock:
                     self._bg_result = result
             except Exception as exc:  # reason: propagate to foreground via event

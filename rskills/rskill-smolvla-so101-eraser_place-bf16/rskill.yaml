@@ -160,6 +160,10 @@ image_preprocessing:
     camera2: "wrist"
 state_contract:
   dim: 6
+policy_extras:
+  # LeRobot SO-101 datasets store the gripper motor on [0, 100], while the
+  # OpenRAL HAL contract is normalized [0, 1]. Arm channels still use degrees.
+  gripper_scale: 100.0
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # SmolVLA chunk_size=50 (checkpoint config); full-chunk synchronous replay.
