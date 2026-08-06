@@ -137,12 +137,12 @@ sim = [
     "num2words>=0.5.14",
     "pymunk<8",
     "robot-descriptions>=1.12.0",  # reason: SO-100 MJCF from DeepMind mujoco_menagerie for offscreen render
-    "transformers>=5.4.0,<5.14.0",
+    "transformers>=5.4.0,<5.15.0",
     "lerobot[diffusion]",  # reason: lerobot 0.6.0 moved `diffusers` behind the `diffusion` extra; the Diffusion Policy adapter (diffusion-pusht rSkill) imports lerobot.policies.diffusion which needs it. Bare lerobot (transitive) no longer carries diffusers.
 ]
 libero = [
     "lerobot[libero]",  # reason: pulls hf-libero (linux-only) + LIBERO bddl task files + robosuite
-    "transformers>=5.4.0,<5.14.0",  # reason: lerobot 0.6.0 requires transformers>=5.4.0,<5.14.0 via its `transformers-dep` extra (smolvla / pi / xvla / libero all alias it). Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version and the pin survives even if a future lerobot loosens its own bound.
+    "transformers>=5.4.0,<5.15.0",  # reason: lerobot 0.6.0 requires transformers>=5.4.0,<5.15.0 via its `transformers-dep` extra (smolvla / pi / xvla / libero all alias it). Stated explicitly here — matching the sim / metaworld / maniskill3 / robocasa groups — so a multi-group sync resolves to one version and the pin survives even if a future lerobot loosens its own bound.
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
     "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 — 3.4 B PaliGemma backbone needs ≤8 GiB VRAM in nf4
     "accelerate>=1.13.0",  # reason: init_empty_weights meta-init fast path for NF4 prequant loads (molmoact2 / pi05 libero rSkills) — matches sim / metaworld / maniskill3 / robocasa groups
@@ -155,7 +155,7 @@ metaworld = [
     "lerobot",  # reason: provides lerobot.envs.metaworld used by the MetaWorld scene adapter
     "gymnasium[mujoco]>=1.3.0",  # reason: gym backend MetaWorldEnv is built on
     "mujoco>=3.8.0",  # reason: physics engine for MetaWorld scenes
-    "transformers>=5.4.0,<5.14.0",  # reason: SmolVLA backbone (pinned to match the sim group)
+    "transformers>=5.4.0,<5.15.0",  # reason: SmolVLA backbone (pinned to match the sim group)
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization
 ]
@@ -167,7 +167,7 @@ maniskill3 = [
     "mani-skill>=3.0.0b9",
     "gymnasium>=1.0.0",  # reason: gym backend ManiSkill envs are built on
     "lerobot",  # reason: every non-RLDX policy adapter (smolvla / pi05 / xvla / act / diffusion) imports lerobot.policies.* at load time. Pulled bare (no `[libero]`) to keep robosuite unconstrained — `mani-skill` carries SAPIEN, not robosuite, so there is no robosuite version pin to clash with. Once an MS3-specific rSkill ships in-tree this becomes load-bearing; today it future-proofs the group + matches the metaworld group's convention.
-    "transformers>=5.4.0,<5.14.0",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
+    "transformers>=5.4.0,<5.15.0",  # reason: SmolVLA / π0.5 / xVLA / ACT / diffusion adapters all import transformers at load time (lerobot's own dep is too loose for the Py3.12 + lerobot compat path — see python/rskill/src/openral_rskill/_lerobot_compat.py). Pinned to match the sim + metaworld groups so a `--group sim --group maniskill3` sync resolves to a single transformers version.
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 (matches metaworld group convention)
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization (matches metaworld group)
 ]
@@ -268,7 +268,7 @@ robocasa = [
     # pi05-vision-nf4 scene (and any future transformers-backed adapter on a
     # robosuite>=1.5 task).
     "lerobot",  # reason: policy adapters (smolvla / pi05 / xvla / act / diffusion) import lerobot.policies.* at load time. Pulled bare (no `[libero]`) — robosuite>=1.5 above is the RoboCasa pin and conflicts with libero's robosuite==1.4.
-    "transformers>=5.4.0,<5.14.0",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
+    "transformers>=5.4.0,<5.15.0",  # reason: SmolVLA / π0.5 / xVLA backbones live in transformers (PaliGemma, Florence-2, SmolVLM). Pinned to match the sim / metaworld / maniskill3 groups so multi-group syncs resolve to a single version.
     "accelerate>=1.13.0",  # reason: device_map + dtype handling for SmolVLA / pi05 init_empty_weights fast meta-init path.
     "bitsandbytes>=0.45",  # reason: 4-bit (NF4) quantization for π0.5 / openarm-vision-nf4 — the pi05 adapter raises ROSConfigError without bnb on `quantization.dtype: nf4` manifests.
     "num2words>=0.5.14",  # reason: required by SmolVLAProcessor (transformers) for number tokenization.
@@ -372,7 +372,7 @@ omdet = [
     # backend (openral_runner.backends.gstreamer.omdet_turbo_detector) lazily
     # imports torch + transformers; this group provides them. Required by the
     # `deploy sim --object-detector-manifest <…omdet-turbo-indoor…>` leg.
-    "transformers>=5.4.0,<5.14.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
+    "transformers>=5.4.0,<5.15.0",  # reason: AutoModelForZeroShotObjectDetection (OmDet-Turbo). Pinned to match the sim / vla groups so a multi-group sync resolves to one transformers version.
     "torch>=2.2",           # reason: OmDet-Turbo forward pass + .to(device); CUDA when available, CPU fallback for GPU-less hosts / deploy sim.
     "pillow>=10.0",         # reason: BGR frame -> RGB PIL.Image for the processor.
     "timm>=1.0",            # reason: OmDet-Turbo's Swin backbone loads via TimmBackbone under transformers 5.3; also used to rebuild the backbone at the processor's 640² input (the pretrained checkpoint is pinned to 224² — see _fit_timm_backbone_to_processor).
