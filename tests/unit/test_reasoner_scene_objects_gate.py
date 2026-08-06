@@ -118,6 +118,16 @@ def test_sub_centimetre_jitter_is_suppressed(memory_exporter: InMemorySpanExport
     assert len(memory_exporter.get_finished_spans()) == 1
 
 
+def test_scene_order_does_not_count_as_change(memory_exporter: InMemorySpanExporter) -> None:
+    holder = _make_holder()
+    holder.emit()
+    graph = holder._spatial_memory.to_scene_graph()
+    reordered = graph.model_copy(update={"nodes": list(reversed(graph.nodes))})
+    holder._spatial_memory = SpatialMemory.from_scene_graph(reordered)
+    holder.emit()
+    assert len(memory_exporter.get_finished_spans()) == 1
+
+
 def test_keepalive_reemits_unchanged_scene(memory_exporter: InMemorySpanExporter) -> None:
     """After the keepalive interval an unchanged scene re-emits (collector restart)."""
     holder = _make_holder()

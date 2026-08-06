@@ -353,9 +353,6 @@ class SmolVLAAdapter(rSkillBase):
         if self._executor is None:
             raise ROSRuntimeError("SmolVLAAdapter._step_impl: executor not started")
 
-        # Lazy batch: the executor only materialises it when an inference
-        # actually launches (cold start / prefetch trigger), so buffer-pop
-        # ticks skip obs conversion + preprocessing + H2D copies entirely.
         action_tensor = self._executor.select_action(
             lambda: self._preprocess(self._obs_fn(world_state))
         )

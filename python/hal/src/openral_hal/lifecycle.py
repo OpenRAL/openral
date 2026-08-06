@@ -780,11 +780,6 @@ if _ROS2_AVAILABLE:
                 self._clock_pub.publish(msg)
 
             def _loop() -> None:
-                # Deadline-paced (same shape as openral_sensors.ros_publisher):
-                # `stop.wait(period)` AFTER the publishes made the real cadence
-                # work + period, so the 30 Hz proprio lane — and /clock in sim
-                # mode, i.e. the whole use_sim_time graph — ran slow by the
-                # publish cost.
                 next_deadline = monotonic() + period
                 while not stop.is_set():
                     try:
@@ -799,8 +794,6 @@ if _ROS2_AVAILABLE:
                     if remaining > 0 and stop.wait(timeout=remaining):
                         return
                     next_deadline += period
-                    # Way behind (a publish blocked for periods) — re-anchor
-                    # instead of firing a catch-up burst.
                     if monotonic() > next_deadline + period:
                         next_deadline = monotonic() + period
 

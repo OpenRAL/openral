@@ -63,7 +63,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
-    attach_chunk_executor,
+    build_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -287,10 +287,6 @@ class _GrootAdapter:
     _image_input_keys: tuple[str, ...] = _GR00T_LIBERO_IMAGE_KEYS
     # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
     _state_dim: int = _GR00T_LIBERO_STATE_DIM
-    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`,
-    # ``chunk_size=_replan_steps``, custom ``_chunk_forward`` producer);
-    # replaces the adapter-private deque + refill so pop/prefetch semantics
-    # live in ONE place across all chunked adapters.
     _chunk_executor: Any = None
     _last_input_frame: NDArray[np.uint8] | None = None
 
@@ -299,7 +295,6 @@ class _GrootAdapter:
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
-            # Stops any pre-fetch, clears the buffer, resets the policy.
             self._chunk_executor.reset()
         elif hasattr(self._policy, "reset"):
             self._policy.reset()
@@ -308,20 +303,10 @@ class _GrootAdapter:
         if self._chunk_executor is not None:
             action = self._chunk_executor.select_action(lambda: (observation, instruction))
             return np.asarray(action, dtype=np.float32)
-        # Per-step fallback (replan_steps <= 1): fresh chunk every tick,
-        # first action executed.
         return np.asarray(self._chunk_forward((observation, instruction))[0], dtype=np.float32)
 
     def _chunk_forward(self, payload: tuple[Observation, str]) -> list[NDArray[np.float32]]:
-        """Chunk producer for the executor — predict + decode one fresh chunk.
-
-        Returns the first ``_replan_steps`` DECODED per-step actions (GR00T's
-        8-of-16 execution horizon): ``select_action`` rejects native relative
-        actions, so ``predict_action_chunk`` is called directly (it is
-        ``@torch.no_grad``) and the whole chunk decodes while the pack-step
-        raw state is still cached. Instrumented by the executor's
-        ``run_inference`` seam.
-        """
+        """Predict and decode one execution chunk."""
         observation, instruction = payload
         batch = self._build_batch(observation, instruction)
         batch = self._preprocessor(batch)
@@ -343,7 +328,7 @@ class _GrootAdapter:
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
         if self._chunk_executor is not None:
-            self._chunk_executor.stop()  # join any pre-fetch thread first
+            self._chunk_executor.stop()
             self._chunk_executor = None
         release_torch_modules(
             self,
@@ -376,7 +361,7 @@ class _GrootAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             if self._flip_vertical:
@@ -434,7 +419,7 @@ def _build_groot_config(
 
 
 @POLICIES.register("gr00t")
-def _build_gr00t(env_cfg: Any) -> PolicyAdapter:
+def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: staged loader
     """Load the in-process lerobot ``GrootPolicy`` (GR00T N1.7) backend.
 
     YAML knobs (via ``vla.extra``): ``device``, ``embodiment_tag``,
@@ -578,13 +563,11 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:
         _image_input_keys=image_input_keys,
         _state_dim=state_dim,
     )
-    # Chunk buffer sized to GR00T's execution horizon (8-of-16 replan), fed by
-    # the adapter's decode-carrying producer.
-    return attach_chunk_executor(
-        adapter,
+    adapter._chunk_executor = build_chunk_executor(
         spec.extra,
         policy=policy,
         chunk_fn=adapter._chunk_forward,
         chunk_size=replan_steps,
         adapter_name="gr00t",
     )
+    return adapter

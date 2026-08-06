@@ -131,7 +131,7 @@ class _DiffusionAdapter:
             from openral_sim.policies._video_capture import to_input_frame
 
             self._last_input_frame = to_input_frame(img)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             batch["observation.image"] = t.unsqueeze(0).to(self.device)
 
         state = observation.get("state")

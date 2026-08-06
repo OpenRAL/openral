@@ -896,12 +896,9 @@ if _ROS2_AVAILABLE:
             _manifest = getattr(skill, "manifest", None)
             _runtime = getattr(_manifest, "runtime", None)
             engine = str(getattr(_runtime, "value", _runtime) or "") or "torch"
-            # Normalise the manifest RuntimeKind vocabulary (pytorch /
-            # tensorrt) to the `_vla_core.run_inference` engine vocabulary
-            # (torch / trt). The two span families feed the same dashboard
-            # Identity latch, and mixed vocabularies made the engine label
-            # flip "pytorch" ↔ "torch" every chunk.
-            engine = {"pytorch": "torch", "tensorrt": "trt"}.get(engine, engine)
+            from openral_rskill._vla_core import resolve_inference_engine
+
+            engine = resolve_inference_engine(skill, engine)
             _adapter = getattr(skill, "_adapter", None)
             _device = getattr(_adapter, "device", None) or getattr(skill, "device", None)
             consumed = getattr(_manifest, "n_action_steps", None) or getattr(
@@ -998,13 +995,7 @@ if _ROS2_AVAILABLE:
             rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
-            # Absolute tick deadline (perf_counter domain, matching
-            # ``sleep_until``). The loop previously slept ``period_s``
-            # unconditionally AFTER each tick's work, so the real cadence was
-            # ``work + period`` — an 11 ms pop step ran at ~22 Hz and a
-            # chunk-boundary inference stretched the tick to ~0.5 s. Pacing to
-            # an absolute deadline restores the configured rate; a tick that
-            # overruns just re-anchors instead of bursting to catch up.
+            # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
             skill_role = str(getattr(skill_info, "role", "")) if skill_info is not None else ""
@@ -1032,10 +1023,16 @@ if _ROS2_AVAILABLE:
                 # `inference_span(**attrs)` prefixes kwargs with
                 # ``inference.`` — set the literal rskill.* keys directly
                 # via `set_attribute` so they keep their dotted names.
-                _inf_attrs: dict[str, str] = {"engine": inference_engine}
-                if inference_device:
-                    _inf_attrs["device"] = inference_device
-                with inference_span(chunk_index=chunk_index, **_inf_attrs) as inf_span:
+                span_context = (
+                    inference_span(
+                        chunk_index=chunk_index,
+                        engine=inference_engine,
+                        device=inference_device,
+                    )
+                    if inference_device
+                    else inference_span(chunk_index=chunk_index, engine=inference_engine)
+                )
+                with span_context as inf_span:
                     if self._active_skill_id:
                         inf_span.set_attribute("rskill.id", self._active_skill_id)
                     if skill_role:
@@ -1067,8 +1064,8 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
-                        inf_span.set_attribute("inference.chunk_size", int(_cs))
+                    if consumed_per_inference:
+                        inf_span.set_attribute("inference.chunk_size", int(consumed_per_inference))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
@@ -1093,10 +1090,8 @@ if _ROS2_AVAILABLE:
                     self.get_logger().debug(
                         f"rskill_runner: publish_feedback skipped (goal not active): {exc!s}"
                     )
-                    return
+                    return "cancelled"
 
-                # Sleep until the next tick boundary (absolute deadline —
-                # see the ``next_tick_deadline`` note above).
                 next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
 
         def _apply_starting_pose_or_abort(self, skill: Any, goal_handle: Any, result: Any) -> bool:
@@ -1870,15 +1865,7 @@ def _required_vla_camera_slots(
 
 
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
-    """Sleep to the next absolute tick deadline; return the deadline that gated it.
-
-    The goal loop previously slept ``period_s`` unconditionally AFTER each
-    tick's work, so the real cadence was ``work + period`` — an 11 ms pop
-    step ran at ~22 Hz instead of the configured 30 Hz, and a chunk-boundary
-    inference stretched its tick to ~0.5 s. Deadline pacing restores the
-    configured rate; a tick that overran its budget re-anchors to *now*
-    instead of firing a burst of zero-sleep catch-up ticks (which would slam
-    the HAL with stale-batched actions).
+    """Sleep to the next absolute tick deadline, re-anchoring after overruns.
 
     Args:
         prev_deadline_s: The deadline (``time.perf_counter`` domain) that
@@ -1886,7 +1873,7 @@ def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
         period_s: Tick period in seconds.
 
     Returns:
-        The deadline that gated this tick — pass back in on the next call.
+        The deadline to pass into the next call.
     """
     from openral_runner.clock import sleep_until
 
@@ -2029,13 +2016,7 @@ def _build_runtime_skill_from_manifest(
         )
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
-    # Deploy-runtime default: overlap chunk N+1 inference with the tail of
-    # chunk N (ChunkedExecutor / SmolVLA async mode) so the chunk-boundary
-    # forward doesn't stall the tick cadence (~250 ms every n_action_steps
-    # ticks on the SO-101 bench = 25 Hz at a configured 30). setdefault so a
-    # manifest's ``policy_extras.chunk_prefetch: false`` pins it off; the eval
-    # path (`openral sim run`) never sets it and stays synchronous /
-    # paper-faithful. Adapters that don't know the flag ignore it.
+    # Deploy overlaps the next inference unless the manifest opts out.
     policy_extra.setdefault("chunk_prefetch", True)
     vla = VLASpec(
         id=manifest.model_family,

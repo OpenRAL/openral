@@ -85,6 +85,7 @@ from openral_core import (
     RobotCapabilities,
     RobotDescription,
     RSkillManifest,
+    SpatialNodeKind,
     TimeoutEvidence,
     WaitTool,
     assert_vla_reward_fits,
@@ -629,9 +630,7 @@ class ReasonerNode(LifecycleNode):
         # snapshot into it. Stays None for an externally-injected read-only
         # querier (we don't mutate a backend we don't own).
         self._spatial_memory_writer: SpatialMemory | None = None
-        # Emit-on-change gate for the ``world.scene_objects`` span (see
-        # ``_emit_scene_objects_span``): the last emitted semantic key and
-        # the monotonic time of the last emission (keepalive anchor).
+        # Last emitted semantic scene key and keepalive anchor.
         self._scene_objects_key: tuple[object, ...] | None = None
         self._scene_objects_emitted_monotonic: float = 0.0
         # Occupancy-grid-refined approach phase — latest decoded occupancy grid (an
@@ -2064,10 +2063,7 @@ class ReasonerNode(LifecycleNode):
         # before the first heartbeat tick (which re-emits on the 0.2 Hz cadence).
         self._emit_scene_objects_span()
 
-    # Re-emit an UNCHANGED scene at most this often. A keepalive (rather than
-    # pure suppression) keeps two consumers alive: the dashboard card's age
-    # readout, and a collector restarted mid-deploy (its ``_topics`` state is
-    # in-process, so it would otherwise show no map until the next real change).
+    # Repopulates collectors that restart while the scene stays unchanged.
     _SCENE_OBJECTS_KEEPALIVE_S: float = 60.0
 
     def _emit_scene_objects_span(self) -> None:
@@ -2093,19 +2089,20 @@ class ReasonerNode(LifecycleNode):
         try:
             import time as _time
 
-            from openral_world_state import emit_scene_objects_span, scene_objects_payload
+            from openral_world_state import emit_scene_objects_span
 
             graph = self._spatial_memory.to_scene_graph()
             key: tuple[object, ...] = tuple(
-                (
-                    o["id"],
-                    o["label"],
-                    round(float(o["x"]), 2),
-                    round(float(o["y"]), 2),
-                    round(float(o["z"]), 2),
-                    o["is_container"],
+                sorted(
+                    (
+                        node.node_id,
+                        node.label,
+                        *(round(value, 2) for value in node.pose.xyz),
+                        node.is_container,
+                    )
+                    for node in graph.nodes
+                    if node.kind is SpatialNodeKind.OBJECT
                 )
-                for o in scene_objects_payload(graph)
             )
             now = _time.monotonic()
             if (
@@ -2113,9 +2110,9 @@ class ReasonerNode(LifecycleNode):
                 and now - self._scene_objects_emitted_monotonic < self._SCENE_OBJECTS_KEEPALIVE_S
             ):
                 return
+            emit_scene_objects_span(graph, source_node=self.get_name())
             self._scene_objects_key = key
             self._scene_objects_emitted_monotonic = now
-            emit_scene_objects_span(graph, source_node=self.get_name())
         except Exception as exc:  # reason: telemetry must never break the tick
             self.get_logger().debug(f"scene-objects span emit failed: {exc!s}")
 

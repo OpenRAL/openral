@@ -209,14 +209,7 @@ class _AggregatorPump:
             self._thread = None
 
     def _run(self) -> None:
-        """Poll ``read_latest`` at the configured rate; write new frames only.
-
-        Deadline-paced (same shape as ``openral_sensors.ros_publisher``):
-        the old ``stop_event.wait(period)``-then-work loop ran at
-        work + period, so the thumbnail-encode cost pushed the effective
-        pump rate below the camera rate and every read sampled a slightly
-        staler frame.
-        """
+        """Poll ``read_latest`` at the configured rate; write new frames only."""
         next_deadline = time.monotonic() + self._period_s
         while not self._stop_event.is_set():
             try:
@@ -239,8 +232,6 @@ class _AggregatorPump:
             if remaining > 0 and self._stop_event.wait(timeout=remaining):
                 return
             next_deadline += self._period_s
-            # Way behind (reader/thumbnail blocked for periods) — re-anchor
-            # instead of firing a catch-up burst.
             if time.monotonic() > next_deadline + self._period_s:
                 next_deadline = time.monotonic() + self._period_s
 

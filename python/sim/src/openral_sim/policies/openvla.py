@@ -57,10 +57,9 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
-from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
-    attach_chunk_executor,
+    build_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -584,9 +583,6 @@ class _OpenVLAAdapter:
     _gripper_threshold: float = 0.5
     _torch_seed: int | None = None
     _last_input_frame: NDArray[np.uint8] | None = None
-    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`,
-    # producer `_chunk_forward`); replaces the adapter-private replay
-    # list so pop/prefetch semantics live in one shared place.
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
@@ -601,11 +597,10 @@ class _OpenVLAAdapter:
         if self._chunk_executor is not None:
             action = self._chunk_executor.select_action(lambda: (observation, instruction))
             return np.asarray(action, dtype=np.float32)
-        # Per-step fallback (chunk length <= 1).
         return np.asarray(self._chunk_forward((observation, instruction))[0], dtype=np.float32)
 
     def _chunk_forward(self, payload: tuple[Observation, str]) -> list[NDArray[np.float32]]:
-        """Chunk producer for the executor — one `_predict_chunk` call."""
+        """Predict one action chunk."""
         observation, instruction = payload
         return self._predict_chunk(observation, instruction)
 
@@ -617,7 +612,7 @@ class _OpenVLAAdapter:
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
         if self._chunk_executor is not None:
-            self._chunk_executor.stop()  # join any pre-fetch thread first
+            self._chunk_executor.stop()
             self._chunk_executor = None
         release_torch_modules(self, "_model", "_processor", device=self.device, torch=self._torch)
 
@@ -665,7 +660,7 @@ class _OpenVLAAdapter:
         else:
             autocast_ctx = contextlib.nullcontext()
 
-        with inference_span(kind="foreground"), torch.no_grad(), autocast_ctx:
+        with torch.no_grad(), autocast_ctx:
             if self._generation_method == _GENERATE_ACTION_VERL:
                 if not hasattr(self._model, _GENERATE_ACTION_VERL):
                     raise ROSConfigError(
@@ -865,8 +860,10 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _gripper_threshold=_extra_float(extra, "openvla_gripper_threshold", 0.5),
         _torch_seed=torch_seed,
     )
-    # chunk_size is nominal (OFT checkpoints emit 8-step chunks); the
-    # producer sizes the actual buffer.
-    return attach_chunk_executor(
-        adapter, spec.extra, chunk_fn=adapter._chunk_forward, chunk_size=8, adapter_name="openvla"
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra,
+        chunk_fn=adapter._chunk_forward,
+        chunk_size=int(manifest.n_action_steps or 1),
+        adapter_name="openvla",
     )
+    return adapter

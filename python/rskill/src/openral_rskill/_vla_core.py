@@ -29,7 +29,7 @@ import gc
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
@@ -40,6 +40,8 @@ from openral_observability import inference_span, semconv
 
 if TYPE_CHECKING:
     from openral_core import ImagePreprocessing, RSkillManifest, VLASpec
+
+    from openral_rskill.executor import ChunkedExecutor
 
 # Re-exported from the span helper that owns the label (design §9 closed set);
 # kept in `__all__` here for the adapters that import it from _vla_core.
@@ -492,7 +494,6 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
-    method: str = "select_action",
     call: Callable[[Any], Any] | None = None,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
@@ -516,17 +517,11 @@ def run_inference(
             ``"onnx"`` / ``"jit"`` / …). Defaults to ``"torch"`` since
             every shipped adapter dispatches through PyTorch today; TRT
             and ONNX adapters pass their own value.
-        method: Policy method to invoke. ``"select_action"`` (default) pops
-            one action via the policy's internal queue;
-            ``"predict_action_chunk"`` computes a full chunk tensor without
-            touching the queue — used by :class:`ChunkedExecutor`, whose
-            background pre-fetch must not mutate live policy state.
         call: Custom inference callable invoked as ``call(batch)`` INSTEAD of
-            ``getattr(policy, method)`` — the seam stays the single
-            instrumented entry point for adapters whose forward is not a bare
-            policy method (autocast contexts, chunk-level decode, non-lerobot
-            APIs). ``policy`` may be ``None`` in this mode (device label is
-            then omitted).
+            ``policy.select_action(batch)``. The seam stays the single
+            instrumented entry point for chunk producers with autocast,
+            decoding, or non-lerobot APIs. ``policy`` may be ``None`` in this
+            mode.
 
     Returns:
         The raw tensor returned by the invoked callable / policy method.
@@ -536,7 +531,7 @@ def run_inference(
     # ``policy.device`` is the lerobot convention; fall back to None so the
     # span helper omits the attribute on adapters that don't track it.
     device = getattr(policy, "device", None)
-    extras: dict[str, Any] = {"engine": engine if engine is not None else "torch"}
+    extras: dict[str, Any] = {"engine": resolve_inference_engine(policy, engine)}
     if chunk_size is not None:
         extras["chunk_size"] = chunk_size
     if device is not None:
@@ -547,10 +542,50 @@ def run_inference(
     ):
         started_ns = perf_counter_ns()
         try:
-            return call(batch) if call is not None else getattr(policy, method)(batch)
+            return call(batch) if call is not None else policy.select_action(batch)
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
+
+
+def resolve_inference_engine(owner: Any, declared: str | None = None) -> str:
+    """Return the active inference backend, preferring runtime attachments.
+
+    Optional policy plugins replace callables after the manifest is loaded, so
+    the manifest runtime may no longer describe the code actually executing.
+    Plugins can expose ``_openral_inference_engine`` explicitly; the released
+    OpenRAL Pro TRT plugin predates that marker, so its entry-point module is
+    also recognized.
+    """
+    candidates = [owner]
+    adapter = getattr(owner, "_adapter", None)
+    if adapter is not None:
+        candidates.append(adapter)
+    for candidate in tuple(candidates):
+        policy = getattr(candidate, "_policy", None)
+        if policy is not None:
+            candidates.append(policy)
+    for candidate in tuple(candidates):
+        model = getattr(candidate, "model", None)
+        if model is not None:
+            candidates.extend((model, getattr(model, "sample_actions", None)))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        marker = getattr(candidate, "_openral_inference_engine", None)
+        if isinstance(marker, str) and marker:
+            return _normalize_inference_engine(marker)
+        module = str(getattr(candidate, "__module__", type(candidate).__module__))
+        if module == "openral_pro_trt" or module.startswith("openral_pro_trt."):
+            return "trt"
+
+    return _normalize_inference_engine(declared or "torch")
+
+
+def _normalize_inference_engine(engine: str) -> str:
+    """Normalize manifest/runtime backend names to telemetry labels."""
+    return {"pytorch": "torch", "tensorrt": "trt"}.get(engine.lower(), engine.lower())
 
 
 def build_chunk_executor(
@@ -560,25 +595,12 @@ def build_chunk_executor(
     chunk_fn: Callable[[Any], Any] | None = None,
     chunk_size: int | None = None,
     adapter_name: str = "policy",
-) -> Any | None:
+) -> ChunkedExecutor | None:
     """Build + start a :class:`ChunkedExecutor` for a chunked adapter.
 
-    The ONE wiring seam every chunked adapter shares, so the executor's
-    buffer semantics, the ``chunk_prefetch`` flag, and the per-family chunk
-    producers stay in a single place instead of being re-implemented per
-    adapter:
-
-    - Pop ticks come from the executor-owned buffer — no observation batch
-      is built, no policy call happens (this replaced the earlier per-adapter
-      "fast pop" guards, which were coupled to each policy's private queue
-      layout).
-    - ``spec_extra["chunk_prefetch"]`` (set by the deploy runtime via
-      ``policy_extra.setdefault``; a manifest's ``policy_extras`` can pin it
-      off) only controls WHETHER the boundary inference overlaps execution:
-      truthy → background pre-fetch (``prefetch_at=15``), falsy →
-      ``prefetch_at=0``, a plain synchronous chunk buffer with action
-      semantics identical to lerobot's internal queue — the eval path stays
-      paper-faithful.
+    Pop ticks come from the executor-owned buffer, so no observation batch is
+    built and no policy call runs. ``chunk_prefetch`` enables background
+    inference; ``chunk_prefetch_at`` tunes its lead in actions (default 15).
 
     NOT for policies whose ``select_action`` consumes the observation on
     every call (Diffusion Policy keeps ``n_obs_steps`` of observation
@@ -595,9 +617,9 @@ def build_chunk_executor(
         adapter_name: Label for the enable log line.
 
     Returns:
-        A STARTED executor, or ``None`` when the effective chunk size is <= 1
-        (per-step policies like the shipped ACT manifests have no chunk to
-        buffer).
+        A started executor. Returns ``None`` for single-step lerobot policies;
+        custom producers still get a synchronous one-action buffer so their
+        output contract is checked.
     """
     from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
 
@@ -606,14 +628,30 @@ def build_chunk_executor(
         if chunk_size is not None
         else getattr(getattr(policy, "config", None), "n_action_steps", 1) or 1
     )
-    if n <= 1:
+    if n < 1:
+        raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
+    if n == 1 and chunk_fn is None:
         return None
-    prefetch = bool(spec_extra.get("chunk_prefetch"))
+    prefetch = spec_extra.get("chunk_prefetch", False)
+    if not isinstance(prefetch, bool):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
+    prefetch_at = 0
+    if prefetch and n > 1:
+        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 15)
+        if isinstance(raw_prefetch_at, bool) or not isinstance(raw_prefetch_at, int):
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be an integer"
+            )
+        if raw_prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
+            )
+        prefetch_at = min(raw_prefetch_at, n - 1)
     executor = ChunkedExecutor(
         policy,
         chunk_fn=chunk_fn,
         chunk_size=n,
-        prefetch_at=15 if prefetch else 0,
+        prefetch_at=prefetch_at,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -622,31 +660,9 @@ def build_chunk_executor(
         adapter=adapter_name,
         n_action_steps=n,
         prefetch=prefetch,
+        prefetch_at=prefetch_at,
     )
     return executor
-
-
-_AdapterT = TypeVar("_AdapterT")
-
-
-def attach_chunk_executor(
-    adapter: _AdapterT, spec_extra: dict[str, Any], **kwargs: Any
-) -> _AdapterT:
-    """Attach :func:`build_chunk_executor`'s result to ``adapter._chunk_executor``.
-
-    Returns the adapter, so a policy factory's tail stays one statement::
-
-        return attach_chunk_executor(adapter, spec.extra, policy=policy, adapter_name="pi05")
-
-    Args:
-        adapter: A built policy adapter with a ``_chunk_executor`` field.
-        spec_extra: The ``VLASpec.extra`` dict.
-        **kwargs: Forwarded to :func:`build_chunk_executor`.
-    """
-    # reason: adapters are duck-typed dataclasses sharing the `_chunk_executor`
-    # field by convention; a Protocol for one attribute is not worth the ceremony.
-    adapter._chunk_executor = build_chunk_executor(spec_extra, **kwargs)  # type: ignore[attr-defined]
-    return adapter
 
 
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:

@@ -26,7 +26,7 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
-    attach_chunk_executor,
+    build_chunk_executor,
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
@@ -211,9 +211,6 @@ class _SmolVLAAdapter:
     # observation carrying image_handles; shares the TRT runtime's cached
     # vision engine.
     _nvmm_encoder: Any = None
-    # ChunkedExecutor buffer for every chunked checkpoint (see
-    # `_vla_core.build_chunk_executor`); prefetch only when the deploy
-    # runtime sets ``chunk_prefetch``. ``None`` = per-step policy.
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
@@ -221,19 +218,11 @@ class _SmolVLAAdapter:
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
-            # Stops the pre-fetch thread, clears the buffer, resets the policy.
             self._chunk_executor.reset()
         elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        # Chunk-buffer path (every chunked checkpoint): the ChunkedExecutor
-        # owns the per-step buffer, so pop ticks build no batch and touch no
-        # policy — same action semantics as lerobot's internal queue on the
-        # eval path (prefetch_at=0), plus background chunk N+1 pre-fetch on
-        # the deploy path (``chunk_prefetch`` in VLASpec.extra — SmolVLA's
-        # async inference mode). The batch is lazy: built only on the tick
-        # that actually launches an inference.
         if self._chunk_executor is not None:
             self._update_input_preview(observation)
             action_tensor = self._chunk_executor.select_action(
@@ -241,7 +230,6 @@ class _SmolVLAAdapter:
             )
             return to_numpy_action(self._postprocessor(action_tensor))
 
-        # Per-step fallback (n_action_steps <= 1): full batch every tick.
         batch = self._prepared_batch(observation, instruction)
         action_tensor = run_inference(self._policy, batch)
         action_tensor = self._postprocessor(action_tensor)
@@ -287,7 +275,7 @@ class _SmolVLAAdapter:
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
         if self._chunk_executor is not None:
-            self._chunk_executor.stop()  # join the pre-fetch thread first
+            self._chunk_executor.stop()
             self._chunk_executor = None
         if self._nvmm_encoder is not None:
             self._nvmm_encoder.close()
@@ -340,11 +328,11 @@ class _SmolVLAAdapter:
                 "needs all cameras (partial NVMM tiers are unsupported)."
             )
         if self._nvmm_encoder is None:
-            from openral_pro_trt.nvmm_vision_encoder import (  # type: ignore[import-not-found]
-                NvmmVisionEncoder,
-            )
+            from importlib import import_module
 
-            self._nvmm_encoder = NvmmVisionEncoder(
+            nvmm_vision = import_module("openral_pro_trt.nvmm_vision_encoder")
+
+            self._nvmm_encoder = nvmm_vision.NvmmVisionEncoder(
                 sampler.vision_onnx,
                 model_id=sampler.vision_rskill_id,
                 device_index=sampler.device_index,
@@ -355,12 +343,12 @@ class _SmolVLAAdapter:
                 n_cameras=self._nvmm_encoder.n_cameras,
                 model_id=sampler.vision_rskill_id,
             )
-        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found]
-            NvBufSurfaceHandle,
-        )
+        from importlib import import_module
+
+        nvbufsurface = import_module("openral_pro_trt.nvbufsurface")
 
         embs = self._nvmm_encoder.encode_nvmm(
-            [NvBufSurfaceHandle.model_validate(d) for d in ordered]
+            [nvbufsurface.NvBufSurfaceHandle.model_validate(d) for d in ordered]
         )
         sampler.set_precomputed_img_embs(embs)
         return True
@@ -460,7 +448,7 @@ class _SmolVLAAdapter:
                 preview = to_input_frame(img, flip_180=self._flip_images_180)
                 if preview is not None:
                     preview_frames.append(preview)
-                t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+                t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
                 if self._flip_images_180:
                     t = torch.flip(t, dims=[1, 2])
                 t = t.unsqueeze(0).to(self.device)
@@ -710,4 +698,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,
     )
-    return attach_chunk_executor(adapter, spec.extra, policy=policy, adapter_name="smolvla")
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra, policy=policy, adapter_name="smolvla"
+    )
+    return adapter

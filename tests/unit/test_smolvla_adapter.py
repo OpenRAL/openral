@@ -19,6 +19,7 @@ Test strategy
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 from typing import Any
@@ -34,6 +35,7 @@ from openral_core.schemas import (
     RSkillState,
     WorldState,
 )
+from openral_rskill._vla_core import build_chunk_executor
 from openral_rskill.smolvla import (
     ChunkedExecutor,
     SmolVLAAdapter,
@@ -483,15 +485,13 @@ class TestChunkedExecutorChunkFn:
         with pytest.raises(ValueError, match="chunk_fn together with chunk_size"):
             ChunkedExecutor(chunk_fn=lambda payload: [])
 
-    def test_sequence_chunks_are_not_truncated(self) -> None:
-        """A custom producer owns its chunk length; chunk_size is nominal."""
+    def test_sequence_chunk_size_mismatch_is_rejected(self) -> None:
         ex = ChunkedExecutor(
             chunk_fn=lambda payload: [torch.full((1, 6), 7.0)] * 5, chunk_size=3, prefetch_at=0
         )
         ex.start()
-        for _ in range(5):  # 5 actions from ONE inference despite chunk_size=3
-            assert float(ex.select_action({})[0, 0]) == 7.0
-        assert len(ex._buffer) == 0
+        with pytest.raises(ROSRuntimeError, match="expected 3 actions, producer returned 5"):
+            ex.select_action({})
 
     def test_short_chunk_prefetches_right_after_first_pop(self) -> None:
         """chunks shorter than prefetch_at trigger at chunk_size - 1."""
@@ -521,3 +521,62 @@ class TestChunkedExecutorChunkFn:
         ex.reset()
         assert p._reset_calls == 1
         assert p._call_count == 0  # producer used, not policy.predict_action_chunk
+
+    def test_stop_waits_for_running_prefetch(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def chunk_fn(payload: Any) -> list[torch.Tensor]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                started.set()
+                release.wait()
+            return [torch.zeros(1, 6)] * 4
+
+        ex = ChunkedExecutor(chunk_fn=chunk_fn, chunk_size=4, prefetch_at=1)
+        ex.start()
+        for _ in range(3):
+            ex.select_action({})
+        assert started.wait(timeout=1.0)
+
+        stopper = threading.Thread(target=ex.stop)
+        stopper.start()
+        stopper.join(timeout=0.05)
+        assert stopper.is_alive()
+        release.set()
+        stopper.join(timeout=1.0)
+        assert not stopper.is_alive()
+
+
+class TestBuildChunkExecutor:
+    def test_custom_single_action_producer_keeps_synchronous_buffer(self) -> None:
+        ex = build_chunk_executor(
+            {"chunk_prefetch": True},
+            chunk_fn=lambda payload: [torch.zeros(1, 6)],
+            chunk_size=1,
+            adapter_name="test",
+        )
+        assert ex is not None
+        assert ex._prefetch_at == 0
+
+    def test_prefetch_lead_is_configurable_and_clamped(self) -> None:
+        ex = build_chunk_executor(
+            {"chunk_prefetch": True, "chunk_prefetch_at": 99},
+            chunk_fn=lambda payload: [torch.zeros(1, 6)] * 4,
+            chunk_size=4,
+            adapter_name="test",
+        )
+        assert ex is not None
+        assert ex._prefetch_at == 3
+
+    @pytest.mark.parametrize("value", [0, -1, True, "2"])
+    def test_invalid_prefetch_lead_is_rejected(self, value: Any) -> None:
+        with pytest.raises(ROSConfigError, match="chunk_prefetch_at"):
+            build_chunk_executor(
+                {"chunk_prefetch": True, "chunk_prefetch_at": value},
+                chunk_fn=lambda payload: [torch.zeros(1, 6)] * 4,
+                chunk_size=4,
+                adapter_name="test",
+            )

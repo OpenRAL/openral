@@ -33,7 +33,7 @@ from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
-    attach_chunk_executor,
+    build_chunk_executor,
     call_make_processors_cached_first,
     release_torch_modules,
     resolve_camera_keys,
@@ -126,8 +126,6 @@ class _PI05Adapter:
     # then trips a dtype mismatch. autocast silently up/down-casts so
     # mixed-precision compute Just Works.
     _autocast_dtype: Any = None
-    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`);
-    # prefetch only when the deploy runtime sets ``chunk_prefetch``.
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
@@ -135,25 +133,17 @@ class _PI05Adapter:
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
-            # Stops the pre-fetch thread, clears the buffer, resets the policy.
             self._chunk_executor.reset()
         elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        # Chunk-buffer path (see `_vla_core.build_chunk_executor`): pop ticks
-        # build no batch and touch no policy; the boundary inference goes
-        # through `_chunk_forward` (which carries this adapter's autocast
-        # contract), in the background when the deploy runtime set
-        # ``chunk_prefetch``. π0.5's PaliGemma tokenizer + 3-camera batch
-        # build ran on every tick before this, wasted 24 of 25 ticks.
         if self._chunk_executor is not None:
             action_tensor = self._chunk_executor.select_action(
                 lambda: self._prepared_batch(observation, instruction)
             )
             return to_numpy_action(self._postprocessor(action_tensor))
 
-        # Per-step fallback (n_action_steps <= 1).
         batch = self._prepared_batch(observation, instruction)
         with inference_span(kind="single"), self._torch.no_grad(), self._autocast_ctx():
             action_tensor = self._policy.select_action(batch)
@@ -204,7 +194,7 @@ class _PI05Adapter:
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
         if self._chunk_executor is not None:
-            self._chunk_executor.stop()  # join the pre-fetch thread first
+            self._chunk_executor.stop()
             self._chunk_executor = None
         release_torch_modules(
             self,
@@ -240,7 +230,7 @@ class _PI05Adapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
@@ -992,8 +982,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             else (torch.float16 if torch_dtype == torch.float16 else None)
         ),
     )
-    # Chunk buffer via the shared seam; π0.5's forward needs its autocast
-    # contract, so the adapter's own `_chunk_forward` is the producer.
-    return attach_chunk_executor(
-        adapter, spec.extra, policy=policy, chunk_fn=adapter._chunk_forward, adapter_name="pi05"
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra,
+        policy=policy,
+        chunk_fn=adapter._chunk_forward,
+        adapter_name="pi05",
     )
+    return adapter

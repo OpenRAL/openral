@@ -42,7 +42,7 @@
     // Actions consumed per VLA inference (manifest n_action_steps). The old
     // key here was the wire horizon (rows per ActionChunk message) — always 1
     // on the deploy path, a structural constant with no signal.
-    setId($("id-horizon"), id["inference.chunk_size"]);
+    setId($("id-chunk-size"), id["inference.chunk_size"]);
     setId($("id-kernel"), id["safety.kernel"]);
   }
 

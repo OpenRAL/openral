@@ -224,7 +224,7 @@ class _ACTAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
@@ -284,31 +284,32 @@ def _maybe_build_act_nvmm(
     if not device_onnx or not device.startswith("cuda"):
         return None
     try:
+        from importlib import import_module
+
         import tensorrt  # noqa: F401  # reason: probe for the device path
-        from openral_pro_trt.act_nvmm import ActNvmmExecutor  # type: ignore[import-not-found]
-        from openral_pro_trt.act_trt import ensure_act_onnx  # type: ignore[import-not-found]
-        from openral_pro_trt.runtime_tensorrt import (  # type: ignore[import-not-found]
-            TensorRTRuntime,
-        )
-        from openral_pro_trt.smolvla_trt import _device_index  # type: ignore[import-not-found]
+
+        act_nvmm = import_module("openral_pro_trt.act_nvmm")
+        act_trt = import_module("openral_pro_trt.act_trt")
+        trt_runtime = import_module("openral_pro_trt.runtime_tensorrt")
+        smolvla_trt = import_module("openral_pro_trt.smolvla_trt")
     except ImportError:
         _log.info("act_nvmm.unavailable", reason="tensorrt/deps absent — host path")
         return None
 
-    onnx_path = ensure_act_onnx(repo_id, onnx_uri=device_onnx)
-    engine_bytes = TensorRTRuntime(
+    onnx_path = act_trt.ensure_act_onnx(repo_id, onnx_uri=device_onnx)
+    engine_bytes = trt_runtime.TensorRTRuntime(
         device=device, rskill_id=f"{repo_id}#act-device"
     ).serialized_engine(onnx_path)
     cfg = policy.config
     image_input_names = [k.replace("observation.images.", "img_") for k in cfg.image_features]
     _, h, w = next(iter(cfg.image_features.values())).shape
-    executor = ActNvmmExecutor(
+    executor = act_nvmm.ActNvmmExecutor(
         engine_bytes,
         image_input_names=image_input_names,
         state_input_name="state",
         height=h,
         width=w,
-        device_index=_device_index(device),
+        device_index=smolvla_trt._device_index(device),
     )
     _log.info(
         "act_nvmm.attached",

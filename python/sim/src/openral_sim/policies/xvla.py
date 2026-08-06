@@ -32,7 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill._vla_core import (
-    attach_chunk_executor,
+    build_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -66,9 +66,6 @@ class _XVLAAdapter:
     _empty_camera_size: tuple[int, int] = (224, 224)
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
     _last_input_frame: NDArray[np.uint8] | None = None
-    # ChunkedExecutor buffer (see `_vla_core.build_chunk_executor`);
-    # eval-only adapter, so prefetch never engages (flag unset) — the
-    # buffer still removes the wasted 5-stage per-tick observation work.
     _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
@@ -76,25 +73,17 @@ class _XVLAAdapter:
 
     def reset(self) -> None:
         if self._chunk_executor is not None:
-            # Stops any pre-fetch, clears the buffer, resets the policy.
             self._chunk_executor.reset()
         elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        # Chunk-buffer path (see `_vla_core.build_chunk_executor`): stages 1-3
-        # (the 5-stage pipeline's whole observation side — LiberoProcessorStep,
-        # tokenize, forward) run only on inference-launching ticks; pop ticks
-        # go straight to stages 4-5 on the buffered per-step tensor. Before
-        # this, all five stages ran every tick and the queue pop discarded
-        # stages 1-3's work.
         if self._chunk_executor is not None:
             action_tensor = self._chunk_executor.select_action(
                 lambda: self._prepared_batch(observation, instruction)
             )
             return self._postprocess_action(action_tensor)
 
-        # Per-step fallback (n_action_steps <= 1).
         batch = self._prepared_batch(observation, instruction)
         action_tensor = run_inference(self._policy, batch)
         return self._postprocess_action(action_tensor)
@@ -313,4 +302,5 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         _converters=_converters,
         _camera_keys=cam_keys,
     )
-    return attach_chunk_executor(adapter, spec.extra, policy=policy, adapter_name="xvla")
+    adapter._chunk_executor = build_chunk_executor(spec.extra, policy=policy, adapter_name="xvla")
+    return adapter
