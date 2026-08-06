@@ -50,6 +50,9 @@ runtime it depends on as an OpenRAL Pro plugin.
 | `rldx1-ft-gr1-nf4` | rldx | gr1 |
 | `rldx1-ft-libero-nf4` | rldx | franka_panda |
 | `rldx1-ft-rc365-nf4` | rldx | panda_mobile |
+| `xr1-robocasa` | xr1 | panda_mobile |
+| `xr1-robocasa365` | xr1 | panda_mobile |
+| `xr1-vlabench` | xr1 | franka_panda |
 | `rldx1-ft-simpler-widowx-nf4` | rldx | widowx |
 | `smolvla-libero` | smolvla | franka_panda |
 | `smolvla-maniskill-franka` | smolvla | franka_panda |

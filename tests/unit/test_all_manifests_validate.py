@@ -106,6 +106,10 @@ _SIM_STEMS: list[str] = [
     "so101_tube_insertion",
     "tabletop_cube_push",
     "widowx_carrot_on_plate",
+    "xr1_robocasa365_close_blender_lid",
+    "xr1_robocasa365_open_drawer",
+    "xr1_robocasa_pnp",
+    "xr1_vlabench_select_fruit",
 ]
 
 _DEPLOY_STEMS: list[str] = [

@@ -57,6 +57,9 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`rldx1-ft-libero-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-libero-nf4/) | RLWRLD RLDX-1 (Qwen3-VL-8B + MSAT, ~6.9 B) | `franka_panda` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-gr1-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-gr1-nf4/) | RLDX-1 (GR1 bimanual) | `gr1` | RLWRLD non-commercial — sidecar runtime |
 | [`rldx1-ft-rc365-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-rc365-nf4/) | RLDX-1 (RoboCasa365 fine-tune) | `panda_mobile` | RLWRLD non-commercial — sidecar runtime |
+| [`xr1-robocasa`](https://github.com/OpenRAL/openral/tree/master/rskills/xr1-robocasa/) | Xiaomi Robotics XR-1 RoboCasa | `panda_mobile` | Apache-2.0 — pinned custom-code sidecar |
+| [`xr1-robocasa365`](https://github.com/OpenRAL/openral/tree/master/rskills/xr1-robocasa365/) | Xiaomi Robotics XR-1 RoboCasa365 | `panda_mobile` | Apache-2.0 — temporal custom-code sidecar |
+| [`xr1-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/xr1-vlabench/) | Xiaomi Robotics XR-1 VLABench | `franka_panda` | Apache-2.0 — NF4 sidecar, live-validated at 3.66 GiB VRAM |
 | [`rldx1-ft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/rldx1-ft-simpler-widowx-nf4/) | RLDX-1 (SimplerEnv WidowX fine-tune) | `widowx` | RLWRLD non-commercial — sidecar runtime |
 | [`openvla-oft-simpler-widowx-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/openvla-oft-simpler-widowx-nf4/) | OpenVLA-OFT (RLinf PPO ManiSkill3 PutOnPlateInScene25; NF4) | `widowx` | MIT — transformers custom-code; validated 2/5 on SimplerEnv carrot |
 | [`gr00t-n17-libero`](https://github.com/OpenRAL/openral/tree/master/rskills/gr00t-n17-libero/) | NVIDIA Isaac GR00T N1.7 (3B, Cosmos-Reason2-2B VLM backbone) | `franka_panda` | NVIDIA Open Model License (commercial OK) — in-process lerobot 0.6.0 `GrootPolicy`, backbone-only NF4 |
@@ -67,6 +70,10 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`rskill-smolvla-so101-eraser_place-bf16`](https://github.com/OpenRAL/openral/tree/master/rskills/rskill-smolvla-so101-eraser_place-bf16/) | SmolVLA SO-101 "place the erase on the blue square" checkpoint (makermods, 25 real teleop episodes) | `so101_follower` | Apache-2.0 — weights stay upstream; chunk verified against the training data |
 | [`smolvla-robotwin`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-robotwin/) | SmolVLA finetuned on RoboTwin 2.0 (50 bimanual SAPIEN tasks) | `aloha_agilex` | Apache-2.0 — py3.10 SAPIEN sidecar |
 | [`smolvla-vlabench`](https://github.com/OpenRAL/openral/tree/master/rskills/smolvla-vlabench/) | SmolVLA finetuned on VLABench (`lerobot/vlabench_unified`, 97 tasks) — integration baseline, 0% on current tasks | `franka_panda` | Apache-2.0 |
+
+`XiaomiRobotics/Xiaomi-Robotics-1-5B` is intentionally absent: its only model
+artifact is a raw `model_states.pt` post-training seed with no processor or
+direct inference contract. Package a resulting task post-train, not the seed.
 
 ## Perception rSkills (`kind: detector`)
 

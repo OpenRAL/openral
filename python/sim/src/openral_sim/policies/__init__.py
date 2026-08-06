@@ -30,6 +30,7 @@ def _register_policies() -> None:
         rldx,
         robots,
         smolvla,
+        xr1,
         xvla,
     )
 
