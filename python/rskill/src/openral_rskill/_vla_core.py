@@ -494,7 +494,8 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
-    call: Callable[[Any], Any] | None = None,
+    call: Callable[..., Any] | None = None,
+    call_kwargs: dict[str, Any] | None = None,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
 
@@ -522,6 +523,12 @@ def run_inference(
             instrumented entry point for chunk producers with autocast,
             decoding, or non-lerobot APIs. ``policy`` may be ``None`` in this
             mode.
+        call_kwargs: Extra keyword arguments splatted into ``call`` — the RTC
+            executor threads ``inference_delay`` / ``prev_chunk_left_over``
+            through here. ``None`` (the default) calls ``call(batch)`` exactly
+            as before, so non-RTC producers keep their 1-arg signature. When
+            ``inference_delay`` is present it is recorded on the span as
+            ``inference.rtc_delay``.
 
     Returns:
         The raw tensor returned by the invoked callable / policy method.
@@ -536,13 +543,17 @@ def run_inference(
         extras["chunk_size"] = chunk_size
     if device is not None:
         extras["device"] = str(device)
+    if call_kwargs and "inference_delay" in call_kwargs:
+        extras["rtc_delay"] = int(call_kwargs["inference_delay"] or 0)
     with (
         inference_span(chunk_index=chunk_index, kind=kind, **extras) as span,
         torch.no_grad(),
     ):
         started_ns = perf_counter_ns()
         try:
-            return call(batch) if call is not None else policy.select_action(batch)
+            if call is not None:
+                return call(batch, **call_kwargs) if call_kwargs else call(batch)
+            return policy.select_action(batch)
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
