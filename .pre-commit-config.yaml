@@ -27,6 +27,12 @@ repos:
         language: system
         pass_filenames: false
         files: ^python/(core|cli|sim)/
+      - id: schema-export
+        name: check JSON Schema drift
+        entry: uv run python tools/schema_export.py --check
+        language: system
+        pass_filenames: false
+        files: ^(python/core/src/openral_core/|tools/schema_export\.py)
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:
