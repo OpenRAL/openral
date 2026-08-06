@@ -53,12 +53,14 @@ The honest gaps, all visible in a side-by-side:
   manifest's JOINT ENVELOPE note) — which lifts the arm ~1.5 cm higher in the
   frame than the training video shows. Widening the limits to fix this is a
   safety-WG decision, not a scene tweak (CLAUDE.md §3).
-* The wrist camera is calibrated against the dataset's own wrist video (the
-  manifest's ``sim_placement`` reprojects the tape 172 px off; the fitted pose
-  lands at 26.6 px, 24.6 px held out) — but only the OBJECTS were fitted. The
-  real rig's jaws fill far more of the frame than the sim's, so the gripper's
-  own appearance in the grasp camera is still off, and wrist exposure runs
-  ~15% brighter than the real frames.
+* The wrist camera is posed against the dataset's own wrist video at matched
+  joint poses so the jaws frame the eraser at grasp exactly as the real rig's
+  fingers do (an earlier tape-only PnP fit matched the world objects but left
+  the jaws out of frame — see ``wrist_camera_pos_local``). Wrist exposure
+  still runs ~15% brighter than the real frames (MuJoCo has no per-camera
+  exposure; dimming the shared lights would break the front camera's
+  calibrated luminance), and the real frames' strong arm shadow and desk
+  specular pool remain softer here.
 
 Cameras are named ``front`` and ``wrist`` — the checkpoint's own input-feature
 suffixes — so the eraser rSkill's ``image_preprocessing.aliases`` (which are
@@ -323,25 +325,26 @@ class EraserSceneOptions:
     front_camera_target: tuple[float, float, float] = (-0.080, -0.304, 0.0)
     front_camera_fovy: float = 28.8
 
-    # CALIBRATED against the dataset's own wrist video, not inherited. The
-    # blue tape is fixed in the world and visible in most wrist frames, so with
-    # the gripper pose from FK its position in the GRIPPER frame sweeps
-    # 16 x 17 x 11 cm across the episodes — a well-conditioned PnP for the
-    # camera-in-gripper transform. Over 49 frames the robot manifest's
-    # `sim_placement` reprojects the tape 172 px off (a quarter of the frame);
-    # this pose lands at 26.6 px, and a fit on half the frames scores 24.6 px
-    # on the held-out half, so it generalises rather than memorises.
-    #
-    # The fitted fovy (49.3 deg) independently corroborates the manifest's own
-    # `wrist` INTRINSICS (fx = 480 at 640x480 -> 53.1 deg) and contradicts its
-    # `sim_placement.fovy_deg: 90` — a disagreement the manifest already flags
-    # in a comment. Left scene-local on purpose: the manifest models a
-    # different SO-101 phone rig (Cornito/so101_test2), and re-pointing every
-    # so101 scene at this bench's rig is a manifest change, not a scene tweak.
-    wrist_camera_pos_local: tuple[float, float, float] = (-0.0108, 0.088, -0.0329)
-    wrist_camera_target_local: tuple[float, float, float] = (-0.0329, -0.0278, -0.2423)
-    wrist_camera_up_local: tuple[float, float, float] = (-0.0427, 0.8762, -0.48)
-    wrist_camera_fovy: float = 49.3
+    # POSED against the dataset's own wrist video at matched joint poses. An
+    # earlier tape-only PnP fit (26.6 px reprojection over 49 frames) matched
+    # the WORLD objects but put the jaws almost entirely out of frame — the
+    # real rig's two black fingers rise from the bottom edge, fill the bottom
+    # third, and frame the eraser between their tips at grasp, which is the
+    # dominant close-range cue the checkpoint's grasp phase saw in training.
+    # The tape sits ~60-70 deg off the jaw axis, so that fit was insensitive
+    # to exactly the translation the jaw framing depends on. This pose is
+    # constructed in the gripper frame instead — behind/above the jaw base
+    # (jaw axis = local -z, tips at z = -0.104), aimed past the tips, rolled
+    # so the fingers enter bottom-center — and validated side-by-side against
+    # real home/approach/grasp frames of episode 0: jaw tips ~55-70%% height,
+    # eraser above the tips on approach, tape entering at the left edge, all
+    # matching the real composition. The desk-object reprojection stays
+    # consistent with the real frames at those poses (checked visually, not
+    # re-fit numerically).
+    wrist_camera_pos_local: tuple[float, float, float] = (0.0, 0.05, -0.02)
+    wrist_camera_target_local: tuple[float, float, float] = (0.0, -0.04, -0.31)
+    wrist_camera_up_local: tuple[float, float, float] = (0.0, 0.9551, -0.2964)
+    wrist_camera_fovy: float = 52.0
 
     home_qpos_rad: tuple[float, ...] = (-0.1258, -1.7453, 1.5708, 0.9897, 0.1074, 0.0195)
 
