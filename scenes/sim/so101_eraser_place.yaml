@@ -1,0 +1,113 @@
+# SO-101 on a white desk — the sim twin of the real eraser-place bench.
+#
+# Reproduces the fixed-camera layout the `rskill-smolvla-so101-eraser_place-bf16`
+# checkpoint was trained on (dataset `makermods/eraser_place_unblurry_real`):
+# an SO-101 follower facing forward on a white desk, a dark block sitting in
+# front of it, and a small square of blue tape to the arm's right marking the
+# drop target.
+#
+# Layout (top view; the arm sits at the world origin facing -Y, the SO-ARM101
+# MJCF convention; the front camera sits high above/behind the arm and 15 cm
+# to its right so the arm never occludes the gripper + eraser — the real
+# bench's overview composition, laterally unblocked):
+#
+#     +Y (behind the arm)
+#     ↑        ▽ front camera at (-0.210, 0.138, 0.638) → (-0.080, -0.304, 0)
+#     |        [SO-101]  base at the origin
+#     |
+#     |    ▪ tape      ▪ eraser        ← eraser 25.8 cm in front of the base,
+#     |   (blue)         8.4 cm          tape 8.4 cm to the arm's RIGHT
+#     +---------------------------> -X (image right)
+#
+# GEOMETRY, CAMERA AND EXPOSURE ARE MEASURED against the dataset itself, not
+# eyeballed from a screenshot — see the backend module docstring for the method
+# and the cross-checks. Against a real frame this scene renders the tape within
+# 1.5 px of its true column and at its true size (65×41 px vs 63×41), both
+# object colours within ~2 counts per channel, and the same global luminance
+# (126 vs 126). Known gaps: the real rig has a second (teleop leader) arm in
+# the bottom-right of every frame, and the real block is two-tone.
+#
+# Cameras are named `front` / `wrist` — the checkpoint's own input-feature
+# suffixes — so the rSkill's `image_preprocessing.aliases` (keyed by the
+# camera1/camera2 slots) pass through untouched and the batch lands on
+# observation.images.{front,wrist}. No `camera_aliases` override needed.
+#
+# Run::
+#
+#     openral sim run --config scenes/sim/so101_eraser_place.yaml \
+#         --rskill rskills/rskill-smolvla-so101-eraser_place-bf16
+
+scene:
+  id: so101_eraser              # @SCENES.register("so101_eraser", fixed_robot="so101_follower")
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["front", "wrist"]
+  backend_options:
+    # Proprio + action units. The checkpoint emits LeRobot servo DEGREES; the
+    # env converts at the policy boundary. The calibration affine is IDENTITY
+    # and that is correct here (not a placeholder): the rSkill manifest records
+    # the operator home as [-7.21, -102.68, 95.12, 56.70, 6.15] LeRobot degrees
+    # and declares `starting_pose` as the plain radians() of those same numbers,
+    # i.e. this dataset shares the MJCF's `so101_new_calib` zero.
+    joint_units: degrees
+    joint_offsets_deg: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_signs: [1, 1, 1, 1, 1, 1]
+
+    # Arm home = the eraser rSkill's `starting_pose` (the teleop operator's real
+    # home, per-joint median over all 25 episodes' first AND last frames).
+    # Mixed units, per the OpenRAL joint-channel contract: 5 arm joints in
+    # radians, gripper as a normalised [0, 1] opening.
+    home_qpos_rad: [-0.1258, -1.7453, 1.5708, 0.9897, 0.1074, 0.0195]
+
+    # Object placement (metres) — MEASURED from the dataset, not guessed.
+    # Forward kinematics on all 25 teleop episodes: the frame where the gripper
+    # closes gives the eraser, the frame where it reopens gives the tape. TCP
+    # means over N=25 were grasp (+0.024, -0.258) std (0.014, 0.013) and
+    # release (-0.060, -0.267) std (0.024, 0.011). So the tape sits 8.4 cm to
+    # the arm's right of the eraser — not the 5 cm a glance at the frame
+    # suggests — at essentially the same depth.
+    eraser_offset_x: 0.024      # 2.4 cm to the arm's LEFT of centreline
+    eraser_offset_y: 0.258      # 25.8 cm in front of the base
+    tape_offset_x: 0.084        # 8.4 cm to the arm's right (world -X = image right)
+    tape_offset_y: 0.0
+    # Default jitter = the observed per-episode grasp spread, so a multi-episode
+    # eval samples the same layout distribution the operator produced. Set both
+    # to 0 for a bit-identical layout every reset.
+    spawn_jitter_m: 0.013
+    spawn_yaw_jitter_deg: 15.0
+
+    # Lighting condition. `bench` is calibrated against the dataset frames
+    # (global mean luminance 126/255, std 30, bright specular pool at the near
+    # left from a low desk lamp). Others — bright / dim / warm / cool /
+    # overhead / sidelit — are domain-randomisation handles, not other real
+    # benches. `lighting_jitter` re-rolls lamp intensity and position each
+    # reset (0 = off, so `bench` stays bit-identical).
+    lighting: bench
+    lighting_scale: 1.0
+    lighting_jitter: 0.0
+
+task:
+  id: so101_eraser/eraser_place
+  scene_id: so101_eraser
+  # VERBATIM the single training task string, upstream typo included — the
+  # checkpoint saw no other instruction (rskill.yaml `description`).
+  instruction: "place the erase on the blue square"
+  max_steps: 500
+  success_key: is_success
+
+seed: 42
+n_episodes: 1
+record_video: false
+
+metadata:
+  honest_scope: >
+    Sim twin of a REAL-teleop-trained checkpoint. Object placement comes from
+    forward kinematics on all 25 teleop episodes; the camera is fitted to the
+    resulting world-to-pixel correspondences with fovy taken from the robot
+    manifest; exposure is matched to the frames' histogram. It is NOT a
+    calibrated reconstruction: the camera's absolute pose was never measured,
+    the second (teleop leader) arm visible in every training frame is absent,
+    and the block is modelled as a uniform box rather than the real two-tone
+    object. Success is geometric (eraser centre within 2 cm of the tape centre
+    and resting at tape height).

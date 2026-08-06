@@ -1,0 +1,54 @@
+# SO-101 eraser-place bench — deploy twin of the real `makermods` rig.
+#
+# Env-only DeployScene (no task, no eval): boots the full OpenRAL stack
+# (HAL + safety kernel + reasoner + prompt router + runtime + dashboard)
+# against a MuJoCo twin of the bench that produced
+# `rskills/rskill-smolvla-so101-eraser_place-bf16`.
+#
+# WHY `composition` IS LOAD-BEARING HERE. The SO-101 is a `bare_twin_sim`
+# robot in `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY`: `deploy sim` does NOT
+# attach to the sim-tier rollout, it builds a MuJoCo twin straight off the
+# robot manifest's `assets.mjcf`. Without this block the stack would boot a
+# bare arm on an empty plane — no desk, no eraser, no tape — and the policy
+# would have nothing to look at. The composer below splices the same measured
+# arena the sim scene uses (see scenes/sim/so101_eraser_place.yaml and the
+# backend module docstring for how every number was derived from the dataset).
+#
+# Camera routing: the composed MJCF publishes the fixed overview camera under
+# BOTH `front` (the checkpoint's feature suffix, used by `openral sim run`) and
+# `top` (the name `robots/so101_follower` gives it, used here). The HAL's
+# camera rig only splices manifest sensors that are MISSING from the MJCF, so
+# the `top` alias is what keeps deploy sim on the fitted pose instead of the
+# manifest's nominal straight-down placement. `wrist` is spliced into the
+# gripper body by the composer at the manifest's own `sim_placement`.
+#
+# No `safety` block: the robot manifest's envelope (±0.4 m, z 0–0.6) already
+# covers this bench, and the task is a desk-level grasp — the `so101_box`
+# scene's tighter z_min of 0.02 m would sit right on top of the grasp height
+# (the recorded TCP closes at z ≈ 0.025 m with the fingertips ~5 mm off the
+# desk) and turn a normal pick into an E-stop.
+#
+# Run::
+#
+#     openral deploy sim --config scenes/deploy/so101_eraser.yaml \
+#         --initial-task "place the erase on the blue square" \
+#         --hal viewer_enabled=false --no-object-detector
+
+scene:
+  id: so101_eraser
+  backend: mujoco
+  observation_height: 480
+  observation_width: 640
+  cameras: ["top", "wrist"]
+
+robot_id: so101_follower
+
+composition:
+  composer: "openral_sim.backends.so101_eraser:compose_so101_eraser_deploy_mjcf"
+  # Every geometry/appearance default already IS the measured bench (see
+  # EraserSceneOptions), so the only params worth pinning here are the ones a
+  # deploy run wants different from a batch eval: a fixed layout, so an
+  # operator watching the dashboard sees the same bench every reset.
+  params:
+    spawn_jitter_m: 0.0
+    spawn_yaw_jitter_deg: 0.0

@@ -26,7 +26,8 @@ returns the bound robot or ``None``):
   is baked into the scene (its own MJCF / a benchmark world); the CLI rejects
   ``--robot``. These reproduce a specific embodiment + reward. Today:
   ``libero`` (franka), ``metaworld`` (sawyer),
-  ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
+  ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_eraser`` (so101 —
+  the desk twin of the real eraser-place bench), ``so101_box`` (so101 — the
   box/tube task is coupled to the so_arm101 MJCF schema),
   ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
   py3.10 sidecar), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
@@ -60,6 +61,7 @@ def _register_backends() -> None:
         robotwin,
         simpler_env,
         so101_box,
+        so101_eraser,
         tabletop_push,
         vlabench,
     )
