@@ -25,7 +25,8 @@
 # 1.5 px of its true column and at its true size (65×41 px vs 63×41), both
 # object colours within ~2 counts per channel, and the same global luminance
 # (126 vs 126). Known gaps: the real rig has a second (teleop leader) arm in
-# the bottom-right of every frame, and the real block is two-tone.
+# the bottom-right of every frame; the block itself now wears the real
+# product label as a wrapped cube texture.
 #
 # Cameras are named `front` / `wrist` — the checkpoint's own input-feature
 # suffixes — so the rSkill's `image_preprocessing.aliases` (keyed by the
@@ -107,7 +108,7 @@ metadata:
     resulting world-to-pixel correspondences with fovy taken from the robot
     manifest; exposure is matched to the frames' histogram. It is NOT a
     calibrated reconstruction: the camera's absolute pose was never measured,
-    the second (teleop leader) arm visible in every training frame is absent,
-    and the block is modelled as a uniform box rather than the real two-tone
-    object. Success is geometric (eraser centre within 2 cm of the tape centre
-    and resting at tape height).
+    and the second (teleop leader) arm visible in every training frame is
+    absent. The block wears the retail product photo as a wrapped cube
+    texture. Success is geometric (eraser centre within 2 cm of the tape
+    centre and resting at tape height).

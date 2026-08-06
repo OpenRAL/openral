@@ -134,50 +134,33 @@ def test_jaws_are_recoloured_to_match_the_real_rig() -> None:
         _recolour_jaws("<mujoco/>", (0.0, 0.0, 0.0, 1.0))
 
 
-def test_eraser_is_two_tone_and_the_sleeve_is_visual_only() -> None:
-    """White block + navy sleeve, with the sleeve carrying no physics.
+def test_eraser_wears_the_wrapper_texture() -> None:
+    """One box collider, product dimensions, the label wrapped as a cube texture.
 
-    The sleeve is what the overview camera sees, so it must be there; but it
-    must not add contacts or change the grasp, so it carries
-    ``contype``/``conaffinity`` zero and the body keeps an explicit inertial.
+    The texture is appearance only: the single geom keeps its contacts and the
+    body its explicit inertial, so physics is exactly the plain block's.
     """
-    from openral_core.exceptions import ROSConfigError
     from openral_sim.backends.so101_eraser import EraserSceneOptions, compose_so101_eraser_mjcf
 
     _, path = compose_so101_eraser_mjcf()
     model = mujoco.MjModel.from_xml_path(str(path))
     body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "eraser")
     block = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "eraser_geom")
-    sleeve = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "eraser_sleeve")
-    assert sleeve >= 0 and model.geom_bodyid[sleeve] == body
-
-    # Two tones, and the right way round: pale block, dark blue-biased sleeve.
-    assert model.geom_rgba[block][:3].min() > 0.9
-    assert model.geom_rgba[sleeve][:3].max() < 0.5
-    assert model.geom_rgba[sleeve][2] > model.geom_rgba[sleeve][0]
-
-    # Sleeve is decoration: no contacts, and it does not shrink the collider.
-    assert model.geom_contype[sleeve] == 0
-    assert model.geom_conaffinity[sleeve] == 0
+    assert model.geom_bodyid[block] == body
     assert model.geom_contype[block] != 0
 
-    # It covers the +X end only, leaving the white end exposed, and stands
-    # proud of every face it covers (coplanar faces z-fight).
-    opts = EraserSceneOptions()
-    sx = opts.eraser_size[0]
-    lo = model.geom_pos[sleeve][0] - model.geom_size[sleeve][0]
-    hi = model.geom_pos[sleeve][0] + model.geom_size[sleeve][0]
-    assert hi > sx, "sleeve's +X cap is coplanar with the block's — z-fights"
-    assert lo == pytest.approx(sx - 2 * sx * opts.eraser_sleeve_fraction, abs=1e-4)
-    assert model.geom_size[sleeve][1] > opts.eraser_size[1]
+    # The retail product's 40 x 20 x 10 mm block (half-extents).
+    assert tuple(model.geom_size[block]) == pytest.approx(
+        EraserSceneOptions().eraser_size, abs=1e-6
+    )
+    assert EraserSceneOptions().eraser_size == (0.020, 0.010, 0.005)
 
-    # Opting out leaves a plain white block.
-    _, bare_path = compose_so101_eraser_mjcf(EraserSceneOptions(eraser_sleeve_fraction=0.0))
-    bare = mujoco.MjModel.from_xml_path(str(bare_path))
-    assert mujoco.mj_name2id(bare, mujoco.mjtObj.mjOBJ_GEOM, "eraser_sleeve") < 0
-
-    with pytest.raises(ROSConfigError, match="eraser_sleeve_fraction"):
-        compose_so101_eraser_mjcf(EraserSceneOptions(eraser_sleeve_fraction=1.4))
+    # The wrapper: a cube texture bound through the eraser material, and no
+    # leftover second visual geom from the old two-tone modelling.
+    mat = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "eraser_mat")
+    assert mat >= 0 and model.geom_matid[block] == mat
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_TEXTURE, "eraser_tex") >= 0
+    assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "eraser_sleeve") < 0
 
 
 def test_reset_lays_out_the_bench(env_cfg) -> None:

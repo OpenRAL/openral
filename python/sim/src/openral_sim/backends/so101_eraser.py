@@ -44,10 +44,11 @@ The honest gaps, all visible in a side-by-side:
 * The real rig has a SECOND arm — the teleop leader — intruding into the
   bottom-right of every training frame. This scene has only the follower, so
   the sim frame's bottom-right is bare desk.
-* The "eraser" is a white plastic eraser in a dark navy paper sleeve — the
-  label is legible in the wrist view. The scene models both tones as two box
-  geoms, matched on silhouette, size and each tone's mean colour, but NOT on
-  texture: the real sleeve carries printed white lettering this does not.
+* The "eraser" is a white plastic eraser in a blue paper sleeve — the label
+  is legible in the wrist view. The scene wraps the retail product photo
+  around the box as a cube texture: the printed label on the top and bottom
+  faces, matching white/blue bands on the sides and end caps, so the wrapper
+  reads as continuous from every angle the two policy cameras can take.
 * The home pose is CLAMPED to the SO-101 MJCF joint limits — the operator's
   real home exceeds them on shoulder_lift and elbow_flex (see the rSkill
   manifest's JOINT ENVELOPE note) — which lifts the arm ~1.5 cm higher in the
@@ -188,25 +189,15 @@ class EraserSceneOptions:
             two objects are 129.3 px apart at 1490 px/m).
         tape_offset_y: Offset of the tape square from the eraser along ±Y.
             Zero: the frames put both objects on the same image row.
-        eraser_size: Eraser half-extents ``(X, Y, Z)`` — a 42 × 17 × 10 mm
-            block at the default. Sized so the RENDERED object matches the
-            frames' own principal extents (4.0 × 2.2 cm against a real
-            4.2 × 2.2 cm): the apparent width includes the visible side face,
-            so a taller box overshoots even at the right footprint.
-        eraser_rgba: Colour of the ERASER BODY — the white rubber, exposed at
-            the un-sleeved end. Brighter than the desk in the real frames
-            (RGB 143/146/149 against a desk reading 132).
-        eraser_sleeve_rgba: Colour of the paper SLEEVE that wraps the rest of
-            the block. Dark navy: this is what the overview camera mostly sees
-            (RGB 54/55/65 on a desk reading 140) and why the object reads as a
-            dark blob from above despite being a white eraser.
-        eraser_sleeve_fraction: Fraction of the block's length the sleeve
-            covers, measured from the +X end. ``0`` removes the sleeve and
-            leaves a plain white block.
+        eraser_size: Eraser half-extents ``(X, Y, Z)`` — the retail product's
+            40 × 20 × 10 mm at the default (the earlier frame-measured
+            42 × 17 estimate agreed to a few mm).
         eraser_mass: Eraser mass, kg.
-        eraser_yaw_deg: Spawn yaw of the block, degrees. Default -135° matches
+        eraser_yaw_deg: Spawn yaw of the block, degrees. Default +45° matches
             the frames: long axis running lower-left to upper-right in the
             overview image, with the exposed white end toward the near left.
+            (The wrapper texture puts the white end at local +x, so this is
+            the old two-tone -135° flipped by 180°.)
         jaw_rgba: Colour for the two gripper jaw meshes, or ``None`` to keep
             the upstream off-white. Defaults to near-black: the real rig prints
             its jaws in black filament, and they occupy the bottom third of
@@ -280,23 +271,20 @@ class EraserSceneOptions:
     tape_offset_x: float = 0.084
     tape_offset_y: float = 0.0
 
-    # Sized + coloured off the dataset's own frames. At the fitted camera the
-    # image scale is 15.0 px/cm, which puts the block at ~4.4 × 2.6 cm and the
-    # tape at ~4.2 × 3.0 cm.
+    # The product itself: a standard 40 x 20 x 10 mm plastic eraser (identified
+    # by the operator from the retail listing — the earlier frame-measured
+    # 42 x 17 estimate was within a few mm of it). Half-extents (X=length,
+    # Y=width, Z=height).
     #
-    # TWO-TONE, and the split matters: the wrist view resolves the label well
-    # enough to read "PLASTIC ERASER" — it is a WHITE rubber eraser in a dark
-    # navy paper sleeve covering roughly the far two thirds. From overhead the
-    # sleeve dominates, which is why the object reads as a dark blob there
-    # (RGB 54/55/65 on a desk reading 140) while the exposed rubber reads
-    # BRIGHTER than the desk in the wrist view (143/146/149 vs 132).
-    eraser_size: tuple[float, float, float] = (0.021, 0.0085, 0.005)
-    eraser_rgba: tuple[float, float, float, float] = (0.95, 0.95, 0.96, 1.0)
-    eraser_sleeve_rgba: tuple[float, float, float, float] = (0.35, 0.355, 0.41, 1.0)
-    eraser_sleeve_fraction: float = 0.68
+    # Appearance comes from a real product photo wrapped around the box as a
+    # cube texture (see ``_write_eraser_texture_faces``): the label image on
+    # the top and bottom faces, matching white/blue bands on the four sides so
+    # the sleeve reads as one continuous wrapper from every viewpoint the two
+    # policy cameras can take.
+    eraser_size: tuple[float, float, float] = (0.020, 0.010, 0.005)
     eraser_mass: float = 0.015
     # Long axis points away from the camera, canted ~15° off the depth axis.
-    eraser_yaw_deg: float = -135.0
+    eraser_yaw_deg: float = 45.0
 
     # The real rig prints its two jaw fingers in BLACK filament while the
     # upstream MJCF paints the whole arm off-white. The jaws fill the bottom
@@ -546,17 +534,87 @@ def _render_front_camera(opts: EraserSceneOptions) -> str:
     return f'<camera name="front" {common}\n        <camera name="top" {common}'
 
 
-def _render_eraser(opts: EraserSceneOptions) -> str:
-    """The eraser: a white block wearing a navy paper sleeve.
+_ERASER_LABEL_PNG = Path(__file__).parent / "so101_eraser_assets" / "eraser_label.png"
+_ERASER_TEX_SIZE = 256
+# Fraction of the label image (top of the portrait photo) that is the exposed
+# white rubber; the rest is the blue sleeve. Measured from the photo itself
+# (blue-dominant rows start at 17% of the height).
+_ERASER_WHITE_FRACTION = 0.17
+# Band colours sampled from the same photo (BGR, as cv2 loads them).
+_ERASER_BLUE_BGR = (149, 96, 70)
+_ERASER_WHITE_BGR = (243, 236, 235)
 
-    Two geoms in one free body. The white block is the whole object and the
-    only COLLIDER; the sleeve is a visual-only shell (``contype``/``conaffinity``
-    zero) covering ``eraser_sleeve_fraction`` of the length from the +X end and
-    standing 0.6 mm proud so it neither z-fights with the block underneath
-    nor casts shadow acne onto it.
-    Contacts and inertia therefore stay exactly those of the plain block — the
-    sleeve is appearance only, which is the point: it is what the overview
-    camera sees.
+
+def _write_eraser_texture_faces(out_dir: Path) -> dict[str, Path]:
+    """Write the six cube-texture faces that wrap the eraser box.
+
+    The retail product photo (portrait: white rubber end on top, blue
+    "PLASTIC ERASER" sleeve below) goes on the TOP and BOTTOM faces, rotated
+    so the white end lands on the box's -X end. The four side faces carry
+    plain white/blue bands with the colour boundary at the same fractional
+    position, so the sleeve reads as one continuous wrapper. MuJoCo cube
+    faces must be square; each face is stretched onto its box face, so the
+    aspect distortion cancels out.
+
+    Returns:
+        Mapping of MJCF texture attribute (``fileup``…) to the written PNG.
+    """
+    import cv2
+    import numpy as np
+
+    label = cv2.imread(str(_ERASER_LABEL_PNG))
+    if label is None:
+        raise ROSConfigError(
+            f"so101_eraser: cannot read the eraser label texture at {_ERASER_LABEL_PNG}."
+        )
+    sq = _ERASER_TEX_SIZE
+    # Portrait photo, white end at the top → rotate so the white end is LEFT
+    # (-X once mapped onto the box top).
+    flat = cv2.resize(cv2.rotate(label, cv2.ROTATE_90_COUNTERCLOCKWISE), (sq, sq))
+    band = np.empty((sq, sq, 3), np.uint8)
+    band[:, :] = _ERASER_BLUE_BGR
+    band[:, : int(sq * _ERASER_WHITE_FRACTION)] = _ERASER_WHITE_BGR
+    white = np.full((sq, sq, 3), _ERASER_WHITE_BGR, np.uint8)
+    blue = np.full((sq, sq, 3), _ERASER_BLUE_BGR, np.uint8)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Empirical MuJoCo box cube-mapping (verified with a six-colour probe):
+    # front→+z (top), back→-z (bottom), down→+y, up→-y, left→+x, right→-x.
+    # The -y and -z faces mirror the texture u-axis, so those two get a
+    # horizontal flip to keep the white end on the box's +x end all around.
+    faces = {
+        "filefront": ("so101_eraser_tex_top.png", flat),
+        "fileback": ("so101_eraser_tex_bottom.png", cv2.flip(flat, 1)),
+        "filedown": ("so101_eraser_tex_side_py.png", band),
+        "fileup": ("so101_eraser_tex_side_ny.png", cv2.flip(band, 1)),
+        "fileleft": ("so101_eraser_tex_end_white.png", white),
+        "fileright": ("so101_eraser_tex_end_blue.png", blue),
+    }
+    written: dict[str, Path] = {}
+    for attr, (name, img) in faces.items():
+        path = out_dir / name
+        cv2.imwrite(str(path), img)
+        written[attr] = path
+    return written
+
+
+def _render_eraser_asset(out_dir: Path) -> str:
+    """The ``<asset>`` snippet: the cube texture + material wrapping the eraser."""
+    files = _write_eraser_texture_faces(out_dir)
+    attrs = " ".join(f'{attr}="{path}"' for attr, path in files.items())
+    return (
+        f'<texture name="eraser_tex" type="cube" {attrs}/>\n'
+        '    <material name="eraser_mat" texture="eraser_tex" specular="0.1" shininess="0.1"/>'
+    )
+
+
+def _render_eraser(opts: EraserSceneOptions) -> str:
+    """The eraser: one box collider wearing the product-photo cube texture.
+
+    A single free body / single geom: the texture (``eraser_mat``, spliced
+    into ``<asset>`` by the composer) carries the label on the top and bottom
+    faces and the white/blue sleeve bands on the sides, so contacts and
+    inertia are exactly those of the plain block.
 
     The spawn pose is baked into the BODY element, not just written by
     ``reset``. The sim tier does call ``reset`` (and re-rolls the jitter there),
@@ -566,20 +624,12 @@ def _render_eraser(opts: EraserSceneOptions) -> str:
     physics would eject the eraser off the desk before the first frame, leaving
     the deploy twin with a tape square and nothing to pick up. (Observed
     exactly that on the first live deploy run.)
-
-    Raises:
-        ROSConfigError: If the sleeve fraction is not in ``[0, 1]``.
     """
     sx, sy, sz = opts.eraser_size
     m = opts.eraser_mass
-    f = opts.eraser_sleeve_fraction
-    if not 0.0 <= f <= 1.0:
-        raise ROSConfigError(
-            f"so101_eraser: eraser_sleeve_fraction must be in [0, 1]; got {f}.",
-        )
     ex, ey = opts.eraser_xy
     quat = yaw_to_quat_wxyz(math.radians(opts.eraser_yaw_deg))
-    body = (
+    return (
         f'<body name="eraser" pos="{ex} {ey} {sz}" '
         f'quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}">\n'
         '          <freejoint name="eraser_joint"/>\n'
@@ -588,24 +638,9 @@ def _render_eraser(opts: EraserSceneOptions) -> str:
         f"{m * ((2 * sx) ** 2 + (2 * sz) ** 2) / 12.0} "
         f'{m * ((2 * sx) ** 2 + (2 * sy) ** 2) / 12.0}"/>\n'
         f'          <geom name="eraser_geom" type="box" size="{sx} {sy} {sz}" '
-        f'rgba="{_rgba(opts.eraser_rgba)}" friction="1.2 0.02 0.002"/>\n'
+        'material="eraser_mat" friction="1.2 0.02 0.002"/>\n'
+        "        </body>"
     )
-    if f > 0.0:
-        # The shell stands proud on ALL FIVE covered faces, the +X cap
-        # included: leaving that one cap coplanar with the block's own +X face
-        # z-fights, and the near end of the object is exactly what the overview
-        # camera looks at.
-        proud = 0.0006
-        x_start = sx - 2.0 * sx * f  # the sleeve's open edge, where white shows
-        x_end = sx + proud  # past the block's own cap
-        body += (
-            f'          <geom name="eraser_sleeve" type="box" '
-            f'pos="{(x_end + x_start) / 2.0} 0 0" '
-            f'size="{(x_end - x_start) / 2.0} {sy + proud} {sz + proud}" '
-            f'rgba="{_rgba(opts.eraser_sleeve_rgba)}" '
-            'contype="0" conaffinity="0"/>\n'
-        )
-    return body + "        </body>"
 
 
 def _render_tape(opts: EraserSceneOptions) -> str:
@@ -656,6 +691,17 @@ def compose_so101_eraser_mjcf(
         upstream_path = _resolve_robot_mjcf(robot_description)
 
     body = _inject_visual_headlight(upstream_path.read_text(), opts)
+    body, n_asset = re.subn(
+        r"(</asset>)",
+        f"  {_render_eraser_asset(upstream_path.parent)}\n  \\1",
+        body,
+        count=1,
+    )
+    if n_asset != 1:
+        raise ROSConfigError(
+            "so101_eraser: cannot find </asset> in the upstream SO-101 MJCF — "
+            "composer cannot splice the eraser texture in.",
+        )
     body = _recolour_jaws(body, opts.jaw_rgba)
     body = _reanchor_robot_base(body, opts.robot_base_xyz, opts.robot_base_yaw_deg)
     body = _splice_wrist_camera(
