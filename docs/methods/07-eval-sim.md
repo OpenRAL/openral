@@ -102,11 +102,11 @@ _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benc
 ### `python/sim/src/openral_sim/_video.py`
 _Shared 3-panel rollout-debug MP4 helper (was `examples/_video.py`)._
 
-- `save_episode_mp4(result: EpisodeResult, path: Path, *, title: str = "") -> Path` — Render `(policy input grid | joint plot)` for one episode, falling back to the rollout/world stream only when the adapter recorded no input frames. Re-exported from `openral_sim`. (L62)
-- `_stack_padded_states(states) -> NDArray[np.float32]` — Pad ragged joint-position arrays for plotting. (L167)
+- `save_episode_mp4(result: EpisodeResult, path: Path, *, title: str = "") -> Path` — Render `(policy input grid | observation-state plot)` for one episode, falling back to the rollout/world stream only when the adapter recorded no input frames. Re-exported from `openral_sim`. (L62)
+- `_stack_padded_states(states) -> NDArray[np.float32]` — Pad ragged observation-state arrays for plotting. (L167)
 - `_resize_sequence(frames, target) -> list[NDArray[np.uint8]]` (L182)
 - `_resize_frame(frame, target) -> NDArray[np.uint8]` (L220)
-- `class _JointPlotRenderer` — Reusable matplotlib canvas rasteriser. (L240)
+- `class _JointPlotRenderer` — Reusable matplotlib canvas rasteriser; labels generic state channels `s0...` rather than claiming every backend's `observation.state` is a joint vector. (L240)
   - `__init__`, `render_at_step`, `_snapshot`, `__del__`
 
 ### `python/sim/src/openral_sim/_website_video.py`
@@ -121,13 +121,15 @@ _Clean single-view world MP4 helper for website hero clips (overlays rendered by
 
 #### `python/sim/src/openral_sim/backends/robocasa.py`
 _RoboCasa kitchen + GR1 tabletop adapter._
-- `read_panda_mobile_base_velocity(model, data) -> NDArray[np.float32]` — Returns body-frame `(vx, vy, wz)` 3-vec for the robosuite OmronMobileBase; reads `data.qvel` at the three planar joint addresses and de-rotates the world-frame `(vx, vy)` using the live yaw. Returns `zeros(3)` when the base joints aren't in this model (silently no-ops for non-PandaMobile envs). (L1122)
-- `synthesize_laser_scan_2d(*, model, data, base_body_id=None, n_beams=360, max_range_m=12.0, laser_height_m=0.30) -> NDArray[np.float32]` — Single-origin batched `mj_multiRay` 2D laser fan from the panda_mobile base. Returns `(n_beams,)` float32 ranges in metres, clamped to `max_range_m` for "no hit" beams (NEVER NaN/inf, so Nav2 costmap consumers don't poison the grid). Self-exclusion via `bodyexclude=mj_name2id("base")` so the chassis doesn't pollute the scan. (L1195)
+- `_fit_panda_mobile_action(action, *, env_dim, state_layout) -> NDArray[np.float32]` — Reconciles the known 12↔11 RoboCasa dataset/BASIC skew; only `state_layout="xr1_8d"` may zero-fill a 7-D arm+gripper action into PandaMobile base+torso slots. Unknown widths raise `ROSConfigError`.
+- `_xr1_robocasa_state(raw) -> NDArray[np.float32]` — Builds XR-1 RoboCasa's 8-D `[arm_joint_pos(7), gripper(1)]` state from the real robosuite observation.
+- `read_panda_mobile_base_velocity(model, data) -> NDArray[np.float32]` — Returns body-frame `(vx, vy, wz)` 3-vec for the robosuite OmronMobileBase; reads `data.qvel` at the three planar joint addresses and de-rotates the world-frame `(vx, vy)` using the live yaw. Returns `zeros(3)` when the base joints aren't in this model (silently no-ops for non-PandaMobile envs). (L1165)
+- `synthesize_laser_scan_2d(*, model, data, base_body_id=None, n_beams=360, max_range_m=12.0, laser_height_m=0.30) -> NDArray[np.float32]` — Single-origin batched `mj_multiRay` 2D laser fan from the panda_mobile base. Returns `(n_beams,)` float32 ranges in metres, clamped to `max_range_m` for "no hit" beams (NEVER NaN/inf, so Nav2 costmap consumers don't poison the grid). Self-exclusion via `bodyexclude=mj_name2id("base")` so the chassis doesn't pollute the scan. (L1238)
 - `head_cam_enabled() -> bool` — True iff `OPENRAL_ROBOCASA_HEAD_CAM` is set (non-empty, non-`"0"`). Gates the synthetic forward `head` navigation camera below.
 - `render_head_view(renderer, model, data, base_joint_names, *, height_m=1.30, forward_offset_m=0.42) -> NDArray[np.uint8] | None` — Renders the forward egocentric `head` frame: a `mjCAMERA_FREE` camera `forward_offset_m` ahead of the base body at `height_m` looking 3 m forward + 0.5 m down. Geometry comes from the robot.yaml `head` sensor's `metadata.height_m` / `metadata.forward_offset_m` (via `_RoboCasaSim._head_cam_geometry`, cached); the keyword defaults are only the Omron-tuned fallback. Top-down HxWx3 uint8 (no flip; `mujoco.Renderer` emits rows top-first). `None` for non-mobile-base models. `_RoboCasaSim._wrap_obs` calls it (rebuilding its cached renderer when the model identity changes across resets) to add `observation.images.head`; consumed by the InternVLA-N1 VLN rSkill.
 - `_emit_panda_mobile_extras(obs)` (method on `_RoboCasaSim`) — Attaches `obs["robot0_base_vel"]` + `obs["robot0_scan"]` when `_has_mobile_base_robot()` (name ends in `"Mobile"` or contains `"Omron"` — RoboCasa canonicalises `PandaMobile` → the `PandaOmron` composition, so the `"Omron"` arm is what matches at runtime); no-op for other compositions. (L569 in `_wrap_obs`)
-- `sim_time_ns() -> int | None` (method on `_RoboCasaSim`) — `round(MjData.time * 1e9)` off `mujoco_handles()`; covers the robocasa kitchen / GR1 / so100_robosuite scenes. RoboCasa rewinds the clock on `reset`, so it is monotonic only within an episode — `SimAttachedHAL.sim_time_ns` adds the cross-reset offset. (L528)
-- Constants `_OMRON_BASE_JOINT_NAMES`, `_OMRON_BASE_JOINT_NAMES_FALLBACK`, `_LASER_DEFAULT_N_BEAMS=360`, `_LASER_DEFAULT_MAX_RANGE_M=12.0`. (L967)
+- `sim_time_ns() -> int | None` (method on `_RoboCasaSim`) — `round(MjData.time * 1e9)` off `mujoco_handles()`; covers the robocasa kitchen / GR1 / so100_robosuite scenes. RoboCasa rewinds the clock on `reset`, so it is monotonic only within an episode — `SimAttachedHAL.sim_time_ns` adds the cross-reset offset. (L568)
+- Constants `_OMRON_BASE_JOINT_NAMES`, `_OMRON_BASE_JOINT_NAMES_FALLBACK`, `_LASER_DEFAULT_N_BEAMS=360`, `_LASER_DEFAULT_MAX_RANGE_M=12.0`. (L1010)
 
 #### `python/sim/src/openral_sim/backends/depth_camera.py`
 _Simulated depth camera via MuJoCo CPU ray-casting (the 3-D analogue of `synthesize_laser_scan_2d`); robot-agnostic, no GL/EGL context. Feeds the deploy-sim HAL → octomap_server → the kernel world-collision voxel check._
@@ -140,13 +142,20 @@ _Simulated depth camera via MuJoCo CPU ray-casting (the 3-D analogue of `synthes
 - `_quat_to_axisangle(quat) -> NDArray[np.float32]` — `[x,y,z,w]` → axis-angle. (L359)
 - `_build_libero_scene(env_cfg) -> _LiberoSim` (L455)
 
+#### `python/sim/src/openral_sim/backends/vlabench.py`
+_VLABench (ICCV 2025) Franka adapter. The dependency plan pins the upstream-tested MuJoCo 3.2.2 + dm_control 1.0.22 pair; loose newer resolution crashes during dm_control model indexing. Policy cameras bypass LeRobot 0.6.0's stale `[0,1,2]` mapping and select Xiaomi/VLABench's real raw order `[front=2, base=0, wrist=3]` without flipping rows._
+- `class _VLABenchSim` — `SimRollout` over lerobot's `VLABenchEnv`; emits three RGB cameras, 7-D EE/gripper state, and `info["is_success"]`.
+- `_parse_task_id(task_id) -> str` — Validate `vlabench/<task-name>`.
+- `_select_policy_cameras(raw_rgb) -> dict[str, NDArray[np.uint8]]` — Select raw camera indices `(2,0,3)` into `camera1/2/3`; normalize HWC channels without vertical/horizontal flips.
+- `_build_vlabench_scene(env_cfg) -> _VLABenchSim` — Verify assets, build the single-env vector wrapper, and register `scene.id="vlabench"` with fixed robot `franka_panda`.
+
 #### `python/sim/src/openral_sim/policy_deps.py`
 
-_Import-probe + install-hint helpers for policy runtimes. Family-keyed helpers (`can_import_policy_family` / `model_family_install_groups` / `model_family_install_hint`) key on `RSkillManifest.model_family`; the manifest-keyed trio below wraps them for manifests whose runtime is NOT the family's in-process import set (currently the BEHAVIOR organizer GR00T sidecar, `policy_extras.implementation: behavior_b1k_sidecar`)._
+_Import-probe + install-hint helpers for policy runtimes. Family-keyed helpers (`can_import_policy_family` / `model_family_install_groups` / `model_family_install_hint`) key on `RSkillManifest.model_family`; XR-1 probes only the shared ZMQ/msgpack wire because its torch stack lives in a sidecar. The manifest-keyed trio below wraps families with manifest-selected runtime exceptions._
 
-- `can_import_policy_manifest(manifest) -> tuple[bool, str | None]` — Probe the manifest-selected runtime: the BEHAVIOR GR00T sidecar rSkill probes `zmq` + `msgpack` (its openral-side wire), everything else falls through to `can_import_policy_family`. (L256)
-- `manifest_install_groups(manifest) -> tuple[str, ...]` — Dependency groups for the manifest-selected runtime (`("behavior-groot",)` for the BEHAVIOR sidecar rSkill, else `model_family_install_groups`). (L263)
-- `manifest_install_hint(manifest) -> str` — Paste-able install hint for the manifest-selected runtime. (L270)
+- `can_import_policy_manifest(manifest) -> tuple[bool, str | None]` — Probe the manifest-selected runtime: the BEHAVIOR GR00T sidecar rSkill probes `zmq` + `msgpack` (its openral-side wire), everything else falls through to `can_import_policy_family`. (L264)
+- `manifest_install_groups(manifest) -> tuple[str, ...]` — Dependency groups for the manifest-selected runtime (`("behavior-groot",)` for the BEHAVIOR sidecar rSkill, else `model_family_install_groups`). (L271)
+- `manifest_install_hint(manifest) -> str` — Paste-able install hint for the manifest-selected runtime. (L278)
 
 ### `python/sim/src/openral_sim/backends/metaworld.py`
 _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a `metaworld==3.0.0 --no-deps` pip install (its transitive deps conflict with the workspace lock); the scene factory calls `openral_sim._deps.ensure_backend_deps("metaworld")` first so the user gets an interactive auto-install banner on first use. Scene id `metaworld`. Task id `metaworld/<task-name>` (e.g. `metaworld/reach-v3`)._
@@ -312,6 +321,15 @@ _Greenfield robot-agnostic native scene: a push-cube-to-goal task on a configura
 - `class _OpenVLAAdapter` — Transformers custom-code OpenVLA/OpenVLA-OFT policy adapter. Loads one RGB frame + OpenVLA prompt into the checkpoint processor, calls either `predict_action` or RLinf's `generate_action_verl`, normalizes returned single actions / OFT chunks to `(chunk, action_dim)`, applies optional manifest `policy_extras` action postprocess (`action_scale`, binary gripper threshold), and replays the chunk from an internal queue. `reset()` clears the queue and reapplies `openvla_torch_seed` after SimRunner's per-episode RNG seeding so stochastic generation is reproducible.
 - `_build_openvla(env_cfg) -> _OpenVLAAdapter` (`@POLICIES.register("openvla")`) — Resolves the rSkill manifest from `spec.weights_uri`, requires `OPENRAL_ALLOW_REMOTE_CODE=1`, loads the HF repo via `AutoModelForVision2Seq.from_pretrained(..., trust_remote_code=True)`, uses NF4/device-map placement on CUDA (`{"": cuda_index}`), patches `_unnormalize_actions` to move accelerate CUDA tensors to CPU before NumPy, resolves cameras from the manifest/scene, validates `openvla_generation_method`, and threads OpenVLA `policy_extras` into the adapter.
 - Pure helper surface: `_decode_prompt(instruction) -> str`, `_unnormalize_action(norm, stats) -> np.ndarray`, `_as_action_chunk(arr, action_dim) -> np.ndarray`, `_postprocess_action_chunk(arr, *, action_scale, binarize_gripper, gripper_threshold) -> np.ndarray`. Unit-tested without GPU; the opt-in sim test covers the real RLinf checkpoint on SimplerEnv WidowX.
+
+#### `python/sim/src/openral_sim/policies/xr1.py`
+_Xiaomi Robotics XR-1 / MiBoT adapter. The openral process owns history, state-layout conversion, action replay, and the shared sidecar wire; manifest-selected bitsandbytes NF4 runs inside the torch 2.8 / transformers 4.57.1 / FlashAttention custom-code sidecar._
+- `class _XR1Adapter` — `PolicyAdapter` for `robocasa_mg`, `robocasa365`, and `vlabench_choice`; requires `OPENRAL_ALLOW_REMOTE_CODE=1`, validates three cameras and per-profile state/action dimensions, keeps the RC365 interval-two history, and replays the upstream cadence.
+- `_rc365_state(state) -> NDArray[np.float32]` — 16-D OpenRAL quaternion layout → 14-D XR-1 axis-angle layout.
+- `_history_sample(values) -> NDArray[np.float32]` — left-pad a seven-frame history and select offsets `[-6,-4,-2,0]`.
+- `_vlabench_targets(deltas, state) -> NDArray[np.float32]` — integrate XR-1's VLABench deltas into absolute env targets with wrapped Euler angles.
+- `_quantization_mode(manifest) -> str` — map `quantization.dtype=int4` to the sidecar's `nf4` loader and `bf16` to the unquantized path; reject unsupported dtypes.
+- The module docstring carries the local persistent-NF4 export command. A manifest with `policy_extras.prequantized_nf4: true` selects `prequantized_nf4`, which reloads Transformers-native packed shards directly.
 
 #### `python/sim/src/openral_sim/policies/act.py`
 - `class _ACTAdapter` — ACT policy adapter. Manifest-first `image_preprocessing` resolution (`_cam_alias` + `_image_input_template` + `_flip_images_180`) lets LIBERO `camera1` / `camera2` feed an ACT checkpoint whose input features are `observation.images.image` / `observation.images.image2`; legacy `_state_mean` / `_action_std` path stays for `act-aloha`-style checkpoints with norm stats in `model.safetensors`.

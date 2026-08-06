@@ -146,3 +146,12 @@ def test_construct_from_dict_matches_adapter_path() -> None:
     via_dict = RoboCasaBackendOptions.model_validate(payload)
     direct = RoboCasaBackendOptions(mode="prebuilt", prebuilt_task="OpenSingleDoor")
     assert via_dict == direct
+
+
+def test_xr1_state_layout_is_supported() -> None:
+    opts = RoboCasaBackendOptions(
+        mode="prebuilt",
+        prebuilt_task="PickPlaceCounterToCabinet",
+        state_layout="xr1_8d",
+    )
+    assert opts.state_layout == "xr1_8d"

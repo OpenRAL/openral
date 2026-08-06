@@ -1,0 +1,28 @@
+scene:
+  id: robocasa/CloseBlenderLid
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["shoulder_left", "shoulder_right", "wrist"]
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: CloseBlenderLid
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    state_layout: human300_16d
+    horizon: 150
+
+task:
+  id: robocasa/CloseBlenderLid/0
+  scene_id: robocasa/CloseBlenderLid
+  instruction: "close the blender lid"
+  success_key: is_success
+  max_steps: 150
+
+seed: 7
+n_episodes: 1
+metadata:
+  honest_scope: >
+    One-hundred-fifty-step XR-1 RoboCasa365 approval rollout. It is longer than
+    Xiaomi's documented 20-step smoke check but is not the 50-trial target50
+    benchmark.

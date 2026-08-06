@@ -1,0 +1,27 @@
+scene:
+  id: robocasa/OpenDrawer
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["shoulder_left", "shoulder_right", "wrist"]
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: OpenDrawer
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    state_layout: human300_16d
+    horizon: 200
+
+task:
+  id: robocasa/OpenDrawer/0
+  scene_id: robocasa/OpenDrawer
+  instruction: "open the drawer"
+  success_key: is_success
+  max_steps: 200
+
+seed: 11
+n_episodes: 1
+metadata:
+  honest_scope: >
+    Two-hundred-step XR-1 RoboCasa365 OpenDrawer review rollout. This is
+    an integration/behavior clip, not the published target50 evaluation.

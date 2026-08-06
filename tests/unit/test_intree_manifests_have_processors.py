@@ -61,6 +61,12 @@ _LEGACY_NO_PROCESSORS_ALLOWLIST: frozenset[str] = frozenset(
         # py3.11 sidecar; no lerobot PolicyProcessorPipeline. `internvla_n1` is
         # excluded from `_MODERN_PROCESSOR_FAMILIES` for the same reason.
         "rskill-internvla_n1-mobile_base-vln-nf4",
+        # Xiaomi XR-1: the checkpoint's MiBotProcessor owns chat templating,
+        # action masks, and action de-normalization inside the pinned custom-code
+        # sidecar. There is no lerobot PolicyProcessorPipeline pair to materialize.
+        "xr1-robocasa",
+        "xr1-robocasa365",
+        "xr1-vlabench",
     }
 )
 

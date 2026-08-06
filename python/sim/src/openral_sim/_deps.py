@@ -543,7 +543,7 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
 # clone OVER it. If the clone rode floating master (the bug — issue #44)
 # the editable reinstall silently replaced the pinned tree with a
 # drifting one. Keep the two in lockstep when bumping.
-_ROBOSUITE_PIN = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"  # master @ 2026-05-09
+_ROBOSUITE_PIN = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c"  # master @ 2026-08-06
 
 
 def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
@@ -1655,11 +1655,19 @@ def _vlabench_plan() -> BackendInstallPlan:
     clone_step = (
         f"[ -d {src}/.git ] || {git} clone --depth=1 https://github.com/OpenMOSS/VLABench.git {src}"
     )
-    # numpy-2-compatible sim deps VLABench needs at env-build time (dm_control
-    # renderer + open3d/mediapy for obs, gdown for the asset fetch). Loose (no
-    # pins) so uv resolves them against the workspace's numpy 2.x — VLABench's
-    # own setup pins numpy 1.25, which is why the editable install is --no-deps.
-    sim_deps = ["mujoco", "dm_control", "open3d", "mediapy", "gdown"]
+    # VLABench's dm_control integration is API-coupled to this MuJoCo pair.
+    # Newer loose resolution currently lands dm_control 1.0.44 + MuJoCo 3.11,
+    # which crashes at env construction (`MjModel.actuator_ctrladr` missing).
+    # Keep the rendering/asset helpers loose so they can resolve Python 3.12
+    # wheels against the workspace's numpy 2.x.
+    sim_deps = [
+        "mujoco==3.2.2",
+        "dm_control==1.0.22",
+        "open3d",
+        "mediapy",
+        "gdown",
+        "opencv-python",
+    ]
     return BackendInstallPlan(
         backend_id="vlabench",
         display_name=(

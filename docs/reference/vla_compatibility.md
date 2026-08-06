@@ -110,6 +110,8 @@ Columns:
 |---|---|---|---|---|---|---|---|---|
 | `lerobot/smolvla_robocasa` | RoboCasa | `franka_panda`, `manipulator` | TBD | TBD | TBD | — | Apache-2.0 | Kitchen manipulation; no rSkill stub yet |
 | `RLWRLD/RLDX-1-FT-RC365` | RoboCasa-365 | `panda_mobile` | 3-camera layout (`state_contract.layout`) | 3 RGB streams | Processor sidecars in rSkill | `rskills/rldx1-ft-rc365-nf4/` | RLWRLD non-commercial | Out-of-process ZMQ sidecar; mobile-manipulator kitchen fine-tune |
+| `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa` | RoboCasa v0.2 | `panda_mobile` | **8-D** arm joints(7)+gripper(1) | 3 RGB 256x256 views | Action mean/std in plain `preprocessor_config.json`; state is raw | `rskills/xr1-robocasa/` | Apache-2.0 | Custom-code MiBoT sidecar; 7-D delta-EEF output, 10-step replay. OpenRAL's current RoboCasa stack is an integration check, not upstream-score reproduction. |
+| `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa365` | RoboCasa365 | `panda_mobile` | **14-D** EE axis-angle + gripper + base, from 4-frame history | 3 RGB videos, 4 frames sampled at interval 2 | Action mean/std in checkpoint processor; state is raw | `rskills/xr1-robocasa365/` | Apache-2.0 | Custom-code MiBoT sidecar; 12-D action, 16-step replay. Upstream does not pin the RoboCasa365 revision. |
 
 ### 3.5 SO-100 / SO-101 (real robot or sim)
 
@@ -154,6 +156,11 @@ Columns:
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
 | SmolVLA VLABench | VLABench (97 tasks) | `franka_panda` | TBD | TBD | Yes (in ckpt) | `rskills/smolvla-vlabench/` | Apache-2.0 | Integration baseline (0% on current primitives); scene `scenes/benchmark/vlabench_select_fruit.yaml` |
+| `XiaomiRobotics/Xiaomi-Robotics-1-VLABench` | VLABench | `franka_panda` | **7-D** XYZ+Euler+gripper | front(raw 2)+base(raw 0)+wrist(raw 3), 480x480, no flip | Action mean/std in checkpoint processor; state is raw | `rskills/xr1-vlabench/` | Apache-2.0 | MiBoT NF4 sidecar predicts 10 deltas; adapter integrates absolute targets and replans after 5. Live one-step validation: 3.66 GiB process VRAM, 0.81 s warm chunk on RTX 4070 Laptop 8 GB. Persistent local NF4 reload is bit-identical to runtime NF4. |
+
+The public `XiaomiRobotics/Xiaomi-Robotics-1-5B/model_states.pt` is not an
+inference checkpoint: it is a non-self-describing post-training seed. It is
+therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 
 ### 3.10 ALOHA (gym-aloha, MuJoCo)
 

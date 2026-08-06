@@ -6,7 +6,7 @@ Every example writes the same debug video:
     |   VLA input view / policy camera grid         |
     |   (post-preprocess image(s) the policy saw)   |
     +-----------------------------------------------+
-    |    joint positions over time (line plot)      |
+    |    observation state over time (line plot)    |
     +-----------------------------------------------+
 
 This is the one helper every example must use — there is no
@@ -19,7 +19,7 @@ the strict runner populates uniformly.
 Implementation notes
 --------------------
 * Uses imageio + imageio-ffmpeg for MP4 muxing (libx264, yuv420p).
-* Joint plot is rendered with a headless matplotlib figure once per
+* State plot is rendered with a headless matplotlib figure once per
   frame and rasterised into the canvas; this is slower than a static
   plot but yields a *moving cursor* on the time axis that follows the
   rollout, which is what makes the video useful for debugging.
@@ -238,7 +238,7 @@ def _resize_frame(
 
 
 class _JointPlotRenderer:
-    """Renders the bottom joint-positions panel with a moving time cursor.
+    """Renders the bottom observation-state panel with a moving time cursor.
 
     Draws the static line plot once and only updates the vertical cursor
     per frame — keeps the per-step cost cheap (~1 ms vs ~30 ms for a full
@@ -287,13 +287,13 @@ class _JointPlotRenderer:
         else:
             t = np.arange(self._n)
             for d in range(self._dim):
-                label = f"j{d}" if self._dim <= _MAX_LEGEND_JOINTS else None
+                label = f"s{d}" if self._dim <= _MAX_LEGEND_JOINTS else None
                 ax.plot(t, states[:, d], linewidth=1.0, label=label)
             if self._dim <= _MAX_LEGEND_JOINTS:
                 ax.legend(loc="upper right", fontsize=7, ncol=min(self._dim, 4))
             ax.set_xlim(0, max(self._n - 1, 1))
             ax.set_xlabel("step", fontsize=8)
-            ax.set_ylabel("joint pos", fontsize=8)
+            ax.set_ylabel("observation state", fontsize=8)
             ax.tick_params(axis="both", labelsize=7)
             ax.grid(True, alpha=0.3)
 

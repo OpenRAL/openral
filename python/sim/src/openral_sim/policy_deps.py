@@ -78,6 +78,12 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
     "act": "Install the sim extras: `just sync --all-packages --group sim`.",
     "diffusion": "Install the sim extras: `just sync --all-packages --group sim`.",
     "xvla": "Install the sim extras: `just sync --all-packages --group sim`.",
+    "xr1": (
+        "Install the shared sidecar wire: "
+        "`just sync --all-packages --group sidecar-wire`. "
+        "XR-1 itself runs in an auto-provisioned torch-2.8 / transformers-4.57.1 "
+        "sidecar because its pinned stack cannot coexist with the workspace."
+    ),
     "rldx": (
         "Install the rldx extras: `just sync --all-packages --group rldx` "
         "(adds pyzmq + msgpack for the RLDX adapter sidecar)."
@@ -129,6 +135,7 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
     "act": ("sim",),
     "diffusion": ("sim",),
     "xvla": ("sim",),
+    "xr1": ("sidecar-wire",),
     "rldx": ("rldx",),
     "gr00t": ("sim", "gr00t"),
     "diffuser_actor": ("rlbench",),
@@ -150,6 +157,7 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     "act": ("lerobot.policies.act.modeling_act",),
     "diffusion": ("lerobot.policies.diffusion.modeling_diffusion",),
     "xvla": ("lerobot.policies.xvla.modeling_xvla",),
+    "xr1": ("zmq", "msgpack"),
     "rldx": ("zmq", "msgpack"),
     # GR00T-N1.7 now loads in-process via lerobot's native GrootPolicy and is
     # NF4-quantized like pi05. Mirror the factory's first imports in
