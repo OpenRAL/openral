@@ -588,6 +588,72 @@ def _normalize_inference_engine(engine: str) -> str:
     return {"pytorch": "torch", "tensorrt": "trt"}.get(engine.lower(), engine.lower())
 
 
+_RTC_ADAPTERS = frozenset({"smolvla", "pi05"})
+"""Adapters whose lerobot policies are flow-matching and carry ``rtc_config``.
+
+molmoact2/pi0_fast also support RTC upstream but are out of Phase A scope —
+extend this set (and the adapter's chunk_fn kwargs pass-through) to add one.
+"""
+
+_RTC_KEYS = frozenset(
+    {"enabled", "execution_horizon", "max_guidance_weight", "prefix_attention_schedule", "debug"}
+)
+
+
+def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
+    """Parse ``policy_extras.rtc`` into a lerobot :class:`RTCConfig` (or ``None``).
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label; RTC is refused outside ``_RTC_ADAPTERS``.
+
+    Returns:
+        A ``lerobot.policies.rtc.RTCConfig``, or ``None`` when no ``rtc`` block.
+
+    Raises:
+        ROSConfigError: Non-mapping block, unknown key, unknown schedule,
+            non-positive horizon/weight, or a non-flow-matching adapter.
+    """
+    raw = spec_extra.get("rtc")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.rtc must be a mapping")
+    if adapter_name not in _RTC_ADAPTERS:
+        raise ROSConfigError(
+            f"{adapter_name}: RTC needs a flow-matching policy; supported adapters: "
+            f"{sorted(_RTC_ADAPTERS)}"
+        )
+    unknown = set(raw) - _RTC_KEYS
+    if unknown:
+        raise ROSConfigError(f"{adapter_name}: unknown policy_extras.rtc keys {sorted(unknown)}")
+
+    from lerobot.configs import RTCAttentionSchedule  # deferred: lerobot is a heavy optional dep
+    from lerobot.policies.rtc import RTCConfig  # deferred: lerobot is a heavy optional dep
+
+    schedule_raw = raw.get("prefix_attention_schedule", "exp")
+    try:
+        schedule = RTCAttentionSchedule[str(schedule_raw).upper()]
+    except KeyError as exc:
+        raise ROSConfigError(
+            f"{adapter_name}: unknown rtc.prefix_attention_schedule {schedule_raw!r} "
+            f"(expected one of {[s.name.lower() for s in RTCAttentionSchedule]})"
+        ) from exc
+    horizon_raw = raw.get("execution_horizon", 10)
+    if isinstance(horizon_raw, bool) or not isinstance(horizon_raw, int) or horizon_raw < 1:
+        raise ROSConfigError(f"{adapter_name}: rtc.execution_horizon must be a positive integer")
+    try:
+        return RTCConfig(
+            enabled=bool(raw.get("enabled", True)),
+            execution_horizon=horizon_raw,
+            max_guidance_weight=float(raw.get("max_guidance_weight", 10.0)),
+            prefix_attention_schedule=schedule,
+            debug=bool(raw.get("debug", False)),
+        )
+    except ValueError as exc:  # RTCConfig.__post_init__ validation
+        raise ROSConfigError(f"{adapter_name}: invalid policy_extras.rtc: {exc}") from exc
+
+
 def build_chunk_executor(
     spec_extra: dict[str, Any],
     *,
