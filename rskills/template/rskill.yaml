@@ -111,7 +111,7 @@ latency_budget:
 #     enabled: true
 #     execution_horizon: 10
 #     max_guidance_weight: 10.0
-#     prefix_attention_schedule: exp
+#     prefix_attention_schedule: ones  # full-weight blend; measurably better OOD, equal in-distribution
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2410.24164"

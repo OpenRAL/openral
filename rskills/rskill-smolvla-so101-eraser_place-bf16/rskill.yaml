@@ -185,7 +185,7 @@ policy_extras:
     enabled: true
     execution_horizon: 10
     max_guidance_weight: 10.0
-    prefix_attention_schedule: exp
+    prefix_attention_schedule: ones
 
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2506.01844"
