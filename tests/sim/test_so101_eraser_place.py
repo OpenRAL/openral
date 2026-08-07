@@ -307,6 +307,41 @@ def test_gripper_channel_is_lerobot_normalised_not_degrees(env_cfg) -> None:
         rollout.close()
 
 
+def test_one_step_advances_a_full_control_period(env_cfg) -> None:
+    """``step()`` advances 1/control_hz of SIM TIME, not one 2 ms physics tick.
+
+    The checkpoint issues absolute joint targets recorded at 30 FPS, so each
+    one assumes ~33 ms of travel. Advancing a single 2 ms tick per action gave
+    the position actuators 1/17th of that, the arm never reached a target, the
+    proprio never progressed, and every rollout re-issued near-home commands
+    forever (0/10 episodes moved past the home pose).
+    """
+    from openral_sim import SCENES
+
+    rollout = SCENES.get("so101_eraser")(env_cfg)
+    try:
+        obs = rollout.reset(seed=env_cfg.seed)
+        model, data = rollout.mujoco_handles()
+        period = 1.0 / rollout.options.control_hz
+        assert rollout._steps_per_action == pytest.approx(period / model.opt.timestep, abs=1.0)
+
+        t0 = float(data.time)
+        home = np.asarray(obs["state"], dtype=np.float32)
+        for _ in range(10):
+            rollout.step(home)
+        assert float(data.time) - t0 == pytest.approx(10 * period, rel=0.05)
+
+        # And a commanded move actually gets there within a few control ticks,
+        # which is what the single-tick version could never do.
+        target = home.copy()
+        target[1] += 12.0  # shoulder_lift, degrees
+        for _ in range(25):
+            result = rollout.step(target)
+        assert result.observation["state"][1] == pytest.approx(target[1], abs=3.0)
+    finally:
+        rollout.close()
+
+
 def test_success_check_fires_only_on_the_tape(env_cfg) -> None:
     """The geometric place check: eraser on the tape passes, beside it fails."""
     from openral_sim import SCENES

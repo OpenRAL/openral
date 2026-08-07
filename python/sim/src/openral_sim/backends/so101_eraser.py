@@ -254,6 +254,10 @@ class EraserSceneOptions:
         lighting_jitter: Per-reset randomisation of lamp intensity (±fraction)
             and lamp XY (±0.2 m at 1.0). ``0`` (default) keeps ``bench``
             bit-identical across resets.
+        control_hz: Rate the policy's actions are issued at, Hz. One ``step()``
+            advances that much SIM TIME rather than a single 2 ms physics tick
+            — the checkpoint's absolute targets assume ~33 ms of travel each,
+            and a 2 ms budget leaves the arm permanently lagging its target.
         extra_metadata: Free-form strings forwarded to the scene metadata.
     """
 
@@ -349,6 +353,18 @@ class EraserSceneOptions:
     lighting: str = "bench"
     lighting_scale: float = 1.0
     lighting_jitter: float = 0.0
+
+    # Control rate the ACTIONS are issued at, Hz. One `step()` advances this
+    # much SIM TIME (`round(1 / (control_hz * mjcf_timestep))` physics steps),
+    # not one 2 ms physics tick. The distinction is not cosmetic: the
+    # checkpoint was recorded at 30 FPS teleop and its absolute joint targets
+    # assume ~33 ms of travel each. Advancing 2 ms per action gave the
+    # position actuators 1/17th of the time to reach each target, so the arm
+    # lagged, the proprio the policy read back never progressed, and every
+    # rollout re-issued near-home targets forever (measured: 0/10 episodes
+    # moved further than the home pose). Matches the rate the deploy HAL runs
+    # its own control loop at, so sim and deploy execute the same trajectory.
+    control_hz: float = 30.0
 
     joint_units: str = "degrees"
     joint_offsets_deg: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -857,6 +873,24 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> EraserSceneOpti
     return EraserSceneOptions(**parsed)
 
 
+def _steps_per_action(model: mujoco.MjModel, control_hz: float) -> int:
+    """Physics steps that make up one control period.
+
+    Args:
+        model: The compiled scene, for its ``opt.timestep``.
+        control_hz: Action rate (see :attr:`EraserSceneOptions.control_hz`).
+
+    Returns:
+        ``round(1 / (control_hz * timestep))``, at least 1.
+
+    Raises:
+        ROSConfigError: If ``control_hz`` is not positive.
+    """
+    if control_hz <= 0.0:
+        raise ROSConfigError(f"so101_eraser: control_hz must be > 0; got {control_hz}.")
+    return max(1, round(1.0 / (control_hz * float(model.opt.timestep))))
+
+
 @dataclass
 class _So101EraserRollout:
     """Rollout for the so101_eraser scene."""
@@ -892,6 +926,8 @@ class _So101EraserRollout:
         default_factory=lambda: np.ones(_SO101_ARM_DOF, dtype=np.float64)
     )
     _settle_steps: int = 50
+    # Physics steps per `step()` — one control period (see `control_hz`).
+    _steps_per_action: int = 1
     _step_count: int = 0
     _renderer_rgb: Any = None  # mujoco.Renderer — lazy
     _last_front_rgb: NDArray[np.uint8] | None = None
@@ -961,7 +997,10 @@ class _So101EraserRollout:
         hi = self._arm_joint_ranges[:, 1]
         self._data.ctrl[self._arm_actuator_ids] = np.clip(cmd, lo, hi)
 
-        mujoco.mj_step(self._model, self._data)
+        # A control PERIOD of physics, not one 2 ms tick — see
+        # ``EraserSceneOptions.control_hz``. Same pattern as tabletop_push.
+        for _ in range(self._steps_per_action):
+            mujoco.mj_step(self._model, self._data)
         self._step_count += 1
 
         success = self._check_placed()
@@ -1193,6 +1232,7 @@ def build_so101_eraser_scene(env_cfg: SimEnvironment) -> _So101EraserRollout:
         _lamp_light_id=lamp_light,
         _light_baselines=light_baselines,
         _instruction=env_cfg.task.instruction or _INSTRUCTION,
+        _steps_per_action=_steps_per_action(model, options.control_hz),
         _max_steps=int(env_cfg.task.max_steps or _DEFAULT_MAX_STEPS),
         _render_height=int(env_cfg.scene.observation_height or _DEFAULT_RENDER_HEIGHT),
         _render_width=int(env_cfg.scene.observation_width or _DEFAULT_RENDER_WIDTH),
