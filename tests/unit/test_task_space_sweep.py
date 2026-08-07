@@ -71,6 +71,7 @@ def _name(path: str) -> str:
 KNOWN_SIM_GAPS: frozenset[tuple[str, str]] = frozenset(
     {
         ("3d-diffuser-actor-rlbench", "franka_panda"),  # CARTESIAN_POSE -> RLBench sidecar
+        ("xr1-vlabench", "franka_panda"),  # CARTESIAN_POSE -> direct VLABench backend
         ("rldx1-ft-gr1-nf4", "gr1"),  # 29-D body+hands > 17 enumerated joints (hands EE-owned)
     }
 )
@@ -207,7 +208,14 @@ def test_every_actuating_skill_has_a_matching_robot() -> None:
 # the Phase-4 manifest fixes (metaworld 3-D EE-delta+gripper; pusht joint) this
 # is EMPTY. The assertion is exact: a regression adds an entry, a fix that isn't
 # recorded removes one.
-KNOWN_SCENE_GAPS: frozenset[tuple[str, str]] = frozenset()
+KNOWN_SCENE_GAPS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # XR-1's adapter integrates model deltas into the absolute targets
+        # consumed by the direct VLABench wrapper; the generic scene task-space
+        # table still models the common delta-EEF policy interface.
+        ("xr1-vlabench", "vlabench"),
+    }
+)
 
 
 def test_scene_families_are_declared() -> None:

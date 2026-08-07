@@ -107,6 +107,7 @@
       "enum": [
         "smolvla_9d",
         "human300_16d",
+        "xr1_8d",
         "gr1"
       ],
       "title": "State Layout",

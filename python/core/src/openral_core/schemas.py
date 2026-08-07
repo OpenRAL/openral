@@ -4415,6 +4415,7 @@ ModelFamily: TypeAlias = Literal[
     "smolvla",
     "pi05",
     "xvla",
+    "xr1",
     "act",
     "diffusion",
     "rldx",
@@ -4433,6 +4434,12 @@ Used by the eval / runner adapters to dispatch to the right
 ``openral_sim.adapters.<family>`` policy adapter without
 string-matching the skill name. Adding a family here means landing the
 matching adapter under ``python/sim/src/openral_sim/adapters/``.
+
+``xr1`` (Xiaomi Robotics XR-1 / ``MiBoTForActionGeneration``) runs
+out-of-process because its released checkpoints pin torch 2.8,
+transformers 4.57.1, and FlashAttention 2.8.3. The adapter consumes the
+three public benchmark checkpoints; the bare 5B ``model_states.pt`` is
+a post-training seed, not an executable policy.
 
 ``gr00t`` (NVIDIA Isaac GR00T N1.x / N2) runs out-of-process via a ZMQ
 sidecar in an isolated Python 3.10 venv, sharing the architecture of the
@@ -6025,6 +6032,7 @@ CANONICAL_MODEL_TOKENS: frozenset[str] = frozenset(
         "smolvla",  # family smolvla
         "pi05",  # family pi05
         "xvla",  # family xvla
+        "xr1",  # family xr1 (Xiaomi Robotics-1 / MiBoT)
         "act",  # family act
         "diffusion",  # family diffusion
         "molmoact2",  # family molmoact2
@@ -6060,6 +6068,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "smolvla": "smolvla",
     "pi05": "pi05",
     "xvla": "xvla",
+    "xr1": "xr1",
     "act": "act",
     "diffusion": "diffusion",
     "molmoact2": "molmoact2",
@@ -6079,6 +6088,7 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "smolvla": frozenset({"smolvla"}),
     "pi05": frozenset({"pi05"}),
     "xvla": frozenset({"xvla"}),
+    "xr1": frozenset({"xr1"}),
     "act": frozenset({"act"}),
     "diffusion": frozenset({"diffusion"}),
     "molmoact2": frozenset({"molmoact2"}),
@@ -6719,6 +6729,7 @@ class RoboCasaBackendOptions(BaseModel):
     state_layout: Literal[
         "smolvla_9d",
         "human300_16d",
+        "xr1_8d",
         "gr1",
     ] = "human300_16d"
 

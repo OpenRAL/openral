@@ -128,6 +128,11 @@ _KNOWN_DEFERRED: dict[str, str] = {
         "deploy-sim OSC path executes delta/joint modes only. RLBench "
         "runs it via its own Mover, not the deploy-sim OSC path; tracked separately"
     ),
+    "OpenRAL/rskill-xr1-franka_panda-vlabench-nf4": (
+        "XR-1 emits absolute VLABench end-effector targets after adapter-side "
+        "delta integration. The direct VLABench backend consumes them, but the "
+        "generic deploy-sim OSC path executes cartesian_delta rather than cartesian_pose."
+    ),
 }
 
 
