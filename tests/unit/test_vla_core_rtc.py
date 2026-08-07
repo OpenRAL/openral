@@ -6,8 +6,8 @@ import pytest
 from openral_core.exceptions import ROSConfigError
 from openral_rskill._vla_core import (
     _parse_rtc_config,
-    _rtc_enabled_in_extra,
     build_chunk_executor,
+    rtc_enabled_in_extra,
 )
 
 
@@ -79,7 +79,7 @@ def test_non_flow_matching_adapter_rejected() -> None:
         _parse_rtc_config({"rtc": {}}, adapter_name="act")
 
 
-# ── _rtc_enabled_in_extra: the smolvla factory's torch.compile gate ─────────
+# ── rtc_enabled_in_extra: the smolvla factory's torch.compile gate ─────────
 #
 # The smolvla factory skips maybe_compile_chunk_forward on this predicate (RTC and
 # torch.compile rewrite the same flow-matching forward). Testing the predicate rather
@@ -88,24 +88,24 @@ def test_non_flow_matching_adapter_rejected() -> None:
 
 
 def test_rtc_enabled_in_extra_true_for_enabled_block() -> None:
-    assert _rtc_enabled_in_extra({"rtc": {}}, adapter_name="smolvla") is True
-    assert _rtc_enabled_in_extra({"rtc": {"enabled": True}}, adapter_name="smolvla") is True
+    assert rtc_enabled_in_extra({"rtc": {}}, adapter_name="smolvla") is True
+    assert rtc_enabled_in_extra({"rtc": {"enabled": True}}, adapter_name="smolvla") is True
 
 
 def test_rtc_enabled_in_extra_false_for_disabled_block_keeps_compile() -> None:
     """A disabled rtc block must NOT cost the user torch.compile."""
     extra = {"rtc": {"enabled": False}, "compile": True, "compile_mode": "reduce-overhead"}
-    assert _rtc_enabled_in_extra(extra, adapter_name="smolvla") is False
+    assert rtc_enabled_in_extra(extra, adapter_name="smolvla") is False
 
 
 def test_rtc_enabled_in_extra_false_without_block() -> None:
-    assert _rtc_enabled_in_extra({"compile": True}, adapter_name="smolvla") is False
+    assert rtc_enabled_in_extra({"compile": True}, adapter_name="smolvla") is False
 
 
 def test_rtc_enabled_in_extra_propagates_malformed_block() -> None:
     """A bad manifest still fails loudly at this earlier call site."""
     with pytest.raises(ROSConfigError):
-        _rtc_enabled_in_extra({"rtc": {"bogus_knob": 1}}, adapter_name="smolvla")
+        rtc_enabled_in_extra({"rtc": {"bogus_knob": 1}}, adapter_name="smolvla")
 
 
 # ── build_chunk_executor RTC wiring ─────────────────────────────────────────

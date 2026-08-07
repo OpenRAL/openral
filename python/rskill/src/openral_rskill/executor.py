@@ -91,7 +91,6 @@ class ChunkedExecutor:
         self._buffer: deque[Any] = deque()
 
         # ── RTC (lerobot Real-Time Chunking) state ──────────────────────────
-        self._rtc_cfg = rtc_config
         self._rtc_enabled = bool(getattr(rtc_config, "enabled", False))
         self._rtc_queue: Any = None
         self._rtc_last_delay = 0
@@ -104,9 +103,7 @@ class ChunkedExecutor:
                 )
             self._rtc_horizon = int(getattr(rtc_config, "execution_horizon", 0) or 0)
             if prefetch_at < self._rtc_horizon:
-                # The tail handed to the policy is at most `prefetch_at` long, so a
-                # lead shorter than the horizon silently shortens the guidance ramp.
-                # A degradation, not an error — the blend still runs, over fewer steps.
+                # A degradation, not an error: the blend still runs, over fewer steps.
                 log.warning(
                     "chunked_executor.rtc_prefetch_below_horizon",
                     prefetch_at=prefetch_at,

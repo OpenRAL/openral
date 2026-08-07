@@ -148,8 +148,18 @@ policy_extras:
     enabled: true               # false (or no rtc block) = byte-identical to pre-RTC
     execution_horizon: 10       # steps over which the guidance decays to free
     max_guidance_weight: 10.0   # cap on the per-step guidance weight
-    prefix_attention_schedule: exp   # zeros | ones | linear | exp
+    prefix_attention_schedule: ones  # zeros | ones | linear | exp
 ```
+
+`ones` is measured, not a default. It holds the first executed action of a new
+chunk at full weight; `exp` decays it to 0.57–0.78 depending on the inference
+delay, leaving 22–43% of the inter-chunk disagreement in the seam. On a
+calibrated out-of-distribution sweep `ones` gave mean/worst seam discontinuities
+of 15.3°/20.9° against `exp`'s 18.6°/27.3°; on a 10-task LIBERO-Spatial sweep
+(in-distribution) the two were indistinguishable — same 4/10 successes, same
+seam statistics. Raising `max_guidance_weight` (10 → 50) or `execution_horizon`
+(10 → 25) changed nothing: the guidance is a soft pull that halves the gap to
+the previous tail, never a clamp.
 
 `debug: true` is the fifth accepted key (lerobot-side diagnostics). Anything
 else is a `ROSConfigError` at load — a typo cannot silently disable the blend.
@@ -296,7 +306,7 @@ the upstream repo also holds. Every OpenRAL fetch path here is a per-file
 | `runtime` / `quantization.dtype` | `pytorch` / `bf16` |
 | `weights_uri` | `hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0` (pinned mirror) |
 | `chunk_size` / `n_action_steps` | 50 / 50 |
-| `policy_extras.rtc` | enabled; `execution_horizon` 10, `max_guidance_weight` 10.0, schedule `exp` |
+| `policy_extras.rtc` | enabled; `execution_horizon` 10, `max_guidance_weight` 10.0, schedule `ones` |
 | `action_contract` | 6-D `joint_positions`, `joint_units: degrees` |
 | `latency_budget.per_chunk_ms` | 400 (**191 ms measured**, RTX 4070 Laptop) |
 | `min_vram_gb.bf16` | 1.5 (**1.19 GiB peak measured**) |

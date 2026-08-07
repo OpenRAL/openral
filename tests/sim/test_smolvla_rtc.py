@@ -51,6 +51,8 @@ from openral_core.schemas import RSkillManifest
 # `slow`, which is where a 450 M-param GPU checkpoint belongs.
 pytestmark = [pytest.mark.sim, pytest.mark.slow]
 
+torch = pytest.importorskip("torch", reason="torch not installed")
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFEST_PATH = _REPO_ROOT / "rskills" / "rskill-smolvla-so101-eraser_place-bf16" / "rskill.yaml"
 
@@ -71,8 +73,6 @@ class _Infer(Protocol):
 
     Always the same batch and the same noise; ``rtc_kwargs`` is the only thing
     that varies, so any difference between two results is attributable to RTC.
-    Exposed on :class:`_Rollout` so tests can add calls without a second
-    checkpoint load.
     """
 
     def __call__(self, kind: _Kind, **rtc_kwargs: Any) -> Any: ...
@@ -95,7 +95,6 @@ def rollout() -> _Rollout:
     Both calls share one observation and one fixed noise tensor, so the only
     difference between them is the RTC guidance kwargs.
     """
-    torch = pytest.importorskip("torch", reason="torch not installed")
     pytest.importorskip("lerobot", reason="lerobot not installed")
     pytest.importorskip("datasets", reason="lerobot[dataset] extra not installed")
     pytest.importorskip("transformers", reason="lerobot[smolvla] extra not installed")
@@ -207,8 +206,6 @@ def test_guided_chunk_survives_the_no_grad_seam(rollout: _Rollout) -> None:
     assertion rules out the quieter failure: RTC kwargs accepted, silently
     dropped, chunk returned unchanged.
     """
-    torch = pytest.importorskip("torch", reason="torch not installed")
-
     assert rollout.guided.shape == rollout.base.shape
     assert torch.isfinite(rollout.guided).all()
     assert not torch.equal(rollout.guided, rollout.base), (
@@ -242,8 +239,6 @@ def test_null_guidance_reproduces_the_unguided_chunk(rollout: _Rollout) -> None:
     populated; only the tail is absent, which is exactly the first-chunk case
     ``ChunkedExecutor`` hits before it has anything to blend with.
     """
-    torch = pytest.importorskip("torch", reason="torch not installed")
-
     null = rollout.infer("prefetch", inference_delay=_DELAY, prev_chunk_left_over=None)
 
     assert torch.equal(null, rollout.base), (
@@ -259,10 +254,8 @@ def test_inference_mode_would_break_the_guidance(rollout: _Rollout) -> None:
     ``torch.enable_grad()`` escapes ``no_grad`` but *cannot* escape
     ``inference_mode``, so swapping the two in
     :func:`openral_rskill._vla_core.run_inference` would break every guided
-    chunk in production while leaving the unguided path green. This test is the
-    tripwire for that refactor.
+    chunk in production while leaving the unguided path green. This test documents
+    why the choice matters; the other three tests here are what actually break.
     """
-    torch = pytest.importorskip("torch", reason="torch not installed")
-
     with torch.inference_mode(), pytest.raises(RuntimeError, match="grad"):
         rollout.infer("prefetch", inference_delay=_DELAY, prev_chunk_left_over=rollout.prev)

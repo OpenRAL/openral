@@ -681,7 +681,7 @@ def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
         raise ROSConfigError(f"{adapter_name}: invalid policy_extras.rtc: {exc}") from exc
 
 
-def _rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bool:
+def rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bool:
     """Whether ``policy_extras`` carries an *enabled* ``rtc`` block.
 
     For adapter factories that must decide something before the executor exists —
@@ -1192,7 +1192,7 @@ __all__ = [
 ]
 
 
-def _policy_rtc_enabled(policy: Any) -> bool:
+def rtc_enabled(policy: Any) -> bool:
     """Return True when *policy* carries an enabled lerobot ``RTCConfig``.
 
     RTC-enabled policies reject ``select_action`` outright, so callers that
@@ -1292,11 +1292,7 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     # warm-up raises, the caller downgrades it to a warning, and tick 1
     # pays the full cold-start (524 ms measured on the SO-101 eraser
     # checkpoint against a 400 ms budget). Found on a live deploy run.
-    warm_call = (
-        policy.predict_action_chunk
-        if _policy_rtc_enabled(policy)
-        else policy.select_action
-    )
+    warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
     with torch.no_grad():
         warm_call(batch)
     if device.startswith("cuda"):
