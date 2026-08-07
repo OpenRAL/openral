@@ -89,6 +89,11 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.geometry import look_at_quat_wxyz
 
+from openral_sim.backends._so_arm_units import (
+    lerobot_action_to_radians,
+    radians_to_lerobot_state,
+    steps_per_control_period,
+)
 from openral_sim.backends.so101_box._assets import (
     _reanchor_robot_base,
     _resolve_robot_mjcf,
@@ -873,24 +878,6 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> EraserSceneOpti
     return EraserSceneOptions(**parsed)
 
 
-def _steps_per_action(model: mujoco.MjModel, control_hz: float) -> int:
-    """Physics steps that make up one control period.
-
-    Args:
-        model: The compiled scene, for its ``opt.timestep``.
-        control_hz: Action rate (see :attr:`EraserSceneOptions.control_hz`).
-
-    Returns:
-        ``round(1 / (control_hz * timestep))``, at least 1.
-
-    Raises:
-        ROSConfigError: If ``control_hz`` is not positive.
-    """
-    if control_hz <= 0.0:
-        raise ROSConfigError(f"so101_eraser: control_hz must be > 0; got {control_hz}.")
-    return max(1, round(1.0 / (control_hz * float(model.opt.timestep))))
-
-
 @dataclass
 class _So101EraserRollout:
     """Rollout for the so101_eraser scene."""
@@ -982,15 +969,13 @@ class _So101EraserRollout:
                 f"got shape {a.shape}",
             )
         if self._joint_units == "degrees":
-            cmd: NDArray[np.float64] = np.radians(self._joint_signs * (a - self._joint_offsets_deg))
-            # The gripper channel is NOT degrees: lerobot SO-ARM datasets store
-            # it normalised [0, 100] over the jaw's calibrated travel. Mapping
-            # it through radians() like the arm joints lands ~10° open at the
-            # closed end (MJCF jaw range is [-10°, +100°]) — exactly the
-            # grasp-critical regime. Map the fraction onto the jaw range, the
-            # same [0, 1]-style surface the deploy HAL exposes.
             g_lo, g_hi = self._arm_joint_ranges[-1]
-            cmd[-1] = g_lo + np.clip(a[-1] / 100.0, 0.0, 1.0) * (g_hi - g_lo)
+            cmd: NDArray[np.float64] = lerobot_action_to_radians(
+                a,
+                joint_signs=self._joint_signs,
+                joint_offsets_deg=self._joint_offsets_deg,
+                gripper_range=(float(g_lo), float(g_hi)),
+            )
         else:
             cmd = a
         lo = self._arm_joint_ranges[:, 0]
@@ -1060,14 +1045,13 @@ class _So101EraserRollout:
             dtype=np.float64,
         )
         if self._joint_units == "degrees":
-            lerobot_deg: NDArray[np.float64] = (
-                self._joint_signs * np.degrees(qpos) + self._joint_offsets_deg
-            )
-            # Inverse of step()'s gripper mapping: jaw angle → lerobot [0, 100].
-            # degrees(qpos) would report the manifest home (lerobot 1.95) as
-            # -7.9 — below the normalizer's observed minimum.
             g_lo, g_hi = self._arm_joint_ranges[-1]
-            lerobot_deg[-1] = (qpos[-1] - g_lo) / (g_hi - g_lo) * 100.0
+            lerobot_deg = radians_to_lerobot_state(
+                qpos,
+                joint_signs=self._joint_signs,
+                joint_offsets_deg=self._joint_offsets_deg,
+                gripper_range=(float(g_lo), float(g_hi)),
+            )
             return np.asarray(lerobot_deg, dtype=np.float32)
         return np.asarray(qpos, dtype=np.float32)
 
@@ -1232,7 +1216,9 @@ def build_so101_eraser_scene(env_cfg: SimEnvironment) -> _So101EraserRollout:
         _lamp_light_id=lamp_light,
         _light_baselines=light_baselines,
         _instruction=env_cfg.task.instruction or _INSTRUCTION,
-        _steps_per_action=_steps_per_action(model, options.control_hz),
+        _steps_per_action=steps_per_control_period(
+            float(model.opt.timestep), options.control_hz, scene="so101_eraser"
+        ),
         _max_steps=int(env_cfg.task.max_steps or _DEFAULT_MAX_STEPS),
         _render_height=int(env_cfg.scene.observation_height or _DEFAULT_RENDER_HEIGHT),
         _render_width=int(env_cfg.scene.observation_width or _DEFAULT_RENDER_WIDTH),
