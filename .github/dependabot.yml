@@ -14,7 +14,7 @@ updates:
     ignore:
       # reason: the transformers ceiling is set by lerobot's own `transformers-dep`
       # extra (`>=5.4.0,<5.6.0` on lerobot 0.6.0), so widening it here resolves to
-      # nothing. Dependabot re-raised the same no-op bump in #29/#33/#37 and also
+      # nothing. Dependabot re-raised the same no-op bump in #18/#29/#33/#58 and also
       # rewrote the group reason comments to assert a lerobot requirement that does
       # not exist. Bump these pins by hand when lerobot's cap actually moves.
       - dependency-name: "transformers"
