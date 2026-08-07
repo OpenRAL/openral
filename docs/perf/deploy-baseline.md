@@ -281,6 +281,12 @@ one snapshot, the same shape as the `rskill.execute` mistake. Measured over a
 several minutes. Left as a headline span. Worth recording that the check was
 run, because the two preceding rounds each found a real one.
 
+*Revisited later:* the rate was low but every row was zero-information — a
+static (even empty) scene re-shipped its full object-list JSON on each 0.2 Hz
+reasoner heartbeat, 720 rows/hour. The emitter is now change-gated (semantic
+key: id / label / pose to 1 cm / is_container) with a 60 s keepalive, and
+still a headline span — a surviving row means the scene actually changed.
+
 ---
 
 ## Round 3 — reasoner on a free cloud model, with Robometer live

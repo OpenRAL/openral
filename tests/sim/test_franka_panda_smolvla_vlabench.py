@@ -27,6 +27,7 @@ import importlib.util
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 
@@ -93,6 +94,34 @@ def test_install_plan_registered() -> None:
     assert plan.probe() in (True, False)
     # The plan installs editable + stubs rrt_algorithms (no external repo pull for it).
     assert any("rrt_algorithms stub" in s.description for s in plan.steps)
+    install_argv = [arg for step in plan.steps for arg in step.argv]
+    assert "mujoco==3.2.2" in install_argv
+    assert "dm_control==1.0.22" in install_argv
+    assert "opencv-python" in install_argv
+
+
+def test_xiaomi_camera_order_preserves_orientation() -> None:
+    from openral_sim.backends.vlabench import _select_policy_cameras
+
+    raw = np.stack(
+        [
+            np.full((2, 3, 3), 10, dtype=np.uint8),
+            np.full((2, 3, 3), 20, dtype=np.uint8),
+            np.array(
+                [
+                    [[30, 30, 30], [31, 31, 31], [32, 32, 32]],
+                    [[40, 40, 40], [41, 41, 41], [42, 42, 42]],
+                ],
+                dtype=np.uint8,
+            ),
+            np.full((2, 3, 3), 50, dtype=np.uint8),
+        ]
+    )
+    cameras = _select_policy_cameras(raw)
+    assert int(cameras["camera1"][0, 0, 0]) == 30  # front = raw index 2
+    assert int(cameras["camera1"][1, 0, 0]) == 40  # rows are not flipped
+    assert int(cameras["camera2"][0, 0, 0]) == 10  # base = raw index 0
+    assert int(cameras["camera3"][0, 0, 0]) == 50  # wrist = raw index 3
 
 
 # ── Live end-to-end (needs the provisioned VLABench backend + assets) ─────────

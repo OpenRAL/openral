@@ -125,6 +125,13 @@ Materialises a Python 3.10 venv under `_DEFAULT_HOME` (`~/.cache/openral/rldx-si
 - `_make_wrapper(*, work, source, args) -> Path` — Generate `<work>/boot_server.py`: monkey-patches `AutoModel.from_pretrained` for the Qwen3-VL backbone with NF4 / int8 / no-op, sets `sys.argv`, and calls into `rldx.eval.run_rldx_server`. (L82)
 - `main() -> int` — argparse entry point; flags `--model`, `--port`, `--quantization {none,nf4,int8}`, `--home`. Calls `run_sidecar(..., family="rldx", ...)`, which stamps the sidecar identity record (so the adapter can verify reuse) and then `os.execvpe`s into the sidecar venv so SIGINT reaches the server. (L237)
 
+### `tools/xr1_sidecar.py` + `tools/_xr1_server.py`
+_Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provisions torch 2.8 / transformers 4.57.1 / FlashAttention 2.8.3 + bitsandbytes and execs the server. The server loads the pinned MiBoT custom-code checkpoint in manifest-selected NF4 (or BF16), recreates Xiaomi's benchmark-specific chat template and padded state tensor, decodes actions with the checkpoint processor, and serves `ping/reset/get_action/close` over the shared ZMQ/msgpack ndarray wire._
+- `main() -> int` (launcher) — parse model/profile/quantization/host/port/home; `--export-dir` persists an NF4 checkpoint and exits, otherwise stamp sidecar identity and `os.execvpe` into `_xr1_server.py`.
+- `_messages(profile, images, instruction) -> list[dict[str, Any]]` — exact RoboCasa, RoboCasa365-video, or VLABench message layout from upstream revision `7c20088`.
+- `_pad_state(state) -> NDArray[np.float32]` — pad one frame or a four-frame history to XR-1's 60-D internal state.
+- `class _XR1Policy` — pinned `AutoModel`/`AutoProcessor` custom-code loader; bitsandbytes NF4 uses a BF16 compute dtype + CUDA device map, `prequantized_nf4` reloads a saved packed checkpoint without re-quantizing, and checkpoint-owned action de-normalization remains unchanged. `export_pretrained(output_dir)` writes sharded packed safetensors, custom MiBoT code/processor assets, and `quantization_metadata.json` while explicitly excluding cached BF16 shards.
+
 ### `tools/qwen_vlm_sidecar.py` + `tools/_qwen_vlm_server.py`
 _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `openral_runner.backends.gstreamer.qwen_scene_vlm.QwenSceneVlm`._ The launcher provisions an isolated venv (`OPENRAL_QWEN_VLM_SIDECAR_VENV` to reuse one) with transformers + bitsandbytes + `qwen-vl-utils` + pyzmq/msgpack, then `os.execvpe`s into the server. The server answers a ZMQ REQ/REP + msgpack protocol (`{"op":"query","image","question"}` → `{"ok","answer"}`); out-of-process for dependency/VRAM isolation (same pattern as `rldx_sidecar`). Apache-2.0 model.
 

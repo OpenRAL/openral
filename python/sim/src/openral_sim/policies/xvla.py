@@ -26,12 +26,13 @@ never pulls them transitively.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill._vla_core import (
+    build_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -65,15 +66,30 @@ class _XVLAAdapter:
     _empty_camera_size: tuple[int, int] = (224, 224)
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
     _last_input_frame: NDArray[np.uint8] | None = None
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        if hasattr(self._policy, "reset"):
+        if self._chunk_executor is not None:
+            self._chunk_executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        if self._chunk_executor is not None:
+            action_tensor = self._chunk_executor.select_action(
+                lambda: self._prepared_batch(observation, instruction)
+            )
+            return self._postprocess_action(action_tensor)
+
+        batch = self._prepared_batch(observation, instruction)
+        action_tensor = run_inference(self._policy, batch)
+        return self._postprocess_action(action_tensor)
+
+    def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
+        """Stages 1-2: env preprocessor + policy preprocessor."""
         raw = observation.get("raw")
         if not isinstance(raw, dict):
             raise ROSCapabilityMismatch(
@@ -88,9 +104,10 @@ class _XVLAAdapter:
         # Stage 1: env preprocessor (LiberoProcessorStep + image normalize + domain id).
         batch = self._env_pre(batch)
         # Stage 2: policy preprocessor (rename, tokenize, device move, normalize).
-        batch = self._policy_pre(batch)
-        # Stage 3: forward pass.
-        action_tensor = run_inference(self._policy, batch)
+        return cast("dict[str, Any]", self._policy_pre(batch))
+
+    def _postprocess_action(self, action_tensor: Any) -> NDArray[np.float32]:
+        """Stages 4-5: policy postprocessor + env postprocessor, per step."""
         # Stage 4: policy postprocessor (unnormalize, CPU move).
         action_tensor = self._policy_post(action_tensor)
         # Stage 5: env postprocessor (rot6d → axis-angle, 20-D → 7-D).
@@ -106,6 +123,9 @@ class _XVLAAdapter:
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
         release_torch_modules(
             self,
             "_policy",
@@ -270,7 +290,7 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
 
-    return _XVLAAdapter(
+    adapter = _XVLAAdapter(
         spec=spec,
         device=device,
         _policy=policy,
@@ -282,3 +302,5 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         _converters=_converters,
         _camera_keys=cam_keys,
     )
+    adapter._chunk_executor = build_chunk_executor(spec.extra, policy=policy, adapter_name="xvla")
+    return adapter

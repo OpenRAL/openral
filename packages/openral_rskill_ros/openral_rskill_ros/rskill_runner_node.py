@@ -92,11 +92,6 @@ _MAX_APPROACH_WAYPOINTS = 100_000
 _DEFAULT_EXECUTION_DEADLINE_S = 45.0
 
 
-def _remaining_tick_sleep_s(period_s: float, elapsed_s: float) -> float:
-    """Sleep needed to cap a tick at ``1 / rate_hz`` without double-counting work."""
-    return max(0.0, period_s - elapsed_s)
-
-
 def _commercial_deployment() -> bool:
     """Return whether the running deployment is commercial.
 
@@ -886,19 +881,30 @@ if _ROS2_AVAILABLE:
                 )
             return skill
 
-        def _resolve_inference_labels(self, skill: rSkillBase) -> tuple[str, str | None]:
-            """Resolve the inference engine + device labels for the chunk span.
+        def _resolve_inference_labels(
+            self, skill: rSkillBase
+        ) -> tuple[str, str | None, int | None]:
+            """Resolve engine + device + consumed-per-inference for the chunk span.
 
             Engine comes from the manifest runtime (torch / onnx / tensorrt);
-            device from the policy adapter (lerobot ``.device`` convention).
-            Both best-effort — a missing attribute renders "—" on the dashboard.
+            device from the policy adapter (lerobot ``.device`` convention);
+            the third element is the manifest's ``n_action_steps`` — the
+            number of actions the robot consumes before the next VLA
+            inference, which is what ``inference.chunk_size`` means. All
+            best-effort — a missing attribute renders "—" on the dashboard.
             """
             _manifest = getattr(skill, "manifest", None)
             _runtime = getattr(_manifest, "runtime", None)
             engine = str(getattr(_runtime, "value", _runtime) or "") or "torch"
+            from openral_rskill._vla_core import resolve_inference_engine
+
+            engine = resolve_inference_engine(skill, engine)
             _adapter = getattr(skill, "_adapter", None)
             _device = getattr(_adapter, "device", None) or getattr(skill, "device", None)
-            return engine, (str(_device) if _device is not None else None)
+            consumed = getattr(_manifest, "n_action_steps", None) or getattr(
+                _manifest, "chunk_size", None
+            )
+            return engine, (str(_device) if _device is not None else None), consumed
 
         def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
             """Return True once the execution budget has lapsed, reporting the miss.
@@ -939,7 +945,7 @@ if _ROS2_AVAILABLE:
             self._last_deadline_elapsed_s = elapsed_s
             return True
 
-        def _run_until_done_or_deadline(  # noqa: PLR0915 -- linear safety/deadline loop
+        def _run_until_done_or_deadline(
             self,
             *,
             goal_handle: ServerGoalHandle,
@@ -989,15 +995,17 @@ if _ROS2_AVAILABLE:
             rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
-            chunk_index = 0
+            # Absolute deadlines absorb tick work into the configured period.
+            chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
             skill_role = str(getattr(skill_info, "role", "")) if skill_info is not None else ""
             # Resolve inference engine + device once so the dashboard's Inference
             # card + the `inference.engine`/`inference.device` Identity latches
             # populate (best-effort — omitted attrs render "—").
-            inference_engine, inference_device = self._resolve_inference_labels(skill)
+            inference_engine, inference_device, consumed_per_inference = (
+                self._resolve_inference_labels(skill)
+            )
             while True:
-                tick_started = time.monotonic()
                 if self._estop_latched:
                     raise ROSEStopRequested("/openral/estop received during goal")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
@@ -1015,10 +1023,16 @@ if _ROS2_AVAILABLE:
                 # `inference_span(**attrs)` prefixes kwargs with
                 # ``inference.`` — set the literal rskill.* keys directly
                 # via `set_attribute` so they keep their dotted names.
-                _inf_attrs: dict[str, str] = {"engine": inference_engine}
-                if inference_device:
-                    _inf_attrs["device"] = inference_device
-                with inference_span(chunk_index=chunk_index, **_inf_attrs) as inf_span:
+                span_context = (
+                    inference_span(
+                        chunk_index=chunk_index,
+                        engine=inference_engine,
+                        device=inference_device,
+                    )
+                    if inference_device
+                    else inference_span(chunk_index=chunk_index, engine=inference_engine)
+                )
+                with span_context as inf_span:
                     if self._active_skill_id:
                         inf_span.set_attribute("rskill.id", self._active_skill_id)
                     if skill_role:
@@ -1050,8 +1064,12 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if actions and actions[0].horizon:
-                        inf_span.set_attribute("inference.chunk_size", int(actions[0].horizon))
+                    # Manifest `n_action_steps` is the truth; `horizon` is the
+                    # fallback for manifest-less skills (in-tree test rSkills,
+                    # single-step adapters) where the two coincide. Dropping it
+                    # renders "—" on the Inference card for a value we know.
+                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
+                        inf_span.set_attribute("inference.chunk_size", int(_cs))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
@@ -1076,14 +1094,9 @@ if _ROS2_AVAILABLE:
                     self.get_logger().debug(
                         f"rskill_runner: publish_feedback skipped (goal not active): {exc!s}"
                     )
-                    return
+                    return "cancelled"
 
-                sleep_s = _remaining_tick_sleep_s(
-                    period_s,
-                    time.monotonic() - tick_started,
-                )
-                if sleep_s > 0.0:
-                    time.sleep(sleep_s)
+                next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
 
         def _apply_starting_pose_or_abort(self, skill: Any, goal_handle: Any, result: Any) -> bool:
             """Move to ``starting_pose``; abort the goal on a fatal failure.
@@ -1855,6 +1868,27 @@ def _required_vla_camera_slots(
     return tuple(slot for slot in slots if slot in required) if required else slots
 
 
+def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
+    """Sleep to the next absolute tick deadline, re-anchoring after overruns.
+
+    Args:
+        prev_deadline_s: The deadline (``time.perf_counter`` domain) that
+            gated the previous tick.
+        period_s: Tick period in seconds.
+
+    Returns:
+        The deadline to pass into the next call.
+    """
+    from openral_runner.clock import sleep_until
+
+    deadline = prev_deadline_s + period_s
+    now = time.perf_counter()
+    if deadline < now:
+        return now
+    sleep_until(deadline)
+    return deadline
+
+
 def _decode_image_frames(
     image_frames: dict[str, Any],
     sensor_to_slot: dict[str, str],
@@ -1986,12 +2020,11 @@ def _build_runtime_skill_from_manifest(
         )
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
-    # Real-time SmolVLA deploy overlaps chunk inference with replay.
-    # Benchmark/sim-run leaves this unset so it replans synchronously from the
-    # boundary's fresh observation and preserves published eval semantics.
-    model_family = getattr(manifest.model_family, "value", manifest.model_family)
-    if model_family == "smolvla":
-        policy_extra.setdefault("prefetch_at", 20)
+    # Deploy overlaps the next inference unless the manifest opts out. This
+    # helper serves the deploy/runner path only — benchmark and `sim run` build
+    # their policy elsewhere and stay synchronous, preserving published eval
+    # semantics (they replan from each boundary's fresh observation).
+    policy_extra.setdefault("chunk_prefetch", True)
     vla = VLASpec(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that

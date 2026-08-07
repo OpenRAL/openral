@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import structlog
@@ -33,6 +33,7 @@ from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
+    build_chunk_executor,
     call_make_processors_cached_first,
     release_torch_modules,
     resolve_camera_keys,
@@ -125,15 +126,32 @@ class _PI05Adapter:
     # then trips a dtype mismatch. autocast silently up/down-casts so
     # mixed-precision compute Just Works.
     _autocast_dtype: Any = None
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        if hasattr(self._policy, "reset"):
+        if self._chunk_executor is not None:
+            self._chunk_executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        if self._chunk_executor is not None:
+            action_tensor = self._chunk_executor.select_action(
+                lambda: self._prepared_batch(observation, instruction)
+            )
+            return to_numpy_action(self._postprocessor(action_tensor))
+
+        batch = self._prepared_batch(observation, instruction)
+        with inference_span(kind="single"), self._torch.no_grad(), self._autocast_ctx():
+            action_tensor = self._policy.select_action(batch)
+        action_tensor = self._postprocessor(action_tensor)
+        return to_numpy_action(action_tensor)
+
+    def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
+        """Build the full on-device, dtype-cast batch for one inference."""
         batch = self._build_batch(observation, instruction)
         batch = self._preprocessor(batch)
         # Belt-and-suspenders device move (preprocessor sometimes returns CPU tensors).
@@ -152,20 +170,21 @@ class _PI05Adapter:
                     and v.dtype != self._input_dtype
                 ):
                     batch[k] = v.to(self._input_dtype)
-        device_type = self.device.split(":", 1)[0]
-        autocast_ctx: Any
-        if self._autocast_dtype is not None and device_type in {"cuda", "cpu"}:
-            autocast_ctx = self._torch.amp.autocast(
-                device_type=device_type, dtype=self._autocast_dtype
-            )
-        else:
-            import contextlib
+        return cast("dict[str, Any]", batch)
 
-            autocast_ctx = contextlib.nullcontext()
-        with inference_span(kind="single"), self._torch.no_grad(), autocast_ctx:
-            action_tensor = self._policy.select_action(batch)
-        action_tensor = self._postprocessor(action_tensor)
-        return to_numpy_action(action_tensor)
+    def _autocast_ctx(self) -> Any:
+        """The adapter's mixed-precision context (see `_autocast_dtype` note)."""
+        device_type = self.device.split(":", 1)[0]
+        if self._autocast_dtype is not None and device_type in {"cuda", "cpu"}:
+            return self._torch.amp.autocast(device_type=device_type, dtype=self._autocast_dtype)
+        import contextlib
+
+        return contextlib.nullcontext()
+
+    def _chunk_forward(self, batch: dict[str, Any]) -> Any:
+        """Chunk producer for the executor — predict under this adapter's autocast."""
+        with self._torch.no_grad(), self._autocast_ctx():
+            return self._policy.predict_action_chunk(batch)
 
     def close(self) -> None:
         """Drop the loaded modules, then reclaim their VRAM.
@@ -174,6 +193,9 @@ class _PI05Adapter:
         so flushing while this adapter still holds the policy frees nothing.
         See :func:`openral_rskill._vla_core.release_torch_modules`.
         """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
         release_torch_modules(
             self,
             "_policy",
@@ -208,7 +230,7 @@ class _PI05Adapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
@@ -926,7 +948,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
 
-    return _PI05Adapter(
+    adapter = _PI05Adapter(
         spec=spec,
         device=device,
         _policy=policy,
@@ -960,3 +982,10 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             else (torch.float16 if torch_dtype == torch.float16 else None)
         ),
     )
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra,
+        policy=policy,
+        chunk_fn=adapter._chunk_forward,
+        adapter_name="pi05",
+    )
+    return adapter

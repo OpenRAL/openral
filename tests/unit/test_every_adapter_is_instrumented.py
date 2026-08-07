@@ -33,9 +33,14 @@ _NOT_ADAPTERS = {
     "_video_capture.py",
 }
 
-# The two ways to reach the seam: open the span directly, or go through
-# `run_inference`, which opens it for you.
-_SEAM_NAMES = {"inference_span", "run_inference"}
+# The three ways to reach the seam: open the span directly, go through
+# `run_inference` (which opens it for you), or hand the chunk forward to
+# `build_chunk_executor`, whose `ChunkedExecutor` calls `run_inference`
+# internally (openral_rskill/executor.py:_forward). The executor route is why
+# gr00t / molmoact2 / openvla / pi05 / smolvla / xvla name no span symbol of
+# their own yet are fully instrumented — a two-name check reported the first
+# three as gaps they are not.
+_SEAM_NAMES = {"inference_span", "run_inference", "build_chunk_executor"}
 
 
 def _adapter_modules() -> list[pathlib.Path]:

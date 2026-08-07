@@ -28,8 +28,10 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim import SCENES
 from openral_sim.backends.robocasa import (
     _CURATED_PREBUILT_TASKS,
+    _fit_panda_mobile_action,
     _resolve_env_name,
     _validate_backend_options,
+    _xr1_robocasa_state,
     read_panda_mobile_base_velocity,
     synthesize_laser_scan_2d,
 )
@@ -135,6 +137,37 @@ def test_procedural_scene_id_registered() -> None:
     """The bare `robocasa` procedural scene id is registered with the fixed robot."""
     assert "robocasa" in SCENES
     assert SCENES.fixed_robot("robocasa") == "panda_mobile"
+
+
+def test_xr1_robocasa_state_uses_arm_and_one_gripper_value() -> None:
+    state = _xr1_robocasa_state(
+        {
+            "robot0_joint_pos": np.arange(7, dtype=np.float32),
+            "robot0_gripper_qpos": np.array([0.25, -0.25], dtype=np.float32),
+        }
+    )
+    np.testing.assert_array_equal(
+        state,
+        np.array([0, 1, 2, 3, 4, 5, 6, 0.25], dtype=np.float32),
+    )
+
+
+def test_xr1_action_zero_fills_base_and_torso_slots() -> None:
+    action = np.arange(7, dtype=np.float32)
+    fitted = _fit_panda_mobile_action(action, env_dim=11, state_layout="xr1_8d")
+    np.testing.assert_array_equal(
+        fitted,
+        np.array([0, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0], dtype=np.float32),
+    )
+
+
+def test_non_xr1_seven_dim_action_is_rejected() -> None:
+    with pytest.raises(ROSConfigError, match="no declared layout conversion"):
+        _fit_panda_mobile_action(
+            np.zeros(7, dtype=np.float32),
+            env_dim=11,
+            state_layout="human300_16d",
+        )
 
 
 def test_load_or_build_env_robot_guard_for_robocasa(tmp_path: pytest.TempPathFactory) -> None:

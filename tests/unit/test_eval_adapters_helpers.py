@@ -468,8 +468,18 @@ class TestSmolVLAAdapterBuildBatch:
             def reset(self) -> None:
                 pass
 
+        from openral_rskill._vla_core import build_chunk_executor
+
         policy = _Policy()
-        adapter = self._make_adapter(_policy=policy, _prefetch_at=1)
+        adapter = self._make_adapter(_policy=policy)
+        # Production wires the executor through this factory (`_build_smolvla`
+        # does the same), so the test exercises the real seam rather than a
+        # hand-rolled one.
+        adapter._chunk_executor = build_chunk_executor(
+            {"chunk_prefetch": True, "chunk_prefetch_at": 1},
+            policy=policy,
+            adapter_name="smolvla",
+        )
         observation = {"images": {}, "state": np.zeros(6, dtype=np.float32)}
 
         got = [float(adapter.step(observation, "do thing")[0]) for _ in range(4)]
@@ -478,8 +488,17 @@ class TestSmolVLAAdapterBuildBatch:
         assert policy.inferences in (1, 2)  # prefetch may complete before this assertion
 
     def test_default_prefetch_is_disabled_for_benchmark_freshness(self) -> None:
-        """Sim/eval keeps boundary observations fresh unless real-time deploy opts in."""
-        assert self._make_adapter()._prefetch_at == 0
+        """Sim/eval keeps boundary observations fresh unless real-time deploy opts in.
+
+        `chunk_prefetch` absent from `vla.extra` (the benchmark/`sim run` case)
+        must yield a synchronous executor — deploy is the only caller that sets
+        it, so published eval numbers keep replanning from a fresh boundary
+        observation.
+        """
+        from openral_rskill._vla_core import build_chunk_executor
+
+        ex = build_chunk_executor({}, policy=self._make_adapter()._policy, adapter_name="smolvla")
+        assert ex is None or ex._prefetch_at == 0
 
     def test_close_on_cuda_calls_empty_cache(self) -> None:
         fake_torch = MagicMock()

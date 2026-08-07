@@ -23,6 +23,7 @@ from openral_core.schemas import VLASpec
 from openral_observability import semconv
 from openral_rskill._vla_core import (
     resolve_device,
+    resolve_inference_engine,
     resolve_rskill_repo_id,
     resolve_rskill_repo_revision,
     run_inference,
@@ -180,10 +181,11 @@ class TestRunInference:
                 return _CudaLikeResult()
 
         monkeypatch.setattr(torch.cuda, "synchronize", synchronized.append)
+        policy = _ChunkPolicy()
         out = run_inference(
-            _ChunkPolicy(),
+            policy,
             batch={},
-            method_name="predict_action_chunk",
+            call=policy.predict_action_chunk,
             synchronize=True,
         )
 
@@ -210,6 +212,32 @@ class TestRunInference:
         run_inference(_FakePolicy(), batch={}, engine="trt")
         (span,) = span_exporter.get_finished_spans()
         assert dict(span.attributes or {}).get("inference.engine") == "trt"
+
+    def test_released_pro_trt_attachment_overrides_manifest_runtime(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """A runtime-attached TRT sampler wins over declared PyTorch."""
+
+        class _TrtSampler:
+            __module__ = "openral_pro_trt.smolvla_trt"
+
+        class _Model:
+            sample_actions = _TrtSampler()
+
+        class _Policy(_FakePolicy):
+            model = _Model()
+
+        policy = _Policy()
+        assert resolve_inference_engine(policy, "pytorch") == "trt"
+        run_inference(policy, batch={})
+        (span,) = span_exporter.get_finished_spans()
+        assert dict(span.attributes or {}).get("inference.engine") == "trt"
+
+    def test_explicit_plugin_marker_is_generic(self) -> None:
+        class _Policy:
+            _openral_inference_engine = "tensorrt"
+
+        assert resolve_inference_engine(_Policy(), "pytorch") == "trt"
 
 
 # ── to_numpy_action ───────────────────────────────────────────────────────────

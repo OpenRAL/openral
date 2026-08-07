@@ -23,7 +23,7 @@ Architecture
                                     │                                             │
                                     │  ┌──────────────────────────────────────┐  │
                                     │  │  Background thread (daemon)          │  │
-                                    │  │  • _policy.select_action(batch)      │  │
+                                    │  │  • _policy.predict_action_chunk(...) │  │
                                     │  │  • result → _next_chunk (threading.  │  │
                                     │  │             Event + storage)         │  │
                                     │  └──────────────────────────────────────┘  │
@@ -353,9 +353,9 @@ class SmolVLAAdapter(rSkillBase):
         if self._executor is None:
             raise ROSRuntimeError("SmolVLAAdapter._step_impl: executor not started")
 
-        raw = self._obs_fn(world_state)
-        batch = self._preprocess(raw)
-        action_tensor = self._executor.select_action(batch)
+        action_tensor = self._executor.select_action(
+            lambda: self._preprocess(self._obs_fn(world_state))
+        )
 
         # action_tensor: (1, n_dof) float32 on device
         joints = action_tensor.squeeze(0).cpu().tolist()

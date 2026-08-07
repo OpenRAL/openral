@@ -134,8 +134,16 @@ def maybe_attach_pro_hooks(policy_name: str, skill: Any, **kwargs: Any) -> bool:
         not set).
 
     Example:
+        A policy with no hook registered under it takes the absent branch on
+        every host. (The example deliberately does *not* use ``"smolvla"``:
+        on a box with ``openral-pro-trt`` installed that name resolves to a
+        real hook, and calling it without the ``repo_id`` every real caller
+        passes raised a ``TypeError`` from the doctest — the same
+        environment-dependence that made ``mypy --strict`` fail on dev boxes
+        with the pro tier present.)
+
         >>> from openral_rskill.runtime import NullRuntime
-        >>> maybe_attach_pro_hooks("smolvla", NullRuntime())
+        >>> maybe_attach_pro_hooks("_policy_with_no_hook", NullRuntime())
         False
     """
     for ep in entry_points(group=_POLICY_ATTACH_HOOKS_GROUP):

@@ -22,6 +22,8 @@ Task ID convention: ``"vlabench/<task-name>"`` (e.g. ``"vlabench/select_fruit"``
 Provisioning. The Python side (clone + editable install + numpy-2 sim
 deps + rrt-algorithms stub) is handled by :func:`ensure_backend_deps` under the
 ``"vlabench"`` plan, auto-installed on first env build (``OPENRAL_AUTO_INSTALL_DEPS``).
+The plan pins MuJoCo 3.2.2 + dm_control 1.0.22, matching the upstream evaluator;
+newer loose pairs fail during dm_control model indexing.
 The ~12 GB CC-BY asset bundle is a separate one-time Google-Drive fetch that this
 backend does NOT auto-download — like the CoppeliaSim/RLBench backend it leaves the
 heavy external artefact to the user and raises with the exact recipe when it is
@@ -37,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
@@ -64,6 +67,46 @@ _VLABENCH_CAMERA_MAP = {
     "second_image": "camera2",
     "wrist_image": "camera3",
 }
+# Xiaomi's XR-1 evaluator and VLABench's own eval path select the raw camera
+# tuple as front(index 2), second/base(index 0), wrist(index 3). LeRobot 0.6.0's
+# wrapper currently keeps indices 0,1,2, silently dropping the wrist view.
+_VLABENCH_POLICY_CAMERA_INDICES = (2, 0, 3)
+_IMAGE_RANK = 3
+_GRAYSCALE_CHANNELS = 1
+_RGB_CHANNELS = 3
+_RGBA_CHANNELS = 4
+_log = structlog.get_logger(__name__)
+
+
+def _to_hwc_uint8(frame: Any) -> NDArray[np.uint8]:
+    """Normalize one VLABench raw RGB frame without flipping it."""
+    arr = np.asarray(frame)
+    while arr.ndim > _IMAGE_RANK and arr.shape[0] == 1:
+        arr = arr[0]
+    channels = (_GRAYSCALE_CHANNELS, _RGB_CHANNELS, _RGBA_CHANNELS)
+    if arr.ndim == _IMAGE_RANK and arr.shape[0] in channels and arr.shape[-1] not in channels:
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.ndim != _IMAGE_RANK:
+        raise ROSConfigError(f"VLABench RGB frame must be rank-3, got shape {arr.shape}.")
+    if arr.shape[-1] == _GRAYSCALE_CHANNELS:
+        arr = np.repeat(arr, _RGB_CHANNELS, axis=-1)
+    elif arr.shape[-1] == _RGBA_CHANNELS:
+        arr = arr[..., :_RGB_CHANNELS]
+    elif arr.shape[-1] != _RGB_CHANNELS:
+        raise ROSConfigError(f"VLABench RGB frame must have 1, 3, or 4 channels, got {arr.shape}.")
+    return np.ascontiguousarray(arr, dtype=np.uint8)
+
+
+def _select_policy_cameras(raw_rgb: Any) -> dict[str, NDArray[np.uint8]]:
+    """Select front/base/wrist in Xiaomi's policy order; preserve row orientation."""
+    frames = [_to_hwc_uint8(frame) for frame in np.asarray(raw_rgb)]
+    if len(frames) <= max(_VLABENCH_POLICY_CAMERA_INDICES):
+        raise ROSConfigError(
+            "VLABench raw observation must expose at least four RGB cameras "
+            f"for indices {_VLABENCH_POLICY_CAMERA_INDICES}, got {len(frames)}."
+        )
+    selected = [frames[index] for index in _VLABENCH_POLICY_CAMERA_INDICES]
+    return dict(zip(_VLABENCH_CAMERA_MAP.values(), selected, strict=True))
 
 
 def _parse_task_id(task_id: str) -> str:
@@ -89,6 +132,7 @@ class _VLABenchSim:
     task: TaskSpec
     _env: Any  # gymnasium SyncVectorEnv (n_envs=1), lazy-built
     _last_image: NDArray[np.uint8] | None = None
+    _camera_fallback_warned: bool = False
 
     def reset(self, seed: int | None = None) -> Observation:
         obs, _info = self._env.reset(seed=seed)
@@ -108,16 +152,38 @@ class _VLABenchSim:
         )
 
     def _wrap_obs(self, obs: dict[str, Any]) -> Observation:
-        cameras: dict[str, NDArray[np.uint8]] = {}
-        pixels = obs["pixels"]
-        for env_key, cam_key in _VLABENCH_CAMERA_MAP.items():
-            cameras[cam_key] = _unbatch(pixels[env_key]).astype(np.uint8)
+        cameras = self._policy_cameras(obs)
         self._last_image = cameras["camera1"]
         # Full 7-D agent_pos (pos[3] + euler[3] + gripper[1]) — matches the
         # checkpoint's 7-D normalizer stats + the vlabench_unified dataset's
         # observation.state (the config.json's [6] is stale metadata).
         state = _unbatch(obs["agent_pos"]).astype(np.float32)
         return {"images": cameras, "state": state, "task": self.task.instruction}
+
+    def _policy_cameras(self, obs: dict[str, Any]) -> dict[str, NDArray[np.uint8]]:
+        """Read the raw four-camera tuple when available; fall back for old wrappers."""
+        envs: Any = getattr(self._env, "envs", ())
+        wrapper = envs[0] if len(envs) == 1 else None
+        inner = getattr(wrapper, "_env", None)
+        if inner is not None:
+            raw = inner.get_observation()
+            if isinstance(raw, dict) and "rgb" in raw:
+                return _select_policy_cameras(raw["rgb"])
+
+        if not self._camera_fallback_warned:
+            _log.warning(
+                "vlabench_raw_camera_fallback",
+                note=(
+                    "Could not reach the raw four-camera observation; falling back "
+                    "to LeRobot's three-camera mapping, which may omit the wrist view."
+                ),
+            )
+            self._camera_fallback_warned = True
+        pixels = obs["pixels"]
+        return {
+            cam_key: _unbatch(pixels[env_key]).astype(np.uint8)
+            for env_key, cam_key in _VLABENCH_CAMERA_MAP.items()
+        }
 
     def render(self) -> NDArray[np.uint8] | None:
         return None if self._last_image is None else self._last_image.copy()
@@ -195,6 +261,10 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
         task=task_name,
         obs_type="pixels_agent_pos",
         episode_length=int(env_cfg.task.max_steps or 500),
+        render_resolution=(
+            env_cfg.scene.observation_height,
+            env_cfg.scene.observation_width,
+        ),
     )
     env_groups = cfg.create_envs(n_envs=1)
     # create_envs returns {task_group: {idx: SyncVectorEnv}}; take the sole env.

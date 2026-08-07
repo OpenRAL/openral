@@ -152,6 +152,9 @@ class TestBuildRuntimeSkillSceneCameras:
         assert captured["extra"] == {
             **manifest.policy_extras,
             "latency_budget_ms": manifest.latency_budget.per_chunk_ms,
+            # Deploy-runtime default (setdefault — a manifest's
+            # ``policy_extras.chunk_prefetch: false`` wins over it).
+            "chunk_prefetch": True,
         }
 
     def test_smolvla_deploy_enables_realtime_chunk_prefetch(
@@ -184,7 +187,10 @@ class TestBuildRuntimeSkillSceneCameras:
 
         extra = captured["extra"]
         assert isinstance(extra, dict)
-        assert extra["prefetch_at"] == 20
+        # Deploy opts EVERY chunked family into overlap via the shared
+        # `build_chunk_executor` contract; the lead itself defaults to 20
+        # actions inside that factory (`chunk_prefetch_at`).
+        assert extra["chunk_prefetch"] is True
 
     def test_overrides_sensor_name_scene_cameras_with_vla_slots(
         self, monkeypatch: pytest.MonkeyPatch
