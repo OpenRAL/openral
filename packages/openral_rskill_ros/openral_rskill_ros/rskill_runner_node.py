@@ -1064,8 +1064,12 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if consumed_per_inference:
-                        inf_span.set_attribute("inference.chunk_size", int(consumed_per_inference))
+                    # Manifest `n_action_steps` is the truth; `horizon` is the
+                    # fallback for manifest-less skills (in-tree test rSkills,
+                    # single-step adapters) where the two coincide. Dropping it
+                    # renders "—" on the Inference card for a value we know.
+                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
+                        inf_span.set_attribute("inference.chunk_size", int(_cs))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
