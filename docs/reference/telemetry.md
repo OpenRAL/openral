@@ -181,7 +181,10 @@ attributes and are stripped by the store so they cannot fragment a series.
 > instrumented (`engine="sidecar"`), and
 > `tests/unit/test_every_adapter_is_instrumented.py` is a source-level canary
 > that fails if a future adapter defines `step()` without reaching
-> `inference_span` or `run_inference`.
+> `inference_span`, `run_inference`, or `build_chunk_executor` (whose
+> `ChunkedExecutor` calls `run_inference` for you). The canary caught `xr1`
+> on the merge that brought it in — it was the sixth sidecar adapter with an
+> unspanned `SidecarClient.call()`.
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
