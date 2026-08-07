@@ -665,6 +665,31 @@ def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
         raise ROSConfigError(f"{adapter_name}: invalid policy_extras.rtc: {exc}") from exc
 
 
+def _rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bool:
+    """Whether ``policy_extras`` carries an *enabled* ``rtc`` block.
+
+    For adapter factories that must decide something before the executor exists —
+    smolvla skips ``maybe_compile_chunk_forward`` on this, since RTC and
+    ``torch.compile`` rewrite the same flow-matching forward. Keyed on the parsed
+    ``enabled`` flag rather than the block's presence, so ``rtc: {enabled: false}``
+    still gets compiled.
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label, for the error messages.
+
+    Returns:
+        True only for a present, well-formed, enabled ``rtc`` block.
+
+    Raises:
+        ROSConfigError: The ``rtc`` block is malformed — a bad manifest fails here
+            rather than surviving to the later parse in
+            :func:`build_chunk_executor`; the error is identical either way.
+    """
+    cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    return cfg is not None and bool(cfg.enabled)
+
+
 def build_chunk_executor(
     spec_extra: dict[str, Any],
     *,

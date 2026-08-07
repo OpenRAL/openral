@@ -25,6 +25,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    _rtc_enabled_in_extra,
     apply_chunk_replay,
     build_chunk_executor,
     call_make_processors_cached_first,
@@ -669,10 +670,14 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         "smolvla", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
     ):
         _log.info("smolvla.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
-    elif "rtc" in spec.extra:
+    elif _rtc_enabled_in_extra(spec.extra, adapter_name="smolvla"):
         # RTC rewrites the same flow-matching forward torch.compile would capture
         # (guided denoising re-enters it with a fresh prefix each step), so the two
-        # are mutually exclusive exactly like TRT above.
+        # are mutually exclusive exactly like TRT above. Keyed on the parsed
+        # `enabled` flag, so `rtc: {enabled: false}` keeps its torch.compile.
+        # build_chunk_executor parses the block again below — `_parse_rtc_config`
+        # is a pure function of the dict, so the second parse costs nothing but
+        # keeps each call site independent.
         _log.info("smolvla.compile_skipped_for_rtc", repo_id=repo_id)
     else:
         maybe_compile_chunk_forward(policy, spec.extra, device, torch)
