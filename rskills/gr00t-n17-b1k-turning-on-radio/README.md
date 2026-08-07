@@ -107,7 +107,7 @@ OmniGibson step.
 
 | Field | Value |
 | --- | --- |
-| `name` | `OpenRAL/rskill-gr00t-n17-b1k-turning-on-radio` |
+| `name` | `OpenRAL/rskill-gr00t_n17-r1pro-turning_on_radio-bf16` |
 | `version` | `0.1.0` |
 | `license` | `unknown` |
 | `role` | `s1` |
