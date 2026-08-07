@@ -8,6 +8,17 @@
 // wires this core into the live kernel. test_no_alloc-style counting proves
 // the hot path never allocates.
 
+// GCC 13 emits a bogus `-Wnonnull` from inside <vector> when this file is
+// built at -O3 (the Release build the x86 image uses): the fixtures below
+// assign brace-init-lists to `std::vector<Transform>`, and in
+// `_M_assign_aux`'s `else if (size() >= __len)` arm (bits/vector.tcc) a null
+// `_M_start` implies `size() == 0` and therefore `__len == 0`, so the flagged
+// `__builtin_memmove` sits in an unreachable block. `-Wnonnull` runs early in
+// the middle-end, before the pass that deletes that block, so it warns anyway
+// — upstream GCC PR 116851, still open, under root-cause PR 87489. Scoped to
+// the standard headers so `-Wnonnull` still covers this file's own code.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnonnull"
 #include "openral_safety_kernel/collision.hpp"
 
 #include <atomic>
@@ -15,6 +26,7 @@
 #include <cstdlib>
 #include <new>
 #include <vector>
+#pragma GCC diagnostic pop
 
 #include <gtest/gtest.h>
 
@@ -582,8 +594,7 @@ TEST(BoxCapsuleDistance, DisjointAlongFaceNormalIsExact) {
   // clear), running vertically. Nearest box face is x=+0.05 → segment↔box gap
   // 0.2-0.05=0.15; minus the 0.02 capsule radius → 0.13.
   const osk::Vec3 h{0.05, 0.05, 0.05};
-  const double d =
-      osk::box_capsule_distance(identity(), h, translate(0.2, 0.0, 0.0), 0.02, 0.1);
+  const double d = osk::box_capsule_distance(identity(), h, translate(0.2, 0.0, 0.0), 0.02, 0.1);
   EXPECT_NEAR(d, 0.13, 1e-6);
 }
 
@@ -591,8 +602,7 @@ TEST(BoxCapsuleDistance, SegmentOnSurfaceGivesNegativeRadius) {
   // Capsule segment lies on the box's +x face (x=0.05) → segment↔box gap 0;
   // minus the radius → -0.02 (interpenetration by the radius).
   const osk::Vec3 h{0.05, 0.05, 0.05};
-  const double d =
-      osk::box_capsule_distance(identity(), h, translate(0.05, 0.0, 0.0), 0.02, 0.1);
+  const double d = osk::box_capsule_distance(identity(), h, translate(0.05, 0.0, 0.0), 0.02, 0.1);
   EXPECT_NEAR(d, -0.02, 1e-6);
 }
 
@@ -600,8 +610,7 @@ TEST(BoxCapsuleDistance, ClosestFeatureIsTopFace) {
   // Capsule above the top face; nearest endpoint at z=0.1 → gap 0.1-0.05=0.05,
   // minus radius 0.01 → 0.04.
   const osk::Vec3 h{0.05, 0.05, 0.05};
-  const double d =
-      osk::box_capsule_distance(identity(), h, translate(0.0, 0.0, 0.2), 0.01, 0.1);
+  const double d = osk::box_capsule_distance(identity(), h, translate(0.0, 0.0, 0.2), 0.01, 0.1);
   EXPECT_NEAR(d, 0.04, 1e-6);
 }
 
@@ -690,8 +699,7 @@ TEST(SelfCollisionBox, BoxBoxPairFiresAndClears) {
   m.origin = {identity(), identity()};
   m.axis = {{0, 0, 1}, {0, 0, 1}};
   m.box_link = {0, 1};
-  m.boxes = {osk::Obb{{0.05, 0.05, 0.05}, identity()},
-             osk::Obb{{0.05, 0.05, 0.05}, identity()}};
+  m.boxes = {osk::Obb{{0.05, 0.05, 0.05}, identity()}, osk::Obb{{0.05, 0.05, 0.05}, identity()}};
   m.allowed_pairs = {};
 
   osk::CollisionScratch s;
