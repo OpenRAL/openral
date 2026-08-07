@@ -78,6 +78,16 @@ scene:
     spawn_jitter_m: 0.013
     spawn_yaw_jitter_deg: 15.0
 
+    # Servo-lag match — MEASURED from the dataset, not guessed. The real rig
+    # realises ~27% of the commanded position gap per 33 ms frame (first-order
+    # lag, tau ~ 105 ms, all 25 episodes); upstream sts3215 damping 0.60 gives
+    # tau ~ 34 ms. Open-loop replay of a real episode's action stream: stock
+    # tracks with 2.1 deg mean arm error / ~3 frames lead-lag, 1.9 with
+    # 1.1 deg / ~1 frame. Closed-loop A/B (15 paired eps, seed 2042):
+    # engagement unchanged (4/15 both), closure drift consistently smaller
+    # (paired XY 7.8->7.3, 2.9->2.9, 4.5->3.5 cm). Set null for stock physics.
+    arm_servo_damping: 1.9
+
     # Lighting condition. `bench` is calibrated against the dataset frames
     # (global mean luminance 126/255, std 30, bright specular pool at the near
     # left from a low desk lamp). Others — bright / dim / warm / cool /

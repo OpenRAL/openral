@@ -61,3 +61,7 @@ composition:
   params:
     spawn_jitter_m: 0.0
     spawn_yaw_jitter_deg: 0.0
+    # Servo-lag match, same measured value as the sim scene (see
+    # scenes/sim/so101_eraser_place.yaml for the derivation) — the deploy twin
+    # compiles the same composed MJCF, so the two tiers share the dynamics.
+    arm_servo_damping: 1.9
