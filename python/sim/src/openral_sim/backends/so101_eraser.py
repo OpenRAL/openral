@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -236,6 +236,16 @@ class EraserSceneOptions:
             ``reset``. Defaults to 0.013 m — the per-episode spread the
             operator actually produced. Set to 0 for a fixed layout.
         spawn_yaw_jitter_deg: Uniform ± yaw jitter on the eraser spawn.
+        spawn_seed: Deploy-composer only. ``None`` (default) bakes the nominal
+            spawn into the MJCF — every ``openral deploy sim`` launch is the
+            same pinned bench. An int rolls ``spawn_jitter_m`` /
+            ``spawn_yaw_jitter_deg`` ONCE at compose time with this seed and
+            bakes the jittered spawn instead, so repeated deploy launches can
+            sample the same layout distribution the sim tier's ``reset``
+            produces (deploy has no rollout, hence no per-episode re-roll).
+            The rolled spawn is logged; same seed → same bench. The sim tier
+            ignores this field — its ``reset`` re-rolls jitter per episode
+            and overwrites the baked spawn.
         place_xy_tol_m: Success tolerance — how far the eraser centre may sit
             from the tape centre in XY and still count as placed.
         joint_units: ``"degrees"`` (default) makes the env emit proprio and
@@ -353,6 +363,7 @@ class EraserSceneOptions:
 
     spawn_jitter_m: float = 0.013
     spawn_yaw_jitter_deg: float = 15.0
+    spawn_seed: int | None = None
     place_xy_tol_m: float = 0.02
 
     lighting: str = "bench"
@@ -792,6 +803,13 @@ def compose_so101_eraser_deploy_mjcf(**overrides: Any) -> tuple[str, Path]:
     the HAL node contract is ``(xml, meshdir)`` and it writes the XML to
     ``meshdir.parent``, so the mesh directory is returned rather than the file.
 
+    Deploy has no rollout, so the sim tier's per-episode spawn jitter never
+    rolls here — the baked spawn IS the episode layout. ``spawn_seed`` opts a
+    launch into that distribution anyway: the jitter is rolled once, at compose
+    time, and baked (see :class:`EraserSceneOptions`). Without it every launch
+    is the same pinned bench, which is the layout regime the eraser checkpoint
+    is known not to engage on.
+
     Args:
         **overrides: ``scene.backend_options``-style keys, validated through the
             same parser the sim tier uses, so a deploy scene and a sim scene
@@ -801,8 +819,44 @@ def compose_so101_eraser_deploy_mjcf(**overrides: Any) -> tuple[str, Path]:
         ``(xml, meshdir)`` — the composed MJCF and the SO-101 mesh directory.
     """
     opts = _options_from_backend_options(dict(overrides))
+    opts = _roll_compose_time_spawn(opts)
     xml, path = compose_so101_eraser_mjcf(opts)
     return xml, path.parent / "assets"
+
+
+def _roll_compose_time_spawn(opts: EraserSceneOptions) -> EraserSceneOptions:
+    """Bake one draw of the spawn distribution when ``spawn_seed`` is set.
+
+    Mirrors the draw the sim tier's ``reset`` makes (uniform ±``spawn_jitter_m``
+    on world XY, uniform ±``spawn_yaw_jitter_deg`` on yaw) so a seeded deploy
+    launch samples the same layout distribution a sim episode does. The rolled
+    spawn is logged — a deploy trace stays replayable from the seed alone.
+    """
+    if opts.spawn_seed is None:
+        return opts
+    rng = np.random.default_rng(int(opts.spawn_seed))
+    dx = float(rng.uniform(-opts.spawn_jitter_m, opts.spawn_jitter_m))
+    dy = float(rng.uniform(-opts.spawn_jitter_m, opts.spawn_jitter_m))
+    dyaw = float(rng.uniform(-opts.spawn_yaw_jitter_deg, opts.spawn_yaw_jitter_deg))
+    # eraser_xy = (base_x + offset_x, base_y - offset_y): +world-y needs -offset_y.
+    rolled = replace(
+        opts,
+        eraser_offset_x=opts.eraser_offset_x + dx,
+        eraser_offset_y=opts.eraser_offset_y - dy,
+        eraser_yaw_deg=opts.eraser_yaw_deg + dyaw,
+    )
+    import structlog
+
+    structlog.get_logger("ral.sim.compose").info(
+        "so101_eraser_spawn_rolled",
+        spawn_seed=int(opts.spawn_seed),
+        dx_m=round(dx, 5),
+        dy_m=round(dy, 5),
+        dyaw_deg=round(dyaw, 2),
+        eraser_xy=tuple(round(v, 5) for v in rolled.eraser_xy),
+        eraser_yaw_deg=round(rolled.eraser_yaw_deg, 2),
+    )
+    return rolled
 
 
 def _options_from_backend_options(raw: dict[str, Any] | None) -> EraserSceneOptions:
@@ -844,6 +898,19 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> EraserSceneOpti
                     f"valid presets: {sorted(_LIGHTING_PRESETS)!r}.",
                 )
             parsed[key] = name
+        elif key == "spawn_seed":
+            # A seed is an int (or null = pinned spawn); float(value) would
+            # accept 1.5 and silently truncate through np.default_rng.
+            if value is None:
+                parsed[key] = None
+            else:
+                try:
+                    parsed[key] = int(value)
+                except (TypeError, ValueError) as exc:
+                    raise ROSConfigError(
+                        f"so101_eraser: scene.backend_options.spawn_seed must be "
+                        f"an int or null; got {value!r}",
+                    ) from exc
         elif value is None:
             # Only the optional overrides accept null; everything else is a
             # number or a vector and a null there is a YAML mistake.

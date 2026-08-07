@@ -49,6 +49,15 @@ composition:
   # EraserSceneOptions), so the only params worth pinning here are the ones a
   # deploy run wants different from a batch eval: a fixed layout, so an
   # operator watching the dashboard sees the same bench every reset.
+  #
+  # NOTE the pinned layout is also the regime the eraser checkpoint never
+  # engages on (0/10 in the sim tier's no-jitter A/B). Deploy has no rollout
+  # `reset`, so `spawn_jitter_m` alone never rolls here — to sample the sim
+  # tier's layout distribution, pass `spawn_seed: <int>` AND drop the two
+  # zero pins below (the seeded compose-time draw is bounded by
+  # `spawn_jitter_m` / `spawn_yaw_jitter_deg`, so 0.0 pins it regardless of
+  # seed). The draw is logged as `so101_eraser_spawn_rolled`; a different
+  # seed per launch gives independent layouts, the same seed replays one.
   params:
     spawn_jitter_m: 0.0
     spawn_yaw_jitter_deg: 0.0

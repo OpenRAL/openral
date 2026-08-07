@@ -415,3 +415,58 @@ def test_eraser_spawns_in_place_without_a_rollout_reset() -> None:
         mujoco.mj_step(model, data)
     assert data.xpos[body][:2] == pytest.approx(opts.eraser_xy, abs=5e-3)
     assert data.xpos[body][2] > 0.0
+
+
+def test_deploy_spawn_seed_bakes_a_bounded_reproducible_jittered_layout() -> None:
+    """``spawn_seed`` rolls the sim tier's jitter once, at compose time.
+
+    Deploy has no rollout ``reset``, so without this the baked spawn is the
+    pinned nominal layout on every launch — the exact regime the eraser
+    checkpoint never engages on. Seeded composes must (a) move the spawn,
+    (b) stay inside the configured jitter bounds, (c) reproduce bit-equal for
+    the same seed, and (d) leave the default (no seed) compose untouched.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.backends.so101_eraser import (
+        EraserSceneOptions,
+        _options_from_backend_options,
+        compose_so101_eraser_deploy_mjcf,
+    )
+
+    nominal = np.asarray(EraserSceneOptions().eraser_xy)
+    nominal_yaw = EraserSceneOptions().eraser_yaw_deg
+
+    def spawn_of(**overrides):
+        xml, meshdir = compose_so101_eraser_deploy_mjcf(**overrides)
+        path = meshdir.parent / "so101_eraser_spawn_seed_test.xml"
+        path.write_text(xml)
+        model = mujoco.MjModel.from_xml_path(str(path))
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "eraser")
+        return np.asarray(data.xpos[body][:2]).copy()
+
+    pinned = spawn_of()
+    assert pinned == pytest.approx(nominal, abs=1e-6)  # default stays pinned
+
+    a1, a2, b = spawn_of(spawn_seed=1), spawn_of(spawn_seed=1), spawn_of(spawn_seed=2)
+    assert a1 == pytest.approx(a2, abs=1e-9)  # same seed → same bench
+    assert not np.allclose(a1, b, atol=1e-4)  # different seed → different bench
+    jitter = EraserSceneOptions().spawn_jitter_m
+    for p in (a1, b):
+        assert np.all(np.abs(p - nominal) <= jitter + 1e-6)
+        assert not np.allclose(p, nominal, atol=1e-6)  # it actually moved
+
+    # The yaw rolls too, inside its own bound, through the same parser the
+    # deploy YAML uses (so the YAML spelling can't drift from the dataclass).
+    opts = _options_from_backend_options({"spawn_seed": 3})
+    from openral_sim.backends.so101_eraser import _roll_compose_time_spawn
+
+    rolled = _roll_compose_time_spawn(opts)
+    assert rolled.eraser_yaw_deg != nominal_yaw
+    assert abs(rolled.eraser_yaw_deg - nominal_yaw) <= opts.spawn_yaw_jitter_deg
+
+    # null = pinned, and a non-int seed is rejected loudly, not truncated.
+    assert _options_from_backend_options({"spawn_seed": None}).spawn_seed is None
+    with pytest.raises(ROSConfigError):
+        _options_from_backend_options({"spawn_seed": "not-a-seed"})
