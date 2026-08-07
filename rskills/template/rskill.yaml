@@ -97,6 +97,22 @@ latency_budget:
   # `openral_rskill.testing.assert_within_budget`. Otherwise omit — the
   # schema default of `None` opts out of that test-side tolerance check.
 
+# OPTIONAL — chunk_prefetch runs the next inference in the background so a
+# fresh chunk is ready before the current one drains; chunk_prefetch_at tunes
+# the lead in actions consumed (default 15). Real-Time Chunking (RTC) builds
+# on prefetch: it guides the prefetched chunk inside the flow-matching
+# denoiser to blend with the executing chunk's unconsumed tail, instead of a
+# hard cut at the chunk boundary. optional — flow-matching families (smolvla
+# / pi05) only; requires chunk_prefetch: true and chunk_prefetch_at >=
+# rtc.execution_horizon (the executor warns otherwise):
+# policy_extras:
+#   chunk_prefetch: true
+#   rtc:
+#     enabled: true
+#     execution_horizon: 10
+#     max_guidance_weight: 10.0
+#     prefix_attention_schedule: exp
+
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2410.24164"
 source_repo: "hf://TEMPLATE_ORG/TEMPLATE_ID"

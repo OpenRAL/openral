@@ -171,6 +171,19 @@ latency_budget:
   # of a 30 Hz arm, so inference is not the bottleneck.
   per_chunk_ms: 400.0
 
+# Real-Time Chunking (lerobot RTC): the prefetched chunk is guided inside the
+# flow-matching denoiser to blend with the executing chunk's unconsumed tail.
+# Requires chunk_prefetch (the deploy runner's rskill_runner_node.py defaults
+# policy_extras.chunk_prefetch to true, so this manifest does not set it
+# explicitly). Its default chunk_prefetch_at (15) already leads the
+# execution_horizon below (10) — no override needed. PyTorch + TRT runtimes.
+policy_extras:
+  rtc:
+    enabled: true
+    execution_horizon: 10
+    max_guidance_weight: 10.0
+    prefix_attention_schedule: exp
+
 # ── Provenance ─────────────────────────────────────────────────────────────
 paper_url: "https://arxiv.org/abs/2506.01844"
 dataset_uri: "hf://makermods/eraser_place_unblurry_real"
