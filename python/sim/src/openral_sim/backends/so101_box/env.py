@@ -36,6 +36,11 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
+from openral_sim.backends._so_arm_units import (
+    lerobot_action_to_radians,
+    radians_to_lerobot_state,
+    steps_per_control_period,
+)
 from openral_sim.backends.so101_box._assets import (
     BoxSceneOptions,
     compose_so101_box_mjcf,
@@ -197,6 +202,9 @@ class _So101BoxRollout:
         default_factory=lambda: np.ones(_SO101_ARM_DOF, dtype=np.float64)
     )
     _settle_steps: int = 50
+    # Physics steps per `step()` — one control period (see
+    # `BoxSceneOptions.control_hz`).
+    _steps_per_action: int = 1
     _step_count: int = 0
     _renderer_rgb: Any = None  # mujoco.Renderer — lazy, RGB-mode
     _renderer_depth: Any = None  # mujoco.Renderer — lazy, depth-mode
@@ -257,12 +265,18 @@ class _So101BoxRollout:
                 f"got shape {a.shape}",
             )
         # Degree-trained checkpoints (LeRobot SO-100/101) emit absolute joint
-        # targets in LeRobot servo degrees; MuJoCo ctrl is radians. Invert the
-        # calibration affine (lerobot_deg → mujoco_deg) then convert to radians.
+        # targets in LeRobot servo degrees (gripper channel normalised
+        # [0, 100]); MuJoCo ctrl is radians. Invert the calibration affine
+        # (lerobot_deg → mujoco_deg) then convert to radians.
         # ``"radians"`` policies pass through untouched.
         if self._joint_units == "degrees":
-            mujoco_deg = self._joint_signs * (a - self._joint_offsets_deg)
-            cmd: NDArray[np.float64] = np.radians(mujoco_deg)
+            g_lo, g_hi = self._arm_joint_ranges[-1]
+            cmd: NDArray[np.float64] = lerobot_action_to_radians(
+                a,
+                joint_signs=self._joint_signs,
+                joint_offsets_deg=self._joint_offsets_deg,
+                gripper_range=(float(g_lo), float(g_hi)),
+            )
         else:
             cmd = a
         # Clip to the joint position limits (radians) before writing. The
@@ -274,7 +288,10 @@ class _So101BoxRollout:
         hi = self._arm_joint_ranges[:, 1]
         self._data.ctrl[self._arm_actuator_ids] = np.clip(cmd, lo, hi)
 
-        mujoco.mj_step(self._model, self._data)
+        # A control PERIOD of physics, not one 2 ms tick — see
+        # ``BoxSceneOptions.control_hz``.
+        for _ in range(self._steps_per_action):
+            mujoco.mj_step(self._model, self._data)
         self._step_count += 1
 
         success = self._check_insertion()
@@ -351,7 +368,8 @@ class _So101BoxRollout:
         Reads the arm qpos (MuJoCo radians). In ``"degrees"`` mode, converts to
         degrees and applies the calibration affine
         (``lerobot_deg = signs * mujoco_deg + offsets``) so the proprio matches
-        the LeRobot servo-degree convention the checkpoint was trained in.
+        the LeRobot servo-degree convention the checkpoint was trained in; the
+        gripper channel maps to normalised ``[0, 100]`` over the jaw range.
         ``"radians"`` returns qpos as-is.
         """
         qpos = np.asarray(
@@ -359,8 +377,12 @@ class _So101BoxRollout:
             dtype=np.float64,
         )
         if self._joint_units == "degrees":
-            lerobot_deg: NDArray[np.float64] = (
-                self._joint_signs * np.degrees(qpos) + self._joint_offsets_deg
+            g_lo, g_hi = self._arm_joint_ranges[-1]
+            lerobot_deg = radians_to_lerobot_state(
+                qpos,
+                joint_signs=self._joint_signs,
+                joint_offsets_deg=self._joint_offsets_deg,
+                gripper_range=(float(g_lo), float(g_hi)),
             )
             return np.asarray(lerobot_deg, dtype=np.float32)
         return np.asarray(qpos, dtype=np.float32)
@@ -618,6 +640,9 @@ def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
         _joint_units=options.joint_units,
         _joint_offsets_deg=np.asarray(options.joint_offsets_deg, dtype=np.float64),
         _joint_signs=np.asarray(options.joint_signs, dtype=np.float64),
+        _steps_per_action=steps_per_control_period(
+            float(model.opt.timestep), options.control_hz, scene="so101_box"
+        ),
         _slot_block_qpos_addr=int(model.jnt_qposadr[slot_block_joint]),
         _tube_qpos_addr=int(model.jnt_qposadr[tube_joint]),
         _slot_block_body_id=slot_block_body,
