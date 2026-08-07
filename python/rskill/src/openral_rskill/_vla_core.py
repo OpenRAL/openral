@@ -495,6 +495,7 @@ def run_inference(
     chunk_size: int | None = None,
     engine: str | None = None,
     call: Callable[[Any], Any] | None = None,
+    synchronize: bool = False,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
 
@@ -522,6 +523,12 @@ def run_inference(
             instrumented entry point for chunk producers with autocast,
             decoding, or non-lerobot APIs. ``policy`` may be ``None`` in this
             mode.
+        synchronize: Wait for CUDA completion before returning. Background
+            chunk prefetch enables this so its ready event means the tensor is
+            actually usable, not merely queued on a CUDA stream — otherwise the
+            foreground can be handed a chunk whose kernels have not landed. It
+            also keeps the measured span duration honest: without it the timer
+            stops at kernel-launch, not at compute.
 
     Returns:
         The raw tensor returned by the invoked callable / policy method.
@@ -542,7 +549,10 @@ def run_inference(
     ):
         started_ns = perf_counter_ns()
         try:
-            return call(batch) if call is not None else policy.select_action(batch)
+            result = call(batch) if call is not None else policy.select_action(batch)
+            if synchronize and bool(getattr(result, "is_cuda", False)):
+                torch.cuda.synchronize(getattr(result, "device", None))
+            return result
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
@@ -600,7 +610,7 @@ def build_chunk_executor(
 
     Pop ticks come from the executor-owned buffer, so no observation batch is
     built and no policy call runs. ``chunk_prefetch`` enables background
-    inference; ``chunk_prefetch_at`` tunes its lead in actions (default 15).
+    inference; ``chunk_prefetch_at`` tunes its lead in actions (default 20).
 
     NOT for policies whose ``select_action`` consumes the observation on
     every call (Diffusion Policy keeps ``n_obs_steps`` of observation
@@ -637,7 +647,7 @@ def build_chunk_executor(
         raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
     prefetch_at = 0
     if prefetch and n > 1:
-        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 15)
+        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 20)
         if isinstance(raw_prefetch_at, bool) or not isinstance(raw_prefetch_at, int):
             raise ROSConfigError(
                 f"{adapter_name}: policy_extras.chunk_prefetch_at must be an integer"

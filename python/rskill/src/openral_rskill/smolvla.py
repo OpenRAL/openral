@@ -39,8 +39,8 @@ Timing contract (RTX 4070 reference host)
 -----------------------------------------
 - Full chunk inference: ~313 ms.
 - Queue pop: ~3 ms.
-- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 5),
-  giving 5 x 3 ms = 15 ms window — well within the 313 ms inference time.
+- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 20),
+  giving ~667 ms at 30 Hz to cover the measured 313-600 ms inference.
 - Result: the background thread always finishes before the queue drains,
   keeping per-step latency in the cached-pop regime for all but the very
   first inference of a session.
@@ -165,7 +165,7 @@ class SmolVLAAdapter(rSkillBase):
         device: str = "cuda:0",
         n_dof: int = 6,
         n_cameras: int | None = None,
-        prefetch_at: int = 15,
+        prefetch_at: int = 20,
         name: str = "smolvla",
         version: str = "0.1.0",
         embodiment_tags: list[str] | None = None,

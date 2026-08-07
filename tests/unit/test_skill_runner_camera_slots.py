@@ -157,6 +157,41 @@ class TestBuildRuntimeSkillSceneCameras:
             "chunk_prefetch": True,
         }
 
+    def test_smolvla_deploy_enables_realtime_chunk_prefetch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deploy opts SmolVLA into overlap; benchmark construction remains synchronous."""
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = (
+            _REPO_ROOT / "rskills" / "rskill-smolvla-so101-eraser_place-bf16" / "rskill.yaml"
+        )
+        description = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml")
+        )
+        captured: dict[str, object] = {}
+
+        def _capture(env_cfg: object) -> object:
+            captured["extra"] = dict(env_cfg.vla.extra)  # type: ignore[attr-defined]
+            raise ImportError("stop before policy import")
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _capture)
+
+        with pytest.raises(ROSRuntimeError):
+            _build_runtime_skill_from_manifest(
+                yaml_path=yaml_path,
+                prompt="place the erase on the blue square",
+                scene_cameras=("top", "wrist"),
+                description=description,
+            )
+
+        extra = captured["extra"]
+        assert isinstance(extra, dict)
+        # Deploy opts EVERY chunked family into overlap via the shared
+        # `build_chunk_executor` contract; the lead itself defaults to 20
+        # actions inside that factory (`chunk_prefetch_at`).
+        assert extra["chunk_prefetch"] is True
+
     def test_overrides_sensor_name_scene_cameras_with_vla_slots(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

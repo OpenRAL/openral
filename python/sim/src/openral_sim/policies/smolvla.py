@@ -223,6 +223,15 @@ class _SmolVLAAdapter:
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        # The Pro NVMM hook stashes precomputed embeddings as sampler SIDE
+        # STATE, not in the batch, so two overlapping inferences clobber each
+        # other's embeddings. Serialize the NVMM path — tear the executor down
+        # and run in the foreground — until those embeddings travel in the
+        # batch. Keyed on the observation rather than on `_nvmm_encoder`, which
+        # is only built partway through the first such tick.
+        if observation.get("image_handles") and self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
         if self._chunk_executor is not None:
             self._update_input_preview(observation)
             action_tensor = self._chunk_executor.select_action(

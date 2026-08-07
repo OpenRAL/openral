@@ -165,6 +165,33 @@ class TestRunInference:
 
         run_inference(_GradAssertingPolicy(), batch={})
 
+    def test_named_chunk_method_synchronizes_before_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefetch-ready result means CUDA work completed, not merely launched."""
+        synchronized: list[object] = []
+
+        class _CudaLikeResult:
+            is_cuda = True
+            device = "cuda:0"
+
+        class _ChunkPolicy:
+            def predict_action_chunk(self, batch: dict[str, Any]) -> _CudaLikeResult:
+                return _CudaLikeResult()
+
+        monkeypatch.setattr(torch.cuda, "synchronize", synchronized.append)
+        policy = _ChunkPolicy()
+        out = run_inference(
+            policy,
+            batch={},
+            call=policy.predict_action_chunk,
+            synchronize=True,
+        )
+
+        assert isinstance(out, _CudaLikeResult)
+        assert synchronized == ["cuda:0"]
+
     def test_engine_and_device_attrs_emitted(self, span_exporter: InMemorySpanExporter) -> None:
         """``inference.engine`` defaults to ``"torch"``; ``device`` is lifted from policy."""
 

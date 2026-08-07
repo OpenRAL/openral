@@ -259,12 +259,16 @@ def test_so101_box_degrees_units_roundtrip(env_cfg) -> None:
 
     rollout = SCENES.get("so101_box")(_env_with_backend_options(env_cfg, joint_units="degrees"))
     obs = rollout.reset(seed=0)
-    # Reported state is degrees == degrees(raw radian qpos).
+    # Arm channels report degrees == degrees(raw radian qpos); the gripper
+    # channel is normalised [0, 100] over the jaw range, not degrees.
     raw_rad = np.array(
         [float(rollout._data.qpos[a]) for a in rollout._arm_qpos_addrs],
         dtype=np.float64,
     )
-    np.testing.assert_allclose(obs["state"], np.degrees(raw_rad), rtol=0, atol=1e-3)
+    np.testing.assert_allclose(obs["state"][:5], np.degrees(raw_rad[:5]), rtol=0, atol=1e-3)
+    g_lo, g_hi = rollout._arm_joint_ranges[-1]
+    expected_grip = (raw_rad[5] - g_lo) / (g_hi - g_lo) * 100.0
+    assert obs["state"][5] == pytest.approx(expected_grip, abs=1e-3)
     # A degree target drives the radian qpos toward radians(target).
     target_deg = np.array([20.0, 40.0, 30.0, 20.0, -20.0, 30.0], dtype=np.float32)
     for _ in range(80):
@@ -299,7 +303,11 @@ def test_so101_box_calibration_affine_offsets_state(env_cfg) -> None:
     )
     obs = rollout.reset(seed=0)
     raw_deg = np.degrees([float(rollout._data.qpos[a]) for a in rollout._arm_qpos_addrs])
-    np.testing.assert_allclose(obs["state"], raw_deg + np.array(offsets), rtol=0, atol=1e-3)
+    # The affine covers the arm channels; the gripper channel is normalised
+    # [0, 100] and never sees the offset.
+    np.testing.assert_allclose(
+        obs["state"][:5], raw_deg[:5] + np.array(offsets[:5]), rtol=0, atol=1e-3
+    )
     rollout.close()
 
 
@@ -331,6 +339,59 @@ def test_so101_box_calibration_affine_action_roundtrip(env_cfg) -> None:
     assert np.max(np.abs(q1 - q0)) < 0.05, (
         f"affine did not invert (drift={np.max(np.abs(q1 - q0)):.3f})"
     )
+
+
+def test_so101_box_gripper_channel_is_lerobot_normalised_not_degrees(env_cfg) -> None:
+    """The gripper obs/action channel is lerobot [0, 100] jaw travel, not degrees.
+
+    The old degrees mapping reported the closed jaw as degrees(qpos) ≈ -10 (the
+    MJCF jaw range starts at -10°) and clipped commanded values ≥ 100 "degrees"
+    to the jaw's radian limit — the channel was unusable for grasping.
+    """
+    from openral_sim import SCENES
+
+    rollout = SCENES.get("so101_box")(_env_with_backend_options(env_cfg, joint_units="degrees"))
+    try:
+        obs = rollout.reset(seed=0)
+        state = np.asarray(obs["state"], dtype=np.float32)
+        assert 0.0 <= state[5] <= 100.0
+        cmd = state.copy()
+        cmd[5] = 100.0  # fully open on the lerobot scale
+        for _ in range(30):
+            result = rollout.step(cmd)
+        assert result.observation["state"][5] > 80.0
+        cmd[5] = 0.0  # fully closed
+        for _ in range(30):
+            result = rollout.step(cmd)
+        assert result.observation["state"][5] < 20.0
+    finally:
+        rollout.close()
+
+
+def test_so101_box_one_step_advances_a_full_control_period(env_cfg) -> None:
+    """``step()`` advances 1/control_hz of SIM TIME, not one 2 ms physics tick.
+
+    A 30 FPS-trained checkpoint's absolute joint targets each assume ~33 ms of
+    travel; a single physics tick per action gives the position actuators
+    1/17th of that, so the arm never reaches any target and the policy
+    re-issues near-home commands forever.
+    """
+    from openral_sim import SCENES
+
+    rollout = SCENES.get("so101_box")(env_cfg)
+    try:
+        rollout.reset(seed=0)
+        model, data = rollout.mujoco_handles()
+        period = 1.0 / rollout.options.control_hz
+        assert rollout._steps_per_action == pytest.approx(period / model.opt.timestep, abs=1.0)
+
+        t0 = float(data.time)
+        hold = np.zeros(6, dtype=np.float32)
+        for _ in range(10):
+            rollout.step(hold)
+        assert float(data.time) - t0 == pytest.approx(10 * period, rel=0.05)
+    finally:
+        rollout.close()
 
 
 def test_so101_box_invalid_joint_signs_rejected(env_cfg) -> None:

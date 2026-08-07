@@ -264,16 +264,19 @@ hal:
 # MuJoCo wiring consumed by ``MujocoArmHAL.from_description``.
 # Source: ``Simulation/SO101/so101_new_calib.xml`` in
 # ``TheRobotStudio/SO-ARM100`` (vendored via ``robot_descriptions``).
-# The jaw joint range is ``[-0.1745, 1.7453]`` (radians) and its
+# The jaw joint range is ``[-0.17453293, 1.74532925]`` (radians, the
+# MJCF ``jnt_range`` at full precision — a hand-rounded copy here put the
+# deploy tier's gripper affine 0.002 lerobot units off the sim tier's,
+# which reads the range straight from the MJCF) and its
 # closed position is non-zero, so ``gripper.read_mode`` is
 # ``affine_low_high`` (same as SO-100). The qpos slot for the jaw is
 # index 5 (sixth joint in the kinematic chain).
 sim:
   grippers:
     - joint: "gripper"
-      ctrl_range: [-0.1745, 1.7453]
+      ctrl_range: [-0.17453293, 1.74532925]
       qpos_addrs: [5]
-      qpos_scale: 1.9198  # 1.7453 - (-0.1745); kept for symmetry, unused in affine mode
+      qpos_scale: 1.91986218  # hi - lo; kept for symmetry, unused in affine mode
       read_mode: "affine_low_high"
 
 observation_spec:
