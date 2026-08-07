@@ -150,6 +150,43 @@ class TestRunInference:
         assert attrs.get("inference.chunk_size") == 10
         assert attrs.get(semconv.INFERENCE_DURATION_MS, -1.0) >= 0.0
 
+    def test_call_kwargs_are_splatted_and_delay_recorded(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """RTC threads its guidance kwargs through ``call`` and onto the span."""
+        seen: dict[str, Any] = {}
+
+        def _producer(batch: dict[str, Any], **kwargs: Any) -> torch.Tensor:
+            seen.update(kwargs)
+            return torch.zeros(1, 4, 7)
+
+        run_inference(
+            None,
+            batch={},
+            kind="prefetch",
+            call=_producer,
+            call_kwargs={"inference_delay": 3, "prev_chunk_left_over": None},
+        )
+        assert seen == {"inference_delay": 3, "prev_chunk_left_over": None}
+        (span,) = span_exporter.get_finished_spans()
+        assert dict(span.attributes or {}).get("inference.rtc_delay") == 3
+
+    def test_without_call_kwargs_producer_stays_single_arg(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """``call_kwargs=None`` keeps the 1-arg contract and emits no rtc_delay."""
+        seen_args: list[tuple[Any, ...]] = []
+
+        def _producer(*args: Any, **kwargs: Any) -> torch.Tensor:
+            assert not kwargs
+            seen_args.append(args)
+            return torch.zeros(1, 7)
+
+        run_inference(None, batch={"observation": 1}, call=_producer)
+        assert seen_args == [({"observation": 1},)]
+        (span,) = span_exporter.get_finished_spans()
+        assert "inference.rtc_delay" not in dict(span.attributes or {})
+
     def test_default_kind_is_single(self, span_exporter: InMemorySpanExporter) -> None:
         run_inference(_FakePolicy(), batch={})
         (span,) = span_exporter.get_finished_spans()

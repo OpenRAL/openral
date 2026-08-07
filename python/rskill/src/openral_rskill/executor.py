@@ -31,7 +31,7 @@ class ChunkedExecutor:
         self,
         policy: Any = None,
         *,
-        chunk_fn: Callable[[Any], Any] | None = None,
+        chunk_fn: Callable[..., Any] | None = None,
         chunk_size: int | None = None,
         prefetch_at: int = 15,
         rtc_config: Any = None,
@@ -59,14 +59,18 @@ class ChunkedExecutor:
                 actions). ``0`` disables the background thread entirely —
                 the executor is then a plain synchronous chunk buffer
                 (identical action semantics to lerobot's internal queue,
-                minus the wasted per-tick batch builds).
+                minus the wasted per-tick batch builds). RTC mode has no
+                such synchronous form and requires ``>= 1``.
             rtc_config: lerobot ``RTCConfig``. When ``enabled``, the deque is
                 replaced by lerobot's ``ActionQueue``: each prefetched chunk
                 *replaces* the queue tail the moment it lands (dropping the
                 actions consumed during inference), and the producer is called
                 with ``inference_delay=`` / ``prev_chunk_left_over=`` so the
-                policy's flow-matching guidance can blend chunks. Requires a
-                tensor-returning producer and ``prefetch_at >= 1``.
+                policy's flow-matching guidance can blend chunks. The tail is
+                truncated to ``execution_horizon`` rows; a ``prefetch_at``
+                below the horizon cannot fill it, which shortens the blend and
+                logs a warning at construction. Requires ``prefetch_at >= 1``
+                and a producer returning a ``(1, chunk, action)`` tensor.
 
         Raises:
             ValueError: Neither a policy nor ``chunk_fn`` + ``chunk_size``
@@ -91,11 +95,24 @@ class ChunkedExecutor:
         self._rtc_enabled = bool(getattr(rtc_config, "enabled", False))
         self._rtc_queue: Any = None
         self._rtc_last_delay = 0
+        self._rtc_horizon = 0
         if self._rtc_enabled:
             if prefetch_at < 1:
                 raise ROSConfigError(
                     "ChunkedExecutor: RTC needs chunk_prefetch (prefetch_at >= 1) — "
                     "without an overlapping prefetch there is no previous-chunk tail to blend"
+                )
+            self._rtc_horizon = int(getattr(rtc_config, "execution_horizon", 0) or 0)
+            if prefetch_at < self._rtc_horizon:
+                # The tail handed to the policy is at most `prefetch_at` long, so a
+                # lead shorter than the horizon silently shortens the guidance ramp.
+                # A degradation, not an error — the blend still runs, over fewer steps.
+                log.warning(
+                    "chunked_executor.rtc_prefetch_below_horizon",
+                    prefetch_at=prefetch_at,
+                    execution_horizon=self._rtc_horizon,
+                    effect="previous-chunk tail is shorter than the RTC guidance ramp; "
+                    "chunks blend over prefetch_at steps instead of execution_horizon",
                 )
             # lerobot is a heavy optional dep — deferred to RTC-enabled construction.
             from lerobot.policies.rtc import ActionQueue
@@ -217,7 +234,11 @@ class ChunkedExecutor:
                 self._raise_bg_error_if_any()
                 if not self._running:
                     raise ROSRuntimeError("ChunkedExecutor stopped while waiting on pre-fetch")
-                action = self._rtc_queue.get()
+            # Look again whether or not we waited: the bg thread can merge between
+            # the first get() and the _bg_pending read above, and the cold start
+            # below *replaces* the queue — it would discard the chunk that just
+            # landed and re-run inference synchronously.
+            action = self._rtc_queue.get()
             if action is None:
                 # Cold start (first call after reset) — no previous tail to blend.
                 self._chunk_index += 1
@@ -243,10 +264,22 @@ class ChunkedExecutor:
                 "ChunkedExecutor: RTC mode needs a (batch, chunk, action) tensor producer, "
                 f"got {type(chunk).__name__}"
             )
+        if chunk.shape[0] != 1:
+            # squeeze(0) is a no-op on a real batch, which would silently feed the
+            # queue a (batch, chunk, action) tensor and consume batch rows as time.
+            raise ROSRuntimeError(
+                "ChunkedExecutor: RTC serves a single action stream, so the producer's "
+                f"batch dimension must be 1, got {int(chunk.shape[0])}"
+            )
         actions = chunk.squeeze(0).detach()
         # Ground-truth delay: how many actions the consumer popped while this
         # inference ran. Valid in wall-clock deploy AND fast-forward sim, unlike
         # a latency/control-period estimate.
+        #
+        # get_action_index() and merge() take the ActionQueue lock separately, so a
+        # consumer pop landing between them makes lerobot's own cross-check log
+        # "Indexes diff is not equal to real delay" and fall back to real_delay —
+        # one action of staleness in the drop count, not a bug. Don't triage it as one.
         real_delay = max(0, self._rtc_queue.get_action_index() - idx_before)
         self._rtc_last_delay = real_delay
         self._rtc_queue.merge(actions, actions, real_delay, idx_before)
@@ -322,9 +355,15 @@ class ChunkedExecutor:
         idx_before = 0
         if self._rtc_enabled:
             idx_before = self._rtc_queue.get_action_index()
+            left_over = self._rtc_queue.get_left_over()
+            if left_over is not None and 0 < self._rtc_horizon < len(left_over):
+                # Guidance weights are zero past the execution horizon, so the extra
+                # rows only cost a host->policy copy. Normalizing here also keeps the
+                # tail length independent of how early prefetch_at fires.
+                left_over = left_over[: self._rtc_horizon]
             rtc_kwargs = {
                 "inference_delay": self._rtc_last_delay,
-                "prev_chunk_left_over": self._rtc_queue.get_left_over(),
+                "prev_chunk_left_over": left_over,
             }
 
         def _run() -> None:

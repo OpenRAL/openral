@@ -14,6 +14,7 @@ import pytest
 import torch
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_rskill.executor import ChunkedExecutor
+from structlog.testing import capture_logs
 
 CHUNK, DOF = 10, 3
 
@@ -84,7 +85,8 @@ def test_cold_start_has_no_guidance_kwargs() -> None:
 
 def test_prefetch_passes_leftover_tail_and_merge_replaces() -> None:
     producer = Producer()
-    ex = _executor(producer, prefetch_at=CHUNK - 1)  # trigger on the very first pop
+    # horizon == CHUNK so the tail is handed over whole (truncation has its own test).
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=CHUNK)
     first = ex.select_action({})  # cold start (chunk1 = 100..109), pops 100
     _join_bg(ex)  # prefetch (chunk2 = 200..209) merged now
     second = ex.select_action({})
@@ -99,10 +101,50 @@ def test_prefetch_passes_leftover_tail_and_merge_replaces() -> None:
     ex.stop()
 
 
+def test_leftover_tail_is_truncated_to_execution_horizon() -> None:
+    """A long tail is clipped to the horizon — guidance weights past it are zero."""
+    producer = Producer()
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=4)
+    ex.select_action({})  # cold start; 9 rows unconsumed, prefetch launched
+    _join_bg(ex)
+    prev = producer.calls[1]["prev_chunk_left_over"]
+    assert prev.shape == (4, DOF)  # not (9, DOF)
+    assert torch.allclose(prev[0], torch.full((DOF,), 101.0))
+    assert torch.allclose(prev[-1], torch.full((DOF,), 104.0))
+    ex.stop()
+
+
+def test_prefetch_below_horizon_warns() -> None:
+    """A lead shorter than the horizon cannot fill the tail — degradation, not error."""
+    with capture_logs() as logs:
+        ChunkedExecutor(
+            chunk_fn=Producer(),
+            chunk_size=CHUNK,
+            prefetch_at=2,
+            rtc_config=_rtc_config(execution_horizon=8),
+        )
+    warned = [e for e in logs if e["event"] == "chunked_executor.rtc_prefetch_below_horizon"]
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
+    assert warned[0]["prefetch_at"] == 2
+    assert warned[0]["execution_horizon"] == 8
+
+
+def test_prefetch_at_horizon_does_not_warn() -> None:
+    with capture_logs() as logs:
+        ChunkedExecutor(
+            chunk_fn=Producer(),
+            chunk_size=CHUNK,
+            prefetch_at=8,
+            rtc_config=_rtc_config(execution_horizon=8),
+        )
+    assert not [e for e in logs if e["event"] == "chunked_executor.rtc_prefetch_below_horizon"]
+
+
 def test_real_delay_is_actions_consumed_during_inference() -> None:
     producer = Producer()
     producer.blocking = True
-    ex = _executor(producer, prefetch_at=CHUNK - 1)
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=CHUNK)
     ex.select_action({})  # cold start; prefetch launched, blocked
     for _ in range(3):  # consume 3 more of chunk1 while "inference" runs
         ex.select_action({})
@@ -118,7 +160,7 @@ def test_real_delay_is_actions_consumed_during_inference() -> None:
 def test_next_prefetch_reuses_last_real_delay_as_estimate() -> None:
     producer = Producer()
     producer.blocking = True
-    ex = _executor(producer, prefetch_at=CHUNK - 1)
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=CHUNK)
     ex.select_action({})
     for _ in range(3):
         ex.select_action({})
@@ -134,7 +176,7 @@ def test_next_prefetch_reuses_last_real_delay_as_estimate() -> None:
 def test_buffer_drain_blocks_until_merge() -> None:
     producer = Producer()
     producer.blocking = True
-    ex = _executor(producer, prefetch_at=2)
+    ex = _executor(producer, prefetch_at=2, execution_horizon=2)
     drained = [ex.select_action({}) for _ in range(CHUNK)]  # consume ALL of chunk1
     assert len(drained) == CHUNK
 
@@ -144,7 +186,67 @@ def test_buffer_drain_blocks_until_merge() -> None:
     threading.Timer(0.2, _unblock).start()
     nxt = ex.select_action({})  # empty queue + pending prefetch -> blocks
     assert nxt.squeeze(0)[0].item() >= 200.0
+    # Served by the merge, not by a synchronous cold start behind its back.
+    assert len(producer.calls) == 2
     ex.stop()
+
+
+def test_merge_landing_during_empty_read_is_not_discarded() -> None:
+    """A merge can land between the queue read and the ``_bg_pending`` check.
+
+    Forces exactly that interleaving with a thin delegator over the *real*
+    ActionQueue: the first empty ``get()`` releases the blocked producer and
+    waits for the merge, so the executor's next look must find the fresh chunk.
+    Without the second look it falls into the cold-start branch, which
+    *replaces* the queue and throws the just-merged chunk away.
+    """
+    producer = Producer()
+    producer.blocking = True
+    ex = _executor(producer, prefetch_at=2, execution_horizon=2)
+    for _ in range(CHUNK):
+        ex.select_action({})  # drain chunk1; prefetch launched at qsize==2, blocked
+    real_queue = ex._rtc_queue
+
+    class _MergeRacer:
+        """Delegates to the real ActionQueue; lands the merge on the first miss."""
+
+        def __init__(self) -> None:
+            self.raced = False
+
+        def get(self) -> Any:
+            action = real_queue.get()
+            if action is None and not self.raced:
+                self.raced = True
+                producer.release.set()
+                assert ex._bg_thread is not None
+                ex._bg_thread.join(timeout=5.0)  # merge lands, _bg_pending -> False
+            return action
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_queue, name)
+
+    racer = _MergeRacer()
+    ex._rtc_queue = racer
+    action = ex.select_action({})
+    assert racer.raced  # the interleaving really happened
+    assert len(producer.calls) == 2  # no third, synchronous, cold-start inference
+    # real_delay == 2 (rows 8,9 popped while inference ran) -> chunk2 row 2.
+    assert torch.allclose(action.squeeze(0), torch.full((DOF,), 202.0))
+    ex.stop()
+
+
+def test_stop_while_waiting_raises() -> None:
+    producer = Producer()
+    producer.blocking = True
+    ex = _executor(producer, prefetch_at=2, execution_horizon=2)
+    for _ in range(CHUNK):
+        ex.select_action({})  # drain chunk1; prefetch launched, blocked
+    stopper = threading.Timer(0.2, ex.stop)
+    stopper.start()
+    with pytest.raises(ROSRuntimeError, match="stopped while waiting"):
+        ex.select_action({})
+    producer.release.set()  # let the bg thread — and stop()'s join — finish
+    stopper.join(timeout=5.0)
 
 
 def test_bg_error_propagates() -> None:
@@ -155,7 +257,7 @@ def test_bg_error_propagates() -> None:
             return super().__call__(batch, **kwargs)
 
     producer = Boom()
-    ex = _executor(producer, prefetch_at=CHUNK - 1)
+    ex = _executor(producer, prefetch_at=CHUNK - 1, execution_horizon=CHUNK)
     ex.select_action({})
     _join_bg(ex)
     with pytest.raises(ROSRuntimeError, match="kaput"):
@@ -164,14 +266,54 @@ def test_bg_error_propagates() -> None:
     ex.stop()
 
 
+def test_non_tensor_producer_rejected() -> None:
+    """RTC needs a tensor; the sequence producers the deque path accepts won't do."""
+
+    def _sequence(batch: Any, **kwargs: Any) -> list[float]:
+        return [0.0] * CHUNK
+
+    ex = ChunkedExecutor(
+        chunk_fn=_sequence,
+        chunk_size=CHUNK,
+        prefetch_at=CHUNK - 1,
+        rtc_config=_rtc_config(execution_horizon=CHUNK),
+    )
+    ex.start()
+    with pytest.raises(ROSRuntimeError, match="tensor producer"):
+        ex.select_action({})
+    ex.stop()
+
+
+def test_batched_producer_rejected() -> None:
+    """squeeze(0) is a no-op on batch>1, which would consume batch rows as time."""
+
+    def _batched(batch: Any, **kwargs: Any) -> torch.Tensor:
+        return torch.zeros(2, CHUNK, DOF)
+
+    ex = ChunkedExecutor(
+        chunk_fn=_batched,
+        chunk_size=CHUNK,
+        prefetch_at=CHUNK - 1,
+        rtc_config=_rtc_config(execution_horizon=CHUNK),
+    )
+    ex.start()
+    with pytest.raises(ROSRuntimeError, match="batch dimension must be 1"):
+        ex.select_action({})
+    ex.stop()
+
+
 def test_reset_clears_rtc_state() -> None:
     producer = Producer()
     ex = _executor(producer)
-    ex.select_action({})
+    ex.select_action({})  # cold start (call 1, chunk1 = 100..109), pops 100
     ex.reset()
-    action = ex.select_action({})  # fresh cold start
+    action = ex.select_action({})  # fresh cold start (call 2, chunk2 = 200..209)
     assert producer.calls[-1]["prev_chunk_left_over"] is None
     assert action.shape == (1, DOF)
+    # A second inference really ran, and it served chunk2's head — a queue that
+    # survived reset() would have served the stale chunk1 row 1 (== 101) instead.
+    assert len(producer.calls) == 2
+    assert torch.allclose(action.squeeze(0), torch.full((DOF,), 200.0))
     ex.stop()
 
 
