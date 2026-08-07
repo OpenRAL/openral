@@ -1192,6 +1192,16 @@ __all__ = [
 ]
 
 
+def _policy_rtc_enabled(policy: Any) -> bool:
+    """Return True when *policy* carries an enabled lerobot ``RTCConfig``.
+
+    RTC-enabled policies reject ``select_action`` outright, so callers that
+    warm or probe a policy must route through ``predict_action_chunk``.
+    """
+    cfg = getattr(getattr(policy, "config", None), "rtc_config", None)
+    return bool(cfg is not None and getattr(cfg, "enabled", False))
+
+
 def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = None) -> bool:
     """Run one dummy forward so the first *real* tick doesn't blow its deadline.
 
@@ -1271,8 +1281,20 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
 
     with contextlib.suppress(AttributeError, TypeError):
         policy.reset()
+    # RTC-enabled policies hard-assert against `select_action` (lerobot:
+    # "RTC is not supported for select_action, use it with
+    # predict_action_chunk") — the executor only ever calls the chunk
+    # entry point, so warm the same one it will use. Without this the
+    # warm-up raises, the caller downgrades it to a warning, and tick 1
+    # pays the full cold-start (524 ms measured on the SO-101 eraser
+    # checkpoint against a 400 ms budget). Found on a live deploy run.
+    warm_call = (
+        policy.predict_action_chunk
+        if _policy_rtc_enabled(policy)
+        else policy.select_action
+    )
     with torch.no_grad():
-        policy.select_action(batch)
+        warm_call(batch)
     if device.startswith("cuda"):
         torch.cuda.synchronize()
     return True
