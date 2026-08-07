@@ -79,6 +79,24 @@ quiet until deliberately promoted. Every span is still indexed in full for
 > an operator needed scrolled away before it could be read. Inverted, routine
 > traffic contributes **0** info rows.
 
+### `rskill.chunk_inference` attributes
+
+Every span opened by `inference_span` (directly, or through the
+`_vla_core.run_inference` seam) carries `inference.kind` and, when known,
+`inference.chunk_index` / `inference.chunk_size` / `inference.engine` /
+`inference.device`, plus `inference.duration_ms` recorded on close. Those six
+have `semconv.py` constants; the RTC attribute below rides the helper's generic
+`inference.`-prefixed `**attrs` path and has none.
+
+| Attribute | Recorded at | Meaning |
+|---|---|---|
+| `inference.rtc_delay` | `rskill/_vla_core.py::run_inference` | Real-Time Chunking only: how many actions the consumer popped out of the `ActionQueue` while the *previous* inference ran — the prefix length the guidance freezes. It is the queue's **index delta**, not a latency estimate, so it stays correct in fast-forward sim as well as wall-clock deploy. `0` on the cold-start chunk (no previous tail). |
+
+The attribute is written only when the executor threads an `inference_delay`
+into `run_inference(call_kwargs=…)`, so its presence in a trace is also the
+"RTC is on for this skill" marker. It stays on the span and never becomes a
+metric label — the `openral.inference.duration` label set is closed to `kind`.
+
 ### The three event rings
 
 Demoting the noisy spans stopped info being *generated*, but the main ring is

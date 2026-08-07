@@ -494,7 +494,8 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
-    call: Callable[[Any], Any] | None = None,
+    call: Callable[..., Any] | None = None,
+    call_kwargs: dict[str, Any] | None = None,
     synchronize: bool = False,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
@@ -523,6 +524,12 @@ def run_inference(
             instrumented entry point for chunk producers with autocast,
             decoding, or non-lerobot APIs. ``policy`` may be ``None`` in this
             mode.
+        call_kwargs: Extra keyword arguments splatted into ``call`` — the RTC
+            executor threads ``inference_delay`` / ``prev_chunk_left_over``
+            through here. ``None`` (the default) calls ``call(batch)`` exactly
+            as before, so non-RTC producers keep their 1-arg signature. When
+            ``inference_delay`` is present it is recorded on the span as
+            ``inference.rtc_delay``.
         synchronize: Wait for CUDA completion before returning. Background
             chunk prefetch enables this so its ready event means the tensor is
             actually usable, not merely queued on a CUDA stream — otherwise the
@@ -543,13 +550,23 @@ def run_inference(
         extras["chunk_size"] = chunk_size
     if device is not None:
         extras["device"] = str(device)
+    if call_kwargs and "inference_delay" in call_kwargs:
+        extras["rtc_delay"] = int(call_kwargs["inference_delay"] or 0)
     with (
         inference_span(chunk_index=chunk_index, kind=kind, **extras) as span,
+        # NOT ``torch.inference_mode()``: lerobot's RTC guidance calls
+        # ``autograd.grad`` inside ``RTCProcessor.denoise_step``, which raises on
+        # inference-mode tensors. ``no_grad`` still suppresses graph building for
+        # every non-RTC adapter. Pinned by
+        # tests/sim/test_smolvla_rtc.py::test_inference_mode_would_break_the_guidance.
         torch.no_grad(),
     ):
         started_ns = perf_counter_ns()
         try:
-            result = call(batch) if call is not None else policy.select_action(batch)
+            if call is not None:
+                result = call(batch, **call_kwargs) if call_kwargs else call(batch)
+            else:
+                result = policy.select_action(batch)
             if synchronize and bool(getattr(result, "is_cuda", False)):
                 torch.cuda.synchronize(getattr(result, "device", None))
             return result
@@ -598,6 +615,108 @@ def _normalize_inference_engine(engine: str) -> str:
     return {"pytorch": "torch", "tensorrt": "trt"}.get(engine.lower(), engine.lower())
 
 
+_RTC_ADAPTERS = frozenset({"smolvla", "pi05"})
+"""Adapters whose lerobot policies are flow-matching and carry ``rtc_config``.
+
+molmoact2/pi0_fast also support RTC upstream but are out of Phase A scope —
+extend this set (and the adapter's chunk_fn kwargs pass-through) to add one.
+"""
+
+_RTC_KEYS = frozenset(
+    {"enabled", "execution_horizon", "max_guidance_weight", "prefix_attention_schedule", "debug"}
+)
+
+
+def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
+    """Parse ``policy_extras.rtc`` into a lerobot :class:`RTCConfig` (or ``None``).
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label; RTC is refused outside ``_RTC_ADAPTERS``.
+
+    Returns:
+        A ``lerobot.policies.rtc.RTCConfig``, or ``None`` when no ``rtc`` block.
+
+    Raises:
+        ROSConfigError: Non-mapping block, unknown key, unknown schedule,
+            non-boolean ``enabled``/``debug``, non-numeric or non-positive
+            ``max_guidance_weight``, non-positive ``execution_horizon``, or a
+            non-flow-matching adapter.
+    """
+    raw = spec_extra.get("rtc")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.rtc must be a mapping")
+    if adapter_name not in _RTC_ADAPTERS:
+        raise ROSConfigError(
+            f"{adapter_name}: RTC needs a flow-matching policy; supported adapters: "
+            f"{sorted(_RTC_ADAPTERS)}"
+        )
+    unknown = set(raw) - _RTC_KEYS
+    if unknown:
+        raise ROSConfigError(f"{adapter_name}: unknown policy_extras.rtc keys {sorted(unknown)}")
+
+    from lerobot.configs import RTCAttentionSchedule  # deferred: lerobot is a heavy optional dep
+    from lerobot.policies.rtc import RTCConfig  # deferred: lerobot is a heavy optional dep
+
+    schedule_raw = raw.get("prefix_attention_schedule", "exp")
+    try:
+        schedule = RTCAttentionSchedule[str(schedule_raw).upper()]
+    except KeyError as exc:
+        raise ROSConfigError(
+            f"{adapter_name}: unknown rtc.prefix_attention_schedule {schedule_raw!r} "
+            f"(expected one of {[s.name.lower() for s in RTCAttentionSchedule]})"
+        ) from exc
+    horizon_raw = raw.get("execution_horizon", 10)
+    if isinstance(horizon_raw, bool) or not isinstance(horizon_raw, int) or horizon_raw < 1:
+        raise ROSConfigError(f"{adapter_name}: rtc.execution_horizon must be a positive integer")
+    # Flags are checked, never coerced: `bool("false")` is True, so a quoted
+    # YAML boolean would silently arm RTC (or its debug tensors) on a manifest
+    # whose author meant the opposite.
+    for flag in ("enabled", "debug"):
+        if flag in raw and not isinstance(raw[flag], bool):
+            raise ROSConfigError(f"{adapter_name}: rtc.{flag} must be a boolean")
+    weight_raw = raw.get("max_guidance_weight", 10.0)
+    if isinstance(weight_raw, bool) or not isinstance(weight_raw, (int, float)):
+        raise ROSConfigError(f"{adapter_name}: rtc.max_guidance_weight must be a number")
+    try:
+        return RTCConfig(
+            enabled=bool(raw.get("enabled", True)),
+            execution_horizon=horizon_raw,
+            max_guidance_weight=float(weight_raw),
+            prefix_attention_schedule=schedule,
+            debug=bool(raw.get("debug", False)),
+        )
+    except ValueError as exc:  # RTCConfig.__post_init__ validation
+        raise ROSConfigError(f"{adapter_name}: invalid policy_extras.rtc: {exc}") from exc
+
+
+def rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bool:
+    """Whether ``policy_extras`` carries an *enabled* ``rtc`` block.
+
+    For adapter factories that must decide something before the executor exists —
+    smolvla skips ``maybe_compile_chunk_forward`` on this, since RTC and
+    ``torch.compile`` rewrite the same flow-matching forward. Keyed on the parsed
+    ``enabled`` flag rather than the block's presence, so ``rtc: {enabled: false}``
+    still gets compiled.
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label, for the error messages.
+
+    Returns:
+        True only for a present, well-formed, enabled ``rtc`` block.
+
+    Raises:
+        ROSConfigError: The ``rtc`` block is malformed — a bad manifest fails here
+            rather than surviving to the later parse in
+            :func:`build_chunk_executor`; the error is identical either way.
+    """
+    cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    return cfg is not None and bool(cfg.enabled)
+
+
 def build_chunk_executor(
     spec_extra: dict[str, Any],
     *,
@@ -617,6 +736,13 @@ def build_chunk_executor(
     history) — those cannot use a chunk buffer at all and must keep the
     plain per-tick path.
 
+    A ``policy_extras.rtc`` block (see :func:`_parse_rtc_config`) additionally
+    installs the policy's lerobot ``RTCProcessor`` — ``config.rtc_config`` is
+    set and ``init_rtc_processor()`` called *before* the executor is built —
+    and hands the same ``RTCConfig`` to the executor so it serves actions from
+    an ``ActionQueue``. RTC needs a real overlap between chunks, so it refuses
+    single-step policies and ``chunk_prefetch: false``.
+
     Args:
         spec_extra: The ``VLASpec.extra`` dict.
         policy: lerobot-style policy (default chunk producer + reset target).
@@ -630,6 +756,12 @@ def build_chunk_executor(
         A started executor. Returns ``None`` for single-step lerobot policies;
         custom producers still get a synchronous one-action buffer so their
         output contract is checked.
+
+    Raises:
+        ROSConfigError: Non-positive chunk size, malformed ``chunk_prefetch`` /
+            ``chunk_prefetch_at``, an invalid ``rtc`` block, or an ``rtc`` block
+            enabled on a policy that cannot run it (chunk size 1, no
+            pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized).
     """
     from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
 
@@ -640,8 +772,18 @@ def build_chunk_executor(
     )
     if n < 1:
         raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
-    if n == 1 and chunk_fn is None:
-        return None
+    rtc_cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    rtc_on = rtc_cfg is not None and bool(rtc_cfg.enabled)
+    if n == 1:
+        # Never let an enabled rtc block fall through the single-step return below:
+        # RTC blends a *previous chunk's* tail, which one-action inference never has.
+        if rtc_on:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunked execution, but this "
+                "policy emits a single action per inference (chunk size 1)"
+            )
+        if chunk_fn is None:
+            return None
     prefetch = spec_extra.get("chunk_prefetch", False)
     if not isinstance(prefetch, bool):
         raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
@@ -657,11 +799,30 @@ def build_chunk_executor(
                 f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
             )
         prefetch_at = min(raw_prefetch_at, n - 1)
+    if rtc_on:
+        if prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunk_prefetch: true — RTC "
+                "blends the prefetched chunk with the executing one"
+            )
+        if policy is None or not hasattr(policy, "init_rtc_processor"):
+            raise ROSConfigError(
+                f"{adapter_name}: this policy does not expose init_rtc_processor; "
+                "RTC needs a lerobot flow-matching policy"
+            )
+        if _has_bnb_quantized_modules(policy):
+            raise ROSConfigError(
+                f"{adapter_name}: RTC guidance backpropagates through the denoiser each "
+                "step; bitsandbytes-quantized weights (nf4/int8) are not supported"
+            )
+        policy.config.rtc_config = rtc_cfg
+        policy.init_rtc_processor()
     executor = ChunkedExecutor(
         policy,
         chunk_fn=chunk_fn,
         chunk_size=n,
         prefetch_at=prefetch_at,
+        rtc_config=rtc_cfg,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -671,6 +832,7 @@ def build_chunk_executor(
         n_action_steps=n,
         prefetch=prefetch,
         prefetch_at=prefetch_at,
+        rtc=rtc_on,
     )
     return executor
 
@@ -1041,6 +1203,16 @@ __all__ = [
 ]
 
 
+def rtc_enabled(policy: Any) -> bool:
+    """Return True when *policy* carries an enabled lerobot ``RTCConfig``.
+
+    RTC-enabled policies reject ``select_action`` outright, so callers that
+    warm or probe a policy must route through ``predict_action_chunk``.
+    """
+    cfg = getattr(getattr(policy, "config", None), "rtc_config", None)
+    return bool(cfg is not None and getattr(cfg, "enabled", False))
+
+
 def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = None) -> bool:
     """Run one dummy forward so the first *real* tick doesn't blow its deadline.
 
@@ -1061,9 +1233,13 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     so the warm-up exercises the exact kernels the real ticks will — a
     guessed resolution would autotune the wrong ones and waste the pass.
 
-    Best-effort and non-fatal by contract: a policy this cannot introspect
-    is skipped, and any failure is swallowed. A warm-up is an optimisation;
-    it must never be the reason a skill fails to activate.
+    Best-effort: a policy this cannot introspect returns ``False`` unchanged.
+    Anything else — a preprocessor that rejects the dummy batch, a forward
+    that raises — PROPAGATES. A warm-up must never be why a skill fails to
+    activate, so every caller wraps this; ``rskill_runner_node.on_warmup``
+    catches and downgrades to a ``rskill_runner.warmup_failed`` warning.
+    Read that log: a silently skipped warm-up means tick 1 pays the cold
+    start (524 ms measured vs a 400 ms budget on the SO-101 eraser skill).
 
     Args:
         adapter: The policy adapter. Must expose ``_policy`` holding a
@@ -1120,8 +1296,16 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
 
     with contextlib.suppress(AttributeError, TypeError):
         policy.reset()
+    # RTC-enabled policies hard-assert against `select_action` (lerobot:
+    # "RTC is not supported for select_action, use it with
+    # predict_action_chunk") — the executor only ever calls the chunk
+    # entry point, so warm the same one it will use. Without this the
+    # warm-up raises, the caller downgrades it to a warning, and tick 1
+    # pays the full cold-start (524 ms measured on the SO-101 eraser
+    # checkpoint against a 400 ms budget). Found on a live deploy run.
+    warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
     with torch.no_grad():
-        policy.select_action(batch)
+        warm_call(batch)
     if device.startswith("cuda"):
         torch.cuda.synchronize()
     return True

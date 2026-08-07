@@ -130,6 +130,59 @@ to a per-joint MAE of **0.15 – 1.46** over all 50 steps (the flow-matching
 sampler is stochastic, so this varies run to run; the test's ceiling is 5.0).
 Swapping the two aliases on the same frame degrades it to **1.04 – 44.27**.
 
+### Real-Time Chunking (RTC)
+
+A 50-step chunk covers 1.67 s of a 30 Hz arm, and the arm keeps moving while
+the next chunk is computed — so the plain hand-off from one chunk to the next
+lands a fresh plan on a robot that is no longer where the plan assumed. RTC
+closes that seam: the *prefetched* chunk is guided inside the flow-matching
+denoiser to agree with the executing chunk's unconsumed tail, then replaces
+that tail the moment it lands instead of queueing behind it.
+
+This manifest turns it on:
+
+```yaml
+policy_extras:
+  chunk_prefetch: true          # required by rtc; see below
+  rtc:
+    enabled: true               # false (or no rtc block) = byte-identical to pre-RTC
+    execution_horizon: 10       # steps over which the guidance decays to free
+    max_guidance_weight: 10.0   # cap on the per-step guidance weight
+    prefix_attention_schedule: ones  # zeros | ones | linear | exp
+```
+
+`ones` is measured, not a default. It holds the first executed action of a new
+chunk at full weight; `exp` decays it to 0.57–0.78 depending on the inference
+delay, leaving 22–43% of the inter-chunk disagreement in the seam. On a
+calibrated out-of-distribution sweep `ones` gave mean/worst seam discontinuities
+of 15.3°/20.9° against `exp`'s 18.6°/27.3°; on a 10-task LIBERO-Spatial sweep
+(in-distribution) the two were indistinguishable — same 4/10 successes, same
+seam statistics. Raising `max_guidance_weight` (10 → 50) or `execution_horizon`
+(10 → 25) changed nothing: the guidance is a soft pull that halves the gap to
+the previous tail, never a clamp.
+
+`debug: true` is the fifth accepted key (lerobot-side diagnostics). Anything
+else is a `ROSConfigError` at load — a typo cannot silently disable the blend.
+
+**Requires `chunk_prefetch`**: RTC blends the prefetched chunk with the
+executing one, so without an overlapping pre-fetch there is no tail to blend
+and the loader refuses rather than downgrading. The deploy runner
+(`rskill_runner_node.py`) defaults `policy_extras.chunk_prefetch` to true, but
+`openral sim run` and `openral benchmark run` build the extras straight from
+this manifest — so the flag is set here explicitly and the skill loads the same
+way on every entry point. The default `chunk_prefetch_at` (20) leads the
+`execution_horizon` above (10), so that one needs no override. A lead *below*
+the horizon is
+allowed but logs `chunked_executor.rtc_prefetch_below_horizon` — the blend
+then runs over the shorter lead.
+
+Supported on both the **PyTorch** runtime (lerobot's `RTCProcessor`, this
+manifest's `runtime: pytorch`) and the **TensorRT** runtime (`OPENRAL_SMOLVLA_TRT=1`,
+OpenRAL Pro), which serves the guidance from a single engine whose weights are
+fed at runtime. RTC is gated to the flow-matching families (`smolvla`, `pi05`)
+and refuses bitsandbytes-quantized weights, because the guidance backpropagates
+through the denoiser on every step — not a constraint this bf16 skill hits.
+
 ### Joint units — degrees
 
 State and action are on the lerobot SO-ARM scale this repo models as
@@ -255,6 +308,7 @@ the upstream repo also holds. Every OpenRAL fetch path here is a per-file
 | `runtime` / `quantization.dtype` | `pytorch` / `bf16` |
 | `weights_uri` | `hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0` (pinned mirror) |
 | `chunk_size` / `n_action_steps` | 50 / 50 |
+| `policy_extras.rtc` | enabled; `execution_horizon` 10, `max_guidance_weight` 10.0, schedule `ones` |
 | `action_contract` | 6-D `joint_positions`, `joint_units: degrees` |
 | `latency_budget.per_chunk_ms` | 400 (**191 ms measured**, RTX 4070 Laptop) |
 | `min_vram_gb.bf16` | 1.5 (**1.19 GiB peak measured**) |

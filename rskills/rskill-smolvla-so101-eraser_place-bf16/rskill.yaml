@@ -164,6 +164,20 @@ policy_extras:
   # LeRobot SO-101 datasets store the gripper motor on [0, 100], while the
   # OpenRAL HAL contract is normalized [0, 1]. Arm channels still use degrees.
   gripper_scale: 100.0
+  # Real-Time Chunking (lerobot RTC): the prefetched chunk is guided inside the
+  # flow-matching denoiser to blend with the executing chunk's unconsumed tail.
+  # chunk_prefetch is declared explicitly rather than inherited: only the deploy
+  # runner (rskill_runner_node.py) defaults it to true, while `openral sim run`
+  # and `openral benchmark run` build the extras straight from this file and
+  # would hit "policy_extras.rtc requires chunk_prefetch: true".
+  # The default chunk_prefetch_at (20) already leads the execution_horizon below
+  # (10) — no override needed. PyTorch + TRT runtimes.
+  chunk_prefetch: true
+  rtc:
+    enabled: true
+    execution_horizon: 10
+    max_guidance_weight: 10.0
+    prefix_attention_schedule: ones
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # SmolVLA chunk_size=50 (checkpoint config); full-chunk synchronous replay.

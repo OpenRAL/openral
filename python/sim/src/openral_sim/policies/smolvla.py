@@ -36,6 +36,7 @@ from openral_rskill._vla_core import (
     resolve_image_preprocessing,
     resolve_rskill_repo_revision,
     resolve_state_dim,
+    rtc_enabled_in_extra,
     run_inference,
     to_numpy_action,
 )
@@ -678,6 +679,12 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         "smolvla", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
     ):
         _log.info("smolvla.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
+    elif rtc_enabled_in_extra(spec.extra, adapter_name="smolvla"):
+        # RTC rewrites the same flow-matching forward torch.compile would capture
+        # (guided denoising re-enters it with a fresh prefix each step), so the two
+        # are mutually exclusive exactly like TRT above. Keyed on the parsed
+        # `enabled` flag, so `rtc: {enabled: false}` keeps its torch.compile.
+        _log.info("smolvla.compile_skipped_for_rtc", repo_id=repo_id)
     else:
         maybe_compile_chunk_forward(policy, spec.extra, device, torch)
 
