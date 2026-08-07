@@ -129,3 +129,25 @@ def test_missing_policy_feature_names_falls_back_to_robot_gripper_role() -> None
 
     assert permutation is None
     assert grippers == [False, False, False, False, False, True]
+
+
+def test_adapter_without_a_policy_passes_through_instead_of_raising() -> None:
+    """An adapter exposing no ``_policy`` must fall through, not blow up.
+
+    ACT / DiffusionPolicy adapters (and any non-lerobot backbone) have no
+    ``_policy`` attribute, so reading it raises AttributeError on the first
+    line of the probe and leaves the local unbound. The follow-up
+    ``output_features`` read then raised ``UnboundLocalError`` — a NameError,
+    which the surrounding ``except (AttributeError, KeyError, TypeError)``
+    does not catch — so the runner crashed where the contract says it should
+    return "pass through" and let the safety kernel enforce correctness.
+    """
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+
+    permutation, grippers = _build_joint_permutation(
+        adapter=SimpleNamespace(),  # no `_policy` at all
+        description=description,
+    )
+
+    assert permutation is None
+    assert grippers == []

@@ -2192,6 +2192,14 @@ def _build_joint_permutation(
         or "gripper" in j.name.lower()
         for j in description.joints
     ]
+    # Bound before the try: an adapter without a `_policy` (ACT / Diffusion,
+    # or any non-lerobot backbone) raises AttributeError on the FIRST line,
+    # leaving `policy` unbound. The `not names` branch below then read it and
+    # raised UnboundLocalError — a NameError, so the except clause guarding
+    # that read never caught it and the runner blew up instead of falling
+    # through to "pass through". `None.config` raises a plain AttributeError,
+    # which that same clause already handles.
+    policy: Any = None
     try:
         policy = adapter._policy  # type: ignore[attr-defined]  # reason: documented Protocol-internal field
         names = list(policy.config.action_feature_names)
