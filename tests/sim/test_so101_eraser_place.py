@@ -470,3 +470,35 @@ def test_deploy_spawn_seed_bakes_a_bounded_reproducible_jittered_layout() -> Non
     assert _options_from_backend_options({"spawn_seed": None}).spawn_seed is None
     with pytest.raises(ROSConfigError):
         _options_from_backend_options({"spawn_seed": "not-a-seed"})
+
+
+def test_arm_servo_damping_retunes_the_sts3215_class() -> None:
+    """``arm_servo_damping`` rewrites the shared servo default at compose time.
+
+    The real rig realises ~27% of the commanded position gap per 33 ms frame
+    (tau ~ 105 ms); stock sts3215 damping 0.60 gives tau ~ 34 ms. The option
+    must reach the COMPILED model (every arm dof), default to upstream stock,
+    and fail loud if the upstream default class disappears.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim.backends.so101_eraser import (
+        _set_servo_damping,
+        compose_so101_eraser_deploy_mjcf,
+    )
+
+    def arm_dampings(**overrides):
+        xml, meshdir = compose_so101_eraser_deploy_mjcf(**overrides)
+        path = meshdir.parent / "so101_eraser_damping_test.xml"
+        path.write_text(xml)
+        model = mujoco.MjModel.from_xml_path(str(path))
+        out = []
+        for k in range(1, 6):
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, str(k))
+            out.append(float(model.dof_damping[model.jnt_dofadr[jid]]))
+        return out
+
+    assert arm_dampings() == pytest.approx([0.60] * 5)  # default = upstream stock
+    assert arm_dampings(arm_servo_damping=1.9) == pytest.approx([1.9] * 5)
+
+    with pytest.raises(ROSConfigError, match="sts3215"):
+        _set_servo_damping("<mujoco/>", 1.9)

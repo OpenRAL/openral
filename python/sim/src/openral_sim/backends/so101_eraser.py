@@ -246,6 +246,15 @@ class EraserSceneOptions:
             The rolled spawn is logged; same seed → same bench. The sim tier
             ignores this field — its ``reset`` re-rolls jitter per episode
             and overwrites the baked spawn.
+        arm_servo_damping: ``None`` (default) keeps the upstream ``sts3215``
+            joint damping (0.60 → servo time-constant τ ≈ 34 ms at kp 17.8).
+            A float rewrites that damping in the composed MJCF. The real rig
+            realises only ~27% of the commanded position gap per 33 ms frame
+            (τ ≈ 105 ms ⇒ damping ≈ 1.9): replaying a real episode's action
+            stream open-loop, stock physics tracks it with 2.1° mean arm
+            error and ~3 frames of lead-lag; damping 1.9 halves that to
+            1.1° / ~1 frame. Compose-time so the sim tier and the deploy
+            twin (which compiles this MJCF itself) share the dynamics.
         place_xy_tol_m: Success tolerance — how far the eraser centre may sit
             from the tape centre in XY and still count as placed.
         joint_units: ``"degrees"`` (default) makes the env emit proprio and
@@ -364,6 +373,7 @@ class EraserSceneOptions:
     spawn_jitter_m: float = 0.013
     spawn_yaw_jitter_deg: float = 15.0
     spawn_seed: int | None = None
+    arm_servo_damping: float | None = None
     place_xy_tol_m: float = 0.02
 
     lighting: str = "bench"
@@ -548,6 +558,40 @@ def _recolour_jaws(xml: str, rgba: tuple[float, float, float, float] | None) -> 
                 "so the jaws cannot be recoloured. Set backend_options.jaw_rgba to null "
                 "to keep the upstream colours, or update _JAW_MATERIALS.",
             )
+    return xml
+
+
+def _set_servo_damping(xml: str, damping: float | None) -> str:
+    """Rewrite the ``sts3215`` default-class joint damping (servo-lag match).
+
+    Every SO-101 arm joint inherits its damping from the one
+    ``<default class="sts3215">`` joint declaration, so a single rewrite
+    retunes the whole arm's servo time-constant — and because it happens in
+    the composed XML, the sim rollout and the deploy twin (which compiles
+    this MJCF itself) get identical dynamics. A no-op when ``damping`` is
+    ``None`` (upstream stock, 0.60).
+
+    Raises:
+        ROSConfigError: If the ``sts3215`` default class is missing — an
+            upstream restructure would otherwise silently keep stock damping.
+    """
+    if damping is None:
+        return xml
+    xml, n = re.subn(
+        # The class body may hold other elements (a <geom> today) before the
+        # <joint>; the tempered dot keeps the match inside this one class.
+        r'(?s)(<default class="sts3215">(?:(?!</default>).)*?<joint\s[^>]*\bdamping=")[^"]+(")',
+        rf"\g<1>{damping}\g<2>",
+        xml,
+        count=1,
+    )
+    if n != 1:
+        raise ROSConfigError(
+            'so101_eraser: <default class="sts3215"> joint damping not found in the '
+            "upstream SO-101 MJCF, so the servo-lag match cannot be applied. Set "
+            "backend_options.arm_servo_damping to null to keep stock dynamics, or "
+            "update _set_servo_damping.",
+        )
     return xml
 
 
@@ -763,6 +807,7 @@ def compose_so101_eraser_mjcf(
             "composer cannot splice the eraser texture in.",
         )
     body = _recolour_jaws(body, opts.jaw_rgba)
+    body = _set_servo_damping(body, opts.arm_servo_damping)
     body = _reanchor_robot_base(body, opts.robot_base_xyz, opts.robot_base_yaw_deg)
     body = _splice_wrist_camera(
         body,
@@ -914,7 +959,7 @@ def _options_from_backend_options(raw: dict[str, Any] | None) -> EraserSceneOpti
         elif value is None:
             # Only the optional overrides accept null; everything else is a
             # number or a vector and a null there is a YAML mistake.
-            if key != "jaw_rgba":
+            if key not in ("jaw_rgba", "arm_servo_damping"):
                 raise ROSConfigError(
                     f"so101_eraser: scene.backend_options.{key} cannot be null.",
                 )
