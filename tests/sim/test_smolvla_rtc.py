@@ -186,6 +186,12 @@ def rollout() -> _Rollout:
     # everything past `inference_delay`, truncated to the execution horizon the
     # way `ChunkedExecutor._launch_prefetch` truncates it (guidance weights are
     # zero past the horizon anyway).
+    #
+    # This is a valid tail, not the production one: the executor slices from the
+    # ActionQueue's live index at prefetch-launch time, which depends on how far
+    # `chunk_prefetch_at` let the queue drain, whereas `_DELAY` here is a fixed
+    # offset chosen so the tail is deterministic. Same shape and same guidance
+    # semantics, a different alignment into the base chunk.
     horizon = int(rtc_cfg.execution_horizon)
     prev = base.squeeze(0)[_DELAY : _DELAY + horizon].clone()
 

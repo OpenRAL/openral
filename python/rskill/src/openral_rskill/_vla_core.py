@@ -628,7 +628,9 @@ def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
 
     Raises:
         ROSConfigError: Non-mapping block, unknown key, unknown schedule,
-            non-positive horizon/weight, or a non-flow-matching adapter.
+            non-boolean ``enabled``/``debug``, non-numeric or non-positive
+            ``max_guidance_weight``, non-positive ``execution_horizon``, or a
+            non-flow-matching adapter.
     """
     raw = spec_extra.get("rtc")
     if raw is None:
@@ -658,11 +660,20 @@ def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
     horizon_raw = raw.get("execution_horizon", 10)
     if isinstance(horizon_raw, bool) or not isinstance(horizon_raw, int) or horizon_raw < 1:
         raise ROSConfigError(f"{adapter_name}: rtc.execution_horizon must be a positive integer")
+    # Flags are checked, never coerced: `bool("false")` is True, so a quoted
+    # YAML boolean would silently arm RTC (or its debug tensors) on a manifest
+    # whose author meant the opposite.
+    for flag in ("enabled", "debug"):
+        if flag in raw and not isinstance(raw[flag], bool):
+            raise ROSConfigError(f"{adapter_name}: rtc.{flag} must be a boolean")
+    weight_raw = raw.get("max_guidance_weight", 10.0)
+    if isinstance(weight_raw, bool) or not isinstance(weight_raw, (int, float)):
+        raise ROSConfigError(f"{adapter_name}: rtc.max_guidance_weight must be a number")
     try:
         return RTCConfig(
             enabled=bool(raw.get("enabled", True)),
             execution_horizon=horizon_raw,
-            max_guidance_weight=float(raw.get("max_guidance_weight", 10.0)),
+            max_guidance_weight=float(weight_raw),
             prefix_attention_schedule=schedule,
             debug=bool(raw.get("debug", False)),
         )

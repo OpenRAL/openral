@@ -53,13 +53,25 @@ def test_defaults_exp_schedule_and_enabled() -> None:
         {"execution_horizon": 0},  # not positive
         {"execution_horizon": True},  # bool is not an int here
         {"max_guidance_weight": 0.0},  # RTCConfig rejects <= 0
+        {"max_guidance_weight": None},  # a hole, not a number
+        {"max_guidance_weight": "10.0"},  # quoted YAML number
         {"prefix_attention_schedule": "cubic"},  # unknown schedule
+        {"enabled": "false"},  # quoted YAML bool: bool("false") is True
+        {"debug": 1},  # ints are not booleans here
         {"bogus_knob": 1},  # unknown key
     ],
 )
 def test_invalid_blocks_raise(block: object) -> None:
     with pytest.raises(ROSConfigError):
         _parse_rtc_config({"rtc": block}, adapter_name="smolvla")
+
+
+def test_real_booleans_are_accepted() -> None:
+    """The flag guard rejects look-alikes, not the honest YAML booleans."""
+    cfg = _parse_rtc_config({"rtc": {"enabled": False, "debug": True}}, adapter_name="smolvla")
+    assert cfg is not None
+    assert cfg.enabled is False
+    assert cfg.debug is True
 
 
 def test_non_flow_matching_adapter_rejected() -> None:

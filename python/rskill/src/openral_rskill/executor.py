@@ -361,6 +361,12 @@ class ChunkedExecutor:
                 # rows only cost a host->policy copy. Normalizing here also keeps the
                 # tail length independent of how early prefetch_at fires.
                 left_over = left_over[: self._rtc_horizon]
+            # The delay fed here is the *previous* merge's measured one, so the
+            # first guided prefetch after a cold start or reset bootstraps with
+            # 0 (the reset value): no merge has happened yet, so nothing has
+            # been measured. It under-states the real delay for exactly one
+            # chunk — the guidance simply starts freeing a few steps late — and
+            # self-corrects as soon as that merge records a real delay.
             rtc_kwargs = {
                 "inference_delay": self._rtc_last_delay,
                 "prev_chunk_left_over": left_over,

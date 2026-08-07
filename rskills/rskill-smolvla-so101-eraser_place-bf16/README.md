@@ -143,6 +143,7 @@ This manifest turns it on:
 
 ```yaml
 policy_extras:
+  chunk_prefetch: true          # required by rtc; see below
   rtc:
     enabled: true               # false (or no rtc block) = byte-identical to pre-RTC
     execution_horizon: 10       # steps over which the guidance decays to free
@@ -156,9 +157,12 @@ else is a `ROSConfigError` at load — a typo cannot silently disable the blend.
 **Requires `chunk_prefetch`**: RTC blends the prefetched chunk with the
 executing one, so without an overlapping pre-fetch there is no tail to blend
 and the loader refuses rather than downgrading. The deploy runner
-(`rskill_runner_node.py`) already defaults `policy_extras.chunk_prefetch` to
-true, and its default `chunk_prefetch_at` (15) leads the `execution_horizon`
-above (10), so neither needs setting here. A lead *below* the horizon is
+(`rskill_runner_node.py`) defaults `policy_extras.chunk_prefetch` to true, but
+`openral sim run` and `openral benchmark run` build the extras straight from
+this manifest — so the flag is set here explicitly and the skill loads the same
+way on every entry point. The default `chunk_prefetch_at` (15) leads the
+`execution_horizon` above (10), so that one needs no override. A lead *below*
+the horizon is
 allowed but logs `chunked_executor.rtc_prefetch_below_horizon` — the blend
 then runs over the shorter lead.
 

@@ -173,11 +173,14 @@ latency_budget:
 
 # Real-Time Chunking (lerobot RTC): the prefetched chunk is guided inside the
 # flow-matching denoiser to blend with the executing chunk's unconsumed tail.
-# Requires chunk_prefetch (the deploy runner's rskill_runner_node.py defaults
-# policy_extras.chunk_prefetch to true, so this manifest does not set it
-# explicitly). Its default chunk_prefetch_at (15) already leads the
-# execution_horizon below (10) — no override needed. PyTorch + TRT runtimes.
+# chunk_prefetch is declared explicitly rather than inherited: only the deploy
+# runner (rskill_runner_node.py) defaults it to true, while `openral sim run`
+# and `openral benchmark run` build the extras straight from this file and
+# would hit "policy_extras.rtc requires chunk_prefetch: true".
+# The default chunk_prefetch_at (15) already leads the execution_horizon below
+# (10) — no override needed. PyTorch + TRT runtimes.
 policy_extras:
+  chunk_prefetch: true
   rtc:
     enabled: true
     execution_horizon: 10
