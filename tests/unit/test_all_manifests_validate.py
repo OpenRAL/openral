@@ -103,7 +103,6 @@ _SIM_STEMS: list[str] = [
     "robocasa_gr1_pnp_cup_to_drawer",
     "robocasa_panda_mobile_kitchen",
     "robocasa_pnp",
-    "so101_eraser_place",
     "so101_tube_insertion",
     "tabletop_cube_push",
     "widowx_carrot_on_plate",
@@ -126,7 +125,6 @@ _DEPLOY_STEMS: list[str] = [
     "robocasa_vslam",
     "robocasa_vslam_mono",
     "so101_bench",
-    "so101_eraser",
     "so101_box",
 ]
 
