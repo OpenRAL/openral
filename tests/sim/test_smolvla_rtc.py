@@ -15,6 +15,12 @@ Two claims about Real-Time Chunking that no CPU or stub test can make:
    prefix toward the previous chunk's unconsumed tail, which is the whole point
    of RTC: the executor swaps chunks mid-flight and the seam must not jump.
 
+Each claim is paired with the check that keeps it from passing vacuously:
+``prev_chunk_left_over=None`` must return the unguided chunk bit-for-bit (so the
+gap comparison is measuring guidance and not policy nondeterminism), and the
+same guided call under ``torch.inference_mode()`` must raise (so claim 1 is
+about a real constraint, not a coincidence of the current seam).
+
 Real everything (CLAUDE.md §1.11): the shipped manifest's own ``policy_extras.rtc``
 block parsed by the production :func:`openral_rskill._vla_core._parse_rtc_config`,
 the real checkpoint at its shipped precision, and a real frame from its training
@@ -24,7 +30,8 @@ square", upstream typo and all) carried by the dataset row. Skipped without
 CUDA, without lerobot, or when the checkpoint/dataset is neither cached nor
 reachable; never faked.
 
-Measured on an RTX 4070 Laptop: 20 s end-to-end (warm cache), guided prefix gap
+Measured on an RTX 4070 Laptop: 20 s for all four tests (warm cache; one
+checkpoint load amortized across the module-scoped fixture), guided prefix gap
 0.718 against an unguided 1.151 — the guidance closes 38% of the seam.
 
 Named for the behavior under test rather than the ``test_<robot>_<vla>_<sim>.py``
@@ -35,7 +42,7 @@ its real inputs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple, Protocol
 
 import pytest
 from openral_core.schemas import RSkillManifest
@@ -56,13 +63,29 @@ _FRAME = 100
 _DELAY = 3
 
 
+_Kind = Literal["foreground", "prefetch"]
+
+
+class _Infer(Protocol):
+    """Replays the fixture's one observation through the ``run_inference`` seam.
+
+    Always the same batch and the same noise; ``rtc_kwargs`` is the only thing
+    that varies, so any difference between two results is attributable to RTC.
+    Exposed on :class:`_Rollout` so tests can add calls without a second
+    checkpoint load.
+    """
+
+    def __call__(self, kind: _Kind, **rtc_kwargs: Any) -> Any: ...
+
+
 class _Rollout(NamedTuple):
-    """The two chunks under comparison, plus the tail the second was guided by."""
+    """The two chunks under comparison, plus what a test needs to make more."""
 
     base: Any  # (1, chunk, dim) torch tensor — unguided reference chunk
     guided: Any  # (1, chunk, dim) torch tensor — same noise, RTC kwargs populated
     prev: Any  # (horizon, dim) torch tensor — ``base``'s unconsumed tail
     horizon: int
+    infer: _Infer
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +100,7 @@ def rollout() -> _Rollout:
     pytest.importorskip("datasets", reason="lerobot[dataset] extra not installed")
     pytest.importorskip("transformers", reason="lerobot[smolvla] extra not installed")
     if not torch.cuda.is_available():
-        pytest.skip("needs CUDA: the 450 M-param denoiser runs 50 steps twice here")
+        pytest.skip("needs CUDA: several 50-step passes over a 450 M-param denoiser")
 
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -143,17 +166,21 @@ def rollout() -> _Rollout:
     generator = torch.Generator().manual_seed(0)
     noise = torch.randn(1, cfg.chunk_size, cfg.max_action_dim, generator=generator).to(device)
 
-    # `predict_action_chunk` stacks the observation queues in place, so each
-    # call gets its own dict view and a cleared queue.
-    policy.reset()
-    base = run_inference(
-        policy,
-        dict(batch),
-        kind="foreground",
-        chunk_size=cfg.chunk_size,
-        call=policy.predict_action_chunk,
-        call_kwargs={"noise": noise},
-    )
+    def infer(kind: _Kind, **rtc_kwargs: Any) -> Any:
+        # `predict_action_chunk` stacks the observation queues in place, so each
+        # call gets its own dict view and a cleared queue — otherwise call N+1
+        # sees call N's stacked tensors and the results stop being comparable.
+        policy.reset()
+        return run_inference(
+            policy,
+            dict(batch),
+            kind=kind,
+            chunk_size=cfg.chunk_size,
+            call=policy.predict_action_chunk,
+            call_kwargs={"noise": noise, **rtc_kwargs},
+        )
+
+    base = infer("foreground")
 
     # The tail the executor would still have queued when the prefetch fires:
     # everything past `inference_delay`, truncated to the execution horizon the
@@ -162,20 +189,8 @@ def rollout() -> _Rollout:
     horizon = int(rtc_cfg.execution_horizon)
     prev = base.squeeze(0)[_DELAY : _DELAY + horizon].clone()
 
-    policy.reset()
-    guided = run_inference(
-        policy,
-        dict(batch),
-        kind="prefetch",
-        chunk_size=cfg.chunk_size,
-        call=policy.predict_action_chunk,
-        call_kwargs={
-            "noise": noise,
-            "inference_delay": _DELAY,
-            "prev_chunk_left_over": prev,
-        },
-    )
-    return _Rollout(base=base, guided=guided, prev=prev, horizon=horizon)
+    guided = infer("prefetch", inference_delay=_DELAY, prev_chunk_left_over=prev)
+    return _Rollout(base=base, guided=guided, prev=prev, horizon=horizon, infer=infer)
 
 
 def test_guided_chunk_survives_the_no_grad_seam(rollout: _Rollout) -> None:
@@ -209,3 +224,39 @@ def test_guidance_pulls_the_prefix_toward_the_previous_tail(rollout: _Rollout) -
         f"RTC guidance did not pull the prefix toward the previous tail: "
         f"guided gap {prefix_gap:.4f} >= unguided gap {unguided_gap:.4f}"
     )
+
+
+def test_null_guidance_reproduces_the_unguided_chunk(rollout: _Rollout) -> None:
+    """``prev_chunk_left_over=None`` must return the unguided chunk bit-for-bit.
+
+    This is what makes the gap comparison above meaningful. Without it, a
+    guidance path that merely perturbed the chunk — or a policy that was not
+    deterministic under a fixed noise tensor — would move the gap and the
+    inequality would prove nothing. Here RTC is switched on and the kwargs are
+    populated; only the tail is absent, which is exactly the first-chunk case
+    ``ChunkedExecutor`` hits before it has anything to blend with.
+    """
+    torch = pytest.importorskip("torch", reason="torch not installed")
+
+    null = rollout.infer("prefetch", inference_delay=_DELAY, prev_chunk_left_over=None)
+
+    assert torch.equal(null, rollout.base), (
+        "an unguided chunk drifted from the reference: either the policy is "
+        "non-deterministic under fixed noise, or the RTC path perturbs the "
+        "chunk even with no previous tail to blend toward"
+    )
+
+
+def test_inference_mode_would_break_the_guidance(rollout: _Rollout) -> None:
+    """Pins why the seam uses ``no_grad`` and not ``inference_mode``.
+
+    ``torch.enable_grad()`` escapes ``no_grad`` but *cannot* escape
+    ``inference_mode``, so swapping the two in
+    :func:`openral_rskill._vla_core.run_inference` would break every guided
+    chunk in production while leaving the unguided path green. This test is the
+    tripwire for that refactor.
+    """
+    torch = pytest.importorskip("torch", reason="torch not installed")
+
+    with torch.inference_mode(), pytest.raises(RuntimeError, match="grad"):
+        rollout.infer("prefetch", inference_delay=_DELAY, prev_chunk_left_over=rollout.prev)
