@@ -181,10 +181,14 @@ class _PI05Adapter:
 
         return contextlib.nullcontext()
 
-    def _chunk_forward(self, batch: dict[str, Any]) -> Any:
-        """Chunk producer for the executor — predict under this adapter's autocast."""
+    def _chunk_forward(self, batch: dict[str, Any], **kwargs: Any) -> Any:
+        """Chunk producer for the executor — predict under this adapter's autocast.
+
+        ``kwargs`` carries the executor's RTC arguments (``inference_delay`` /
+        ``prev_chunk_left_over``) straight through to lerobot; empty otherwise.
+        """
         with self._torch.no_grad(), self._autocast_ctx():
-            return self._policy.predict_action_chunk(batch)
+            return self._policy.predict_action_chunk(batch, **kwargs)
 
     def close(self) -> None:
         """Drop the loaded modules, then reclaim their VRAM.

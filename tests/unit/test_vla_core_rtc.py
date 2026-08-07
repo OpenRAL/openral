@@ -1,8 +1,10 @@
-"""policy_extras.rtc parsing → lerobot RTCConfig."""
+"""policy_extras.rtc parsing → lerobot RTCConfig, and its wiring into the executor."""
+
+from typing import Any
 
 import pytest
 from openral_core.exceptions import ROSConfigError
-from openral_rskill._vla_core import _parse_rtc_config
+from openral_rskill._vla_core import _parse_rtc_config, build_chunk_executor
 
 
 def test_no_rtc_block_returns_none() -> None:
@@ -59,3 +61,116 @@ def test_invalid_blocks_raise(block: object) -> None:
 def test_non_flow_matching_adapter_rejected() -> None:
     with pytest.raises(ROSConfigError, match="flow-matching"):
         _parse_rtc_config({"rtc": {}}, adapter_name="act")
+
+
+# ── build_chunk_executor RTC wiring ─────────────────────────────────────────
+
+
+class _FlowPolicyStub:  # NOT a mock of a boundary: exercises the documented lerobot surface
+    """Minimal object satisfying the lerobot RTC-activation surface.
+
+    Uses the real lerobot RTCProcessor via the same init_rtc_processor contract
+    (mirrors SmolVLAPolicy.init_rtc_processor's documented behavior).
+    """
+
+    def __init__(self, chunk_size: int = 10) -> None:
+        import types
+
+        self.config = types.SimpleNamespace(
+            n_action_steps=chunk_size, chunk_size=chunk_size, rtc_config=None
+        )
+        self.rtc_processor = None
+
+    def init_rtc_processor(self) -> None:
+        from lerobot.policies.rtc import RTCProcessor
+
+        if self.config.rtc_config is not None:
+            self.rtc_processor = RTCProcessor(self.config.rtc_config)
+
+    def predict_action_chunk(self, batch: Any, **kwargs: Any) -> Any:
+        import torch
+
+        return torch.zeros(1, int(self.config.chunk_size), 3)
+
+
+class _NoRTCPolicyStub:
+    """A chunked policy that is not flow-matching — no ``init_rtc_processor``."""
+
+    def __init__(self, chunk_size: int = 10) -> None:
+        import types
+
+        self.config = types.SimpleNamespace(n_action_steps=chunk_size)
+
+    def predict_action_chunk(self, batch: Any) -> Any:
+        import torch
+
+        return torch.zeros(1, int(self.config.n_action_steps), 3)
+
+
+def test_build_chunk_executor_activates_rtc() -> None:
+    policy = _FlowPolicyStub()
+    ex = build_chunk_executor(
+        {"chunk_prefetch": True, "rtc": {"execution_horizon": 6}},
+        policy=policy,
+        adapter_name="smolvla",
+    )
+    assert ex is not None and ex._rtc_enabled
+    assert policy.config.rtc_config is not None
+    assert policy.config.rtc_config.execution_horizon == 6
+    assert policy.rtc_processor is not None
+    ex.stop()
+
+
+def test_build_chunk_executor_rtc_requires_prefetch() -> None:
+    with pytest.raises(ROSConfigError, match="chunk_prefetch"):
+        build_chunk_executor({"rtc": {}}, policy=_FlowPolicyStub(), adapter_name="smolvla")
+
+
+def test_build_chunk_executor_rtc_disabled_block_is_plain_executor() -> None:
+    policy = _FlowPolicyStub()
+    ex = build_chunk_executor(
+        {"chunk_prefetch": True, "rtc": {"enabled": False}},
+        policy=policy,
+        adapter_name="smolvla",
+    )
+    assert ex is not None and not ex._rtc_enabled
+    assert policy.rtc_processor is None
+    ex.stop()
+
+
+def test_build_chunk_executor_rtc_refuses_single_step_policy() -> None:
+    """A chunk size of 1 would silently return no executor — RTC must fail loudly."""
+    with pytest.raises(ROSConfigError, match="chunked execution"):
+        build_chunk_executor(
+            {"chunk_prefetch": True, "rtc": {}},
+            policy=_FlowPolicyStub(chunk_size=1),
+            adapter_name="smolvla",
+        )
+
+
+def test_build_chunk_executor_rtc_refuses_policy_without_processor() -> None:
+    with pytest.raises(ROSConfigError, match="init_rtc_processor"):
+        build_chunk_executor(
+            {"chunk_prefetch": True, "rtc": {}},
+            policy=_NoRTCPolicyStub(),
+            adapter_name="smolvla",
+        )
+
+
+def test_build_chunk_executor_rtc_refuses_bnb_quantized_policy() -> None:
+    """RTC guidance backpropagates through the denoiser — nf4 weights cannot."""
+    import bitsandbytes as bnb
+    import torch
+
+    class _QuantizedFlowPolicy(torch.nn.Module, _FlowPolicyStub):
+        def __init__(self) -> None:
+            torch.nn.Module.__init__(self)
+            _FlowPolicyStub.__init__(self)
+            self.proj = bnb.nn.Linear4bit(4, 4)
+
+    with pytest.raises(ROSConfigError, match="bitsandbytes"):
+        build_chunk_executor(
+            {"chunk_prefetch": True, "rtc": {}},
+            policy=_QuantizedFlowPolicy(),
+            adapter_name="smolvla",
+        )

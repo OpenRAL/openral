@@ -684,6 +684,13 @@ def build_chunk_executor(
     history) — those cannot use a chunk buffer at all and must keep the
     plain per-tick path.
 
+    A ``policy_extras.rtc`` block (see :func:`_parse_rtc_config`) additionally
+    installs the policy's lerobot ``RTCProcessor`` — ``config.rtc_config`` is
+    set and ``init_rtc_processor()`` called *before* the executor is built —
+    and hands the same ``RTCConfig`` to the executor so it serves actions from
+    an ``ActionQueue``. RTC needs a real overlap between chunks, so it refuses
+    single-step policies and ``chunk_prefetch: false``.
+
     Args:
         spec_extra: The ``VLASpec.extra`` dict.
         policy: lerobot-style policy (default chunk producer + reset target).
@@ -697,6 +704,12 @@ def build_chunk_executor(
         A started executor. Returns ``None`` for single-step lerobot policies;
         custom producers still get a synchronous one-action buffer so their
         output contract is checked.
+
+    Raises:
+        ROSConfigError: Non-positive chunk size, malformed ``chunk_prefetch`` /
+            ``chunk_prefetch_at``, an invalid ``rtc`` block, or an ``rtc`` block
+            enabled on a policy that cannot run it (chunk size 1, no
+            pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized).
     """
     from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
 
@@ -707,8 +720,18 @@ def build_chunk_executor(
     )
     if n < 1:
         raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
-    if n == 1 and chunk_fn is None:
-        return None
+    rtc_cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    rtc_on = rtc_cfg is not None and bool(rtc_cfg.enabled)
+    if n == 1:
+        # Never let an enabled rtc block fall through the single-step return below:
+        # RTC blends a *previous chunk's* tail, which one-action inference never has.
+        if rtc_on:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunked execution, but this "
+                "policy emits a single action per inference (chunk size 1)"
+            )
+        if chunk_fn is None:
+            return None
     prefetch = spec_extra.get("chunk_prefetch", False)
     if not isinstance(prefetch, bool):
         raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
@@ -724,11 +747,30 @@ def build_chunk_executor(
                 f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
             )
         prefetch_at = min(raw_prefetch_at, n - 1)
+    if rtc_on:
+        if prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunk_prefetch: true — RTC "
+                "blends the prefetched chunk with the executing one"
+            )
+        if policy is None or not hasattr(policy, "init_rtc_processor"):
+            raise ROSConfigError(
+                f"{adapter_name}: this policy does not expose init_rtc_processor; "
+                "RTC needs a lerobot flow-matching policy"
+            )
+        if _has_bnb_quantized_modules(policy):
+            raise ROSConfigError(
+                f"{adapter_name}: RTC guidance backpropagates through the denoiser each "
+                "step; bitsandbytes-quantized weights (nf4/int8) are not supported"
+            )
+        policy.config.rtc_config = rtc_cfg
+        policy.init_rtc_processor()
     executor = ChunkedExecutor(
         policy,
         chunk_fn=chunk_fn,
         chunk_size=n,
         prefetch_at=prefetch_at,
+        rtc_config=rtc_cfg,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -738,6 +780,7 @@ def build_chunk_executor(
         n_action_steps=n,
         prefetch=prefetch,
         prefetch_at=prefetch_at,
+        rtc=rtc_on,
     )
     return executor
 
