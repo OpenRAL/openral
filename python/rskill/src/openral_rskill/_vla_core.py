@@ -1222,9 +1222,13 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     so the warm-up exercises the exact kernels the real ticks will — a
     guessed resolution would autotune the wrong ones and waste the pass.
 
-    Best-effort and non-fatal by contract: a policy this cannot introspect
-    is skipped, and any failure is swallowed. A warm-up is an optimisation;
-    it must never be the reason a skill fails to activate.
+    Best-effort: a policy this cannot introspect returns ``False`` unchanged.
+    Anything else — a preprocessor that rejects the dummy batch, a forward
+    that raises — PROPAGATES. A warm-up must never be why a skill fails to
+    activate, so every caller wraps this; ``rskill_runner_node.on_warmup``
+    catches and downgrades to a ``rskill_runner.warmup_failed`` warning.
+    Read that log: a silently skipped warm-up means tick 1 pays the cold
+    start (524 ms measured vs a 400 ms budget on the SO-101 eraser skill).
 
     Args:
         adapter: The policy adapter. Must expose ``_policy`` holding a
