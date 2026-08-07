@@ -40,3 +40,34 @@ def test_franka_sim_joint_names_match_native_mjcf() -> None:
     desc = RobotDescription.from_yaml(_FRANKA)
     sim_names = {j.sim_joint_name or j.name for j in desc.joints if j.role != "gripper"}
     assert {"joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"} <= sim_names
+
+
+def test_derived_twin_honours_a_composed_scene_mjcf(tmp_path) -> None:
+    """`deploy sim`'s composed-scene MJCF reaches a ``hal.sim: null`` robot.
+
+    Regression: the derived-twin branch called ``from_description`` with the
+    description ALONE, dropping the transport that
+    ``openral_hal.lifecycle._compose_scene_mjcf`` threads in as ``mjcf_path``.
+    Every ``DeployScene.composition`` on so100 / so101 was therefore ignored —
+    the stack booted a bare arm on an empty plane while the launch log still
+    reported that it had composed the scene. Caught on a real ``deploy sim``
+    run of ``scenes/deploy/so101_eraser.yaml``, where the policy's overview
+    camera showed no desk, no eraser and no tape.
+    """
+    from openral_sim.backends.so101_eraser import compose_so101_eraser_deploy_mjcf
+
+    desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    assert desc.hal.sim is None, "so101 must stay on the derived-twin path for this test"
+
+    xml, meshdir = compose_so101_eraser_deploy_mjcf()
+    composed = meshdir.parent / "so101_eraser_transport_test.xml"
+    composed.write_text(xml)
+
+    hal = build_hal(desc, mode="sim", transport={"mjcf_path": str(composed)})
+    assert str(composed) == str(
+        hal._mjcf_path
+    )  # reason: the composed-scene path has no public accessor
+
+    # And the scene really is in there: the arena the composer adds, not just
+    # the bare arm the manifest points at.
+    assert "eraser" in xml and "tape" in xml
