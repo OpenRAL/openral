@@ -269,7 +269,10 @@ def _maybe_build_act_nvmm(
     ``policy_extras.act_device_onnx_uri``) + a CUDA device with ``tensorrt``. The
     device engine — image/state normalize + action unnormalize baked in
     (``tools/export_act_onnx.py --preprocess device``) — is built/cached from the
-    ONNX and handed to :class:`~openral_runner.backends.gstreamer.act_nvmm.ActNvmmExecutor`.
+    ONNX and handed to ``openral_pro_trt.act_nvmm.ActNvmmExecutor``. That class
+    lives in the private OpenRAL Pro TRT package, NOT in this repo — the path
+    named here used to point at `openral_runner.backends.gstreamer.act_nvmm`,
+    which does not exist in the open tree.
     Missing deps / no device ONNX → ``None`` so the host path runs; a genuine
     build failure propagates (§1.4, no silent fallback).
     """

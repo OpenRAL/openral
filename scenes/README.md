@@ -100,6 +100,9 @@ just sim-xvla-libero                # xVLA × LIBERO           (Florence-2)
 just sim-pi05-libero                # π0.5 × LIBERO           (≥8 GB VRAM)
 just sim-act-libero                 # ACT × LIBERO            (paper protocol)
 just sim-pi05-robocasa              # π0.5 × RoboCasa kitchen (≥8 GB VRAM)
+# XR-1 uses direct commands and an isolated NF4 sidecar:
+# OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa_pnp.yaml --rskill rskills/xr1-robocasa
+# OPENRAL_ALLOW_REMOTE_CODE=1 openral sim run --config scenes/sim/xr1_robocasa365_close_blender_lid.yaml --rskill rskills/xr1-robocasa365
 
 # BenchmarkScene-tier — `openral benchmark scene --no-update-manifest --n-episodes 1`.
 just sim-metaworld --task metaworld/reach-v3
@@ -142,7 +145,7 @@ supplied at the CLI via `--rskill <name>`.
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
 | RLBench (CoppeliaSim/PyRep) | `rlbench` (scene-fixed Franka Panda; task selected by `backend_options.rlbench_task`) | `python/sim/.../backends/rlbench.py` |
 | BEHAVIOR-1K (OmniGibson / Isaac Sim) | `behavior` (scene-fixed R1 Pro; task/instance selected by `backend_options`) | `python/sim/.../backends/behavior.py` |
-| RoboCasa (MuJoCo)   | `robocasa` (procedural) + ~19 curated kitchen tasks (e.g. `robocasa/PickPlaceCounterToCabinet`) + 24 GR1 tabletop tasks (e.g. `robocasa/gr1/PnPCupToDrawerClose`)                                                                                                                            | `python/sim/.../backends/robocasa.py`     |
+| RoboCasa (MuJoCo)   | `robocasa` (procedural) + curated kitchen tasks (including XR-1's `CloseBlenderLid` smoke task) + 24 GR1 tabletop tasks                                                                                                                            | `python/sim/.../backends/robocasa.py`     |
 | ManiSkill3 (SAPIEN) | `maniskill3` (free-axis; passes `<env_id>` to `gym.make`)                                                                                                                                                                                                                                   | `python/sim/.../backends/maniskill3.py`   |
 | SimplerEnv (SAPIEN) | `simpler_env` (Bridge V2 digital twin: 4 WidowX tasks on MS3 v3.0.x)                                                                                                                                                                                                                        | `python/sim/.../backends/simpler_env.py`  |
 | Custom OpenArm      | `openarm_tabletop_pnp` (bimanual; default top camera matches the mddoai dataset POV)                                                                                                                                                                                                        | `python/sim/.../backends/openarm_*/env.py`|

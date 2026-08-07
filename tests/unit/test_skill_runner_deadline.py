@@ -121,6 +121,11 @@ def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
 
 
 # ── _pace_tick — absolute-deadline loop cadence ──────────────────────────────
+#
+# Supersedes `_remaining_tick_sleep_s(period, elapsed)`, which capped each tick
+# at one period but re-based the period after every sleep, so scheduler jitter
+# accumulated as drift. `_pace_tick` sleeps to an ABSOLUTE deadline and
+# re-anchors on overrun instead of bursting to catch up.
 
 
 def test_pace_tick_sleeps_to_absolute_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,3 +152,32 @@ def test_pace_tick_overrun_reanchors_without_burst(
 
     assert mod._pace_tick(10.0, 0.02) == 11.0
     assert sleeps == []
+
+
+def test_pace_tick_subtracts_processing_time() -> None:
+    """A 30 Hz runner sleeps only the unspent part of its 33.3 ms period.
+
+    Ported from the `_remaining_tick_sleep_s` suite this replaced: the property
+    it pinned (work time comes out of the period, never added to it) still
+    holds, now expressed against the absolute deadline.
+    """
+    mod = _load_skill_runner_module()
+    import openral_runner.clock
+
+    period_s = 1.0 / 30.0
+    sleeps: list[float] = []
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        # Tick started at 10.0, 10 ms of work done → sleep until 10.0 + period.
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: 10.010)
+        monkeypatch.setattr(openral_runner.clock, "sleep_until", sleeps.append)
+        assert mod._pace_tick(10.0, period_s) == pytest.approx(10.0 + period_s)
+        assert sleeps == [pytest.approx(10.0 + period_s)]
+
+        # 50 ms of work overruns the 33.3 ms period → no sleep, re-anchor.
+        sleeps.clear()
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: 10.050)
+        assert mod._pace_tick(10.0, period_s) == 10.050
+        assert sleeps == []
+    finally:
+        monkeypatch.undo()

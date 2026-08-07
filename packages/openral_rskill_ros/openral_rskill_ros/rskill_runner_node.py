@@ -1064,8 +1064,12 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if consumed_per_inference:
-                        inf_span.set_attribute("inference.chunk_size", int(consumed_per_inference))
+                    # Manifest `n_action_steps` is the truth; `horizon` is the
+                    # fallback for manifest-less skills (in-tree test rSkills,
+                    # single-step adapters) where the two coincide. Dropping it
+                    # renders "—" on the Inference card for a value we know.
+                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
+                        inf_span.set_attribute("inference.chunk_size", int(_cs))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
@@ -2016,7 +2020,10 @@ def _build_runtime_skill_from_manifest(
         )
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
-    # Deploy overlaps the next inference unless the manifest opts out.
+    # Deploy overlaps the next inference unless the manifest opts out. This
+    # helper serves the deploy/runner path only — benchmark and `sim run` build
+    # their policy elsewhere and stay synchronous, preserving published eval
+    # semantics (they replan from each boundary's fresh observation).
     policy_extra.setdefault("chunk_prefetch", True)
     vla = VLASpec(
         id=manifest.model_family,
@@ -2126,6 +2133,7 @@ def _robot_state_to_policy(
     robot_to_policy: list[int] | None,
     joint_units_are_degrees: bool,
     policy_is_gripper: list[bool],
+    policy_gripper_scale: float = 1.0,
 ) -> Any:
     """Reorder robot-order state → policy order and convert rad→deg when needed.
 
@@ -2139,7 +2147,9 @@ def _robot_state_to_policy(
     for i, j in enumerate(_effective_perm(robot_to_policy, n)):
         val = float(robot_state[i])
         is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if joint_units_are_degrees and not is_grip:
+        if is_grip:
+            val *= policy_gripper_scale
+        elif joint_units_are_degrees:
             val = math.degrees(val)
         policy_state[j] = val
     return policy_state
@@ -2150,6 +2160,7 @@ def _policy_action_to_robot(
     robot_to_policy: list[int] | None,
     joint_units_are_degrees: bool,
     policy_is_gripper: list[bool],
+    policy_gripper_scale: float = 1.0,
 ) -> Any:
     """Reorder policy-order action → robot order and convert deg→rad when needed.
 
@@ -2163,7 +2174,9 @@ def _policy_action_to_robot(
     for i, j in enumerate(_effective_perm(robot_to_policy, n)):
         val = float(policy_action[j])
         is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if joint_units_are_degrees and not is_grip:
+        if is_grip:
+            val /= policy_gripper_scale
+        elif joint_units_are_degrees:
             val = math.radians(val)
         robot_action[i] = val
     return robot_action
@@ -2206,13 +2219,31 @@ def _build_joint_permutation(
     """
     if description is None:
         return None, []
+    robot_names = [j.name for j in description.joints]
+    fallback_grippers = [
+        getattr(getattr(j, "role", None), "value", getattr(j, "role", None)) == "gripper"
+        or "gripper" in j.name.lower()
+        for j in description.joints
+    ]
+    # Bound before the try: an adapter without a `_policy` (ACT / Diffusion,
+    # or any non-lerobot backbone) raises AttributeError on the FIRST line,
+    # leaving `policy` unbound. The `not names` branch below then read it and
+    # raised UnboundLocalError — a NameError, so the except clause guarding
+    # that read never caught it and the runner blew up instead of falling
+    # through to "pass through". `None.config` raises a plain AttributeError,
+    # which that same clause already handles.
+    policy: Any = None
     try:
         policy = adapter._policy  # type: ignore[attr-defined]  # reason: documented Protocol-internal field
         names = list(policy.config.action_feature_names)
     except (AttributeError, TypeError):
-        return None, []
+        names = []
     if not names:
-        return None, []
+        try:
+            action_dim = int(policy.config.output_features["action"].shape[0])
+        except (AttributeError, KeyError, TypeError):
+            return None, []
+        return (None, fallback_grippers) if action_dim == len(robot_names) else (None, [])
 
     def _normalize(s: str) -> str:
         # Map LeRobot feature keys to robot.yaml joint names.
@@ -2228,7 +2259,6 @@ def _build_joint_permutation(
         return s
 
     policy_names = [_normalize(n) for n in names]
-    robot_names = [j.name for j in description.joints]
     if len(policy_names) != len(robot_names):
         return None, []
     name_to_pidx = {n: i for i, n in enumerate(policy_names)}
@@ -2488,6 +2518,19 @@ def _make_policy_adapter_skill(
                 "no longer guesses the units (issue #135)."
             )
         joint_units_are_degrees = False
+    raw_gripper_scale = getattr(manifest, "policy_extras", {}).get("gripper_scale", 1.0)
+    try:
+        policy_gripper_scale = float(raw_gripper_scale)
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            f"rskill_runner_node: policy_extras.gripper_scale must be a positive number; "
+            f"got {raw_gripper_scale!r}."
+        ) from exc
+    if policy_gripper_scale <= 0.0:
+        raise ROSConfigError(
+            f"rskill_runner_node: policy_extras.gripper_scale must be > 0; "
+            f"got {policy_gripper_scale}."
+        )
     # Print to stderr so the diagnostic shows up in the launch's
     # stitched-together stdout (structlog's OTel sink doesn't surface
     # there). One-time event at build-time — keeps the per-step
@@ -2498,7 +2541,8 @@ def _make_policy_adapter_skill(
         f"joint_units={'degrees' if joint_units_are_degrees else 'radians'} "
         f"(manifest) "
         f"perm={robot_to_policy} "
-        f"is_gripper={policy_is_gripper}",
+        f"is_gripper={policy_is_gripper} "
+        f"gripper_scale={policy_gripper_scale:g}",
         file=sys.stderr,
         flush=True,
     )
@@ -2769,7 +2813,11 @@ def _make_policy_adapter_skill(
                 # whose joint order already matches the robot (SO-101) is not fed
                 # raw radians. See _robot_state_to_policy / _effective_perm.
                 obs["state"] = _robot_state_to_policy(
-                    robot_state, robot_to_policy, joint_units_are_degrees, policy_is_gripper
+                    robot_state,
+                    robot_to_policy,
+                    joint_units_are_degrees,
+                    policy_is_gripper,
+                    policy_gripper_scale,
                 )
             # Deploy-sim keys `world_state.image_frames` by the manifest
             # sensor NAME; VLA adapters look up `obs["images"]` by the VLA
@@ -2794,7 +2842,11 @@ def _make_policy_adapter_skill(
             # (SO-101) reaches the radians Action contract instead of passing
             # through raw (~57x too large → the arm slams its limits).
             robot_action = _policy_action_to_robot(
-                policy_action, robot_to_policy, joint_units_are_degrees, policy_is_gripper
+                policy_action,
+                robot_to_policy,
+                joint_units_are_degrees,
+                policy_is_gripper,
+                policy_gripper_scale,
             )
             # One-shot stderr diagnostic so the launch's stdout shows
             # what's actually being commanded. Print the FIRST step

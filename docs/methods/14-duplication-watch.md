@@ -295,6 +295,20 @@ contributor should look at before adding similar code.
   deleted (they inherit `DeployScene.from_yaml`, which returns `Self`).
   A new `from_yaml` on a schemas-module model should be a one-line
   delegation to `_load_yaml_model`.
+- **LeRobot SO-ARM unit + cadence conversions in the native MuJoCo
+  scenes — consolidated** into
+  `openral_sim/backends/_so_arm_units.py`
+  (`steps_per_control_period`, `lerobot_action_to_radians`,
+  `radians_to_lerobot_state`): `so101_eraser` and `so101_box` each
+  carried their own copy of the degrees-mode affine and physics-stepping
+  loop, and the copies drifted — `so101_box` shipped a
+  single-`mj_step`-per-action cadence and a gripper-as-degrees mapping
+  that `so101_eraser` had already fixed. **A new raw-MuJoCo scene that
+  accepts LeRobot-convention actions must route through this module**,
+  not re-derive the conversions. (`tabletop_push` keeps its own
+  `_joint_scales` affine + `settle_steps` knob on purpose: it is
+  robot-agnostic, so it cannot assume the SO-ARM "last channel is a
+  [0, 100] gripper" convention.)
 - **Rotation/quaternion math scattered across packages** — the **yaw
   family is now consolidated** into `openral_core.geometry`
   (`yaw_to_quat_xyzw`, `yaw_to_quat_wxyz`, `quat_xyzw_to_yaw`): the five

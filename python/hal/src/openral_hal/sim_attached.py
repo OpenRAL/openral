@@ -1020,7 +1020,7 @@ class SimAttachedHAL:
             flush=True,
         )
 
-    def idle_step(self) -> bool:
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.
 
         SIM-ONLY. This refreshes ``_last_obs`` (camera frames + state) so the
@@ -1064,11 +1064,20 @@ class SimAttachedHAL:
         never builds a wrong-width zero vector. (The bridge's catch-once-and-
         disable guard around :meth:`idle_step` remains as defence in depth.)
 
+        Args:
+            wall_dt_s: Wall-clock seconds this tick represents. Accepted for
+                signature parity with :meth:`MujocoArmHAL.idle_step` and
+                currently unused: a wrapped ``SimRollout`` owns its own
+                per-``step`` sim-time stride, so the bridge cannot convert a
+                wall slice into a step count without backend-specific
+                knowledge.
+
         Returns:
             ``True`` if the env was stepped, ``False`` if suppressed (not
             connected, estop latched, or action dim unresolved). Backend-agnostic —
             no MuJoCo-handle gate.
         """
+        del wall_dt_s
         if not self._connected:
             return False
         if self._estop_latched:

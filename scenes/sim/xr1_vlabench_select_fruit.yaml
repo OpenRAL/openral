@@ -1,0 +1,21 @@
+scene:
+  id: vlabench
+  backend: mujoco
+  observation_height: 480
+  observation_width: 480
+  cameras: ["camera1", "camera2", "camera3"]
+
+task:
+  id: vlabench/select_fruit
+  scene_id: vlabench
+  instruction: "select the fruit"
+  success_key: is_success
+  max_steps: 100
+
+seed: 0
+n_episodes: 1
+record_video: true
+metadata:
+  honest_scope: >
+    Short XR-1 wiring validation using Xiaomi's front/base/wrist camera order
+    and the local persistently packed NF4 rSkill. Not a benchmark score.

@@ -1,0 +1,64 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-xr1-franka_panda-vlabench-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+model_family: "xr1"
+evaluated_tasks: ["vlabench"]
+
+embodiment_tags: ["franka_panda"]
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 480
+    min_height: 480
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 480
+    min_height: 480
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 480
+    min_height: 480
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "absolute"
+
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+weights_uri: "hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4"
+min_vram_gb:
+  int4: 4.0  # measured 3.66 GiB process VRAM on RTX 4070 Laptop
+image_preprocessing:
+  flip_180: false
+state_contract:
+  dim: 7
+chunk_size: 10
+n_action_steps: 5
+latency_budget:
+  per_chunk_ms: 2000.0
+
+policy_extras:
+  xr1_profile: "vlabench_choice"
+  replan_steps: 5
+  crop_ratio: 1.0
+  prequantized_nf4: true
+
+paper_url: "https://arxiv.org/abs/2607.15330"
+source_repo: "hf://XiaomiRobotics/Xiaomi-Robotics-1-VLABench@2dfc33b390478f71737eacb4748333e6d8638a06"
+description: >
+  Apache-2.0 XR-1 VLABench checkpoint. It consumes the benchmark's front,
+  second, and wrist 480x480 views plus 7-D relative EE state. OpenRAL
+  integrates the decoded deltas into absolute VLABench targets and replans
+  after five of each ten predicted actions.
+
+actions: ["pick", "place", "grasp"]
+objects: ["fruit", "object"]
+scenes: ["tabletop"]
+action_contract:
+  dim: 7
+  representation: "cartesian_pose"

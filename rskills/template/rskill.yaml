@@ -99,7 +99,7 @@ latency_budget:
 
 # OPTIONAL — chunk_prefetch runs the next inference in the background so a
 # fresh chunk is ready before the current one drains; chunk_prefetch_at tunes
-# the lead in actions consumed (default 15). Real-Time Chunking (RTC) builds
+# the lead in actions consumed (default 20). Real-Time Chunking (RTC) builds
 # on prefetch: it guides the prefetched chunk inside the flow-matching
 # denoiser to blend with the executing chunk's unconsumed tail, instead of a
 # hard cut at the chunk boundary. optional — flow-matching families (smolvla

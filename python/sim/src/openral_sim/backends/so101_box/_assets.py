@@ -165,11 +165,20 @@ class BoxSceneOptions:
     insertion_axis_tol_deg: float = 10.0
     insertion_xy_tol_m: float = 0.003
 
+    # Rate the policy's actions are issued at, Hz. One ``step()`` advances a
+    # full control period of physics (``round(1 / (control_hz * timestep))``
+    # mj_step calls), so a 30 FPS-trained checkpoint's absolute joint targets
+    # get their assumed ~33 ms of travel per action. Consumed by the env
+    # factory, not the MJCF composer.
+    control_hz: float = 30.0
+
     # Joint-units convention for the scene's proprio state + action contract.
     # ``"radians"`` (default) keeps MuJoCo-native units; ``"degrees"`` makes
     # the env emit state and accept actions in degrees — the convention
     # LeRobot-trained SO-100/101 checkpoints (for example MolmoAct2-SO100_101)
-    # were recorded in. Consumed by the env factory, not the MJCF composer.
+    # were recorded in (arm joints in servo degrees; the GRIPPER channel is
+    # normalised [0, 100] over the jaw travel, not degrees). Consumed by the
+    # env factory, not the MJCF composer.
     joint_units: str = "radians"
 
     # Per-joint calibration affine bridging the MuJoCo URDF joint convention to

@@ -21,7 +21,7 @@ installed" answer is controlled (CLAUDE.md §1.11: no mocks/stubs).
 
 from __future__ import annotations
 
-from importlib.metadata import EntryPoint
+from importlib.metadata import EntryPoint, entry_points
 
 import pytest
 from openral_core.exceptions import ROSConfigError
@@ -29,6 +29,27 @@ from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runt
 from openral_rskill.runtime import NullRuntime
 from openral_rskill.runtime_onnx import ONNXRuntime
 from openral_rskill.runtime_pytorch import PyTorchRuntime
+
+
+def _installed(group: str, name: str) -> bool:
+    """True when the REAL (unpatched) entry-point group ships ``name``."""
+    return any(ep.name == name for ep in entry_points(group=group))
+
+
+# The two unpatched tests below assert the open-source-only shape of the
+# environment. That holds in CI and on a plain checkout, but `openral-pro-trt`
+# is installed on some dev boxes — there the assertions are not wrong, they are
+# unobservable, so skip rather than fail (CLAUDE.md §1.11: an unavailable — or
+# here, an unavoidably-present — dependency is a skip with a reason, never a
+# faked result).
+_PRO_TRT_BACKEND = pytest.mark.skipif(
+    _installed("openral.runtime_backends", "tensorrt"),
+    reason="openral-pro-trt is installed here; this test asserts the absent-backend branch",
+)
+_PRO_SMOLVLA_HOOK = pytest.mark.skipif(
+    _installed("openral.policy_attach_hooks", "smolvla"),
+    reason="openral-pro-trt is installed here; this test asserts the no-hook branch",
+)
 
 
 class TestResolveRuntimeBackendBuiltins:
@@ -51,8 +72,9 @@ class TestResolveRuntimeBackendMiss:
         with pytest.raises(ROSConfigError, match="openral-pro-trt"):
             resolve_runtime_backend("tensorrt")
 
+    @_PRO_TRT_BACKEND
     def test_real_environment_has_no_tensorrt_backend(self) -> None:
-        """Without monkeypatching: this repo checkout has no openral-pro-trt
+        """Without monkeypatching: a plain repo checkout has no openral-pro-trt
         installed, so the real, unpatched entry-point group is genuinely empty."""
         with pytest.raises(ROSConfigError, match="tensorrt"):
             resolve_runtime_backend("tensorrt")
@@ -95,6 +117,7 @@ def _fake_attach_hook(skill: object, **kwargs: object) -> bool:
 
 
 class TestMaybeAttachProHooks:
+    @_PRO_SMOLVLA_HOOK
     def test_no_hook_installed_returns_false(self) -> None:
         assert maybe_attach_pro_hooks("smolvla", NullRuntime()) is False
 

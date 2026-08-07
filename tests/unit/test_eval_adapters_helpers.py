@@ -447,6 +447,59 @@ class TestSmolVLAAdapterBuildBatch:
         adapter = self._make_adapter(_policy=_NoReset())
         adapter.reset()  # must be a no-op
 
+    def test_step_replays_executor_owned_chunk_in_order(self) -> None:
+        """Deploy/eval SmolVLA uses the shared chunk executor, not synchronous queue pops."""
+        import torch
+
+        class _Config:
+            n_action_steps = 4
+
+        class _Policy:
+            config = _Config()
+
+            def __init__(self) -> None:
+                self.inferences = 0
+
+            def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
+                self.inferences += 1
+                values = torch.arange(4, dtype=torch.float32) + self.inferences * 10
+                return values.view(1, 4, 1).repeat(1, 1, 6)
+
+            def reset(self) -> None:
+                pass
+
+        from openral_rskill._vla_core import build_chunk_executor
+
+        policy = _Policy()
+        adapter = self._make_adapter(_policy=policy)
+        # Production wires the executor through this factory (`_build_smolvla`
+        # does the same), so the test exercises the real seam rather than a
+        # hand-rolled one.
+        adapter._chunk_executor = build_chunk_executor(
+            {"chunk_prefetch": True, "chunk_prefetch_at": 1},
+            policy=policy,
+            adapter_name="smolvla",
+        )
+        observation = {"images": {}, "state": np.zeros(6, dtype=np.float32)}
+
+        got = [float(adapter.step(observation, "do thing")[0]) for _ in range(4)]
+
+        assert got == [10.0, 11.0, 12.0, 13.0]
+        assert policy.inferences in (1, 2)  # prefetch may complete before this assertion
+
+    def test_default_prefetch_is_disabled_for_benchmark_freshness(self) -> None:
+        """Sim/eval keeps boundary observations fresh unless real-time deploy opts in.
+
+        `chunk_prefetch` absent from `vla.extra` (the benchmark/`sim run` case)
+        must yield a synchronous executor — deploy is the only caller that sets
+        it, so published eval numbers keep replanning from a fresh boundary
+        observation.
+        """
+        from openral_rskill._vla_core import build_chunk_executor
+
+        ex = build_chunk_executor({}, policy=self._make_adapter()._policy, adapter_name="smolvla")
+        assert ex is None or ex._prefetch_at == 0
+
     def test_close_on_cuda_calls_empty_cache(self) -> None:
         fake_torch = MagicMock()
         adapter = self._make_adapter(device="cuda:0", _torch=fake_torch)

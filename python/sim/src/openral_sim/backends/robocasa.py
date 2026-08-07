@@ -98,13 +98,22 @@ def _arm_part_config(controller_name: str) -> dict[str, Any]:
     return _json.loads(fname.read_text())  # type: ignore[no-any-return]
 
 
-# A small curated set of prebuilt RoboCasa tasks we register up-front.
+# Tasks registered with ``robocasa/<task>`` scene ids at import time.
+# Names match the keys robosuite uses for ``robosuite.make(env_name=...)``.
+# The PickPlace envs use their current upstream names, not the shorter PnP
+# aliases from the original issue draft.
+#
+# Keep this list curated so `openral sim list` stays legible; add tasks when
+# they become benchmark or integration targets.
+#
+# Sourced from robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
 # Keeping this list short keeps `openral sim list` legible; users who need a
 # different task can still pass `--scene robocasa/<task>` directly --
 # the adapter resolves any robosuite-registered env_name. Promote
 # additional entries here when they become benchmark targets. Sourced
 # from robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
 _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
+    "CloseBlenderLid",
     "PickPlaceCounterToCabinet",
     "PickPlaceCabinetToCounter",
     "PickPlaceCounterToSink",
@@ -125,15 +134,54 @@ _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "TurnOffSinkFaucet",
     "NavigateKitchen",
 )
-"""Tasks registered with ``<prefix>/<task>`` scene ids at import time.
 
-Names match the keys robosuite uses for ``robosuite.make(env_name=...)``
-(robocasa registers them via ``@register_env`` -- see
-``robocasa/environments/kitchen/atomic/*.py``). The ``PickPlace*`` envs
-are the atomic pick-and-place tasks; the upstream names use the
-``Pick`` / ``Place`` prefix today, not the shorter ``PnP`` we used in
-the issue-#88 draft.
-"""
+_XR1_ROBOCASA_ARM_DIM = 7
+_XR1_ROBOCASA_ACTION_DIM = 7
+_PANDA_MOBILE_BASIC_ACTION_DIM = 11
+
+
+def _fit_panda_mobile_action(
+    action: NDArray[np.float32],
+    *,
+    env_dim: int,
+    state_layout: str,
+) -> NDArray[np.float32]:
+    """Fit known PandaMobile checkpoint layouts to the live BASIC composite."""
+    action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+    if action_arr.shape[0] == env_dim:
+        return action_arr
+    if action_arr.shape[0] == env_dim + 1:
+        return np.ascontiguousarray(action_arr[:env_dim])
+    if action_arr.shape[0] == env_dim - 1:
+        return np.concatenate([action_arr, -np.ones(1, dtype=np.float32)])
+    if (
+        action_arr.shape[0] == _XR1_ROBOCASA_ACTION_DIM
+        and env_dim == _PANDA_MOBILE_BASIC_ACTION_DIM
+        and state_layout == "xr1_8d"
+    ):
+        # XR-1 RoboCasa controls only right-arm OSC(6) + gripper(1).
+        # PandaMobile's remaining BASIC slots are base(3) + torso(1).
+        return np.concatenate([action_arr, np.zeros(4, dtype=np.float32)])
+    raise ROSConfigError(
+        f"RoboCasa PandaMobile action is {action_arr.shape[0]}-D but the live "
+        f"BASIC composite is {env_dim}-D; no declared layout conversion exists."
+    )
+
+
+def _xr1_robocasa_state(raw: dict[str, Any]) -> NDArray[np.float32]:
+    """Build XR-1 RoboCasa's ``7 arm joints + 1 gripper`` state."""
+    joints = raw.get("robot0_joint_pos")
+    gripper = raw.get("robot0_gripper_qpos")
+    if joints is None or gripper is None:
+        raise ROSConfigError("XR-1 RoboCasa requires robot0_joint_pos and robot0_gripper_qpos.")
+    joint_arr = np.asarray(joints, dtype=np.float32).reshape(-1)
+    gripper_arr = np.asarray(gripper, dtype=np.float32).reshape(-1)
+    if joint_arr.shape[0] < _XR1_ROBOCASA_ARM_DIM or gripper_arr.shape[0] < 1:
+        raise ROSConfigError(
+            "XR-1 RoboCasa requires 7 arm joints and at least one gripper value; "
+            f"got {joint_arr.shape[0]} joints and {gripper_arr.shape[0]} gripper values."
+        )
+    return np.concatenate([joint_arr[:_XR1_ROBOCASA_ARM_DIM], gripper_arr[:1]]).astype(np.float32)
 
 
 # The 24 GR1 tabletop tasks shipped by the upstream fork
@@ -283,19 +331,11 @@ class _RoboCasaSim:
             # under the BASIC composite). Slice or pad so the downstream
             # length assert holds.
             env_dim = int(getattr(self._env, "action_dim", action_arr.shape[-1]))
-            if action_arr.shape[-1] != env_dim:
-                if action_arr.shape[-1] == env_dim + 1:
-                    # 12-D dataset, 11-D env: drop the trailing control_mode
-                    # flag. The live raw robosuite BASIC composite is
-                    # right(6) + gripper(1) + base(3) + torso(1); the policy's
-                    # dim10 torso slot is constant 0, dim11 is the active
-                    # manipulate/nav mode flag that this env does not consume.
-                    action_arr = np.ascontiguousarray(action_arr[:env_dim])
-                elif action_arr.shape[-1] == env_dim - 1:
-                    # Inverse skew: re-append the torso slot at -1 (lowest).
-                    pad: NDArray[np.float32] = -np.ones(1, dtype=np.float32)
-                    action_arr = np.concatenate([action_arr, pad])
-            action_env = action_arr
+            action_env = _fit_panda_mobile_action(
+                action_arr,
+                env_dim=env_dim,
+                state_layout=self._state_layout,
+            )
         # robosuite's `step` returns (obs, reward, done, info); the
         # gymnasium 5-tuple is only on robosuite>=1.5 envs that wrap
         # `GymWrapper`. Handle both shapes.
@@ -651,7 +691,9 @@ class _RoboCasaSim:
             "robot0_left_gripper_qpos",
         )
         keys: tuple[str, ...]
-        if self._state_layout == "smolvla_9d":
+        if self._state_layout == "xr1_8d":
+            state = _xr1_robocasa_state(raw)
+        elif self._state_layout == "smolvla_9d":
             keys = state_keys_smolvla
         elif self._state_layout == "gr1":
             keys = state_keys_gr1
@@ -671,16 +713,17 @@ class _RoboCasaSim:
             "robot0_base_quat",
             "robot0_eef_quat",
         }
-        state_parts: list[NDArray[np.float32]] = []
-        for key in keys:
-            value = raw.get(key)
-            if value is None:
-                continue
-            state_arr: NDArray[np.float32] = np.asarray(value, dtype=np.float32).reshape(-1)
-            if key in _quat_keys_state and state_arr.shape[0] == 4:  # noqa: PLR2004
-                state_arr = _canonicalize_quat_xyzw_np(state_arr)
-            state_parts.append(state_arr)
-        state = np.concatenate(state_parts) if state_parts else np.zeros(0, dtype=np.float32)
+        if self._state_layout != "xr1_8d":
+            state_parts: list[NDArray[np.float32]] = []
+            for key in keys:
+                value = raw.get(key)
+                if value is None:
+                    continue
+                state_arr: NDArray[np.float32] = np.asarray(value, dtype=np.float32).reshape(-1)
+                if key in _quat_keys_state and state_arr.shape[0] == 4:  # noqa: PLR2004
+                    state_arr = _canonicalize_quat_xyzw_np(state_arr)
+                state_parts.append(state_arr)
+            state = np.concatenate(state_parts) if state_parts else np.zeros(0, dtype=np.float32)
 
         # RoboCasa's task language is episode-specific: the env samples a
         # particular object (e.g. "hot dog") and ``env.get_ep_meta()["lang"]``

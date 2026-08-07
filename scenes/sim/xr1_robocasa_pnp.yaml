@@ -1,0 +1,29 @@
+scene:
+  id: robocasa/PickPlaceCounterToCabinet
+  backend: mujoco
+  observation_height: 256
+  observation_width: 256
+  cameras: ["shoulder_left", "shoulder_right", "wrist"]
+  backend_options:
+    mode: prebuilt
+    prebuilt_task: PickPlaceCounterToCabinet
+    robots: ["PandaMobile"]
+    controller: OSC_POSE
+    state_layout: xr1_8d
+    obj_groups: "baguette"
+    horizon: 100
+
+task:
+  id: robocasa/PickPlaceCounterToCabinet/0
+  scene_id: robocasa/PickPlaceCounterToCabinet
+  instruction: "pick the baguette from the counter and place it into the cabinet"
+  success_key: is_success
+  max_steps: 100
+
+seed: 1
+n_episodes: 1
+metadata:
+  honest_scope: >
+    XR-1 observation/action integration check. This does not reproduce Xiaomi's
+    RoboCasa v0.2 benchmark because OpenRAL currently provisions its own pinned
+    RoboCasa kitchen stack.

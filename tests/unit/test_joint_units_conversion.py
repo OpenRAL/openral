@@ -13,16 +13,20 @@ two actuation-critical helpers that apply that conversion:
   ``Action`` contract instead of passing through raw (~57x too large → the
   arm slams its limits).
 
-Gripper channels carry a custom 0-1/0-100 motor unit, not an angle, so both
-helpers leave them untouched.
+Gripper channels carry a custom motor unit, not an angle. ``gripper_scale``
+maps the HAL's normalized [0, 1] surface to a checkpoint's [0, 100] dataset
+surface when declared.
 """
 
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
+from openral_core import RobotDescription
 from openral_rskill_ros.rskill_runner_node import (
+    _build_joint_permutation,
     _policy_action_to_robot,
     _robot_state_to_policy,
 )
@@ -83,3 +87,67 @@ def test_conversion_round_trips_through_reorder() -> None:
         policy, perm, joint_units_are_degrees=True, policy_is_gripper=gripper
     )
     np.testing.assert_allclose(back, robot_state)
+
+
+def test_gripper_scale_maps_normalized_hal_to_lerobot_motor_units() -> None:
+    """SO-101 policy sees [0,100], while the HAL remains normalized [0,1]."""
+    robot_state = np.array([0.5])
+    policy = _robot_state_to_policy(
+        robot_state,
+        None,
+        joint_units_are_degrees=True,
+        policy_is_gripper=[True],
+        policy_gripper_scale=100.0,
+    )
+    assert policy[0] == 50.0
+
+    robot = _policy_action_to_robot(
+        policy,
+        None,
+        joint_units_are_degrees=True,
+        policy_is_gripper=[True],
+        policy_gripper_scale=100.0,
+    )
+    assert robot[0] == 0.5
+
+
+def test_missing_policy_feature_names_falls_back_to_robot_gripper_role() -> None:
+    """SmolVLA config has only action shape; the robot manifest still identifies gripper."""
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    adapter = SimpleNamespace(
+        _policy=SimpleNamespace(
+            config=SimpleNamespace(
+                output_features={"action": SimpleNamespace(shape=(6,))},
+            )
+        )
+    )
+
+    permutation, grippers = _build_joint_permutation(
+        adapter=adapter,
+        description=description,
+    )
+
+    assert permutation is None
+    assert grippers == [False, False, False, False, False, True]
+
+
+def test_adapter_without_a_policy_passes_through_instead_of_raising() -> None:
+    """An adapter exposing no ``_policy`` must fall through, not blow up.
+
+    ACT / DiffusionPolicy adapters (and any non-lerobot backbone) have no
+    ``_policy`` attribute, so reading it raises AttributeError on the first
+    line of the probe and leaves the local unbound. The follow-up
+    ``output_features`` read then raised ``UnboundLocalError`` — a NameError,
+    which the surrounding ``except (AttributeError, KeyError, TypeError)``
+    does not catch — so the runner crashed where the contract says it should
+    return "pass through" and let the safety kernel enforce correctness.
+    """
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+
+    permutation, grippers = _build_joint_permutation(
+        adapter=SimpleNamespace(),  # no `_policy` at all
+        description=description,
+    )
+
+    assert permutation is None
+    assert grippers == []

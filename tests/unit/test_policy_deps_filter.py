@@ -73,6 +73,7 @@ def test_model_family_install_groups_returns_uv_groups_for_known_families() -> N
     """pi05 needs both sim + libero; rldx needs only rldx; act / smolvla / xvla need sim."""
     assert set(model_family_install_groups("pi05")) == {"sim", "libero"}
     assert set(model_family_install_groups("rldx")) == {"rldx"}
+    assert set(model_family_install_groups("xr1")) == {"sidecar-wire"}
     for fam in ("smolvla", "act", "diffusion", "xvla"):
         assert set(model_family_install_groups(fam)) == {"sim"}
 
@@ -272,3 +273,8 @@ def test_gr00t_probe_covers_the_lazy_diffusers_import() -> None:
     every dispatch then aborted at runtime ("'diffusers' is required but not
     installed"; observed live, deploy-sim 2026-07-20). The probe must cover it."""
     assert "diffusers" in model_family_required_imports("gr00t")
+
+
+def test_xr1_probe_uses_only_the_sidecar_wire() -> None:
+    """XR-1's incompatible torch stack stays outside the workspace."""
+    assert model_family_required_imports("xr1") == ("zmq", "msgpack")

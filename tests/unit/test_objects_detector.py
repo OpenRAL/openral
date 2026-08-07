@@ -21,6 +21,7 @@ Fixture constants:
 from __future__ import annotations
 
 import pathlib
+from importlib.metadata import entry_points
 
 import numpy as np
 import pytest
@@ -372,6 +373,13 @@ class TestTierSelection:
                 tier=DetectorTier.NVINFER,
             )
 
+    @pytest.mark.skipif(
+        any(
+            ep.name == DetectorTier.NVMM_AGGREGATOR.value
+            for ep in entry_points(group="openral.detector_tiers")
+        ),
+        reason="openral-pro-trt is installed here; this test asserts the absent-tier branch",
+    )
     def test_make_detector_nvmm_aggregator_names_pro_trt_when_absent(
         self, tmp_path: pathlib.Path
     ) -> None:
@@ -379,8 +387,10 @@ class TestTierSelection:
 
         The zero-copy NVMM aggregator lives in the private
         openral-pro-trt package, resolved via the ``openral.detector_tiers``
-        entry-point group. This repo checkout genuinely has no such entry
-        point registered, so this is a real (not monkeypatched) miss.
+        entry-point group. A plain repo checkout has no such entry point
+        registered, so this is a real (not monkeypatched) miss — and on a dev
+        box where the pro tier IS installed the miss cannot happen at all, so
+        the test skips rather than reporting a false red (CLAUDE.md §1.11).
         """
         missing = tmp_path / "does_not_exist.onnx"
         with pytest.raises(ROSConfigError, match="openral-pro-trt"):

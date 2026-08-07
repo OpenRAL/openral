@@ -3116,7 +3116,7 @@ robocasa = [
     { name = "lerobot" },
     { name = "lxml" },
     { name = "num2words" },
-    { name = "robosuite", version = "1.5.2", source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b#232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" } },
+    { name = "robosuite", version = "1.5.2", source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c#5ce6643f3092639d08f7b0f90ed1c6a84f50552c" } },
     { name = "robosuite-models" },
     { name = "transformers" },
 ]
@@ -3258,7 +3258,7 @@ robocasa = [
     { name = "lerobot" },
     { name = "lxml", specifier = ">=5" },
     { name = "num2words", specifier = ">=0.5.14" },
-    { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" },
+    { name = "robosuite", git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c" },
     { name = "robosuite-models", specifier = ">=1.0.0" },
     { name = "transformers", specifier = ">=5.4.0,<5.14.0" },
 ]
@@ -4306,7 +4306,7 @@ wheels = [
 [[package]]
 name = "robosuite"
 version = "1.5.2"
-source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=232ce7d4a6ed89c949a9aba024a05c8c32fdd08b#232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" }
+source = { git = "https://github.com/ARISE-Initiative/robosuite.git?rev=5ce6643f3092639d08f7b0f90ed1c6a84f50552c#5ce6643f3092639d08f7b0f90ed1c6a84f50552c" }
 resolution-markers = [
     "(platform_machine == 'AMD64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')",
     "platform_machine != 'AMD64' and platform_machine != 'aarch64' and platform_machine != 'arm64' and platform_machine != 'armv7l' and platform_machine != 's390x' and platform_machine != 'x86_64' and sys_platform == 'linux'",

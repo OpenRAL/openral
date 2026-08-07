@@ -22,11 +22,13 @@ verification happened on the GPU host.
 from __future__ import annotations
 
 import importlib.metadata
+import sys
 import sysconfig
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openral_core.exceptions import ROSConfigError
 from openral_sim import _deps
 from openral_sim._deps import (
     _ROBOSUITE_PIN,
@@ -797,3 +799,79 @@ class TestRobocasaImportVerification:
             _deps.Path, "is_file", lambda self: "download_kitchen_assets" in str(self)
         )
         assert _has_robocasa_kitchen() is False
+
+
+def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(monkeypatch) -> None:
+    """A backend may not re-pin a distribution this interpreter already imported.
+
+    LIBERO pins ``robosuite==1.4`` (mount models under
+    ``robosuite.models.mounts``) while RoboCasa / OpenArm need ``>=1.5``
+    (``robosuite.models.bases``). Swapping the on-disk package mid-process
+    leaves ``robosuite.models.base`` cached from the old tree while fresh
+    imports resolve against the new one, so ``MujocoXML`` exists twice and
+    every ``isinstance`` across the seam fails with the thoroughly unhelpful
+    ``XMLError: ... is not a MujocoXML instance``.
+
+    Observed for real: running ``pytest python/hal/tests`` downgraded the
+    developer's venv from robosuite 1.5.2 to 1.4.0 partway through and then
+    failed three LIBERO tests that pass in isolation. The guard must fire
+    BEFORE any install step runs, so a refused swap leaves the venv untouched.
+    """
+    ran: list[str] = []
+
+    plan = _deps.BackendInstallPlan(
+        backend_id="libero",
+        display_name="LIBERO",
+        license_note="test",
+        probe=lambda: False,  # not installed -> we would proceed to install
+        steps=(_deps.InstallStep(description="would swap robosuite", argv=["uv", "sync"]),),
+        manual_hint="just sync --group libero",
+        repins=("robosuite",),
+    )
+    monkeypatch.setattr(_deps, "get_plan", lambda _bid: plan)
+    monkeypatch.setattr(
+        _deps.subprocess,
+        "run",
+        lambda *a, **k: ran.append("ran"),  # must never fire
+    )
+    monkeypatch.setitem(sys.modules, "robosuite", SimpleNamespace(__version__="1.5.2"))
+
+    with pytest.raises(ROSConfigError, match="already imported"):
+        _deps.ensure_backend_deps("libero")
+    assert ran == [], "the guard must refuse BEFORE mutating the venv"
+
+
+def test_live_swap_guard_allows_a_clean_process_and_unrelated_backends(monkeypatch) -> None:
+    """The guard is narrow: it only trips on an ALREADY-IMPORTED repinned module.
+
+    The normal path — a fresh `openral sim run` that auto-installs LIBERO
+    before anything imports robosuite — must still work, and a backend that
+    does not re-pin robosuite must not be blocked by an unrelated import.
+    """
+    for repins, preimported in ((("robosuite",), False), ((), True)):
+        ran: list[str] = []
+        plan = _deps.BackendInstallPlan(
+            backend_id="libero",
+            display_name="LIBERO",
+            license_note="test",
+            probe=lambda: True,  # short-circuits after the guard has been cleared
+            steps=(_deps.InstallStep(description="s", argv=["uv", "sync"]),),
+            manual_hint="hint",
+            repins=repins,
+        )
+        monkeypatch.setattr(_deps, "get_plan", lambda _bid, _p=plan: _p)
+        monkeypatch.delitem(sys.modules, "robosuite", raising=False)
+        if preimported:
+            monkeypatch.setitem(sys.modules, "robosuite", SimpleNamespace())
+        _deps.ensure_backend_deps("libero")  # must not raise
+        assert ran == []
+
+
+def test_every_robosuite_swapping_plan_declares_the_repin() -> None:
+    """The four plans that move robosuite between 1.4 and 1.5 declare it.
+
+    A plan that swaps robosuite without declaring `repins` silently regains
+    the corrupting behaviour, so pin the list rather than trusting review.
+    """
+    for backend_id in ("libero", "robocasa_kitchen", "robocasa_gr1", "openarm_robosuite"):
+        assert "robosuite" in _deps.get_plan(backend_id).repins, backend_id

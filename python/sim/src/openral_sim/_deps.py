@@ -117,6 +117,13 @@ class BackendInstallPlan:
         manual_hint: String shown inside the :class:`ROSConfigError`
             when the user refuses or a step fails -- gives them the
             exact commands to finish manually.
+        repins: Top-level module names whose INSTALLED VERSION this plan
+            changes (directly or transitively). Reaching the install means
+            the probe failed, i.e. the version on disk is not the one this
+            backend needs -- so if such a module is already imported in
+            this interpreter, running the steps would swap it underneath
+            live objects. :func:`_assert_no_live_dependency_swap` refuses
+            that case; see it for why a ``sys.modules`` flush cannot fix it.
     """
 
     backend_id: str
@@ -125,6 +132,7 @@ class BackendInstallPlan:
     probe: Callable[[], bool]
     steps: tuple[InstallStep, ...]
     manual_hint: str
+    repins: tuple[str, ...] = ()
 
 
 # ── probes ───────────────────────────────────────────────────────────────────
@@ -543,7 +551,7 @@ def _remove_editable_shadow_step(pkg_name: str) -> InstallStep:
 # clone OVER it. If the clone rode floating master (the bug — issue #44)
 # the editable reinstall silently replaced the pinned tree with a
 # drifting one. Keep the two in lockstep when bumping.
-_ROBOSUITE_PIN = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b"  # master @ 2026-05-09
+_ROBOSUITE_PIN = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c"  # master @ 2026-08-06
 
 
 def _robosuite_clone_step(git: str, rs_dir: Path) -> InstallStep:
@@ -795,6 +803,7 @@ def _robocasa_kitchen_plan() -> BackendInstallPlan:
             f"touch {rc_dir}/robocasa/macros_private.py && "
             f"uv pip install --no-deps -e {rc_dir}"
         ),
+        repins=("robosuite",),
     )
 
 
@@ -1016,6 +1025,7 @@ def _robocasa_gr1_plan() -> BackendInstallPlan:
             f"touch {clone_dir}/robocasa/macros_private.py && "
             f"uv pip install --no-deps -e {clone_dir}"
         ),
+        repins=("robosuite",),
     )
 
 
@@ -1069,6 +1079,7 @@ def _libero_plan() -> BackendInstallPlan:
             ),
         ),
         manual_hint=(f"CC={cc} just sync --all-packages --group libero --inexact"),
+        repins=("robosuite",),
     )
 
 
@@ -1655,11 +1666,19 @@ def _vlabench_plan() -> BackendInstallPlan:
     clone_step = (
         f"[ -d {src}/.git ] || {git} clone --depth=1 https://github.com/OpenMOSS/VLABench.git {src}"
     )
-    # numpy-2-compatible sim deps VLABench needs at env-build time (dm_control
-    # renderer + open3d/mediapy for obs, gdown for the asset fetch). Loose (no
-    # pins) so uv resolves them against the workspace's numpy 2.x — VLABench's
-    # own setup pins numpy 1.25, which is why the editable install is --no-deps.
-    sim_deps = ["mujoco", "dm_control", "open3d", "mediapy", "gdown"]
+    # VLABench's dm_control integration is API-coupled to this MuJoCo pair.
+    # Newer loose resolution currently lands dm_control 1.0.44 + MuJoCo 3.11,
+    # which crashes at env construction (`MjModel.actuator_ctrladr` missing).
+    # Keep the rendering/asset helpers loose so they can resolve Python 3.12
+    # wheels against the workspace's numpy 2.x.
+    sim_deps = [
+        "mujoco==3.2.2",
+        "dm_control==1.0.22",
+        "open3d",
+        "mediapy",
+        "gdown",
+        "opencv-python",
+    ]
     return BackendInstallPlan(
         backend_id="vlabench",
         display_name=(
@@ -1759,6 +1778,7 @@ def _openarm_robosuite_plan() -> BackendInstallPlan:
             ),
         ),
         manual_hint="just sync --all-packages --group robocasa --inexact",
+        repins=("robosuite",),
     )
 
 
@@ -1822,6 +1842,48 @@ def _display_install_banner(plan: BackendInstallPlan) -> None:
     )
 
 
+def _assert_no_live_dependency_swap(plan: BackendInstallPlan) -> None:
+    """Refuse to re-pin a distribution this interpreter has already imported.
+
+    LIBERO needs ``robosuite==1.4`` while RoboCasa / OpenArm need ``>=1.5``,
+    and the two layouts are not merely different versions — 1.4 keeps its
+    mount models under ``robosuite.models.mounts``, 1.5 under
+    ``robosuite.models.bases``. Swapping the on-disk package mid-process
+    therefore leaves ``robosuite.models.base`` cached from the OLD tree while
+    any fresh import resolves against the NEW one, so ``MujocoXML`` exists
+    twice and every ``isinstance`` across the seam fails::
+
+        XMLError: <class 'robosuite.models.mounts.rethink_mount.RethinkMount'>
+                  is not a MujocoXML instance.
+
+    Flushing ``sys.modules`` (which the post-install path already does) cannot
+    repair this: dependents imported earlier — ``libero``, ``lerobot.envs``,
+    and any env object already constructed — keep hard references to classes
+    from the old tree, and nothing re-binds them short of a new interpreter.
+
+    Reaching this function means the probe already failed, i.e. the installed
+    version is NOT the one this backend wants. So an imported ``repins``
+    module is exactly the corrupting case, and the only safe answer is to fail
+    before mutating the venv rather than after.
+
+    Raises:
+        ROSConfigError: When a ``plan.repins`` module is already imported.
+    """
+    import sys
+
+    live = [mod for mod in plan.repins if mod in sys.modules]
+    if not live:
+        return
+    raise ROSConfigError(
+        f"{plan.backend_id} needs a different {', '.join(live)} than the one "
+        f"installed, but this process has already imported it. Installing now "
+        f"would swap the package underneath live objects and produce confusing "
+        f"duplicate-class errors (e.g. 'X is not a MujocoXML instance') rather "
+        f"than a clean failure.\n"
+        f"Install it first, then re-run in a fresh process:\n  " + plan.manual_hint
+    )
+
+
 def ensure_backend_deps(backend_id: str) -> None:
     """Install ``backend_id`` deps if missing, after the user confirms.
 
@@ -1851,6 +1913,7 @@ def ensure_backend_deps(backend_id: str) -> None:
     plan = get_plan(backend_id)
     if plan.probe():
         return
+    _assert_no_live_dependency_swap(plan)
 
     # Serialise the prompt + install so concurrent callers from the env-
     # builder + policy-builder threads in ``SimRunner._build_env_and_policy``

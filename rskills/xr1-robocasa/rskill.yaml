@@ -1,0 +1,62 @@
+schema_version: "0.1"
+name: "OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4"
+version: "0.1.0"
+license: "apache-2.0"
+role: "s1"
+kind: "vla"
+model_family: "xr1"
+evaluated_tasks: ["robocasa"]
+
+embodiment_tags: ["panda_mobile"]
+sensors_required:
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera1"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera2"
+    min_width: 256
+    min_height: 256
+  - modality: "rgb"
+    vla_feature_key: "observation.images.camera3"
+    min_width: 256
+    min_height: 256
+actuators_required:
+  - kind: "joint_position"
+    control_mode_semantics:
+      mode: "delta"
+
+runtime: "pytorch"
+quantization:
+  dtype: "int4"
+  backend: "pytorch"
+weights_uri: "hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4"
+image_preprocessing:
+  flip_180: false
+state_contract:
+  dim: 8
+chunk_size: 10
+n_action_steps: 10
+latency_budget:
+  per_chunk_ms: 120000.0
+
+policy_extras:
+  xr1_profile: "robocasa_mg"
+  replan_steps: 10
+  crop_ratio: 0.95
+  prequantized_nf4: true
+
+paper_url: "https://arxiv.org/abs/2607.15330"
+source_repo: "hf://XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa@8550c4915b83bd10ec838214dcfc2d9dc0e3e7ff"
+description: >
+  Apache-2.0 XR-1 RoboCasa benchmark checkpoint. The OpenRAL adapter runs
+  Xiaomi's pinned Transformers custom code in an isolated sidecar, supplies
+  three 256x256 views plus seven arm joints and one gripper value, and replays
+  ten 7-D delta-EEF actions per query.
+
+actions: ["pick", "place", "open", "close"]
+objects: ["kitchen_object"]
+scenes: ["kitchen"]
+action_contract:
+  dim: 7
+  representation: "delta_ee_6d_plus_gripper"

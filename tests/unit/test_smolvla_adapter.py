@@ -6,10 +6,9 @@ interface that ``ChunkedExecutor`` and ``SmolVLAAdapter`` require.
 
 Test strategy
 -------------
-- ``TestChunkedExecutor``: exercises the state machine (reset, prefetch
-  trigger, step counting) using a NullPolicy whose ``select_action`` is
-  instrumented to count calls.  Asserts the prefetch fires exactly when
-  expected and that background errors propagate cleanly.
+- ``TestChunkedExecutor``: exercises executor-owned chunk ordering, reset,
+  prefetch timing, and background error propagation. The policy returns
+  numbered chunks so any duplicated or reordered action fails visibly.
 - ``TestSmolVLAAdapterLifecycle``: exercises the full Skill lifecycle
   (configure → activate → step → deactivate → shutdown) by monkey-patching
   the lerobot imports so ``on_load_weights`` doesn't hit the network.
@@ -64,38 +63,44 @@ class _FakeConfig:
 class _NullPolicy:
     """Minimal lerobot policy stub for unit tests.
 
-    ``predict_action_chunk`` returns a (1, chunk_size, n_dof) tensor whose
-    chunk axis is stamped with a monotonically increasing chunk id, so tests
-    can assert WHICH inference produced each action the executor hands out.
-    ``select_action`` (the legacy single-step interface) is instrumented too,
+    ``predict_action_chunk`` returns numbered chunks: inference 1 contains
+    actions 100, 101, 102…, inference 2 contains 200, 201… Numbering EVERY
+    step (rather than stamping the whole chunk with one id) is what makes
+    intra-chunk reordering and duplication visible — a chunk filled with a
+    single value hides both.
+
+    ``select_action`` (the legacy single-step interface) is counted separately
     so tests can assert the executor never falls back to it.
     """
 
     def __init__(self, chunk_size: int = 10, n_dof: int = 6) -> None:
         self.config = _FakeConfig(chunk_size=chunk_size, n_dof=n_dof)
-        self._call_count = 0  # predict_action_chunk invocations
+        self._inference_count = 0
         self._select_action_calls = 0
-        self._reset_calls = 0
+        self._reset_count = 0
 
     def reset(self) -> None:
-        """Count resets (the executor must never call this from prefetch)."""
-        self._reset_calls += 1
+        """Record resets; the executor must never call this from prefetch."""
+        self._reset_count += 1
 
     def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Return a (1, chunk_size, n_dof) tensor filled with the chunk id.
-
-        Args:
-            batch: Ignored (no real inference performed).
-        """
-        self._call_count += 1
-        return torch.full(
-            (1, self.config.n_action_steps, self.config.n_dof), float(self._call_count)
+        """Return one numbered ``(1, steps, n_dof)`` chunk."""
+        del batch
+        self._inference_count += 1
+        values = (
+            torch.arange(
+                self.config.n_action_steps,
+                dtype=torch.float32,
+            )
+            + self._inference_count * 100
         )
+        return values.view(1, -1, 1).expand(1, -1, self.config.n_dof).clone()
 
     def select_action(self, batch: dict[str, Any]) -> torch.Tensor:
-        """Legacy single-step interface — the executor must not use it."""
+        """Legacy single-step surface — kept warmup-compatible, but counted:
+        the chunk executor must never route through it."""
         self._select_action_calls += 1
-        return torch.zeros(1, self.config.n_dof)
+        return self.predict_action_chunk(batch)[:, 0]
 
 
 def _make_world_state(n_joints: int = 6) -> WorldState:
@@ -166,22 +171,24 @@ class TestChunkedExecutor:
         ex = ChunkedExecutor(p, prefetch_at=2)
         ex.start()
         batch: dict[str, Any] = {}
-        ex.select_action(batch)
-        assert p._call_count == 1
+        action = ex.select_action(batch)
+        assert p._inference_count == 1
+        assert action[0, 0].item() == 100
 
-    def test_subsequent_calls_pop_executor_buffer(self) -> None:
-        """Calls 2..chunk_size pop the executor buffer — no policy calls at all.
+    def test_subsequent_calls_drain_executor_owned_chunk(self) -> None:
+        """Calls 2..chunk_size drain the executor buffer IN ORDER — no new inference.
 
-        prefetch_at=0 keeps the background pre-fetch out of the tested window.
+        prefetch_at=0 keeps the background pre-fetch out of the tested window,
+        so the exact action sequence proves the buffer served every step.
         """
         chunk_size = 8
         p = _NullPolicy(chunk_size=chunk_size)
         ex = ChunkedExecutor(p, prefetch_at=0)
         ex.start()
         batch: dict[str, Any] = {}
-        for _ in range(chunk_size):
-            ex.select_action(batch)
-        assert p._call_count == 1  # exactly one chunk inference for the whole chunk
+        got = [int(ex.select_action(batch)[0, 0].item()) for _ in range(chunk_size)]
+        assert got == list(range(100, 100 + chunk_size))
+        assert p._inference_count == 1  # one chunk inference for the whole chunk
         assert p._select_action_calls == 0  # legacy per-step interface unused
 
     def test_lazy_batch_only_materialised_on_inference(self) -> None:
@@ -217,21 +224,20 @@ class TestChunkedExecutor:
         ex.start()
         batch: dict[str, Any] = {}
 
-        first_chunk = [ex.select_action(batch) for _ in range(chunk_size)]
-        # Every action of chunk 1 must come from inference #1 — the old bug
-        # served the tail of the chunk from a racing second inference.
-        assert all(float(a[0, 0]) == 1.0 for a in first_chunk)
+        first_chunk = [int(ex.select_action(batch)[0, 0].item()) for _ in range(chunk_size)]
+        # Every action of chunk 1 must come from inference #1, IN ORDER — the
+        # old bug served the tail of the chunk from a racing second inference.
+        assert first_chunk == list(range(100, 100 + chunk_size))
 
         # Crossing into chunk 2 consumes the pre-fetched result: total
         # inferences == 2 (one per chunk), and the policy was never reset.
-        nxt = ex.select_action(batch)
-        assert float(nxt[0, 0]) == 2.0
-        assert p._call_count == 2
-        assert p._reset_calls == 0
+        assert int(ex.select_action(batch)[0, 0].item()) == 200
+        assert p._inference_count == 2
+        assert p._reset_count == 0
         ex.stop()
 
     def test_reset_clears_state(self) -> None:
-        """reset() must clear the buffer and reset the policy."""
+        """reset() clears the owned buffer and resets the policy once."""
         p = _NullPolicy(chunk_size=5)
         ex = ChunkedExecutor(p, prefetch_at=0)
         ex.start()
@@ -240,7 +246,7 @@ class TestChunkedExecutor:
         assert len(ex._buffer) == 3
         ex.reset()
         assert len(ex._buffer) == 0
-        assert p._reset_calls == 1
+        assert p._reset_count == 1
 
     def test_stop_is_idempotent(self) -> None:
         """stop() must be callable multiple times without error."""
@@ -250,10 +256,44 @@ class TestChunkedExecutor:
         ex.stop()
         ex.stop()  # second stop must not raise
 
+    def test_prefetch_is_clamped_for_small_chunks(self) -> None:
+        """A default larger than the checkpoint chunk cannot silently disable prefetch."""
+        ex = ChunkedExecutor(_NullPolicy(chunk_size=4), prefetch_at=20)
+        assert ex._prefetch_at == 3
+
+    def test_zero_prefetch_waits_for_fresh_boundary_batch(self) -> None:
+        """Zero disables background inference instead of capturing a one-step-stale batch."""
+        policy = _NullPolicy(chunk_size=2)
+        ex = ChunkedExecutor(policy, prefetch_at=0)
+        ex.start()
+
+        assert [int(ex.select_action({})[0, 0]) for _ in range(2)] == [100, 101]
+        assert policy._inference_count == 1
+        assert int(ex.select_action({})[0, 0]) == 200
+        assert policy._inference_count == 2
+
+    def test_negative_prefetch_is_rejected(self) -> None:
+        """Negative queue depths are configuration errors."""
+        with pytest.raises(ROSConfigError, match="prefetch_at"):
+            ChunkedExecutor(_NullPolicy(), prefetch_at=-1)
+
     def test_background_error_propagates_as_ros_runtime_error(self) -> None:
-        """If the pre-fetch thread raises, the next blocking call must re-raise."""
+        """If the pre-fetch thread raises, the next foreground call must re-raise.
+
+        The failure is raised by the policy on the real background path rather
+        than poked into the executor's private ``_bg_error``, so this exercises
+        the actual propagation seam (CLAUDE.md §1.11).
+        """
+
+        class _FailingPolicy(_NullPolicy):
+            def predict_action_chunk(self, batch: dict[str, Any]) -> torch.Tensor:
+                # Inference 1 is the foreground chunk; fail the prefetch (2nd).
+                if self._inference_count == 1:
+                    raise ValueError("simulated GPU OOM")
+                return super().predict_action_chunk(batch)
+
         chunk_size = 4
-        p = _NullPolicy(chunk_size=chunk_size)
+        p = _FailingPolicy(chunk_size=chunk_size)
         ex = ChunkedExecutor(p, prefetch_at=2)
         ex.start()
         batch: dict[str, Any] = {}
@@ -261,12 +301,6 @@ class TestChunkedExecutor:
         # Drain the whole chunk so the next call must consume the BG result.
         for _ in range(chunk_size):
             ex.select_action(batch)
-
-        # Inject a pre-baked error into the executor state (simulates BG failure).
-        ex._bg_event.set()
-        ex._bg_error = ValueError("simulated GPU OOM")
-        ex._bg_pending = True
-        ex._buffer.clear()
 
         with pytest.raises(ROSRuntimeError, match="simulated GPU OOM"):
             ex.select_action(batch)
@@ -287,6 +321,28 @@ class TestChunkedExecutor:
         # Allow the daemon thread to start.
         time.sleep(0.05)
         assert ex._bg_thread is not None
+        ex.stop()
+
+    def test_prefetch_preserves_chunk_order_without_resetting_policy(self) -> None:
+        """Background inference cannot reset, duplicate, or reorder foreground actions.
+
+        The companion to ``test_prefetch_triggers_background_thread``: that one
+        proves the thread launches, this one proves what it hands back is still
+        the right sequence. With prefetch ACTIVE, the whole of chunk 1 must be
+        served in order and the boundary must hand over chunk 2's first action —
+        not a duplicate, not a reordered pop, not a re-inference.
+        """
+        chunk_size = 6
+        p = _NullPolicy(chunk_size=chunk_size)
+        ex = ChunkedExecutor(p, prefetch_at=2)
+        ex.start()
+        batch: dict[str, Any] = {}
+
+        got = [int(ex.select_action(batch)[0, 0].item()) for _ in range(chunk_size + 1)]
+        assert got == [100, 101, 102, 103, 104, 105, 200]
+        assert p._inference_count == 2
+        assert p._reset_count == 0
+        assert p._select_action_calls == 0
         ex.stop()
 
 
@@ -519,8 +575,8 @@ class TestChunkedExecutorChunkFn:
         ex.start()
         ex.select_action({})
         ex.reset()
-        assert p._reset_calls == 1
-        assert p._call_count == 0  # producer used, not policy.predict_action_chunk
+        assert p._reset_count == 1
+        assert p._inference_count == 0  # producer used, not policy.predict_action_chunk
 
     def test_stop_waits_for_running_prefetch(self) -> None:
         started = threading.Event()

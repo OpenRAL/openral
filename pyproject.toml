@@ -71,9 +71,8 @@ openral-dataset = { workspace = true } # reason: rosbag2 ↔ LeRobotDataset v3 b
 openral-state-adapter = { workspace = true } # reason: layout adapter registry — per-checkpoint state-vector assemblers
 
 # robosuite is pinned to the ARISE-Initiative master branch at commit
-# 232ce7d ("synchronize rendering context for envs", 2026-05-09).
-# This commit is 1 commit ahead of the v1.5.2 PyPI tag and is what
-# `_robocasa_kitchen_plan` already installs editable at runtime.
+# 5ce6643 (2026-08-06). RoboCasa 1.0.1 passes `load_model_on_init`,
+# which the previous 232ce7d pin did not accept.
 # Putting the pin here so the lockfile honestly reflects what we ship,
 # and so `uv sync --group robocasa` lands directly on the right tree
 # (no version mismatch to swap). See the explanatory comment on the
@@ -89,7 +88,7 @@ openral-state-adapter = { workspace = true } # reason: layout adapter registry �
 # the same SHA so they don't overwrite this `uv sync` install with
 # floating master — issue #44), regenerate the lockfile, and re-run
 # `just sim-audit robocasa_pnp` to confirm no regression.
-robosuite = { git = "https://github.com/ARISE-Initiative/robosuite.git", rev = "232ce7d4a6ed89c949a9aba024a05c8c32fdd08b" }
+robosuite = { git = "https://github.com/ARISE-Initiative/robosuite.git", rev = "5ce6643f3092639d08f7b0f90ed1c6a84f50552c" }
 
 [dependency-groups]
 dev = [
@@ -231,8 +230,7 @@ robocasa = [
     # pinned commit (see `[tool.uv.sources] robosuite = { git = ... }`
     # below). We pin `>=1.5.2` here so the resolver still satisfies the
     # RoboCasa constraint, but the `tool.uv.sources` override is what
-    # actually selects the install target: commit `232ce7d`, which is
-    # one commit beyond the v1.5.2 PyPI tag.
+    # actually selects the install target: commit `5ce6643`.
     #
     # Why the git pin (not just `robosuite==1.5.2` from PyPI):
     #   1. PyPI 1.5.2 was cut with a `setup.py` that hard-pins
@@ -240,8 +238,7 @@ robocasa = [
     #      `numpy<2.0`, which is incompatible with the workspace-wide
     #      `numpy>=2.0.0,<2.6.0` pulled by `lerobot>=0.5.1`. uv refuses
     #      to lock that combination.
-    #   2. The master-branch `setup.py` (commit 232ce7d, "synchronize
-    #      rendering context for envs") moved mink to `extras_require`,
+    #   2. The master-branch `setup.py` moved mink to `extras_require`,
     #      so a workspace that doesn't request the `mink` extra
     #      resolves cleanly with the rest of the numpy>=2 ecosystem.
     #      `_robocasa_kitchen_plan` then installs `mink==0.0.5
