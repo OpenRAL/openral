@@ -331,7 +331,7 @@ class _SmolVLAAdapter:
                 "needs all cameras (partial NVMM tiers are unsupported)."
             )
         if self._nvmm_encoder is None:
-            from openral_pro_trt.nvmm_vision_encoder import (  # type: ignore[import-not-found]
+            from openral_pro_trt.nvmm_vision_encoder import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
                 NvmmVisionEncoder,
             )
 
@@ -346,7 +346,7 @@ class _SmolVLAAdapter:
                 n_cameras=self._nvmm_encoder.n_cameras,
                 model_id=sampler.vision_rskill_id,
             )
-        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found]
+        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found, import-untyped, unused-ignore]
             NvBufSurfaceHandle,
         )
 
