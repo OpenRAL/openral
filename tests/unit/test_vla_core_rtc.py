@@ -204,7 +204,7 @@ def test_build_chunk_executor_rtc_refuses_policy_without_processor() -> None:
 
 def test_build_chunk_executor_rtc_refuses_bnb_quantized_policy() -> None:
     """RTC guidance backpropagates through the denoiser — nf4 weights cannot."""
-    import bitsandbytes as bnb
+    bnb = pytest.importorskip("bitsandbytes", reason="install the sim group: just sync --group sim")
     import torch
 
     class _QuantizedFlowPolicy(torch.nn.Module, _FlowPolicyStub):
