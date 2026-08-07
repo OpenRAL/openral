@@ -547,6 +547,11 @@ def run_inference(
         extras["rtc_delay"] = int(call_kwargs["inference_delay"] or 0)
     with (
         inference_span(chunk_index=chunk_index, kind=kind, **extras) as span,
+        # NOT ``torch.inference_mode()``: lerobot's RTC guidance calls
+        # ``autograd.grad`` inside ``RTCProcessor.denoise_step``, which raises on
+        # inference-mode tensors. ``no_grad`` still suppresses graph building for
+        # every non-RTC adapter. Pinned by
+        # tests/sim/test_smolvla_rtc.py::test_inference_mode_would_break_the_guidance.
         torch.no_grad(),
     ):
         started_ns = perf_counter_ns()
