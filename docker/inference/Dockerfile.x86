@@ -236,9 +236,42 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --group sim --group omdet --group lingbot \
     && uv pip install --python /workspace/.venv/bin/python onnxruntime opencv-python
 
-# Copy the colcon-buildable trees AFTER the venv resolve so a packages/ tweak
-# doesn't bust the (much larger) Python dep layer. `cpp/` carries the C++ safety
-# kernel + the opentelemetry_cpp_vendor package the kernel links against.
+# ── opentelemetry_cpp_vendor, on its own cache line ──────────────────
+#
+# This package clones and builds opentelemetry-cpp from source via
+# `ExternalProject_Add`, and it is the single most expensive thing in the image
+# after the Python deps: 154s of the 211.7s colcon step, measured on run
+# 31244132105. Worse, it is a *serial gate* — `openral_safety_kernel` links its
+# CMake targets and cannot start until it finishes, so the vendor build and the
+# kernel together accounted for 210 of those 211.7 seconds while the other 14
+# packages finished in parallel by t=92s.
+#
+# It is also the most stable thing in the image: `cpp/opentelemetry_cpp_vendor/`
+# is two files, and `cpp/` as a whole changed in 3 of the last 60 commits.
+# Copying it alone and building it alone gives it a cache key that a `packages/`
+# or `python/` diff cannot invalidate, which takes it off the critical path for
+# essentially every PR.
+#
+# It has no in-repo dependencies (`package.xml`: ament_cmake + curl), so it is
+# safe to build before any other tree is present. The kernel is NOT built here:
+# it also depends on `openral_msgs`, which lives under `packages/`.
+COPY cpp/opentelemetry_cpp_vendor/ cpp/opentelemetry_cpp_vendor/
+
+RUN bash -lc 'set -eo pipefail \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && set -u \
+    && colcon build --merge-install \
+        --base-paths cpp \
+        --packages-select opentelemetry_cpp_vendor \
+        --cmake-args -DCMAKE_C_COMPILER=/usr/bin/gcc \
+                     -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+                     -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log'
+
+# The remaining colcon-buildable trees. Copied AFTER the venv resolve so a
+# packages/ tweak doesn't bust the (much larger) Python dep layer. `cpp/` carries
+# the C++ safety kernel (and re-lands the vendor sources copied above, which is
+# a no-op for the already-installed vendor prefix).
 COPY packages/ packages/
 COPY cpp/ cpp/
 
@@ -252,11 +285,19 @@ COPY benchmarks/ benchmarks/
 COPY tools/ tools/
 COPY scenes/ scenes/
 
-# Build every ROS 2 + C++ package the deploy image needs in one shot. The set
-# mirrors `just ros2-build` so the on-host dev loop and the image stay aligned —
-# including openral_perception_ros (the gstreamer-free ros_image_detector_node +
+# Build the remaining ROS 2 + C++ packages the deploy image needs. Together with
+# the opentelemetry_cpp_vendor build above this is 16 packages: the
+# deploy-relevant subset of `just ros2-build` (which additionally builds the
+# HALs and bringup packages for robots this image does not target), kept aligned
+# with it so the on-host dev loop and the image agree on the shared packages.
+# Includes openral_perception_ros (the gstreamer-free ros_image_detector_node +
 # reward_monitor_node) and the C++ safety kernel (binary lands at
 # /workspace/install/lib/openral_safety_kernel/safety_kernel_node).
+#
+# `source /workspace/install/setup.bash` overlays the vendor prefix built in the
+# earlier layer so `openral_safety_kernel` finds its opentelemetry-cpp CMake
+# targets. It is sourced BEFORE `set -u` because colcon's generated setup
+# scripts reference unbound variables.
 #
 # `Python3_EXECUTABLE=/workspace/.venv/bin/python` is essential so the
 # ament-python packages resolve openral_* + structlog against the venv, not the
@@ -265,11 +306,11 @@ COPY scenes/ scenes/
 # runtime stage copies install/ over and cross-tree symlinks would dangle.
 RUN bash -lc 'set -eo pipefail \
     && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && source /workspace/install/setup.bash \
     && set -u \
     && colcon build --merge-install \
         --base-paths packages cpp \
         --packages-select openral_msgs \
-                          opentelemetry_cpp_vendor \
                           openral_hal_so100 \
                           openral_hal_galaxea_a1 \
                           openral_hal_openarm \
