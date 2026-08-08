@@ -2059,6 +2059,79 @@ def assert_ros2_packages_discoverable(
     )
 
 
+def _preflight_scene_assets(config: Path | None) -> None:
+    """Provision the scene's sim backend BEFORE ``ros2 launch``.
+
+    RoboCasa's first run clones the fork and downloads ~11 GB of kitchen
+    assets. Both steps live in ``openral_sim.backends.robocasa._build_robocasa_sim``,
+    which the HAL calls from ``on_configure`` — a callback that
+    ``tools/lifecycle_autostart.py`` bounds at 300 s, while the nav2 palette
+    re-seed helper alongside it waits only 120 s for ``/navigate_to_pose``.
+
+    On a fresh machine that race is unwinnable. The download runs for tens of
+    minutes, so both helpers time out and exit non-zero: the HAL never reaches
+    ACTIVE, and the reasoner's palette permanently loses
+    ``navigate_to_pose`` — for a scene whose whole point is find → navigate →
+    grab. Nothing reports the actual cause; you get two dead helper processes
+    and a quietly reduced skill palette while the download carries on in the
+    background.
+
+    Doing it here moves that work in front of the launch, where it is an
+    ordinary foreground download against a TTY rather than hidden work inside
+    a lifecycle callback on a deadline. It also puts RoboCasa's asset LICENSE
+    banner and its ``typer.confirm()`` somewhere the operator can actually see
+    and answer; inside the ROS node the prompt had no reachable terminal.
+
+    Idempotent and near-free once warm: both helpers short-circuit on a
+    readiness sentinel, so later launches pay two ``stat()`` calls. Advisory
+    by design — a provisioning failure is reported and the launch continues,
+    because the HAL will retry and raise its own typed error with the full
+    upstream context.
+
+    Args:
+        config: DeployScene YAML path, or None when the caller resolved the
+            scene some other way (then this is a no-op).
+    """
+    if config is None:
+        return
+    try:
+        from openral_core import DeployScene, load_scene_strict
+    except ImportError:  # pragma: no cover - openral_core is a hard dep
+        return
+    try:
+        scene_id = load_scene_strict(str(config), DeployScene).scene.id
+    except (ROSConfigError, FileNotFoundError):
+        # Scene errors are the launch resolver's to report, not ours.
+        return
+
+    # Only the RoboCasa family provisions out-of-tree assets today. Mirrors
+    # the kitchen-vs-GR1 split in `_build_robocasa_sim`.
+    if not scene_id.startswith("robocasa"):
+        return
+    backend_id = "robocasa_gr1" if scene_id.startswith("robocasa/gr1/") else "robocasa_kitchen"
+
+    try:
+        from openral_sim._assets import ensure_robocasa_assets
+        from openral_sim._deps import ensure_backend_deps
+    except ImportError:
+        # No openral_sim in this env — the HAL will fail with its own
+        # actionable error rather than us guessing at one.
+        return
+
+    _console.print(
+        f"[dim]preflight: provisioning {backend_id} (first run clones the fork "
+        "and downloads ~11 GB of assets; cached afterwards)[/dim]"
+    )
+    try:
+        ensure_backend_deps(backend_id)
+        ensure_robocasa_assets()
+    except Exception as exc:  # reason: advisory — the HAL retries and raises typed
+        _console.print(
+            f"[yellow]preflight: could not provision {backend_id} ({exc}); "
+            "continuing — the HAL will retry at on_configure[/yellow]"
+        )
+
+
 def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow — split would obscure the prompt → install → re-probe contract
     *,
     repo_root: Path,
@@ -2286,7 +2359,7 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
         _console.print(f"  to enable the dropped skill(s): {shlex.join(install_cmd)}")
 
 
-def deploy_sim_command(
+def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print → preflight → launch flow; splitting would scatter the flag contract
     config: Path = typer.Option(  # reason: typer Option idiom
         ...,
         "--config",
@@ -2766,6 +2839,12 @@ def deploy_sim_command(
     except ROSConfigError as exc:
         _console.print(f"[red]config error:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+    # Provision the scene's sim backend now, not inside the HAL's
+    # ``on_configure``. Deliberately AFTER the overlay check above, so a
+    # missing ``openral_rskill_ros`` fails in a second instead of after an
+    # 11 GB download. See :func:`_preflight_scene_assets`.
+    _preflight_scene_assets(config)
 
     _reap_orphans_with_log()
 
