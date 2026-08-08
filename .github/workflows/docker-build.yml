@@ -17,6 +17,23 @@ name: docker-build
 # down by a registry-backed BuildKit layer cache on GHCR ($IMAGE:buildcache):
 # master pushes write it, every run reads it, so a typical PR reuses the
 # CUDA/apt/venv layers and only re-runs the layers its diff invalidates.
+#
+# ── Where the time actually goes ─────────────────────────────────────
+# Forensics on run 31244132105 (a PR build, 1058.9s in `docker buildx build`)
+# found the cost was mostly NOT cache misses — apt, the uv installer and the
+# whole runtime-base stage all hit cache:
+#   474.5s (45%)  `--load` exporting the 7.9 GB image to a tarball and
+#                 replaying it into dockerd, under the docker-container driver
+#   211.7s (20%)  colcon, of which 210s was opentelemetry_cpp_vendor and the
+#                 safety kernel it serially gates
+#   154.4s (15%)  pulling 4.59 GB of GHCR cache layers on steps that HIT cache
+#   115.3s (11%)  uv sync, re-downloading 4.42 GiB of wheels
+#    69.4s  (7%)  COPY --from=builder /workspace
+# The first, second and fourth are addressed by the containerd image store
+# below and by the layer split in docker/inference/Dockerfile.x86.
+#
+# Note what is NOT on that list: pushing to GHCR. The push step is gated on
+# `github.event_name == 'push'`, so it does not run on a PR at all.
 on:
   workflow_dispatch:
   pull_request:
@@ -75,13 +92,49 @@ jobs:
           docker image prune -af || true
           df -h /
 
+      # Switch dockerd to the containerd image store. This is what lets us drop
+      # the `docker-container` buildx driver, and it is the single biggest win
+      # in this workflow.
+      #
+      # With `docker-container`, buildkit runs in its own container with its own
+      # store, so `--load` has to serialize the finished image to a tarball and
+      # replay it into dockerd. On run 31244132105 that cost 474.5s of a 1058.9s
+      # build — 45% of the total — split as `exporting layers 278.1s` +
+      # `sending tarball 196.3s`, to move 7.9 GB that buildkit had *just*
+      # finished assembling. It is paid in full on every run, including a
+      # hypothetical 100% cache hit, which is why cache tuning alone could never
+      # get this workflow under ~11 minutes.
+      #
+      # With the containerd store, the built image lands directly in the store
+      # the daemon already reads from, so there is no export and no import. The
+      # historical reason for `docker-container` — "the default docker driver
+      # cannot export a registry cache" — is exactly what the containerd store
+      # lifts, so the registry layer cache below keeps working.
+      #
+      # Restarting dockerd discards any previously pulled images; nothing has
+      # been pulled at this point, and `Free runner disk` above already pruned.
+      - name: Enable the containerd image store
+        run: |
+          sudo mkdir -p /etc/docker
+          printf '%s\n' '{ "features": { "containerd-snapshotter": true } }' \
+            | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          # Fail loudly rather than silently falling back to the overlay2 store
+          # and the tarball round-trip this step exists to remove.
+          docker info -f '{{ .DriverStatus }}'
+          docker info -f '{{ .DriverStatus }}' | grep -q 'io.containerd.snapshotter' || {
+            echo "::error::containerd image store did not come up; refusing to build"
+            exit 1
+          }
+
       # Registry-backed layer cache: runners are ephemeral, so without this
       # every run re-pulls the CUDA base, re-apt-installs ROS Jazzy, and
-      # re-resolves the full torch venv from zero (~30+ min). The docker-
-      # container driver is required — the default docker driver cannot
-      # export a registry cache.
+      # re-resolves the full torch venv from zero (~30+ min).
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        with:
+          # The daemon's own buildkit, writing straight to the containerd store.
+          driver: docker
 
       # Cache reads need auth on pull_request runs too (the GHCR package may
       # be private); GITHUB_TOKEN carries packages:read for same-repo PRs.
@@ -99,9 +152,22 @@ jobs:
       - name: Build openral:x86 (GStreamer-free)
         run: |
           cache_to=""
-          if [ "${{ github.event_name }}" = "push" ]; then
-            cache_to="--cache-to type=registry,ref=$IMAGE:buildcache,mode=max"
-          fi
+          case "${{ github.event_name }}" in
+            push)
+              cache_to="--cache-to type=registry,ref=$IMAGE:buildcache,mode=max"
+              ;;
+            workflow_dispatch)
+              # Exercise the registry cache EXPORT path on demand, against a
+              # scratch ref that master never reads. This is how you validate a
+              # change to the build driver or the image store before it reaches
+              # master, where a broken exporter would fail the publish build.
+              cache_to="--cache-to type=registry,ref=$IMAGE:buildcache-dispatch,mode=max"
+              ;;
+          esac
+          # `--load` is a no-op under the docker driver (the build already
+          # writes into the daemon's containerd store); it is kept so the
+          # command still means the same thing if the driver is ever changed
+          # back.
           # shellcheck disable=SC2086 -- intentional word-splitting of $cache_to.
           docker buildx build --progress=plain \
             -f docker/inference/Dockerfile.x86 \
@@ -109,12 +175,16 @@ jobs:
             $cache_to \
             -t openral:x86 --load .
 
-      # `--load` copies the image out of the buildkit container into dockerd,
-      # so both stores briefly hold it. Drop the buildkit copy before the
-      # smoke tests to keep the tight runner disk from filling.
-      - name: Reclaim buildkit store
+      # Under the docker driver there is no second copy of the image to reclaim
+      # — that was the `docker-container` tarball round-trip. What is left is
+      # buildkit's own build cache (intermediate layers, the uv cache mount),
+      # which is dead weight once the image exists and is worth dropping on a
+      # runner whose disk is this tight. The image itself lives in the
+      # containerd store and is unaffected.
+      - name: Reclaim build cache
         run: |
           docker buildx prune -af || true
+          docker image ls
           df -h /
 
       # GStreamer-free deploy smoke: gi absent; cv2 / feetech / onnxruntime /
