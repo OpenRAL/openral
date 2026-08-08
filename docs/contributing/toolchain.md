@@ -209,7 +209,7 @@ openral detect                   # auto-detect robot + sensors + GPU; write a fu
 openral connect --robot so100    # open a HAL connection (only so100 wired today)
 openral calibrate camera --sensor S  # ros2 camera_calibration helper
 openral install sim              # post-install opt-in dep groups
-openral install ros              # re-run scripts/bootstrap_ubuntu.sh (sudo)
+openral install ros              # run the packaged bootstrap_ubuntu.sh (sudo); no clone needed
 openral install list             # show every known dep group
 openral rskill install <hub-id>  # download an rSkill from HF Hub (license-gated)
 openral rskill list              # list installed rSkills

@@ -195,7 +195,7 @@ Opt-in extras (installed into the same managed venv):
   openral install behavior-groot  # BEHAVIOR-1K GR00T + OmniGibson sidecar wire
   openral install list            # show every known group
 
-System bootstrap (needs sudo + clones the openral repo):
+System bootstrap (needs sudo; no clone required — the script ships in the wheel):
   openral install ros             # ROS 2 + libusb + udev (apt)
 
 Notes:
