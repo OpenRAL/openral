@@ -162,3 +162,76 @@ def test_bh_cli_import_is_light() -> None:
         "Eval adapters must keep their torch / mujoco / gym imports inside "
         "`_run()` and registered factories, not at module top level."
     )
+
+
+def test_bh_sim_run_dry_run_rejects_incompatible_embodiment() -> None:
+    """`--dry-run` must run the embodiment gate a real rollout hits.
+
+    Regression: the dry-run branch returned before ``SimRunner.activate``'s
+    :func:`openral_sim.sim_runner._check_rskill_compatibility` call, so a
+    franka_panda rSkill paired with the pusht scene printed a happy plan and
+    exited 0 — making ``--dry-run`` useless as a CI wiring check.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "sim",
+            "run",
+            "--config",
+            "scenes/sim/pusht.yaml",
+            "--rskill",
+            "rskills/smolvla-libero",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "compat error" in result.output
+    assert "embodiment" in result.output.lower()
+
+
+def test_bh_sim_run_dry_run_accepts_scene_render_resolution_bump() -> None:
+    """A scene rendering above robot.yaml's nominal size must still pass.
+
+    ``rskills/xr1-vlabench`` requires 480x480 while
+    ``robots/franka_panda/robot.yaml`` declares 256x256 cameras; the vlabench
+    scene renders at 480 and ``_check_rskill_compatibility`` syncs the sensor
+    intrinsics to the real render size before the gate. Guards against a
+    naive gate that reads robot.yaml alone and false-negatives here.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "sim",
+            "run",
+            "--config",
+            "scenes/sim/xr1_vlabench_select_fruit.yaml",
+            "--rskill",
+            "rskills/xr1-vlabench",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_bh_sim_run_rejects_non_vla_rskill_cleanly() -> None:
+    """A detector / reward / playbook rSkill has no model_family.
+
+    It must be refused with the same message ``openral benchmark run`` gives,
+    not a raw pydantic ``string_type`` error from ``VLASpec(id=None)``.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "sim",
+            "run",
+            "--config",
+            "scenes/sim/libero_spatial.yaml",
+            "--rskill",
+            "rskills/omdet-turbo-locator",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "no model_family" in result.output
+    assert "expects a VLA skill" in result.output
+    assert "string_type" not in result.output
