@@ -30,7 +30,7 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | Object detection + spatial lift | ✅ shipped — `RosImageObjectDetectorNode`, 2D→3D object lift, RT-DETR + OmDet-Turbo detector rSkills, GStreamer perception bus; LocateAnything-3B wired via VLM sidecar + `locate_in_view` on-demand tool; scene-VLM `kind:vlm` |
 | Geometric safety + watchdog | 🟡 in flight — chunk-rate safety pass-through + envelope checks (✅), deadman/E-stop forwarders + human-estop (✅ `openral_safety_watchdog` / `openral_human_estop`); self/world/voxel collision + OctoMap→voxel bridge in dev |
 | C++ safety kernel | 🟡 in flight — deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; sim/HIL gate + LTTng pending |
-| Org / publishing | 🟡 in flight — public repo + `master` branch protection ✅; PyPI trusted-publishing + GHCR images wired (`release-pypi.yml` / `release.yml`) but nothing published yet |
+| Org / publishing | 🟡 in flight — public repo + `master` branch protection ✅; PyPI trusted-publishing wired (`release-pypi.yml`) but nothing published yet. `release.yml` was dropped 2026-06-17; the GHCR release-image path returns as a purpose-built `release-image.yml` once ROS-in-CI infra exists |
 
 Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
 
