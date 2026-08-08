@@ -2221,3 +2221,77 @@ def test_repo_root_from_unresolvable_names_both_escape_hatches(
     message = str(excinfo.value)
     assert "OPENRAL_REPO_ROOT" in message
     assert "git clone" in message
+
+
+# ---------------------------------------------------------------------------
+# Scene-asset preflight (`_preflight_scene_assets`)
+#
+# RoboCasa's first run downloads ~11 GB inside the HAL's on_configure, which
+# tools/lifecycle_autostart.py bounds at 300 s and the nav2 palette re-seed
+# helper at 120 s. Provisioning ahead of `ros2 launch` takes that work out of
+# the deadline. Real in-tree scene YAMLs, no mocks (CLAUDE.md §1.11).
+# ---------------------------------------------------------------------------
+
+
+def test_scene_asset_preflight_is_a_noop_without_a_config() -> None:
+    """No scene, nothing to provision — and no import of the sim stack."""
+    deploy_sim._preflight_scene_assets(None)
+
+
+def test_scene_asset_preflight_skips_non_robocasa_scenes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the RoboCasa family provisions out-of-tree assets.
+
+    A non-RoboCasa deploy scene must not reach `ensure_backend_deps` at all;
+    importing the sim provisioner for, say, an Isaac scene would be wasted
+    work and could prompt about a download the scene never needs.
+    """
+    called: list[str] = []
+
+    def _boom(backend_id: str) -> None:
+        called.append(backend_id)
+        raise AssertionError("provisioner reached for a non-robocasa scene")
+
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _boom)
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+    assert called == []
+
+
+def test_scene_asset_preflight_provisions_the_kitchen_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `robocasa/<task>` scene provisions the kitchen fork before launch."""
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "openral_sim._deps.ensure_backend_deps",
+        lambda backend_id: seen.__setitem__("backend", backend_id),
+    )
+    monkeypatch.setattr(
+        "openral_sim._assets.ensure_robocasa_assets",
+        lambda: seen.__setitem__("assets", True),
+    )
+
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/robocasa_baguette.yaml"))
+
+    assert seen["backend"] == "robocasa_kitchen"
+    assert seen["assets"] is True
+
+
+def test_scene_asset_preflight_is_advisory_when_provisioning_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provisioning failure must not abort the launch.
+
+    The HAL retries at on_configure and raises a typed error carrying the
+    upstream stderr, which is a better message than anything we could
+    synthesise here — so the preflight warns and returns.
+    """
+
+    def _fail(backend_id: str) -> None:
+        raise RuntimeError("network is down")
+
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _fail)
+    # Must not raise.
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/robocasa_baguette.yaml"))
