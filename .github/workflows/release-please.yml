@@ -72,15 +72,41 @@ jobs:
 
       - name: summarise
         env:
-          RELEASED: ${{ steps.release.outputs.release_created }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASED: ${{ steps.release.outputs.releases_created || steps.release.outputs.release_created }}
           TAG: ${{ steps.release.outputs.tag_name }}
           PR: ${{ steps.release.outputs.pr }}
         run: |
           set -euo pipefail
           if [ "$RELEASED" = "true" ]; then
             echo "::notice::Released $TAG. release-pypi.yml publishes the 14 packages from this tag."
-          elif [ -n "$PR" ]; then
-            echo "::notice::Release PR is open and up to date. Merge it to cut the release."
-          else
-            echo "::notice::No releasable commits since the last tag (only hidden types: docs/test/style/ci/build/chore)."
+            exit 0
           fi
+          if [ -n "$PR" ]; then
+            echo "::notice::Release PR is open and up to date. Merge it to cut the release."
+            exit 0
+          fi
+
+          # No release and no PR. That is the normal outcome when nothing
+          # releasable merged — but it is ALSO exactly what a stuck release
+          # looks like, because release-please emits no outputs when it finds a
+          # merged release PR it cannot build a release from, and then declines
+          # to open a new one ("There are untagged, merged release PRs
+          # outstanding - aborting"). v0.3.0 sat in that state across two runs
+          # while this step cheerfully reported "no releasable commits", so the
+          # tag was never created and release-pypi.yml never ran.
+          #
+          # The two cases are indistinguishable from the action's outputs, so
+          # ask the repository instead: release-please labels its PR
+          # `autorelease: pending` when it opens it and swaps it to
+          # `autorelease: tagged` once the release exists. A MERGED PR still
+          # carrying `pending` is a release that stalled between those points.
+          stuck=$(gh pr list --state merged --label 'autorelease: pending' \
+                    --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>/dev/null || true)
+          if [ -n "$stuck" ]; then
+            echo "::error::release-please created no release, but a merged release PR is still pending:"
+            printf '%s\n' "$stuck" | sed 's/^/  /'
+            echo "::error::No tag was created, so release-pypi.yml will not run and nothing will publish. Read this job's log above for why the release could not be built — a component/branch mismatch is the usual cause. See docs/contributing/releasing.md."
+            exit 1
+          fi
+          echo "::notice::No releasable commits since the last tag (only hidden types: docs/test/style/ci/build/chore)."

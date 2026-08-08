@@ -194,3 +194,35 @@ def test_selective_tests_short_circuit_the_release_pr() -> None:
             f"the guard must emit {output!r} — the full-suite step is gated on "
             "full_run alone, the rest on any."
         )
+
+
+def test_release_please_reports_a_stalled_release() -> None:
+    """A release that stalls between merge and tag must fail the job, not pass.
+
+    release-please emits no outputs when it finds a merged release PR it cannot
+    build a release from, then declines to open a new one. That is byte-for-byte
+    the same output as "nothing releasable merged", so the summarise step cannot
+    tell them apart from the action alone — it has to ask the repository whether
+    a merged PR is still labelled ``autorelease: pending``. v0.3.0 sat stalled
+    across two runs while the step reported success, and no tag was ever cut.
+    """
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/release-please.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["release-please"]["steps"]
+    summarise = next(s for s in steps if s.get("name") == "summarise")
+    run = summarise["run"]
+
+    assert "autorelease: pending" in run, (
+        "the stalled-release check keys off release-please's pending label"
+    )
+    assert "--state merged" in run, "only a *merged* pending PR indicates a stall"
+    assert "::error::" in run and "exit 1" in run, (
+        "a stalled release must fail the job — reporting success is what hid it"
+    )
+    # The action sets releases_created in manifest mode; release_created is the
+    # single-package name. Reading only one silently misses a real release.
+    assert "releases_created" in summarise["env"]["RELEASED"], (
+        "manifest mode reports via releases_created"
+    )
+    assert "GH_TOKEN" in summarise["env"], "the label query needs an authenticated gh"

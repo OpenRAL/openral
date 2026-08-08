@@ -99,6 +99,33 @@ Two habits keep this rare: prefer several focused PRs over one very large
 squash, and keep code snippets out of commit bodies (describe the fix in
 prose, or fence the snippet in a PR comment instead).
 
+## When a release stalls between merge and tag
+
+release-please can find a merged release PR it cannot build a release from, and
+then decline to open a new one — logging `There are untagged, merged release
+PRs outstanding - aborting`. It emits no outputs in that state, which is
+byte-for-byte what "nothing releasable merged" looks like. v0.3.0 sat stalled
+across two runs before this was noticed; no tag was created, so nothing
+published.
+
+The `summarise` step in [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml)
+now distinguishes them by asking the repository rather than the action: a
+**merged** PR still labelled `autorelease: pending` is a release that stopped
+between merging and tagging. The job fails loudly in that case.
+
+If you see that error, the reason is in the same job's log, above the abort —
+look for a line naming what could not be built. The one that bit us was:
+
+```
+⚠ PR component: undefined does not match configured component: openral
+```
+
+`getBranchComponent()` derives a component from `package-name` and, unlike
+`getComponent()`, ignores `include-component-in-tag`; the release branch has no
+component segment, so the two could never match. Removing `package-name` fixed
+it. Once the config is right, a re-run tags the already-merged PR — the PR does
+not need to be reopened or remade.
+
 ## What you have to do
 
 Write Conventional Commits (already required — [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §4.2).
