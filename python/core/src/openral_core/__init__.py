@@ -3,6 +3,8 @@
 Public surface is everything imported here. Private modules use leading underscore.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from openral_core.detection_tracker import DetectionTracker2D, aabb_iou_2d
 from openral_core.exceptions import (
     ROSCapabilityMismatch,
@@ -419,4 +421,4 @@ __all__ = [
     "scene_task_space_compatible",
     "task_space_compatible",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-core")
