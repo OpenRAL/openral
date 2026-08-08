@@ -6,6 +6,7 @@
 > - Repo layout → [`docs/architecture/repo-map.md`](docs/architecture/repo-map.md) + live [`repo-state-map.html`](docs/architecture/repo-state-map.html).
 > - Toolchain & `openral` CLI → [`docs/contributing/toolchain.md`](docs/contributing/toolchain.md). **Env rule: always `just sync` (never bare `uv sync`); opt-in groups via `just sync --group <name>`; LIBERO↔RoboCasa groups are mutually exclusive (swap per task); RoboCasa installs editable at runtime via the HAL, not `just sync` — see "Managing the Python environment & dependency groups".**
 > - Glossary → [`docs/reference/glossary.md`](docs/reference/glossary.md).
+> - Releasing → [`docs/contributing/releasing.md`](docs/contributing/releasing.md). **One lockstep SemVer across root + all `python/*`; the bump is computed from Conventional Commits by release-please. Never hand-edit a `version =` field or an `openral-*==` pin — they are rewritten in the release PR.**
 > - Public-symbol inventory → [`docs/METHODS.md`](docs/METHODS.md) index + per-layer files in [`docs/methods/`](docs/methods/). **`grep -rn <symbol> docs/methods/` before adding a helper.**
 > - Agent-tool entry points → [`AGENTS.md`](AGENTS.md) is the tool-neutral root pointer (Cursor / Codex / Copilot / Aider read it) and **redirects here**; keep it a 3-line pointer, never a copy or symlink of this file. Vendor-neutral skills live in [`.agents/skills/`](.agents/skills/) (`SKILL.md` + `references/`). `AGENTS.md` itself stays at repo root — it does **not** belong under `.agents/`.
 > - Design decisions (ADRs) → [`docs/decisions.md`](docs/decisions.md); the ADR log itself lives in the private `OpenRAL/management` repo.
@@ -89,7 +90,7 @@ Re-read this file if >1 day or >1 PR since last; check [`docs/decisions.md`](doc
 5. **Smallest viable PR.** >800 lines needs maintainer pre-approval.
 6. **Pre-existing errors → separate prior `fix(...)` commit** on the same branch (§1.15).
 7. **Update docs in the same PR** (§1.14).
-8. **Conventional Commits** (`feat(skill): …`, `fix(safety): …`). Squash on merge only when the branch is a single logical change.
+8. **Conventional Commits** (`feat(skill): …`, `fix(safety): …`). Squash on merge only when the branch is a single logical change. The type is load-bearing: it decides the next release's SemVer segment (`fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE:` → minor while <1.0) and whether the change reaches `CHANGELOG.md` — `docs/test/style/ci/build/chore` are silent on both counts.
 9. **Run full local CI** before pushing: `just lint && just test && just sim` (where applicable).
 
 ### 4.3 Repo state map

@@ -102,5 +102,6 @@ nav:
   - Contributing:
     - Development: contributing/development.md
     - Toolchain cheatsheet: contributing/toolchain.md
+    - Releasing: contributing/releasing.md
     - Selective testing: contributing/selective-testing.md
     - Test-suite audit: contributing/test-audit.md

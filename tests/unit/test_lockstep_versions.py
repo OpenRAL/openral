@@ -11,16 +11,26 @@ every inter-package dependency pins that exact number. Both halves matter:
   ``openral-core`` in published metadata lets pip pair ``openral-cli 0.2.0``
   with any future ``openral-core``.
 
+Both numbers are rewritten by release-please, never by hand — so the
+``x-release-please-*`` annotations that let it find them are part of the
+contract too. A package that loses an annotation, or that never reaches
+``extra-files``, silently stops being bumped and drifts out of lockstep at the
+next release.
+
 Coverage
 --------
 - Root and every ``python/*`` package declare the same ``[project] version``.
 - Every ``openral-*`` dependency is pinned ``==`` to that version.
 - Every ``python/*`` package that ships a distribution appears in the
   ``release-pypi.yml`` publish matrix.
+- Every ``python/*`` package is listed in ``release-please-config.json`` and
+  carries the annotations release-please needs.
+- The manifest agrees with the tree about the current version.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -90,4 +100,61 @@ def test_every_package_is_in_the_publish_matrix() -> None:
     assert expected == published, (
         f"publish matrix drift — missing: {sorted(expected - published)}, "
         f"stale: {sorted(published - expected)}"
+    )
+
+
+def _release_please_config() -> dict:
+    return json.loads((REPO_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+
+
+def test_every_package_is_an_extra_file() -> None:
+    """release-please only rewrites what ``extra-files`` names."""
+    extra = set(_release_please_config()["packages"]["."]["extra-files"])
+    expected = {f"python/{p.name}/pyproject.toml" for p in PACKAGE_DIRS}
+    assert expected == extra, (
+        f"release-please extra-files drift — missing: {sorted(expected - extra)}, "
+        f"stale: {sorted(extra - expected)}. An unlisted package never gets bumped."
+    )
+
+
+@pytest.mark.parametrize("pkg_dir", PACKAGE_DIRS, ids=lambda p: p.name)
+def test_package_carries_release_please_annotations(pkg_dir: Path) -> None:
+    """The ``version`` line and any sibling block are annotated for the updater.
+
+    release-please's generic updater rewrites *only* annotated lines, so a
+    missing marker fails open — the file keeps the old version with no error.
+    """
+    lines = (pkg_dir / "pyproject.toml").read_text(encoding="utf-8").split("\n")
+
+    version_lines = [ln for ln in lines if ln.startswith("version = ")]
+    assert len(version_lines) == 1, (
+        f"{pkg_dir.name}: expected one version line, got {version_lines}"
+    )
+    assert version_lines[0].endswith("# x-release-please-version"), (
+        f"{pkg_dir.name}: {version_lines[0]!r} is missing the "
+        "`# x-release-please-version` annotation — it would not be bumped."
+    )
+
+    sibling_idx = [i for i, ln in enumerate(lines) if _SIBLING_RE.match(ln.strip().strip('",'))]
+    if not sibling_idx:
+        return  # no siblings (core, observability) — nothing to fence.
+
+    starts = [i for i, ln in enumerate(lines) if ln.strip() == "# x-release-please-start-version"]
+    ends = [i for i, ln in enumerate(lines) if ln.strip() == "# x-release-please-end"]
+    assert len(starts) == 1 and len(ends) == 1, (
+        f"{pkg_dir.name}: expected exactly one start/end annotation pair, "
+        f"got {len(starts)} start(s) and {len(ends)} end(s)."
+    )
+    assert starts[0] < min(sibling_idx) and max(sibling_idx) < ends[0], (
+        f"{pkg_dir.name}: sibling pins fall outside the "
+        "x-release-please-start-version block, so they would not be bumped."
+    )
+
+
+def test_manifest_matches_the_tree() -> None:
+    """``.release-please-manifest.json`` is release-please's view of "now"."""
+    manifest = json.loads((REPO_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["."] == _root_version(), (
+        f"manifest says {manifest['.']}, root pyproject says {_root_version()}. "
+        "release-please computes the next bump from the manifest — they must agree."
     )
