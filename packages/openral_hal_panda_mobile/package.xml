@@ -30,7 +30,6 @@
   <depend>std_msgs</depend>
   <depend>openral_msgs</depend>
   <depend>lifecycle_msgs</depend>
-  <depend>rclpy_lifecycle</depend>
 
   <!-- Python runtime: the OpenRAL Python workspace must be on PYTHONPATH -->
   <exec_depend>python3-openral-hal</exec_depend>

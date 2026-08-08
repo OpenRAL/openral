@@ -20,9 +20,7 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>rclpy</depend>
-  <depend>rclpy_action</depend>
   <depend>lifecycle_msgs</depend>
-  <depend>rclpy_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>openral_msgs</depend>

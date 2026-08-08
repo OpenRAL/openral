@@ -19,7 +19,6 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>rclpy</depend>
-  <depend>rclpy_lifecycle</depend>
   <depend>lifecycle_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

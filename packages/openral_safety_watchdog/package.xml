@@ -18,7 +18,6 @@
 
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>
-  <depend>rclpy_lifecycle</depend>
   <depend>std_msgs</depend>
   <depend>openral_msgs</depend>
 

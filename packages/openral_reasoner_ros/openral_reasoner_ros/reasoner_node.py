@@ -974,7 +974,7 @@ class ReasonerNode(LifecycleNode):
         # Crash-safe ladder persistence (`ladder_state_path` param): the
         # snapshot file, or None when persistence is disabled.
         self._ladder_state_path: pathlib.Path | None = None
-        self._execute_rskill_client: Any = None  # rclpy_action.ActionClient
+        self._execute_rskill_client: Any = None  # rclpy.action.ActionClient
         # Lifecycle clients are cached per target node — one
         # ``<node>/change_state`` client per peer.
         self._lifecycle_clients: dict[str, Any] = {}

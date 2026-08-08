@@ -18,7 +18,6 @@
 
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>
-  <depend>rclpy_lifecycle</depend>
   <depend>openral_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
