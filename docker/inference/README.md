@@ -219,6 +219,46 @@ To validate a change to the build driver or image store before it reaches
 registry cache *export* path against a scratch `:buildcache-dispatch` ref that
 `master` never reads.
 
+### Do not move the buildcache to another repository
+
+`$IMAGE:buildcache` deliberately lives in **the same GHCR repository as the
+image** (`ghcr.io/openral/openral`). Splitting it out to something like
+`ghcr.io/openral/openral-cache:buildcache` looks tidier and would silently cost
+several minutes per `master` build.
+
+GHCR deduplicates blobs per repository. Because `--cache-to
+type=registry,mode=max` writes every layer into `ghcr.io/openral/openral`, by
+the time `Tag + push to GHCR` runs, all of the image's layers are already there.
+Measured on master run 31253732623, the push is **16 × `Layer already exists`
+and 1 × `Pushed`** — the single new blob is the attestation manifest, which the
+cache export does not carry — so the whole step takes **3.3s**. Before the cache
+and the image shared a repository's dedup domain, that same step took **6m27s**.
+
+Two consequences worth internalising:
+
+- **The upload cost did not vanish, it moved.** The master cache export is
+  ~426s, against the ~387s the push used to cost. The publish path is roughly a
+  wash on its own; the win comes from the tarball round-trip disappearing
+  (build + push together: 1705s → 1353s). Do not read the 3.3s push as free.
+- **A separate cache repo breaks the dedup**, and the push reverts to uploading
+  the full image. Nothing will fail — CI stays green — the publish step just
+  quietly gets minutes slower. There is no test that catches this.
+
+### Where the remaining time goes
+
+After the above, neither a warm nor a cold build is dominated by compiling
+anything. Measured:
+
+| | Warm PR build (264s) | Cold master build (1350s) |
+|---|---|---|
+| Actual compilation | ~0s (30/30 steps `CACHED`) | 322s (uv sync 113s, vendor 104s, 15 pkgs 105s) |
+| Export / unpack / cache export | ~250s unpacking + 138s blob pull | 810s (60%) |
+
+So the lever for further speedup is **image size**, or decoupling the smoke
+checks from a full local image materialization — not more caching and not
+colcon. A 25.2 GB image is materialized in full to run three short
+`docker run` checks.
+
 ## Image sizes
 
 | Image | Size |
