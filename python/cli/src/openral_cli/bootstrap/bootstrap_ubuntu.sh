@@ -46,10 +46,38 @@ sudo locale-gen en_US.UTF-8 || true
 # ROS 2 apt repository
 sudo add-apt-repository -y universe
 sudo apt-get install -y curl gnupg lsb-release
-sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-  -o /usr/share/keyrings/ros-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-  | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# Only add our own source entry when the host has none.
+#
+# Recent Ubuntu/ROS images ship the official `ros2-apt-source` .deb, which
+# installs /etc/apt/sources.list.d/ros2.sources — deb822 format, carrying the
+# signing key INLINE under `Signed-By:`. Writing our legacy one-line ros2.list
+# on top of that leaves apt with two entries for the same repo+suite whose
+# Signed-By values disagree, and apt then refuses to read ANY source list:
+#
+#   E: Conflicting values set for option Signed-By regarding source
+#      http://packages.ros.org/ros2/ubuntu/ noble:
+#      /usr/share/keyrings/ros-archive-keyring.gpg != -----BEGIN PGP ...
+#   E: The list of sources could not be read.
+#
+# That is not a soft failure — every subsequent apt command on the machine
+# breaks, including the rest of this script, and the user is left with an
+# unusable package manager until they delete one of the two entries by hand.
+# So detect first and leave a working configuration alone.
+#
+# `grep -R` (not `-r`): ros2.sources is typically a SYMLINK into
+# /usr/share/ros-apt-source/, and `-r` does not follow symlinks found during
+# directory recursion — it would miss the very file we are checking for.
+if grep -Rqs 'packages\.ros\.org/ros2' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+  echo "==> ROS 2 apt source already configured — leaving it as-is."
+  echo "    (a second entry with a different signed-by= would break every apt"
+  echo "     command with 'Conflicting values set for option Signed-By')"
+else
+  sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
+    | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+fi
 sudo apt-get update
 sudo apt-get install -y "ros-${ROS_DISTRO}-ros-base" python3-colcon-common-extensions \
   "ros-${ROS_DISTRO}-rmw-cyclonedds-cpp" || true
