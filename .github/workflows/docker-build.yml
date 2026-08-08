@@ -24,8 +24,9 @@ name: docker-build
 # Forensics on run 31244132105 (a PR build, 1058.9s in `docker buildx build`)
 # found the cost was mostly NOT cache misses — apt, the uv installer and the
 # whole runtime-base stage all hit cache:
-#   474.5s (45%)  `--load` exporting the 7.9 GB image to a tarball and
-#                 replaying it into dockerd, under the docker-container driver
+#   474.5s (45%)  `--load` exporting the image to a tarball (7.9 GB of
+#                 compressed layers; the image itself is 25.2 GB) and replaying
+#                 it into dockerd, under the docker-container driver
 #   211.7s (20%)  colcon, of which 210s was opentelemetry_cpp_vendor and the
 #                 safety kernel it serially gates
 #   154.4s (15%)  pulling 4.59 GB of GHCR cache layers on steps that HIT cache
@@ -90,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # The image is ~16 GB (CUDA 13 + ROS Jazzy + colcon build). GitHub-hosted
+      # The image is ~25 GB (CUDA 13 + ROS Jazzy + colcon build). GitHub-hosted
       # runners ship ~14 GB free on /, so reclaim the big preinstalled toolchains
       # we don't need before building.
       - name: Free runner disk
@@ -108,8 +109,9 @@ jobs:
       # store, so `--load` has to serialize the finished image to a tarball and
       # replay it into dockerd. On run 31244132105 that cost 474.5s of a 1058.9s
       # build — 45% of the total — split as `exporting layers 278.1s` +
-      # `sending tarball 196.3s`, to move 7.9 GB that buildkit had *just*
-      # finished assembling. It is paid in full on every run, including a
+      # `sending tarball 196.3s`, to move 7.9 GB of compressed layers that
+      # buildkit had *just* finished assembling. It is paid in full on every
+      # run, including a
       # hypothetical 100% cache hit, which is why cache tuning alone could never
       # get this workflow under ~11 minutes.
       #

@@ -172,7 +172,7 @@ change** (`docker/inference/**`, `pyproject.toml`, `uv.lock`, `packages/**`,
 `docker-smoke-x86-deploy` smoke (asserts `gi` absent, cv2 / feetech /
 onnxruntime / omdet present, `deploy run --dry-run` resolves) but does **not**
 push. On merge to `master` it builds and pushes `openral:x86` to GHCR. The image
-is ~16 GB, so the workflow frees runner disk before building.
+is ~25 GB, so the workflow frees runner disk before building.
 
 ### Build caching
 
@@ -223,5 +223,5 @@ registry cache *export* path against a scratch `:buildcache-dispatch` ref that
 
 | Image | Size |
 |---|---|
-| `openral:x86` (gstreamer-free) | ~16 GB |
+| `openral:x86` (gstreamer-free) | 25.2 GB |
 | `openral:x86-deepstream-latest` (built by openral-pro) | larger (adds the media stack) |
