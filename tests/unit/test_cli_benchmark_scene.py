@@ -117,3 +117,73 @@ def test_benchmark_scene_dry_run_honours_n_episodes_override() -> None:
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
     assert "n_episodes=3" in flat
+
+
+def test_benchmark_scene_dry_run_resolves_the_rskill() -> None:
+    """``--dry-run`` must parse ``--rskill``, not echo it as-typed.
+
+    Regression: the dry-run branch returned before
+    :func:`openral_cli.main._parse_rskill_cli_arg`, so a broken manifest or a
+    non-VLA kind passed the exact check the flag exists to perform. The
+    resolved adapter id in the output is the proof it was parsed.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "scene",
+            "--config",
+            str(_BENCHMARK_SCENE),
+            "--rskill",
+            "rskills/diffusion-pusht",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "id=diffusion" in " ".join(result.output.split())
+
+
+def test_benchmark_scene_dry_run_rejects_non_vla_rskill() -> None:
+    """A non-VLA rSkill must fail the dry run, not just the real run."""
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "scene",
+            "--config",
+            str(_BENCHMARK_SCENE),
+            "--rskill",
+            "rskills/robometer-4b",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code != 0, result.output
+    assert "model_family" in result.output
+
+
+def test_benchmark_scene_dry_run_applies_the_task_gate() -> None:
+    """A task-mismatched pairing must fail in the dry run.
+
+    ``rskills/diffusion-pusht`` declares ``evaluated_tasks: [pusht]``; the
+    LIBERO-spatial benchmark scene is outside it, so
+    :func:`openral_sim.benchmark.check_benchmark_task_compatibility` rejects
+    the pairing at real-run time. The dry run must predict that, not print a
+    plan that cannot execute.
+    """
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "benchmark",
+            "scene",
+            "--config",
+            str(_REPO_ROOT / "scenes" / "benchmark" / "libero_spatial.yaml"),
+            "--rskill",
+            "rskills/diffusion-pusht",
+            "--dry-run",
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "task gate" in result.output

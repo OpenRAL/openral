@@ -237,7 +237,11 @@ def _sim_run_callback(
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Resolve config + rSkill and print the planned run without building the sim.",
+        help=(
+            "Resolve config + rSkill, run the embodiment/sensor compatibility "
+            "gate, and print the planned run without building the sim or "
+            "fetching weights. Exits non-zero if the pairing is incompatible."
+        ),
     ),
 ) -> None:
     """Top-level eval entry point — collects argv into the args namespace and dispatches."""
@@ -361,6 +365,16 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
 
     rskill_uri = _validate_skill_ref(args.rskill)
     manifest = load_rskill_manifest(rskill_uri)
+
+    # Only `kind='vla'` skills carry a model_family; a detector / reward /
+    # playbook skill has none and cannot drive a VLASpec. Reject it here with
+    # the same message `openral benchmark run` gives, rather than letting
+    # `VLASpec(id=None)` surface a raw pydantic string_type error.
+    if manifest.model_family is None:
+        raise ROSConfigError(
+            f"rSkill {args.rskill!r} has no model_family (kind={manifest.kind!r}); "
+            "--rskill expects a VLA skill."
+        )
 
     # Compose the runtime VLASpec from the manifest + CLI overrides. The
     # adapter id is the manifest's `model_family` — historically a separate
@@ -721,7 +735,20 @@ def _run(args: SimpleNamespace) -> int:
     max_ticks = env_cfg.n_episodes * (_max + 1)
     if args.dry_run:
         print(f"  max_ticks: {max_ticks}")
-        print("  dry-run: resolved config + rSkill; simulator not built")
+        # Run the same embodiment / sensor / capability gate a real rollout
+        # hits at SimRunner.activate. Without it --dry-run reported a happy
+        # plan for pairings the run would reject (a franka_panda rSkill on
+        # the pusht scene), which makes it useless as a CI wiring check.
+        # Reused verbatim so the two paths cannot drift, and because it is
+        # what syncs sensor intrinsics to the scene's render size.
+        from openral_sim.sim_runner import _check_rskill_compatibility
+
+        try:
+            _check_rskill_compatibility(env_cfg)
+        except (ROSError, ValueError) as exc:
+            print(f"compat error: {exc}", file=sys.stderr)
+            return 1
+        print("  dry-run: resolved config + rSkill, compatibility checked; sim not built")
         return 0
 
     view, strict_view = _resolve_view(args.view)
