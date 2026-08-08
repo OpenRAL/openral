@@ -135,6 +135,15 @@ just ros2-test              # colcon test + colcon test-result --verbose
 just test-ros-live          # the live-ROS pytest suite (see below)
 ```
 
+`just ros2-build` first runs `scripts/check_ros_build_deps.sh`, which derives
+the required ament packages from the in-tree `package.xml` files and reports
+any that are not installed under `/opt/ros/$ROS_DISTRO/share`, with a ready
+`apt-get install` line. Without it a single missing apt package (say
+`ros-jazzy-octomap-msgs`) surfaces ~45 s in as a CMake `find_package` error
+that aborts every remaining package, burying the cause. The check is
+advisory — set `OPENRAL_ROS_DEPS_STRICT=1` to make missing deps fatal — and
+no-ops when ROS 2 is not sourced.
+
 #### The live-ROS suite (`OPENRAL_TEST_ROS_LIVE`)
 
 A set of integration tests — the reasoner node's dispatch, VRAM and async-LLM
