@@ -142,11 +142,33 @@ Without the secret the job still runs and says so with a `::warning::`. Recover
 a stranded tag by dispatching `release-pypi.yml` manually with `target=pypi`,
 `confirm=YES`.
 
-## Trial runs
+## Trial runs — currently unavailable
 
-`release-pypi.yml` also accepts a `workflow_dispatch` with `target=testpypi`
-(the default), which publishes to TestPyPI without any confirmation. Use it to
-validate packaging changes without burning a version number.
+`release-pypi.yml` accepts a `workflow_dispatch` with `target=testpypi` (the
+default), which is meant to publish to TestPyPI without confirmation so you can
+validate packaging without burning a version number.
+
+**It does not work today.** TestPyPI has no trusted publisher matching
+`OpenRAL/openral` + `release-pypi.yml`, so the OIDC exchange fails before
+anything is uploaded:
+
+```
+invalid-publisher: valid token, but no corresponding publisher
+  sub: repo:OpenRAL/openral:ref:refs/heads/master
+  workflow_ref: OpenRAL/openral/.github/workflows/release-pypi.yml@refs/heads/master
+```
+
+Every `target=testpypi` dispatch has failed this way (run 31258658584 on
+2026-08-08; three more on 2026-07-09). The 0.1.0 files sitting on TestPyPI
+predate the move into the OpenRAL org, which is the likely reason the
+publisher no longer matches. Registering one with the claims in the
+`release-pypi.yml` header restores the path.
+
+Real PyPI is unaffected: its publisher works, and 0.1.0 and 0.2.0 are
+published for all 14 packages. Note that trusted publishing matches on the
+ref, so a tag push (`refs/tags/vX.Y.Z`) and a dispatch off master
+(`refs/heads/master`) present different claims — a green tag release does not
+imply a green dispatch.
 
 ## What is *not* versioned by this
 

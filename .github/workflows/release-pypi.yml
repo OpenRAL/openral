@@ -24,10 +24,24 @@ name: release-pypi
 # repo + this workflow file. Pending publishers cover names that don't exist
 # yet and need no org approval (https://docs.pypi.org/trusted-publishers/):
 #   owner: OpenRAL · repo: openral · workflow: release-pypi.yml · env: (none)
-#   - TestPyPI (https://test.pypi.org): already registered.
-#   - PyPI (https://pypi.org): register a pending publisher per project under
-#     the individual account, then dispatch target=pypi (or push a v*.*.* tag).
-#     Projects transfer into the OpenRAL org later with no re-publish.
+#   - PyPI (https://pypi.org): WORKING. 0.1.0 and 0.2.0 are published for all
+#     14 packages; the v0.2.0 tag push (run 30795961650) exchanged its OIDC
+#     token successfully.
+#   - TestPyPI (https://test.pypi.org): NOT REGISTERED for this owner/repo.
+#     Every `target=testpypi` dispatch fails the token exchange with
+#     `invalid-publisher: valid token, but no corresponding publisher`, most
+#     recently run 31258658584 on 2026-08-08 and three runs on 2026-07-09.
+#     The 0.1.0 files on TestPyPI predate the move into the OpenRAL org, so
+#     the publisher is presumably still bound to the old owner. Register one
+#     with the claims above to restore the trial-release path; until then
+#     `target=testpypi` is dead and the only working route is a v*.*.* tag.
+#
+# Trusted publishing matches on the *ref*, so a claim set is not portable
+# between triggers: a tag push presents `ref: refs/tags/vX.Y.Z` while a
+# workflow_dispatch off master presents `ref: refs/heads/master`. A publisher
+# registered without a ref restriction accepts both; one restricted to tags
+# rejects the dispatch. That difference is why the tag path can be green while
+# a dispatch is not.
 #
 # Every workspace package shares one lockstep version, and every `openral-*`
 # dependency pins it exactly — nothing here bumps it. `release-please.yml`
