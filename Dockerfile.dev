@@ -108,6 +108,14 @@ WORKDIR /workspace
 # over /workspace at run time, which shadows this .venv entirely, so the sync
 # exists to prove the lockfile resolves and to populate the build host's uv
 # cache — not to ship a venv.
+#
+# `docker/inference/Dockerfile.x86` DOES need that cache win (it is the CI
+# image), and it now gets it a different way: a `manifests` stage prunes
+# `python/` to the members' real `pyproject.toml` files and `uv sync
+# --no-install-workspace` installs the third-party closure against those. That
+# is the supported version of what the hand-written stub trees were reaching
+# for. It is deliberately NOT replicated here — this image's venv is shadowed
+# at run time anyway, so the extra stage would buy nothing.
 COPY pyproject.toml uv.lock* ./
 COPY python/ python/
 

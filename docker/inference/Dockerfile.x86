@@ -50,6 +50,30 @@
 # `--network host` is recommended so the host can share the DDS bus. ROS 2
 # Jazzy + the local colcon overlay are sourced by the entrypoint.
 
+# ── Stage 0: workspace manifests ─────────────────────────────────────
+#
+# Prunes `python/` down to just the workspace members' `pyproject.toml` files.
+# The builder installs the third-party dependency set against THIS tree, not the
+# real one, so editing Python source no longer invalidates the dependency layer.
+#
+# Why a pruning stage instead of listing the manifests by hand: the uv workspace
+# is `members = ["python/*"]`, so a hand-written `COPY python/core/pyproject.toml
+# …` list silently drifts the moment a 15th package lands under `python/`. The
+# glob cannot drift.
+#
+# This stage re-runs on every `python/` edit (it takes ~3 s), but it emits a
+# byte-identical tree whenever no `pyproject.toml` changed. BuildKit keys the
+# downstream `COPY --from=manifests` on the *content* of what it copies, so the
+# expensive `uv sync` below stays cached across ordinary source edits.
+#
+# The base is the same CUDA image the builder uses, purely so this stage costs
+# no extra registry pull — nothing from the base is used beyond GNU find.
+FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS manifests
+
+COPY python/ /manifests/python/
+RUN find /manifests/python -type f ! -name pyproject.toml -delete \
+    && find /manifests/python -depth -type d -empty -delete
+
 # ── Stage 1: builder ─────────────────────────────────────────────────
 
 FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS builder
@@ -152,10 +176,34 @@ WORKDIR /workspace
 
 # Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
 COPY pyproject.toml uv.lock ./
-COPY python/ python/
 
-# Workspace install. Groups needed for a real VLA deploy with the perception
-# legs, all gstreamer-free:
+# The manifests-only view of `python/` (see stage 0). This is what the
+# third-party install below resolves against.
+COPY --from=manifests /manifests/python/ python/
+
+# ── Phase 1: third-party dependencies ────────────────────────────────
+#
+# `--no-install-workspace` installs the 215-package third-party closure (torch
+# 2.9.1, the whole nvidia-cu12 stack, transformers, lerobot, mujoco, …) and
+# skips every `openral-*` workspace member. Those members need no source tree to
+# be *excluded*, which is the entire point: this layer's cache key is
+# `pyproject.toml` + `uv.lock` + the 14 member manifests, and nothing else.
+#
+# Before this split, `COPY python/ python/` sat directly above the sync, so a
+# one-line edit to any Python source file — the most-churned tree in the repo,
+# 33 of the last 60 commits — re-downloaded 4.42 GiB of wheels (torch 858 MiB,
+# cudnn 674 MiB, cublas 567 MiB, …) and re-ran the whole builder stage. The uv
+# cache mount does NOT save you here: BuildKit cache mounts are not exported by
+# the registry cache exporter, so on an ephemeral CI runner it is always cold.
+#
+# An earlier attempt at this split (see Dockerfile.dev's comment) hand-wrote
+# *fake* stub src trees and failed — uv rejected them with "references a
+# workspace ... but is not a workspace member". Real manifests plus
+# `--no-install-workspace` is the supported path: uv never builds the members,
+# so it never looks for their sources.
+#
+# Groups needed for a real VLA deploy with the perception legs, all
+# gstreamer-free:
 #   sim   — the lerobot / transformers / accelerate / bitsandbytes stack the VLA
 #           policy adapters AND the in-process Robometer reward monitor import at
 #           load time (needed on REAL hardware too).
@@ -163,6 +211,18 @@ COPY python/ python/
 #           the ros_image_detector_node runs when enable_object_detector is on.
 #   lingbot — the msgpack + synchronous-websocket protocol dependencies used by
 #           the out-of-process LingBot policy adapters, including Galaxea A1.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --all-packages \
+        --group sim --group omdet --group lingbot \
+        --no-install-workspace
+
+# ── Phase 2: the workspace members themselves ────────────────────────
+#
+# Now the real source tree. This layer DOES rebuild on every Python edit, but
+# all it does is install the 14 local packages into the venv phase 1 already
+# populated — seconds, not minutes, and no network.
+COPY python/ python/
+
 # The `opencv_thread` camera path needs cv2 (opencv-python). It is a per-member
 # EXTRA (openral-runner `opencv`), NOT pulled by `uv sync --all-packages`, so it
 # is installed explicitly post-sync alongside onnxruntime (which lives only in
