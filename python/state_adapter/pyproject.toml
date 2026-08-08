@@ -1,13 +1,13 @@
 [project]
 name = "openral-state-adapter"
-version = "0.2.0"  # x-release-please-version
+version = "0.3.0"  # x-release-please-version
 description = "OpenRAL layout-adapter registry — assembles per-checkpoint state vectors"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.2.0", # reason: StateLayout / StateContractBindings / WRAPPED_TASK_SPACE_LAYOUTS
+    "openral-core==0.3.0", # reason: StateLayout / StateContractBindings / WRAPPED_TASK_SPACE_LAYOUTS
     # x-release-please-end
     "numpy>=1.26", # reason: assembler outputs np.ndarray
 ]
