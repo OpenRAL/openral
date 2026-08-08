@@ -1,14 +1,14 @@
 [project]
 name = "openral-reasoner"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "OpenRAL S2 reasoner — typed LLM client + Plan → BT XML emission"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",            # reason: RSkillManifest / WorldState / ROSPlanningError subclasses
-    "openral-observability==0.3.1",   # reason: future inference_span wraps the LLM call (deferred to first concrete LLMClient PR)
+    "openral-core==0.3.2",            # reason: RSkillManifest / WorldState / ROSPlanningError subclasses
+    "openral-observability==0.3.2",   # reason: future inference_span wraps the LLM call (deferred to first concrete LLMClient PR)
     # x-release-please-end
     "pydantic>=2.5",           # reason: Plan / ToolCall structured-output schemas
     "structlog>=24.1",         # reason: structured logging per CLAUDE.md §5.1

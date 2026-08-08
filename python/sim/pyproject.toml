@@ -1,18 +1,18 @@
 [project]
 name = "openral-sim"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "OpenRAL sim eval — robot × scene × task × VLA factory and runner for rSkill validation before hardware deployment"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",   # reason: SimEnvironment / SceneSpec / TaskSpec / VLASpec schemas
-    "openral-runner==0.3.1", # reason: InferenceRunnerBase for SimRunner
-    "openral-rskill==0.3.1",  # reason: rSkill loader
-    "openral-observability==0.3.1",  # reason: configure_observability / shutdown_observability bracketing
-    "openral-dataset==0.3.1",        # reason: RolloutRecorder + LeRobotDatasetSink for --dataset-out
-    "openral-world-state==0.3.1",    # reason: shared look-at gaze geometry for scene-camera placement
+    "openral-core==0.3.2",   # reason: SimEnvironment / SceneSpec / TaskSpec / VLASpec schemas
+    "openral-runner==0.3.2", # reason: InferenceRunnerBase for SimRunner
+    "openral-rskill==0.3.2",  # reason: rSkill loader
+    "openral-observability==0.3.2",  # reason: configure_observability / shutdown_observability bracketing
+    "openral-dataset==0.3.2",        # reason: RolloutRecorder + LeRobotDatasetSink for --dataset-out
+    "openral-world-state==0.3.2",    # reason: shared look-at gaze geometry for scene-camera placement
     # x-release-please-end
     "structlog>=24.1",    # reason: structured logging per CLAUDE.md §5.1
     "PyYAML>=6.0",        # reason: SimEnvironment YAML config loader

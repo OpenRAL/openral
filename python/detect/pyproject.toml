@@ -1,17 +1,17 @@
 [project]
 name = "openral-detect"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "Hardware probing + RobotDescription assembly + skill compatibility report"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",          # reason: RobotDescription / RobotCapabilities / RSkillManifest
-    "openral-sensors==0.3.1",       # reason: CATALOG.build for materializing detected sensors
-    "openral-rskill==0.3.1",         # reason: rSkill.check_compatibility + list_installed
-    "openral-cli==0.3.1",           # reason: reuse autodetect.enumerate_usb_devices + scan_dds_topics
-    "openral-observability==0.3.1", # reason: tracing spans around each probe
+    "openral-core==0.3.2",          # reason: RobotDescription / RobotCapabilities / RSkillManifest
+    "openral-sensors==0.3.2",       # reason: CATALOG.build for materializing detected sensors
+    "openral-rskill==0.3.2",         # reason: rSkill.check_compatibility + list_installed
+    "openral-cli==0.3.2",           # reason: reuse autodetect.enumerate_usb_devices + scan_dds_topics
+    "openral-observability==0.3.2", # reason: tracing spans around each probe
     # x-release-please-end
     "pydantic>=2.7",             # reason: DetectionReport / CompatibilityReport models
     "psutil>=5.9",               # reason: network interface enumeration in probe_network

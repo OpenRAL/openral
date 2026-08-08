@@ -1,14 +1,14 @@
 [project]
 name = "openral-hal"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "OpenRAL Hardware Abstraction Layer — HAL Protocol and ros2_control adapter"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1", # reason: HAL Protocol uses RobotDescription, Action, JointState
-    "openral-sensors==0.3.1", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
+    "openral-core==0.3.2", # reason: HAL Protocol uses RobotDescription, Action, JointState
+    "openral-sensors==0.3.2", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
     # x-release-please-end
     # reason: lerobot types.py module + the SO-100/SO-101 real servo bus. The
     # `feetech` extra pulls feetech-servo-sdk (scservo_sdk) + deepdiff, which

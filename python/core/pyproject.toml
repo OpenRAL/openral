@@ -1,6 +1,6 @@
 [project]
 name = "openral-core"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "OpenRAL Pydantic schemas — normative contract for the OpenRAL layer interfaces"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

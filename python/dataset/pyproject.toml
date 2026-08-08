@@ -1,14 +1,14 @@
 [project]
 name = "openral-dataset"
-version = "0.3.1"  # x-release-please-version
+version = "0.3.2"  # x-release-please-version
 description = "OpenRAL dataset bridge — RolloutRecorder + LeRobotDataset v3 / rosbag2 sinks for every skill execution"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.1",                  # reason: RobotDescription / ObservationSpec / ActionSpec / SensorSpec schemas (normative bind targets)
-    "openral-observability==0.3.1",         # reason: semconv constants (DATASET_REPO_ID / DATASET_EPISODE_IDX / DATASET_FRAME_IDX) + rskill_span helpers
+    "openral-core==0.3.2",                  # reason: RobotDescription / ObservationSpec / ActionSpec / SensorSpec schemas (normative bind targets)
+    "openral-observability==0.3.2",         # reason: semconv constants (DATASET_REPO_ID / DATASET_EPISODE_IDX / DATASET_FRAME_IDX) + rskill_span helpers
     # x-release-please-end
     "numpy>=1.26",                   # reason: per-frame state / action / image arrays
     "structlog>=24.1",               # reason: structured logging per CLAUDE.md §5.1
