@@ -41,6 +41,7 @@ modules at import, and the resulting ``glib`` state conflicts with
 
 from __future__ import annotations
 
+from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, Any
 
 # Light imports — no torch, no gi, no rclpy in any of these.
@@ -72,7 +73,7 @@ __all__ = [
     "precise_sleep",
     "sleep_until",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-runner")
 
 
 _LAZY_ATTRS: dict[str, tuple[str, str]] = {

@@ -36,6 +36,8 @@ so installing this package never pulls heavyweight ML deps.
 
 from __future__ import annotations
 
+from importlib.metadata import version as _pkg_version
+
 # Trigger built-in policy + backend registration (LIBERO, MetaWorld, mock,
 # smolvla, …). Importing the two subpackages runs their `_register_*`
 # side effects.
@@ -64,4 +66,4 @@ __all__ = [
     "save_episode_mp4",
 ]
 
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-sim")

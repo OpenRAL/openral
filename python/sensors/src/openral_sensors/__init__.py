@@ -17,6 +17,8 @@ Public surface:
 # Import every vendor module so the global CATALOG is populated on
 # `import openral_sensors`.  Order does not matter; each module registers
 # its own entries with replace=True.
+from importlib.metadata import version as _pkg_version
+
 from openral_sensors import (  # reason: side-effect import populates CATALOG
     force_torque,
     luxonis,
@@ -53,4 +55,4 @@ __all__ = [
     "realsense_d435_bundle",
     "realsense_d435i_bundle",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-sensors")

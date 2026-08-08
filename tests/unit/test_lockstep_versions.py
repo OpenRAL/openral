@@ -27,6 +27,8 @@ Coverage
   carries the annotations release-please needs.
 - The manifest agrees with the tree about the current version.
 - ``uv.lock`` records that same version for every workspace member.
+- No package hardcodes ``__version__`` — release-please only rewrites
+  ``pyproject.toml``, so source has to derive it.
 """
 
 from __future__ import annotations
@@ -186,6 +188,28 @@ def test_uv_lock_records_the_lockstep_version() -> None:
         f"uv.lock is a release behind for {stale}; the tree is at {_root_version()}. "
         "Run `uv lock` and commit the result."
     )
+
+
+@pytest.mark.parametrize("pkg_dir", PACKAGE_DIRS, ids=lambda p: p.name)
+def test_dunder_version_is_derived_not_hardcoded(pkg_dir: Path) -> None:
+    """``__version__`` reads ``importlib.metadata``, never a literal.
+
+    release-please rewrites `pyproject.toml`, not source. Eleven packages
+    carried a hand-written ``__version__ = "0.2.0"`` that nothing bumped, so
+    two releases later the runtime still announced 0.2.0 while the wheel said
+    0.3.1 — and ``test_smoke.py``'s metadata comparison failed on master. A
+    literal here is a second source of truth; there is only one.
+    """
+    src = pkg_dir / "src"
+    for init in src.glob("*/__init__.py"):
+        for line in init.read_text(encoding="utf-8").split("\n"):
+            if not line.startswith("__version__"):
+                continue
+            assert not re.match(r'^__version__\s*=\s*["\']', line), (
+                f"{init.relative_to(REPO_ROOT)}: {line!r} hardcodes the version. "
+                'Use `_pkg_version("<dist-name>")` from importlib.metadata — '
+                "release-please only rewrites pyproject.toml."
+            )
 
 
 def test_selective_tests_short_circuit_the_release_pr() -> None:

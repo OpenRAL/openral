@@ -152,6 +152,13 @@ are rewritten by release-please via the `x-release-please-version` /
 `x-release-please-start-version` annotations in each `pyproject.toml`; editing
 around them puts the manifest and the tree out of sync.
 
+Nothing under `src/` carries a version either. Every package's `__version__`
+reads `importlib.metadata` for its own distribution, so it follows the
+pyproject release-please just rewrote. Hardcoded literals used to sit in
+eleven `__init__.py` files and nothing bumped them — the runtime announced
+0.2.0 out of a 0.3.1 wheel until this was fixed. `test_lockstep_versions.py`
+rejects a literal reintroduced there.
+
 ## Adding a package
 
 A new `python/<name>` package needs three edits, all enforced by

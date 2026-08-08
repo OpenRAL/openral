@@ -10,8 +10,10 @@ checks):
 - It uses **only the public ``import openral_core as core`` surface**,
   catching regressions in the package re-exports without touching
   internal modules.
-- It pins the package version string so a botched release bump is caught
-  before tests/build/publish run.
+- It checks that ``__version__`` agrees with the installed distribution — the
+  package derives it from ``importlib.metadata``, so a failure here means the
+  install itself is broken, not that someone forgot a bump.
+  ``tests/unit/test_lockstep_versions.py`` owns the release-bump contract.
 
 Per the audit (``tests/README.md`` §4-A.7), this docstring documents the
 file's role so future readers don't fold its assertions into the fuzz

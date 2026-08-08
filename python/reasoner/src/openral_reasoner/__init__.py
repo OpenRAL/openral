@@ -13,6 +13,8 @@ subscriptions and dispatch plumbing.
 
 from __future__ import annotations
 
+from importlib.metadata import version as _pkg_version
+
 from openral_reasoner.active_search import (
     SearchBudget,
     SearchCandidate,
@@ -125,4 +127,4 @@ __all__ = [
     "save_ladder_state",
     "should_rebuild_mission",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-reasoner")

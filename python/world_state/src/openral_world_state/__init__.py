@@ -22,6 +22,8 @@ Public surface:
   lift 2D detections to 3D object centres and remember them with IoU gating.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from openral_world_state.aggregator import (
     DEFAULT_POLICY_STATE_STALENESS_S,
     DEFAULT_RATE_HZ,
@@ -101,4 +103,4 @@ __all__ = [
     "rotation_to_quat_wxyz",
     "scene_objects_payload",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-world-state")
