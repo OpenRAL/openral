@@ -36,7 +36,13 @@ acceleration ≤ 2.0 m/s². Deadman required.
 | `elbow_flex`    | revolute | −1.7453 – 1.5708 | 4.5 | 3.35 |
 | `wrist_flex`    | revolute | ±1.6581 | 4.5 | 3.35 |
 | `wrist_roll`    | revolute | ±2.7925 | 4.5 | 3.35 |
-| `gripper`       | revolute | −0.1745 – 1.7453 | 4.5 | 3.35 |
+| `gripper`       | revolute | 0 — 1 (normalised, **not** rad) | 4.5 | 3.35 |
+
+The gripper row is the one exception to the "Limits (rad)" heading: that
+channel carries a normalised `[0 = closed, 1 = open]` jaw fraction, and
+`position_limits` declares the unit the safety envelope and the runner's
+pre-clamp compare against. The jaw's mechanical `[−0.1745, 1.7453] rad`
+range lives in `sim.grippers[].ctrl_range` and the URDF (issue #62).
 
 MJCF reference: `robot_descriptions:so_arm101_mj_description` —
 `TheRobotStudio/SO-ARM100/Simulation/SO101/so101_new_calib.xml`

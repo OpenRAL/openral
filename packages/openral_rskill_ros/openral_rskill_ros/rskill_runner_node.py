@@ -2547,8 +2547,12 @@ def _make_policy_adapter_skill(
         flush=True,
     )
     # Per-joint absolute clamping bounds taken straight from the
-    # RobotDescription (URDF / MJCF) joint limits — same limits the
-    # safety_kernel's envelope encodes. Without this, an out-of-distribution
+    # RobotDescription's declared ``position_limits`` — same limits the
+    # safety_kernel's envelope encodes. These are in the unit of the value
+    # that travels on each channel (radians/metres for arm joints, a
+    # normalised [0, 1] fraction for a ``normalised`` gripper), NOT
+    # unconditionally the URDF's mechanical range — see ``JointSpec``
+    # and issue #62. Without this, an out-of-distribution
     # checkpoint can emit a joint target a few degrees past the mechanical
     # range; the kernel correctly rejects + estops, the robot never moves,
     # and the operator sees nothing happen. In hardware the motors / firmware

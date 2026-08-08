@@ -542,7 +542,18 @@ class JointSpec(BaseModel):
         parent_link: Parent link name.
         child_link: Child link name.
         axis_xyz: Rotation/translation axis unit vector.
-        position_limits: (min, max) in radians or meters.
+        position_limits: (min, max) in the unit of the value that travels
+            on this channel — radians or metres for arm joints, and
+            ``(0.0, 1.0)`` for a gripper whose HAL contract is a normalised
+            jaw fraction (i.e. one declared ``normalised`` in
+            :attr:`SimDescription.grippers`). The safety kernel's envelope,
+            the rSkill runner's pre-clamp and the supervisor's
+            ``gripper_min`` / ``gripper_max`` all compare a **commanded
+            Action value** against these bounds, so declaring a normalised
+            gripper's mechanical radian range here stops the envelope from
+            constraining that channel at all (issue #62). A mechanical range
+            that differs from the channel unit belongs in
+            :attr:`SimGripperDescription.ctrl_range` / the URDF.
         velocity_limit: Maximum velocity.
         effort_limit: Maximum effort (N or Nm).
         has_position_sensor: Whether position feedback is available.

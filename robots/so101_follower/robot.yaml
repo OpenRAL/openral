@@ -9,9 +9,11 @@
 #
 # Joint kinematic detail is taken from the public SO-101 MJCF in
 # ``robot_descriptions`` / ``TheRobotStudio/SO-ARM100/Simulation/SO101``
-# (the ``new_calib`` variant). ``position_limits`` are in radians
+# (the ``new_calib`` variant). Arm ``position_limits`` are in radians
 # despite the lerobot SDK exposing degrees — OpenRAL keeps the
-# URDF-native units.
+# URDF-native units. The *gripper* is the documented exception: its
+# channel carries a normalised [0, 1] jaw fraction, so its limits are
+# ``[0.0, 1.0]`` — see the note on that joint (issue #62).
 #
 # Manifest joint order is the kinematic chain order:
 #   shoulder_pan → shoulder_lift → elbow_flex → wrist_flex → wrist_roll → gripper
@@ -100,7 +102,17 @@ joints:
     parent_link: "gripper_base"
     child_link: "moving_jaw"
     axis_xyz: [0.0, 0.0, 1.0]
-    position_limits: [-0.1745, 1.7453]
+    # NORMALISED jaw fraction — [0 = closed, 1 = open] — NOT the jaw's
+    # mechanical radian range. `position_limits` is the unit of the value that
+    # travels on this channel (the safety kernel's envelope, the runner's
+    # pre-clamp and the supervisor's gripper_min/max all read it as such), and
+    # the SO-ARM HAL contract puts a [0, 1] fraction here
+    # (`MujocoArmHAL._gripper_command_to_raw`, `SO100FollowerHAL`). The jaw's
+    # mechanical range lives in `sim.grippers[].ctrl_range` below and in the
+    # URDF, which is where the [-0.1745, 1.7453] rad span belongs. Declaring
+    # radians here left the envelope not constraining the channel at all — a
+    # malformed 1.5 fraction cleared the check and reached the HAL (issue #62).
+    position_limits: [0.0, 1.0]
     velocity_limit: 4.5
     effort_limit: 3.35
     actuator_kind: "servo"
