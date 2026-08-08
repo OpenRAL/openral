@@ -56,22 +56,25 @@ merge PRs to master  →  release-please computes the bump  →  release PR
 
 ## Check the release PR against `git log`
 
-release-please parses each commit message with a conventional-commits grammar.
-A message it cannot parse is **skipped silently** — no error, no entry in the
-changelog, no contribution to the bump. Large squash-merges are the usual
-casualty: GitHub composes the squash body from every sub-commit, and one
-prose line containing source syntax is enough to fail the whole message.
+release-please expands a squash-merge body: GitHub composes it from every
+sub-commit, and each `* type(scope): subject` line is parsed as its own
+entry. When the body fails the conventional-commits grammar — one prose line
+containing source syntax is enough — the expansion is **dropped silently**.
+The commit's own subject still lands, so the failure looks like a normal
+one-line entry rather than an error.
 
-A real example on this repo — `cc6182a` (PR #43), a 3658-line squash of ~150
-sub-commits, fails to parse on the body line:
+A real example on this repo: `cc6182a` (PR #43) is a 3658-line squash of ~150
+sub-commits whose body fails to parse on the line
 
 ```
 isinstance(x, (int, float)) admits bool
 ```
 
-Everything in that PR is therefore missing from the generated changelog,
-including a `refactor(reasoner)!` sub-commit with a `BREAKING CHANGE:` footer.
-Nothing warns you.
+In the 0.3.0 changelog it appears as a single line under **Changed** — its
+own subject, `perf(sensors): 9x faster skill load…`. The ~150 sub-commits are
+absent, and so is the `refactor(reasoner)!` sub-commit's `BREAKING CHANGE:`
+footer: 0.3.0 has no "⚠ BREAKING CHANGES" section even though the release
+removes the `OPENRAL_REASONER_LLM_*` contract. Nothing warns you.
 
 So before merging a release PR, diff its changelog against the range it
 covers:
@@ -82,8 +85,15 @@ git log --no-merges --format='%s' v<last>..origin/master
 
 Anything in that list with a user-facing type (`feat`, `fix`, `refactor`,
 `perf`) that is absent from the PR's changelog was dropped — add it by hand.
-The changelog body is editable, and editing it is the intended fix; the merged
-commit message cannot be corrected without rewriting `master`.
+Check large squashes line by line, and check for a missing "⚠ BREAKING
+CHANGES" section against `git log --grep='BREAKING CHANGE'`. The changelog
+body is editable, and editing it is the intended fix; the merged commit
+message cannot be corrected without rewriting `master`.
+
+A merge commit needs the same care in the other direction: keep its message
+free of any `type(scope): subject` line, or release-please parses the merge
+*and* the branch commit and the entry appears twice. The 0.3.0 changelog
+carries exactly that duplicate for `feat(release)` (`f1d1b1f` and `5ba709a`).
 
 Two habits keep this rare: prefer several focused PRs over one very large
 squash, and keep code snippets out of commit bodies (describe the fix in

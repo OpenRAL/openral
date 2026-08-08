@@ -6,6 +6,7 @@
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
   "pull-request-title-pattern": "chore(release): v${version}",
+  "group-pull-request-title-pattern": "chore(release): v${version}",
   "signoff": "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
   "changelog-sections": [
     { "type": "feat", "section": "Added" },
