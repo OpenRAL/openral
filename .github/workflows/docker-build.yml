@@ -39,6 +39,9 @@ on:
   pull_request:
     paths:
       - docker/inference/**
+      # The build context definition: excluding a path here changes what every
+      # COPY sees, so it is a real build input.
+      - .dockerignore
       - pyproject.toml
       - uv.lock
       - packages/**
@@ -54,6 +57,9 @@ on:
     branches: [master]
     paths:
       - docker/inference/**
+      # The build context definition: excluding a path here changes what every
+      # COPY sees, so it is a real build input.
+      - .dockerignore
       - pyproject.toml
       - uv.lock
       - packages/**
@@ -145,12 +151,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # PRs only READ the cache (a PR cannot poison it); master pushes also
-      # WRITE it. mode=max exports the builder stage's layers too — that is
-      # where the expensive apt + uv-sync work lives in the multi-stage
-      # Dockerfile, and mode=min would only cache the final stage.
+      # `mode=max` on every export: it includes the builder stage's layers, not
+      # just the final stage's, and the builder is where the expensive apt +
+      # uv-sync work lives in this multi-stage Dockerfile.
+      #
+      # PRs previously READ the master cache and wrote nothing. That meant the
+      # second commit on a branch could not reuse anything the first commit had
+      # just built — every push re-ran the same work against the same stale
+      # master cache. A PR-scoped cache ref fixes that: commit N writes it,
+      # commit N+1 reads it, and the branch converges on "only my newest diff
+      # rebuilds".
+      #
+      # It is scoped per PR rather than shared because a shared writable cache
+      # is a cross-PR trust boundary — any contributor could poison the layers
+      # every other build imports. Fork PRs get a read-only GITHUB_TOKEN and so
+      # cannot write GHCR at all; they are detected here and left reading the
+      # master cache only, exactly as before.
+      #
+      # `docker-build-cache-cleanup.yml` deletes the ref when the PR closes.
       - name: Build openral:x86 (GStreamer-free)
         run: |
+          pr_cache=""
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+             && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            pr_cache="$IMAGE:buildcache-pr-${{ github.event.number }}"
+          fi
+
+          # Master's cache is always readable; the PR's own cache is listed
+          # first so buildkit prefers the fresher, branch-local layers.
+          cache_from="--cache-from type=registry,ref=$IMAGE:buildcache"
           cache_to=""
           case "${{ github.event_name }}" in
             push)
@@ -163,15 +192,25 @@ jobs:
               # master, where a broken exporter would fail the publish build.
               cache_to="--cache-to type=registry,ref=$IMAGE:buildcache-dispatch,mode=max"
               ;;
+            pull_request)
+              if [ -n "$pr_cache" ]; then
+                cache_from="--cache-from type=registry,ref=$pr_cache $cache_from"
+                cache_to="--cache-to type=registry,ref=$pr_cache,mode=max"
+                echo "PR-scoped layer cache: $pr_cache"
+              else
+                echo "Fork PR — reading the master cache only, no cache write."
+              fi
+              ;;
           esac
           # `--load` is a no-op under the docker driver (the build already
           # writes into the daemon's containerd store); it is kept so the
           # command still means the same thing if the driver is ever changed
           # back.
-          # shellcheck disable=SC2086 -- intentional word-splitting of $cache_to.
+          # shellcheck disable=SC2086 -- intentional word-splitting of the
+          # $cache_from / $cache_to flag strings.
           docker buildx build --progress=plain \
             -f docker/inference/Dockerfile.x86 \
-            --cache-from type=registry,ref=$IMAGE:buildcache \
+            $cache_from \
             $cache_to \
             -t openral:x86 --load .
 
