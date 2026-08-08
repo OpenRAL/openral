@@ -142,33 +142,42 @@ Without the secret the job still runs and says so with a `::warning::`. Recover
 a stranded tag by dispatching `release-pypi.yml` manually with `target=pypi`,
 `confirm=YES`.
 
-## Trial runs — currently unavailable
+## Trial runs
 
 `release-pypi.yml` accepts a `workflow_dispatch` with `target=testpypi` (the
-default), which is meant to publish to TestPyPI without confirmation so you can
-validate packaging without burning a version number.
+default), which publishes to TestPyPI without confirmation. Use it to validate
+packaging without burning a version number — `skip-existing` means re-running
+it against an already-published version is a no-op, so it costs nothing.
 
-**It does not work today.** TestPyPI has no trusted publisher matching
-`OpenRAL/openral` + `release-pypi.yml`, so the OIDC exchange fails before
-anything is uploaded:
+It is worth doing before any release that changes packaging metadata, because
+it is the only way to see what installers will actually read. After it runs,
+check the published requirements rather than the source:
 
+```sh
+curl -s https://test.pypi.org/pypi/openral-cli/<version>/json \
+  | python3 -c "import sys,json;[print(r) for r in json.load(sys.stdin)['info']['requires_dist']]"
 ```
-invalid-publisher: valid token, but no corresponding publisher
-  sub: repo:OpenRAL/openral:ref:refs/heads/master
-  workflow_ref: OpenRAL/openral/.github/workflows/release-pypi.yml@refs/heads/master
-```
 
-Every `target=testpypi` dispatch has failed this way (run 31258658584 on
-2026-08-08; three more on 2026-07-09). The 0.1.0 files sitting on TestPyPI
-predate the move into the OpenRAL org, which is the likely reason the
-publisher no longer matches. Registering one with the claims in the
-`release-pypi.yml` header restores the path.
+The 0.2.0 trial confirmed every `openral-*` sibling carries its `==` pin, with
+extras and markers intact (`openral-observability[dashboard]==0.2.0`,
+`pygobject>=3.42; extra == "gstreamer"`). Neither `uv lock --check` nor the
+unit tests can show that — they read source, and `[tool.uv.sources]` is
+stripped at build time.
 
-Real PyPI is unaffected: its publisher works, and 0.1.0 and 0.2.0 are
-published for all 14 packages. Note that trusted publishing matches on the
-ref, so a tag push (`refs/tags/vX.Y.Z`) and a dispatch off master
-(`refs/heads/master`) present different claims — a green tag release does not
-imply a green dispatch.
+### When the token exchange fails
+
+A `invalid-publisher: valid token, but no corresponding publisher` error means
+the OIDC claims do not match any registered trusted publisher — nothing is
+uploaded. Register one per project with `owner: OpenRAL`, `repo: openral`,
+`workflow: release-pypi.yml`, and **no** environment name (the workflow
+declares none, so the claim is `environment: MISSING` and a publisher that
+expects one will never match).
+
+Trusted publishing also matches on the ref, so claims are not portable between
+triggers: a tag push presents `refs/tags/vX.Y.Z`, a dispatch off master
+presents `refs/heads/master`. A publisher with no ref restriction accepts
+both; one restricted to tags rejects the dispatch. A green tag release
+therefore does not imply a green dispatch, and vice versa.
 
 ## What is *not* versioned by this
 
