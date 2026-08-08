@@ -42,6 +42,41 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    which runs the same fast quality gate as PR CI and then publishes each
    package via PyPI Trusted Publishing.
 
+## Check the release PR against `git log`
+
+release-please parses each commit message with a conventional-commits grammar.
+A message it cannot parse is **skipped silently** — no error, no entry in the
+changelog, no contribution to the bump. Large squash-merges are the usual
+casualty: GitHub composes the squash body from every sub-commit, and one
+prose line containing source syntax is enough to fail the whole message.
+
+A real example on this repo — `cc6182a` (PR #43), a 3658-line squash of ~150
+sub-commits, fails to parse on the body line:
+
+```
+isinstance(x, (int, float)) admits bool
+```
+
+Everything in that PR is therefore missing from the generated changelog,
+including a `refactor(reasoner)!` sub-commit with a `BREAKING CHANGE:` footer.
+Nothing warns you.
+
+So before merging a release PR, diff its changelog against the range it
+covers:
+
+```sh
+git log --no-merges --format='%s' v<last>..origin/master
+```
+
+Anything in that list with a user-facing type (`feat`, `fix`, `refactor`,
+`perf`) that is absent from the PR's changelog was dropped — add it by hand.
+The changelog body is editable, and editing it is the intended fix; the merged
+commit message cannot be corrected without rewriting `master`.
+
+Two habits keep this rare: prefer several focused PRs over one very large
+squash, and keep code snippets out of commit bodies (describe the fix in
+prose, or fence the snippet in a PR comment instead).
+
 ## What you have to do
 
 Write Conventional Commits (already required — [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) §4.2).
