@@ -42,6 +42,12 @@ on:
   pull_request:
     paths:
       - docker/inference/**
+      # ...but README.md is NOT a build input: it is never COPYed into the
+      # image and cannot change a layer. Without this negation a docs-only edit
+      # in this directory triggers a full image build (~7 min even on a total
+      # cache hit, because the image still has to be materialized). Negations
+      # must come AFTER the pattern they narrow — later patterns win.
+      - '!docker/inference/README.md'
       # The build context definition: excluding a path here changes what every
       # COPY sees, so it is a real build input.
       - .dockerignore
@@ -60,6 +66,12 @@ on:
     branches: [master]
     paths:
       - docker/inference/**
+      # ...but README.md is NOT a build input: it is never COPYed into the
+      # image and cannot change a layer. Without this negation a docs-only edit
+      # in this directory triggers a full image build (~7 min even on a total
+      # cache hit, because the image still has to be materialized). Negations
+      # must come AFTER the pattern they narrow — later patterns win.
+      - '!docker/inference/README.md'
       # The build context definition: excluding a path here changes what every
       # COPY sees, so it is a real build input.
       - .dockerignore
@@ -111,9 +123,8 @@ jobs:
       # build — 45% of the total — split as `exporting layers 278.1s` +
       # `sending tarball 196.3s`, to move 7.9 GB of compressed layers that
       # buildkit had *just* finished assembling. It is paid in full on every
-      # run, including a
-      # hypothetical 100% cache hit, which is why cache tuning alone could never
-      # get this workflow under ~11 minutes.
+      # run, including a hypothetical 100% cache hit, which is why cache tuning
+      # alone could never get this workflow under ~11 minutes.
       #
       # With the containerd store, the built image lands directly in the store
       # the daemon already reads from, so there is no export and no import. The
