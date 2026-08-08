@@ -2,22 +2,24 @@ name: docker-build
 # Builds the open GStreamer-free deploy image (`openral:x86`) from
 # docker/inference/Dockerfile.x86.
 #
-# Path-filtered auto-triggers (re-enabled 2026-08-03 — the earlier "out of
-# Actions credits" freeze is over; every other workflow has been running for
-# weeks):
-#   * pull_request → build + smoke only (no push)
-#   * push to master → build + push openral:x86 to GHCR
-# The `paths:` filter means it only runs when the image's build inputs change
-# (or the live-ROS tests it hosts), not on every commit. workflow_dispatch stays
-# for manual runs: it never pushes an image, but it DOES write a scratch layer
-# cache ref (`:buildcache-dispatch`) so the registry cache export path can be
-# exercised on demand without touching the cache master reads.
+# The only auto-trigger is `push` to master → build + push openral:x86 to GHCR.
+# It ran on pull_request too until 2026-08-08; at ~15-20 min of runner time per
+# commit it was the most expensive thing in CI, and it re-ran on every push to a
+# branch. Master-only means a broken image (or a live-ROS regression) is caught
+# on merge rather than in review — run the workflow by hand on the branch when a
+# PR actually touches the image or those tests.
+#
+# The `paths:` filter means even master only builds when the image's build
+# inputs change (or the live-ROS tests it hosts). workflow_dispatch is the
+# manual escape hatch: it never pushes an image, but it DOES write a scratch
+# layer cache ref (`:buildcache-dispatch`) so the registry cache export path can
+# be exercised on demand without touching the cache master reads.
 #
 # The paths deliberately include python/**, packages/**, cpp/** and the lock
 # files: the image BAKES the code in (COPY + uv sync + colcon build), it does
 # not mount it, so code changes are real build inputs. Rebuild cost is kept
 # down by a registry-backed BuildKit layer cache on GHCR ($IMAGE:buildcache):
-# master pushes write it, every run reads it, so a typical PR reuses the
+# master pushes write it, every run reads it, so a typical build reuses the
 # CUDA/apt/venv layers and only re-runs the layers its diff invalidates.
 #
 # ── Where the time actually goes ─────────────────────────────────────
@@ -36,32 +38,9 @@ name: docker-build
 # below and by the layer split in docker/inference/Dockerfile.x86.
 #
 # Note what is NOT on that list: pushing to GHCR. The push step is gated on
-# `github.event_name == 'push'`, so it does not run on a PR at all.
+# `github.event_name == 'push'`, so a workflow_dispatch run skips it.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - docker/inference/**
-      # ...but README.md is NOT a build input: it is never copied into the
-      # image and cannot change a layer. Without this negation a docs-only edit
-      # in this directory triggers a full image build (~7 min even on a total
-      # cache hit, because the image still has to be materialized). Negations
-      # must come AFTER the pattern they narrow — later patterns win.
-      - '!docker/inference/README.md'
-      # The build context definition: excluding a path here changes what every
-      # COPY sees, so it is a real build input.
-      - .dockerignore
-      - pyproject.toml
-      - uv.lock
-      - packages/**
-      - cpp/**
-      - python/**
-      - .github/workflows/docker-build.yml
-      # The live-ROS suite runs in this job and nowhere else (issue #46), so a
-      # diff that only touches those tests must still rebuild + run them.
-      - scripts/ros_live_tests.sh
-      - tests/integration/test_reasoner_*.py
-      - tests/integration/test_critic_producer_node.py
   push:
     branches: [master]
     paths:
@@ -157,8 +136,8 @@ jobs:
           # The daemon's own buildkit, writing straight to the containerd store.
           driver: docker
 
-      # Cache reads need auth on pull_request runs too (the GHCR package may
-      # be private); GITHUB_TOKEN carries packages:read for same-repo PRs.
+      # Needed to read the layer cache and to push the image; GITHUB_TOKEN
+      # carries both packages:read and packages:write here.
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
@@ -169,31 +148,8 @@ jobs:
       # `mode=max` on every export: it includes the builder stage's layers, not
       # just the final stage's, and the builder is where the expensive apt +
       # uv-sync work lives in this multi-stage Dockerfile.
-      #
-      # PRs previously READ the master cache and wrote nothing. That meant the
-      # second commit on a branch could not reuse anything the first commit had
-      # just built — every push re-ran the same work against the same stale
-      # master cache. A PR-scoped cache ref fixes that: commit N writes it,
-      # commit N+1 reads it, and the branch converges on "only my newest diff
-      # rebuilds".
-      #
-      # It is scoped per PR rather than shared because a shared writable cache
-      # is a cross-PR trust boundary — any contributor could poison the layers
-      # every other build imports. Fork PRs get a read-only GITHUB_TOKEN and so
-      # cannot write GHCR at all; they are detected here and left reading the
-      # master cache only, exactly as before.
-      #
-      # `docker-build-cache-cleanup.yml` deletes the ref when the PR closes.
       - name: Build openral:x86 (GStreamer-free)
         run: |
-          pr_cache=""
-          if [ "${{ github.event_name }}" = "pull_request" ] \
-             && [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
-            pr_cache="$IMAGE:buildcache-pr-${{ github.event.number }}"
-          fi
-
-          # Master's cache is always readable; the PR's own cache is listed
-          # first so buildkit prefers the fresher, branch-local layers.
           cache_from="--cache-from type=registry,ref=$IMAGE:buildcache"
           cache_to=""
           case "${{ github.event_name }}" in
@@ -206,15 +162,6 @@ jobs:
               # change to the build driver or the image store before it reaches
               # master, where a broken exporter would fail the publish build.
               cache_to="--cache-to type=registry,ref=$IMAGE:buildcache-dispatch,mode=max"
-              ;;
-            pull_request)
-              if [ -n "$pr_cache" ]; then
-                cache_from="--cache-from type=registry,ref=$pr_cache $cache_from"
-                cache_to="--cache-to type=registry,ref=$pr_cache,mode=max"
-                echo "PR-scoped layer cache: $pr_cache"
-              else
-                echo "Fork PR — reading the master cache only, no cache write."
-              fi
               ;;
           esac
           # `--load` is a no-op under the docker driver (the build already
@@ -267,8 +214,8 @@ jobs:
       #
       # tests/ + conftest.py + scripts/ are NOT baked into the deploy image
       # (it ships a runtime, not a test tree), so bind-mount them from the
-      # checkout — that also guarantees the PR's version of the tests runs
-      # against the PR's image. No GPU on the runner and none needed: the
+      # checkout — that also guarantees the commit's version of the tests runs
+      # against the commit's image. No GPU on the runner and none needed: the
       # free-VRAM readings are pinned at the nvidia-smi process boundary.
       - name: Live ROS tests (OPENRAL_TEST_ROS_LIVE)
         run: |
@@ -292,7 +239,8 @@ jobs:
           docker run --rm openral:x86 | grep -qi "deploy"
           echo "OK: bare-openral entrypoint (doctor + default CMD)"
 
-      # Push only on merge to master (never on PRs). GHCR login already
+      # Push only on merge to master (a workflow_dispatch run never pushes).
+      # GHCR login already
       # happened above (it is needed unconditionally for the layer cache).
       - name: Tag + push to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

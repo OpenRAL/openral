@@ -161,6 +161,12 @@ nowhere else. The `docker-build` workflow is the only CI surface with a real
 ROS 2 install; the `test-selective` runner has none, so anything not listed here
 silently `importorskip`s in CI.
 
+That workflow runs on **merge to `master`**, not on pull requests (a full image
+build is ~15-20 min of runner time). Run it yourself with `just test-ros-live`
+while developing, or dispatch the workflow against your branch
+(`gh workflow run docker-build.yml --ref <branch>`) before merging a change to
+these tests.
+
 One live test — `tests/unit/test_gstreamer_perception_tee.py`'s end-to-end
 publish — is deliberately excluded: it also needs PyGObject, which the open
 deploy image does not ship (the GStreamer media stack is OpenRAL Pro). `just

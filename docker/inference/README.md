@@ -166,18 +166,24 @@ export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
 ## CI
 
-`.github/workflows/docker-build.yml` builds this image **only when its inputs
-change** (`docker/inference/**`, `pyproject.toml`, `uv.lock`, `packages/**`,
-`cpp/**`, or the workflow itself). On a pull request it builds and runs the
-`docker-smoke-x86-deploy` smoke (asserts `gi` absent, cv2 / feetech /
-onnxruntime / omdet present, `deploy run --dry-run` resolves) but does **not**
-push. On merge to `master` it builds and pushes `openral:x86` to GHCR. The image
-is ~25 GB, so the workflow frees runner disk before building.
+`.github/workflows/docker-build.yml` builds this image **on merge to `master`
+only**, and only when its inputs change (`docker/inference/**`,
+`pyproject.toml`, `uv.lock`, `packages/**`, `cpp/**`, or the workflow itself).
+It builds, runs the smoke tests (asserts `gi` absent, cv2 / feetech /
+onnxruntime / omdet present, `deploy run --dry-run` resolves) plus the live-ROS
+suite, then pushes `openral:x86` to GHCR. The image is ~25 GB, so the workflow
+frees runner disk before building.
+
+It does **not** run on pull requests: a full build is ~15-20 min of runner time
+and it re-ran on every push to a branch. If your PR touches the image or the
+live-ROS tests, run the workflow by hand against your branch
+(`gh workflow run docker-build.yml --ref <branch>`) — a dispatch run builds and
+tests exactly the same way, it just never pushes the image.
 
 ### Build caching
 
 The image is large and its code is baked in, not mounted, so a naive rebuild is
-~30 minutes. Four mechanisms keep an incremental PR build far below that. If you
+~30 minutes. Three mechanisms keep an incremental build far below that. If you
 change the Dockerfile's layer order, keep them in mind — they are easy to defeat
 by accident.
 
@@ -192,13 +198,7 @@ by accident.
    `$IMAGE:buildcache` (`mode=max`, so the builder stage's layers are cached
    too, not just the final stage); every run reads it.
 
-3. **Per-PR layer cache.** Same-repo PRs additionally read and write
-   `$IMAGE:buildcache-pr-<n>`, so the second commit on a branch reuses what the
-   first one built instead of starting again from the master cache. Fork PRs
-   have a read-only token and are detected and skipped. The ref is deleted when
-   the PR closes, by `docker-build-cache-cleanup.yml`.
-
-4. **Layer ordering that isolates the two expensive steps.** Two rules:
+3. **Layer ordering that isolates the two expensive steps.** Two rules:
    - **The dependency sync must not depend on Python source.** A `manifests`
      stage prunes `python/` to the workspace members' `pyproject.toml` files, and
      `uv sync --no-install-workspace` installs the 215-package third-party
