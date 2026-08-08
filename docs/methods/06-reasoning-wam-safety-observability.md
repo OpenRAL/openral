@@ -359,8 +359,9 @@ _Producer-side helpers for recording rich span attributes on OpenRAL hot-path sp
 ### `python/observability/src/openral_observability/system_metrics.py`
 _Background sampler for the `openral.system.*` gauges; feeds the dashboard's System Health card via `psutil` (CPU + RAM) and optional `pynvml` (GPU memory + util)._
 
-- `start_system_metrics_collector(*, interval_s=1.0) -> bool` — Start a daemon thread that samples host metrics every `interval_s` seconds. Returns `False` and a quiet no-op when neither `psutil` nor `pynvml` is importable. Idempotent; re-starts retune the interval. (L45)
-- `stop_system_metrics_collector(*, timeout_s=2.0) -> None` — Signal the collector thread to stop and join. Safe to call when not running. (L75)
+- `start_system_metrics_collector(*, interval_s=1.0) -> bool` — Start a daemon thread that samples host metrics every `interval_s` seconds. Returns `False` and a quiet no-op when neither `psutil` nor `pynvml` is importable. Idempotent; re-starts retune the interval. (L52)
+- `stop_system_metrics_collector(*, timeout_s=2.0) -> None` — Signal the collector thread to stop and join. Safe to call when not running. (L82)
+- `_nvml_query(read, what, gpu_index) -> Any | None` — Run one NVML read, returning `None` when the device does not implement it. Each GPU metric is queried independently so an unsupported call cannot cost the whole tick: on a unified-memory SoC (GB10 / DGX Spark, Thor) `nvmlDeviceGetMemoryInfo` raises `NVMLError_NotSupported` — no discrete VRAM pool — while `nvmlDeviceGetUtilizationRates` works, and previously the former propagated out of `_sample_once` and dropped utilisation too, logging a traceback per interval. Degradation is logged once per (device, query) via `_UNSUPPORTED_LOGGED`, since it is a permanent hardware property. Metrics-path counterpart to the unified-memory handling in `openral_detect.probes.gpu`. (L147)
 
 ### `python/observability/src/openral_observability/propagation.py`
 _W3C TraceContext inject / extract for cross-process trace correlation._
