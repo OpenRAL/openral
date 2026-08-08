@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -262,11 +263,27 @@ def test_check_just_present() -> None:
         assert _check_just().status == "ok"
 
 
-def test_check_just_missing() -> None:
+def test_check_just_missing_with_a_justfile_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # `just` absence is non-fatal (`warn`, not `missing`) so `openral doctor`
     # still exits 0 on hosts that only need to run skills.
+    (tmp_path / "Justfile").write_text("default:\n    @echo hi\n")
+    monkeypatch.chdir(tmp_path)
     with patch("openral_cli.main.shutil.which", return_value=None):
         assert _check_just().status == "warn"
+
+
+def test_check_just_missing_without_a_justfile_is_not_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Tier-0 curl-bash install has no checkout, so there are no recipes for
+    # `just` to run. Warning there is noise, not a finding.
+    monkeypatch.chdir(tmp_path)
+    with patch("openral_cli.main.shutil.which", return_value=None):
+        result = _check_just()
+    assert result.status == "info"
+    assert "no Justfile" in result.details
 
 
 # ── _check_reasoner_llm ───────────────────────────────────────────────────────

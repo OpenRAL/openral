@@ -152,6 +152,18 @@ uv tool install --force --python 3.12 \
     ${extra_index_args[@]+"${extra_index_args[@]}"} \
     ${torch_backend_args[@]+"${torch_backend_args[@]}"} "${spec}"
 
+# ── 3b. just (user-local task runner) ──────────────────────────────────────────
+
+# `just` is the repo's task runner and shows up in every doc snippet, so a
+# Tier-0 host that later clones the repo needs it. It installs user-local via
+# uv (the `rust-just` PyPI wheel) — no sudo, unlike the /usr/local/bin install
+# the system bootstrap does. Non-fatal: a failure here must not sink the CLI
+# install, which is what the user actually asked for.
+if ! command -v just >/dev/null 2>&1; then
+    info "installing just (uv tool install rust-just)"
+    uv tool install rust-just || warn "could not install just — \`openral\` itself is unaffected."
+fi
+
 # ── 4. PATH guidance ───────────────────────────────────────────────────────────
 
 # `uv tool install` prints its own PATH instructions; we re-emit a compact

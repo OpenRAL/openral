@@ -13,6 +13,8 @@ The probes must:
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -89,6 +91,100 @@ class TestGpuProbe:
         result = probe_gpus(warnings=warnings_sink)
         assert isinstance(result.nvidia, list)
         assert result.backend in {"none", "nvidia-smi", "lspci", "tegra-release", "system_profiler"}
+
+
+class TestUnifiedMemoryHosts:
+    """A GPU with no discrete VRAM pool must still be detected.
+
+    On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor)
+    ``nvmlDeviceGetMemoryInfo`` returns NVML_ERROR_NOT_SUPPORTED and
+    ``nvidia-smi`` prints ``[N/A]`` for memory.total. Before the fallback below,
+    that single unsupported call aborted the whole enumeration and the host
+    reported "GPU absent" — taking gpu_supported_dtypes and the cuMotion gate
+    down with it. Measured on a DGX Spark (GB10, cc 12.1, CUDA 13.0).
+    """
+
+    def test_system_memory_matches_proc_meminfo(self) -> None:
+        # Fully real: the fallback figure must agree with the kernel's own
+        # numbers, and must report *available* memory rather than the
+        # page-cache-starved SC_AVPHYS_PAGES (which read ~1 GiB of 122 GiB).
+        from openral_detect.probes.gpu import _system_memory_mib
+
+        meminfo = Path("/proc/meminfo")
+        if not meminfo.is_file():
+            pytest.skip("no /proc/meminfo on this platform")
+        result = _system_memory_mib()
+        assert result is not None
+        total_mib, avail_mib = result
+        fields = {
+            line.split(":")[0]: int(line.split()[1])
+            for line in meminfo.read_text().splitlines()
+            if ":" in line and len(line.split()) > 1
+        }
+        # Kernel MemTotal excludes firmware-reserved regions, so allow 10%.
+        assert total_mib == pytest.approx(fields["MemTotal"] // 1024, rel=0.1)
+        assert avail_mib == fields["MemAvailable"] // 1024
+        assert 0 < avail_mib <= total_mib
+
+    def test_cuda_toolkit_prefers_cuda_home_over_path(self) -> None:
+        # A distro nvcc at /usr/bin (Ubuntu ships 12.0) must not shadow a newer
+        # /usr/local/cuda-N install — that is what closed the cuMotion CUDA>=13
+        # gate on a Spark that genuinely has CUDA 13.0.
+        from openral_detect.probes.gpu import _CUDA_HOME_NVCC, _probe_cuda_toolkit_version
+
+        if not _CUDA_HOME_NVCC.is_file():
+            pytest.skip("no /usr/local/cuda/bin/nvcc on this host")
+        raw = subprocess.check_output([str(_CUDA_HOME_NVCC), "--version"], text=True)
+        expected = next(ln for ln in raw.splitlines() if "release" in ln)
+        expected_version = expected.split("release")[1].split(",")[0].strip()
+        assert _probe_cuda_toolkit_version() == expected_version
+
+    def test_gpu_survives_an_unsupported_memory_query(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        warnings_sink: list[str],
+    ) -> None:
+        # The NVML driver boundary is stubbed the same way the existing
+        # pynvml-ImportError test above stubs it — there is no way to make a
+        # real discrete GPU answer NOT_SUPPORTED, and the whole point is the
+        # driver's response.
+        import sys
+        import types
+
+        class _NotSupportedError(Exception):
+            pass
+
+        class _Pci:
+            # Mirrors NVML's own field name, which is camelCase.
+            busId = "0000000F:01:00.0"  # noqa: N815
+
+        stub = types.SimpleNamespace(
+            nvmlInit=lambda: None,
+            nvmlShutdown=lambda: None,
+            nvmlDeviceGetCount=lambda: 1,
+            nvmlSystemGetDriverVersion=lambda: "580.126.09",
+            nvmlDeviceGetHandleByIndex=lambda i: object(),
+            nvmlDeviceGetName=lambda h: "NVIDIA GB10",
+            nvmlDeviceGetCudaComputeCapability=lambda h: (12, 1),
+            nvmlDeviceGetPciInfo=lambda h: _Pci(),
+        )
+
+        def _no_memory(handle: object) -> None:
+            raise _NotSupportedError("NVMLError_NotSupported(3)")
+
+        stub.nvmlDeviceGetMemoryInfo = _no_memory
+        monkeypatch.setitem(sys.modules, "pynvml", stub)
+
+        result = probe_gpus(warnings=warnings_sink)
+        assert result.backend == "nvml", "unified-memory GPU was dropped from enumeration"
+        gpu = next(g for g in result.nvidia if g.name == "NVIDIA GB10")
+        assert gpu.cuda_compute_capability == (12, 1)
+        # VRAM fell back to real system RAM, so downstream gates see a real number.
+        assert gpu.vram_total_mib > 0
+        assert gpu.supported_dtypes, "no dtypes derived — the cc gate never ran"
+        assert any("unified memory" in w for w in warnings_sink), (
+            "the shared-with-OS caveat must be surfaced, not silently swallowed"
+        )
 
 
 class TestCameraProbes:

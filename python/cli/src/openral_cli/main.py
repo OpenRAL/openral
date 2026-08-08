@@ -639,7 +639,14 @@ def _check_just() -> CheckResult:
     # `just` is a developer-convenience task runner, not a runtime requirement
     # of `openral`; report absence with `warn` rather than `missing` so doctor
     # still exits 0 on hosts that only need to run skills.
-    return CheckResult("just", "ok" if path else "warn", path or "not found")
+    if path:
+        return CheckResult("just", "ok", path)
+    # …and on a Tier-0 install there is no checkout, so there are no recipes for
+    # `just` to run: warning about it is noise. Only a host with a Justfile
+    # nearby is actually missing something.
+    if not any((Path.cwd() / name).is_file() for name in ("Justfile", "justfile")):
+        return CheckResult("just", "info", "not installed (no Justfile here — nothing to run)")
+    return CheckResult("just", "warn", "not found")
 
 
 def _cosmos_autostart_enabled() -> bool:
