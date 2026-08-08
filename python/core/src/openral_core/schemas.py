@@ -2639,18 +2639,28 @@ class QuantizationDtype(str, Enum):
         FP16: 16-bit float (GPU-native, common default).
         BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).
         INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).
+        FP8: 8-bit float, E4M3 (Ada/Hopper+; keeps floating-point dynamic
+            range at INT8's memory cost, which matters for transformer
+            activations that INT8's fixed scale clips). Carried in a TensorRT
+            engine as explicit ``QuantizeLinear``/``DequantizeLinear`` node
+            pairs in the ONNX graph, not as a builder precision flag.
         INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).
-        FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).
+        FP4_NVFP4: NVIDIA FP4 format (Blackwell; highest throughput). Block
+            size 16 with an FP32/FP16/BF16 scale — distinct from the MX
+            formats, which scale per 32 elements with an E8M0 exponent.
 
     Example:
         >>> QuantizationDtype.INT8.value
         'int8'
+        >>> QuantizationDtype.FP8.value
+        'fp8'
     """
 
     FP32 = "fp32"
     FP16 = "fp16"
     BF16 = "bf16"
     INT8 = "int8"
+    FP8 = "fp8"
     INT4 = "int4"
     FP4_NVFP4 = "fp4_nvfp4"
 

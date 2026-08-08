@@ -54,6 +54,13 @@ QUANT_PRESETS: dict[str, QuantizationConfig] = {
         dtype=QuantizationDtype.FP4_NVFP4,
         backend=QuantizationBackend.TENSORRT,
     ),
+    # FP8 is TensorRT-only by construction: it reaches the engine as explicit
+    # Q/DQ node pairs baked into the ONNX graph, not as a runtime cast, so
+    # there is no PyTorch-backend counterpart to pair it with here.
+    "trt_fp8": QuantizationConfig(
+        dtype=QuantizationDtype.FP8,
+        backend=QuantizationBackend.TENSORRT,
+    ),
     "onnx_int8": QuantizationConfig(
         dtype=QuantizationDtype.INT8,
         backend=QuantizationBackend.ONNX,

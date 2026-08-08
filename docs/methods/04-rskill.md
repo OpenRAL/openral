@@ -65,7 +65,7 @@ _Filesystem-based per-host engine cache for compiled skill runtimes._
   - private: `_key_path`
 
 ### `python/rskill/src/openral_rskill/quantization.py`
-- `auto_select_quant(device_info: DeviceInfo) -> QuantizationConfig` — Heuristic to pick dtype/backend. (L72)
+- `auto_select_quant(device_info: DeviceInfo) -> QuantizationConfig` — Heuristic to pick dtype/backend. (L79)
 
 ### `python/rskill/src/openral_rskill/loader.py`
 _rSkill loader — HF Hub download, manifest validation, license guard, local registry._
