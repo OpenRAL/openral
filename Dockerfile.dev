@@ -85,6 +85,12 @@ ENV PATH="/root/.local/bin:${PATH}"
 # just
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
+# The uv cache lives on a BuildKit cache mount and the target venv lives in the
+# image layer — two different filesystems, so uv's default hardlink install mode
+# always fails and falls back with a warning. Mirrors
+# `docker/inference/Dockerfile.x86`.
+ENV UV_LINK_MODE=copy
+
 WORKDIR /workspace
 
 # Copy the whole Python workspace before syncing. This used to copy only

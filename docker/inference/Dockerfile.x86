@@ -139,6 +139,15 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 # moves cold-start skill loads back to seconds.
 ENV UV_COMPILE_BYTECODE=1
 
+# The uv cache lives on a BuildKit cache mount and the target venv lives in the
+# image layer — two different filesystems, so uv's default hardlink install
+# mode always fails and falls back, printing:
+#   warning: Failed to hardlink files; falling back to full copy.
+# Naming the copy mode up front skips the failed-hardlink probe on every one of
+# the ~229 installed packages and silences a warning that has been in every
+# build log to date.
+ENV UV_LINK_MODE=copy
+
 WORKDIR /workspace
 
 # Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
