@@ -9,7 +9,9 @@ name: docker-build
 #   * push to master → build + push openral:x86 to GHCR
 # The `paths:` filter means it only runs when the image's build inputs change
 # (or the live-ROS tests it hosts), not on every commit. workflow_dispatch stays
-# for manual runs (no push).
+# for manual runs: it never pushes an image, but it DOES write a scratch layer
+# cache ref (`:buildcache-dispatch`) so the registry cache export path can be
+# exercised on demand without touching the cache master reads.
 #
 # The paths deliberately include python/**, packages/**, cpp/** and the lock
 # files: the image BAKES the code in (COPY + uv sync + colcon build), it does
