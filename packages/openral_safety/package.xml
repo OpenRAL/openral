@@ -19,7 +19,6 @@
 
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>
-  <depend>rclpy_lifecycle</depend>
   <!-- Chunk-rate safety boundary topics + diagnostics. -->
   <depend>openral_msgs</depend>
   <depend>std_msgs</depend>

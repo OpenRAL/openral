@@ -153,7 +153,11 @@ just sim-libero                     # SmolVLA × LIBERO        (GPU + MUJOCO_GL)
 just sim-xvla-libero                # xVLA × LIBERO           (Florence-2)
 just sim-pi05-libero                # π0.5 × LIBERO           (≥8 GB VRAM)
 just sim-act-libero                 # ACT × LIBERO            (paper protocol)
-just sim-pi05-robocasa              # π0.5 × RoboCasa kitchen (≥8 GB VRAM)
+
+# RoboCasa has no dedicated recipe — drive it through the generic `sim-eval`
+# with one of the in-tree RoboCasa SimScenes (XR-1 is the maintained pairing;
+# there is no π0.5 RoboCasa rSkill).
+just sim-eval scenes/sim/xr1_robocasa_pnp.yaml --rskill rskill://rskills/xr1-robocasa
 
 # BenchmarkScene-tier — `openral benchmark scene --no-update-manifest \
 #     --n-episodes 1 --save-dir` (paper protocol, single rollout for smoke).

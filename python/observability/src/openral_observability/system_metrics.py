@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from openral_observability import metrics, semconv
@@ -35,6 +37,11 @@ from openral_observability import metrics, semconv
 __all__ = ["start_system_metrics_collector", "stop_system_metrics_collector"]
 
 _LOG = logging.getLogger(__name__)
+
+#: Per-(device, query) keys whose "not supported" degradation has already been
+#: logged, so an unsupported NVML call is reported once rather than on every
+#: sampling tick. See :func:`_nvml_query`.
+_UNSUPPORTED_LOGGED: set[str] = set()
 
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
@@ -137,6 +144,49 @@ def _set_abs(
     prev[key] = value
 
 
+def _nvml_query(read: Callable[[], Any], what: str, gpu_index: int) -> Any | None:
+    """Run one NVML read, returning ``None`` when the device does not support it.
+
+    Not every NVML query works on every device. On a unified-memory NVIDIA SoC
+    (GB10 / DGX Spark, Thor) ``nvmlDeviceGetMemoryInfo`` raises
+    ``NVMLError_NotSupported`` — there is no discrete VRAM pool to report —
+    while ``nvmlDeviceGetUtilizationRates`` works fine.
+
+    Previously these reads were unguarded, so that one unsupported call
+    propagated out of :func:`_sample_once` and cost the whole tick: GPU
+    utilisation the device *does* support was dropped along with the memory
+    figures, and the sampler logged a full traceback at ERROR every interval
+    (32 tracebacks in two minutes of a ``deploy sim`` run). ``openral_detect``
+    already degrades gracefully on the same devices; this brings the metrics
+    path in line.
+
+    The degradation is logged once per (device, query) rather than per tick,
+    because it is a permanent property of the hardware, not a transient fault.
+
+    Args:
+        read: Zero-argument callable performing the NVML query.
+        what: Short query name used in the log line and dedup key.
+        gpu_index: NVML device index, for the log line and dedup key.
+
+    Returns:
+        Whatever ``read()`` returned, or ``None`` when it raised.
+    """
+    try:
+        return read()
+    except Exception as exc:
+        key = f"{gpu_index}.{what}"
+        if key not in _UNSUPPORTED_LOGGED:
+            _UNSUPPORTED_LOGGED.add(key)
+            _LOG.info(
+                "system_metrics: GPU %d does not support the %s query (%s); "
+                "that metric is skipped, others keep flowing",
+                gpu_index,
+                what,
+                type(exc).__name__,
+            )
+        return None
+
+
 def _sample_once(
     psutil_mod: Any,
     pynvml_mod: Any,
@@ -157,15 +207,23 @@ def _sample_once(
         if isinstance(name, bytes):
             name = name.decode(errors="replace")
         labels = {semconv.SYSTEM_GPU_INDEX: i, semconv.SYSTEM_GPU_NAME: name}
-        util = pynvml_mod.nvmlDeviceGetUtilizationRates(handle)
-        mem = pynvml_mod.nvmlDeviceGetMemoryInfo(handle)
-        _set_abs(instruments["gpu_util"], prev, f"gpu_util.{i}", float(util.gpu), labels)
-        _set_abs(
-            instruments["gpu_mem_used"], prev, f"gpu_used.{i}", mem.used / (1024 * 1024), labels
-        )
-        _set_abs(
-            instruments["gpu_mem_total"], prev, f"gpu_total.{i}", mem.total / (1024 * 1024), labels
-        )
+        # Query each metric independently: a device that does not implement one
+        # of them must not cost us the others (see `_nvml_query`).
+        util = _nvml_query(partial(pynvml_mod.nvmlDeviceGetUtilizationRates, handle), "util", i)
+        mem = _nvml_query(partial(pynvml_mod.nvmlDeviceGetMemoryInfo, handle), "memory", i)
+        if util is not None:
+            _set_abs(instruments["gpu_util"], prev, f"gpu_util.{i}", float(util.gpu), labels)
+        if mem is not None:
+            _set_abs(
+                instruments["gpu_mem_used"], prev, f"gpu_used.{i}", mem.used / (1024 * 1024), labels
+            )
+            _set_abs(
+                instruments["gpu_mem_total"],
+                prev,
+                f"gpu_total.{i}",
+                mem.total / (1024 * 1024),
+                labels,
+            )
 
 
 def _run(stop_event: threading.Event) -> None:

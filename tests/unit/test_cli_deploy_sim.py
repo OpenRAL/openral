@@ -2135,3 +2135,89 @@ def test_deploy_sim_cli_flag_overrides_scene_runtime() -> None:
     joined = " ".join(invocation.argv_template)
     assert "enable_reward_monitor:=false" in joined
     assert "reward_monitor_manifest:=" not in joined
+
+
+# ---------------------------------------------------------------------------
+# Repo-root resolution (`_repo_root_from`)
+#
+# The robots/ and rskills/ manifest trees are repo data, not package data, so
+# a wheel install's __file__ lives in site-packages and has no robots/
+# ancestor. These cover the three-step resolution order that keeps `openral
+# deploy sim` usable off a published wheel.
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_checkout(root: Path) -> Path:
+    """Create a directory that looks like an OpenRAL checkout to the resolver."""
+    (root / "robots").mkdir(parents=True)
+    (root / "rskills").mkdir(parents=True)
+    return root
+
+
+def test_repo_root_from_source_checkout_walks_up_from_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Step 2: an editable/source install resolves from the module's __file__."""
+    monkeypatch.delenv("OPENRAL_REPO_ROOT", raising=False)
+    root = deploy_sim._repo_root_from(Path(deploy_sim.__file__))
+    assert (root / "robots").is_dir()
+    assert (root / "rskills").is_dir()
+    # The real in-tree fixture this repo ships, so we know we found *our* root.
+    assert (root / "robots" / "panda_mobile" / "robot.yaml").is_file()
+
+
+def test_repo_root_from_wheel_install_falls_back_to_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Step 3: a site-packages __file__ still resolves when cwd is a checkout.
+
+    This is the wheel-install case: `uv tool install openral-cli` puts
+    deploy_sim.py under ~/.local/share/uv/tools/, which has no robots/
+    ancestor, so the __file__ walk cannot succeed and only cwd can.
+    """
+    monkeypatch.delenv("OPENRAL_REPO_ROOT", raising=False)
+    site_packages = tmp_path / "site-packages" / "openral_cli"
+    site_packages.mkdir(parents=True)
+    checkout = _make_fake_checkout(tmp_path / "checkout")
+    monkeypatch.chdir(checkout)
+
+    assert deploy_sim._repo_root_from(site_packages / "deploy_sim.py") == checkout
+
+
+def test_repo_root_from_env_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Step 1: OPENRAL_REPO_ROOT beats both the __file__ walk and cwd."""
+    checkout = _make_fake_checkout(tmp_path / "explicit")
+    monkeypatch.setenv("OPENRAL_REPO_ROOT", str(checkout))
+
+    # Start from the real source tree, which would otherwise resolve to the
+    # actual repo root — the env var must take precedence over it.
+    assert deploy_sim._repo_root_from(Path(deploy_sim.__file__)) == checkout
+
+
+def test_repo_root_from_env_override_rejects_non_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A bogus OPENRAL_REPO_ROOT fails loud rather than silently falling through."""
+    empty = tmp_path / "not-a-checkout"
+    empty.mkdir()
+    monkeypatch.setenv("OPENRAL_REPO_ROOT", str(empty))
+
+    with pytest.raises(ROSConfigError, match="does not look like an OpenRAL checkout"):
+        deploy_sim._repo_root_from(Path(deploy_sim.__file__))
+
+
+def test_repo_root_from_unresolvable_names_both_escape_hatches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With no checkout anywhere, the error must point at clone + env var."""
+    monkeypatch.delenv("OPENRAL_REPO_ROOT", raising=False)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        deploy_sim._repo_root_from(elsewhere / "deploy_sim.py")
+
+    message = str(excinfo.value)
+    assert "OPENRAL_REPO_ROOT" in message
+    assert "git clone" in message

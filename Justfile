@@ -404,6 +404,7 @@ ros2-env:
 # package lands under packages/ or cpp/, add it here so `just ros2-build`
 # stays the single-command rebuild for the whole graph.
 ros2-build:
+    @bash scripts/check_ros_build_deps.sh
     colcon build --merge-install --symlink-install \
         --base-paths packages cpp \
         --packages-select openral_msgs \
