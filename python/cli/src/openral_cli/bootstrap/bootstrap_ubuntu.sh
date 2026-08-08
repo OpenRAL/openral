@@ -2,7 +2,11 @@
 set -euo pipefail
 
 # Ubuntu 22.04 (Humble) or 24.04 (Jazzy) bootstrap.
-# Usage: ./scripts/bootstrap_ubuntu.sh
+# Usage: `openral install ros` (works from a curl-bash install — no clone),
+#        or `just bootstrap` from a workspace checkout.
+#
+# This lives inside the openral-cli package rather than scripts/ so it ships
+# in the wheel: the Tier-0 installer never clones the repo.
 
 if [[ ! -f /etc/os-release ]] || ! grep -qiE 'ubuntu' /etc/os-release; then
   echo "This script is for Ubuntu only." >&2

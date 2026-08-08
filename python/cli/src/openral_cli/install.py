@@ -8,7 +8,8 @@ deps) ship separately and are layered in on demand.
 
 Group taxonomy mirrors the workspace root ``pyproject.toml``
 ``[dependency-groups]`` table — keep the two in sync. ``ros`` is special-cased
-because it re-exec's ``scripts/bootstrap_ubuntu.sh`` (sudo + apt) rather than
+because it re-exec's the packaged ``openral_cli/bootstrap/bootstrap_ubuntu.sh``
+(sudo + apt) rather than
 calling ``uv pip install``; everything else is a pure-Python group resolved by
 the workspace lockfile.
 
@@ -37,7 +38,7 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from importlib import resources
 from typing import Final
 
 import typer
@@ -364,18 +365,19 @@ def install_rldx(
 def install_ros() -> None:
     """Re-run the ROS 2 + system-package bootstrap (sudo + apt; Linux only).
 
-    Delegates to ``scripts/bootstrap_ubuntu.sh`` or ``scripts/bootstrap_macos.sh``
-    from a cloned workspace. Resolution order for the script path:
-
-        1. ``OPENRAL_REPO_ROOT/scripts/bootstrap_<os>.sh`` if the env var is set.
-        2. ``<cwd>/scripts/bootstrap_<os>.sh`` if a workspace is present.
-        3. Print a clone hint and exit non-zero.
+    Delegates to the ``bootstrap_<os>.sh`` shipped inside this wheel
+    (``openral_cli/bootstrap/``). Shipping it as package data — rather than
+    reading it out of a workspace checkout — is what makes this subcommand work
+    for the Tier-0 curl-bash install, whose whole point is that there is no
+    clone: ``uv tool install openral-cli`` is the entire footprint. It also
+    pins the bootstrap to the same release as the CLI running it.
 
     The Tier-0 curl-bash installer cannot ship apt packages without sudo,
     so this subcommand is the only supported escalation path.
 
     Raises:
-        ROSConfigError: when the bootstrap script cannot be located.
+        ROSConfigError: on an unsupported platform, or when the bootstrap exits
+            non-zero.
     """
     if sys.platform == "darwin":
         script_name = "bootstrap_macos.sh"
@@ -386,27 +388,15 @@ def install_ros() -> None:
             f"`openral install ros` is only supported on Linux and macOS (detected {sys.platform})."
         )
 
-    candidates: list[Path] = []
-    env_root = os.environ.get("OPENRAL_REPO_ROOT")
-    if env_root:
-        candidates.append(Path(env_root) / "scripts" / script_name)
-    candidates.append(Path.cwd() / "scripts" / script_name)
-
-    for path in candidates:
-        if path.is_file():
-            console.print(f"[yellow]about to run {path} (will prompt for sudo)[/yellow]")
-            proc = subprocess.run(["bash", str(path)], check=False)
-            if proc.returncode != 0:
-                raise ROSConfigError(f"{script_name} exited {proc.returncode}; see output above.")
-            console.print("[green]✓ system bootstrap complete[/green]")
-            return
-
-    raise ROSConfigError(
-        f"Could not locate {script_name}. Clone the openral repo and set "
-        f"OPENRAL_REPO_ROOT, or run from a workspace checkout:\n"
-        f"  git clone https://github.com/OpenRAL/openral.git\n"
-        f"  cd openral && openral install ros"
-    )
+    # as_file (not a bare Path) so this keeps working if openral-cli is ever
+    # installed from a zipimport-style archive; `bash <path>` needs a real file.
+    resource = resources.files("openral_cli") / "bootstrap" / script_name
+    with resources.as_file(resource) as path:
+        console.print(f"[yellow]about to run {path} (will prompt for sudo)[/yellow]")
+        proc = subprocess.run(["bash", str(path)], check=False)
+    if proc.returncode != 0:
+        raise ROSConfigError(f"{script_name} exited {proc.returncode}; see output above.")
+    console.print("[green]✓ system bootstrap complete[/green]")
 
 
 @install_app.command("list")

@@ -41,10 +41,13 @@ quickstart:
     @exec bash -c 'source install/setup.bash && exec .venv/bin/openral'
 
 # One-shot bootstrap for a fresh dev machine
+# The scripts live inside the openral-cli package (not scripts/) so that a
+# curl-bash `uv tool install openral-cli` — which never clones this repo — can
+# still run them via `openral install ros`. Same file, both entry points.
 bootstrap:
     @case "$(uname)" in \
-        Linux)  ./scripts/bootstrap_ubuntu.sh ;; \
-        Darwin) ./scripts/bootstrap_macos.sh ;; \
+        Linux)  ./python/cli/src/openral_cli/bootstrap/bootstrap_ubuntu.sh ;; \
+        Darwin) ./python/cli/src/openral_cli/bootstrap/bootstrap_macos.sh ;; \
         *) echo "Unsupported OS: $(uname)" >&2; exit 1 ;; \
     esac
     uv sync --all-packages

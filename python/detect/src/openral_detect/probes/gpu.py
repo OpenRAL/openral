@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -240,6 +241,48 @@ def _probe_nvmm_available(*, search_paths: Sequence[Path] | None = None) -> bool
     return any((root / "libnvbufsurface.so").exists() for root in paths)
 
 
+# ── Unified-memory hosts ──────────────────────────────────────────────────────
+#
+# On a unified-memory NVIDIA SoC (GB10 / DGX Spark, Thor) there is no discrete
+# VRAM pool to report: ``nvmlDeviceGetMemoryInfo`` returns
+# NVML_ERROR_NOT_SUPPORTED and ``nvidia-smi`` prints ``[N/A]`` for
+# memory.total / memory.free. Measured on a DGX Spark (GB10, driver 580.126.09,
+# CUDA 13.0): every other NVML call — count, name, compute capability (12, 1),
+# PCI info — succeeds. The GPU is real and fully usable, so we fall back to the
+# system RAM figure, which is genuinely what the GPU can address.
+#
+# Caveat this deliberately accepts: that pool is shared with the OS and the page
+# cache, so `vram_total_mib` on such a host is "addressable", not "dedicated".
+
+
+def _system_memory_mib() -> tuple[int, int] | None:
+    """Return ``(total_mib, available_mib)`` of system RAM, or ``None``.
+
+    Used as the VRAM figure on unified-memory SoCs. ``SC_AVPHYS_PAGES`` is
+    Linux/glibc; when it is missing, available falls back to total.
+    """
+    try:
+        page = os.sysconf("SC_PAGE_SIZE")
+        total = os.sysconf("SC_PHYS_PAGES")
+    except (ValueError, OSError, AttributeError):
+        return None
+    total_mib = int(page * total // (1024 * 1024))
+    # MemAvailable is the only honest "free" figure on Linux: SC_AVPHYS_PAGES
+    # counts only untouched pages, so a host with a warm page cache reports
+    # ~1 GiB free out of 122 GiB and a loader sizing against it would refuse to
+    # start. Measured on a DGX Spark: SC_AVPHYS_PAGES 1076 MiB vs MemAvailable
+    # 112 GiB.
+    with contextlib.suppress(OSError, ValueError, IndexError):
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return total_mib, int(line.split()[1]) // 1024
+    try:
+        avail_mib = int(page * os.sysconf("SC_AVPHYS_PAGES") // (1024 * 1024))
+    except (ValueError, OSError, AttributeError):
+        avail_mib = total_mib
+    return total_mib, avail_mib
+
+
 # ── NVIDIA discrete via pynvml ────────────────────────────────────────────────
 
 
@@ -259,38 +302,76 @@ def _probe_nvidia_pynvml(warnings: list[str]) -> list[NvidiaGpuInfo]:
         driver = pynvml.nvmlSystemGetDriverVersion()
         if isinstance(driver, bytes):
             driver = driver.decode("utf-8", errors="replace")
-        for i in range(n):
+    except Exception as exc:
+        warnings.append(f"gpu.nvml: enumeration failed: {exc!r}")
+        with contextlib.suppress(Exception):
+            pynvml.nvmlShutdown()
+        return out
+
+    for i in range(n):
+        # Identity + compute capability are required — a device we cannot name
+        # or gate on is not usable. Everything else degrades to a fallback, and
+        # each device is isolated so one bad device never drops the others.
+        try:
             h = pynvml.nvmlDeviceGetHandleByIndex(i)
             name = pynvml.nvmlDeviceGetName(h)
             if isinstance(name, bytes):
                 name = name.decode("utf-8", errors="replace")
-            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
             cc = pynvml.nvmlDeviceGetCudaComputeCapability(h)
-            pci = pynvml.nvmlDeviceGetPciInfo(h)
-            bus_id = pci.busId
-            if isinstance(bus_id, bytes):
-                bus_id = bus_id.decode("utf-8", errors="replace")
             cc_tuple = (int(cc[0]), int(cc[1]))
-            out.append(
-                NvidiaGpuInfo(
-                    index=i,
-                    name=name,
-                    vram_total_mib=int(mem.total // (1024 * 1024)),
-                    vram_free_mib=int(mem.free // (1024 * 1024)),
-                    pci_bus_id=bus_id,
-                    driver_version=driver,
-                    cuda_compute_capability=cc_tuple,
-                    cuda_toolkit_version=_probe_cuda_toolkit_version(),
-                    tensorrt_version=_probe_tensorrt_version(),
-                    supported_dtypes=_dtypes_for(cc_tuple),
-                    tops_estimate=_tops_for_nvidia_name(name),
+        except Exception as exc:
+            warnings.append(f"gpu.nvml: device {i} skipped: {exc!r}")
+            continue
+
+        try:
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            vram_total_mib = int(mem.total // (1024 * 1024))
+            vram_free_mib = int(mem.free // (1024 * 1024))
+        except Exception:
+            # Unified-memory SoC (GB10 / Thor): no discrete pool to report.
+            system_mem = _system_memory_mib()
+            if system_mem is None:
+                warnings.append(
+                    f"gpu.nvml: device {i} ({name}) reports no VRAM and system "
+                    "memory is unreadable; skipping"
                 )
+                continue
+            vram_total_mib, vram_free_mib = system_mem
+            warnings.append(
+                f"gpu.nvml: device {i} ({name}) has no discrete VRAM pool "
+                f"(unified memory) — reporting {vram_total_mib} MiB of system "
+                "RAM, which is shared with the OS"
             )
-    except Exception as exc:
-        warnings.append(f"gpu.nvml: enumeration failed: {exc!r}")
-    finally:
-        with contextlib.suppress(Exception):
-            pynvml.nvmlShutdown()
+
+        bus_id = ""
+        try:
+            raw_bus_id = pynvml.nvmlDeviceGetPciInfo(h).busId
+            bus_id = (
+                raw_bus_id.decode("utf-8", errors="replace")
+                if isinstance(raw_bus_id, bytes)
+                else raw_bus_id
+            )
+        except Exception as exc:
+            warnings.append(f"gpu.nvml: device {i} PCI info unavailable: {exc!r}")
+
+        out.append(
+            NvidiaGpuInfo(
+                index=i,
+                name=name,
+                vram_total_mib=vram_total_mib,
+                vram_free_mib=vram_free_mib,
+                pci_bus_id=bus_id,
+                driver_version=driver,
+                cuda_compute_capability=cc_tuple,
+                cuda_toolkit_version=_probe_cuda_toolkit_version(),
+                tensorrt_version=_probe_tensorrt_version(),
+                supported_dtypes=_dtypes_for(cc_tuple),
+                tops_estimate=_tops_for_nvidia_name(name),
+            )
+        )
+
+    with contextlib.suppress(Exception):
+        pynvml.nvmlShutdown()
     return out
 
 
@@ -324,8 +405,6 @@ def _probe_nvidia_smi(warnings: list[str]) -> list[NvidiaGpuInfo]:
         try:
             idx = int(parts[0])
             name = parts[1]
-            vram_total = int(parts[2])
-            vram_free = int(parts[3])
             driver = parts[4]
             cc_str = parts[5]
             bus_id = parts[6]
@@ -333,6 +412,21 @@ def _probe_nvidia_smi(warnings: list[str]) -> list[NvidiaGpuInfo]:
         except (ValueError, IndexError):
             warnings.append(f"gpu.nvidia-smi: malformed row {line!r}")
             continue
+        try:
+            vram_total = int(parts[2])
+            vram_free = int(parts[3])
+        except ValueError:
+            # `[N/A]` — unified-memory SoC with no discrete pool (see
+            # _system_memory_mib). Same fallback as the NVML path.
+            system_mem = _system_memory_mib()
+            if system_mem is None:
+                warnings.append(f"gpu.nvidia-smi: no VRAM and no system memory in row {line!r}")
+                continue
+            vram_total, vram_free = system_mem
+            warnings.append(
+                f"gpu.nvidia-smi: {name} reports no discrete VRAM pool (unified "
+                f"memory) — reporting {vram_total} MiB of system RAM, shared with the OS"
+            )
         cc = (cc_major, cc_minor)
         out.append(
             NvidiaGpuInfo(
@@ -495,8 +589,16 @@ def _probe_apple_silicon(warnings: list[str]) -> AppleSiliconInfo | None:
 # ── Helpers — CUDA toolkit / TensorRT version ────────────────────────────────
 
 
+#: Canonical "currently selected CUDA toolkit" symlink. Preferred over ``$PATH``
+#: because distro packages (Ubuntu's ``nvidia-cuda-toolkit``) drop an older nvcc
+#: at /usr/bin/nvcc that shadows a newer /usr/local/cuda-N install. Measured on a
+#: DGX Spark: /usr/bin/nvcc is 12.0 while /usr/local/cuda -> cuda-13.0 is 13.0,
+#: which silently closed the cuMotion CUDA>=13 gate on a host that has CUDA 13.
+_CUDA_HOME_NVCC: Path = Path("/usr/local/cuda/bin/nvcc")
+
+
 def _probe_cuda_toolkit_version() -> str | None:
-    nvcc = shutil.which("nvcc")
+    nvcc = str(_CUDA_HOME_NVCC) if _CUDA_HOME_NVCC.is_file() else shutil.which("nvcc")
     if not nvcc:
         return None
     try:
