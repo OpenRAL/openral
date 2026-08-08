@@ -34,9 +34,6 @@ build/
 *.mjb
 mjx_tmp/
 
-# Docker
-.dockerignore
-
 # Editors
 .vscode/
 .idea/

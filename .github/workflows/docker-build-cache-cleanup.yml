@@ -1,0 +1,78 @@
+name: docker-build-cache-cleanup
+# Deletes the PR-scoped BuildKit layer cache that `docker-build.yml` writes.
+#
+# That workflow gives every same-repo PR its own `$IMAGE:buildcache-pr-<n>` ref
+# so successive commits on a branch reuse each other's layers instead of each
+# rebuilding against the stale master cache. Those refs are `mode=max` exports
+# of a ~16 GB image, so without this they would accumulate in GHCR one per PR,
+# forever.
+#
+# Runs on PR close (merged or not). Fork PRs never get a cache ref written —
+# their GITHUB_TOKEN is read-only — so there is simply nothing to delete and the
+# job no-ops.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  packages: write  # deleting a package version this repo owns
+
+concurrency:
+  group: docker-build-cache-cleanup-${{ github.event.number }}
+  cancel-in-progress: false
+
+jobs:
+  delete-pr-cache:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete the PR's buildcache ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PACKAGE: openral  # ghcr.io/openral/openral
+          TAG: buildcache-pr-${{ github.event.number }}
+        run: |
+          set -euo pipefail
+
+          # The versions endpoint differs for org- vs user-owned packages and
+          # the wrong one 404s. Try the org route, then the user route. This is
+          # an explicit two-way probe, not a silent fallback: whichever one
+          # answers is logged, and failing both is a hard error.
+          versions=""
+          for scope in orgs users; do
+            if versions=$(gh api --paginate \
+                  "/$scope/$OWNER/packages/container/$PACKAGE/versions" 2>/dev/null); then
+              echo "Package is $scope-owned ($OWNER/$PACKAGE)."
+              break
+            fi
+            versions=""
+          done
+
+          if [ -z "$versions" ]; then
+            echo "::error::Could not list versions of $OWNER/$PACKAGE via either the orgs or users endpoint."
+            exit 1
+          fi
+
+          ids=$(printf '%s' "$versions" \
+            | jq -r --arg tag "$TAG" '.[] | select(.metadata.container.tags[]? == $tag) | .id')
+
+          if [ -z "$ids" ]; then
+            echo "No cache ref tagged '$TAG' — nothing to delete."
+            echo "(Expected for fork PRs, and for PRs whose diff never triggered docker-build.)"
+            exit 0
+          fi
+
+          # A tag resolves to exactly one version in practice, but the API
+          # models it as a list and a re-tagged ref could leave more than one.
+          for id in $ids; do
+            echo "Deleting package version $id (tag '$TAG')…"
+            for scope in orgs users; do
+              if gh api --method DELETE \
+                    "/$scope/$OWNER/packages/container/$PACKAGE/versions/$id" 2>/dev/null; then
+                echo "  deleted."
+                break
+              fi
+            done
+          done

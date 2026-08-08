@@ -174,6 +174,51 @@ onnxruntime / omdet present, `deploy run --dry-run` resolves) but does **not**
 push. On merge to `master` it builds and pushes `openral:x86` to GHCR. The image
 is ~16 GB, so the workflow frees runner disk before building.
 
+### Build caching
+
+The image is large and its code is baked in, not mounted, so a naive rebuild is
+~30 minutes. Four mechanisms keep an incremental PR build far below that. If you
+change the Dockerfile's layer order, keep them in mind — they are easy to defeat
+by accident.
+
+1. **Containerd image store, `docker` buildx driver.** The build writes straight
+   into the store dockerd reads from. Under the older `docker-container` driver,
+   `--load` had to serialize the finished 7.9 GB image to a tarball and replay it
+   into the daemon — 45% of total build time, paid on every run no matter how
+   good the cache was. The workflow asserts the snapshotter is active and fails
+   the job if it is not.
+
+2. **Registry-backed layer cache on GHCR.** `master` pushes write
+   `$IMAGE:buildcache` (`mode=max`, so the builder stage's layers are cached
+   too, not just the final stage); every run reads it.
+
+3. **Per-PR layer cache.** Same-repo PRs additionally read and write
+   `$IMAGE:buildcache-pr-<n>`, so the second commit on a branch reuses what the
+   first one built instead of starting again from the master cache. Fork PRs
+   have a read-only token and are detected and skipped. The ref is deleted when
+   the PR closes, by `docker-build-cache-cleanup.yml`.
+
+4. **Layer ordering that isolates the two expensive steps.** Two rules:
+   - **The dependency sync must not depend on Python source.** A `manifests`
+     stage prunes `python/` to the workspace members' `pyproject.toml` files, and
+     `uv sync --no-install-workspace` installs the 215-package third-party
+     closure against *that*. The real `python/` is copied afterwards and a second
+     sync adds the 14 local packages in ~2s. Copying `python/` before the sync —
+     the obvious-looking arrangement — makes every one-line source edit
+     re-download ~4.4 GiB of wheels. Note the BuildKit cache mount on
+     `/root/.cache/uv` does **not** save you: cache mounts are not exported by
+     the registry cache exporter, so on a fresh runner it is always cold.
+   - **`opentelemetry_cpp_vendor` gets its own layer.** It builds
+     opentelemetry-cpp from source and serially gates `openral_safety_kernel`,
+     together ~210s of the colcon step. It is copied and built before
+     `packages/` lands so that a `packages/` or `python/` diff cannot invalidate
+     it.
+
+To validate a change to the build driver or image store before it reaches
+`master`, run the workflow via **workflow_dispatch**: dispatch runs exercise the
+registry cache *export* path against a scratch `:buildcache-dispatch` ref that
+`master` never reads.
+
 ## Image sizes
 
 | Image | Size |
