@@ -7,6 +7,10 @@ from Conventional Commits — edit the release PR, not this file.
 
 ## [0.3.0](https://github.com/OpenRAL/openral/compare/v0.2.0...v0.3.0) (2026-08-08)
 
+### ⚠ BREAKING CHANGES
+
+* **reasoner:** the deprecated `OPENRAL_REASONER_LLM_*` provider-first env contract is removed (ADR-0088; deprecated in 0.2.0 as a one-release shim). An environment that sets only those variables now fails with "`OPENRAL_REASONER_MODEL` is unset" instead of silently selecting a model — deliberate, so a reasoner driving real hardware refuses to start on stale configuration rather than picking something unintended. Every provider the old contract reached is expressible model-first via `OPENRAL_REASONER_ENDPOINT`, which accepts the named endpoints `anthropic` / `openrouter` / `gemini` / `xai` / `deepseek` / `huggingface` / `ollama` / `vllm`. Migration table: [`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md). ([#43](https://github.com/OpenRAL/openral/pull/43))
+
 
 ### Added
 
@@ -14,16 +18,49 @@ from Conventional Commits — edit the release PR, not this file.
 * **ci:** re-enable docker-build triggers; publish openral:x86 to GHCR on master ([558beba](https://github.com/OpenRAL/openral/commit/558beba4e16490a996962c716f46fed1ccc6d758))
 * **ci:** structured changelog via git-cliff + first CHANGELOG.md ([#38](https://github.com/OpenRAL/openral/issues/38)) ([ed0eb25](https://github.com/OpenRAL/openral/commit/ed0eb251054b7980c35daad9a2f025173010c3f8))
 * **deploy:** x86 image is THE deploy artifact; repo is for dev/sim/benchmarks ([3468bb6](https://github.com/OpenRAL/openral/commit/3468bb6fec7c2708bb210fc7bf9aba4de989f591))
-* **release:** derive the lockstep SemVer bump from Conventional Commits ([f1d1b1f](https://github.com/OpenRAL/openral/commit/f1d1b1f386e9374a6391dc47dfd4d1bec0088ee3))
+* **hal:** real SO-101 reset_to_pose ramp; so101 bench defaults detector-off ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **observability:** emit the latency metrics from their span helpers ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **observability:** measure bringup — a deploy.bringup span per transition ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **reasoner:** named endpoints so the model-first contract covers the shim ([#43](https://github.com/OpenRAL/openral/pull/43))
 * **release:** derive the lockstep SemVer bump from Conventional Commits ([5ba709a](https://github.com/OpenRAL/openral/commit/5ba709a4cf369d3244aab683b6c3f2a890fc9f32))
+* **rskill:** activate RTC via build_chunk_executor; pi05 chunk_fn forwards guided kwargs ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** enable RTC on the SO-101 eraser_place manifest + template docs ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** eraser_place RTC schedule exp->ones — measured better OOD seams, equal in-distribution ([#43](https://github.com/OpenRAL/openral/pull/43))
 * **rskill:** package makermods SmolVLA eraser-place as an SO-101 rSkill ([68e4070](https://github.com/OpenRAL/openral/commit/68e4070396e330ce2f66034f1af4baf2652a91eb))
+* **rskill:** parse policy_extras.rtc into a lerobot RTCConfig ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** Real-Time Chunking — guided chunk blending on the PyTorch path ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** RTC mode for ChunkedExecutor — ActionQueue replace-on-merge + guided-chunk kwargs ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **runner,sim:** log freed VRAM per eviction; ship `just profile-load` ([#43](https://github.com/OpenRAL/openral/pull/43))
 * **sim:** add Xiaomi XR-1 policy support ([1843424](https://github.com/OpenRAL/openral/commit/184342448fad8351ef8d086fbabecdbd25c37558))
 
 
 ### Changed
 
 * **ci:** cut the docker-build PR loop from ~21 min by removing the --load tarball and fixing layer ordering ([#68](https://github.com/OpenRAL/openral/issues/68)) ([8e779d8](https://github.com/OpenRAL/openral/commit/8e779d809db43b570e12f3437ae920d408ffdce1))
+* **core:** single source for reasoner endpoint presets ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **deploy:** pre-warm the VLA framework on the sim path too ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **deploy:** SO-101 goal loop 14.2 → 28.5 Hz — pacing, wasted preprocessing, and chunk prefetch ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **docker:** pin HF_HOME; record measured verdicts for the deferred items ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **hal:** one staged-clone helper for both OpenArm asset fetchers ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **hal:** reset_to_pose ramp reuses the send_action unit conversion ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **observability:** give the log bridge a level floor, defaulting to INFO ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **observability:** invert the event-log span band to an allow-list ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **observability:** one shared emitter for camera-frame dashboard spans ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **reasoner:** start the managed LLM sidecar at configure, not on tick 1 ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill,sim:** one generalized chunk executor across all in-process VLA adapters ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** one GPU-memory probe for eviction and phase heartbeats ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** report RSS + major faults per load phase ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** skip HF's throwaway weight init; quiet per-tick spans; manifest default_prompt ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** trim RTC comment slop; rtc helpers get public names ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **rskill:** warm the policy at activate so tick 1 stops missing its deadline ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **runner:** rate-limit the deadline-miss WARN to one line per 5 s ([#43](https://github.com/OpenRAL/openral/pull/43))
 * **sensors:** 9x faster skill load on real hardware — the camera topic was holding 89.5% of the GIL ([#43](https://github.com/OpenRAL/openral/issues/43)) ([cc6182a](https://github.com/OpenRAL/openral/commit/cc6182ab0668a82f272d1d5d89baf55757a1062f))
+* **sensors:** CameraInfo rescale via openral_core.scale_intrinsics_to ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **sensors:** stop the camera ROS topic starving the runtime process ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **sim,rskill-ros:** prefetch chunk N+1 on the deploy path — 28.5 Hz steady ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **sim:** shared home for the SO-ARM unit + cadence conversions ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **sim:** skip per-tick preprocessing while the policy queue holds actions ([#43](https://github.com/OpenRAL/openral/pull/43))
+* **sim:** stop importing the lerobot tree to answer "is the group installed?" ([#43](https://github.com/OpenRAL/openral/pull/43))
 
 
 ### Fixed
@@ -44,6 +81,7 @@ from Conventional Commits — edit the release PR, not this file.
 * **safety:** silence GCC 13's bogus -Wnonnull in the collision test ([#66](https://github.com/OpenRAL/openral/issues/66)) ([6bbd3a1](https://github.com/OpenRAL/openral/commit/6bbd3a13cf25b239116a70488bb7822bc451480f))
 * **schema:** refresh XR-1 exports ([2cabf83](https://github.com/OpenRAL/openral/commit/2cabf837b81060bae7b75472f74a024000c72f3c))
 * **sim,cli:** make --dry-run gate what a real run gates ([#69](https://github.com/OpenRAL/openral/issues/69)) ([af8fde7](https://github.com/OpenRAL/openral/commit/af8fde71b0f72561de11b35409ee610c54c8dc73))
+* **rskill,sim,observability,reasoner,hal:** 69 further fixes landed in the same PR — e-stop latch, VRAM release on skill swap, deadline-abort semantics, chunk-executor races and telemetry correctness among them; see the PR for the full list ([#43](https://github.com/OpenRAL/openral/pull/43))
 
 ## [0.2.0] - 2026-08-03
 
