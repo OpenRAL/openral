@@ -6,11 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core",            # reason: TickResult / RunResult / SensorFrame schemas
-    "openral-hal",             # reason: HardwareRunner depends on the HAL Protocol
-    "openral-observability",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
-    "openral-rskill",           # reason: HardwareRunner accepts a Skill and calls Skill.step
-    "openral-world-state",     # reason: WorldStateAggregator is the runner's WorldState producer
+    "openral-core==0.2.0",            # reason: TickResult / RunResult / SensorFrame schemas
+    "openral-hal==0.2.0",             # reason: HardwareRunner depends on the HAL Protocol
+    "openral-observability==0.2.0",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
+    "openral-rskill==0.2.0",           # reason: HardwareRunner accepts a Skill and calls Skill.step
+    "openral-world-state==0.2.0",     # reason: WorldStateAggregator is the runner's WorldState producer
     "msgpack>=1.1",            # reason: native A1 Runtime local service framing
     "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
 ]

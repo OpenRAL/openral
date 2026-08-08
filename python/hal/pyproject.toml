@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core", # reason: HAL Protocol uses RobotDescription, Action, JointState
-    "openral-sensors", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
+    "openral-core==0.2.0", # reason: HAL Protocol uses RobotDescription, Action, JointState
+    "openral-sensors==0.2.0", # reason: catalog-backed *_with_sensors() factories materialise SensorSpec/Bundle on canonical RobotDescriptions
     # reason: lerobot types.py module + the SO-100/SO-101 real servo bus. The
     # `feetech` extra pulls feetech-servo-sdk (scservo_sdk) + deepdiff, which
     # lerobot's FeetechMotorsBus lazy-requires at connect(); without it,

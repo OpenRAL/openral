@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core",            # reason: RSkillManifest / WorldState / ROSPlanningError subclasses
-    "openral-observability",   # reason: future inference_span wraps the LLM call (deferred to first concrete LLMClient PR)
+    "openral-core==0.2.0",            # reason: RSkillManifest / WorldState / ROSPlanningError subclasses
+    "openral-observability==0.2.0",   # reason: future inference_span wraps the LLM call (deferred to first concrete LLMClient PR)
     "pydantic>=2.5",           # reason: Plan / ToolCall structured-output schemas
     "structlog>=24.1",         # reason: structured logging per CLAUDE.md §5.1
     "anthropic>=0.40",         # reason: AnthropicToolUseClient — provider="anthropic" path
