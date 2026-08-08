@@ -1,17 +1,17 @@
 [project]
 name = "openral-runner"
-version = "0.3.0"  # x-release-please-version
+version = "0.3.1"  # x-release-please-version
 description = "OpenRAL inference runner — closes WorldState → Skill → HAL at a cadence"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
     # x-release-please-start-version
-    "openral-core==0.3.0",            # reason: TickResult / RunResult / SensorFrame schemas
-    "openral-hal==0.3.0",             # reason: HardwareRunner depends on the HAL Protocol
-    "openral-observability==0.3.0",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
-    "openral-rskill==0.3.0",           # reason: HardwareRunner accepts a Skill and calls Skill.step
-    "openral-world-state==0.3.0",     # reason: WorldStateAggregator is the runner's WorldState producer
+    "openral-core==0.3.1",            # reason: TickResult / RunResult / SensorFrame schemas
+    "openral-hal==0.3.1",             # reason: HardwareRunner depends on the HAL Protocol
+    "openral-observability==0.3.1",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
+    "openral-rskill==0.3.1",           # reason: HardwareRunner accepts a Skill and calls Skill.step
+    "openral-world-state==0.3.1",     # reason: WorldStateAggregator is the runner's WorldState producer
     # x-release-please-end
     "msgpack>=1.1",            # reason: native A1 Runtime local service framing
     "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
