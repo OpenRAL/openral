@@ -136,7 +136,7 @@ class _XR1Policy:
         self._quantization = quantization
         # reason: transformers ships AutoProcessor / BitsAndBytesConfig untyped,
         # same as the safetensors `safe_open` sites in quantize_lingbot_vla2.py.
-        self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+        self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call, unused-ignore]
             repo_id,
             revision=revision,
             trust_remote_code=True,
@@ -150,7 +150,7 @@ class _XR1Policy:
             "low_cpu_mem_usage": True,
         }
         if quantization == "nf4":
-            model_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call]
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(  # type: ignore[no-untyped-call, unused-ignore]
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_compute_dtype=torch.bfloat16,
