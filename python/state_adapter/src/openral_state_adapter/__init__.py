@@ -5,6 +5,8 @@ Consumers (skill_runner, reasoner palette filter) call
 :func:`assemble_state` / :func:`registered_layouts`.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from openral_state_adapter import (
     layouts as _layouts,  # reason: side-effect import — registers every shipped layout
 )
@@ -23,4 +25,4 @@ __all__ = [
     "register",
     "registered_layouts",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-state-adapter")

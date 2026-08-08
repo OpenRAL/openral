@@ -6,6 +6,12 @@ Run with:
 Writes to docs/reference/schemas/<ModelName>.json and docs/reference/schemas/all.json.
 CI compares the output of this script against committed files; any drift fails the build.
 
+``all.json`` deliberately carries no package version. Stamping one made every
+release bump this generated file — a 1-line diff in 6k lines that CI's drift
+check turns into a hard failure on the release PR unless someone remembers to
+regenerate. The schemas' own compatibility contract is each model's
+``schema_version`` field; the release that produced a given file is in git.
+
 Schema versioning rules (pre-1.0):
   - Breaking change (field removed, type narrowed, required added) → bump MINOR.
   - Additive change (optional field added, enum value added) → bump PATCH.
@@ -23,8 +29,7 @@ from typing import Any
 # ── Ensure the workspace packages are importable when run from repo root ──────
 sys.path.insert(0, str(Path(__file__).parent.parent / "python" / "core" / "src"))
 
-import openral_core  # reason: path manipulation above
-from openral_core.schemas import (
+from openral_core.schemas import (  # reason: path manipulation above
     Action,
     ActionRepresentation,
     ActionSpec,
@@ -166,7 +171,6 @@ def export_schemas(out_dir: Path = _OUT_DIR) -> dict[str, Any]:
     all_schemas: dict[str, Any] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "openral_core",
-        "version": openral_core.__version__,
         "schemas": {},
     }
 

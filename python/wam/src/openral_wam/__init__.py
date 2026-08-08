@@ -24,6 +24,8 @@ Layer 5 for what's planned next.
 
 from __future__ import annotations
 
+from importlib.metadata import version as _pkg_version
+
 from openral_wam.null_wam import NullWorldModel
 from openral_wam.protocol import WorldModel
 from openral_wam.rollout import Rollout
@@ -33,4 +35,4 @@ __all__ = [
     "Rollout",
     "WorldModel",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-wam")

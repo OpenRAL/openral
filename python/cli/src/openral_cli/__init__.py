@@ -1,6 +1,8 @@
 """openral CLI — the `ros` command entry point."""
 
-__version__ = "0.2.0"
-__all__ = ["app"]
+from importlib.metadata import version as _pkg_version
 
 from openral_cli.main import app
+
+__all__ = ["app"]
+__version__ = _pkg_version("openral-cli")

@@ -37,6 +37,17 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    Review the number and the notes there — the changelog body is editable, so
    curate it in the PR if a release deserves a narrative.
 
+   It also carries a second commit, `chore(release): refresh uv.lock for the
+   version bump`, pushed by the same workflow. release-please only substitutes
+   text in the files `extra-files` names, and `uv.lock` is generated — it
+   records every workspace member's version, so a bump that stops at the
+   pyprojects leaves the lock a release behind (v0.3.0 and v0.3.1 both did:
+   master ran 0.3.1 pyprojects against a lock still saying 0.2.0, and
+   `uv sync --frozen` installed that stale metadata). The step runs `uv lock`
+   on the release branch; without `--upgrade` it rewrites only the 15 version
+   lines and leaves third-party pins alone. `test_lockstep_versions.py` fails
+   if the lock and the tree ever disagree again.
+
    Its CI is deliberately thin. `test-selective` short-circuits on the
    `release-please--*` branch and selects nothing: rewriting all 15 pyprojects
    matches the `pyproject.toml` full-run glob *and* marks every package
@@ -140,6 +151,13 @@ Do **not** hand-edit a `version =` field to cut a release. Versions and pins
 are rewritten by release-please via the `x-release-please-version` /
 `x-release-please-start-version` annotations in each `pyproject.toml`; editing
 around them puts the manifest and the tree out of sync.
+
+Nothing under `src/` carries a version either. Every package's `__version__`
+reads `importlib.metadata` for its own distribution, so it follows the
+pyproject release-please just rewrote. Hardcoded literals used to sit in
+eleven `__init__.py` files and nothing bumped them — the runtime announced
+0.2.0 out of a 0.3.1 wheel until this was fixed. `test_lockstep_versions.py`
+rejects a literal reintroduced there.
 
 ## Adding a package
 

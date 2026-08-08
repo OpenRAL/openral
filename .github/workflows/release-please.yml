@@ -52,6 +52,18 @@ jobs:
       contents: write        # create the release commit, tag and GitHub release
       pull-requests: write   # open / update the release PR
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Needed by the uv.lock step below, which pushes to the release
+          # branch. The default GITHUB_TOKEN can push, but its commits do not
+          # re-trigger the required checks — same reason the tag needs the app.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       - name: check token
         env:
           HAS_APP_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
@@ -69,6 +81,40 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # release-please rewrites the 15 pyprojects and knows nothing about
+      # uv.lock — which records every workspace member's version too. Left
+      # alone, the lock keeps the *previous* release's numbers: master carried
+      # 0.3.1 pyprojects against a lock still saying 0.2.0, so every
+      # `uv sync --frozen` installed metadata a release behind, and every
+      # feature branch that touched dependencies re-locked 15 unrelated lines.
+      #
+      # release-please cannot do this itself: `extra-files` is a text
+      # substituter driven by `x-release-please-*` comments, and uv.lock is
+      # generated — the annotations would not survive the next `uv lock`. So
+      # regenerate it here and push it into the release PR, where the version
+      # bump belongs. `uv lock` without `--upgrade` rewrites only what the
+      # pyprojects changed; third-party pins keep their resolved versions.
+      - name: refresh uv.lock on the release PR
+        if: steps.release.outputs.pr
+        env:
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch=$(jq -r .headBranchName <<<"$PR")
+          git fetch --depth 1 origin "$branch"
+          git checkout "$branch"
+          uv lock
+          if git diff --quiet uv.lock; then
+            echo "::notice::uv.lock on $branch already matches the release version."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # -s because DCO is a required check on the release PR too.
+          git commit -s -m 'chore(release): refresh uv.lock for the version bump' uv.lock
+          git push origin "HEAD:$branch"
+          echo "::notice::Pushed a refreshed uv.lock to $branch."
 
       - name: summarise
         env:

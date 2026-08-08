@@ -29,6 +29,8 @@ TensorRT/NVMM fast path is a private OpenRAL Pro plugin); resolve it via
 ``resolve_runtime_backend("tensorrt")`` when ``openral-pro-trt`` is installed.
 """
 
+from importlib.metadata import version as _pkg_version
+
 from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runtime_backend
 from openral_rskill.base import rSkillBase
 from openral_rskill.engine_cache import DEFAULT_CACHE_DIR, EngineCache
@@ -56,4 +58,4 @@ __all__ = [
     "rSkillBase",
     "resolve_runtime_backend",
 ]
-__version__ = "0.2.0"
+__version__ = _pkg_version("openral-rskill")

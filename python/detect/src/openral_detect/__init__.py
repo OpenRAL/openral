@@ -1,6 +1,6 @@
 """openral auto-provisioning — `openral detect` machinery."""
 
-__version__ = "0.2.0"
+from importlib.metadata import version as _pkg_version
 
 from openral_detect.assemble import assemble_robot_description, build_compute_spec
 from openral_detect.compatibility import (
@@ -57,3 +57,4 @@ __all__ = [
     "check_single_rskill",
     "detect_hardware",
 ]
+__version__ = _pkg_version("openral-detect")

@@ -26,6 +26,9 @@ Coverage
 - Every ``python/*`` package is listed in ``release-please-config.json`` and
   carries the annotations release-please needs.
 - The manifest agrees with the tree about the current version.
+- ``uv.lock`` records that same version for every workspace member.
+- No package hardcodes ``__version__`` — release-please only rewrites
+  ``pyproject.toml``, so source has to derive it.
 """
 
 from __future__ import annotations
@@ -158,6 +161,55 @@ def test_manifest_matches_the_tree() -> None:
         f"manifest says {manifest['.']}, root pyproject says {_root_version()}. "
         "release-please computes the next bump from the manifest — they must agree."
     )
+
+
+def test_uv_lock_records_the_lockstep_version() -> None:
+    """``uv.lock`` pins every workspace member at the tree's version.
+
+    release-please rewrites pyprojects textually and cannot regenerate a lock
+    file, so the two drifted for two releases: master shipped 0.3.1 pyprojects
+    against a lock still naming 0.2.0, and `uv sync --frozen` happily installed
+    the stale metadata. release-please.yml now runs `uv lock` on the release
+    branch; this test is what fails if that step is dropped or silently stops
+    working.
+    """
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+    # Each workspace member is a `[[package]]` whose source is the local tree.
+    members = re.findall(
+        r'^name = "(openral[a-z-]*)"\nversion = "([^"]+)"\nsource = \{ (?:editable|virtual)',
+        lock,
+        re.M,
+    )
+    assert len(members) >= len(PACKAGE_DIRS), (
+        f"expected every workspace member in uv.lock, found {members}"
+    )
+    stale = {name: version for name, version in members if version != _root_version()}
+    assert not stale, (
+        f"uv.lock is a release behind for {stale}; the tree is at {_root_version()}. "
+        "Run `uv lock` and commit the result."
+    )
+
+
+@pytest.mark.parametrize("pkg_dir", PACKAGE_DIRS, ids=lambda p: p.name)
+def test_dunder_version_is_derived_not_hardcoded(pkg_dir: Path) -> None:
+    """``__version__`` reads ``importlib.metadata``, never a literal.
+
+    release-please rewrites `pyproject.toml`, not source. Eleven packages
+    carried a hand-written ``__version__ = "0.2.0"`` that nothing bumped, so
+    two releases later the runtime still announced 0.2.0 while the wheel said
+    0.3.1 — and ``test_smoke.py``'s metadata comparison failed on master. A
+    literal here is a second source of truth; there is only one.
+    """
+    src = pkg_dir / "src"
+    for init in src.glob("*/__init__.py"):
+        for line in init.read_text(encoding="utf-8").split("\n"):
+            if not line.startswith("__version__"):
+                continue
+            assert not re.match(r'^__version__\s*=\s*["\']', line), (
+                f"{init.relative_to(REPO_ROOT)}: {line!r} hardcodes the version. "
+                'Use `_pkg_version("<dist-name>")` from importlib.metadata — '
+                "release-please only rewrites pyproject.toml."
+            )
 
 
 def test_selective_tests_short_circuit_the_release_pr() -> None:
