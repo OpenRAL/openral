@@ -42,7 +42,7 @@ on:
   pull_request:
     paths:
       - docker/inference/**
-      # ...but README.md is NOT a build input: it is never COPYed into the
+      # ...but README.md is NOT a build input: it is never copied into the
       # image and cannot change a layer. Without this negation a docs-only edit
       # in this directory triggers a full image build (~7 min even on a total
       # cache hit, because the image still has to be materialized). Negations
@@ -66,7 +66,7 @@ on:
     branches: [master]
     paths:
       - docker/inference/**
-      # ...but README.md is NOT a build input: it is never COPYed into the
+      # ...but README.md is NOT a build input: it is never copied into the
       # image and cannot change a layer. Without this negation a docs-only edit
       # in this directory triggers a full image build (~7 min even on a total
       # cache hit, because the image still has to be materialized). Negations
