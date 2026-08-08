@@ -304,18 +304,22 @@ def test_check_reasoner_llm_absent(_clear_reasoner_env: None) -> None:
     assert "packages/openral_reasoner_ros/README.md" in rows[0].details
 
 
-def test_check_reasoner_llm_unknown_provider(
+def test_check_reasoner_legacy_provider_env_is_ignored(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "groq-cloud")
+    """The retired provider-first env selects nothing (removed in 0.3.0).
+
+    doctor must report the same "no model configured" row it reports for an
+    empty environment, and point at the model-first replacement — not diagnose
+    a contract the factory no longer reads.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-ant-secret")
     rows = _check_reasoner_llm()
-    assert len(rows) == 2
-    assert rows[0].check == "Reasoner env"
-    assert rows[0].status == "warn"
-    assert "deprecated" in rows[0].details
-    assert rows[1].status == "fail"
-    assert "groq-cloud" in rows[1].details
-    assert "anthropic" in rows[1].details
+    assert len(rows) == 1
+    assert rows[0].status == "absent"
+    assert "OPENRAL_REASONER_MODEL" in rows[0].details
 
 
 def test_check_reasoner_curated_model_missing_key(
@@ -364,100 +368,115 @@ def test_check_reasoner_uncurated_model_needs_escape_hatch(
     assert "OPENRAL_REASONER_DIALECT" in rows[0].details
 
 
-def test_check_reasoner_llm_anthropic_ok_redacts_key(
+def test_check_reasoner_named_endpoint_supplies_dialect(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "claude-haiku-4-5")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-ant-secret-12345")
+    """A named endpoint carries its own dialect, so DIALECT stays optional.
+
+    doctor must resolve `ENDPOINT=<name>` the way the factory does; reporting
+    `fail` for config that builds a client at runtime is worse than silence.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    rows = _check_reasoner_llm()
+    summary = next(r for r in rows if r.check == "Reasoner LLM")
+    assert summary.status == "warn"
+    assert "dialect=openai" in summary.details
+    assert "endpoint=http://localhost:11434/v1" in summary.details
+    # Loopback daemons enforce no auth, so an unset key is not a gap here.
+    assert not any(r.status == "fail" for r in rows)
+    assert not any(r.check == "Reasoner API_KEY" for r in rows)
+
+
+def test_check_reasoner_named_endpoint_enforces_auth(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """An auth-required named endpoint still reports the missing key."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openrouter")
+    rows = _check_reasoner_llm()
+    assert next(r for r in rows if r.check == "Reasoner LLM").status == "warn"
+    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
+    assert key_row.status == "missing"
+
+
+def test_check_reasoner_curated_model_resolves_named_endpoint(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A curated model pointed at a named endpoint resolves it to the URL too.
+
+    Left unresolved the literal name reaches the SDK as a base URL, and the
+    loopback probe never fires because "ollama" has no hostname.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "vllm")
+    summary = next(r for r in _check_reasoner_llm() if r.check == "Reasoner LLM")
+    assert "endpoint=http://localhost:8000/v1" in summary.details
+
+
+def test_check_reasoner_dialect_clash_fails(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A named endpoint cannot re-dialect a curated model — doctor says so too.
+
+    The factory refuses this outright; reporting `ok` would tell the operator
+    their config is fine right up until the reasoner refuses to configure.
+    """
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-ant-secret")
+    rows = _check_reasoner_llm()
+    assert len(rows) == 1
+    assert rows[0].status == "fail"
+    assert "dialect" in rows[0].details
+
+
+def test_check_reasoner_named_endpoint_auth_posture_wins(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """A no-auth named endpoint clears the key requirement for a curated model."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "vllm")
+    rows = _check_reasoner_llm()
+    assert next(r for r in rows if r.check == "Reasoner LLM").status == "ok"
+    assert not any(r.check == "Reasoner API_KEY" for r in rows)
+
+
+def test_check_reasoner_curated_model_ok_redacts_key(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-opus-4-8")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-ant-secret-12345")
     rows = _check_reasoner_llm()
     summary = next(r for r in rows if r.check == "Reasoner LLM")
     assert summary.status == "ok"
-    assert "provider=anthropic" in summary.details
-    assert "model=claude-haiku-4-5" in summary.details
+    assert "model=claude-opus-4-8" in summary.details
+    assert "dialect=anthropic" in summary.details
     assert "api_key=set" in summary.details
     # API key value must never appear in the rendered output.
     assert "sk-ant-secret-12345" not in summary.details
 
 
-def test_check_reasoner_llm_anthropic_missing_model(
+def test_check_reasoner_uncurated_model_ok_redacts_key(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "anthropic")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-ant-secret")
-    rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    assert summary.status == "warn"
-    follow_up = next(r for r in rows if r.check == "Reasoner MODEL")
-    assert follow_up.status == "missing"
-    assert "OPENRAL_REASONER_LLM_MODEL" in follow_up.details
+    """The escape-hatch row redacts the key too, not just the curated path."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "claude-haiku-4-5")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "anthropic")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-ant-secret-12345")
+    summary = next(r for r in _check_reasoner_llm() if r.check == "Reasoner LLM")
+    assert summary.status == "warn"  # uncurated
+    assert "api_key=set" in summary.details
+    assert "sk-ant-secret-12345" not in summary.details
 
 
-def test_check_reasoner_llm_openrouter_missing_key(
-    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
-) -> None:
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek/deepseek-chat-v3:free")
-    rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    assert summary.status == "warn"
-    key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
-    assert key_row.status == "missing"
-    assert "openrouter" in key_row.details
-    # The default OpenRouter URL is surfaced in the summary even though
-    # BASE_URL isn't set explicitly.
-    assert "openrouter.ai/api/v1" in summary.details
-
-
-def test_check_reasoner_llm_ollama_default_base_url_no_key(
-    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
-) -> None:
-    """`provider=ollama` is recognised, defaults to the loopback base URL,
-    and requires no API key — it must not be reported as an unknown provider."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "ollama")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen3:8b")
-    rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    # No model/key missing → ok (auth not required for ollama).
-    assert summary.status == "ok"
-    assert "provider=ollama" in summary.details
-    assert "localhost:11434/v1" in summary.details
-    # Loopback base URL → an Ollama probe row is emitted.
-    assert any(r.check == "Ollama" for r in rows)
-
-
-def test_check_reasoner_llm_cosmos_no_model_needed(
-    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
-) -> None:
-    """`provider=cosmos` is complete with just the PROVIDER var: the model
-    defaults to nvidia/Cosmos3-Edge, no API key is required, and the loopback
-    probe row is labelled `Cosmos 3` — `info` (not `warn`) when down, because
-    the managed vLLM sidecar auto-starts on the first reasoner tick."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
-    monkeypatch.delenv("OPENRAL_COSMOS3_AUTOSTART", raising=False)
-    rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    assert summary.status == "ok"
-    assert "provider=cosmos" in summary.details
-    # The *effective* model must be visible so a self-managed-endpoint
-    # operator can spot a served-name mismatch here, not at tick time.
-    assert "nvidia/Cosmos3-Edge (default)" in summary.details
-    assert "127.0.0.1:8901/v1" in summary.details
-    assert not any(r.check == "Reasoner MODEL" for r in rows)
-    probe = next(r for r in rows if r.check == "Cosmos 3")
-    # No server running in the test env; the row must be informational.
-    assert probe.status in {"ok", "info"}
-    if probe.status == "info":
-        assert "auto-starts" in probe.details
-
-
-def test_check_reasoner_llm_cosmos_autostart_disabled_warns(
+def test_check_reasoner_cosmos_autostart_disabled_warns(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
     """With OPENRAL_COSMOS3_AUTOSTART disabled, a down endpoint is a real
     problem: the probe row must keep `warn` severity and must NOT claim the
     server auto-starts."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "cosmos")
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "cosmos3-edge")
     monkeypatch.setenv("OPENRAL_COSMOS3_AUTOSTART", "0")
     rows = _check_reasoner_llm()
     probe = next(r for r in rows if r.check == "Cosmos 3")
@@ -468,104 +487,79 @@ def test_check_reasoner_llm_cosmos_autostart_disabled_warns(
 
 
 @pytest.mark.parametrize(
-    ("provider", "model", "base_url_fragment"),
+    ("endpoint", "base_url_fragment"),
     [
-        ("gemini", "gemini-2.5-flash", "generativelanguage.googleapis.com"),
-        ("xai", "grok-4", "api.x.ai/v1"),
-        ("deepseek", "deepseek-chat", "api.deepseek.com"),
+        ("openrouter", "openrouter.ai/api/v1"),
+        ("gemini", "generativelanguage.googleapis.com"),
+        ("xai", "api.x.ai/v1"),
+        ("deepseek", "api.deepseek.com"),
+        ("huggingface", "router.huggingface.co/v1"),
     ],
 )
-def test_check_reasoner_llm_named_cloud_preset(
+def test_check_reasoner_named_cloud_endpoint(
     monkeypatch: pytest.MonkeyPatch,
     _clear_reasoner_env: None,
-    provider: str,
-    model: str,
+    endpoint: str,
     base_url_fragment: str,
 ) -> None:
-    """The gemini / xai / deepseek presets resolve a vendor base URL, require a
-    key, and emit no Ollama probe (cloud endpoints)."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", provider)
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", model)
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", f"sk-{provider}-secret")
+    """A named cloud endpoint resolves its vendor URL and probes nothing."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "some-model")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", endpoint)
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", f"sk-{endpoint}-secret")
     rows = _check_reasoner_llm()
     summary = next(r for r in rows if r.check == "Reasoner LLM")
-    assert summary.status == "ok"
-    assert f"provider={provider}" in summary.details
     assert base_url_fragment in summary.details
-    assert not any(r.check == "Ollama" for r in rows)
+    assert not any(r.check == "Reasoner endpoint" for r in rows)
+    assert not any(r.status == "fail" for r in rows)
 
 
-def test_check_reasoner_llm_named_cloud_preset_missing_key(
+def test_check_reasoner_named_cloud_endpoint_missing_key(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    """A named cloud preset without an API key reports the missing key row."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "deepseek")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek-chat")
+    """A named cloud endpoint without an API key reports the missing key row."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "deepseek-chat")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "deepseek")
     rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    assert summary.status == "warn"
     key_row = next(r for r in rows if r.check == "Reasoner API_KEY")
     assert key_row.status == "missing"
     assert "deepseek" in key_row.details
 
 
-def test_check_reasoner_llm_vllm_probe_row_labelled_vllm(
+def test_check_reasoner_named_local_endpoint_probes_loopback(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    """`provider=vllm` defaults to the local :8000 endpoint, needs no key, and
-    its loopback probe row is labelled vLLM (not Ollama) with a vLLM hint."""
-    # Port 1 is guaranteed-closed so the probe always warns deterministically.
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1:1/v1")
-    rows = _check_reasoner_llm()
-    summary = next(r for r in rows if r.check == "Reasoner LLM")
-    # No model/key missing → ok (auth not required for vllm).
-    assert summary.status == "ok"
-    assert "provider=vllm" in summary.details
-    probe = next(r for r in rows if r.check == "vLLM")
-    assert probe.status == "warn"
-    assert "vllm serve" in probe.details
-    # Must not be mislabelled / hinted as Ollama.
-    assert not any(r.check == "Ollama" for r in rows)
-    assert "bootstrap-ollama" not in probe.details
-
-
-def test_check_reasoner_llm_vllm_default_port(
-    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
-) -> None:
-    """With no BASE_URL, vllm resolves the :8000 loopback default in the summary."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "vllm")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen2.5-7b-instruct")
+    """`ENDPOINT=vllm` resolves the :8000 loopback default and probes it."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen2.5-7b-instruct")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "vllm")
     rows = _check_reasoner_llm()
     summary = next(r for r in rows if r.check == "Reasoner LLM")
     assert "localhost:8000/v1" in summary.details
-    # Loopback → a vLLM probe row is emitted (reachable or not).
-    assert any(r.check == "vLLM" for r in rows)
+    # Auth is not required for a loopback daemon, so no key row.
+    assert not any(r.check == "Reasoner API_KEY" for r in rows)
+    assert any(r.check == "Reasoner endpoint" for r in rows)
 
 
-def test_check_reasoner_llm_local_endpoint_unreachable(
+def test_check_reasoner_local_endpoint_unreachable(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
+    """A down BYO-local endpoint is a real `warn`, with a start-your-server hint."""
     # Port 1 is guaranteed-closed (privileged, never bound by a dev tool).
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openai-compatible")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "qwen3:8b")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_BASE_URL", "http://127.0.0.1:1/v1")
-    rows = _check_reasoner_llm()
-    ollama = next(r for r in rows if r.check == "Ollama")
-    assert ollama.status == "warn"
-    assert "bootstrap-ollama" in ollama.details
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://127.0.0.1:1/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    probe = next(r for r in _check_reasoner_llm() if r.check == "Reasoner endpoint")
+    assert probe.status == "warn"
+    assert "unreachable at 127.0.0.1:1" in probe.details
 
 
-def test_check_reasoner_llm_cloud_endpoint_no_ollama_probe(
+def test_check_reasoner_cloud_endpoint_emits_no_probe(
     monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
 ) -> None:
-    """Cloud base URLs must not emit an Ollama row (no probe out)."""
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_PROVIDER", "openrouter")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_MODEL", "deepseek/deepseek-chat-v3:free")
-    monkeypatch.setenv("OPENRAL_REASONER_LLM_API_KEY", "sk-or-secret")
+    """Cloud base URLs must emit no probe row — doctor never reaches out."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "gpt-5.5")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-or-secret")
     rows = _check_reasoner_llm()
-    assert not any(r.check == "Ollama" for r in rows)
+    assert not any(r.check == "Reasoner endpoint" for r in rows)
 
 
 # ── _gather_checks ────────────────────────────────────────────────────────────
@@ -705,3 +699,22 @@ def test_doctor_exits_0_on_tier0_host() -> None:
     with patch("openral_cli.main._gather_checks", return_value=tier0):
         result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
+
+
+def test_doctor_and_factory_share_one_preset_table() -> None:
+    """Doctor must consume the factory's endpoint presets, not a mirror.
+
+    A hand-mirrored copy in openral_cli.main drifted twice (2fe732a: doctor
+    rejected valid named endpoints; 131a489: doctor passed a dialect clash
+    the factory refuses). The table now lives in openral_core and both sides
+    import THE SAME object, so a third drift is impossible by construction.
+    """
+    from openral_core import REASONER_ENDPOINT_PRESETS
+    from openral_reasoner.tool_use import _ENDPOINT_PRESETS
+
+    assert _ENDPOINT_PRESETS is REASONER_ENDPOINT_PRESETS
+    import openral_cli.main as doctor_module
+
+    assert not hasattr(doctor_module, "_REASONER_ENDPOINT_PRESETS"), (
+        "openral_cli.main regrew a local mirror of the endpoint presets"
+    )

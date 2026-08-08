@@ -38,6 +38,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -227,6 +228,14 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         self._boot_timeout_s = boot_timeout_s
         self._server_ready = False
         self._child: subprocess.Popen[bytes] | None = None
+        # _ensure_server is reachable from two threads at once — warm() runs
+        # on the reasoner-llm pool at on_configure while the completion gate's
+        # describe_image runs on the reasoner-vlm pool — and its check-then-act
+        # on _child/_server_ready would double-spawn `vllm serve` (port fight,
+        # 2x VRAM) with the first Popen handle orphaned. One lock serialises
+        # the probe/spawn/wait; the winner marks ready and the loser returns
+        # instantly through the _server_ready short-circuit.
+        self._ensure_lock = threading.Lock()
 
     # -- managed server lifecycle -------------------------------------------
 
@@ -261,6 +270,11 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
     def _ensure_server(self) -> None:
         """Probe the endpoint; auto-start the managed sidecar when appropriate.
 
+        Thread-safe: the llm-pool ``warm()`` and the vlm-pool
+        ``describe_image`` can arrive concurrently on a cold host, so the
+        probe/spawn/wait runs under ``_ensure_lock`` — the second caller
+        blocks on the same boot instead of spawning a duplicate sidecar.
+
         Raises:
             ROSConfigError: When the endpoint is down, autostart is off (or
                 the URL is non-loopback), or the spawned server exits early /
@@ -268,6 +282,13 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         """
         if self._server_ready:
             return
+        with self._ensure_lock:
+            if self._server_ready:  # won by the thread that held the lock
+                return
+            self._ensure_server_locked()
+
+    def _ensure_server_locked(self) -> None:
+        """The single-threaded probe/spawn/wait body; caller holds the lock."""
         base_url = self._base_url or COSMOS3_BASE_URL
         if _endpoint_is_up(base_url):
             self._server_ready = True
@@ -330,6 +351,25 @@ class Cosmos3ToolUseClient(OpenAICompatibleToolUseClient):
         self._server_ready = False
 
     # -- ToolUseClient ------------------------------------------------------
+
+    def warm(self) -> None:
+        """Start the managed sidecar now instead of on the first tick.
+
+        ``_ensure_server`` is otherwise reached only from
+        :meth:`select_tool` / :meth:`describe_image`, i.e. on the
+        reasoner's *first tick* — after the whole graph is already up and
+        an operator is waiting on a decision. On a cold host that call
+        provisions a venv and downloads ~9 GB before vLLM even starts
+        loading; on a warm one it is still a vLLM model load. Meanwhile
+        bringup has minutes of unrelated work (HAL ``on_configure``,
+        MuJoCo, camera first-frame gating) it could have overlapped with.
+
+        Callers run this off the executor thread — see
+        ``ReasonerNode.on_configure``. Safe to call more than once:
+        ``_ensure_server`` short-circuits on ``_server_ready`` and reuses
+        a child that is still booting rather than double-spawning.
+        """
+        self._ensure_server()
 
     def select_tool(
         self,

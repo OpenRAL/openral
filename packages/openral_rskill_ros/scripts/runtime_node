@@ -46,6 +46,49 @@ except ImportError:
     pass
 
 
+def _prewarm_vla_imports() -> None:
+    """Import the shared VLA framework stack while no camera thread exists.
+
+    On a real deploy the lazy per-goal VLA import inside this process is
+    crushed by the camera reader threads: ``transformers``' import runs
+    ``importlib.metadata.packages_distributions()`` — a stat() per file of
+    every installed distribution — and every stat releases the GIL, which a
+    30 fps reader thread then snatches. Measured live on an SO-101 bench:
+    the identical import chain takes 23 s in a quiet process and 8+ minutes
+    (unfinished) once two camera readers are up; neither bytecode
+    precompilation nor a raised GIL switch interval rescues it, because the
+    convoy is on GIL *re-acquisition* after each syscall, not on compute
+    slices. So pay the 23 s exactly once here, single-threaded, before
+    ``open_deploy_sensor_readers`` spawns the first reader — the per-goal
+    import then hits ``sys.modules`` and completes in milliseconds.
+
+    **The call must stay ahead of ``open_deploy_sensor_readers``.** That
+    ordering is the entire fix; moving it after the readers reinstates the
+    8-minute stall. It is the same class of ordering constraint as the
+    ``gi``/``Gst.init()`` block at the top of this file.
+
+    Also runs on the sim path, where there are no in-process reader threads
+    and so no convoy: there the point is to overlap ~7 s of import with the
+    HAL's concurrent ``on_configure`` instead of charging it to the first
+    ``ExecuteRskill`` goal.
+
+    Best-effort: hosts without the VLA stack (slim installs) skip cleanly;
+    the per-goal lazy import still raises its own typed error.
+    """
+    from openral_rskill._diagnostics import phase_timer
+
+    try:
+        with phase_timer("vla_framework", prefix="prewarm"):
+            import torch  # noqa: F401  # reason: prewarm only
+
+            # Pulls transformers (the packages_distributions stat storm) and
+            # every lerobot policy family module — the shared ~95% of any
+            # VLA adapter's import phase.
+            from lerobot.policies import factory  # noqa: F401  # reason: prewarm only
+    except ImportError:
+        pass
+
+
 def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstrap entry point — splitting obscures the launch contract
     try:
         import rclpy
@@ -112,6 +155,16 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # HAL's SimSensorBridge.
     # Empty (sim deploys) leaves the HAL bridge as the only camera source.
     bootstrap.declare_parameter("deploy_config", "")
+    # The launch's RESOLVED consumer flags (tri-state strings; "" = "no
+    # launch opinion, honour the scene"). The scene YAML's own
+    # enable_object_detector / enable_slam can be None ("auto") and only the
+    # deploy CLI resolves that — these carry the resolution across so the
+    # sensor leg's topic rate/resolution exemptions key off the consumers
+    # that actually launched (see sensor_leg.apply_launch_overrides).
+    bootstrap.declare_parameter("resolved_enable_object_detector", "")
+    bootstrap.declare_parameter("resolved_enable_slam", "")
+    bootstrap.declare_parameter("resolved_slam_stereo_cameras", "")
+    bootstrap.declare_parameter("resolved_slam_mono_camera", "")
     robot_yaml: str = bootstrap.get_parameter("robot_yaml").get_parameter_value().string_value
     search_paths: list[str] = [
         p
@@ -148,6 +201,23 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         bootstrap.get_parameter("dataset_license").get_parameter_value().string_value
     )
     deploy_config: str = bootstrap.get_parameter("deploy_config").get_parameter_value().string_value
+
+    def _tristate(name: str) -> bool | None:
+        raw = bootstrap.get_parameter(name).get_parameter_value().string_value.strip().lower()
+        return None if not raw else raw in ("1", "true", "yes", "on")
+
+    resolved_enable_object_detector = _tristate("resolved_enable_object_detector")
+    resolved_enable_slam = _tristate("resolved_enable_slam")
+    _stereo_csv = (
+        bootstrap.get_parameter("resolved_slam_stereo_cameras").get_parameter_value().string_value
+    )
+    resolved_slam_stereo_cameras: tuple[str, ...] | None = (
+        tuple(s.strip() for s in _stereo_csv.split(",") if s.strip()) or None
+    )
+    resolved_slam_mono_camera: str | None = (
+        bootstrap.get_parameter("resolved_slam_mono_camera").get_parameter_value().string_value
+        or None
+    )
     bootstrap.destroy_node()
 
     if not robot_yaml:
@@ -212,6 +282,21 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         rclpy.try_shutdown()
         return 3
 
+    # Pre-warm the heavy VLA imports BEFORE the first camera reader thread
+    # exists (see _prewarm_vla_imports — the readers' GIL churn stretches the
+    # same import from 23 s to 8+ min). Emits
+    # prewarm_vla_framework_{start,heartbeat,done} so the operator sees the
+    # one-time bring-up cost.
+    #
+    # Runs on the SIM path too, even though sim spawns no in-process reader
+    # threads and so has no convoy to avoid. The win there is different: the
+    # import is ~7 s of pure single-threaded work that the first
+    # ``ExecuteRskill`` goal used to pay in the operator's critical path,
+    # whereas here it overlaps the HAL's own ``on_configure`` (~6 s on a
+    # MuJoCo arm, ~27 s on a cold robocasa kitchen) happening concurrently in
+    # another process. Same total work, moved off the goal.
+    _prewarm_vla_imports()
+
     # Real deploys: open the deploy config's camera readers and publish
     # them onto the WorldState image topics. Fail loudly — a real run
     # whose cameras cannot open would otherwise starve the policy of
@@ -221,22 +306,42 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     if deploy_config:
         from openral_core import DeployScene
         from openral_rskill_ros.sensor_leg import (
+            apply_launch_overrides,
             merge_deploy_sensors,
             open_deploy_sensor_readers,
+            slam_camera_names,
+            topic_frame_size,
         )
 
         try:
             scene = DeployScene.from_yaml(deploy_config)
+            # The scene's raw runtime block can say None ("auto") where the
+            # launch already resolved on/off — fold the launch's answer over
+            # it so the rate/resolution exemptions match the consumers that
+            # actually exist in this graph.
+            effective_runtime = apply_launch_overrides(
+                scene.runtime,
+                enable_object_detector=resolved_enable_object_detector,
+                enable_slam=resolved_enable_slam,
+                slam_stereo_cameras=resolved_slam_stereo_cameras,
+                slam_mono_camera=resolved_slam_mono_camera,
+            )
             # Robot-manifest ∪ scene sensors (scene wins on name collision —
             # a same-named scene entry is that robot sensor's deploy binding);
             # the leg opens only those carrying a `deploy_binding`. The shared
             # aggregator gets frames straight from the readers (the
             # zero-copy vision path — zero-copy NVMM handles survive; no intra-process ROS
             # round trip on the policy leg).
+            # Visual SLAM tracks frame-to-frame motion and loses the track on
+            # a starved stream, so its cameras are exempted from the fallback
+            # publisher's rate cap automatically — derived from the scene, not
+            # from a per-binding flag somebody has to remember (§1.4).
             sensor_leg = open_deploy_sensor_readers(
                 merge_deploy_sensors(runtime.description.sensors, scene.sensors),
                 aggregator=runtime.aggregator,
                 ros_node=runtime.world_state_node,
+                uncapped_sensors=slam_camera_names(effective_runtime),
+                topic_max_size=topic_frame_size(effective_runtime),
             )
             if sensor_leg.direct_sensors:
                 from rclpy.parameter import Parameter

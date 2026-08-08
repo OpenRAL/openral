@@ -20,8 +20,7 @@ std::vector<double> read_double_array(rclcpp_lifecycle::LifecycleNode& node,
   return node.get_parameter(name).as_double_array();
 }
 
-bool read_xyz_array(rclcpp_lifecycle::LifecycleNode& node,
-                    const std::string& name,
+bool read_xyz_array(rclcpp_lifecycle::LifecycleNode& node, const std::string& name,
                     std::array<double, 3>& out) {
   const auto values = read_double_array(node, name);
   if (values.size() != 3) {
@@ -35,19 +34,17 @@ bool read_xyz_array(rclcpp_lifecycle::LifecycleNode& node,
 
 }  // namespace
 
-EnvelopeLoadStatus load_envelope_from_ros_parameters(
-    rclcpp_lifecycle::LifecycleNode& node,
-    EnvelopeIntersection& out,
-    std::string& error_message) {
+EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::LifecycleNode& node,
+                                                     EnvelopeIntersection& out,
+                                                     std::string& error_message) {
   error_message.clear();
   out = EnvelopeIntersection{};
 
   const std::int64_t n_dof_signed = node.get_parameter("n_dof").as_int();
   if (n_dof_signed <= 0) {
-    error_message =
-        "n_dof is 0; no envelope supplied. Boot through "
-        "`openral deploy sim` so the launch forwards robots/<id>/robot.yaml "
-        "as ROS parameters on this node.";
+    error_message = "n_dof is 0; no envelope supplied. Boot through "
+                    "`openral deploy sim` so the launch forwards robots/<id>/robot.yaml "
+                    "as ROS parameters on this node.";
     return EnvelopeLoadStatus::kUnconfigured;
   }
   out.n_dof = static_cast<std::size_t>(n_dof_signed);
@@ -61,16 +58,13 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(
   out.joint_velocity_max = read_double_array(node, "joint_velocity_max");
   out.joint_torque_max = read_double_array(node, "joint_torque_max");
 
-  if (out.joint_position_min.size() != out.n_dof
-      || out.joint_position_max.size() != out.n_dof
-      || out.joint_velocity_max.size() != out.n_dof
-      || out.joint_torque_max.size() != out.n_dof) {
+  if (out.joint_position_min.size() != out.n_dof || out.joint_position_max.size() != out.n_dof ||
+      out.joint_velocity_max.size() != out.n_dof || out.joint_torque_max.size() != out.n_dof) {
     std::ostringstream oss;
     oss << "joint_* parameter arrays disagree with n_dof=" << out.n_dof
-        << " (min=" << out.joint_position_min.size()
-        << " max=" << out.joint_position_max.size()
-        << " vel=" << out.joint_velocity_max.size()
-        << " tau=" << out.joint_torque_max.size() << ")";
+        << " (min=" << out.joint_position_min.size() << " max=" << out.joint_position_max.size()
+        << " vel=" << out.joint_velocity_max.size() << " tau=" << out.joint_torque_max.size()
+        << ")";
     error_message = oss.str();
     return EnvelopeLoadStatus::kInvalidShape;
   }
@@ -83,8 +77,7 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(
   out.max_ee_accel_m_s2 = node.get_parameter("max_ee_accel_m_s2").as_double();
   out.max_force_n = node.get_parameter("max_force_n").as_double();
   out.max_torque_nm = node.get_parameter("max_torque_nm").as_double();
-  out.contact_force_threshold_n =
-      node.get_parameter("contact_force_threshold_n").as_double();
+  out.contact_force_threshold_n = node.get_parameter("contact_force_threshold_n").as_double();
   out.deadman_required = node.get_parameter("deadman_required").as_bool();
 
   return EnvelopeLoadStatus::kOk;

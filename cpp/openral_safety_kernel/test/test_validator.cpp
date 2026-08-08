@@ -15,11 +15,8 @@ namespace osk = openral_safety_kernel;
 
 namespace {
 
-osk::EnvelopeIntersection make_env(std::size_t n_dof = 3,
-                                   double pos_lo = -1.0,
-                                   double pos_hi = 1.0,
-                                   double vel_max = 3.15,
-                                   double tau_max = 5.0) {
+osk::EnvelopeIntersection make_env(std::size_t n_dof = 3, double pos_lo = -1.0, double pos_hi = 1.0,
+                                   double vel_max = 3.15, double tau_max = 5.0) {
   osk::EnvelopeIntersection env;
   env.robot_name = "toy";
   env.n_dof = n_dof;
@@ -201,9 +198,8 @@ TEST(Validator, NonJointModeStillRejectsNan) {
   // NaN scan runs BEFORE the per-mode dispatch, so per-mode chunks
   // still get the structural soundness guarantee.
   auto env = make_env(11);
-  const std::vector<double> flat = {0.01,
-                                    std::numeric_limits<double>::quiet_NaN(),
-                                    0.0, 0.0, 0.0, 0.0};
+  const std::vector<double> flat = {0.01, std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0, 0.0,
+                                    0.0};
   const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta);
   const auto rc = osk::validate(view, env);
   ASSERT_FALSE(rc);

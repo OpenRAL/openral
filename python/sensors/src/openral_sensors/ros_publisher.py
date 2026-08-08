@@ -112,6 +112,17 @@ class SensorRosPublisher:
             layout ``/openral/cameras/<name>/camera_info`` so real
             cameras match the sim HAL's topics (mono visual SLAM
             subscribes there).
+        max_size: Optional ``(width, height)`` ceiling for the published
+            image. Frames larger than this are downscaled, preserving
+            aspect ratio, and ``CameraInfo``'s ``k``/``p`` are rescaled by
+            the same factor so the intrinsics keep matching the pixels.
+            ``None`` (default) publishes at capture resolution. Exists
+            because every publish hands rclpy a full-resolution buffer
+            whose Python→C conversion holds the GIL for the whole copy —
+            profiled at ~30 ms per 640x480 frame, which is 30 % of wall
+            time even at the sensor leg's capped topic rate. The policy is
+            unaffected: it reads frames in-process from the aggregator,
+            never from this topic.
 
     Example:
         >>> # End-to-end exercised in tests/unit/test_sensor_ros_publisher.py
@@ -130,6 +141,7 @@ class SensorRosPublisher:
         camera_info: IntrinsicsPinhole | None = None,
         info_topic: str | None = None,
         node: Node | None = None,
+        max_size: tuple[int, int] | None = None,
     ) -> None:
         """Stash configuration; no ROS I/O until :meth:`start`."""
         if not topic.startswith("/"):
@@ -149,6 +161,9 @@ class SensorRosPublisher:
         self._frame_id = frame_id or reader.sensor_id
         self._qos_depth = qos_depth
         self._camera_info_spec = camera_info
+        if max_size is not None and (max_size[0] <= 0 or max_size[1] <= 0):
+            raise ValueError(f"SensorRosPublisher: max_size must be positive; got {max_size!r}")
+        self._max_size = max_size
 
         # A composed runtime injects its existing node. Standalone callers
         # retain the original private-node behavior.
@@ -395,6 +410,10 @@ class SensorRosPublisher:
         height = int(getattr(frame, "height", 0))
         channels = 1 if ros_encoding in {"mono8", "16UC1"} else 3
 
+        scale = self._downscale_factor(width, height)
+        if scale < 1.0:
+            data, width, height = self._downscale(data, width, height, channels, scale)
+
         msg = Image()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
@@ -410,13 +429,74 @@ class SensorRosPublisher:
         if self._info_publisher is not None and self._camera_info_spec is not None:
             self._publish_camera_info(width, height, msg.header.stamp)
 
+    def _downscale_factor(self, width: int, height: int) -> float:
+        """Uniform scale that fits ``width x height`` inside ``max_size``.
+
+        Returns ``1.0`` (publish untouched) when no ceiling is configured or
+        the frame already fits. Aspect ratio is preserved — a non-uniform
+        squash would need separate x/y intrinsic scaling and silently break
+        any consumer doing geometry.
+        """
+        if self._max_size is None or width <= 0 or height <= 0:
+            return 1.0
+        max_w, max_h = self._max_size
+        return min(1.0, max_w / width, max_h / height)
+
+    def _downscale(
+        self, data: bytes, width: int, height: int, channels: int, scale: float
+    ) -> tuple[bytes, int, int]:
+        """Resize raw interleaved bytes by ``scale``; returns ``(data, w, h)``.
+
+        Falls back to the original frame if numpy/Pillow is unavailable or the
+        buffer is not the length its geometry implies — publishing a
+        full-resolution frame is merely slower, while publishing a mis-sized
+        buffer would corrupt every subscriber.
+        """
+        raw = bytes(data)  # accepts bytearray/memoryview from a duck-typed frame
+        if len(raw) != width * height * channels:
+            return raw, width, height
+        try:
+            import numpy as np
+            from PIL import Image as PilImage
+        except ImportError:
+            return raw, width, height
+        new_w, new_h = max(1, round(width * scale)), max(1, round(height * scale))
+        arr = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, channels)
+        mode = "L" if channels == 1 else "RGB"
+        img = PilImage.fromarray(arr.squeeze() if channels == 1 else arr, mode=mode)
+        # BILINEAR, not LANCZOS: this runs on the publish thread and the
+        # consumers are detectors / VLMs, not humans looking for ringing.
+        resized = img.resize((new_w, new_h), PilImage.Resampling.BILINEAR)
+        return np.asarray(resized).tobytes(), new_w, new_h
+
     def _publish_camera_info(self, width: int, height: int, stamp: object) -> None:
-        """Publish a companion ``CameraInfo`` at the same cadence as the image."""
+        """Publish a companion ``CameraInfo`` matching the published image.
+
+        The intrinsics are scaled to ``width x height`` rather than taken
+        verbatim from the spec: when :attr:`_max_size` downscales the frame,
+        manifest-resolution ``fx/fy/cx/cy`` against reduced dimensions would
+        be silently wrong for every geometric consumer (cuVSLAM, nvblox, the
+        depth provider, object-lift) with nothing in the graph to flag it.
+        """
+        from openral_core import scale_intrinsics_to
         from sensor_msgs.msg import CameraInfo
 
         assert self._info_publisher is not None
         assert self._camera_info_spec is not None
         spec = self._camera_info_spec
+
+        # Scale from the resolution the intrinsics were calibrated at to the
+        # one actually being published — via the SAME helper the sim HAL uses
+        # (openral_core.scale_intrinsics_to), so real-hardware and sim
+        # CameraInfo can never drift apart on the linear rescale rule.
+        # Per-axis by construction, so a spec whose declared geometry
+        # disagrees with the sensor still lands correctly. A degenerate spec
+        # (zero width/height) is published verbatim rather than divided by.
+        if spec.width > 0 and spec.height > 0:
+            scaled = scale_intrinsics_to(spec, width, height)
+            fx, fy, cx, cy = scaled.fx, scaled.fy, scaled.cx, scaled.cy
+        else:
+            fx, fy, cx, cy = spec.fx, spec.fy, spec.cx, spec.cy
 
         info = CameraInfo()
         info.header.stamp = stamp
@@ -426,20 +506,7 @@ class SensorRosPublisher:
         info.distortion_model = spec.distortion_model
         # ROS expects flat lists; pad/truncate to spec sizes.
         info.d = list(spec.distortion_coeffs)
-        info.k = [spec.fx, 0.0, spec.cx, 0.0, spec.fy, spec.cy, 0.0, 0.0, 1.0]
+        info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
         info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        info.p = [
-            spec.fx,
-            0.0,
-            spec.cx,
-            0.0,
-            0.0,
-            spec.fy,
-            spec.cy,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-        ]
+        info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         self._info_publisher.publish(info)

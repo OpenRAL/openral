@@ -9,16 +9,13 @@ set -euo pipefail
 #
 # After this script, the env vars below point the reasoner at the local
 # endpoint. This is the model-first contract (ADR-0088): an Ollama tag is an
-# *uncurated* model id, so the endpoint + dialect must be explicit — the
-# reasoner logs a `reasoner.model.uncurated` warning (untested for robotics
-# tool calling), which is expected for a local baseline:
+# *uncurated* model id, so the reasoner logs a `reasoner.model.uncurated`
+# warning (untested for robotics tool calling), which is expected for a local
+# baseline. `ollama` is a named endpoint carrying its own URL, dialect and
+# cold-start timeout, so no DIALECT is needed:
 #
 #   export OPENRAL_REASONER_MODEL=qwen3:8b
-#   export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-#   export OPENRAL_REASONER_DIALECT=openai
-#
-# (The legacy OPENRAL_REASONER_LLM_* vars still work for one release via the
-# deprecation shim; do not use them in new setups.)
+#   export OPENRAL_REASONER_ENDPOINT=ollama
 #
 # Flags:
 #   --no-pull           Skip the `ollama pull` step (binary install only).
@@ -43,8 +40,7 @@ reasoner baseline model (qwen3:8b by default).
 Afterwards, export these to wire the reasoner at the local endpoint
 (model-first contract, ADR-0088):
   export OPENRAL_REASONER_MODEL=qwen3:8b
-  export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-  export OPENRAL_REASONER_DIALECT=openai
+  export OPENRAL_REASONER_ENDPOINT=ollama
 EOF
       exit 0
       ;;
@@ -125,12 +121,11 @@ cat <<EOF
 
 ==> Local reasoner baseline ready. Export these to wire it up
     (model-first contract, ADR-0088 — an Ollama tag is uncurated, so the
-    endpoint + dialect are explicit; the reasoner logs an expected
-    reasoner.model.uncurated warning):
+    reasoner logs an expected reasoner.model.uncurated warning; the named
+    'ollama' endpoint supplies the URL and dialect):
 
     export OPENRAL_REASONER_MODEL=${MODEL}
-    export OPENRAL_REASONER_ENDPOINT=http://localhost:11434/v1
-    export OPENRAL_REASONER_DIALECT=openai
+    export OPENRAL_REASONER_ENDPOINT=ollama
 
 Then 'openral doctor' reports "Reasoner LLM" as warn (uncurated model —
 expected) and "Reasoner endpoint" as ok.

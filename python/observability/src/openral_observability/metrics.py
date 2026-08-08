@@ -37,10 +37,8 @@ __all__ = [
     "get_hal_read_state_duration",
     "get_hal_send_action_duration",
     "get_inference_duration",
-    "get_inference_timeouts",
     "get_meter",
     "get_observability_export_failures",
-    "get_safety_clamps",
     "get_safety_violations",
     "get_sensors_age_ms",
     "get_sensors_stale_reads",
@@ -198,17 +196,6 @@ def get_tick_deadline_misses() -> Counter:
     )
 
 
-def get_inference_timeouts() -> Counter:
-    """``openral.inference.timeouts`` — ``ROSInferenceTimeout`` occurrences."""
-    return _cached(
-        semconv.METRIC_INFERENCE_TIMEOUTS,
-        lambda meter, name: meter.create_counter(
-            name=name,
-            description="ROSInferenceTimeout occurrences on the inference path.",
-        ),
-    )
-
-
 def get_safety_violations() -> Counter:
     """``openral.safety.violations`` — :class:`ROSSafetyViolation` family counter.
 
@@ -223,19 +210,18 @@ def get_safety_violations() -> Counter:
     )
 
 
-def get_safety_clamps() -> Counter:
-    """``openral.safety.clamps`` — safety-driven action clamps (no violation raised)."""
-    return _cached(
-        semconv.METRIC_SAFETY_CLAMPS,
-        lambda meter, name: meter.create_counter(
-            name=name,
-            description="Safety-driven action clamps that did not raise a violation.",
-        ),
-    )
-
-
 def get_hal_estop_count() -> Counter:
-    """``openral.hal.estop.count`` — :meth:`HAL.estop` invocations."""
+    """``openral.hal.estop.count`` — e-stops received at the HAL.
+
+    Recorded by ``openral_hal.lifecycle._emit_estop_telemetry`` on every
+    ``/openral/estop`` message the shared HAL lifecycle node latches, with
+    a ``hal.adapter`` label. Counts e-stop *receptions* on the actuation
+    side rather than ``HAL.estop()`` invocations specifically, so HALs that
+    opt out of the vendor stop path still register — an uncounted e-stop is
+    the blind spot this closes.
+
+    Labels: ``hal.adapter``.
+    """
     return _cached(
         semconv.METRIC_HAL_ESTOP_COUNT,
         lambda meter, name: meter.create_counter(
@@ -282,6 +268,14 @@ def get_observability_export_failures() -> Counter:
     """``openral.observability.export_failures`` — dropped OTLP batches.
 
     Labels: ``signal_kind`` (``trace`` | ``metric`` | ``log``).
+
+    Recorded by ``openral_observability._sdk._FailureCountingSpanExporter``,
+    which wraps the configured OTLP span exporter and counts every non-SUCCESS
+    result. Traces only so far: the metric and log pipelines have no equivalent
+    wrapper yet, so ``signal_kind`` is always ``trace`` in practice.
+
+    Without it a collector that is silently dropping batches looks identical to
+    a healthy one — the failure mode the counter exists to expose.
     """
     return _cached(
         semconv.METRIC_OBSERVABILITY_EXPORT_FAILURES,

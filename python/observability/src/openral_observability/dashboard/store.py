@@ -37,6 +37,8 @@ from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import Metric, ResourceMetrics
 from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, Span
 
+from openral_observability import semconv
+
 __all__ = ["TelemetryEvent", "TelemetryStore"]
 
 _EVENT_RING_SIZE = 200
@@ -48,11 +50,68 @@ _EVENT_RING_SIZE = 200
 # gone from the ring. Errors ALSO land here so they survive the flood; the
 # snapshot merges both lanes.
 _ERROR_EVENT_RING_SIZE = 64
+# A THIRD ring, same size, for headline `info` rows (deploy.bringup,
+# rskill.execute, reasoner.tick …). These need to outlive the main ring's flood
+# for the same reason errors do, but they must not share the error lane's
+# budget: mirroring all non-debug traffic into the 64 error slots let routine
+# info evict the safety events that lane exists to preserve. `world.scene_objects`
+# alone runs at ~0.10/s (measured live), so the shared lane fully cycled in ~11
+# minutes of an otherwise idle scene and a minute-one `safety.violation` was
+# gone by minute twelve — the exact "counter goes up, no trace" failure the
+# protected lane was added to prevent. Two rings, one budget each, so neither
+# class can starve the other.
+_HEADLINE_EVENT_RING_SIZE = 64
 _ERROR_SEVERITIES = ("error", "fatal")
 _METRIC_SAMPLE_RING_SIZE = 600  # ~5 min at one sample per 500 ms
 _SUBSCRIBER_QUEUE_SIZE = 256
 # OTLP Status.code values per opentelemetry-proto: 0=UNSET, 1=OK, 2=ERROR.
 _STATUS_ERROR = 2
+
+# Spans that earn an `info` row in the operator's Event Log. EVERYTHING
+# ELSE lands in the `debug` band.
+#
+# This is an allow-list on purpose. It used to be a deny-list
+# (`_PER_TICK_SPANS`) naming the three obvious 30 Hz offenders — but four
+# more span families tick at the same rate and were never added to it:
+# `world_state.snapshot` (once per runner tick), `rskill.tick`,
+# `safety.check` (once per candidate action chunk, from three separate
+# emitters including the C++ kernel), and `rskill.chunk_inference`. At
+# ~120 info rows/s the 200-slot ring cycles in under two seconds, so every
+# lifecycle line an operator actually needs scrolled past before it could
+# be read — the exact problem the deny-list was introduced to fix, still
+# unfixed because the list was incomplete.
+#
+# A deny-list makes "noisy" the thing you must remember to declare, and
+# that memory failed four times. Inverted, a new span is quiet until
+# someone deliberately promotes it, which is the safer default for a
+# panel whose whole value is signal density.
+#
+# Two things are unaffected: an ERROR-status span still escalates to
+# `error` regardless of this set, and every span is still indexed in full
+# for `openral replay`. This changes the event-log band only.
+_HEADLINE_SPANS = frozenset(
+    {
+        semconv.SPAN_CLI_COMMAND,  # one per CLI invocation
+        semconv.SPAN_DEPLOY_BRINGUP,  # one per lifecycle transition
+        # NOTE: `rskill.execute` is deliberately NOT here. The name is
+        # emitted at two very different rates by two different sites —
+        # `rskill_runner_node` opens one per dispatched goal, but
+        # `rSkillBase.step()` opens one per *tick*. Promoting it put 60
+        # rows into a 20 s live deploy-sim window (measured), reproducing
+        # the exact flood this allow-list exists to prevent. It can only
+        # become a headline once the per-step emitter is renamed; until
+        # then the goal-level line is not worth the per-tick stream.
+        semconv.SPAN_RSKILL_CONFIGURE,  # skill lifecycle
+        semconv.SPAN_RSKILL_ACTIVATE,  # skill lifecycle
+        semconv.SPAN_REASONER_TICK,  # one per LLM round-trip
+        semconv.SPAN_WORLD_SCENE_OBJECTS,  # ~0.2 Hz spatial-memory graph
+        semconv.SPAN_SIM_RUN,  # one per sim run (held open)
+    }
+)
+
+# Span-name prefixes that are also headline-worthy. `detect.probe.*` is a
+# handful of one-shot rows per `openral detect`, not a stream.
+_HEADLINE_SPAN_PREFIXES = ("detect.probe.",)
 
 # OTLP SeverityNumber bands (opentelemetry-proto logs/v1): four numbers per
 # level — TRACE 1-4, DEBUG 5-8, INFO 9-12, WARN 13-16, ERROR 17-20, FATAL
@@ -79,6 +138,15 @@ _ANY_VALUE_DECODERS: dict[str, Any] = {
     "double_value": lambda av: av.double_value,
     "bytes_value": lambda av: av.bytes_value,
 }
+
+
+def _is_headline_span(name: str) -> bool:
+    """True when ``name`` earns an ``info`` row in the Event Log.
+
+    See :data:`_HEADLINE_SPANS` for why this is an allow-list rather than a
+    list of known-noisy spans.
+    """
+    return name in _HEADLINE_SPANS or name.startswith(_HEADLINE_SPAN_PREFIXES)
 
 
 def _attr_value(av: AnyValue) -> Any:
@@ -348,6 +416,9 @@ class TelemetryStore:
         # Protected lane: error/fatal events, immune to the high-rate flood that
         # cycles the main ring in seconds (see _ERROR_EVENT_RING_SIZE).
         self._error_events: deque[TelemetryEvent] = deque(maxlen=_ERROR_EVENT_RING_SIZE)
+        # Headline lane: `info`/`warn` rows worth keeping, on their own budget so
+        # they cannot evict the error lane (see _HEADLINE_EVENT_RING_SIZE).
+        self._headline_events: deque[TelemetryEvent] = deque(maxlen=_HEADLINE_EVENT_RING_SIZE)
         self._counters: dict[str, int] = defaultdict(int)
         self._metrics: dict[str, _MetricSeries] = {}
         # Topical state buckets — one per "topic" the dashboard renders
@@ -579,9 +650,16 @@ class TelemetryStore:
             # Index full spans by trace_id for `openral replay` (bag↔OTel replay).
             self._index_span(span, trace_id_hex, ts_unix, attrs)
 
-        # Always append a one-line event so the operator sees the
-        # most recent activity. Severity escalates on ERROR status.
-        severity = "error" if span.status.code == _STATUS_ERROR else "info"
+        # Always append a one-line event so the operator sees the most recent
+        # activity. Severity escalates on ERROR status; otherwise only the
+        # headline spans get `info` and everything else lands in the
+        # `debug` band, filterable and out of the way (see _HEADLINE_SPANS).
+        if span.status.code == _STATUS_ERROR:
+            severity = "error"
+        elif _is_headline_span(span.name):
+            severity = "info"
+        else:
+            severity = "debug"
         title = _summarise_span(span.name, attrs, duration_ms)
         self._append_event(
             TelemetryEvent(
@@ -626,18 +704,34 @@ class TelemetryStore:
                 self._counters[event.name] += 1
 
     def _append_event(self, ev: TelemetryEvent) -> None:
-        """Append to the main ring, and mirror durable events into the protected lane.
+        """Append to the main ring, and mirror non-debug events into the protected lane.
 
-        The protected lane keeps the last :data:`_ERROR_EVENT_RING_SIZE` events
-        alive even when the high-rate info/debug stream cycles the main ring, so
-        a skill_failure / estop / safety.violation always leaves a trace the
-        operator can still find seconds later. Mirrored when the severity is
-        error/fatal OR the kind is in :data:`_PROTECTED_EVENT_KINDS` (a
-        skill_failure downgraded to "warn" while latched must still survive).
+        The protected lane keeps the last :data:`_ERROR_EVENT_RING_SIZE`
+        non-debug events alive even when the high-rate debug stream cycles the
+        main ring, so a bringup line / skill_failure / estop / safety.violation
+        always leaves a trace the operator can still find seconds later.
+
+        **Everything above debug is mirrored, but into two separate lanes.**
+        Measured on a live `deploy sim`: the main ring held 201 rows of which
+        193 were `hal.read_state`, i.e. ~7 s of history at 30 Hz. Demoting the
+        per-tick spans took info *generation* to zero, but the rows an operator
+        actually wants — `deploy.bringup`, `rskill.execute` — still shared one
+        FIFO with the debug stream, so they were evicted within seconds. An info
+        row that cannot outlive the flood is no more useful than one that was
+        never emitted.
+
+        Mirroring them into the *error* lane fixed that and broke something
+        worse: routine info then evicted the safety events those 64 slots exist
+        to preserve (`world.scene_objects` alone at ~0.10/s cycles the lane in
+        ~11 minutes of an idle scene). So the two classes get one ring each —
+        errors, e-stops, safety violations and skill failures here, headline
+        info there — and neither can starve the other.
         """
         self._events.append(ev)
         if ev.severity in _ERROR_SEVERITIES or ev.kind in _PROTECTED_EVENT_KINDS:
             self._error_events.append(ev)
+        elif ev.severity != "debug":
+            self._headline_events.append(ev)
 
     def _record_log(self, record: LogRecord, scope_name: str) -> None:
         """Append one bridged OTLP ``LogRecord`` to the event ring (issue #318)."""
@@ -793,16 +887,30 @@ class TelemetryStore:
                 "channels": attrs.get("openral.sensors.channels"),
                 "age_ms": attrs.get("openral.sensors.age_ms"),
             }
+            existing = per_camera.get(source, {})
             thumb = attrs.get("openral.sensors.thumbnail_jpeg_b64")
             if thumb:
                 # Persist the thumb until a newer one arrives so the
                 # card doesn't flicker between high-rate frames without
                 # one and the low-rate frames that carry one.
                 entry["thumbnail_jpeg_b64"] = thumb
-            else:
-                existing = per_camera.get(source, {})
-                if "thumbnail_jpeg_b64" in existing:
-                    entry["thumbnail_jpeg_b64"] = existing["thumbnail_jpeg_b64"]
+            elif "thumbnail_jpeg_b64" in existing:
+                entry["thumbnail_jpeg_b64"] = existing["thumbnail_jpeg_b64"]
+            # Effective read rate as an EMA over inter-span intervals. The
+            # tile's `age_ms` is frame age sampled at an arbitrary phase
+            # against a free-running camera, so it sawtooths 0→period — a
+            # smoothed rate is the steady number an operator actually wants.
+            prev_ts = existing.get("ts_unix")
+            if isinstance(prev_ts, (int, float)):
+                dt = ts_unix - float(prev_ts)
+                if dt > 0:
+                    inst = 1.0 / dt
+                    prev_fps = existing.get("fps")
+                    entry["fps"] = (
+                        0.8 * float(prev_fps) + 0.2 * inst
+                        if isinstance(prev_fps, (int, float))
+                        else inst
+                    )
             per_camera[source] = entry
         elif span_name == "slam.occupancy_grid":
             # Live 2D SLAM occupancy map from slam_toolbox.
@@ -873,25 +981,40 @@ class TelemetryStore:
         elif span_name == "safety.check":
             check_name = attrs.get("safety.check_name") or "(unknown)"
             severity = attrs.get("safety.severity", "info")
-            clamped = attrs.get("safety.clamped", False)
             ledger: dict[str, dict[str, Any]] = self._topics["safety"].setdefault("checks", {})
             ledger[str(check_name)] = {
                 "ts_unix": ts_unix,
                 "severity": severity,
-                "clamped": clamped,
                 "kernel": attrs.get("safety.kernel"),
                 "duration_ms": duration_ms,
             }
             self._topics["safety"]["latest_ts_unix"] = ts_unix
             # E-stop latch state for the UI's E-STOP / Reset control. The kernel
-            # drops every chunk with severity "violation" while latched (a
-            # violation, an /openral/estop, or a subsequent estop_latched drop)
-            # and reports "ok" once running clean again — so this self-corrects
-            # after a reset without the dashboard needing an rclpy node. A clamp
+            # drops every chunk while latched and reports a clean pass once
+            # running clean again — so this self-corrects after a reset
+            # without the dashboard needing an rclpy node. A clamp
             # ("warning") is not a latch and leaves the flag untouched.
+            #
+            # The clean-pass value is "info", NOT "ok". This used to test for
+            # "ok", which no emitter has ever produced: the C++ kernel sends
+            # `info` on a pass (lifecycle_kernel.cpp:721), `warn` while
+            # latched (:461) and `violation` on a drop (:583, :748), and the
+            # Python passthrough supervisor matches it. So the latch could
+            # only ever be set, never cleared, and the "self-corrects" claim
+            # above was false — `estopped` stuck true until an explicit
+            # POST /api/estop_reset.
+            #
+            # A pass from a real kernel is proof it is not latched: the
+            # kernel cannot publish a passing chunk while `fault_latch_` is
+            # set, it returns early with `estop_latched`. The null client is
+            # excluded because it emits "info" unconditionally without
+            # checking anything (runner/safety.py) — treating that as
+            # evidence of a clear would let a no-op client unlatch the UI.
             if severity == "violation":
                 self._topics["safety"]["estopped"] = True
-            elif severity == "ok":
+            elif severity == "info" and attrs.get(semconv.SAFETY_KERNEL) != (
+                semconv.SAFETY_KERNEL_NULL
+            ):
                 self._topics["safety"]["estopped"] = False
             if severity == "violation":
                 # A violation must SURVIVE and STAND OUT. The generic
@@ -1069,17 +1192,20 @@ class TelemetryStore:
         return sorted(self._services)[0]
 
     def _merged_events(self) -> list[TelemetryEvent]:
-        """Main ring + protected error lane, deduped, most-recent first.
+        """Main ring + both protected lanes, deduped, most-recent first.
 
-        Error events evicted from the fast-cycling main ring survive in
-        ``_error_events`` and are merged back here, so the event log always
-        carries the last ``_ERROR_EVENT_RING_SIZE`` errors no matter how hard the
-        info/debug stream floods the main ring. Dedup is by object identity (the
-        same event object is appended to both lanes).
+        Events evicted from the fast-cycling main ring survive in
+        ``_error_events`` (errors, e-stops, safety violations, skill failures)
+        or ``_headline_events`` (the `info` rows an operator reads), so the log
+        always carries the last ``_ERROR_EVENT_RING_SIZE`` of the former and
+        ``_HEADLINE_EVENT_RING_SIZE`` of the latter no matter how hard the debug
+        stream floods the main ring. The lanes are separate so routine `info`
+        cannot evict a safety event. Dedup is by object identity (the same event
+        object is appended to the main ring and at most one lane).
         """
         seen: set[int] = set()
         merged: list[TelemetryEvent] = []
-        for ev in (*self._events, *self._error_events):
+        for ev in (*self._events, *self._error_events, *self._headline_events):
             if id(ev) in seen:
                 continue
             seen.add(id(ev))
@@ -1154,9 +1280,11 @@ _IDENTITY_KEYS: frozenset[str] = frozenset(
         "openral.hal.adapter",
         "openral.hal.robot.model",
         "openral.hal.control_mode",
-        # The policy's action-chunk horizon is identity-stable for a run;
-        # it rides in on every `hal.send_action` span (producer.record_action
-        # → semconv.HAL_ACTION_HORIZON) so we latch it for the Identity card.
+        # Wire-level rows-per-ActionChunk message; NOT the policy chunk
+        # length — every shipped adapter emits single-step Actions, so this
+        # is structurally 1 on the ROS deploy path. Kept latched for
+        # completeness but no longer rendered (the Identity strip shows
+        # `inference.chunk_size` instead).
         "openral.hal.action.horizon",
         # rSkill identity ships under both the short `rskill.*` prefix
         # (semconv.RSKILL_ID / RSKILL_ROLE, emitted by every rskill span)
@@ -1174,6 +1302,11 @@ _IDENTITY_KEYS: frozenset[str] = frozenset(
         "safety.kernel",
         "inference.engine",
         "inference.device",
+        # Actions the robot consumes per VLA inference (manifest
+        # n_action_steps) — identity-stable per skill; rides on the runner's
+        # per-tick inference span. This is the number the Identity strip's
+        # "chunk size" pair renders.
+        "inference.chunk_size",
     }
 )
 
@@ -1327,6 +1460,15 @@ def _summarise_span(name: str, attrs: dict[str, Any], duration_ms: float) -> str
         "safety.check_name",
         "openral.tick.idx",
         "inference.chunk_index",
+        # A scene-objects row without the count reads as a bare name; with
+        # it, a surviving (change-gated) row says what changed size-wise.
+        semconv.WORLD_SCENE_OBJECTS_COUNT,
+        # Without these a bringup row reads "deploy.bringup · 6203.4ms" and
+        # does not say WHICH node held the graph up — the one question the
+        # span exists to answer. With them the Event Log row is the whole
+        # answer, which is why there is no separate bringup panel.
+        semconv.BRINGUP_NODE,
+        semconv.BRINGUP_TRANSITION,
     ):
         if key in attrs:
             parts.append(f"{key.rsplit('.', 1)[-1]}={attrs[key]}")

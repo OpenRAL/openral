@@ -40,6 +40,7 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import inference_span
 from openral_rskill._vla_core import resolve_rskill_repo_id
 
 from openral_sim.da3_depth import DEFAULT_DA3_PORT, Da3DepthClient
@@ -135,7 +136,10 @@ class _InternVLAN1Adapter:
             else np.ones(rgb.shape[:2], dtype=np.float32)
         )
 
-        reply = self._client.call("step", {"rgb": rgb, "depth": depth, "instruction": instruction})
+        with inference_span(kind="single", engine="sidecar"):
+            reply = self._client.call(
+                "step", {"rgb": rgb, "depth": depth, "instruction": instruction}
+            )
         v, w = (float(x) for x in self._client.require(reply, "twist"))
         if bool(reply.get("stop")):
             self._stopped = True

@@ -120,6 +120,50 @@ as the opt-in `gstreamer` extra — it is import-safe without `gi` (the `gi`/`Gs
 imports are lazy) and is what OpenRAL Pro builds on. It is simply not installed
 in this image.
 
+## Build-time and runtime caches
+
+Two settings in `Dockerfile.x86` exist purely to keep cold starts sane, and
+both are easy to drop in a refactor without noticing:
+
+- **`ENV UV_COMPILE_BYTECODE=1`** — uv skips `.pyc` generation by default, so
+  without it the *first* import of the torch/lerobot/transformers tree inside a
+  fresh container byte-compiles the whole thing at runtime. Measured live on an
+  SO-101 deploy: the lazy SmolVLA import inside `runtime_node` crawled for 15+
+  minutes, GIL-starved to ~12% of a core by the two 30 fps camera threads
+  sharing its process. Compiling at build time costs a few minutes once.
+- **`ENV HF_HOME=/opt/openral/hf-cache`** — pins the Hugging Face cache to a
+  stable, mountable path instead of `$HOME/.cache/huggingface` in the
+  container's writable layer. **Naming it does not persist it.** Mount it:
+
+  ```bash
+  docker run --rm --gpus all \
+      -v ~/.cache/huggingface:/opt/openral/hf-cache \
+      openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
+  ```
+
+  Without the mount every `--rm` run re-downloads the rSkill's weights —
+  gigabytes and minutes per launch (SmolVLA ~1.4 GB, Robometer-4B ~3.5 GB) —
+  and the cost is invisible in a `phase_timer` breakdown because it lands
+  inside `from_pretrained`.
+
+## Driving the container's ROS graph from the host
+
+The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with
+`RMW_IMPLEMENTATION` unset gets Fast-DDS on Jazzy, so host-side `ros2` tooling
+**cannot see the container's nodes even with `--network host`** — an
+`ros2 action send_goal` just hangs until its timeout against a running action
+server. Either dispatch from inside the container:
+
+```bash
+docker exec <name> bash -lc 'source /workspace/install/setup.bash && ros2 action send_goal …'
+```
+
+or match the middleware on the host:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+```
+
 ## CI
 
 `.github/workflows/docker-build.yml` builds this image **only when its inputs

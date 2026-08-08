@@ -4,6 +4,8 @@
 
 ### `tools/profile_policy_load.py`
 _One-shot wall-time breakdown of a single policy load. Drives `openral_sim.factory.make_policy` against an in-tree rSkill manifest and prints a phase-by-phase summary built from every `<prefix>_<name>_{start,done}` event emitted by `openral_rskill._diagnostics.phase_timer`. Use when `ros2 launch openral_rskill_ros …_e2e.launch.py` or `openral sim run` is slow to first action — answers "where do the seconds go" before changing any code._
+_Wired as `just profile-load <rskill> [args]` (Justfile). Measured on an RTX 4070 with `rskills/act-so101-pen` (warm cache): imports 4.6 s (54%), snapshot 0.3 s, from_pretrained 0.7 s, to_device 0.0 s, 8.5 s end-to-end — the import tax dominates even a small ResNet+transformer policy. Families whose adapter lacks a `_<family>_phase` helper (`xvla`, `diffusion`) report "no phase_timer events captured"; the end-to-end total is still valid._
+
 
 - `class _PhaseCapture` — `structlog` processor that buffers `_start` / `_done` events and pairs them by name. Insertion-ordered so the rendered table mirrors the actual load order. (L49)
 - `_parse_args(argv) -> argparse.Namespace` — `--rskill <dir>` (required), `--device` (default `auto`). (L88)

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import inference_span
 
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -115,7 +116,8 @@ class _Diffuser3DActorAdapter:
                 "instruction": instruction,
             }
         }
-        reply = self._client.call("get_action", payload)
+        with inference_span(kind="single", engine="sidecar"):
+            reply = self._client.call("get_action", payload)
         return np.asarray(self._client.require(reply, "action"), dtype=np.float32).reshape(-1)
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:

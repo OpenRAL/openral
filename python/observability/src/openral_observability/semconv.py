@@ -54,7 +54,6 @@ INFERENCE_DURATION_MS: Final[str] = "inference.duration_ms"
 SAFETY_SEVERITY: Final[str] = "safety.severity"
 SAFETY_CHECK_NAME: Final[str] = "safety.check_name"
 SAFETY_KERNEL: Final[str] = "safety.kernel"
-SAFETY_CLAMPED: Final[str] = "safety.clamped"
 
 # ── reward.* — task-progress reward monitor scores ──────────────────────────
 REWARD_PROGRESS: Final[str] = "reward.progress"
@@ -184,6 +183,21 @@ SPAN_REWARD_SCORE: Final[str] = "reward.score"
 """One span per reward-monitor assessment (service query or critic tick)."""
 SPAN_REASONER_TICK: Final[str] = "reasoner.tick"
 """One span per :meth:`openral_reasoner.ReasonerCore.tick`."""
+SPAN_DEPLOY_BRINGUP: Final[str] = "deploy.bringup"
+"""One span per managed-lifecycle transition callback.
+
+Emitted by the :func:`openral_observability.log_lifecycle_errors` decorator,
+so every node that already uses it is covered without a call-site change.
+Until this existed nothing measured bringup at all: the "HAL ``on_configure``
+takes ~6 s, or ~27 s on a cold robocasa kitchen" figures that justify the
+300 s lifecycle-autostart timeouts lived only in launch-file comments, which
+means they could neither be verified nor detected when they regressed.
+"""
+
+# Bringup span attributes.
+BRINGUP_NODE: Final[str] = "openral.bringup.node"
+BRINGUP_TRANSITION: Final[str] = "openral.bringup.transition"
+BRINGUP_RESULT: Final[str] = "openral.bringup.result"
 
 # Reasoner span attributes (rendered with the ``reasoner.`` prefix).
 REASONER_MODEL: Final[str] = "reasoner.model"
@@ -213,12 +227,28 @@ SPAN_SIM_STEP: Final[str] = "sim.step"
 SPAN_PHYSICS_STEP: Final[str] = "physics.step"
 
 # ── Span-event names ───────────────────────────────────────────────────────
+#
+# Four of these are DECLARED BUT NEVER EMITTED — nothing in python/,
+# packages/ or cpp/ adds them to a span: EVENT_ACTION_DROPPED,
+# EVENT_CHUNK_PREFETCH_HIT, EVENT_CHUNK_PREFETCH_MISS
+# and EVENT_EPISODE_CLOSED. They are annotated individually below and
+# tabulated in `docs/reference/telemetry.md`. They are kept rather than
+# deleted because each records an intended contract, and because
+# `dashboard/store.py` already consumes two of them — but a name that
+# exists and never fires is a trap for anyone reading this file as an
+# inventory of what the system actually reports.
 
+# Emitted by the shared HAL lifecycle node's `/openral/estop` callback
+# (`openral_hal.lifecycle._emit_estop_telemetry`) — the actuation-side
+# chokepoint every robot HAL runs on. Feeds the dashboard's Command-band
+# `e-stops` counter, which read 0 for every e-stop until it was wired.
 EVENT_ESTOP_REQUESTED: Final[str] = "openral.event.estop_requested"
 EVENT_SENSOR_STALE: Final[str] = "openral.event.sensor_stale"
 EVENT_STALENESS_LATCHED: Final[str] = "openral.event.staleness_latched"
 EVENT_ERROR_LATCHED: Final[str] = "openral.event.error_latched"
 EVENT_SAFETY_VIOLATION: Final[str] = "openral.event.safety_violation"
+# NOT EMITTED. `DeadlineOverrunPolicy.DROP` does drop the action, but it
+# reports via `deadline_missed` + the WARN line, never this event.
 EVENT_ACTION_DROPPED: Final[str] = "openral.event.action_dropped"
 EVENT_DEADLINE_MISSED: Final[str] = "openral.event.deadline_missed"
 # A Reasoner-published skill failure. The single
@@ -228,10 +258,15 @@ EVENT_DEADLINE_MISSED: Final[str] = "openral.event.deadline_missed"
 # ``vram_insufficient`` refusal and the reward-plateau abort. The
 # concrete failure state rides on the ``SKILL_FAILURE_STATE`` attribute.
 EVENT_SKILL_FAILURE: Final[str] = "openral.event.skill_failure"
+# NOT EMITTED (both). Action-chunk prefetch exists on the rSkill path but
+# never reports its hit rate, so "is the prefetch actually helping?" is
+# unanswerable from a trace — the one question these two exist to answer.
 EVENT_CHUNK_PREFETCH_HIT: Final[str] = "openral.event.chunk_prefetch_hit"
 EVENT_CHUNK_PREFETCH_MISS: Final[str] = "openral.event.chunk_prefetch_miss"
-# Emitted by RolloutRecorder.episode_end() so a Jaeger query
-# can pivot from a successful skill execution to the produced dataset row.
+# NOT EMITTED. Intended for RolloutRecorder.episode_end() so a Jaeger query
+# could pivot from a successful skill execution to the produced dataset
+# row; the recorder closes episodes without adding it, so that pivot does
+# not work today.
 EVENT_EPISODE_CLOSED: Final[str] = "openral.event.episode_closed"
 
 # ── Metric instrument names ────────────────────────────────────────────────
@@ -240,9 +275,7 @@ METRIC_TICK_DURATION: Final[str] = "openral.tick.duration"
 METRIC_INFERENCE_DURATION: Final[str] = "openral.inference.duration"
 METRIC_TICK_BUDGET_VIOLATIONS: Final[str] = "openral.tick.budget_violations"
 METRIC_TICK_DEADLINE_MISSES: Final[str] = "openral.tick.deadline_misses"
-METRIC_INFERENCE_TIMEOUTS: Final[str] = "openral.inference.timeouts"
 METRIC_SAFETY_VIOLATIONS: Final[str] = "openral.safety.violations"
-METRIC_SAFETY_CLAMPS: Final[str] = "openral.safety.clamps"
 METRIC_HAL_READ_STATE_DURATION: Final[str] = "openral.hal.read_state.duration"
 METRIC_HAL_SEND_ACTION_DURATION: Final[str] = "openral.hal.send_action.duration"
 METRIC_HAL_ESTOP_COUNT: Final[str] = "openral.hal.estop.count"
@@ -309,6 +342,9 @@ SAFETY_KERNEL_NULL: Final[str] = "null"
 SAFETY_KERNEL_CPP: Final[str] = "cpp"
 
 __all__ = [
+    "BRINGUP_NODE",
+    "BRINGUP_RESULT",
+    "BRINGUP_TRANSITION",
     "DATASET_EPISODE_IDX",
     "DATASET_EPISODE_SUCCESS",
     "DATASET_FRAME_IDX",
@@ -368,9 +404,7 @@ __all__ = [
     "METRIC_HAL_READ_STATE_DURATION",
     "METRIC_HAL_SEND_ACTION_DURATION",
     "METRIC_INFERENCE_DURATION",
-    "METRIC_INFERENCE_TIMEOUTS",
     "METRIC_OBSERVABILITY_EXPORT_FAILURES",
-    "METRIC_SAFETY_CLAMPS",
     "METRIC_SAFETY_VIOLATIONS",
     "METRIC_SENSORS_AGE_MS",
     "METRIC_SENSORS_STALE_READS",
@@ -431,7 +465,6 @@ __all__ = [
     "RUN_MODE_HARDWARE",
     "RUN_MODE_SIM",
     "SAFETY_CHECK_NAME",
-    "SAFETY_CLAMPED",
     "SAFETY_KERNEL",
     "SAFETY_KERNEL_CPP",
     "SAFETY_KERNEL_NULL",
@@ -446,6 +479,7 @@ __all__ = [
     "SENSORS_WIDTH",
     "SKILL_FAILURE_STATE",
     "SPAN_CLI_COMMAND",
+    "SPAN_DEPLOY_BRINGUP",
     "SPAN_HAL_READ_STATE",
     "SPAN_HAL_SEND_ACTION",
     "SPAN_PHYSICS_STEP",

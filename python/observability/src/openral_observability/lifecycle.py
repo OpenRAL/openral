@@ -1,4 +1,4 @@
-"""Make ``LifecycleNode`` transition-callback failures observable.
+"""Make ``LifecycleNode`` transitions observable — failures *and* duration.
 
 rclpy's ``LifecycleNodeMixin.__execute_callback`` wraps every transition
 callback (``on_configure`` / ``on_activate`` / …) in a bare ``except
@@ -23,10 +23,14 @@ on pure-Python hosts, matching :mod:`openral_observability.diagnostics`.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
+
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 if TYPE_CHECKING:
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
@@ -68,13 +72,34 @@ def log_lifecycle_errors(
     def _wrapper(self: _Node, state: LifecycleState) -> TransitionCallbackReturn:
         from rclpy.lifecycle import TransitionCallbackReturn
 
-        try:
-            return callback(self, state)
-        except Exception:  # reason: surface rclpy-swallowed transition failures
-            logger: Any = self.get_logger()
-            logger.error(
-                f"{callback.__name__} raised — transition failed:\n{traceback.format_exc()}"
-            )
-            return TransitionCallbackReturn.FAILURE
+        from openral_observability import semconv
+
+        tracer = trace.get_tracer("openral.lifecycle")
+        node_name = "unknown"
+        with contextlib.suppress(Exception):
+            node_name = str(self.get_name())
+        with tracer.start_as_current_span(
+            semconv.SPAN_DEPLOY_BRINGUP,
+            attributes={
+                semconv.BRINGUP_NODE: node_name,
+                semconv.BRINGUP_TRANSITION: callback.__name__,
+            },
+        ) as span:
+            try:
+                result = callback(self, state)
+            except Exception:  # reason: surface rclpy-swallowed transition failures
+                logger: Any = self.get_logger()
+                logger.error(
+                    f"{callback.__name__} raised — transition failed:\n{traceback.format_exc()}"
+                )
+                span.set_attribute(semconv.BRINGUP_RESULT, "FAILURE")
+                span.set_status(Status(StatusCode.ERROR))
+                return TransitionCallbackReturn.FAILURE
+            span.set_attribute(semconv.BRINGUP_RESULT, str(getattr(result, "name", result)))
+            if result != TransitionCallbackReturn.SUCCESS:
+                # A clean FAILURE return is still a failed bringup; without
+                # this only the raising path would show red on the dashboard.
+                span.set_status(Status(StatusCode.ERROR))
+            return result
 
     return _wrapper

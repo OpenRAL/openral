@@ -132,7 +132,39 @@ source /opt/ros/jazzy/setup.bash
 just ros2-build             # colcon build --merge-install
 source install/setup.bash
 just ros2-test              # colcon test + colcon test-result --verbose
+just test-ros-live          # the live-ROS pytest suite (see below)
 ```
+
+#### The live-ROS suite (`OPENRAL_TEST_ROS_LIVE`)
+
+A set of integration tests — the reasoner node's dispatch, VRAM and async-LLM
+paths, plus the Tier-C critic producer — needs more than an importable `rclpy`:
+a real DDS graph and the colcon-built `openral_msgs` / `openral_reasoner_ros` /
+`openral_prompt_router` overlay. They are gated behind `OPENRAL_TEST_ROS_LIVE=1`
+so the ordinary `uv run pytest` run (where rclpy + DDS init can clash with a
+glib pulled in transitively by torch/pyarrow) does not trip over them.
+
+`scripts/ros_live_tests.sh` holds the target list and sets the variable. Both
+callers exec it, so they cannot select different tests:
+
+| Caller | Environment |
+| --- | --- |
+| `just test-ros-live` | your host, after `just ros2-build && source install/setup.bash` |
+| `docker-build` workflow, "Live ROS tests" step | inside `openral:x86`, which bakes ROS 2 Jazzy + the colcon overlay |
+
+No GPU is required — the free-VRAM readings are pinned at the `nvidia-smi`
+process boundary. Pass extra pytest flags through the recipe, e.g.
+`just test-ros-live -k dispatch_watchdog`.
+
+Adding a live-ROS test means adding its file to `TARGETS` in that script, and
+nowhere else. The `docker-build` workflow is the only CI surface with a real
+ROS 2 install; the `test-selective` runner has none, so anything not listed here
+silently `importorskip`s in CI.
+
+One live test — `tests/unit/test_gstreamer_perception_tee.py`'s end-to-end
+publish — is deliberately excluded: it also needs PyGObject, which the open
+deploy image does not ship (the GStreamer media stack is OpenRAL Pro). `just
+test` runs it on a host that has the `gstreamer` extra installed.
 
 ### Sim evals (closed-loop, opt-in — needs HF weights ± GPU)
 

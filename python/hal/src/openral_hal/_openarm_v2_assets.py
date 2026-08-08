@@ -31,11 +31,11 @@ tracked as a TODO at the call site.
 from __future__ import annotations
 
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
 from openral_core.exceptions import ROSConfigError
+
+from openral_hal._pinned_clone import fetch_pinned_clone
 
 __all__ = ["ensure_openarm_v2_mjcf"]
 
@@ -64,7 +64,7 @@ def _cache_dir() -> Path:
 def ensure_openarm_v2_mjcf() -> str:
     """Return the on-disk path to the v2 bimanual MJCF, fetching if needed.
 
-    Idempotent: subsequent calls re-use the cached clone.  The repo
+    Idempotent: subsequent calls reuse the cached clone.  The repo
     is checked out at :data:`_OPENARM_V2_PINNED_SHA` so the
     in-tree sim contract doesn't drift with upstream master.
 
@@ -81,39 +81,15 @@ def ensure_openarm_v2_mjcf() -> str:
     if mjcf.is_file():
         return str(mjcf)
 
-    if shutil.which("git") is None:
-        raise ROSConfigError(
-            "OpenArm v2 needs `git` on the PATH to clone "
-            f"{_OPENARM_REPO_URL} (pin {_OPENARM_V2_PINNED_SHA[:10]}).  "
-            "Install git or pre-populate "
-            f"{repo_dir!s}."
-        )
-
-    # Clean any half-finished clone from a previous failed attempt so
-    # we never inherit a partial tree.
-    if repo_dir.exists():
-        shutil.rmtree(repo_dir, ignore_errors=True)
-
-    try:
-        # Shallow clone of the pinned commit, mirrors the
-        # `robot_descriptions` convention (small, no full history).
-        subprocess.run(
-            ["git", "clone", "--filter=blob:none", _OPENARM_REPO_URL, str(repo_dir)],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(repo_dir), "checkout", _OPENARM_V2_PINNED_SHA],
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        # `subprocess.CalledProcessError` carries stderr as bytes.
-        stderr = (exc.stderr or b"").decode(errors="replace").strip()
-        raise ROSConfigError(
-            f"Failed to fetch OpenArm v2 (pin {_OPENARM_V2_PINNED_SHA[:10]}) "
-            f"from {_OPENARM_REPO_URL}: {stderr or exc}"
-        ) from exc
+    # Staged clone + atomic rename (shared with the Anvil fetcher): shallow
+    # clone of the pinned commit, mirroring the `robot_descriptions`
+    # convention (small, no full history).
+    fetch_pinned_clone(
+        _OPENARM_REPO_URL,
+        _OPENARM_V2_PINNED_SHA,
+        repo_dir,
+        what="OpenArm v2",
+    )
 
     if not mjcf.is_file():
         raise ROSConfigError(

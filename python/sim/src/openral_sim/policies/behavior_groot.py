@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_observability import inference_span
 
 from openral_sim import _behavior_wire
 from openral_sim.sidecar import SidecarClient
@@ -174,10 +175,11 @@ class _BehaviorGrootAdapter:
         head = images.get("head")
         if head is not None:
             self._last_input = np.asarray(head, dtype=np.uint8)
-        reply = self._client.call(
-            "get_action",
-            {"observation": _behavior_wire_observation(observation, instruction=instruction)},
-        )
+        with inference_span(kind="single", engine="sidecar"):
+            reply = self._client.call(
+                "get_action",
+                {"observation": _behavior_wire_observation(observation, instruction=instruction)},
+            )
         action = np.asarray(self._client.require(reply, "action"), dtype=np.float32).reshape(-1)
         if action.shape != (_ACTION_DIM,):
             raise ROSRuntimeError(

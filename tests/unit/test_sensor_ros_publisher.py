@@ -54,11 +54,17 @@ class _FakeReader:
 
 
 def _make_frame(width: int = 16, height: int = 12) -> SensorFrame:
-    """Build a small RGB8 :class:`SensorFrame` with a known pixel pattern."""
-    payload = bytes(range(width * height * 3 % 256)) * (
-        (width * height * 3) // (width * height * 3 % 256 or 1) + 1
-    )
-    payload = payload[: width * height * 3]
+    """Build an RGB8 :class:`SensorFrame` with a known repeating pixel pattern.
+
+    Tiles ``0..255`` to the exact byte count the geometry implies. The size is
+    a parameter because a frame must be able to match a real manifest's
+    intrinsics — ``_publish_camera_info`` scales fx/fy/cx/cy from the
+    calibrated resolution to the published one, so a mismatched pair no longer
+    round-trips unchanged.
+    """
+    n_bytes = width * height * 3
+    pattern = bytes(range(256))
+    payload = (pattern * (n_bytes // 256 + 1))[:n_bytes]
     return SensorFrame(
         sensor_id="wrist_rgb",
         stamp_monotonic_ns=time.monotonic_ns(),
@@ -238,7 +244,15 @@ def test_publisher_camera_info_companion_round_trip() -> None:
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
     spec = next(s for s in desc.sensors if s.modality == "rgb" and s.intrinsics is not None)
 
-    reader = _FakeReader(sensor_id=spec.name, frame=_make_frame())
+    # Frame geometry MUST match the declared intrinsics, as a real camera's
+    # does: `_publish_camera_info` scales fx/fy/cx/cy from the calibrated
+    # resolution to the published one, so pairing 640x480 intrinsics with a
+    # 16x12 frame would assert the very desync this publisher exists to avoid.
+    assert spec.intrinsics is not None  # reason: filtered above; narrows for mypy
+    reader = _FakeReader(
+        sensor_id=spec.name,
+        frame=_make_frame(width=spec.intrinsics.width, height=spec.intrinsics.height),
+    )
     pub = SensorRosPublisher(
         reader=reader,
         topic=f"/openral/cameras/{spec.name}/image",
@@ -264,6 +278,7 @@ def test_publisher_camera_info_companion_round_trip() -> None:
         assert received, "no CameraInfo messages received within 2 s"
         info = received[0]
         assert info.header.frame_id == spec.frame_id
+        assert (info.width, info.height) == (spec.intrinsics.width, spec.intrinsics.height)
         k = list(info.k)
         assert k[0] == spec.intrinsics.fx
         assert k[4] == spec.intrinsics.fy
@@ -271,3 +286,116 @@ def test_publisher_camera_info_companion_round_trip() -> None:
         assert k[5] == spec.intrinsics.cy
     finally:
         pub.stop()
+
+
+# ── Resolution ceiling + lockstep intrinsics ────────────────────────────────
+#
+# `max_size` exists because every publish hands rclpy a full-resolution buffer
+# whose Python->C conversion holds the GIL for the whole copy (~30 ms per
+# 640x480 frame, 30 % of wall time even at the sensor leg's capped rate). The
+# hazard it introduces is silent: resize the pixels without rescaling
+# CameraInfo and every geometric consumer is quietly wrong.
+
+
+def test_max_size_rejects_non_positive_dimensions() -> None:
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    with pytest.raises(ValueError, match="max_size must be positive"):
+        SensorRosPublisher(
+            reader=_FakeReader(sensor_id="wrist_rgb", frame=_make_frame()),
+            topic="/openral/cameras/wrist/image",
+            rate_hz=3.0,
+            max_size=(0, 240),
+        )
+
+
+def test_downscale_factor_only_ever_shrinks() -> None:
+    """A frame already inside the ceiling is published untouched."""
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    pub = SensorRosPublisher(
+        reader=_FakeReader(sensor_id="wrist_rgb", frame=_make_frame()),
+        topic="/openral/cameras/wrist/image",
+        rate_hz=3.0,
+        max_size=(320, 240),
+    )
+    assert pub._downscale_factor(640, 480) == 0.5
+    assert pub._downscale_factor(160, 120) == 1.0, "must never upscale"
+    assert pub._downscale_factor(320, 240) == 1.0
+
+
+def test_downscale_preserves_aspect_ratio_and_buffer_length() -> None:
+    """A wrong-length buffer would corrupt every subscriber, not just slow it."""
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    pub = SensorRosPublisher(
+        reader=_FakeReader(sensor_id="wrist_rgb", frame=_make_frame()),
+        topic="/openral/cameras/wrist/image",
+        rate_hz=3.0,
+        max_size=(320, 240),
+    )
+    raw = bytes(640 * 480 * 3)
+    scale = pub._downscale_factor(640, 480)
+    data, w, h = pub._downscale(raw, 640, 480, 3, scale)
+    assert (w, h) == (320, 240)
+    assert w / h == 640 / 480, "aspect ratio changed — intrinsics would need x/y split"
+    assert len(data) == w * h * 3, "buffer length must match the declared geometry"
+
+
+def test_downscale_falls_back_on_a_mismatched_buffer() -> None:
+    """Publishing full-res is merely slow; publishing a mis-sized buffer corrupts."""
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    pub = SensorRosPublisher(
+        reader=_FakeReader(sensor_id="wrist_rgb", frame=_make_frame()),
+        topic="/openral/cameras/wrist/image",
+        rate_hz=3.0,
+        max_size=(320, 240),
+    )
+    truncated = bytes(1000)  # not 640*480*3
+    data, w, h = pub._downscale(truncated, 640, 480, 3, 0.5)
+    assert (w, h) == (640, 480)
+    assert data == truncated
+
+
+def test_camera_info_intrinsics_scale_with_a_downscaled_image() -> None:
+    """fx/fy/cx/cy must track the published pixels, or geometry breaks silently.
+
+    Guards the concrete hazard: `_publish_camera_info` historically took
+    width/height from the frame but k/p verbatim from the manifest, so a
+    resized image would ship full-resolution intrinsics against reduced
+    dimensions with nothing in the graph to flag it.
+    """
+    # `_publish_camera_info` builds a real `sensor_msgs/CameraInfo`, so this
+    # one needs the IDL on the path even though it never touches the network.
+    pytest.importorskip("sensor_msgs", reason="rclpy / sensor_msgs not on PYTHONPATH")
+
+    from openral_core import IntrinsicsPinhole
+    from openral_sensors.ros_publisher import SensorRosPublisher
+
+    intr = IntrinsicsPinhole(width=640, height=480, fx=480.0, fy=480.0, cx=320.0, cy=240.0)
+    pub = SensorRosPublisher(
+        reader=_FakeReader(sensor_id="wrist_rgb", frame=_make_frame()),
+        topic="/openral/cameras/wrist/image",
+        rate_hz=3.0,
+        camera_info=intr,
+        max_size=(320, 240),
+    )
+
+    published: list[object] = []
+
+    class _Sink:
+        def publish(self, msg: object) -> None:
+            published.append(msg)
+
+    pub._info_publisher = _Sink()  # type: ignore[assignment]  # reason: duck-typed sink
+    pub._publish_camera_info(320, 240, stamp=None)
+
+    info = published[0]
+    assert (info.width, info.height) == (320, 240)
+    # Half the pixels → half the focal length and half the principal point.
+    assert info.k[0] == pytest.approx(240.0), "fx did not scale with the image"
+    assert info.k[4] == pytest.approx(240.0), "fy did not scale with the image"
+    assert info.k[2] == pytest.approx(160.0), "cx did not scale with the image"
+    assert info.k[5] == pytest.approx(120.0), "cy did not scale with the image"
+    assert info.p[0] == pytest.approx(info.k[0]) and info.p[2] == pytest.approx(info.k[2])

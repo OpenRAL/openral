@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_observability import inference_span
 from openral_rskill.loader import load_rskill_manifest
 from openral_runner.backends.galaxea_a1_ipc import (
     RuntimeLocalClient,
@@ -180,18 +181,19 @@ class _LingBotVaA1Adapter:
             raise ROSRuntimeError("lingbot_va_a1 requires OpenRAL image observations")
         front = _rgb_image(images.get("front"), name="front")
         wrist = _rgb_image(images.get("wrist"), name="wrist")
-        response = self._client.call(
-            {
-                "protocol": _PROTOCOL_VERSION,
-                "op": "step",
-                "instruction": instruction,
-                "timeout_s": self._timeout_s,
-                "joints": encode_array(joints),
-                "front_rgb": encode_array(front),
-                "wrist_rgb": encode_array(wrist),
-            },
-            timeout_s=self._timeout_s,
-        )
+        with inference_span(kind="single", engine="sidecar"):
+            response = self._client.call(
+                {
+                    "protocol": _PROTOCOL_VERSION,
+                    "op": "step",
+                    "instruction": instruction,
+                    "timeout_s": self._timeout_s,
+                    "joints": encode_array(joints),
+                    "front_rgb": encode_array(front),
+                    "wrist_rgb": encode_array(wrist),
+                },
+                timeout_s=self._timeout_s,
+            )
         action = decode_array(
             response.get("action"),
             shape=(7,),

@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import inference_span
 from openral_rskill._vla_core import resolve_camera_keys
 
 from openral_sim.policies._policy_loading import load_manifest_for_spec
@@ -327,17 +328,22 @@ class _XR1Adapter:
             }
             payload_state = state
 
-        reply = self._client.call(
-            "get_action",
-            {
-                "profile": self._profile,
-                "images": payload_images,
-                "state": payload_state,
-                "task": instruction,
-                "seed": 42,
-                "crop_ratio": self._crop_ratio,
-            },
-        )
+        # The sidecar round-trip IS the inference — span it here, as rldx and
+        # every other sidecar adapter does. `openral.inference.duration` is
+        # emitted only by `inference_span`, so an unspanned adapter reports no
+        # latency at all (tests/unit/test_every_adapter_is_instrumented.py).
+        with inference_span(kind="foreground"):
+            reply = self._client.call(
+                "get_action",
+                {
+                    "profile": self._profile,
+                    "images": payload_images,
+                    "state": payload_state,
+                    "task": instruction,
+                    "seed": 42,
+                    "crop_ratio": self._crop_ratio,
+                },
+            )
         chunk = np.asarray(self._client.require(reply, "action"), dtype=np.float32)
         expected_dim = _PROFILE_ACTION_DIMS[self._profile]
         if chunk.ndim != _ACTION_CHUNK_RANK or chunk.shape[1] != expected_dim:

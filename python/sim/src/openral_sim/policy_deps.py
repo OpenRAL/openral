@@ -30,10 +30,30 @@ the next ROS launch would fail with ``No module named 'openral_core'``.
 ``just sync`` additionally repairs the ``hf-libero==0.1.3``
 distutils-uninstall trap before+after the sync.
 
-The probe never instantiates a factory or loads weights — it only
-imports the deepest lerobot/transformers module each family touches.
-That's fast (≈100 ms for the lerobot tree on a warm filesystem) and
-deterministic.
+The probe never instantiates a factory or loads weights. By default it
+only resolves the *top-level* package of each required import via
+``importlib.util.find_spec`` — measured at ~0 ms, and the same idiom
+:func:`openral_cli.deploy_sim._omdet_runtime_available` already uses for
+this class of decision.
+
+It deliberately does NOT import the deep module. ``lerobot/policies/
+__init__.py`` eagerly imports the configuration class of *every* policy
+family, so touching ``lerobot.policies.<anything>`` costs the whole tree
+— measured 6.6 s, and identically so via ``find_spec`` (which must import
+the parent package to find the child). That price was being paid in
+*three* processes per deploy (the CLI preflight, the reasoner's palette
+seed, and ``runtime_node``) when only ``runtime_node`` needs the modules
+resolved. An earlier version of this docstring claimed "≈100 ms for the
+lerobot tree"; that was wrong by ~65x.
+
+The fast probe catches the failure this module exists to catch — a
+dependency group that was never installed. It cannot catch a group that
+is installed but *broken* (a half-written editable ``.pth``, say). That
+case still surfaces at dispatch, where
+:mod:`openral_rskill_ros.rskill_runner_node` already translates the
+factory's ``ImportError`` into a ``ROSRuntimeError`` carrying
+:func:`model_family_install_hint`. Set ``OPENRAL_STRICT_POLICY_PROBE=1``
+to restore the deep import probe when that distinction matters.
 
 Adding a new policy family: register a new entry in
 :data:`_FAMILY_REQUIRED_IMPORTS` AND :data:`_FAMILY_INSTALL_HINTS`.
@@ -45,6 +65,8 @@ walks both dicts so a half-registered family fails at unit-test time.
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import os
 import sys
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -151,6 +173,8 @@ _FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
 # policy's factory (e.g.
 # ``from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy``
 # is what ``_build_smolvla`` does on line 300 of smolvla.py).
+_STRICT_PROBE_ENV = "OPENRAL_STRICT_POLICY_PROBE"
+
 _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     "smolvla": ("transformers", "lerobot.policies.smolvla.modeling_smolvla"),
     "pi05": ("transformers", "bitsandbytes", "lerobot.policies.pi05.modeling_pi05"),
@@ -224,18 +248,48 @@ def model_family_required_imports(family: str) -> tuple[str, ...]:
 def can_import_policy_family(family: str) -> tuple[bool, str | None]:
     """Probe whether ``family``'s policy factory can resolve its imports.
 
-    Imports each module in :data:`_FAMILY_REQUIRED_IMPORTS[family]` via
-    :func:`importlib.import_module`. Returns ``(True, None)`` on full
-    success. On the first failure: purges the partially-loaded module
-    tree from ``sys.modules`` (so a subsequent call sees the same
-    primary error, not a cascade) and returns ``(False, reason)``
-    where ``reason`` carries the leaf import error.
+    Resolves each entry in :data:`_FAMILY_REQUIRED_IMPORTS[family]` via
+    :func:`_can_import_modules` — top-level ``find_spec`` by default,
+    or a full import under ``OPENRAL_STRICT_POLICY_PROBE=1``. Returns
+    ``(True, None)`` on full success, else ``(False, reason)`` where
+    ``reason`` carries the leaf import error. The strict tier also
+    purges the partially-loaded module tree from ``sys.modules`` so a
+    subsequent call sees the same primary error, not a cascade.
     """
     return _can_import_modules(model_family_required_imports(family))
 
 
 def _can_import_modules(required: tuple[str, ...]) -> tuple[bool, str | None]:
-    """Probe an explicit import set with the same partial-import cleanup."""
+    """Probe an explicit import set, cheaply by default.
+
+    Resolves only the top-level package of each entry via
+    :func:`importlib.util.find_spec` unless ``OPENRAL_STRICT_POLICY_PROBE=1``
+    is set, in which case the historical deep-import probe runs instead.
+    See the module docstring for why the deep probe is not the default.
+    """
+    if os.environ.get(_STRICT_PROBE_ENV) == "1":
+        return _deep_import_probe(required)
+    for mod in required:
+        top = mod.split(".", 1)[0]
+        try:
+            found = importlib.util.find_spec(top) is not None
+        except (ImportError, ValueError):
+            # A top-level name can still raise when the package exists but
+            # its loader is unusable (a broken editable install). Treat it
+            # exactly as absent — the message is what the operator acts on.
+            found = False
+        if not found:
+            return False, f"ModuleNotFoundError: No module named {top!r}"
+    return True, None
+
+
+def _deep_import_probe(required: tuple[str, ...]) -> tuple[bool, str | None]:
+    """Import every entry for real, with partial-import cleanup.
+
+    The historical probe. Opt-in via ``OPENRAL_STRICT_POLICY_PROBE=1``:
+    it is the only tier that catches an installed-but-broken dependency,
+    and it costs ~6.6 s the first time it touches ``lerobot.policies``.
+    """
     for mod in required:
         try:
             importlib.import_module(mod)

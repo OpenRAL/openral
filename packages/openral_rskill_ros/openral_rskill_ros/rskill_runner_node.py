@@ -55,6 +55,21 @@ __all__ = ["RskillRunnerNode", "main"]
 log = structlog.get_logger(__name__)
 
 
+def _cuda_allocated_mb() -> float | None:
+    """Currently-allocated CUDA memory in MiB, or ``None`` off-GPU.
+
+    Thin wrapper over the shared ``openral_rskill._diagnostics._gpu_mb``
+    probe (memory_allocated, never memory_reserved — "did the weights
+    actually go away"), in ``no_import`` mode: this path must never import
+    torch just to answer, and a host without it simply gets ``None``. One
+    probe means eviction logs and phase-timer heartbeats can never disagree
+    about how much VRAM a swap freed.
+    """
+    from openral_rskill._diagnostics import _gpu_mb
+
+    return _gpu_mb(no_import=True)
+
+
 # Type for the injected skill resolver. Takes the goal's rskill_id /
 # revision / prompt / prompt_metadata_json and returns a *configured +
 # activated* rSkill ready to receive `step` calls. Production deployments
@@ -182,6 +197,9 @@ if _ROS2_AVAILABLE:
             self._active_skill: Any = None
             self._active_skill_id: str = ""
             self._active_skill_revision: str = ""
+            # True elapsed time when the execution budget last lapsed, so an
+            # aborted goal's failure_reason can quote the overrun.
+            self._last_deadline_elapsed_s: float | None = None
             # Single GPU-resident skill. The runner keeps exactly one
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
@@ -543,10 +561,26 @@ if _ROS2_AVAILABLE:
             shutdown = getattr(skill, "shutdown", None)
             if not callable(shutdown):
                 return
+            before_mb = _cuda_allocated_mb()
             try:
                 shutdown()
             except Exception as exc:  # reason: eviction must never block the next goal
                 self.get_logger().warning(f"rskill_runner.evict_failed: {exc!s}")
+            after_mb = _cuda_allocated_mb()
+            if before_mb is not None and after_mb is not None:
+                # An eviction that frees nothing is the failure mode this run
+                # cannot otherwise see: `torch.cuda.empty_cache()` returns only
+                # already-free blocks, so an adapter that flushes without
+                # dropping its model reference reports success while the card
+                # stays full — and the next skill OOMs on an 8 GB machine even
+                # though each fits alone. Logging the delta makes a silent
+                # regression of that fix visible in one line.
+                log.info(
+                    "rskill_runner.evicted",
+                    freed_mb=round(before_mb - after_mb, 1),
+                    resident_mb_before=round(before_mb, 1),
+                    resident_mb_after=round(after_mb, 1),
+                )
 
         # ── Action callbacks ─────────────────────────────────────────────────
 
@@ -601,6 +635,9 @@ if _ROS2_AVAILABLE:
                 self._active_skill_revision = revision
                 self._chunks_published = 0
                 self._cancel_requested = False
+                # True elapsed time when the execution budget lapsed, so the
+                # abort reason can quote the overrun rather than the budget.
+                self._last_deadline_elapsed_s: float | None = None
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
 
@@ -693,7 +730,7 @@ if _ROS2_AVAILABLE:
                 self._publish_episode_start(task_string=episode_task)
                 try:
                     try:
-                        self._run_until_done_or_deadline(
+                        exit_reason = self._run_until_done_or_deadline(
                             goal_handle=goal_handle,
                             skill=skill,
                             deadline_s=deadline_s,
@@ -753,6 +790,25 @@ if _ROS2_AVAILABLE:
                         result.success = False
                         result.failure_reason = "cancelled"
                         self._finalize_goal(goal_handle, "canceled")
+                        self._reset_active_goal()
+                        return result
+
+                    # A lapsed budget is a FAILURE, not a quiet success. Every
+                    # exit from the loop used to be a bare `return`, so this
+                    # fell through to `success = True` and the reasoner's
+                    # replanning ladder never saw the miss (CLAUDE.md §3 —
+                    # deadline fallback is mandatory). Aborted with a typed
+                    # reason, matching the ROSError path the ladder already
+                    # parses.
+                    if exit_reason == "deadline":
+                        _over = self._last_deadline_elapsed_s
+                        _elapsed_txt = f"{_over:.1f}" if _over is not None else "?"
+                        self._drain_and_idle_hold(skill)
+                        result.success = False
+                        result.failure_reason = (
+                            f"deadline_exceeded: elapsed={_elapsed_txt}s budget={deadline_s:.1f}s"
+                        )
+                        self._finalize_goal(goal_handle, "abort")
                         self._reset_active_goal()
                         return result
 
@@ -825,19 +881,69 @@ if _ROS2_AVAILABLE:
                 )
             return skill
 
-        def _resolve_inference_labels(self, skill: rSkillBase) -> tuple[str, str | None]:
-            """Resolve the inference engine + device labels for the chunk span.
+        def _resolve_inference_labels(
+            self, skill: rSkillBase
+        ) -> tuple[str, str | None, int | None]:
+            """Resolve engine + device + consumed-per-inference for the chunk span.
 
             Engine comes from the manifest runtime (torch / onnx / tensorrt);
-            device from the policy adapter (lerobot ``.device`` convention).
-            Both best-effort — a missing attribute renders "—" on the dashboard.
+            device from the policy adapter (lerobot ``.device`` convention);
+            the third element is the manifest's ``n_action_steps`` — the
+            number of actions the robot consumes before the next VLA
+            inference, which is what ``inference.chunk_size`` means. All
+            best-effort — a missing attribute renders "—" on the dashboard.
             """
             _manifest = getattr(skill, "manifest", None)
             _runtime = getattr(_manifest, "runtime", None)
             engine = str(getattr(_runtime, "value", _runtime) or "") or "torch"
+            from openral_rskill._vla_core import resolve_inference_engine
+
+            engine = resolve_inference_engine(skill, engine)
             _adapter = getattr(skill, "_adapter", None)
             _device = getattr(_adapter, "device", None) or getattr(skill, "device", None)
-            return engine, (str(_device) if _device is not None else None)
+            consumed = getattr(_manifest, "n_action_steps", None) or getattr(
+                _manifest, "chunk_size", None
+            )
+            return engine, (str(_device) if _device is not None else None), consumed
+
+        def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
+            """Return True once the execution budget has lapsed, reporting the miss.
+
+            Owns the whole check so the step loop reads as one line. Reports
+            the REAL elapsed time rather than the budget — a blocking
+            ``skill.step()`` can overshoot by a lot (144.5 s against a 45 s
+            budget on the SO-101 bench, since the budget can only be tested
+            between steps) and rounding that down to the limit hides the
+            thing worth seeing. Emits ``openral.event.deadline_missed``,
+            which the dashboard already counts, and stashes the elapsed so
+            the goal's ``failure_reason`` can quote it.
+
+            Args:
+                start: ``time.monotonic()`` captured when execution began.
+                budget_s: Resolved deadline; ``<= 0`` disables the check.
+                chunks: Chunks published so far, for the operator log.
+
+            Returns:
+                ``True`` if the budget has lapsed and the loop must stop.
+            """
+            if budget_s <= 0.0:
+                return False
+            elapsed_s = time.monotonic() - start
+            if elapsed_s <= budget_s:
+                return False
+            from openral_observability import semconv
+            from opentelemetry import trace
+
+            self.get_logger().warning(
+                f"rskill_runner.deadline_exceeded: elapsed={elapsed_s:.1f}s "
+                f"budget={budget_s:.1f}s chunks={chunks}"
+            )
+            trace.get_current_span().add_event(
+                semconv.EVENT_DEADLINE_MISSED,
+                {"elapsed_s": round(elapsed_s, 1), "budget_s": budget_s},
+            )
+            self._last_deadline_elapsed_s = elapsed_s
+            return True
 
         def _run_until_done_or_deadline(
             self,
@@ -845,8 +951,30 @@ if _ROS2_AVAILABLE:
             goal_handle: ServerGoalHandle,
             skill: rSkillBase,
             deadline_s: float,
-        ) -> None:
+        ) -> str:
             """Drive ``skill.step(snapshot)`` until done / cancelled / deadline.
+
+            Returns:
+                Why the loop exited — ``"completed"`` (the skill signalled
+                :class:`ROSRskillGoalSatisfied`, or an open-loop VLA ran to
+                the caller's satisfaction), ``"deadline"`` (the budget
+                lapsed), or ``"cancelled"``. The caller MUST distinguish
+                these: every exit used to be a bare ``return``, so a goal
+                that blew its deadline was indistinguishable from one that
+                achieved its task and was reported ``success=True``.
+                Observed on the SO-101 bench — a 144.5 s first inference
+                against a resolved 45 s budget still closed SUCCEEDED,
+                which also denies the reasoner's replanning ladder the
+                signal it needs (CLAUDE.md §3, "deadline fallback
+                mandatory").
+
+            Note:
+                The budget is checked *between* steps, so a single blocking
+                ``skill.step()`` overruns it by up to one step duration —
+                the loop cannot preempt a synchronous inference call. The
+                reported ``elapsed_s`` is therefore the true elapsed time,
+                not the budget, so the overrun is visible rather than
+                rounded down to the limit.
 
             Mirrors the inner loop of
             :meth:`openral_runner.DeployRunner._tick_impl` but trims
@@ -867,20 +995,23 @@ if _ROS2_AVAILABLE:
             rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
-            chunk_index = 0
+            # Absolute deadlines absorb tick work into the configured period.
+            chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
             skill_role = str(getattr(skill_info, "role", "")) if skill_info is not None else ""
             # Resolve inference engine + device once so the dashboard's Inference
             # card + the `inference.engine`/`inference.device` Identity latches
             # populate (best-effort — omitted attrs render "—").
-            inference_engine, inference_device = self._resolve_inference_labels(skill)
+            inference_engine, inference_device, consumed_per_inference = (
+                self._resolve_inference_labels(skill)
+            )
             while True:
                 if self._estop_latched:
                     raise ROSEStopRequested("/openral/estop received during goal")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
-                    return
-                if deadline_s > 0.0 and time.monotonic() - start > deadline_s:
-                    return
+                    return "cancelled"
+                if self._deadline_lapsed(start, deadline_s, chunk_index):
+                    return "deadline"
 
                 snapshot = self._aggregator.snapshot()
                 # Wrap inference so the Inference card and the rskill.id /
@@ -892,10 +1023,16 @@ if _ROS2_AVAILABLE:
                 # `inference_span(**attrs)` prefixes kwargs with
                 # ``inference.`` — set the literal rskill.* keys directly
                 # via `set_attribute` so they keep their dotted names.
-                _inf_attrs: dict[str, str] = {"engine": inference_engine}
-                if inference_device:
-                    _inf_attrs["device"] = inference_device
-                with inference_span(chunk_index=chunk_index, **_inf_attrs) as inf_span:
+                span_context = (
+                    inference_span(
+                        chunk_index=chunk_index,
+                        engine=inference_engine,
+                        device=inference_device,
+                    )
+                    if inference_device
+                    else inference_span(chunk_index=chunk_index, engine=inference_engine)
+                )
+                with span_context as inf_span:
                     if self._active_skill_id:
                         inf_span.set_attribute("rskill.id", self._active_skill_id)
                     if skill_role:
@@ -915,7 +1052,7 @@ if _ROS2_AVAILABLE:
                             f"rskill_runner.rskill_goal_satisfied: {completion!s}"
                         )
                         inf_span.set_attribute("rskill.completion", "goal_satisfied")
-                        return
+                        return "completed"
                     # ``step()`` may return a single ``Action``
                     # (legacy single-surface rskills) or ``list[Action]``
                     # (slot-dispatched multi-surface output, e.g. the
@@ -927,8 +1064,12 @@ if _ROS2_AVAILABLE:
                     # ``send_action`` call below).
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
                     inf_span.set_attribute("inference.actions_emitted", len(actions))
-                    if actions and actions[0].horizon:
-                        inf_span.set_attribute("inference.chunk_size", int(actions[0].horizon))
+                    # Manifest `n_action_steps` is the truth; `horizon` is the
+                    # fallback for manifest-less skills (in-tree test rSkills,
+                    # single-step adapters) where the two coincide. Dropping it
+                    # renders "—" on the Inference card for a value we know.
+                    if _cs := consumed_per_inference or (actions[0].horizon if actions else None):
+                        inf_span.set_attribute("inference.chunk_size", int(_cs))
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
@@ -953,13 +1094,9 @@ if _ROS2_AVAILABLE:
                     self.get_logger().debug(
                         f"rskill_runner: publish_feedback skipped (goal not active): {exc!s}"
                     )
-                    return
+                    return "cancelled"
 
-                # Sleep until the next tick boundary — the loop's
-                # rate-limiting is intentionally minimal here; production
-                # use composes the full DeployRunner via the compose
-                # factory when F2's typed WorldStateStamped lands.
-                time.sleep(period_s)
+                next_tick_deadline = _pace_tick(next_tick_deadline, period_s)
 
         def _apply_starting_pose_or_abort(self, skill: Any, goal_handle: Any, result: Any) -> bool:
             """Move to ``starting_pose``; abort the goal on a fatal failure.
@@ -1731,6 +1868,27 @@ def _required_vla_camera_slots(
     return tuple(slot for slot in slots if slot in required) if required else slots
 
 
+def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
+    """Sleep to the next absolute tick deadline, re-anchoring after overruns.
+
+    Args:
+        prev_deadline_s: The deadline (``time.perf_counter`` domain) that
+            gated the previous tick.
+        period_s: Tick period in seconds.
+
+    Returns:
+        The deadline to pass into the next call.
+    """
+    from openral_runner.clock import sleep_until
+
+    deadline = prev_deadline_s + period_s
+    now = time.perf_counter()
+    if deadline < now:
+        return now
+    sleep_until(deadline)
+    return deadline
+
+
 def _decode_image_frames(
     image_frames: dict[str, Any],
     sensor_to_slot: dict[str, str],
@@ -1831,6 +1989,20 @@ def _build_runtime_skill_from_manifest(
     )
 
     manifest = RSkillManifest.from_yaml(str(yaml_path))
+    # An empty goal prompt falls back to the checkpoint's own training string.
+    # Single-task finetunes are conditioned on one exact phrase (upstream typos
+    # included) and degrade on a paraphrase; before `default_prompt` existed the
+    # only source was `ExecuteRskill.prompt`, so a hand-dispatched goal with no
+    # prompt fed the policy "" and an operator retyping it from the README could
+    # silently mis-condition it. Generalist checkpoints leave the field unset
+    # and keep the old behaviour (empty prompt stays empty).
+    if not prompt and manifest.default_prompt:
+        log.info(
+            "rskill_runner.default_prompt_applied",
+            rskill=manifest.name,
+            prompt=manifest.default_prompt,
+        )
+        prompt = manifest.default_prompt
     # Defensive guard: this helper builds a VLA policy adapter shim;
     # wrapped-ROS rSkills (kind: ros_action / ros_service) must NOT come
     # through here because they have no model weights to bind. The
@@ -1848,6 +2020,11 @@ def _build_runtime_skill_from_manifest(
         )
     policy_extra = dict(manifest.policy_extras)
     policy_extra["latency_budget_ms"] = manifest.latency_budget.per_chunk_ms
+    # Deploy overlaps the next inference unless the manifest opts out. This
+    # helper serves the deploy/runner path only — benchmark and `sim run` build
+    # their policy elsewhere and stay synchronous, preserving published eval
+    # semantics (they replan from each boundary's fresh observation).
+    policy_extra.setdefault("chunk_prefetch", True)
     vla = VLASpec(
         id=manifest.model_family,
         # Pass the absolute local directory so the same resolver that
@@ -1956,6 +2133,7 @@ def _robot_state_to_policy(
     robot_to_policy: list[int] | None,
     joint_units_are_degrees: bool,
     policy_is_gripper: list[bool],
+    policy_gripper_scale: float = 1.0,
 ) -> Any:
     """Reorder robot-order state → policy order and convert rad→deg when needed.
 
@@ -1969,7 +2147,9 @@ def _robot_state_to_policy(
     for i, j in enumerate(_effective_perm(robot_to_policy, n)):
         val = float(robot_state[i])
         is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if joint_units_are_degrees and not is_grip:
+        if is_grip:
+            val *= policy_gripper_scale
+        elif joint_units_are_degrees:
             val = math.degrees(val)
         policy_state[j] = val
     return policy_state
@@ -1980,6 +2160,7 @@ def _policy_action_to_robot(
     robot_to_policy: list[int] | None,
     joint_units_are_degrees: bool,
     policy_is_gripper: list[bool],
+    policy_gripper_scale: float = 1.0,
 ) -> Any:
     """Reorder policy-order action → robot order and convert deg→rad when needed.
 
@@ -1993,7 +2174,9 @@ def _policy_action_to_robot(
     for i, j in enumerate(_effective_perm(robot_to_policy, n)):
         val = float(policy_action[j])
         is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if joint_units_are_degrees and not is_grip:
+        if is_grip:
+            val /= policy_gripper_scale
+        elif joint_units_are_degrees:
             val = math.radians(val)
         robot_action[i] = val
     return robot_action
@@ -2036,13 +2219,31 @@ def _build_joint_permutation(
     """
     if description is None:
         return None, []
+    robot_names = [j.name for j in description.joints]
+    fallback_grippers = [
+        getattr(getattr(j, "role", None), "value", getattr(j, "role", None)) == "gripper"
+        or "gripper" in j.name.lower()
+        for j in description.joints
+    ]
+    # Bound before the try: an adapter without a `_policy` (ACT / Diffusion,
+    # or any non-lerobot backbone) raises AttributeError on the FIRST line,
+    # leaving `policy` unbound. The `not names` branch below then read it and
+    # raised UnboundLocalError — a NameError, so the except clause guarding
+    # that read never caught it and the runner blew up instead of falling
+    # through to "pass through". `None.config` raises a plain AttributeError,
+    # which that same clause already handles.
+    policy: Any = None
     try:
         policy = adapter._policy  # type: ignore[attr-defined]  # reason: documented Protocol-internal field
         names = list(policy.config.action_feature_names)
     except (AttributeError, TypeError):
-        return None, []
+        names = []
     if not names:
-        return None, []
+        try:
+            action_dim = int(policy.config.output_features["action"].shape[0])
+        except (AttributeError, KeyError, TypeError):
+            return None, []
+        return (None, fallback_grippers) if action_dim == len(robot_names) else (None, [])
 
     def _normalize(s: str) -> str:
         # Map LeRobot feature keys to robot.yaml joint names.
@@ -2058,7 +2259,6 @@ def _build_joint_permutation(
         return s
 
     policy_names = [_normalize(n) for n in names]
-    robot_names = [j.name for j in description.joints]
     if len(policy_names) != len(robot_names):
         return None, []
     name_to_pidx = {n: i for i, n in enumerate(policy_names)}
@@ -2318,6 +2518,19 @@ def _make_policy_adapter_skill(
                 "no longer guesses the units (issue #135)."
             )
         joint_units_are_degrees = False
+    raw_gripper_scale = getattr(manifest, "policy_extras", {}).get("gripper_scale", 1.0)
+    try:
+        policy_gripper_scale = float(raw_gripper_scale)
+    except (TypeError, ValueError) as exc:
+        raise ROSConfigError(
+            f"rskill_runner_node: policy_extras.gripper_scale must be a positive number; "
+            f"got {raw_gripper_scale!r}."
+        ) from exc
+    if policy_gripper_scale <= 0.0:
+        raise ROSConfigError(
+            f"rskill_runner_node: policy_extras.gripper_scale must be > 0; "
+            f"got {policy_gripper_scale}."
+        )
     # Print to stderr so the diagnostic shows up in the launch's
     # stitched-together stdout (structlog's OTel sink doesn't surface
     # there). One-time event at build-time — keeps the per-step
@@ -2328,7 +2541,8 @@ def _make_policy_adapter_skill(
         f"joint_units={'degrees' if joint_units_are_degrees else 'radians'} "
         f"(manifest) "
         f"perm={robot_to_policy} "
-        f"is_gripper={policy_is_gripper}",
+        f"is_gripper={policy_is_gripper} "
+        f"gripper_scale={policy_gripper_scale:g}",
         file=sys.stderr,
         flush=True,
     )
@@ -2412,6 +2626,32 @@ def _make_policy_adapter_skill(
 
         def _configure_impl(self) -> None:
             """No-op — `make_policy` already built the adapter."""
+
+        def on_warmup(self) -> None:
+            """Run one dummy forward before the first real tick.
+
+            ``rSkillBase.activate()`` calls this ahead of ``_activate_impl``.
+            The first CUDA inference pays cuDNN autotune and kernel JIT —
+            measured at 330 ms against a 33 ms budget on the ACT so101-pen
+            checkpoint, so tick 1 was a guaranteed deadline miss and, under
+            ``DeadlineOverrunPolicy.DROP``, the robot's first commanded
+            action was discarded. Same wall-clock either way; this just
+            moves it to where the operator is already waiting.
+
+            Non-fatal by contract: a warm-up is an optimisation and must
+            never be why a skill fails to activate. Adapters whose policy
+            cannot be introspected (the HF-based molmoact2 / openvla) are
+            skipped silently by the helper.
+            """
+            from openral_rskill._vla_core import warm_up_lerobot_policy
+
+            try:
+                warmed = warm_up_lerobot_policy(self._adapter, prompt=self._prompt or "")
+            except Exception as exc:  # reason: an optimisation must never block activate
+                log.warning("rskill_runner.warmup_failed", skill=self.name, error=str(exc))
+                return
+            if warmed:
+                log.info("rskill_runner.warmed_up", skill=self.name)
 
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
@@ -2573,7 +2813,11 @@ def _make_policy_adapter_skill(
                 # whose joint order already matches the robot (SO-101) is not fed
                 # raw radians. See _robot_state_to_policy / _effective_perm.
                 obs["state"] = _robot_state_to_policy(
-                    robot_state, robot_to_policy, joint_units_are_degrees, policy_is_gripper
+                    robot_state,
+                    robot_to_policy,
+                    joint_units_are_degrees,
+                    policy_is_gripper,
+                    policy_gripper_scale,
                 )
             # Deploy-sim keys `world_state.image_frames` by the manifest
             # sensor NAME; VLA adapters look up `obs["images"]` by the VLA
@@ -2598,7 +2842,11 @@ def _make_policy_adapter_skill(
             # (SO-101) reaches the radians Action contract instead of passing
             # through raw (~57x too large → the arm slams its limits).
             robot_action = _policy_action_to_robot(
-                policy_action, robot_to_policy, joint_units_are_degrees, policy_is_gripper
+                policy_action,
+                robot_to_policy,
+                joint_units_are_degrees,
+                policy_is_gripper,
+                policy_gripper_scale,
             )
             # One-shot stderr diagnostic so the launch's stdout shows
             # what's actually being commanded. Print the FIRST step

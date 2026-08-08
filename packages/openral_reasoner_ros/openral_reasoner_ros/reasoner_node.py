@@ -85,6 +85,7 @@ from openral_core import (
     RobotCapabilities,
     RobotDescription,
     RSkillManifest,
+    SpatialNodeKind,
     TimeoutEvidence,
     WaitTool,
     assert_vla_reward_fits,
@@ -573,7 +574,7 @@ class ReasonerNode(LifecycleNode):
             ``suppressed_reason="heartbeat_idle"``.
         client: Optional pre-built :class:`ToolUseClient`. When ``None``
             :meth:`on_configure` builds one from the
-            ``OPENRAL_REASONER_LLM_*`` env vars via
+            ``OPENRAL_REASONER_*`` env vars via
             :func:`build_tool_use_client_from_env`. Tests pass a
             :class:`FakeToolUseClient` here.
         palette: Optional pre-built :class:`ToolPalette`. When ``None``
@@ -629,6 +630,9 @@ class ReasonerNode(LifecycleNode):
         # snapshot into it. Stays None for an externally-injected read-only
         # querier (we don't mutate a backend we don't own).
         self._spatial_memory_writer: SpatialMemory | None = None
+        # Last emitted semantic scene key and keepalive anchor.
+        self._scene_objects_key: tuple[object, ...] | None = None
+        self._scene_objects_emitted_monotonic: float = 0.0
         # Occupancy-grid-refined approach phase — latest decoded occupancy grid (an
         # ``openral_world_state.grid.OccupancyGridIndex``), from the latched
         # ``occupancy_map_topic`` subscription. ``None`` until a map arrives;
@@ -1035,6 +1039,22 @@ class ReasonerNode(LifecycleNode):
         self._vlm_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reasoner-vlm")
         self._inbox_guard = self.create_guard_condition(self._drain_executor_inbox)
 
+        # Start a managed LLM sidecar NOW rather than on the first tick.
+        # Clients that own one (the Cosmos 3 Edge local vLLM) otherwise boot
+        # it lazily from ``select_tool``, i.e. after the whole graph is up
+        # and an operator is already waiting on a decision — a vLLM model
+        # load at best, a venv provision plus a ~9 GB download on a cold
+        # host. Bringup has minutes of unrelated work (HAL ``on_configure``,
+        # MuJoCo, camera first-frame gating) to overlap it with.
+        #
+        # On the LLM pool, so ``on_configure`` still returns promptly and
+        # the lifecycle transition is not held open by a model load. Cloud
+        # clients expose no ``warm`` and are untouched. Failure is
+        # non-fatal: the lazy path in ``select_tool`` remains the source of
+        # truth for whether the server is actually usable, and it will
+        # report the real error at the point it matters.
+        self._submit_client_warmup(client)
+
         # NOTE: ``self._core`` is built *after* the palette seed below, so the
         # robot-context system prompt (option B) reflects the capabilities
         # loaded from ``robot_yaml``. Nothing between here and then dispatches
@@ -1256,6 +1276,31 @@ class ReasonerNode(LifecycleNode):
         )
         return TransitionCallbackReturn.SUCCESS
 
+    def _submit_client_warmup(self, client: object) -> None:
+        """Kick a managed LLM sidecar's boot onto the LLM pool, if it has one.
+
+        No-op for clients without a ``warm()`` — every cloud provider.
+        Runs off the executor thread so ``on_configure`` returns promptly
+        and the lifecycle transition is not held open by a model load.
+
+        A failure here is not the deploy's problem: the lazy path in
+        ``select_tool`` still owns whether the server is usable and
+        surfaces the real error where an operator can act on it. Logging at
+        warning keeps a silent sidecar failure visible during bringup
+        rather than only at the first tick.
+        """
+        warm = getattr(client, "warm", None)
+        if not callable(warm):
+            return
+
+        def _run() -> None:
+            try:
+                warm()
+            except Exception as exc:  # reason: pre-warm is an optimisation, never a gate
+                self.get_logger().warning(f"on_configure: LLM sidecar pre-warm failed: {exc!s}")
+
+        self._llm_pool.submit(_run)
+
     @log_lifecycle_errors
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """Arm the periodic tick timer."""
@@ -1317,13 +1362,7 @@ class ReasonerNode(LifecycleNode):
         # Async LLM phase (#21) teardown — a still-running worker call is not
         # interruptible (provider SDKs have their own timeouts); shutdown
         # without waiting and let the generation bump drop its completion.
-        self._llm_generation += 1
-        if self._llm_pool is not None:
-            self._llm_pool.shutdown(wait=False, cancel_futures=True)
-            self._llm_pool = None
-        if self._vlm_pool is not None:
-            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
-            self._vlm_pool = None
+        self._shutdown_worker_pools()
         if self._inbox_guard is not None:
             self.destroy_guard_condition(self._inbox_guard)
             self._inbox_guard = None
@@ -1331,9 +1370,37 @@ class ReasonerNode(LifecycleNode):
         self.get_logger().info("on_cleanup: state cleared")
         return TransitionCallbackReturn.SUCCESS
 
+    def _shutdown_worker_pools(self) -> None:
+        """Drop the LLM / VLM worker pools and abandon any in-flight call.
+
+        A still-running worker call is not interruptible (provider SDKs own
+        their timeouts), so shut down without waiting and let the generation
+        bump drop its completion.
+
+        Called from BOTH ``on_cleanup`` and ``on_shutdown``. ``on_cleanup``
+        alone is not enough: ``_submit_client_warmup`` starts the managed vLLM
+        sidecar early in ``on_configure``, and ``@log_lifecycle_errors`` turns a
+        later raise in that same transition into ``FAILURE`` — which leaves the
+        node ``unconfigured``, a state ``on_cleanup`` is never entered from. The
+        pool's non-daemon thread and the child it spawned would then outlive the
+        node with nothing left to reap them.
+        """
+        self._llm_generation += 1
+        if self._llm_pool is not None:
+            self._llm_pool.shutdown(wait=False, cancel_futures=True)
+            self._llm_pool = None
+        if self._vlm_pool is not None:
+            self._vlm_pool.shutdown(wait=False, cancel_futures=True)
+            self._vlm_pool = None
+
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Final shutdown."""
+        """Final shutdown.
+
+        Reaps the worker pools unconditionally — this is the only teardown hook
+        a node that failed ``on_configure`` will ever reach.
+        """
         del state
+        self._shutdown_worker_pools()
         self.get_logger().info("on_shutdown")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1996,6 +2063,9 @@ class ReasonerNode(LifecycleNode):
         # before the first heartbeat tick (which re-emits on the 0.2 Hz cadence).
         self._emit_scene_objects_span()
 
+    # Repopulates collectors that restart while the scene stays unchanged.
+    _SCENE_OBJECTS_KEEPALIVE_S: float = 60.0
+
     def _emit_scene_objects_span(self) -> None:
         """Publish the remembered objects as a ``world.scene_objects`` span.
 
@@ -2005,16 +2075,44 @@ class ReasonerNode(LifecycleNode):
         preloaded ``spatial_memory_path`` map; post-producer (once the
         perception → spatial-memory object lift lands, PR #229) the World-State
         node becomes the canonical emitter of the same span.
+
+        Emit-on-change: this is called on every 0.2 Hz heartbeat, but an
+        unchanged scene re-emits only every ``_SCENE_OBJECTS_KEEPALIVE_S`` —
+        a static map produced 720 zero-information event rows per hour, each
+        dragging the full object list JSON along. The change key is SEMANTIC
+        (id / label / pose to 1 cm / is_container): detector ingest bumps
+        ``last_seen_ns`` / ``observation_count`` and jitters ``pose`` on every
+        snapshot, so an exact-payload hash would never suppress anything.
         """
         if self._spatial_memory is None:
             return
         try:
+            import time as _time
+
             from openral_world_state import emit_scene_objects_span
 
-            emit_scene_objects_span(
-                self._spatial_memory.to_scene_graph(),
-                source_node=self.get_name(),
+            graph = self._spatial_memory.to_scene_graph()
+            key: tuple[object, ...] = tuple(
+                sorted(
+                    (
+                        node.node_id,
+                        node.label,
+                        *(round(value, 2) for value in node.pose.xyz),
+                        node.is_container,
+                    )
+                    for node in graph.nodes
+                    if node.kind is SpatialNodeKind.OBJECT
+                )
             )
+            now = _time.monotonic()
+            if (
+                key == self._scene_objects_key
+                and now - self._scene_objects_emitted_monotonic < self._SCENE_OBJECTS_KEEPALIVE_S
+            ):
+                return
+            emit_scene_objects_span(graph, source_node=self.get_name())
+            self._scene_objects_key = key
+            self._scene_objects_emitted_monotonic = now
         except Exception as exc:  # reason: telemetry must never break the tick
             self.get_logger().debug(f"scene-objects span emit failed: {exc!s}")
 
@@ -2140,12 +2238,27 @@ class ReasonerNode(LifecycleNode):
         loaded_paths: list[pathlib.Path] = []
         for path in manifest_paths:
             try:
-                manifests.append(RSkillManifest.from_yaml(str(path)))
-                loaded_paths.append(path)
+                manifest = RSkillManifest.from_yaml(str(path))
             except (OSError, ValueError) as exc:
                 self.get_logger().warning(
                     f"palette seed: skipping unloadable rskill {path!s}: {exc}",
                 )
+                continue
+            manifests.append(manifest)
+            loaded_paths.append(path)
+            # Feed the pre-dispatch VRAM gate from the SAME manifests the LLM is
+            # being offered. `_manifest_for_rskill` otherwise falls back to the
+            # install registry (`~/.local/share/openral/rskills.json`), which a
+            # search-path-seeded palette never populates: on the reference host
+            # the palette carried 48 manifests while the registry held 3 detector
+            # skills and no VLA at all, so `_refuse_unfittable_vla` early-returned
+            # `False` for EVERY VLA and both its tiers were dead. Observed live
+            # 2026-08-04: `molmoact2-multi-so101-nf4` (4.0 GB + 5.5 GB reward on
+            # an 8 GB card) was named "will be refused at dispatch" by the CLI
+            # preflight, then dispatched, loaded its processor, and burned the
+            # full 20 s patience ceiling before being cancelled as KIND_TIMEOUT —
+            # a VRAM refusal reported as a timeout.
+            self._manifests_by_id.setdefault(manifest.name, manifest)
 
         # Reasoner playbooks, Phase 3 — collect installed, capability-matched `kind: playbook`
         # rSkills and render their PLAYBOOK.md bodies into the `## PLAYBOOKS`
@@ -3936,12 +4049,18 @@ class ReasonerNode(LifecycleNode):
         self._reprompt_memory(text, traceparent=traceparent)
 
     def _manifest_for_rskill(self, rskill_id: str) -> RSkillManifest | None:
-        """The installed :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
+        """The :class:`RSkillManifest` for ``rskill_id`` (cached), or None.
 
-        VLA/reward VRAM-fit pairing — the pre-dispatch pair check needs the VLA's manifest (for its
-        ``min_vram_gb``), but the palette path does not retain manifests. Load
-        them once on first miss (``rSkill`` pulls torch, so lazy-imported) and
-        cache by name. Returns ``None`` when the id is not installed / unloadable.
+        VLA/reward VRAM-fit pairing — the pre-dispatch gate needs the VLA's
+        ``min_vram_gb``. The cache is primed by :meth:`_seed_palette` from the
+        very manifests the LLM is offered, so **every** palette skill resolves;
+        the ``rSkill.list_installed()`` fallback below covers only ids that
+        reached the graph some other way (a Hub-installed skill not on any
+        ``rskill_search_paths`` root). ``rSkill`` pulls torch, so it stays lazy.
+
+        Returning ``None`` disables the VRAM gate for that dispatch, which is
+        why the priming matters: the registry alone left the gate dead for
+        every VLA on a search-path-seeded palette.
         """
         if rskill_id in self._manifests_by_id:
             return self._manifests_by_id[rskill_id]

@@ -7,8 +7,9 @@ name: docker-build
 # weeks):
 #   * pull_request → build + smoke only (no push)
 #   * push to master → build + push openral:x86 to GHCR
-# The `paths:` filter means it only runs when the image's build inputs change,
-# not on every commit. workflow_dispatch stays for manual runs (no push).
+# The `paths:` filter means it only runs when the image's build inputs change
+# (or the live-ROS tests it hosts), not on every commit. workflow_dispatch stays
+# for manual runs (no push).
 #
 # The paths deliberately include python/**, packages/**, cpp/** and the lock
 # files: the image BAKES the code in (COPY + uv sync + colcon build), it does
@@ -27,6 +28,11 @@ on:
       - cpp/**
       - python/**
       - .github/workflows/docker-build.yml
+      # The live-ROS suite runs in this job and nowhere else (issue #46), so a
+      # diff that only touches those tests must still rebuild + run them.
+      - scripts/ros_live_tests.sh
+      - tests/integration/test_reasoner_*.py
+      - tests/integration/test_critic_producer_node.py
   push:
     branches: [master]
     paths:
@@ -37,6 +43,11 @@ on:
       - cpp/**
       - python/**
       - .github/workflows/docker-build.yml
+      # The live-ROS suite runs in this job and nowhere else (issue #46), so a
+      # diff that only touches those tests must still rebuild + run them.
+      - scripts/ros_live_tests.sh
+      - tests/integration/test_reasoner_*.py
+      - tests/integration/test_critic_producer_node.py
 
 permissions:
   contents: read
@@ -120,6 +131,31 @@ jobs:
             openral deploy run --config scenes/deploy/so101_bench.yaml --dry-run | grep -q "hal_mode:=real"
             echo "OK: deploy run --dry-run resolves"
           '
+
+      # Live-ROS suite (issue #46). These tests are gated on
+      # OPENRAL_TEST_ROS_LIVE=1 because they need a real rclpy, a real DDS
+      # graph, and the colcon-built openral_msgs / openral_reasoner_ros /
+      # openral_prompt_router overlay. This image is the ONLY CI surface that
+      # has any of that — the ubuntu-hosted test-selective runner has no ROS 2
+      # at all, so every one of them importorskips there. Without this step
+      # they run nowhere, and safety-adjacent gates like the reasoner's
+      # pre-dispatch VRAM refusal rot unnoticed (PR #44).
+      #
+      # tests/ + conftest.py + scripts/ are NOT baked into the deploy image
+      # (it ships a runtime, not a test tree), so bind-mount them from the
+      # checkout — that also guarantees the PR's version of the tests runs
+      # against the PR's image. No GPU on the runner and none needed: the
+      # free-VRAM readings are pinned at the nvidia-smi process boundary.
+      - name: Live ROS tests (OPENRAL_TEST_ROS_LIVE)
+        run: |
+          # --entrypoint /entrypoint.sh drops the image's hardcoded `openral`
+          # argument while keeping the ROS + colcon-overlay sourcing the tests
+          # depend on.
+          docker run --rm --entrypoint /entrypoint.sh \
+            -v "$PWD/tests:/workspace/tests:ro" \
+            -v "$PWD/conftest.py:/workspace/conftest.py:ro" \
+            -v "$PWD/scripts:/workspace/scripts:ro" \
+            openral:x86 bash scripts/ros_live_tests.sh -q
 
       # Default-entrypoint smoke: the steps above override --entrypoint, so
       # they never exercise what `docker run openral:x86 …` actually does.

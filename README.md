@@ -18,7 +18,7 @@
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-OpenRAL-FFD21E)](https://huggingface.co/OpenRAL)
 [![Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/3paXT2bVyB)
 
-[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
+[Quick start](#quick-start) · [Architecture](#architecture) · [Robots](docs/reference/robots.md) · [rSkills](docs/reference/rskills.md) · [Reasoner](docs/reference/reasoner.md) · [Sim envs](docs/reference/sim-environments.md) · [Telemetry](docs/reference/telemetry.md) · [Discord](https://discord.gg/3paXT2bVyB) · [Docs](https://openral.github.io/openral/)
 
 </div>
 
@@ -57,7 +57,7 @@ We compose ROS 2, tf2, MoveIt 2 (with optional CUDA-accelerated **cuMotion** pla
 - **GPU-accelerated MoveIt planning** — `cuMotion` CUDA pipeline behind a capability gate, OMPL fallback
 - C++ **safety kernel** — deny-by-default allocation-free validator (envelope + self/world/voxel collision) + independent deadman & hardware-E-stop watchdogs
 - [Reasoner](docs/reference/reasoner.md)/safety ROS graph with provider-agnostic LLM tool dispatch
-- OpenTelemetry instrumentation with OTLP export, live `openral dashboard`, and a read-only **Foxglove** live-scene surface
+- OpenTelemetry instrumentation with OTLP export, live `openral dashboard`, and a read-only **Foxglove** live-scene surface — every span, metric, log site and load-phase timer is catalogued in the **[Telemetry reference](docs/reference/telemetry.md)**
 
 Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: [docs/architecture/repo-state-map.html](docs/architecture/repo-state-map.html).
 
@@ -132,8 +132,13 @@ docker run --rm --gpus all openral:x86 doctor          # host diagnosis
 docker run --rm --device /dev/ttyACM0 openral:x86 detect   # robot.yaml wizard
 docker run --rm --gpus all --network host \
     --device /dev/ttyACM0 --device /dev/video0 \
+    -v ~/.cache/huggingface:/opt/openral/hf-cache \
     openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
 ```
+
+> Mount the Hugging Face cache (`-v ~/.cache/huggingface:/opt/openral/hf-cache`,
+> the image's pinned `HF_HOME`). Without it every `--rm` run re-downloads the
+> rSkill weights into a discarded layer — gigabytes and minutes per launch.
 
 One-liner install (no clone, no sudo):
 

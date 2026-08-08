@@ -1243,3 +1243,32 @@ class TestExpectedRepoName:
             assert repo_name_is_canonical(got, kind=m.kind, model_family=m.model_family), (
                 f"{p.parent.name}: {got}"
             )
+
+
+# ── default_prompt ────────────────────────────────────────────────────────────
+
+
+class TestDefaultPrompt:
+    """The checkpoint's own training string, used when a goal omits `prompt`."""
+
+    def test_absent_by_default(self) -> None:
+        """Generalist checkpoints take arbitrary instructions — no default."""
+        assert RSkillManifest(**_minimal_manifest_dict()).default_prompt is None
+
+    def test_round_trips_verbatim(self) -> None:
+        """Single-task finetunes are conditioned on one exact phrase.
+
+        The training string is preserved byte-for-byte, upstream typos and all
+        (this checkpoint really was trained on "the erase", not "the eraser") —
+        a paraphrase measurably degrades the policy.
+        """
+        d = _minimal_manifest_dict()
+        d["default_prompt"] = "place the erase on the blue square"
+        assert RSkillManifest(**d).default_prompt == "place the erase on the blue square"
+
+    def test_empty_string_rejected(self) -> None:
+        """An empty default is meaningless — omit the field instead."""
+        d = _minimal_manifest_dict()
+        d["default_prompt"] = ""
+        with pytest.raises(ValidationError):
+            RSkillManifest(**d)
