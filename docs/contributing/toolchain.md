@@ -92,8 +92,12 @@ correct way to run a RoboCasa scene is to let the HAL provision it:
 
 ```bash
 OPENRAL_AUTO_INSTALL_DEPS=1 openral deploy sim \
-  --config scenes/deploy/robocasa_navigate.yaml --rskill <rskill>
+  --config scenes/deploy/robocasa_navigate.yaml
 ```
+
+`deploy sim` takes no `--rskill`: the reasoner picks the active rSkill
+dynamically from the in-tree `rskills/` palette at `on_configure`. The scene
+YAML is the only policy input.
 
 Do **not** hand-install `robocasa` / `robosuite` yourself — that pulls the wrong
 robosuite and wrecks the managed env.
