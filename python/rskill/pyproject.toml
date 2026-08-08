@@ -1,14 +1,16 @@
 [project]
 name = "openral-rskill"
-version = "0.2.0"
+version = "0.2.0"  # x-release-please-version
 description = "OpenRAL Skill base class — lifecycle state machine and mock skill"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core",            # reason: WorldState / Action / RobotDescription schemas + exceptions
-    "openral-observability",   # reason: rskill_span / inference_span on Skill.configure / activate / step / chunk inference
-    "openral-world-state",     # reason: LookAtRskill — compute_gaze_pose / rotation_to_quat_wxyz / homogeneous_from_quat_xyz
+    # x-release-please-start-version
+    "openral-core==0.2.0",            # reason: WorldState / Action / RobotDescription schemas + exceptions
+    "openral-observability==0.2.0",   # reason: rskill_span / inference_span on Skill.configure / activate / step / chunk inference
+    "openral-world-state==0.2.0",     # reason: LookAtRskill — compute_gaze_pose / rotation_to_quat_wxyz / homogeneous_from_quat_xyz
+    # x-release-please-end
     "huggingface_hub>=0.20",       # reason: rSkill.from_pretrained downloads manifests + weights from HF Hub
     "structlog>=24.1",             # reason: structured logging per CLAUDE.md §5.1
 ]

@@ -107,7 +107,40 @@ jobs:
       # gives us a tiny ephemeral env in a few seconds — no workspace sync needed.
       - name: Select tests for the diff
         id: select
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
+          set -euo pipefail
+          # release-please's release PR is pure mechanical version churn: it
+          # rewrites `version =` and the `openral-*==` pins across all 15
+          # pyprojects and regenerates CHANGELOG.md, nothing else. Root
+          # `pyproject.toml` is a full-run glob, so the selector would force
+          # the ENTIRE suite plus every opt-in dependency lane — including
+          # isaacsim / robotwin / gr00t, whose sidecars a hosted runner cannot
+          # provision — for a diff that cannot change behaviour. Every commit
+          # the release covers already passed this job on its own PR.
+          #
+          # Emit an empty selection rather than adding a job-level `if:`:
+          # select-and-test is a REQUIRED check, and a required check skipped
+          # by a condition is never reported — GitHub leaves it "Expected" and
+          # blocks the merge forever (same trap as the pull_request trigger
+          # comment above). This keeps the job running and green, exactly like
+          # a docs-only PR. `full_run` must be set too: the full-suite step is
+          # gated on it alone, not on `any`.
+          #
+          # Prefix per release-please's RELEASE_PLEASE_BRANCH_PREFIX
+          # ("release-please--branches"); the glob also covers the
+          # --components-- variant if separate-pull-requests is ever enabled.
+          case "${HEAD_REF:-}" in
+            release-please--*)
+              echo "::notice::release-please PR — lockstep version churn only, no tests selected."
+              {
+                echo "any=false"
+                echo "full_run=false"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
           uv run --isolated --with pydantic --python 3.12 \
             python tools/select_tests.py \
             --base "${{ steps.range.outputs.base }}" \

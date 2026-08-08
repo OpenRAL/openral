@@ -1,12 +1,14 @@
 [project]
 name = "openral-sensors"
-version = "0.2.0"
+version = "0.2.0"  # x-release-please-version
 description = "OpenRAL sensor adapters — launch generators and calibration helpers"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core", # reason: SensorSpec / SensorBundle schemas
+    # x-release-please-start-version
+    "openral-core==0.2.0", # reason: SensorSpec / SensorBundle schemas
+    # x-release-please-end
 ]
 
 [build-system]

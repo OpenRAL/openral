@@ -29,10 +29,16 @@ name: release-pypi
 #     the individual account, then dispatch target=pypi (or push a v*.*.* tag).
 #     Projects transfer into the OpenRAL org later with no re-publish.
 #
-# Every workspace package shares one lockstep version — bump all pyprojects
-# (root + python/*) together for a release. Versioning is SemVer: pick the
-# segment by content — fixes only → patch (0.2.1), features → minor (0.3.0),
-# breaking change / stable API → major (1.0.0). Not every release is a minor.
+# Every workspace package shares one lockstep version, and every `openral-*`
+# dependency pins it exactly — nothing here bumps it. `release-please.yml`
+# derives the SemVer segment from the Conventional Commits merged since the
+# last tag (fix → patch, feat → minor, breaking → minor while <1.0) and
+# rewrites all 15 pyprojects in its release PR. Merging that PR creates the
+# `v*.*.*` tag this workflow publishes from.
+#
+# Do not hand-edit a version to cut a release; see docs/contributing/releasing.md.
+# tests/unit/test_lockstep_versions.py fails the build if the versions, the
+# `openral-*==` pins, or the matrix below drift apart.
 
 on:
   workflow_dispatch:

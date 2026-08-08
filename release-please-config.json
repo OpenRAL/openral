@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "include-component-in-tag": false,
+  "separate-pull-requests": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "pull-request-title-pattern": "chore(release): v${version}",
+  "signoff": "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>",
+  "changelog-sections": [
+    { "type": "feat", "section": "Added" },
+    { "type": "refactor", "section": "Changed" },
+    { "type": "perf", "section": "Changed" },
+    { "type": "fix", "section": "Fixed" },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "style", "section": "Styling", "hidden": true },
+    { "type": "ci", "section": "Continuous Integration", "hidden": true },
+    { "type": "build", "section": "Build System", "hidden": true },
+    { "type": "chore", "section": "Miscellaneous", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "package-name": "openral",
+      "extra-files": [
+        "python/cli/pyproject.toml",
+        "python/core/pyproject.toml",
+        "python/dataset/pyproject.toml",
+        "python/detect/pyproject.toml",
+        "python/hal/pyproject.toml",
+        "python/observability/pyproject.toml",
+        "python/reasoner/pyproject.toml",
+        "python/rskill/pyproject.toml",
+        "python/runner/pyproject.toml",
+        "python/sensors/pyproject.toml",
+        "python/sim/pyproject.toml",
+        "python/state_adapter/pyproject.toml",
+        "python/wam/pyproject.toml",
+        "python/world_state/pyproject.toml"
+      ]
+    }
+  }
+}
