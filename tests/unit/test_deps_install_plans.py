@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import importlib.metadata
 import sys
-import sysconfig
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,7 +43,44 @@ from openral_sim._deps import (
     get_plan,
 )
 
+# `uv pip` targets the venv it discovers from the *working directory*, which is
+# not necessarily the interpreter running pytest — from a git worktree it is a
+# different environment entirely, and an editable installed there never becomes
+# importable here. Every uv call these tests make is about their own process, so
+# say so explicitly.
+_UV_PIP_INSTALL = ["uv", "pip", "install", "--python", sys.executable]
+_UV_PIP_UNINSTALL = ["uv", "pip", "uninstall", "--python", sys.executable]
+
 # ─── Fix #1+2: shadow dir cleanup ─────────────────────────────────────────
+
+
+def _step_site_packages() -> Path:
+    """Where ``_remove_editable_shadow_step`` will actually look.
+
+    The step runs ``uv run python``, which resolves the *project* venv — not
+    necessarily the interpreter running pytest. Those differ whenever the suite
+    runs from a git worktree, or against a venv reached via ``PYTHONPATH``, and
+    planting the shadow under the wrong ``site-packages`` made the removal test
+    fail while the preservation test passed vacuously (the step reports "no
+    shadow to clean" both when the dir is protected and when it was never
+    there). Ask the step's own interpreter instead.
+    """
+    import subprocess
+
+    probe = subprocess.run(
+        [
+            _deps._uv(),
+            "run",
+            "--no-sync",  # a unit test must not trigger a workspace sync
+            "python",
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return Path(probe.stdout.strip())
 
 
 class TestRemoveEditableShadow:
@@ -68,7 +104,7 @@ class TestRemoveEditableShadow:
 
         # Build a fake shadow directly in the real site-packages, then
         # run the step and confirm it's gone.
-        sp = Path(sysconfig.get_paths()["purelib"])
+        sp = _step_site_packages()
         shadow_name = "shadow_test_pkg_xyz_42"
         shadow = sp / shadow_name
         shadow.mkdir()
@@ -94,7 +130,7 @@ class TestRemoveEditableShadow:
         """A site-packages dir WITH __init__.py is a real install — do not touch."""
         import subprocess
 
-        sp = Path(sysconfig.get_paths()["purelib"])
+        sp = _step_site_packages()
         pkg_name = "real_pkg_test_xyz_42"
         pkg_dir = sp / pkg_name
         pkg_dir.mkdir()
@@ -508,7 +544,7 @@ class TestRefreshEditableFinders:
         try:
             # First install: find_spec returns None until we refresh.
             subprocess.run(
-                ["uv", "pip", "install", "--no-deps", "-e", str(a)],
+                [*_UV_PIP_INSTALL, "--no-deps", "-e", str(a)],
                 check=True,
                 capture_output=True,
             )
@@ -526,7 +562,7 @@ class TestRefreshEditableFinders:
 
             # Swap to B: without refresh, find_spec sticks to A; with refresh, follows B.
             subprocess.run(
-                ["uv", "pip", "install", "--force-reinstall", "--no-deps", "-e", str(b)],
+                [*_UV_PIP_INSTALL, "--force-reinstall", "--no-deps", "-e", str(b)],
                 check=True,
                 capture_output=True,
             )
@@ -544,7 +580,7 @@ class TestRefreshEditableFinders:
             assert spec_fresh is not None and spec_fresh.origin is not None
             assert str(tmp_path / "b") in spec_fresh.origin, spec_fresh.origin
         finally:
-            subprocess.run(["uv", "pip", "uninstall", pkg], capture_output=True, check=False)
+            subprocess.run([*_UV_PIP_UNINSTALL, pkg], capture_output=True, check=False)
             # Drop any meta_path finder we might have registered for this pkg.
             for finder in list(sys.meta_path):
                 mod_name = getattr(finder, "__module__", "")
