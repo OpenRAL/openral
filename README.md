@@ -181,6 +181,9 @@ The `openral` CLI lives in `.venv/bin/openral`. Run via `uv run openral ...` or 
 
 `uv run openral doctor` output on a working machine:
 
+<!-- Snapshot of a real run at v0.3.1. Every row is that machine's — the GPU,
+     the ROS paths and the openral-core version all move; nothing reads this. -->
+
 ```
          openral doctor
 ┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -188,7 +191,7 @@ The `openral` CLI lives in `.venv/bin/openral`. Run via `uv run openral ...` or 
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
 │ Python             │ ok      │ 3.12.9                         │
 │ Platform           │ info    │ Linux 6.14.0                   │
-│ openral-core       │ ok      │ 0.2.0                          │
+│ openral-core       │ ok      │ 0.3.1                          │
 │ ROS 2 binary       │ ok      │ /opt/ros/jazzy/bin/ros2        │
 │ ROS 2 distro       │ ok      │ jazzy                          │
 │ RMW                │ info    │ rmw_fastrtps_cpp (default)     │
