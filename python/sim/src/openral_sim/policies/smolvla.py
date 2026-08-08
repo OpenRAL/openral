@@ -26,14 +26,17 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
+    build_chunk_executor,
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
     resolve_rskill_repo_revision,
     resolve_state_dim,
+    rtc_enabled_in_extra,
     run_inference,
     to_numpy_action,
 )
@@ -209,18 +212,44 @@ class _SmolVLAAdapter:
     # observation carrying image_handles; shares the TRT runtime's cached
     # vision engine.
     _nvmm_encoder: Any = None
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        if hasattr(self._policy, "reset"):
+        if self._chunk_executor is not None:
+            self._chunk_executor.reset()
+        elif hasattr(self._policy, "reset"):
             self._policy.reset()
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
+        # The Pro NVMM hook stashes precomputed embeddings as sampler SIDE
+        # STATE, not in the batch, so two overlapping inferences clobber each
+        # other's embeddings. Serialize the NVMM path — tear the executor down
+        # and run in the foreground — until those embeddings travel in the
+        # batch. Keyed on the observation rather than on `_nvmm_encoder`, which
+        # is only built partway through the first such tick.
+        if observation.get("image_handles") and self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
+        if self._chunk_executor is not None:
+            self._update_input_preview(observation)
+            action_tensor = self._chunk_executor.select_action(
+                lambda: self._prepared_batch(observation, instruction)
+            )
+            return to_numpy_action(self._postprocessor(action_tensor))
+
+        batch = self._prepared_batch(observation, instruction)
+        action_tensor = run_inference(self._policy, batch)
+        action_tensor = self._postprocessor(action_tensor)
+        return to_numpy_action(action_tensor)
+
+    def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
+        """Build the full on-device, dtype-cast batch for one chunk inference."""
         used_handles = self._maybe_encode_image_handles(observation)
         batch = self._build_batch(observation, instruction, gpu_frames=used_handles)
-        batch = self._preprocessor(batch)
+        batch = cast("dict[str, Any]", self._preprocessor(batch))
         # Belt-and-suspenders device move (preprocessor sometimes returns CPU tensors).
         device_kind = self.device.split(":", 1)[0]
         for k, v in list(batch.items()):
@@ -246,21 +275,29 @@ class _SmolVLAAdapter:
                 tensor = tensor.to(self._image_dtype)
             batch[k] = tensor
 
-        action_tensor = run_inference(self._policy, batch)
-        action_tensor = self._postprocessor(action_tensor)
-        return to_numpy_action(action_tensor)
+        return batch
 
     def close(self) -> None:
-        # lerobot policies do not expose an explicit close — rely on GC.
-        # Free GPU memory on CUDA to avoid leaks across configs in long-running drivers.
+        """Tear down the NVMM encoder, drop the modules, then reclaim VRAM.
+
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the policy frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
         if self._nvmm_encoder is not None:
             self._nvmm_encoder.close()
             self._nvmm_encoder = None
-        if self.device.startswith("cuda"):
-            import contextlib
-
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        release_torch_modules(
+            self,
+            "_policy",
+            "_preprocessor",
+            "_postprocessor",
+            device=self.device,
+            torch=self._torch,
+        )
 
     def _maybe_encode_image_handles(self, observation: Observation) -> bool:
         """Run the zero-copy NVMM vision leg when the observation carries it.
@@ -301,11 +338,11 @@ class _SmolVLAAdapter:
                 "needs all cameras (partial NVMM tiers are unsupported)."
             )
         if self._nvmm_encoder is None:
-            from openral_pro_trt.nvmm_vision_encoder import (  # type: ignore[import-not-found]
-                NvmmVisionEncoder,
-            )
+            from importlib import import_module
 
-            self._nvmm_encoder = NvmmVisionEncoder(
+            nvmm_vision = import_module("openral_pro_trt.nvmm_vision_encoder")
+
+            self._nvmm_encoder = nvmm_vision.NvmmVisionEncoder(
                 sampler.vision_onnx,
                 model_id=sampler.vision_rskill_id,
                 device_index=sampler.device_index,
@@ -316,12 +353,12 @@ class _SmolVLAAdapter:
                 n_cameras=self._nvmm_encoder.n_cameras,
                 model_id=sampler.vision_rskill_id,
             )
-        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found]
-            NvBufSurfaceHandle,
-        )
+        from importlib import import_module
+
+        nvbufsurface = import_module("openral_pro_trt.nvbufsurface")
 
         embs = self._nvmm_encoder.encode_nvmm(
-            [NvBufSurfaceHandle.model_validate(d) for d in ordered]
+            [nvbufsurface.NvBufSurfaceHandle.model_validate(d) for d in ordered]
         )
         sampler.set_precomputed_img_embs(embs)
         return True
@@ -352,6 +389,28 @@ class _SmolVLAAdapter:
                 return None
             ordered.append(handles[cam_key])
         return ordered if ordered else None
+
+    def _update_input_preview(self, observation: Observation) -> None:
+        """Refresh ``_last_input_frame`` from raw numpy frames (no tensor work).
+
+        The fast pop path skips ``_build_batch`` (which normally records the
+        preview), but the eval-layer debug video samples
+        :meth:`last_input_frame` every env step — without this it would show
+        one frozen frame per chunk.
+        """
+        from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
+
+        images = observation.get("images", {})
+        preview_frames: list[NDArray[np.uint8]] = []
+        for cam_key in self._camera_keys:
+            img = images.get(cam_key)
+            if img is None:
+                continue
+            preview = to_input_frame(img, flip_180=self._flip_images_180)
+            if preview is not None:
+                preview_frames.append(preview)
+        if preview_frames:
+            self._last_input_frame = tile_input_frames(preview_frames)
 
     def _build_batch(
         self, observation: Observation, instruction: str, *, gpu_frames: bool = False
@@ -399,7 +458,7 @@ class _SmolVLAAdapter:
                 preview = to_input_frame(img, flip_180=self._flip_images_180)
                 if preview is not None:
                     preview_frames.append(preview)
-                t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+                t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
                 if self._flip_images_180:
                     t = torch.flip(t, dims=[1, 2])
                 t = t.unsqueeze(0).to(self.device)
@@ -549,7 +608,20 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
             )
 
             sanitize_smolvla_config(repo_id, revision=revision)
-            policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+            # Skip HF's random weight init: lerobot builds the SmolVLM2
+            # backbone by calling the model class directly (every SmolVLA
+            # finetune sets load_vlm_weights=False), so it initialises 507 M
+            # params, truncates half the text layers away, and then overwrites
+            # the rest from the checkpoint. ~6 s of the ~15 s cold load, for
+            # values nothing reads. Guarded below — see suppress_hf_weight_init.
+            from openral_rskill._vla_core import (
+                assert_all_parameters_finite,
+                suppress_hf_weight_init,
+            )
+
+            with suppress_hf_weight_init():
+                policy = SmolVLAPolicy.from_pretrained(repo_id, revision=revision)
+            assert_all_parameters_finite(policy, repo_id=repo_id)
         with _smolvla_phase("to_device", device=device):
             policy = policy.to(device)
     finally:
@@ -607,6 +679,12 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         "smolvla", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
     ):
         _log.info("smolvla.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
+    elif rtc_enabled_in_extra(spec.extra, adapter_name="smolvla"):
+        # RTC rewrites the same flow-matching forward torch.compile would capture
+        # (guided denoising re-enters it with a fresh prefix each step), so the two
+        # are mutually exclusive exactly like TRT above. Keyed on the parsed
+        # `enabled` flag, so `rtc: {enabled: false}` keeps its torch.compile.
+        _log.info("smolvla.compile_skipped_for_rtc", repo_id=repo_id)
     else:
         maybe_compile_chunk_forward(policy, spec.extra, device, torch)
 
@@ -622,7 +700,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     ip = resolve_image_preprocessing(manifest, spec.extra)
     state_dim = resolve_state_dim(manifest, spec.extra)
 
-    return _SmolVLAAdapter(
+    adapter = _SmolVLAAdapter(
         spec=spec,
         device=device,
         _policy=policy,
@@ -636,3 +714,7 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _cam_alias=dict(ip.aliases),
         _image_input_template=ip.input_template,
     )
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra, policy=policy, adapter_name="smolvla"
+    )
+    return adapter

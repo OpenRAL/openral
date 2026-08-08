@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 400.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54
+  weights_uri: hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0684b28fb6470f25d333aa65e31c8b781b
   source_repo: hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54
   paper_url: https://arxiv.org/abs/2506.01844
 ---

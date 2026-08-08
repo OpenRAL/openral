@@ -3,12 +3,15 @@
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` to match the convention in
 ``tests/integration/test_failure_bus.py`` / ``test_world_state_integration.py``
 (rclpy + DDS init clash with a glib pulled in by torch/pyarrow during the
-regular ``uv run pytest`` invocation). Run with::
+regular ``uv run pytest`` invocation).
 
-    just ros2-build
+Part of the live-ROS suite listed in ``scripts/ros_live_tests.sh``. CI runs it
+inside ``openral:x86`` (the ``docker-build`` workflow — the only CI surface with
+a real rclpy + colcon overlay). Locally::
+
+    source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest tests/integration/test_reasoner_node_end_to_end.py \\
-        -v -p no:launch_testing -p no:launch_ros
+    just test-ros-live            # whole suite; `-k <expr>` narrows it
 
 The test exercises the full ``/openral/prompt_in/cli`` →
 ``/openral/prompt`` → reasoner tick → dispatch round-trip with a real

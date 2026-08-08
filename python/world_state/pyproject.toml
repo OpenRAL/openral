@@ -1,14 +1,16 @@
 [project]
 name = "openral-world-state"
-version = "0.2.0"
+version = "0.3.1"  # x-release-please-version
 description = "OpenRAL World State aggregator — tf2-aware snapshot producer"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "openral-core", # reason: WorldState / JointState / SensorSpec schemas
+    # x-release-please-start-version
+    "openral-core==0.3.1", # reason: WorldState / JointState / SensorSpec schemas
+    "openral-observability==0.3.1", # reason: world_state.snapshot span + components_stale metric
+    # x-release-please-end
     "numpy>=1.26",  # reason: voxel-frustum lift geometry
-    "openral-observability", # reason: world_state.snapshot span + components_stale metric
     "structlog>=24.1",  # reason: structured logging per CLAUDE.md §5.1
     "opentelemetry-api>=1.27",  # reason: trace.get_tracer for snapshot span
 ]

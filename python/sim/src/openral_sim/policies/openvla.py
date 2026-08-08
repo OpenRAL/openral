@@ -57,9 +57,10 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
-from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
+    build_chunk_executor,
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_rskill_repo_id,
@@ -582,24 +583,38 @@ class _OpenVLAAdapter:
     _gripper_threshold: float = 0.5
     _torch_seed: int | None = None
     _last_input_frame: NDArray[np.uint8] | None = None
-    _action_queue: list[NDArray[np.float32]] = field(default_factory=list)
+    _chunk_executor: Any = None
 
     def last_input_frame(self) -> NDArray[np.uint8] | None:
         return self._last_input_frame
 
     def reset(self) -> None:
-        self._action_queue = []
+        if self._chunk_executor is not None:
+            self._chunk_executor.reset()
         _seed_torch_for_sampling(self._torch, self._torch_seed)
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
-        if not self._action_queue:
-            self._action_queue = self._predict_chunk(observation, instruction)
-        return self._action_queue.pop(0)
+        if self._chunk_executor is not None:
+            action = self._chunk_executor.select_action(lambda: (observation, instruction))
+            return np.asarray(action, dtype=np.float32)
+        return np.asarray(self._chunk_forward((observation, instruction))[0], dtype=np.float32)
+
+    def _chunk_forward(self, payload: tuple[Observation, str]) -> list[NDArray[np.float32]]:
+        """Predict one action chunk."""
+        observation, instruction = payload
+        return self._predict_chunk(observation, instruction)
 
     def close(self) -> None:
-        if self.device.startswith("cuda"):
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        """Drop the loaded modules, then reclaim their VRAM.
+
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the model frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+        """
+        if self._chunk_executor is not None:
+            self._chunk_executor.stop()
+            self._chunk_executor = None
+        release_torch_modules(self, "_model", "_processor", device=self.device, torch=self._torch)
 
     def _collect_image(self, observation: Observation) -> Any:
         """Return the single RGB frame OpenVLA consumes, as a PIL Image."""
@@ -645,7 +660,7 @@ class _OpenVLAAdapter:
         else:
             autocast_ctx = contextlib.nullcontext()
 
-        with inference_span(kind="chunk"), torch.no_grad(), autocast_ctx:
+        with torch.no_grad(), autocast_ctx:
             if self._generation_method == _GENERATE_ACTION_VERL:
                 if not hasattr(self._model, _GENERATE_ACTION_VERL):
                     raise ROSConfigError(
@@ -825,7 +840,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
             f"{generation_method!r}."
         )
 
-    return _OpenVLAAdapter(
+    adapter = _OpenVLAAdapter(
         spec=spec,
         device=device,
         _model=model,
@@ -845,3 +860,10 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _gripper_threshold=_extra_float(extra, "openvla_gripper_threshold", 0.5),
         _torch_seed=torch_seed,
     )
+    adapter._chunk_executor = build_chunk_executor(
+        spec.extra,
+        chunk_fn=adapter._chunk_forward,
+        chunk_size=int(manifest.n_action_steps or 1),
+        adapter_name="openvla",
+    )
+    return adapter

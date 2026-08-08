@@ -81,9 +81,12 @@ Example (SO-100 / franka — manifest-driven, the preferred path)::
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -189,6 +192,39 @@ except ImportError:
 
 
 HALFactory = Callable[..., "HAL"]
+
+
+@contextmanager
+def _hal_duration_metric(metric_name: str, hal_adapter: str) -> Iterator[None]:
+    """Time a HAL call and record it on the matching duration histogram.
+
+    Pairs with the `hal.read_state` / `hal.send_action` spans so trace and
+    metric are emitted from one place. Both instruments were previously
+    recorded only by :class:`openral_runner.DeployRunner`, which the ROS
+    deploy graph does not instantiate — `rskill_runner_node` runs its own
+    tick loop — so a live `openral deploy run` produced the spans and no
+    latency histogram whatsoever.
+
+    Never raises: an observability probe must not be able to disturb the
+    control loop (CLAUDE.md §1.1).
+    """
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            from openral_observability import metrics as _metrics
+            from openral_observability import semconv
+
+            getter = {
+                semconv.METRIC_HAL_READ_STATE_DURATION: _metrics.get_hal_read_state_duration,
+                semconv.METRIC_HAL_SEND_ACTION_DURATION: _metrics.get_hal_send_action_duration,
+            }[metric_name]
+            _metrics.record_histogram_ms(
+                getter(),
+                (perf_counter() - started) * 1000.0,
+                {semconv.LABEL_HAL_ADAPTER: hal_adapter},
+            )
 
 
 def _hal_service_name(node_name: str) -> str:
@@ -744,6 +780,7 @@ if _ROS2_AVAILABLE:
                 self._clock_pub.publish(msg)
 
             def _loop() -> None:
+                next_deadline = monotonic() + period
                 while not stop.is_set():
                     try:
                         _publish_clock()
@@ -753,7 +790,12 @@ if _ROS2_AVAILABLE:
                             mobile.publish_from_snapshot()
                     except Exception as exc:  # reason: a publish hiccup must not kill the thread
                         self.get_logger().warn(f"proprio publisher thread: {exc}")
-                    stop.wait(period)
+                    remaining = next_deadline - monotonic()
+                    if remaining > 0 and stop.wait(timeout=remaining):
+                        return
+                    next_deadline += period
+                    if monotonic() > next_deadline + period:
+                        next_deadline = monotonic() + period
 
             self._pub_thread = threading.Thread(
                 target=_loop, name="openral_hal_proprio_pub", daemon=True
@@ -834,14 +876,22 @@ if _ROS2_AVAILABLE:
             tracer = trace.get_tracer("openral_hal.lifecycle")
             hal_adapter_label = type(self._hal).__name__.lower()
             robot_model = getattr(self._hal.description, "name", self._node_name)
-            with tracer.start_as_current_span(
-                semconv.SPAN_HAL_READ_STATE,
-                attributes={
-                    semconv.HAL_ADAPTER: hal_adapter_label,
-                    semconv.HAL_ROBOT_MODEL: str(robot_model),
-                    semconv.TICK_IDX: tick_idx,
-                },
-            ) as hal_read_span:
+            # Record the duration histogram alongside the span. These two
+            # instruments used to live only in `openral_runner.DeployRunner`,
+            # which the ROS deploy graph never instantiates — so a real
+            # `deploy run` emitted HAL spans and no HAL latency metric at all.
+            # Emitting both from the one site is what keeps them consistent.
+            with (
+                _hal_duration_metric(semconv.METRIC_HAL_READ_STATE_DURATION, hal_adapter_label),
+                tracer.start_as_current_span(
+                    semconv.SPAN_HAL_READ_STATE,
+                    attributes={
+                        semconv.HAL_ADAPTER: hal_adapter_label,
+                        semconv.HAL_ROBOT_MODEL: str(robot_model),
+                        semconv.TICK_IDX: tick_idx,
+                    },
+                ) as hal_read_span,
+            ):
                 if self._proprio is not None:
                     # Read the post-step snapshot (plain data), never
                     # the simulator: this callback runs on the control thread
@@ -935,15 +985,18 @@ if _ROS2_AVAILABLE:
             tracer = trace.get_tracer("openral_hal.lifecycle")
             hal_adapter_label = type(self._hal).__name__.lower()
             applied = True
-            with tracer.start_as_current_span(
-                semconv.SPAN_HAL_SEND_ACTION,
-                attributes={
-                    semconv.HAL_ADAPTER: hal_adapter_label,
-                    semconv.HAL_CONTROL_MODE: action.control_mode.value,
-                    semconv.TICK_IDX: tick_idx,
-                    "openral.hal.action.source": source,
-                },
-            ) as hal_send_span:
+            with (
+                _hal_duration_metric(semconv.METRIC_HAL_SEND_ACTION_DURATION, hal_adapter_label),
+                tracer.start_as_current_span(
+                    semconv.SPAN_HAL_SEND_ACTION,
+                    attributes={
+                        semconv.HAL_ADAPTER: hal_adapter_label,
+                        semconv.HAL_CONTROL_MODE: action.control_mode.value,
+                        semconv.TICK_IDX: tick_idx,
+                        "openral.hal.action.source": source,
+                    },
+                ) as hal_send_span,
+            ):
                 try:
                     self._hal.send_action(action)
                 except Exception as exc:  # reason: HAL surfaces typed errors; log + skip
@@ -997,6 +1050,20 @@ if _ROS2_AVAILABLE:
             self.get_logger().error(
                 "openral_hal.estop_received; ignoring further commands until reset."
             )
+            # Ordering is deliberate: latch, then STOP, then report. The latch
+            # above is what makes `_on_safe_action` drop commands, and the
+            # physical stop below must not queue behind telemetry. Reporting
+            # runs in a `finally` so an e-stop is counted even when the vendor
+            # stop path raises, and even for HALs that opt out of it entirely
+            # (the early return in `_invoke_hal_estop`) — an uncounted e-stop
+            # is exactly the blind spot this exists to close.
+            try:
+                self._invoke_hal_estop()
+            finally:
+                self._emit_estop_telemetry()
+
+        def _invoke_hal_estop(self) -> None:
+            """Call the vendor stop path for HALs that opt into it."""
             from openral_hal.protocol import LifecycleEStopHAL
 
             if self._hal is None or not isinstance(self._hal, LifecycleEStopHAL):
@@ -1009,6 +1076,48 @@ if _ROS2_AVAILABLE:
                 self.get_logger().error(f"hardware estop completed: {exc}")
             except Exception as exc:  # reason: latch must survive a vendor stop-path failure
                 self.get_logger().fatal(f"hardware estop failed: {exc}")
+
+        def _emit_estop_telemetry(self) -> None:
+            """Report the e-stop on the OTLP path: span event + counter.
+
+            The dashboard ingests OTLP, not ROS topics, so ``/openral/estop``
+            is invisible to it. Its Command-band ``e-stops`` counter reads
+            ``openral.event.estop_requested``, which nothing emitted — the
+            widget therefore read **0 no matter how many e-stops fired**, and a
+            safety indicator that cannot leave zero reads as "no e-stops have
+            occurred". Same for the ``openral.hal.estop.count`` instrument.
+
+            This node is the right and only chokepoint: it is the shared
+            lifecycle base every robot HAL runs on, and it sits on the
+            actuation side — if it fires, commands are already being dropped.
+            Counting at the six ``/openral/estop`` publishers would need six
+            call sites (one of them the C++ kernel) and counting at every
+            subscriber would multiply a single e-stop into several.
+
+            Never raises: an exception escaping here would propagate out of the
+            e-stop callback, and telemetry must not be able to disturb the
+            stop path (CLAUDE.md §1.1).
+            """
+            try:
+                from openral_observability import metrics as ral_metrics
+                from openral_observability import semconv
+                from opentelemetry import trace
+
+                adapter = type(self._hal).__name__ if self._hal is not None else "none"
+                attrs = {semconv.HAL_ADAPTER: adapter}
+                span = trace.get_current_span()
+                if span.is_recording():
+                    span.add_event(semconv.EVENT_ESTOP_REQUESTED, attributes=attrs)
+                else:
+                    # No active span in a bare ROS callback — open a transient
+                    # one so the event still reaches the collector (mirrors
+                    # `reasoner_node._emit_skill_failure_event`).
+                    tracer = trace.get_tracer("openral.hal")
+                    with tracer.start_as_current_span("hal.estop") as estop_span:
+                        estop_span.add_event(semconv.EVENT_ESTOP_REQUESTED, attributes=attrs)
+                ral_metrics.get_hal_estop_count().add(1, {semconv.LABEL_HAL_ADAPTER: adapter})
+            except Exception as exc:  # reason: telemetry must never disturb the stop path
+                self.get_logger().warning(f"estop telemetry failed: {exc!s}")
 
         def _on_estop_cleared(self, _msg: object) -> None:
             """Clear the estop latch when the reset authority broadcasts /openral/estop_cleared.

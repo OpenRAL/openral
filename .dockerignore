@@ -1,0 +1,87 @@
+# Build-context exclusions shared by every Dockerfile built with the repo root
+# as its context: `docker/inference/Dockerfile.x86` (the open deploy image) and
+# `Dockerfile.dev` (the dev shell).
+#
+# This file was previously *gitignored* (a `# Docker` / `.dockerignore` pair in
+# `.gitignore`), so the repo shipped without one and every build sent the whole
+# working tree — including `.git` and whatever local `build/` / `install/` /
+# `.venv/` happened to be lying around. On CI that is only a 34 MB / 0.4 s
+# transfer, so this is NOT a speed fix; it is a *determinism* fix. Without it a
+# contributor's local `just docker-build-x86` hashes a different context than
+# CI does (their `.venv/` and colcon `build/` are in it, CI's are not), so the
+# two disagree about which layers are cache-valid and local builds re-run work
+# CI would have skipped.
+#
+# Everything the Dockerfiles actually COPY is deliberately NOT excluded:
+# pyproject.toml, uv.lock, python/, packages/, cpp/, robots/, rskills/,
+# benchmarks/, tools/, scenes/, docker/inference/entrypoint.sh. Verified: no
+# tracked file under any of those paths matches a pattern below.
+
+# VCS + CI metadata — never copied into an image.
+.git
+.gitignore
+.github
+
+# Docs and tests are not baked into the deploy image (it ships a runtime, not a
+# test tree). docker-build.yml bind-mounts tests/ + conftest.py + scripts/ from
+# the checkout at run time for the live-ROS suite, so excluding them from the
+# build context does not affect that.
+docs
+site
+tests
+.agents
+
+# Python build/venv artifacts.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.venv
+.venv-*
+dist
+.eggs
+
+# Test/lint caches.
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.hypothesis
+htmlcov
+.coverage
+coverage.xml
+
+# colcon artifacts. The image runs its own `colcon build` into a clean
+# /workspace; a host-built tree leaking in would shadow it with binaries linked
+# against the host's ROS, not the image's.
+build
+install
+log
+build_py312
+install_py312
+.colcon-build
+
+# Agent/editor scratch.
+.claude
+.worktrees
+.impeccable
+.superpowers
+.vscode
+.idea
+*.swp
+*~
+
+# Large local-only artifacts that are never image inputs.
+example_videos
+outputs
+mjx_tmp
+unsloth_compiled_cache
+.cache
+docker/inference/deepstream/*.tbz2
+
+# Secrets — belt and braces; these are gitignored too, but a build context is
+# a second way for them to leave the host.
+*.pem
+*.key
+*.p12
+*.pfx
+*.env
+!.env.example

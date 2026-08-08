@@ -1562,6 +1562,24 @@ def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool =
     """
     if run_preflight:
         repo_root = _repo_root_from(Path(__file__))
+        # Same preflight sequence, and the same order, as the ``deploy sim``
+        # block: overlay check → orphan reap → palette extras → VRAM pair.
+        # These two used to run on the sim path ONLY, which made a crashed
+        # ``deploy run`` uniquely expensive to recover from: its orphaned
+        # graph processes kept holding GPU memory and ``/dev/shm/fastrtps_*``
+        # lockfiles until someone happened to run ``deploy sim``, and the
+        # next ``deploy run`` failed with a terse ``Failed init_port
+        # fastrtps_port7000`` instead of reaping them. Real hardware is the
+        # path where a stale HAL matters most, so it should not be the one
+        # missing the cleanup.
+        try:
+            assert_ros2_packages_discoverable(_required_ros2_packages(invocation))
+        except ROSConfigError as exc:
+            _console.print(f"[red]config error:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        _reap_orphans_with_log()
+
         _preflight_palette_deps(
             repo_root=repo_root,
             robot_yaml=Path(invocation.robot_yaml),

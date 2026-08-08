@@ -200,6 +200,72 @@ def test_purge_partial_imports_drops_only_matching_prefixes() -> None:
             sys.modules.pop(k, None)
 
 
+def test_fast_probe_does_not_import_the_deep_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default probe resolves the top-level package only.
+
+    This is the whole point of the fast tier. ``lerobot/policies/__init__``
+    eagerly imports every family's config class, so importing (or even
+    ``find_spec``-ing) ``lerobot.policies.<x>.modeling_<x>`` drags in the
+    entire tree — 6.6 s, measured — and the CLI preflight and the
+    reasoner's palette seed were each paying it on every deploy while only
+    ``runtime_node`` actually needs the modules resolved.
+
+    Uses an obscure stdlib module as a stand-in so the assertion holds
+    without the lerobot extras installed.
+    """
+    deep = "email.mime.audio"
+    monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_deep", (deep,))
+    purge_partial_imports((deep,))
+
+    ok, reason = can_import_policy_family("_test_deep")
+
+    assert ok is True
+    assert reason is None
+    assert deep not in sys.modules, (
+        f"{deep} was imported by the default probe; the fast tier must resolve "
+        "only the top-level package."
+    )
+
+
+def test_strict_probe_env_restores_the_deep_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``OPENRAL_STRICT_POLICY_PROBE=1`` opts back into the full import.
+
+    The strict tier is the only one that catches an installed-but-broken
+    dependency, so it has to stay reachable.
+    """
+    deep = "email.mime.audio"
+    monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_deep", (deep,))
+    monkeypatch.setenv("OPENRAL_STRICT_POLICY_PROBE", "1")
+    purge_partial_imports((deep,))
+
+    ok, reason = can_import_policy_family("_test_deep")
+
+    assert ok is True
+    assert reason is None
+    assert deep in sys.modules
+
+
+def test_fast_probe_rejects_a_missing_top_level_of_a_dotted_requirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dotted requirement whose root is absent still fails, with the root named."""
+    monkeypatch.setitem(
+        _FAMILY_REQUIRED_IMPORTS,
+        "_test_missing_top",
+        ("__definitely_not_a_real_module__.policies.modeling",),
+    )
+
+    ok, reason = can_import_policy_family("_test_missing_top")
+
+    assert ok is False
+    assert reason is not None
+    assert "__definitely_not_a_real_module__" in reason
+
+
 def test_gr00t_probe_covers_the_lazy_diffusers_import() -> None:
     """``diffusers`` is imported lazily inside GrootPolicy's build, not by the
     ``modeling_groot`` module import — probing only the modeling module admitted

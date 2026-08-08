@@ -1,0 +1,112 @@
+name: release-please
+# Computes the next lockstep SemVer version from Conventional Commits and
+# opens the release PR. This is the only thing that decides major/minor/patch —
+# the number is derived from what merged, not remembered by a human.
+#
+# The loop:
+#   1. A push to master re-runs this job. release-please reads every commit
+#      since the `v*.*.*` tag named in .release-please-manifest.json and picks
+#      the bump: `fix:` → patch, `feat:` → minor, `feat!:`/`BREAKING CHANGE:`
+#      → minor while <1.0 (`bump-minor-pre-major`), major once we cut 1.0.
+#   2. It opens/updates `chore(release): vX.Y.Z`, which rewrites every
+#      pyproject (root `[project] version` via the `python` release type; the
+#      14 members' version lines and `openral-*==` pins via `extra-files` +
+#      the `x-release-please-*` annotations) and regenerates CHANGELOG.md.
+#      Review the number there — the PR is the human gate.
+#   3. Merging it tags `vX.Y.Z` and publishes the GitHub release, which fires
+#      release-pypi.yml → PyPI.
+#
+# Nothing here publishes. `release-pypi.yml` remains the only path to an index.
+#
+# TOKEN — read this before the first release.
+# GitHub deliberately does not trigger workflows from events created with the
+# default GITHUB_TOKEN. If release-please tags `vX.Y.Z` with GITHUB_TOKEN,
+# release-pypi.yml will NOT fire and the release silently stops at the tag.
+# So a dedicated token is what makes the chain work end to end:
+#   • RELEASE_PLEASE_TOKEN — a GitHub App installation token (preferred) or a
+#     fine-grained PAT with contents:write + pull-requests:write. Its PRs also
+#     run the required `quality` / `DCO` checks normally, so the release PR is
+#     mergeable without an admin bypass.
+#   • Without it the job still works, but the tag lands inert. Recover by
+#     dispatching release-pypi.yml manually with target=pypi, confirm=YES.
+# The `check token` step below states which mode this run is in.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push while a release PR is being written would race on the same
+# branch. Queue instead of cancelling — a dropped run leaves the PR stale.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # create the release commit, tag and GitHub release
+      pull-requests: write   # open / update the release PR
+    steps:
+      - name: check token
+        env:
+          HAS_APP_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_APP_TOKEN" = "true" ]; then
+            echo "::notice::RELEASE_PLEASE_TOKEN present — merging the release PR will trigger release-pypi.yml."
+          else
+            echo "::warning::RELEASE_PLEASE_TOKEN is unset; falling back to GITHUB_TOKEN. The v*.*.* tag will NOT trigger release-pypi.yml — dispatch it manually (target=pypi, confirm=YES) after merging the release PR."
+          fi
+
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4.4.1
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: summarise
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASED: ${{ steps.release.outputs.releases_created || steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASED" = "true" ]; then
+            echo "::notice::Released $TAG. release-pypi.yml publishes the 14 packages from this tag."
+            exit 0
+          fi
+          if [ -n "$PR" ]; then
+            echo "::notice::Release PR is open and up to date. Merge it to cut the release."
+            exit 0
+          fi
+
+          # No release and no PR. That is the normal outcome when nothing
+          # releasable merged — but it is ALSO exactly what a stuck release
+          # looks like, because release-please emits no outputs when it finds a
+          # merged release PR it cannot build a release from, and then declines
+          # to open a new one ("There are untagged, merged release PRs
+          # outstanding - aborting"). v0.3.0 sat in that state across two runs
+          # while this step cheerfully reported "no releasable commits", so the
+          # tag was never created and release-pypi.yml never ran.
+          #
+          # The two cases are indistinguishable from the action's outputs, so
+          # ask the repository instead: release-please labels its PR
+          # `autorelease: pending` when it opens it and swaps it to
+          # `autorelease: tagged` once the release exists. A MERGED PR still
+          # carrying `pending` is a release that stalled between those points.
+          stuck=$(gh pr list --state merged --label 'autorelease: pending' \
+                    --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>/dev/null || true)
+          if [ -n "$stuck" ]; then
+            echo "::error::release-please created no release, but a merged release PR is still pending:"
+            printf '%s\n' "$stuck" | sed 's/^/  /'
+            echo "::error::No tag was created, so release-pypi.yml will not run and nothing will publish. Read this job's log above for why the release could not be built — a component/branch mismatch is the usual cause. See docs/contributing/releasing.md."
+            exit 1
+          fi
+          echo "::notice::No releasable commits since the last tag (only hidden types: docs/test/style/ci/build/chore)."

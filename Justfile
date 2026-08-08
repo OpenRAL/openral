@@ -41,10 +41,13 @@ quickstart:
     @exec bash -c 'source install/setup.bash && exec .venv/bin/openral'
 
 # One-shot bootstrap for a fresh dev machine
+# The scripts live inside the openral-cli package (not scripts/) so that a
+# curl-bash `uv tool install openral-cli` — which never clones this repo — can
+# still run them via `openral install ros`. Same file, both entry points.
 bootstrap:
     @case "$(uname)" in \
-        Linux)  ./scripts/bootstrap_ubuntu.sh ;; \
-        Darwin) ./scripts/bootstrap_macos.sh ;; \
+        Linux)  ./python/cli/src/openral_cli/bootstrap/bootstrap_ubuntu.sh ;; \
+        Darwin) ./python/cli/src/openral_cli/bootstrap/bootstrap_macos.sh ;; \
         *) echo "Unsupported OS: $(uname)" >&2; exit 1 ;; \
     esac
     uv sync --all-packages
@@ -305,6 +308,15 @@ hal-twin-sweep:
 # ROS 2-gated integration tests (requires: source /opt/ros/jazzy/setup.bash)
 test-integration:
     PYTHONPATH="$(pwd)/packages/world_state:${PYTHONPATH}" uv run pytest tests/integration/ -v --tb=short
+
+# Real rclpy + a real DDS graph + the colcon overlay; no GPU needed. Requires
+#     source /opt/ros/jazzy/setup.bash && just ros2-build && source install/setup.bash
+# scripts/ros_live_tests.sh owns the target list, and the `docker-build`
+# workflow runs that same script inside `openral:x86` — so this recipe and CI
+# can never select a different set of tests. `-k <expr>` narrows the run.
+# Live-ROS suite (OPENRAL_TEST_ROS_LIVE=1) — see docs/contributing/development.md
+test-ros-live *args:
+    uv run bash scripts/ros_live_tests.sh -q {{args}}
 
 # Subset by keyword
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as
@@ -617,6 +629,29 @@ sim-act-libero *args: _strip-hf-libero-egg _ensure-libero-config
 #   just sim-audit libero_spatial robocasa_pnp
 sim-audit *args:
     uv run python tools/audit_sim_configs.py {{args}}
+
+# The load path is where deploy latency actually lives — imports,
+# from_pretrained, quantisation, to_device — and the phases are already
+# instrumented (`phase_timer`), but nothing surfaced them outside a live
+# deploy's logs. This renders them as a table with each phase's share, so a
+# regression is one command away instead of a bisect. Real weights, real
+# device; pass any in-tree rSkill:
+#
+#   just profile-load rskills/act-so101-pen
+#   just profile-load rskills/smolvla-libero --device cpu
+#
+# Measured on an RTX 4070 (act-so101-pen, warm cache): imports 4.6 s (54%),
+# snapshot 0.3 s, from_pretrained 0.7 s, to_device 0.0 s, 8.5 s end-to-end.
+#
+# HF_HUB_OFFLINE=1 additionally skips the per-file HEAD revalidation inside
+# lerobot/transformers that `_hf_download_cached_first` cannot wrap — worth
+# setting for a clean warm-cache number. Families whose adapter has no
+# `_<family>_phase` helper (xvla, diffusion) still report "no phase_timer
+# events captured"; the end-to-end total is valid regardless.
+#
+# Phase-by-phase breakdown of one rSkill's load, on the real GPU.
+profile-load rskill *args:
+    uv run python tools/profile_policy_load.py --rskill {{rskill}} {{args}}
 
 # Hardware-in-loop (requires connected robot + permissions)
 # HIL test driver. When no hardware is attached, the per-file module-level

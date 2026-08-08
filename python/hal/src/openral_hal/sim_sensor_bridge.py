@@ -45,14 +45,21 @@ def constant_scan_no_hit_ranges(*, n_beams: int, max_range_m: float) -> list[flo
     return [float(max_range_m)] * int(n_beams)
 
 
-def should_idle_step(now_ns: int, last_action_ns: int, idle_hold_ns: int) -> bool:
+def should_idle_step(
+    now_ns: int,
+    last_action_ns: int,
+    idle_hold_ns: int,
+    *,
+    step_while_active: bool = False,
+) -> bool:
     """Return True iff the sim-only idle stepper should advance the env now.
 
-    The idle stepper yields to active skills: it steps the env with a zero/HOLD
-    action ONLY when no real action has arrived within the idle-hold window. So
-    it returns True iff ``now_ns - last_action_ns >= idle_hold_ns`` — i.e. the
-    last real actuation is at least ``idle_hold_ns`` old (or there has been
-    none, ``last_action_ns == 0``).
+    Scene-attached environments yield to active skills: they step with a
+    zero/HOLD action only when no real action arrived within the idle-hold
+    window. Bare ``MujocoArmHAL`` opts into ``step_while_active`` because its
+    ``send_action`` advances only one physics tick; the wall-time stepper must
+    keep integrating the current control target or simulation time, camera
+    timers, and ``/clock`` collapse during a rollout.
 
     Pure (no rclpy / no I/O) so it is unit-testable in isolation. The
     single-threaded rclpy executor guarantees the idle timer and
@@ -65,6 +72,8 @@ def should_idle_step(now_ns: int, last_action_ns: int, idle_hold_ns: int) -> boo
             ``send_action`` (``SimAttachedHAL.last_action_ns``); ``0`` if none.
         idle_hold_ns: Quiet window in ns. A real action within this window of
             ``now_ns`` suppresses the idle tick.
+        step_while_active: Keep stepping despite recent actions. Used only by
+            bare MuJoCo arms whose action path does not advance wall time.
 
     Returns:
         ``True`` to idle-step now, ``False`` to yield to a recent action.
@@ -77,7 +86,7 @@ def should_idle_step(now_ns: int, last_action_ns: int, idle_hold_ns: int) -> boo
         ... )
         False
     """
-    return now_ns - last_action_ns >= idle_hold_ns
+    return step_while_active or now_ns - last_action_ns >= idle_hold_ns
 
 
 def _obs_key_for_sensor(sensor: Any) -> str:
@@ -718,10 +727,27 @@ class SimSensorBridge:
         if not callable(idle_step):
             return
         last_action_ns = int(getattr(self._hal, "last_action_ns", 0))
-        if not should_idle_step(time.monotonic_ns(), last_action_ns, self._idle_hold_ns):
+        step_while_active = bool(getattr(self._hal, "_step_while_active", False))
+        if not should_idle_step(
+            time.monotonic_ns(),
+            last_action_ns,
+            self._idle_hold_ns,
+            step_while_active=step_while_active,
+        ):
             return
         try:
-            idle_step()
+            # Hand the tick's WALL period to the HAL so it advances that much
+            # SIM time. The idle timer is deliberately on SYSTEM_TIME (see
+            # _start_idle_stepper), but every other timer on this node — the
+            # camera republisher, the camera-TF broadcast, the cinecam — runs on
+            # the node clock, which under `use_sim_time` is the sim clock this
+            # very callback advances. A single physics step per tick leaves sim
+            # time running at ~2% of wall, so those timers fire ~50x slower than
+            # their nominal rate and the world-state aggregator latches every
+            # camera STALE against its wall-clock arrival stamps. Bare MuJoCo
+            # arms also run this during active skills: send_action() advances
+            # one physics tick, not one wall-time slice.
+            idle_step(wall_dt_s=1.0 / max(self._camera_rate_hz, 1.0))
         except Exception as exc:  # reason: contain a per-tick crash-loop; warn once + disable
             self._node.get_logger().warning(
                 f"SimSensorBridge: idle stepper disabled after error: {exc}. "

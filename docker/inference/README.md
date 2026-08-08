@@ -120,6 +120,50 @@ as the opt-in `gstreamer` extra — it is import-safe without `gi` (the `gi`/`Gs
 imports are lazy) and is what OpenRAL Pro builds on. It is simply not installed
 in this image.
 
+## Build-time and runtime caches
+
+Two settings in `Dockerfile.x86` exist purely to keep cold starts sane, and
+both are easy to drop in a refactor without noticing:
+
+- **`ENV UV_COMPILE_BYTECODE=1`** — uv skips `.pyc` generation by default, so
+  without it the *first* import of the torch/lerobot/transformers tree inside a
+  fresh container byte-compiles the whole thing at runtime. Measured live on an
+  SO-101 deploy: the lazy SmolVLA import inside `runtime_node` crawled for 15+
+  minutes, GIL-starved to ~12% of a core by the two 30 fps camera threads
+  sharing its process. Compiling at build time costs a few minutes once.
+- **`ENV HF_HOME=/opt/openral/hf-cache`** — pins the Hugging Face cache to a
+  stable, mountable path instead of `$HOME/.cache/huggingface` in the
+  container's writable layer. **Naming it does not persist it.** Mount it:
+
+  ```bash
+  docker run --rm --gpus all \
+      -v ~/.cache/huggingface:/opt/openral/hf-cache \
+      openral:x86 deploy run --config scenes/deploy/so101_bench.yaml
+  ```
+
+  Without the mount every `--rm` run re-downloads the rSkill's weights —
+  gigabytes and minutes per launch (SmolVLA ~1.4 GB, Robometer-4B ~3.5 GB) —
+  and the cost is invisible in a `phase_timer` breakdown because it lands
+  inside `from_pretrained`.
+
+## Driving the container's ROS graph from the host
+
+The image sets `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`. A host shell with
+`RMW_IMPLEMENTATION` unset gets Fast-DDS on Jazzy, so host-side `ros2` tooling
+**cannot see the container's nodes even with `--network host`** — an
+`ros2 action send_goal` just hangs until its timeout against a running action
+server. Either dispatch from inside the container:
+
+```bash
+docker exec <name> bash -lc 'source /workspace/install/setup.bash && ros2 action send_goal …'
+```
+
+or match the middleware on the host:
+
+```bash
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+```
+
 ## CI
 
 `.github/workflows/docker-build.yml` builds this image **only when its inputs
@@ -128,11 +172,96 @@ change** (`docker/inference/**`, `pyproject.toml`, `uv.lock`, `packages/**`,
 `docker-smoke-x86-deploy` smoke (asserts `gi` absent, cv2 / feetech /
 onnxruntime / omdet present, `deploy run --dry-run` resolves) but does **not**
 push. On merge to `master` it builds and pushes `openral:x86` to GHCR. The image
-is ~16 GB, so the workflow frees runner disk before building.
+is ~25 GB, so the workflow frees runner disk before building.
+
+### Build caching
+
+The image is large and its code is baked in, not mounted, so a naive rebuild is
+~30 minutes. Four mechanisms keep an incremental PR build far below that. If you
+change the Dockerfile's layer order, keep them in mind — they are easy to defeat
+by accident.
+
+1. **Containerd image store, `docker` buildx driver.** The build writes straight
+   into the store dockerd reads from. Under the older `docker-container` driver,
+   `--load` had to serialize the finished 7.9 GB image to a tarball and replay it
+   into the daemon — 45% of total build time, paid on every run no matter how
+   good the cache was. The workflow asserts the snapshotter is active and fails
+   the job if it is not.
+
+2. **Registry-backed layer cache on GHCR.** `master` pushes write
+   `$IMAGE:buildcache` (`mode=max`, so the builder stage's layers are cached
+   too, not just the final stage); every run reads it.
+
+3. **Per-PR layer cache.** Same-repo PRs additionally read and write
+   `$IMAGE:buildcache-pr-<n>`, so the second commit on a branch reuses what the
+   first one built instead of starting again from the master cache. Fork PRs
+   have a read-only token and are detected and skipped. The ref is deleted when
+   the PR closes, by `docker-build-cache-cleanup.yml`.
+
+4. **Layer ordering that isolates the two expensive steps.** Two rules:
+   - **The dependency sync must not depend on Python source.** A `manifests`
+     stage prunes `python/` to the workspace members' `pyproject.toml` files, and
+     `uv sync --no-install-workspace` installs the 215-package third-party
+     closure against *that*. The real `python/` is copied afterwards and a second
+     sync adds the 14 local packages in ~2s. Copying `python/` before the sync —
+     the obvious-looking arrangement — makes every one-line source edit
+     re-download ~4.4 GiB of wheels. Note the BuildKit cache mount on
+     `/root/.cache/uv` does **not** save you: cache mounts are not exported by
+     the registry cache exporter, so on a fresh runner it is always cold.
+   - **`opentelemetry_cpp_vendor` gets its own layer.** It builds
+     opentelemetry-cpp from source and serially gates `openral_safety_kernel`,
+     together ~210s of the colcon step. It is copied and built before
+     `packages/` lands so that a `packages/` or `python/` diff cannot invalidate
+     it.
+
+To validate a change to the build driver or image store before it reaches
+`master`, run the workflow via **workflow_dispatch**: dispatch runs exercise the
+registry cache *export* path against a scratch `:buildcache-dispatch` ref that
+`master` never reads.
+
+### Do not move the buildcache to another repository
+
+`$IMAGE:buildcache` deliberately lives in **the same GHCR repository as the
+image** (`ghcr.io/openral/openral`). Splitting it out to something like
+`ghcr.io/openral/openral-cache:buildcache` looks tidier and would silently cost
+several minutes per `master` build.
+
+GHCR deduplicates blobs per repository. Because `--cache-to
+type=registry,mode=max` writes every layer into `ghcr.io/openral/openral`, by
+the time `Tag + push to GHCR` runs, all of the image's layers are already there.
+Measured on master run 31253732623, the push is **16 × `Layer already exists`
+and 1 × `Pushed`** — the single new blob is the attestation manifest, which the
+cache export does not carry — so the whole step takes **3.3s**. Before the cache
+and the image shared a repository's dedup domain, that same step took **6m27s**.
+
+Two consequences worth internalising:
+
+- **The upload cost did not vanish, it moved.** The master cache export is
+  ~426s, against the ~387s the push used to cost. The publish path is roughly a
+  wash on its own; the win comes from the tarball round-trip disappearing
+  (build + push together: 1705s → 1353s). Do not read the 3.3s push as free.
+- **A separate cache repo breaks the dedup**, and the push reverts to uploading
+  the full image. Nothing will fail — CI stays green — the publish step just
+  quietly gets minutes slower. There is no test that catches this.
+
+### Where the remaining time goes
+
+After the above, neither a warm nor a cold build is dominated by compiling
+anything. Measured:
+
+| | Warm PR build (264s) | Cold master build (1350s) |
+|---|---|---|
+| Actual compilation | ~0s (30/30 steps `CACHED`) | 322s (uv sync 113s, vendor 104s, 15 pkgs 105s) |
+| Export / unpack / cache export | ~250s unpacking + 138s blob pull | 810s (60%) |
+
+So the lever for further speedup is **image size**, or decoupling the smoke
+checks from a full local image materialization — not more caching and not
+colcon. A 25.2 GB image is materialized in full to run three short
+`docker run` checks.
 
 ## Image sizes
 
 | Image | Size |
 |---|---|
-| `openral:x86` (gstreamer-free) | ~16 GB |
+| `openral:x86` (gstreamer-free) | 25.2 GB |
 | `openral:x86-deepstream-latest` (built by openral-pro) | larger (adds the media stack) |

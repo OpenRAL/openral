@@ -82,7 +82,13 @@ joints:
     parent_link: "gripper_base"
     child_link: "gripper_finger"
     axis_xyz: [0.0, 0.0, 1.0]
-    position_limits: [0.0, 1.5708]
+    # NORMALISED jaw fraction — [0 = closed, 1 = open] — NOT the jaw's
+    # mechanical radian range; see the sibling note in
+    # `robots/so101_follower/robot.yaml` and issue #62. Matches the in-code
+    # `SO100_DESCRIPTION` (`openral_hal.so100_follower`), which already
+    # declared `(0.0, 1.0)`; this YAML had drifted because the
+    # manifest↔HAL-constant guard skips SO-100.
+    position_limits: [0.0, 1.0]
     velocity_limit: 4.5
     effort_limit: 1.5
     actuator_kind: "servo"

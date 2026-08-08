@@ -108,6 +108,11 @@ def _resolve_mjcf_path(desc: RobotDescription) -> str:
     return str(path)
 
 
+# Upper bound on how much sim time one idle tick may advance, in physics
+# steps. Guards the wall-time catch-up below: if the executor stalls (a long
+# render, a GC pause) the next tick must not fast-forward the world by seconds.
+_IDLE_STEP_CAP = 200
+
 log = structlog.get_logger(__name__)
 
 
@@ -160,6 +165,11 @@ class MujocoArmHAL(HALBase):
     Raises:
         ROSConfigError: If ``description.joints`` is empty.
     """
+
+    # ponytail: keep the existing wall-time stepper running instead of adding a
+    # second controller loop. send_action() advances only one physics tick, so
+    # yielding the stepper during an active skill starves /clock and cameras.
+    _step_while_active = True
 
     def __init__(
         self,
@@ -621,7 +631,11 @@ class MujocoArmHAL(HALBase):
             qpos_addr = self._joint_qpos_addr.get(name)
             if qpos_addr is None:
                 continue
-            self._data.qpos[qpos_addr] = float(value)
+            gripper = self._grippers_by_joint.get(name)
+            if gripper is None:
+                self._data.qpos[qpos_addr] = float(value)
+            else:
+                self._reset_gripper_qpos(gripper, float(value))
             qvel_addr = self._joint_qvel_addr.get(name)
             if qvel_addr is not None:
                 # Zero qvel too so the snap doesn't carry momentum.
@@ -629,7 +643,16 @@ class MujocoArmHAL(HALBase):
         mj.mj_forward(self._model, self._data)
         # Re-seed ctrl from qpos so position actuators hold the new pose
         # on the next ``mj_step``.
-        for name in self._joint_names:
+        for name, value in zip(self._joint_names, pose, strict=True):
+            gripper = self._grippers_by_joint.get(name)
+            if gripper is not None:
+                primary_idx = self._effective_actuator_index_for(gripper, name)
+                if primary_idx is not None:
+                    raw = self._gripper_command_to_raw(gripper, float(value))
+                    self._data.ctrl[primary_idx] = raw
+                    if gripper.mirror_actuator_index is not None:
+                        self._data.ctrl[gripper.mirror_actuator_index] = -raw
+                continue
             act_idx = self._actuator_index.get(name)
             qpos_addr = self._joint_qpos_addr.get(name)
             if act_idx is None or qpos_addr is None:
@@ -668,7 +691,7 @@ class MujocoArmHAL(HALBase):
         """
         return self._last_action_ns
 
-    def idle_step(self) -> bool:
+    def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the sim one HOLD tick so cameras + state stay live while idle.
 
         Gives a bare ``MujocoArmHAL`` the idle-cameras
@@ -684,6 +707,12 @@ class MujocoArmHAL(HALBase):
         drive an e-stopped robot. ``False`` also signals the bridge to leave the
         cached frame frozen.
 
+        Args:
+            wall_dt_s: Wall-clock seconds this tick represents. The sim is
+                advanced by that much sim time (capped at
+                ``_IDLE_STEP_CAP`` steps so a long stall cannot fast-forward
+                the world). ``None`` keeps the legacy single-step behaviour.
+
         Returns:
             ``True`` if the sim advanced, ``False`` if the HAL is not connected
             (e.g. after :meth:`estop`).
@@ -692,7 +721,24 @@ class MujocoArmHAL(HALBase):
             return False
         import mujoco as mj  # reason: optional sim-only dep
 
-        mj.mj_step(self._model, self._data)
+        # Advance a WALL-TIME slice, not a single physics step. One
+        # `mj_step` per idle tick makes sim time crawl at
+        # `timestep * tick_rate` — 0.002 s * 10 Hz = 2% of real time on this
+        # arm — and every OTHER timer in the HAL node runs on the NODE clock,
+        # which under `use_sim_time` IS that crawling sim clock. The camera,
+        # camera-TF and cinecam timers then fire 50x slower than their nominal
+        # rate (a 10 Hz camera timer every 5 s), the world-state aggregator
+        # stamps the frames with wall-clock arrival and latches every camera
+        # STALE, and the policy is fed seconds-old pixels. Stepping the tick's
+        # worth of sim time keeps the two clocks in step, which is what
+        # "keeps cameras live while idle" was supposed to mean.
+        steps = 1
+        if wall_dt_s is not None and wall_dt_s > 0:
+            timestep = float(self._model.opt.timestep)
+            if timestep > 0:
+                steps = max(1, min(_IDLE_STEP_CAP, round(wall_dt_s / timestep)))
+        for _ in range(steps):
+            mj.mj_step(self._model, self._data)
         self._last_state_time = time.monotonic()
         return True
 
@@ -761,12 +807,7 @@ class MujocoArmHAL(HALBase):
         for joint_name, gripper in self._grippers_by_joint.items():
             joint_idx = self._joint_names.index(joint_name)
             command = float(last_step[joint_idx])
-            if gripper.write_mode is GripperWriteMode.NORMALISED:
-                normalised = max(0.0, min(1.0, command))
-                low, high = gripper.ctrl_range
-                raw = low + normalised * (high - low)
-            else:  # PASSTHROUGH
-                raw = command
+            raw = self._gripper_command_to_raw(gripper, command)
             primary_idx = self._effective_actuator_index_for(gripper, joint_name)
             if primary_idx is None:
                 raise ROSConfigError(
@@ -777,6 +818,27 @@ class MujocoArmHAL(HALBase):
             self._data.ctrl[primary_idx] = raw
             if gripper.mirror_actuator_index is not None:
                 self._data.ctrl[gripper.mirror_actuator_index] = -raw
+
+    @staticmethod
+    def _gripper_command_to_raw(gripper: SimGripperDescription, command: float) -> float:
+        """Map the public gripper command to the actuator's native range."""
+        if gripper.write_mode is GripperWriteMode.PASSTHROUGH:
+            return command
+        low, high = gripper.ctrl_range
+        return low + max(0.0, min(1.0, command)) * (high - low)
+
+    def _reset_gripper_qpos(self, gripper: SimGripperDescription, value: float) -> None:
+        """Write a public gripper value into its native qpos representation."""
+        assert self._data is not None
+        if gripper.read_mode is GripperReadMode.AFFINE_LOW_HIGH:
+            self._data.qpos[gripper.qpos_addrs[0]] = self._gripper_command_to_raw(gripper, value)
+            return
+        if gripper.read_mode is GripperReadMode.PASSTHROUGH:
+            self._data.qpos[gripper.qpos_addrs[0]] = value
+            return
+        each = max(0.0, min(1.0, value)) * gripper.qpos_scale / len(gripper.qpos_addrs)
+        for addr in gripper.qpos_addrs:
+            self._data.qpos[addr] = each
 
     def _read_gripper_value(self, gripper: SimGripperDescription) -> float:
         """Report the gripper's public position according to ``gripper.read_mode``."""

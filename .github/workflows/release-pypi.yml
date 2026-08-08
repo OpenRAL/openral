@@ -24,15 +24,35 @@ name: release-pypi
 # repo + this workflow file. Pending publishers cover names that don't exist
 # yet and need no org approval (https://docs.pypi.org/trusted-publishers/):
 #   owner: OpenRAL · repo: openral · workflow: release-pypi.yml · env: (none)
-#   - TestPyPI (https://test.pypi.org): already registered.
-#   - PyPI (https://pypi.org): register a pending publisher per project under
-#     the individual account, then dispatch target=pypi (or push a v*.*.* tag).
-#     Projects transfer into the OpenRAL org later with no re-publish.
+#   - PyPI (https://pypi.org): WORKING. 0.1.0 and 0.2.0 are published for all
+#     14 packages; the v0.2.0 tag push (run 30795961650) exchanged its OIDC
+#     token successfully.
+#   - TestPyPI (https://test.pypi.org): WORKING since 2026-08-08. 0.1.0 and
+#     0.2.0 are published for all 14 packages. It was broken up to that point
+#     — the publisher was still bound to the pre-org-move owner, so every
+#     `target=testpypi` dispatch died at the token exchange with
+#     `invalid-publisher: valid token, but no corresponding publisher`
+#     (run 31258658584, plus three on 2026-07-09). Re-registering the 14
+#     projects against the claims above fixed it. If that symptom returns,
+#     this is the first thing to check.
 #
-# Every workspace package shares one lockstep version — bump all pyprojects
-# (root + python/*) together for a release. Versioning is SemVer: pick the
-# segment by content — fixes only → patch (0.2.1), features → minor (0.3.0),
-# breaking change / stable API → major (1.0.0). Not every release is a minor.
+# Trusted publishing matches on the *ref*, so a claim set is not portable
+# between triggers: a tag push presents `ref: refs/tags/vX.Y.Z` while a
+# workflow_dispatch off master presents `ref: refs/heads/master`. A publisher
+# registered without a ref restriction accepts both; one restricted to tags
+# rejects the dispatch. That difference is why the tag path can be green while
+# a dispatch is not.
+#
+# Every workspace package shares one lockstep version, and every `openral-*`
+# dependency pins it exactly — nothing here bumps it. `release-please.yml`
+# derives the SemVer segment from the Conventional Commits merged since the
+# last tag (fix → patch, feat → minor, breaking → minor while <1.0) and
+# rewrites all 15 pyprojects in its release PR. Merging that PR creates the
+# `v*.*.*` tag this workflow publishes from.
+#
+# Do not hand-edit a version to cut a release; see docs/contributing/releasing.md.
+# tests/unit/test_lockstep_versions.py fails the build if the versions, the
+# `openral-*==` pins, or the matrix below drift apart.
 
 on:
   workflow_dispatch:

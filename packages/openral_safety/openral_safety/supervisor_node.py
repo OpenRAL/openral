@@ -290,7 +290,6 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
                 self._chunks_dropped += 1
                 self._last_drop_reason = "estop_latched"
                 span.set_attribute(semconv.SAFETY_SEVERITY, "warn")
-                span.set_attribute(semconv.SAFETY_CLAMPED, False)
                 span.set_attribute("safety.drop_reason", "estop_latched")
                 self.get_logger().debug(
                     "dropping candidate_action while estop latched: "
@@ -301,7 +300,6 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             kind, reason = self._envelope_violation(msg)
             if kind is not None:
                 span.set_attribute(semconv.SAFETY_SEVERITY, "violation")
-                span.set_attribute(semconv.SAFETY_CLAMPED, False)
                 span.set_attribute("safety.drop_reason", kind)
                 span.set_attribute("safety.violation_reason", reason)
                 self._handle_violation(msg, kind=kind, reason=reason)
@@ -310,7 +308,6 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             # Pass through — publish the same payload on /openral/safe_action.
             # We forward the exact message (no field rewrites) so trace_id /
             # rskill_id stay attached for the F7 correlator and `openral replay`.
-            span.set_attribute(semconv.SAFETY_CLAMPED, False)
             assert self._safe_pub is not None  # invariant on active state
             self._safe_pub.publish(msg)
             self._chunks_passed += 1
@@ -528,7 +525,15 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         return (None, "")
 
     def _envelope_violation_gripper(self, *, flat: list[float]) -> tuple[str | None, str]:
-        """GRIPPER_*: clamp width to the ``[gripper_min, gripper_max]`` range.
+        """GRIPPER_*: reject a width outside ``[gripper_min, gripper_max]``.
+
+        Despite the historical wording, this does **not** clamp: it returns a
+        ``gripper_range`` violation, which the caller routes to
+        :meth:`_handle_violation` — drop the chunk and fire the e-stop. That
+        is the deny-by-default contract (CLAUDE.md §3); nothing in OpenRAL
+        silently corrects an out-of-range command into range, which is also
+        why ``safety.clamped`` is a literal ``False`` at every site and
+        ``openral.safety.clamps`` has nothing to count.
 
         The launch sources these parameters from the robot.yaml's
         gripper joint's ``position_limits`` (when present); ``-1.0``

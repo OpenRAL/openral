@@ -23,7 +23,7 @@ Architecture
                                     │                                             │
                                     │  ┌──────────────────────────────────────┐  │
                                     │  │  Background thread (daemon)          │  │
-                                    │  │  • _policy.select_action(batch)      │  │
+                                    │  │  • _policy.predict_action_chunk(...) │  │
                                     │  │  • result → _next_chunk (threading.  │  │
                                     │  │             Event + storage)         │  │
                                     │  └──────────────────────────────────────┘  │
@@ -39,8 +39,8 @@ Timing contract (RTX 4070 reference host)
 -----------------------------------------
 - Full chunk inference: ~313 ms.
 - Queue pop: ~3 ms.
-- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 5),
-  giving 5 x 3 ms = 15 ms window — well within the 313 ms inference time.
+- Pre-fetch trigger at ``prefetch_at`` steps before end of chunk (default 20),
+  giving ~667 ms at 30 Hz to cover the measured 313-600 ms inference.
 - Result: the background thread always finishes before the queue drains,
   keeping per-step latency in the cached-pop regime for all but the very
   first inference of a session.
@@ -165,7 +165,7 @@ class SmolVLAAdapter(rSkillBase):
         device: str = "cuda:0",
         n_dof: int = 6,
         n_cameras: int | None = None,
-        prefetch_at: int = 5,
+        prefetch_at: int = 20,
         name: str = "smolvla",
         version: str = "0.1.0",
         embodiment_tags: list[str] | None = None,
@@ -353,9 +353,9 @@ class SmolVLAAdapter(rSkillBase):
         if self._executor is None:
             raise ROSRuntimeError("SmolVLAAdapter._step_impl: executor not started")
 
-        raw = self._obs_fn(world_state)
-        batch = self._preprocess(raw)
-        action_tensor = self._executor.select_action(batch)
+        action_tensor = self._executor.select_action(
+            lambda: self._preprocess(self._obs_fn(world_state))
+        )
 
         # action_tensor: (1, n_dof) float32 on device
         joints = action_tensor.squeeze(0).cpu().tolist()

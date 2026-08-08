@@ -24,8 +24,7 @@ namespace openral_safety_kernel::otel {
 
 /// Default OTLP/HTTP endpoint when no env var overrides it. Matches the
 /// dashboard's bind port (python/observability/.../dashboard/server.py:29).
-inline constexpr const char* kDefaultOtlpHttpEndpoint =
-    "http://localhost:4318";
+inline constexpr const char* kDefaultOtlpHttpEndpoint = "http://localhost:4318";
 
 /// Service name resource attribute attached to every span.
 inline constexpr const char* kServiceName = "openral_safety_kernel";
@@ -42,8 +41,7 @@ inline constexpr const char* kSafetyKernelValue = "cpp";
 /// Event name fired on a violation span so the dashboard's
 /// ``_COUNTED_EVENTS`` set ticks. Mirrors
 /// ``openral_observability.semconv.EVENT_SAFETY_VIOLATION``.
-inline constexpr const char* kSafetyViolationEventName =
-    "openral.event.safety_violation";
+inline constexpr const char* kSafetyViolationEventName = "openral.event.safety_violation";
 
 /// Install a global ``TracerProvider`` with an OTLP/HTTP exporter +
 /// ``BatchSpanProcessor``. Returns ``true`` if the provider was
@@ -81,7 +79,6 @@ opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> tracer();
 /// (python/observability/.../propagation.py) — same propagator, same
 /// header names — so spans created here become children of the
 /// producer-side ``rskill.tick`` from the runner.
-opentelemetry::context::Context extract_parent_context(
-    const std::string& traceparent);
+opentelemetry::context::Context extract_parent_context(const std::string& traceparent);
 
 }  // namespace openral_safety_kernel::otel

@@ -123,3 +123,38 @@ def test_act_adapter_uses_materialize_processor_dir_in_modern_branch() -> None:
     assert "materialize_processor_dir(manifest)" in src, (
         "_build_act's modern branch should call materialize_processor_dir(manifest)."
     )
+
+
+def test_act_close_releases_the_nvmm_executor() -> None:
+    """The TRT device executor must be closed on skill swap, not left to GC.
+
+    Its engine + activation workspace live outside torch's caching
+    allocator, so release_torch_modules cannot reclaim them — an adapter
+    close() that skips the executor leaves the VRAM resident and the next
+    skill's load OOMs (the exact 'swap did not give the card back' class the
+    SmolVLA adapter already guards via its _nvmm_encoder teardown). The fake
+    stands in for the OpenRAL Pro executor at the package boundary (§1.11).
+    """
+    from openral_core import VLASpec
+    from openral_sim.policies.act import _ACTAdapter
+
+    closed: list[bool] = []
+
+    class _FakeExecutor:
+        def close(self) -> None:
+            closed.append(True)
+
+    adapter = _ACTAdapter(
+        spec=VLASpec(id="act", weights_uri="lerobot/act_aloha_sim_transfer_cube_human"),
+        device="cpu",
+        _policy=object(),
+        _preprocessor=None,
+        _postprocessor=None,
+        _torch=None,
+        _nvmm_executor=_FakeExecutor(),
+    )
+    adapter.close()
+
+    assert closed == [True], "close() must close the NVMM executor exactly once"
+    assert adapter._nvmm_executor is None
+    assert adapter._policy is None

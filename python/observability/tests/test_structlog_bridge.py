@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 import structlog
-from openral_observability.logging import trace_context_processor
+from openral_observability.logging import resolve_log_level, trace_context_processor
 from openral_observability.tracing import rskill_span
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -48,3 +51,43 @@ def test_processor_no_op_outside_span() -> None:
 
     assert "trace_id" not in captured[0]
     assert "span_id" not in captured[0]
+
+
+# ── OPENRAL_LOG_LEVEL floor ───────────────────────────────────────────────────
+
+
+def test_log_level_defaults_to_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset → INFO.
+
+    The bridge used to hard-pin DEBUG, so every per-tick debug record in the
+    deploy graph was JSON-rendered and shipped as an OTLP log record.
+    """
+    monkeypatch.delenv("OPENRAL_LOG_LEVEL", raising=False)
+    assert resolve_log_level() == logging.INFO
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("DEBUG", logging.DEBUG),
+        ("debug", logging.DEBUG),
+        ("  WARNING  ", logging.WARNING),
+        ("ERROR", logging.ERROR),
+        ("10", logging.DEBUG),
+    ],
+)
+def test_log_level_parses_names_and_integers(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+) -> None:
+    """Level names are case-insensitive and whitespace-tolerant; integers pass through."""
+    monkeypatch.setenv("OPENRAL_LOG_LEVEL", raw)
+    assert resolve_log_level() == expected
+
+
+@pytest.mark.parametrize("raw", ["", "LOUD", "not-a-level"])
+def test_unparseable_log_level_falls_back_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """A typo must not take down a deploy at bring-up."""
+    monkeypatch.setenv("OPENRAL_LOG_LEVEL", raw)
+    assert resolve_log_level() == logging.INFO

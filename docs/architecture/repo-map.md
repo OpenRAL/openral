@@ -50,7 +50,10 @@ openral/                      ← THIS monorepo
 ├─ tests/{unit,integration,sim,hil}/  ← all four trees ✓
 ├─ docs/                          ← mkdocs-material; decision log lives in the private OpenRAL/management repo ✓
 ├─ tools/                         ← schema_export.py, skill_publisher.py ✓
-├─ scripts/                       ← bootstrap_*.sh, install.sh ✓
+├─ scripts/                       ← install.sh (Tier-0 curl-bash) + repair/dev helpers ✓
+│  Note: bootstrap_ubuntu.sh / bootstrap_macos.sh live in
+│  python/cli/src/openral_cli/bootstrap/ so they ship in the openral-cli
+│  wheel — `openral install ros` must work without a clone.
 ├─ Justfile                       ← canonical task runner ✓
 ├─ pyproject.toml + uv.lock       ← ✓
 └─ .github/workflows/             ← CI ✓

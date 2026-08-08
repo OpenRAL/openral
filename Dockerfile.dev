@@ -85,6 +85,12 @@ ENV PATH="/root/.local/bin:${PATH}"
 # just
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
 
+# The uv cache lives on a BuildKit cache mount and the target venv lives in the
+# image layer — two different filesystems, so uv's default hardlink install mode
+# always fails and falls back with a warning. Mirrors
+# `docker/inference/Dockerfile.x86`.
+ENV UV_LINK_MODE=copy
+
 WORKDIR /workspace
 
 # Copy the whole Python workspace before syncing. This used to copy only
@@ -102,6 +108,14 @@ WORKDIR /workspace
 # over /workspace at run time, which shadows this .venv entirely, so the sync
 # exists to prove the lockfile resolves and to populate the build host's uv
 # cache — not to ship a venv.
+#
+# `docker/inference/Dockerfile.x86` DOES need that cache win (it is the CI
+# image), and it now gets it a different way: a `manifests` stage prunes
+# `python/` to the members' real `pyproject.toml` files and `uv sync
+# --no-install-workspace` installs the third-party closure against those. That
+# is the supported version of what the hand-written stub trees were reaching
+# for. It is deliberately NOT replicated here — this image's venv is shadowed
+# at run time anyway, so the extra stage would buy nothing.
 COPY pyproject.toml uv.lock* ./
 COPY python/ python/
 

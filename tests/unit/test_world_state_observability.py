@@ -175,6 +175,65 @@ def test_first_stale_tick_emits_staleness_latched_event(
     assert persisted_events == []
 
 
+def test_never_received_component_does_not_latch(
+    memory_exporter: InMemorySpanExporter,
+) -> None:
+    """A component with no data yet is stale, but has not *latched*.
+
+    `world_state` subscribes before the HAL publishes its first `joint_state`,
+    so on a real SO-101 this fired a WARN at T+0.00 with the HAL activating
+    0.25 s later — on every single bringup, in the one severity band an
+    operator cannot filter away. "Never received" is not "went stale"; the
+    component is still surfaced through `diag` and the components_stale gauge.
+    """
+    clock = _FakeClock()
+    agg = WorldStateAggregator(
+        _make_description(["cam0"]),
+        clock_fn=clock,
+        staleness_limit_s=0.05,
+    )
+
+    # Tick 1: nothing has ever arrived — the bringup window.
+    snap = agg.snapshot()
+
+    spans = memory_exporter.get_finished_spans()
+    latched = [e for e in spans[0].events if e.name == semconv.EVENT_STALENESS_LATCHED]
+    assert latched == [], f"never-received components latched: {latched}"
+    # Still reported as stale everywhere an operator would look.
+    assert snap.diagnostics["joint_state"] == "stale"
+    assert snap.diagnostics["cam0"] == "stale"
+    assert spans[0].attributes is not None
+    assert spans[0].attributes[semconv.WORLD_STATE_COMPONENTS_STALE] == 2
+
+
+def test_component_latches_after_it_has_been_fresh(
+    memory_exporter: InMemorySpanExporter,
+) -> None:
+    """The suppression is scoped to never-received; a real drop still latches."""
+    clock = _FakeClock()
+    agg = WorldStateAggregator(
+        _make_description(["cam0"]),
+        clock_fn=clock,
+        staleness_limit_s=0.05,
+    )
+    agg.snapshot()  # bringup: silent
+
+    agg.update_joint_state(JointState(name=["j0"], position=[0.0], stamp_ns=clock.now))
+    agg.update_image("cam0", "/cam0/image_raw", clock.now)
+    agg.snapshot()  # fresh
+
+    clock.advance(100.0)
+    agg.snapshot()  # both drop out — this one must latch
+
+    spans = memory_exporter.get_finished_spans()
+    latched = {
+        e.attributes[semconv.WORLD_STATE_COMPONENT]
+        for e in spans[2].events
+        if e.name == semconv.EVENT_STALENESS_LATCHED
+    }
+    assert latched == {"joint_state", "cam0"}
+
+
 def test_error_latched_event_fires_once(memory_exporter: InMemorySpanExporter) -> None:
     """``error_latched`` fires when ``set_error`` is called, not on every snapshot."""
     clock = _FakeClock()

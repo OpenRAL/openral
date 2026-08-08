@@ -37,14 +37,24 @@
 # stats-magnitude heuristic. Same posture as the two sibling SO-101 SmolVLA
 # skills (rskill-smolvla-so101-pen-bf16 / -pick_place_pen-bf16).
 #
-# PROVENANCE — weights stay UPSTREAM at makermods/... (Apache-2.0). Verified on
-# this host that `SmolVLAPolicy.from_pretrained` loads the repo ROOT directly
-# (config.json + model.safetensors + the two processor JSONs and their
-# normalizer .safetensors all live at the root; the 20 `checkpoints/<step>/`
-# training snapshots are NOT touched because every OpenRAL fetch path is
-# per-file `hf_hub_download`, never `snapshot_download`, on the weights repo).
-# No config sanitize is needed: the config carries no stray keys that lerobot
-# 0.6.0's draccus `SmolVLAConfig` rejects.
+# PROVENANCE — weights are the OpenRAL MIRROR
+# `OpenRAL/rskill-smolvla-so101-eraser_place-bf16`, byte-identical to upstream
+# `makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54`
+# (Apache-2.0): model.safetensors sha256
+# 58d656e494a3143c00b19261a14f2b312656751cedd98253ab8a5f3fbcc73609 matches the
+# upstream LFS digest, verified before upload. Mirroring is the catalog standard
+# (rskills/README.md, "One rSkill <-> one HF repo") and it is not ceremony — the
+# sibling rskill-smolvla-so101-pen-bf16 points at a third-party repo that went
+# GATED after packaging, and now needs HF_HUB_OFFLINE=1 plus a warm cache to
+# deploy at all. `weights_uri` is pinned to the mirror's commit SHA for
+# reproducible loads (CLAUDE.md §1.8).
+#
+# The mirror carries ONLY the 7 root inference files, not the 20
+# `checkpoints/<step>/` training snapshots (~21 GB with optimizer state) the
+# upstream repo also holds. `SmolVLAPolicy.from_pretrained` loads the repo root
+# directly, and every OpenRAL fetch path here is per-file `hf_hub_download`,
+# never `snapshot_download`. No config sanitize is needed: the config carries no
+# stray keys that lerobot 0.6.0's draccus `SmolVLAConfig` rejects.
 
 # ── Identity ───────────────────────────────────────────────────────────────
 schema_version: "0.1"
@@ -130,12 +140,12 @@ min_vram_gb:
 # Pair this VLA with its task-progress reward monitor so a reward-enabled
 # deploy auto-resolves the Robometer NF4 manifest.
 reward_rskill_name: "OpenRAL/rskill-robometer_4b-any-general-nf4"
-weights_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54"
+weights_uri: "hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0684b28fb6470f25d333aa65e31c8b781b"
 
 # ── Preprocessing (all knobs needed to interpret IO) ───────────────────────
 processors:
-  preprocessor_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54/policy_preprocessor.json"
-  postprocessor_uri: "hf://makermods/smolvla_makermods_eraser_place_unblurry_real_2026-07-31_17-35-54/policy_postprocessor.json"
+  preprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0684b28fb6470f25d333aa65e31c8b781b/policy_preprocessor.json"
+  postprocessor_uri: "hf://OpenRAL/rskill-smolvla-so101-eraser_place-bf16@7a9a8a0684b28fb6470f25d333aa65e31c8b781b/policy_postprocessor.json"
 # Real SO-101 teleop recorded upright — no rotation. Aliases are keyed by the
 # VLA SLOT names (camera1/camera2): by the time the adapter sees the batch the
 # runner has already re-keyed the manifest sensor names via vla_feature_key
@@ -150,6 +160,24 @@ image_preprocessing:
     camera2: "wrist"
 state_contract:
   dim: 6
+policy_extras:
+  # LeRobot SO-101 datasets store the gripper motor on [0, 100], while the
+  # OpenRAL HAL contract is normalized [0, 1]. Arm channels still use degrees.
+  gripper_scale: 100.0
+  # Real-Time Chunking (lerobot RTC): the prefetched chunk is guided inside the
+  # flow-matching denoiser to blend with the executing chunk's unconsumed tail.
+  # chunk_prefetch is declared explicitly rather than inherited: only the deploy
+  # runner (rskill_runner_node.py) defaults it to true, while `openral sim run`
+  # and `openral benchmark run` build the extras straight from this file and
+  # would hit "policy_extras.rtc requires chunk_prefetch: true".
+  # The default chunk_prefetch_at (20) already leads the execution_horizon below
+  # (10) — no override needed. PyTorch + TRT runtimes.
+  chunk_prefetch: true
+  rtc:
+    enabled: true
+    execution_horizon: 10
+    max_guidance_weight: 10.0
+    prefix_attention_schedule: ones
 
 # ── Execution semantics ────────────────────────────────────────────────────
 # SmolVLA chunk_size=50 (checkpoint config); full-chunk synchronous replay.

@@ -25,11 +25,13 @@ import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     apply_chunk_replay,
     call_make_processors_cached_first,
     materialize_processor_dir,
     maybe_compile_chunk_forward,
+    release_torch_modules,
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
@@ -178,11 +180,32 @@ class _ACTAdapter:
             ) / self._state_std
 
     def close(self) -> None:
-        if self.device.startswith("cuda"):
-            import contextlib
+        """Drop the loaded modules, then reclaim their VRAM.
 
-            with contextlib.suppress(Exception):
-                self._torch.cuda.empty_cache()
+        Order matters: ``empty_cache()`` only returns already-free blocks,
+        so flushing while this adapter still holds the policy frees nothing.
+        See :func:`openral_rskill._vla_core.release_torch_modules`.
+
+        The TRT/NVMM device executor is released first and explicitly — its
+        engine + activation workspace live outside torch's caching allocator,
+        so ``release_torch_modules`` cannot reclaim them and a skill swap
+        would otherwise leave them resident until GC (mirrors the SmolVLA
+        adapter's ``_nvmm_encoder`` teardown).
+        """
+        executor = self._nvmm_executor
+        self._nvmm_executor = None
+        if executor is not None:
+            closer = getattr(executor, "close", None)
+            if callable(closer):  # the Pro executor's contract; duck-typed here
+                closer()
+        release_torch_modules(
+            self,
+            "_policy",
+            "_preprocessor",
+            "_postprocessor",
+            device=self.device,
+            torch=self._torch,
+        )
 
     def _build_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
         torch = self._torch
@@ -201,7 +224,7 @@ class _ACTAdapter:
             preview = to_input_frame(img, flip_180=self._flip_images_180)
             if preview is not None:
                 preview_frames.append(preview)
-            t = torch.from_numpy(np.asarray(img)).float().div(255.0).permute(2, 0, 1)
+            t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
             if self._flip_images_180:
                 t = torch.flip(t, dims=[1, 2])
             t = t.unsqueeze(0).to(self.device)
@@ -225,6 +248,17 @@ class _ACTAdapter:
 _log = structlog.get_logger(__name__)
 
 
+def _act_phase(name: str, **fields: Any) -> Any:
+    """Shortcut for ``phase_timer(name, prefix="act", log=_log)``.
+
+    Mirrors the smolvla / pi05 adapters so a ACT load emits the same
+    ``act_<name>_{start,heartbeat,done}`` shape. Without it
+    ``tools/profile_policy_load.py`` had nothing to render for this family
+    and reported "no phase_timer events captured".
+    """
+    return phase_timer(name, prefix="act", log=_log, **fields)
+
+
 def _maybe_build_act_nvmm(
     policy: Any, repo_id: str, device: str, manifest: Any
 ) -> Any:  # reason: lerobot policy + ActNvmmExecutor are untyped
@@ -235,7 +269,10 @@ def _maybe_build_act_nvmm(
     ``policy_extras.act_device_onnx_uri``) + a CUDA device with ``tensorrt``. The
     device engine — image/state normalize + action unnormalize baked in
     (``tools/export_act_onnx.py --preprocess device``) — is built/cached from the
-    ONNX and handed to :class:`~openral_runner.backends.gstreamer.act_nvmm.ActNvmmExecutor`.
+    ONNX and handed to ``openral_pro_trt.act_nvmm.ActNvmmExecutor``. That class
+    lives in the private OpenRAL Pro TRT package, NOT in this repo — the path
+    named here used to point at `openral_runner.backends.gstreamer.act_nvmm`,
+    which does not exist in the open tree.
     Missing deps / no device ONNX → ``None`` so the host path runs; a genuine
     build failure propagates (§1.4, no silent fallback).
     """
@@ -250,31 +287,32 @@ def _maybe_build_act_nvmm(
     if not device_onnx or not device.startswith("cuda"):
         return None
     try:
+        from importlib import import_module
+
         import tensorrt  # noqa: F401  # reason: probe for the device path
-        from openral_pro_trt.act_nvmm import ActNvmmExecutor  # type: ignore[import-not-found]
-        from openral_pro_trt.act_trt import ensure_act_onnx  # type: ignore[import-not-found]
-        from openral_pro_trt.runtime_tensorrt import (  # type: ignore[import-not-found]
-            TensorRTRuntime,
-        )
-        from openral_pro_trt.smolvla_trt import _device_index  # type: ignore[import-not-found]
+
+        act_nvmm = import_module("openral_pro_trt.act_nvmm")
+        act_trt = import_module("openral_pro_trt.act_trt")
+        trt_runtime = import_module("openral_pro_trt.runtime_tensorrt")
+        smolvla_trt = import_module("openral_pro_trt.smolvla_trt")
     except ImportError:
         _log.info("act_nvmm.unavailable", reason="tensorrt/deps absent — host path")
         return None
 
-    onnx_path = ensure_act_onnx(repo_id, onnx_uri=device_onnx)
-    engine_bytes = TensorRTRuntime(
+    onnx_path = act_trt.ensure_act_onnx(repo_id, onnx_uri=device_onnx)
+    engine_bytes = trt_runtime.TensorRTRuntime(
         device=device, rskill_id=f"{repo_id}#act-device"
     ).serialized_engine(onnx_path)
     cfg = policy.config
     image_input_names = [k.replace("observation.images.", "img_") for k in cfg.image_features]
     _, h, w = next(iter(cfg.image_features.values())).shape
-    executor = ActNvmmExecutor(
+    executor = act_nvmm.ActNvmmExecutor(
         engine_bytes,
         image_input_names=image_input_names,
         state_input_name="state",
         height=h,
         width=w,
-        device_index=_device_index(device),
+        device_index=smolvla_trt._device_index(device),
     )
     _log.info(
         "act_nvmm.attached",
@@ -292,15 +330,16 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     spec = env_cfg.vla
     device = resolve_device(spec)
 
-    try:
-        import torch
-        from lerobot.policies.act.modeling_act import ACTPolicy
-        from openral_rskill import _lerobot_compat  # noqa: F401
-    except ImportError as exc:  # pragma: no cover - opt-in
-        raise ROSConfigError(
-            "ACT adapter requires torch + lerobot; install with: "
-            "just sync --all-packages --group sim"
-        ) from exc
+    with _act_phase("imports"):
+        try:
+            import torch
+            from lerobot.policies.act.modeling_act import ACTPolicy
+            from openral_rskill import _lerobot_compat  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - opt-in
+            raise ROSConfigError(
+                "ACT adapter requires torch + lerobot; install with: "
+                "just sync --all-packages --group sim"
+            ) from exc
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="ACT")
     manifest = _load_manifest_for_spec(spec)
@@ -310,11 +349,15 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     # ``n_state_dim`` on ``JunnDooChoi/act_libero_spatial_finetuned_kaf_64``).
     from huggingface_hub import snapshot_download
 
-    pretrained_path = snapshot_download(
-        repo_id=repo_id, revision=revision, ignore_patterns=["*.md"]
-    )
+    with _act_phase("snapshot", repo=repo_id):
+        pretrained_path = snapshot_download(
+            repo_id=repo_id, revision=revision, ignore_patterns=["*.md"]
+        )
     _sanitize_act_config_json(pretrained_path)
-    policy = ACTPolicy.from_pretrained(pretrained_path).to(device)
+    with _act_phase("from_pretrained", repo=repo_id):
+        policy = ACTPolicy.from_pretrained(pretrained_path)
+    with _act_phase("to_device", device=device, gpu_mb=True):
+        policy = policy.to(device)
     policy.eval()
 
     # ACT predicts ``chunk_size=100`` actions per heavy forward. The paper

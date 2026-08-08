@@ -595,8 +595,20 @@ def test_goal_accept_served_while_execute_runs() -> None:
         )
 
         # Both goals must still terminate (goal-2 executes after goal-1's
-        # rollout releases the serialization lock).
+        # rollout releases the serialization lock). The constant skill never
+        # ends on its own, so BOTH goals exit via their execution budget —
+        # which is a typed ABORT (deadline_exceeded), not a quiet success:
+        # CLAUDE.md §3 deadline fallback is mandatory, and the runner stopped
+        # folding a lapsed budget into success=True on this branch. What this
+        # test guards is the accept latency above and that termination is
+        # orderly + labelled, not the verdict.
         result1 = _await_result(handle1, executor)
         result2 = _await_result(send2.result(), executor)
-        assert result1.result.success, result1.result.failure_reason
-        assert result2.result.success, result2.result.failure_reason
+        assert not result1.result.success
+        assert result1.result.failure_reason.startswith("deadline_exceeded"), (
+            result1.result.failure_reason
+        )
+        assert not result2.result.success
+        assert result2.result.failure_reason.startswith("deadline_exceeded"), (
+            result2.result.failure_reason
+        )

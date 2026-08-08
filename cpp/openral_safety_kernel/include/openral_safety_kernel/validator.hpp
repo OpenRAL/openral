@@ -5,12 +5,12 @@
 
 #pragma once
 
+#include "openral_safety_kernel/envelope.hpp"
+#include "openral_safety_kernel/result.hpp"
+
 #include <cstdint>
 #include <cstring>
 #include <string_view>
-
-#include "openral_safety_kernel/envelope.hpp"
-#include "openral_safety_kernel/result.hpp"
 
 namespace openral_safety_kernel {
 
@@ -20,13 +20,13 @@ namespace openral_safety_kernel {
 /// constants so the lifecycle node can publish the violation without
 /// translation. CLAUDE.md §1.3 — schemas are the contract.
 enum class ViolationKind : std::uint8_t {
-  kForce = 1,        ///< openral_msgs::FailureTrigger::KIND_FORCE
-  kWorkspace = 2,    ///< openral_msgs::FailureTrigger::KIND_WORKSPACE
-  kController = 5,   ///< openral_msgs::FailureTrigger::KIND_CONTROLLER
+  kForce = 1,       ///< openral_msgs::FailureTrigger::KIND_FORCE
+  kWorkspace = 2,   ///< openral_msgs::FailureTrigger::KIND_WORKSPACE
+  kController = 5,  ///< openral_msgs::FailureTrigger::KIND_CONTROLLER
   // Geometric self/world collision. The value must exist so the
   // enum stays 1:1 with the IDL; the geometric check that *emits* it lands
   // in a follow-up PR (this kernel does not yet produce kCollision).
-  kCollision = 10,   ///< openral_msgs::FailureTrigger::KIND_COLLISION
+  kCollision = 10,  ///< openral_msgs::FailureTrigger::KIND_COLLISION
 };
 
 /// Sub-classification carried inside ControllerEvidence.state.

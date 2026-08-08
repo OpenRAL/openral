@@ -14,13 +14,14 @@ three guard inputs set directly on the node (``__init__`` reads the reward /
 gpu-total params at construction, before a test can set them — the param→attr
 plumbing is covered live by the VRAM-pair-refusal ARMED log).
 
-Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite::
+Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like the rest of the live reasoner suite
+(``scripts/ros_live_tests.sh``). CI runs it inside ``openral:x86`` (the
+``docker-build`` workflow) — this file is the falsification test for issue #46:
+a structurally dead ``_refuse_unfittable_vla`` turns it red. Locally::
 
-    just ros2-build
+    source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest \\
-        tests/integration/test_reasoner_vram_pair_refusal.py -v \\
-        -p no:launch_testing -p no:launch_ros
+    just test-ros-live            # whole suite; `-k <expr>` narrows it
 """
 
 from __future__ import annotations
@@ -126,7 +127,23 @@ def test_execute_rskill_refused_when_vla_reward_pair_exceeds_vram() -> None:
         # params, so set the attributes the guard reads directly):
         reasoner._reward_manifest = reward_manifest
         reasoner._gpu_total_vram_gb = 4.0  # < 4.8 GB pair → must refuse
-        reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest  # type: ignore[method-assign]  # reason: inject fixture manifest at the guard's seam
+        # Prime the manifest cache the way `_seed_palette` does, rather than
+        # replacing `_manifest_for_rskill` itself.
+        #
+        # This line used to read:
+        #     reasoner._manifest_for_rskill = lambda _rskill_id: vla_manifest
+        # which stubbed out the very method that was broken in production, so
+        # the test could only ever exercise the refusal *arithmetic*. It could
+        # not see that the real lookup returned `None` — it consulted the
+        # install registry (`~/.local/share/openral/rskills.json`), which a
+        # search-path-seeded palette never populates — and that `None` makes
+        # `_refuse_unfittable_vla` return `False` and let the dispatch through.
+        # A structurally dead gate passed this test for as long as it existed;
+        # a real deploy caught it on 2026-08-04 when molmoact2 (4.0 + 5.5 GB on
+        # an 8 GB card) was dispatched anyway and reported as a 20 s timeout.
+        # Injecting at the cache keeps the production lookup in the assertion.
+        reasoner._manifests_by_id[_VLA_ID] = vla_manifest
+        assert reasoner._manifest_for_rskill(_VLA_ID) is vla_manifest
 
         # Real ExecuteRskill server — records if a goal ever reaches execute.
         server_node = rclpy.create_node("openral_test_vla_server")

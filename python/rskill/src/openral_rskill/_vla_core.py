@@ -24,19 +24,28 @@ camera handling, and post-processor pipelines stay where they are.
 
 from __future__ import annotations
 
+import contextlib
+import gc
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from time import perf_counter_ns
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from openral_observability import InferenceKind as _InferenceKind
 from openral_observability import inference_span, semconv
 
 if TYPE_CHECKING:
     from openral_core import ImagePreprocessing, RSkillManifest, VLASpec
 
-InferenceKind = Literal["foreground", "prefetch", "single"]
+    from openral_rskill.executor import ChunkedExecutor
+
+# Re-exported from the span helper that owns the label (design §9 closed set);
+# kept in `__all__` here for the adapters that import it from _vla_core.
+InferenceKind = _InferenceKind
 
 
 def resolve_device(spec: VLASpec) -> str:
@@ -485,6 +494,9 @@ def run_inference(
     kind: InferenceKind = "single",
     chunk_size: int | None = None,
     engine: str | None = None,
+    call: Callable[..., Any] | None = None,
+    call_kwargs: dict[str, Any] | None = None,
+    synchronize: bool = False,
 ) -> Any:
     """Call ``policy.select_action(batch)`` inside an OTel span and ``no_grad``.
 
@@ -507,30 +519,322 @@ def run_inference(
             ``"onnx"`` / ``"jit"`` / …). Defaults to ``"torch"`` since
             every shipped adapter dispatches through PyTorch today; TRT
             and ONNX adapters pass their own value.
+        call: Custom inference callable invoked as ``call(batch)`` INSTEAD of
+            ``policy.select_action(batch)``. The seam stays the single
+            instrumented entry point for chunk producers with autocast,
+            decoding, or non-lerobot APIs. ``policy`` may be ``None`` in this
+            mode.
+        call_kwargs: Extra keyword arguments splatted into ``call`` — the RTC
+            executor threads ``inference_delay`` / ``prev_chunk_left_over``
+            through here. ``None`` (the default) calls ``call(batch)`` exactly
+            as before, so non-RTC producers keep their 1-arg signature. When
+            ``inference_delay`` is present it is recorded on the span as
+            ``inference.rtc_delay``.
+        synchronize: Wait for CUDA completion before returning. Background
+            chunk prefetch enables this so its ready event means the tensor is
+            actually usable, not merely queued on a CUDA stream — otherwise the
+            foreground can be handed a chunk whose kernels have not landed. It
+            also keeps the measured span duration honest: without it the timer
+            stops at kernel-launch, not at compute.
 
     Returns:
-        The raw action tensor returned by ``policy.select_action``.
+        The raw tensor returned by the invoked callable / policy method.
     """
     import torch
 
     # ``policy.device`` is the lerobot convention; fall back to None so the
     # span helper omits the attribute on adapters that don't track it.
     device = getattr(policy, "device", None)
-    extras: dict[str, Any] = {"engine": engine if engine is not None else "torch"}
+    extras: dict[str, Any] = {"engine": resolve_inference_engine(policy, engine)}
     if chunk_size is not None:
         extras["chunk_size"] = chunk_size
     if device is not None:
         extras["device"] = str(device)
+    if call_kwargs and "inference_delay" in call_kwargs:
+        extras["rtc_delay"] = int(call_kwargs["inference_delay"] or 0)
     with (
         inference_span(chunk_index=chunk_index, kind=kind, **extras) as span,
+        # NOT ``torch.inference_mode()``: lerobot's RTC guidance calls
+        # ``autograd.grad`` inside ``RTCProcessor.denoise_step``, which raises on
+        # inference-mode tensors. ``no_grad`` still suppresses graph building for
+        # every non-RTC adapter. Pinned by
+        # tests/sim/test_smolvla_rtc.py::test_inference_mode_would_break_the_guidance.
         torch.no_grad(),
     ):
         started_ns = perf_counter_ns()
         try:
-            return policy.select_action(batch)
+            if call is not None:
+                result = call(batch, **call_kwargs) if call_kwargs else call(batch)
+            else:
+                result = policy.select_action(batch)
+            if synchronize and bool(getattr(result, "is_cuda", False)):
+                torch.cuda.synchronize(getattr(result, "device", None))
+            return result
         finally:
             elapsed_ms = (perf_counter_ns() - started_ns) / 1_000_000.0
             span.set_attribute(semconv.INFERENCE_DURATION_MS, elapsed_ms)
+
+
+def resolve_inference_engine(owner: Any, declared: str | None = None) -> str:
+    """Return the active inference backend, preferring runtime attachments.
+
+    Optional policy plugins replace callables after the manifest is loaded, so
+    the manifest runtime may no longer describe the code actually executing.
+    Plugins can expose ``_openral_inference_engine`` explicitly; the released
+    OpenRAL Pro TRT plugin predates that marker, so its entry-point module is
+    also recognized.
+    """
+    candidates = [owner]
+    adapter = getattr(owner, "_adapter", None)
+    if adapter is not None:
+        candidates.append(adapter)
+    for candidate in tuple(candidates):
+        policy = getattr(candidate, "_policy", None)
+        if policy is not None:
+            candidates.append(policy)
+    for candidate in tuple(candidates):
+        model = getattr(candidate, "model", None)
+        if model is not None:
+            candidates.extend((model, getattr(model, "sample_actions", None)))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        marker = getattr(candidate, "_openral_inference_engine", None)
+        if isinstance(marker, str) and marker:
+            return _normalize_inference_engine(marker)
+        module = str(getattr(candidate, "__module__", type(candidate).__module__))
+        if module == "openral_pro_trt" or module.startswith("openral_pro_trt."):
+            return "trt"
+
+    return _normalize_inference_engine(declared or "torch")
+
+
+def _normalize_inference_engine(engine: str) -> str:
+    """Normalize manifest/runtime backend names to telemetry labels."""
+    return {"pytorch": "torch", "tensorrt": "trt"}.get(engine.lower(), engine.lower())
+
+
+_RTC_ADAPTERS = frozenset({"smolvla", "pi05"})
+"""Adapters whose lerobot policies are flow-matching and carry ``rtc_config``.
+
+molmoact2/pi0_fast also support RTC upstream but are out of Phase A scope —
+extend this set (and the adapter's chunk_fn kwargs pass-through) to add one.
+"""
+
+_RTC_KEYS = frozenset(
+    {"enabled", "execution_horizon", "max_guidance_weight", "prefix_attention_schedule", "debug"}
+)
+
+
+def _parse_rtc_config(spec_extra: dict[str, Any], *, adapter_name: str) -> Any:
+    """Parse ``policy_extras.rtc`` into a lerobot :class:`RTCConfig` (or ``None``).
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label; RTC is refused outside ``_RTC_ADAPTERS``.
+
+    Returns:
+        A ``lerobot.policies.rtc.RTCConfig``, or ``None`` when no ``rtc`` block.
+
+    Raises:
+        ROSConfigError: Non-mapping block, unknown key, unknown schedule,
+            non-boolean ``enabled``/``debug``, non-numeric or non-positive
+            ``max_guidance_weight``, non-positive ``execution_horizon``, or a
+            non-flow-matching adapter.
+    """
+    raw = spec_extra.get("rtc")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.rtc must be a mapping")
+    if adapter_name not in _RTC_ADAPTERS:
+        raise ROSConfigError(
+            f"{adapter_name}: RTC needs a flow-matching policy; supported adapters: "
+            f"{sorted(_RTC_ADAPTERS)}"
+        )
+    unknown = set(raw) - _RTC_KEYS
+    if unknown:
+        raise ROSConfigError(f"{adapter_name}: unknown policy_extras.rtc keys {sorted(unknown)}")
+
+    from lerobot.configs import RTCAttentionSchedule  # deferred: lerobot is a heavy optional dep
+    from lerobot.policies.rtc import RTCConfig  # deferred: lerobot is a heavy optional dep
+
+    schedule_raw = raw.get("prefix_attention_schedule", "exp")
+    try:
+        schedule = RTCAttentionSchedule[str(schedule_raw).upper()]
+    except KeyError as exc:
+        raise ROSConfigError(
+            f"{adapter_name}: unknown rtc.prefix_attention_schedule {schedule_raw!r} "
+            f"(expected one of {[s.name.lower() for s in RTCAttentionSchedule]})"
+        ) from exc
+    horizon_raw = raw.get("execution_horizon", 10)
+    if isinstance(horizon_raw, bool) or not isinstance(horizon_raw, int) or horizon_raw < 1:
+        raise ROSConfigError(f"{adapter_name}: rtc.execution_horizon must be a positive integer")
+    # Flags are checked, never coerced: `bool("false")` is True, so a quoted
+    # YAML boolean would silently arm RTC (or its debug tensors) on a manifest
+    # whose author meant the opposite.
+    for flag in ("enabled", "debug"):
+        if flag in raw and not isinstance(raw[flag], bool):
+            raise ROSConfigError(f"{adapter_name}: rtc.{flag} must be a boolean")
+    weight_raw = raw.get("max_guidance_weight", 10.0)
+    if isinstance(weight_raw, bool) or not isinstance(weight_raw, (int, float)):
+        raise ROSConfigError(f"{adapter_name}: rtc.max_guidance_weight must be a number")
+    try:
+        return RTCConfig(
+            enabled=bool(raw.get("enabled", True)),
+            execution_horizon=horizon_raw,
+            max_guidance_weight=float(weight_raw),
+            prefix_attention_schedule=schedule,
+            debug=bool(raw.get("debug", False)),
+        )
+    except ValueError as exc:  # RTCConfig.__post_init__ validation
+        raise ROSConfigError(f"{adapter_name}: invalid policy_extras.rtc: {exc}") from exc
+
+
+def rtc_enabled_in_extra(spec_extra: dict[str, Any], *, adapter_name: str) -> bool:
+    """Whether ``policy_extras`` carries an *enabled* ``rtc`` block.
+
+    For adapter factories that must decide something before the executor exists —
+    smolvla skips ``maybe_compile_chunk_forward`` on this, since RTC and
+    ``torch.compile`` rewrite the same flow-matching forward. Keyed on the parsed
+    ``enabled`` flag rather than the block's presence, so ``rtc: {enabled: false}``
+    still gets compiled.
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict (manifest ``policy_extras``).
+        adapter_name: Adapter label, for the error messages.
+
+    Returns:
+        True only for a present, well-formed, enabled ``rtc`` block.
+
+    Raises:
+        ROSConfigError: The ``rtc`` block is malformed — a bad manifest fails here
+            rather than surviving to the later parse in
+            :func:`build_chunk_executor`; the error is identical either way.
+    """
+    cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    return cfg is not None and bool(cfg.enabled)
+
+
+def build_chunk_executor(
+    spec_extra: dict[str, Any],
+    *,
+    policy: Any = None,
+    chunk_fn: Callable[[Any], Any] | None = None,
+    chunk_size: int | None = None,
+    adapter_name: str = "policy",
+) -> ChunkedExecutor | None:
+    """Build + start a :class:`ChunkedExecutor` for a chunked adapter.
+
+    Pop ticks come from the executor-owned buffer, so no observation batch is
+    built and no policy call runs. ``chunk_prefetch`` enables background
+    inference; ``chunk_prefetch_at`` tunes its lead in actions (default 20).
+
+    NOT for policies whose ``select_action`` consumes the observation on
+    every call (Diffusion Policy keeps ``n_obs_steps`` of observation
+    history) — those cannot use a chunk buffer at all and must keep the
+    plain per-tick path.
+
+    A ``policy_extras.rtc`` block (see :func:`_parse_rtc_config`) additionally
+    installs the policy's lerobot ``RTCProcessor`` — ``config.rtc_config`` is
+    set and ``init_rtc_processor()`` called *before* the executor is built —
+    and hands the same ``RTCConfig`` to the executor so it serves actions from
+    an ``ActionQueue``. RTC needs a real overlap between chunks, so it refuses
+    single-step policies and ``chunk_prefetch: false``.
+
+    Args:
+        spec_extra: The ``VLASpec.extra`` dict.
+        policy: lerobot-style policy (default chunk producer + reset target).
+        chunk_fn: Custom chunk producer for adapters whose forward is not a
+            bare ``predict_action_chunk`` — see :class:`ChunkedExecutor`.
+        chunk_size: Actions consumed per inference; defaults to
+            ``policy.config.n_action_steps``.
+        adapter_name: Label for the enable log line.
+
+    Returns:
+        A started executor. Returns ``None`` for single-step lerobot policies;
+        custom producers still get a synchronous one-action buffer so their
+        output contract is checked.
+
+    Raises:
+        ROSConfigError: Non-positive chunk size, malformed ``chunk_prefetch`` /
+            ``chunk_prefetch_at``, an invalid ``rtc`` block, or an ``rtc`` block
+            enabled on a policy that cannot run it (chunk size 1, no
+            pre-fetch, no ``init_rtc_processor``, bitsandbytes-quantized).
+    """
+    from openral_rskill.executor import ChunkedExecutor  # deferred: avoids import cycle
+
+    n = int(
+        chunk_size
+        if chunk_size is not None
+        else getattr(getattr(policy, "config", None), "n_action_steps", 1) or 1
+    )
+    if n < 1:
+        raise ROSConfigError(f"{adapter_name}: chunk size must be positive, got {n}")
+    rtc_cfg = _parse_rtc_config(spec_extra, adapter_name=adapter_name)
+    rtc_on = rtc_cfg is not None and bool(rtc_cfg.enabled)
+    if n == 1:
+        # Never let an enabled rtc block fall through the single-step return below:
+        # RTC blends a *previous chunk's* tail, which one-action inference never has.
+        if rtc_on:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunked execution, but this "
+                "policy emits a single action per inference (chunk size 1)"
+            )
+        if chunk_fn is None:
+            return None
+    prefetch = spec_extra.get("chunk_prefetch", False)
+    if not isinstance(prefetch, bool):
+        raise ROSConfigError(f"{adapter_name}: policy_extras.chunk_prefetch must be a boolean")
+    prefetch_at = 0
+    if prefetch and n > 1:
+        raw_prefetch_at = spec_extra.get("chunk_prefetch_at", 20)
+        if isinstance(raw_prefetch_at, bool) or not isinstance(raw_prefetch_at, int):
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be an integer"
+            )
+        if raw_prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.chunk_prefetch_at must be positive"
+            )
+        prefetch_at = min(raw_prefetch_at, n - 1)
+    if rtc_on:
+        if prefetch_at < 1:
+            raise ROSConfigError(
+                f"{adapter_name}: policy_extras.rtc requires chunk_prefetch: true — RTC "
+                "blends the prefetched chunk with the executing one"
+            )
+        if policy is None or not hasattr(policy, "init_rtc_processor"):
+            raise ROSConfigError(
+                f"{adapter_name}: this policy does not expose init_rtc_processor; "
+                "RTC needs a lerobot flow-matching policy"
+            )
+        if _has_bnb_quantized_modules(policy):
+            raise ROSConfigError(
+                f"{adapter_name}: RTC guidance backpropagates through the denoiser each "
+                "step; bitsandbytes-quantized weights (nf4/int8) are not supported"
+            )
+        policy.config.rtc_config = rtc_cfg
+        policy.init_rtc_processor()
+    executor = ChunkedExecutor(
+        policy,
+        chunk_fn=chunk_fn,
+        chunk_size=n,
+        prefetch_at=prefetch_at,
+        rtc_config=rtc_cfg,
+    )
+    executor.start()
+    log = structlog.get_logger("openral_rskill._vla_core")
+    log.info(
+        "vla.chunk_executor_enabled",
+        adapter=adapter_name,
+        n_action_steps=n,
+        prefetch=prefetch,
+        prefetch_at=prefetch_at,
+        rtc=rtc_on,
+    )
+    return executor
 
 
 def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:
@@ -886,6 +1190,7 @@ __all__ = [
     "materialize_processor_dir",
     "maybe_compile_chunk_forward",
     "parse_hf_file_uri",
+    "release_torch_modules",
     "resolve_camera_keys",
     "resolve_device",
     "resolve_image_preprocessing",
@@ -894,4 +1199,300 @@ __all__ = [
     "resolve_state_dim",
     "run_inference",
     "to_numpy_action",
+    "warm_up_lerobot_policy",
 ]
+
+
+def rtc_enabled(policy: Any) -> bool:
+    """Return True when *policy* carries an enabled lerobot ``RTCConfig``.
+
+    RTC-enabled policies reject ``select_action`` outright, so callers that
+    warm or probe a policy must route through ``predict_action_chunk``.
+    """
+    cfg = getattr(getattr(policy, "config", None), "rtc_config", None)
+    return bool(cfg is not None and getattr(cfg, "enabled", False))
+
+
+def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = None) -> bool:
+    """Run one dummy forward so the first *real* tick doesn't blow its deadline.
+
+    The first inference on a CUDA policy pays cuDNN autotune, kernel JIT and
+    lazy-module materialisation. Measured on an RTX 4070 with the ACT
+    so101-pen checkpoint (resnet18 + transformer, two 480x640 cameras)::
+
+        call 1   330.4 ms      <- 10x the 33.3 ms budget at 30 Hz
+        call 2+   14.9 ms
+
+    Charged to tick 1 that is a guaranteed deadline miss, and under
+    ``DeadlineOverrunPolicy.DROP`` the robot's first commanded action is
+    discarded. Paying it during ``activate()`` instead costs the same
+    wall-clock but lands where an operator is already waiting.
+
+    Shapes come from the policy's own ``config``
+    (``image_features[k].shape``, ``input_features["observation.state"]``),
+    so the warm-up exercises the exact kernels the real ticks will — a
+    guessed resolution would autotune the wrong ones and waste the pass.
+
+    Best-effort: a policy this cannot introspect returns ``False`` unchanged.
+    Anything else — a preprocessor that rejects the dummy batch, a forward
+    that raises — PROPAGATES. A warm-up must never be why a skill fails to
+    activate, so every caller wraps this; ``rskill_runner_node.on_warmup``
+    catches and downgrades to a ``rskill_runner.warmup_failed`` warning.
+    Read that log: a silently skipped warm-up means tick 1 pays the cold
+    start (524 ms measured vs a 400 ms budget on the SO-101 eraser skill).
+
+    Args:
+        adapter: The policy adapter. Must expose ``_policy`` holding a
+            lerobot policy (all six in-tree lerobot families do); anything
+            else returns ``False`` unchanged.
+        prompt: Task string for language-conditioned families.
+        torch: The caller's torch module; imported on demand when omitted.
+
+    Returns:
+        ``True`` when a dummy forward actually ran, ``False`` when skipped.
+    """
+    policy = getattr(adapter, "_policy", None)
+    config = getattr(policy, "config", None)
+    if policy is None or config is None:
+        return False
+    image_features = getattr(config, "image_features", None)
+    input_features = getattr(config, "input_features", None)
+    if not image_features or not input_features:
+        return False
+
+    if torch is None:
+        import torch as torch_mod
+
+        torch = torch_mod
+
+    device = str(getattr(adapter, "device", "") or "cpu")
+    state_feature = input_features.get("observation.state")
+    if state_feature is None:
+        return False
+    # SmolVLA casts images to a non-default dtype; warming in the wrong one
+    # autotunes kernels the real path will not use.
+    image_dtype = getattr(adapter, "_image_dtype", None) or torch.float32
+
+    batch: dict[str, Any] = {
+        "observation.state": torch.zeros(
+            1, int(state_feature.shape[0]), dtype=torch.float32, device=device
+        ),
+        "task": [prompt],
+    }
+    for key, feature in image_features.items():
+        channels, height, width = (int(v) for v in feature.shape)
+        batch[key] = torch.zeros(1, channels, height, width, dtype=image_dtype, device=device)
+
+    # Run the batch through the adapter's own preprocessor first, exactly as
+    # `step()` does. Skipping it warms the wrong thing — or nothing at all:
+    # SmolVLA's `select_action` reads `observation.language.tokens`, which the
+    # preprocessor produces by tokenising `task`, so a raw batch raises
+    # KeyError and the warm-up is silently lost. Found on a live deploy sim;
+    # the guard downgraded it to a warning, which is exactly why it went
+    # unnoticed until the log was read.
+    preprocessor = getattr(adapter, "_preprocessor", None)
+    if callable(preprocessor):
+        batch = preprocessor(batch)
+
+    with contextlib.suppress(AttributeError, TypeError):
+        policy.reset()
+    # RTC-enabled policies hard-assert against `select_action` (lerobot:
+    # "RTC is not supported for select_action, use it with
+    # predict_action_chunk") — the executor only ever calls the chunk
+    # entry point, so warm the same one it will use. Without this the
+    # warm-up raises, the caller downgrades it to a warning, and tick 1
+    # pays the full cold-start (524 ms measured on the SO-101 eraser
+    # checkpoint against a 400 ms budget). Found on a live deploy run.
+    warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
+    with torch.no_grad():
+        warm_call(batch)
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    return True
+
+
+def release_torch_modules(owner: object, *attrs: str, device: str = "", torch: Any = None) -> None:
+    """Drop references to loaded torch modules, then reclaim their VRAM.
+
+    **Order is the whole point.** ``torch.cuda.empty_cache()`` returns
+    *already-free* cached blocks to the driver; it cannot free memory the
+    allocator still considers live. So calling it while the adapter still
+    holds the policy frees exactly nothing. Measured on an RTX 4070 with a
+    768 MiB module resident::
+
+        after load                       768.2 MiB allocated
+        empty_cache() alone              768.2 MiB allocated   <- unchanged
+        drop the reference, then flush     0.0 MiB allocated   <- reclaimed
+
+    Every VLA adapter's ``close()`` used to do the second thing, which is
+    why an rSkill swap did not actually give the card back and a second
+    skill OOM'd on an 8 GB machine even though each fits alone.
+
+    ``gc.collect()`` is not optional here either: a policy is typically part
+    of a reference cycle (module ↔ parameters ↔ hooks), so dropping the last
+    named reference does not necessarily run its finaliser on the spot.
+
+    Best-effort by contract — teardown must always reach the code behind it,
+    so a missing attribute or a torch that will not import is swallowed.
+
+    Args:
+        owner: The adapter holding the modules.
+        *attrs: Attribute names to clear (e.g. ``"_policy"``, ``"_processor"``).
+        device: The adapter's device string. The cache flush is skipped
+            unless it names CUDA; dropping the references still happens.
+        torch: The caller's already-imported torch module. Adapters pass
+            their own ``self._torch`` handle — the same one they use
+            everywhere else — rather than have this helper re-import it.
+
+    Example:
+        >>> class _Adapter:
+        ...     def __init__(self) -> None:
+        ...         self._policy = object()
+        >>> a = _Adapter()
+        >>> release_torch_modules(a, "_policy", device="cpu")
+        >>> a._policy is None
+        True
+    """
+    for attr in attrs:
+        with contextlib.suppress(AttributeError):
+            setattr(owner, attr, None)
+    with contextlib.suppress(Exception):
+        gc.collect()
+        if device.startswith("cuda"):
+            if torch is None:
+                import torch as torch_mod
+
+                torch = torch_mod
+            torch.cuda.empty_cache()
+
+
+@contextmanager
+def suppress_hf_weight_init() -> Iterator[None]:
+    """Skip HF's random weight init while a checkpoint is being loaded.
+
+    ``transformers`` fills every parameter with its per-module init
+    distribution at construction time, then ``from_pretrained`` immediately
+    overwrites all of it with the stored tensors — the init is pure waste. HF
+    knows this and skips it internally, but only on its own
+    ``from_pretrained`` path. lerobot's SmolVLA builds the backbone by calling
+    the model class *directly*
+    (``SmolVLMForConditionalGeneration(config=...)`` in
+    ``smolvlm_with_expert.py``, taken whenever the checkpoint sets
+    ``load_vlm_weights=False`` — which every SmolVLA finetune does), so it pays
+    the full init. Worse, it then truncates the text stack to
+    ``num_vlm_layers`` and throws half those freshly-initialised layers away.
+
+    Measured on the SO-101 eraser-place checkpoint (SmolVLM2-500M backbone,
+    507 M params built, 16 of 32 layers kept):
+
+    ==========================================  ========
+    construction                                  wall
+    ==========================================  ========
+    baseline (allocate + init)                   8.45 s
+    with this context (allocate only)            2.38 s
+    meta device (allocate nothing)               0.03 s
+    ==========================================  ========
+
+    i.e. ~6 s of the ~15 s cold load is init math for values nothing reads.
+
+    The remaining time is allocation. Reclaiming it needs a meta-device build
+    plus an assign-mode state-dict load — a deeper change into lerobot's
+    construction path, deliberately not attempted here. **Measured ceiling on
+    an RTX 4070 host: ~1.6 s** (508 M params in transformer-shaped blocks —
+    1.79 s allocated on CPU vs 0.21 s under ``accelerate.init_empty_weights``),
+    so the win is smaller than the 2.4 s this note used to imply. Against a
+    SmolVLA load that is ~10 s in-graph that is 15-20%, bought by taking
+    ownership of construction code lerobot owns and re-validating it on every
+    lerobot bump. π0.5 does take that path (``pi05.py``) because there the same
+    change is worth 157 s → 14 s on a 3.4 B model; at 500 M it is not.
+
+    Safety: only sound when the checkpoint supplies **every** parameter —
+    otherwise a param that would have been randomly initialised is left as
+    whatever ``malloc`` returned. Callers must therefore validate the loaded
+    model; :func:`assert_all_parameters_finite` is the guard used by the
+    SmolVLA adapter.
+
+    Process-global for the duration (it patches the ``PreTrainedModel``
+    class), so it must not wrap a block that loads models on several threads
+    at once. The skill runner serialises loads behind its resident-skill lock,
+    which is the only in-process caller.
+
+    Yields:
+        Nothing; the caller's construction runs with init suppressed.
+
+    Example:
+        >>> from openral_rskill._vla_core import suppress_hf_weight_init
+        >>> with suppress_hf_weight_init():
+        ...     pass  # SmolVLAPolicy.from_pretrained(...) goes here
+    """
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except ImportError:  # transformers is an opt-in extra
+        yield
+        return
+
+    original = PreTrainedModel._init_weights  # reason: documented monkeypatch
+
+    def _skip(self: Any, module: Any) -> None:  # reason: matches HF signature
+        return
+
+    PreTrainedModel._init_weights = _skip  # type: ignore[method-assign]  # reason: restored in finally
+    try:
+        yield
+    finally:
+        PreTrainedModel._init_weights = original  # type: ignore[method-assign]  # reason: restore
+
+
+def assert_all_parameters_finite(
+    policy: Any, *, repo_id: str
+) -> None:  # reason: torch.nn.Module without importing torch here
+    """Raise if any parameter is NaN/Inf — the guard for suppressed init.
+
+    Uninitialised memory read as float is overwhelmingly NaN or a wild
+    magnitude, so this catches a checkpoint that failed to cover the graph
+    while :func:`suppress_hf_weight_init` was active. Without the check a
+    partially-loaded policy would silently emit garbage actions; the safety
+    kernel would clamp them, but the robot would still move wrongly.
+
+    Freshly-mapped pages are the other uninitialised state: all ZEROS, which
+    are finite and would sail through the isfinite check. A trained weight
+    *matrix* (ndim >= 2) is never exactly all-zero, so those are rejected
+    too; 1-D parameters (biases, norms) are exempt — zero-init biases are
+    legitimate and common.
+
+    Args:
+        policy: The loaded ``torch.nn.Module``.
+        repo_id: Checkpoint id, for the error message.
+
+    Raises:
+        ROSConfigError: If any floating-point parameter is non-finite, or a
+            floating-point weight matrix is entirely zero.
+    """
+    import torch  # reason: torch is an opt-in extra
+
+    # 1-D parameters (biases, norms) are legitimately zero-init; only
+    # matrices/convs (>= this many dims) are held to the all-zero check.
+    matrix_min_dims = 2
+    bad: list[str] = []
+    zeroed: list[str] = []
+    for name, tensor in policy.named_parameters():
+        if not tensor.is_floating_point():
+            continue
+        if not torch.isfinite(tensor).all():
+            bad.append(name)
+        elif tensor.dim() >= matrix_min_dims and tensor.numel() > 0 and not tensor.count_nonzero():
+            zeroed.append(name)
+    if bad:
+        raise ROSConfigError(
+            f"{repo_id!r}: {len(bad)} parameter tensor(s) are NaN/Inf after load "
+            f"(first: {bad[0]!r}). The checkpoint does not cover the whole graph, "
+            "so weight-init suppression left them uninitialised."
+        )
+    if zeroed:
+        raise ROSConfigError(
+            f"{repo_id!r}: {len(zeroed)} weight matrix(es) are entirely zero after "
+            f"load (first: {zeroed[0]!r}). A trained checkpoint never ships an "
+            "all-zero weight matrix — a non-strict load most likely skipped the "
+            "key (renamed after a dependency bump?) and weight-init suppression "
+            "left the tensor on fresh zero pages."
+        )

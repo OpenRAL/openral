@@ -96,3 +96,96 @@ def test_successful_configure_passes_through_unchanged(capfd: pytest.CaptureFixt
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+# ── bringup span (deploy.bringup) ────────────────────────────────────────────
+
+
+def test_transition_emits_a_bringup_span_with_node_and_transition() -> None:
+    """The decorator times every transition, not just failures.
+
+    Nothing measured bringup before this: the "HAL ``on_configure`` takes
+    ~6 s, or ~27 s on a cold robocasa kitchen" figures that justify the
+    300 s lifecycle-autostart timeouts lived only in launch-file comments,
+    so they could neither be verified nor detected when they regressed.
+    Instrumenting the shared decorator covers every node that already uses
+    it without touching a single call site.
+    """
+    import rclpy
+    from openral_observability import log_lifecycle_errors, semconv
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace.set_tracer_provider(provider)
+
+    class _TimedNode(LifecycleNode):
+        @log_lifecycle_errors
+        def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+            return TransitionCallbackReturn.SUCCESS
+
+    rclpy.init()
+    node: _TimedNode | None = None
+    try:
+        node = _TimedNode("openral_lifecycle_bringup_span_test")
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+
+        spans = [s for s in exporter.get_finished_spans() if s.name == semconv.SPAN_DEPLOY_BRINGUP]
+        assert spans, "the transition must leave a deploy.bringup span"
+        attrs = dict(spans[-1].attributes or {})
+        assert attrs[semconv.BRINGUP_TRANSITION] == "on_configure"
+        assert attrs[semconv.BRINGUP_NODE] == "openral_lifecycle_bringup_span_test"
+        assert attrs[semconv.BRINGUP_RESULT] == "SUCCESS"
+        assert spans[-1].end_time is not None and spans[-1].start_time is not None
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+        exporter.clear()
+
+
+def test_a_failed_transition_marks_the_bringup_span_error() -> None:
+    """A clean FAILURE return is still a failed bringup and must show red."""
+    import rclpy
+    from openral_observability import log_lifecycle_errors, semconv
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.trace import StatusCode
+    from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace.set_tracer_provider(provider)
+
+    class _FailingNode(LifecycleNode):
+        @log_lifecycle_errors
+        def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
+            return TransitionCallbackReturn.FAILURE
+
+    rclpy.init()
+    node: _FailingNode | None = None
+    try:
+        node = _FailingNode("openral_lifecycle_bringup_fail_test")
+        node.trigger_configure()
+
+        spans = [s for s in exporter.get_finished_spans() if s.name == semconv.SPAN_DEPLOY_BRINGUP]
+        assert spans
+        assert spans[-1].status.status_code == StatusCode.ERROR
+        assert dict(spans[-1].attributes or {})[semconv.BRINGUP_RESULT] == "FAILURE"
+    finally:
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+        exporter.clear()

@@ -284,7 +284,7 @@ class DetectorRunner:
         """
         import ctypes  # noqa: PLC0415  # reason: only the NVMM path needs ctypes
 
-        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found]  # noqa: PLC0415
+        from openral_pro_trt.nvbufsurface import (  # type: ignore[import-not-found, import-untyped, unused-ignore]  # noqa: PLC0415
             wrap_buffer,
         )
 

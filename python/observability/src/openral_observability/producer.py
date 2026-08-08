@@ -20,7 +20,13 @@ import io
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
+from opentelemetry import trace
+
 from openral_observability import semconv
+
+#: Channel count identifying an RGB/BGR frame — the only layout the
+#: display-flip in :func:`emit_sensor_frame_span` knows how to rotate.
+_RGB_CHANNELS = 3
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -65,14 +71,28 @@ def modality_for_encoding(encoding: object) -> str:
 # stay readable in Jaeger and the dashboard ring stays bounded.
 _MAX_JOINTS = 64
 _MAX_EE_FRAMES = 8
-# Thumbnail target — capped at VGA so the dashboard shows native-resolution
-# frames (the largest rskill camera contract is 640x480; PIL.thumbnail only
-# ever shrinks, so this never upscales). Emitted at a throttled rate
-# (DeployRunner private 25 Hz cadence), not faster than tick rate — so q90 stays
-# cheap over OTLP even at 2-3 cameras on localhost.
-_THUMB_MAX_WIDTH = 640
-_THUMB_MAX_HEIGHT = 480
-_THUMB_JPEG_QUALITY = 90
+# Thumbnail target. This is a DASHBOARD CARD, not a policy input — no VLA
+# ever reads it (policies get frames in-process from the aggregator), so it
+# is sized for the UI and nothing else.
+#
+# Previously 640x480 @ q90, justified by "emitted at a throttled rate ...
+# not faster than tick rate". That assumption did not hold: WorldState's
+# `_on_image` encodes on EVERY camera callback with no throttle, so on the
+# SO-101 bench this ran at 60 frames/s (2 cameras x 30 Hz) — and because
+# `PIL.thumbnail` only ever SHRINKS, a 640x480 target was a no-op resize on
+# a 640x480 camera. Every frame went out at full resolution, q90, then
+# base64 (+33%). Measured on a representative frame:
+#
+#   640x480 q90 -> 99.0 KiB JPEG -> 132.0 KiB base64 -> 8.11 MB/s at 60/s
+#   320x240 q60 ->  3.2 KiB JPEG ->   4.2 KiB base64 -> 0.26 MB/s at 60/s
+#
+# i.e. ~31x less OTLP traffic, plus the PIL encode itself gets far cheaper —
+# and that encode runs in the deploy process, under the GIL, competing with
+# model loads and inference. q60 matches what this module's own docstrings
+# already claimed ("~60").
+_THUMB_MAX_WIDTH = 320
+_THUMB_MAX_HEIGHT = 240
+_THUMB_JPEG_QUALITY = 60
 
 
 def _r3(values: Iterable[float]) -> list[float]:
@@ -199,12 +219,15 @@ def record_sensor_frame_attrs(
 ) -> None:
     """Attach sensor-frame attributes to a ``sensors.read_latest`` span.
 
-    Pass ``thumbnail_bytes`` at the throttled dashboard rate
-    (DeployRunner's private 25 Hz per-camera cadence); OTLP
-    attributes are a preview channel, not a 30 fps video transport. When
-    set, the value is base64-encoded inline; downstream consumers
-    (including :mod:`openral_observability.dashboard`) decode it for
-    display.
+    ``thumbnail_bytes`` rides along as an inline base64 attribute — a preview
+    channel for the dashboard's camera tiles, not a lossless video transport.
+    Callers range from DeployRunner's throttled per-camera cadence up to the
+    deploy sensor pump's full reader rate (~30 Hz per camera; measured
+    2.42 ms/frame at 320x240 q60 with Pillow dropping the GIL) — keep new
+    callers within that envelope, since every thumbnail also transits the
+    OTLP exporter. When set, the value is base64-encoded inline; downstream
+    consumers (including :mod:`openral_observability.dashboard`) decode it
+    for display.
     """
     if modality is not None:
         span.set_attribute(semconv.SENSORS_MODALITY, str(modality))
@@ -224,6 +247,69 @@ def record_sensor_frame_attrs(
         else:
             encoded = base64.b64encode(thumbnail_bytes).decode("ascii")
         span.set_attribute(semconv.SENSORS_THUMBNAIL_JPEG_B64, encoded)
+
+
+def emit_sensor_frame_span(
+    frame: Any,
+    *,
+    sensor_name: str,
+    age_ms: float,
+    flip_180: bool = False,
+    tracer_name: str = "openral_observability.producer",
+) -> None:
+    """Emit ONE dashboard ``sensors.read_latest`` span for a camera frame.
+
+    THE shared producer for the dashboard's camera tiles — the deploy sensor
+    pump (``openral_rskill_ros.sensor_leg``) and WorldState's ``_on_image``
+    both route through it, so the flip handling, span shape and thumbnail
+    encode can never drift between pump-fed and tee-fed cameras (they were
+    two hand-mirrored copies before, and had already drifted).
+
+    ``flip_180`` (the ``OPENRAL_DASHBOARD_FLIP_180`` convention) rotates a
+    **display copy** only — the caller's ``frame`` object is never mutated,
+    because the raw frame is what reaches the policy and a flipped policy
+    input double-flips against the VLA adapter's own
+    ``image_preprocessing.flip_180``. Applied only to 3-channel frames whose
+    buffer length matches their geometry; anything else displays unflipped.
+
+    Args:
+        frame: A ``SensorFrame``-shaped object (``width`` / ``height`` /
+            ``channels`` / ``encoding`` / ``data`` / ``model_copy``).
+        sensor_name: Value for the span's ``SENSORS_SOURCE`` attribute.
+        age_ms: Frame age in the caller's clock domain (sim-aware callers
+            must compute this from their own clock).
+        flip_180: Rotate the display copy 180° before thumbnailing.
+        tracer_name: OTel tracer name, so the span still attributes to the
+            emitting subsystem.
+    """
+    display = frame
+    data = getattr(frame, "data", b"")
+    if flip_180 and data and int(getattr(frame, "channels", 0) or 0) == _RGB_CHANNELS:
+        expected = frame.width * frame.height * _RGB_CHANNELS
+        if len(data) == expected:
+            import numpy as np  # reason: lazy — only on the camera display path
+
+            flipped = (
+                np.frombuffer(data, dtype=np.uint8)
+                .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
+                .tobytes()
+            )
+            display = frame.model_copy(update={"data": flipped})
+    tracer = trace.get_tracer(tracer_name)
+    with tracer.start_as_current_span(
+        semconv.SPAN_SENSORS_READ_LATEST,
+        attributes={semconv.SENSORS_SOURCE: sensor_name},
+    ) as span:
+        record_sensor_frame_attrs(
+            span,
+            modality=modality_for_encoding(frame.encoding),
+            encoding=str(getattr(frame.encoding, "value", frame.encoding)),
+            width=int(frame.width),
+            height=int(frame.height),
+            channels=int(getattr(frame, "channels", 0) or 0),
+            age_ms=age_ms,
+            thumbnail_bytes=encode_frame_thumbnail(display),
+        )
 
 
 def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
@@ -268,9 +354,10 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
     skips the thumbnail attribute.
 
     The whole encode pipeline runs in a few ms per frame at typical
-    sensor resolutions. The runner calls it at the throttled
-    thumbnail cadence (not every tick), so the per-tick cost is
-    amortised across cameras and the tick budget is unaffected.
+    sensor resolutions (2.42 ms measured at 320x240 q60), and Pillow
+    drops the GIL for the resize/encode. Callers range from the
+    runner's throttled thumbnail cadence to the deploy sensor pump's
+    full ~30 Hz reader rate.
     """
     try:
         from PIL import Image

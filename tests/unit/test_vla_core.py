@@ -23,6 +23,7 @@ from openral_core.schemas import VLASpec
 from openral_observability import semconv
 from openral_rskill._vla_core import (
     resolve_device,
+    resolve_inference_engine,
     resolve_rskill_repo_id,
     resolve_rskill_repo_revision,
     run_inference,
@@ -149,6 +150,43 @@ class TestRunInference:
         assert attrs.get("inference.chunk_size") == 10
         assert attrs.get(semconv.INFERENCE_DURATION_MS, -1.0) >= 0.0
 
+    def test_call_kwargs_are_splatted_and_delay_recorded(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """RTC threads its guidance kwargs through ``call`` and onto the span."""
+        seen: dict[str, Any] = {}
+
+        def _producer(batch: dict[str, Any], **kwargs: Any) -> torch.Tensor:
+            seen.update(kwargs)
+            return torch.zeros(1, 4, 7)
+
+        run_inference(
+            None,
+            batch={},
+            kind="prefetch",
+            call=_producer,
+            call_kwargs={"inference_delay": 3, "prev_chunk_left_over": None},
+        )
+        assert seen == {"inference_delay": 3, "prev_chunk_left_over": None}
+        (span,) = span_exporter.get_finished_spans()
+        assert dict(span.attributes or {}).get("inference.rtc_delay") == 3
+
+    def test_without_call_kwargs_producer_stays_single_arg(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """``call_kwargs=None`` keeps the 1-arg contract and emits no rtc_delay."""
+        seen_args: list[tuple[Any, ...]] = []
+
+        def _producer(*args: Any, **kwargs: Any) -> torch.Tensor:
+            assert not kwargs
+            seen_args.append(args)
+            return torch.zeros(1, 7)
+
+        run_inference(None, batch={"observation": 1}, call=_producer)
+        assert seen_args == [({"observation": 1},)]
+        (span,) = span_exporter.get_finished_spans()
+        assert "inference.rtc_delay" not in dict(span.attributes or {})
+
     def test_default_kind_is_single(self, span_exporter: InMemorySpanExporter) -> None:
         run_inference(_FakePolicy(), batch={})
         (span,) = span_exporter.get_finished_spans()
@@ -163,6 +201,33 @@ class TestRunInference:
                 return torch.zeros(1, 7)
 
         run_inference(_GradAssertingPolicy(), batch={})
+
+    def test_named_chunk_method_synchronizes_before_return(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A prefetch-ready result means CUDA work completed, not merely launched."""
+        synchronized: list[object] = []
+
+        class _CudaLikeResult:
+            is_cuda = True
+            device = "cuda:0"
+
+        class _ChunkPolicy:
+            def predict_action_chunk(self, batch: dict[str, Any]) -> _CudaLikeResult:
+                return _CudaLikeResult()
+
+        monkeypatch.setattr(torch.cuda, "synchronize", synchronized.append)
+        policy = _ChunkPolicy()
+        out = run_inference(
+            policy,
+            batch={},
+            call=policy.predict_action_chunk,
+            synchronize=True,
+        )
+
+        assert isinstance(out, _CudaLikeResult)
+        assert synchronized == ["cuda:0"]
 
     def test_engine_and_device_attrs_emitted(self, span_exporter: InMemorySpanExporter) -> None:
         """``inference.engine`` defaults to ``"torch"``; ``device`` is lifted from policy."""
@@ -184,6 +249,32 @@ class TestRunInference:
         run_inference(_FakePolicy(), batch={}, engine="trt")
         (span,) = span_exporter.get_finished_spans()
         assert dict(span.attributes or {}).get("inference.engine") == "trt"
+
+    def test_released_pro_trt_attachment_overrides_manifest_runtime(
+        self, span_exporter: InMemorySpanExporter
+    ) -> None:
+        """A runtime-attached TRT sampler wins over declared PyTorch."""
+
+        class _TrtSampler:
+            __module__ = "openral_pro_trt.smolvla_trt"
+
+        class _Model:
+            sample_actions = _TrtSampler()
+
+        class _Policy(_FakePolicy):
+            model = _Model()
+
+        policy = _Policy()
+        assert resolve_inference_engine(policy, "pytorch") == "trt"
+        run_inference(policy, batch={})
+        (span,) = span_exporter.get_finished_spans()
+        assert dict(span.attributes or {}).get("inference.engine") == "trt"
+
+    def test_explicit_plugin_marker_is_generic(self) -> None:
+        class _Policy:
+            _openral_inference_engine = "tensorrt"
+
+        assert resolve_inference_engine(_Policy(), "pytorch") == "trt"
 
 
 # ── to_numpy_action ───────────────────────────────────────────────────────────
@@ -467,3 +558,105 @@ class TestCloneChunkOutput:
         assert _clone_chunk_output(None, torch) is None
         assert _clone_chunk_output(3.5, torch) == 3.5
         assert _clone_chunk_output({"n": 7}, torch) == {"n": 7}
+
+
+# ── suppress_hf_weight_init / assert_all_parameters_finite ────────────────────
+
+
+class TestSuppressHfWeightInit:
+    """The load-time optimisation that skips HF's throwaway random init.
+
+    Every case patches ``transformers.modeling_utils.PreTrainedModel``
+    directly, so the whole class needs the real library — there is nothing
+    meaningful left to assert without it (CLAUDE.md §1.11: skip, never fake).
+    The base CI job installs the workspace without the VLA extras.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_transformers(self) -> None:
+        pytest.importorskip(
+            "transformers",
+            reason="install the VLA stack to exercise the HF init suppression",
+        )
+
+    def test_init_is_suppressed_inside_and_restored_after(self) -> None:
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        before = PreTrainedModel._init_weights
+        with suppress_hf_weight_init():
+            assert PreTrainedModel._init_weights is not before
+        assert PreTrainedModel._init_weights is before
+
+    def test_restored_on_exception(self) -> None:
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        before = PreTrainedModel._init_weights
+        with pytest.raises(RuntimeError, match="synthetic"), suppress_hf_weight_init():
+            raise RuntimeError("synthetic")
+        assert PreTrainedModel._init_weights is before
+
+    def test_suppressed_init_is_a_noop(self) -> None:
+        """The patched hook must accept HF's (self, module) signature and do nothing."""
+        from openral_rskill._vla_core import suppress_hf_weight_init
+        from transformers.modeling_utils import PreTrainedModel
+
+        layer = torch.nn.Linear(4, 4)
+        with torch.no_grad():
+            layer.weight.fill_(1.5)
+        with suppress_hf_weight_init():
+            PreTrainedModel._init_weights(None, layer)  # type: ignore[arg-type]
+        assert torch.allclose(layer.weight, torch.full_like(layer.weight, 1.5))
+
+
+class TestAssertAllParametersFinite:
+    """The guard that makes suppressed init safe."""
+
+    def test_passes_on_finite_module(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        assert_all_parameters_finite(torch.nn.Linear(3, 3), repo_id="unit/finite")
+
+    def test_raises_on_nan_parameter(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.weight[0, 0] = float("nan")
+        with pytest.raises(ROSConfigError, match="NaN/Inf"):
+            assert_all_parameters_finite(module, repo_id="unit/broken")
+
+    def test_raises_on_inf_parameter(self) -> None:
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.bias[1] = float("inf")
+        with pytest.raises(ROSConfigError, match="unit/broken"):
+            assert_all_parameters_finite(module, repo_id="unit/broken")
+
+    def test_raises_on_all_zero_weight_matrix(self) -> None:
+        """Fresh zero pages are finite — the other uninitialised state.
+
+        A parameter a non-strict load skipped (key renamed after a
+        dependency bump) lands on freshly-mapped all-zero memory under
+        suppressed init; isfinite passes and the policy would silently emit
+        wrong actions. A trained weight MATRIX is never exactly all-zero.
+        """
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.weight.zero_()
+        with pytest.raises(ROSConfigError, match="entirely zero"):
+            assert_all_parameters_finite(module, repo_id="unit/zeroed")
+
+    def test_zero_bias_is_legitimate(self) -> None:
+        """1-D parameters (biases, norms) are commonly zero-init — never flagged."""
+        from openral_rskill._vla_core import assert_all_parameters_finite
+
+        module = torch.nn.Linear(3, 3)
+        with torch.no_grad():
+            module.bias.zero_()
+        assert_all_parameters_finite(module, repo_id="unit/zero-bias")

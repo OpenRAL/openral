@@ -166,6 +166,93 @@ def test_deadline_overrun_raise_aborts() -> None:
         runner.run(max_ticks=5)
 
 
+# ── deadline-miss WARN rate limit ────────────────────────────────────────────
+
+
+def _miss_runner() -> FixedLatencyRunner:
+    """A runner whose every tick overruns its budget."""
+    return FixedLatencyRunner(
+        fake_inference_s=0.0,
+        rate_hz=30.0,
+        deadline_overrun_policy=DeadlineOverrunPolicy.WARN,
+    )
+
+
+def test_first_deadline_miss_always_logs() -> None:
+    """An operator must see the first miss immediately, not after a window."""
+    runner = _miss_runner()
+    due, suppressed, worst_ms = runner._deadline_log_due(99.0)
+    assert due is True
+    assert suppressed == 0
+    assert worst_ms == 99.0
+
+
+def test_subsequent_misses_are_counted_not_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host that misses every tick emits one line, not 30 per second.
+
+    WARNING is the one band an operator cannot filter away in the Event
+    Log, so an unthrottled 30 Hz warn buries the context needed to
+    diagnose the very slowness it is reporting.
+    """
+    runner = _miss_runner()
+    now = 1_000.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+
+    assert runner._deadline_log_due(40.0)[0] is True  # first one logs
+    for _ in range(89):  # ~3 s of misses at 30 Hz, same instant
+        assert runner._deadline_log_due(40.0)[0] is False
+
+    assert runner._deadline_suppressed == 89
+
+
+def test_summary_line_carries_the_suppressed_count_and_worst_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No miss is silently dropped — it is reported as a count instead of a row."""
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    runner = _miss_runner()
+
+    assert runner._deadline_log_due(40.0)[0] is True
+    runner._deadline_log_due(55.0)
+    runner._deadline_log_due(120.0)  # the worst one
+    runner._deadline_log_due(60.0)
+
+    clock["now"] += 6.0  # past the 5 s period
+    due, suppressed, worst_ms = runner._deadline_log_due(45.0)
+
+    assert due is True
+    assert suppressed == 3
+    assert worst_ms == 120.0, "worst_tick_ms must survive the suppressed window"
+
+
+def test_counters_reset_after_each_emitted_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The second window reports its own misses, not a running total."""
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    runner = _miss_runner()
+
+    runner._deadline_log_due(40.0)  # first line
+    runner._deadline_log_due(90.0)
+    clock["now"] += 6.0
+    runner._deadline_log_due(50.0)  # second line, reports the above
+
+    runner._deadline_log_due(41.0)
+    clock["now"] += 6.0
+    _, suppressed, worst_ms = runner._deadline_log_due(42.0)
+
+    assert suppressed == 1
+    assert worst_ms == 42.0, "the 90 ms tick belonged to an already-reported window"
+
+
+def test_every_miss_still_counts_toward_the_metric() -> None:
+    """Only the log is rate-limited; deadline_misses stays the honest rate signal."""
+    runner = _miss_runner()
+    result = runner.run(max_ticks=5)
+    # All five ticks overran; the run completes and reports them.
+    assert result.n_ticks == 5
+
+
 def test_latency_budget_violation_counter() -> None:
     """Ticks exceeding ``latency_budget_ms`` count toward ``budget_violations``."""
     runner = FixedLatencyRunner(

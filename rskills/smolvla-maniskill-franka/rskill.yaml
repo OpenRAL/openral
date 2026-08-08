@@ -149,8 +149,9 @@ description: >
   Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka
   Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length
   50 across overhead + wrist RGB views and a 9-D Franka qpos state.
-  Runs end-to-end on ManiSkill3 PickCube-v1 with a live SAPIEN viewer
-  via `openral sim run --view`.
+  The checkpoint loads and actuates on ManiSkill3 PickCube-v1 with a live
+  SAPIEN viewer, but cannot satisfy that task's goal-placement success —
+  the evaluated_tasks gate blocks the pairing (see the LiftCube-gap note).
 
 # Action vocabulary surfaced to the reasoner LLM tool palette.
 # "lift" is not in the RSkillAction enum; the lift motion is expressed
@@ -170,9 +171,15 @@ action_contract:
   dim: 8
 
 benchmarks:
-  # PickCube-v1 via the curated franka_panda suite `maniskill3_panda`
-  # (auto-filters to this rSkill's task). 0.0 = the shipped LiftCube
-  # checkpoint cannot satisfy PickCube's goal-placement success (task
-  # mismatch — see the MS3 LiftCube-gap note above); replace with a
-  # PickCube-trained policy to lift this.
+  # PickCube-v1, measured BEFORE the evaluated_tasks gate existed. 0.0 = the
+  # shipped LiftCube checkpoint cannot satisfy PickCube's goal-placement
+  # success (task mismatch — see the MS3 LiftCube-gap note above).
+  #
+  # This number is no longer reproducible by the documented command: no
+  # in-tree scene or suite carries `maniskill3/LiftCube`, so
+  # `openral benchmark run --suite maniskill3_panda --rskill
+  # rskills/smolvla-maniskill-franka` now filters to zero tasks and raises
+  # ROSCapabilityMismatch. That is the gate working as designed — this rSkill
+  # has no valid in-tree MS3 benchmark until a LiftCube scene is added or a
+  # PickCube-trained checkpoint replaces it.
   maniskill3_panda: 0.0

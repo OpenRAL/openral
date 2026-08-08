@@ -35,6 +35,21 @@ __all__ = ["InferenceRunnerBase"]
 
 log = structlog.get_logger(__name__)
 
+# Minimum gap between deadline-miss WARN lines, per runner.
+#
+# A host that is genuinely too slow misses its budget on EVERY tick, so this
+# logged once per tick — up to 30 Hz — and WARNING is the one band an
+# operator cannot filter away in the dashboard's Event Log. The failure is
+# real and worth surfacing, but it is a *sustained condition*, not 30
+# independent events per second, and at that rate it buries the very context
+# needed to diagnose it.
+#
+# Only the log line is rate-limited. `openral.tick.deadline_misses` still
+# counts every miss and every `rskill.tick` span still carries its
+# `deadline_missed` event, so nothing that aggregates loses precision — the
+# metric remains the honest rate signal, which is what it is for.
+_DEADLINE_LOG_PERIOD_S = 5.0
+
 
 def _percentile(samples: list[float], q: float) -> float:
     """Linear-interpolation percentile of a non-empty sample list.
@@ -109,6 +124,11 @@ class InferenceRunnerBase(ABC):
         self._save_dir = save_dir
         self._tick_idx = 0
         self._active = False
+        # Deadline-miss WARN rate limit (see _DEADLINE_LOG_PERIOD_S). -inf so
+        # the first miss of a run always logs immediately.
+        self._deadline_log_next_due = float("-inf")
+        self._deadline_suppressed = 0
+        self._deadline_worst_ms = 0.0
 
     # ── Lifecycle ───────────────────────────────────────────────────────────
 
@@ -269,11 +289,19 @@ class InferenceRunnerBase(ABC):
         if self._latency_budget_ms is not None:
             tick_attrs[semconv.METRIC_THRESHOLD_MS] = self._latency_budget_ms
         ral_metrics.record_histogram_ms(ral_metrics.get_tick_duration(), result.tick_ms, tick_attrs)
-        ral_metrics.record_histogram_ms(
-            ral_metrics.get_inference_duration(),
-            result.inference_ms,
-            base_attrs,
-        )
+        # `openral.inference.duration` is NOT recorded here. It is emitted by
+        # `openral_observability.inference_span`, which every VLA adapter opens
+        # around the real chunk compute.
+        #
+        # This line used to record it too, and the two were not the same
+        # quantity: `result.inference_ms` is `Skill.step` wall-time — the chunk
+        # *dispatch* cost, which for a ChunkedExecutor is near-zero on the ticks
+        # that just replay a cached action — while the span times the inference
+        # itself. Same instrument, two meanings, and two disjoint label sets
+        # (`{rskill.id}` here vs `{kind}` on the span), so the eval/sim path
+        # doubled its sample count and computed p95 over a mixed population.
+        # The dispatch cost is still on the tick span as `rskill.inference_ms`
+        # and in the run summary's avg/p99, where it is unambiguous.
         if result.safety_violations:
             # ``safety_violations`` is a list of human-readable strings on
             # ``TickResult``; the counter just records that the tick had
@@ -361,6 +389,31 @@ class InferenceRunnerBase(ABC):
             return None
         return f"{ctx.trace_id:032x}"
 
+    def _deadline_log_due(self, tick_ms: float) -> tuple[bool, int, float]:
+        """Rate-limit the deadline-miss WARN to one line per period.
+
+        Returns ``(due, suppressed_since_last, worst_tick_ms)``. When
+        ``due`` is False the caller must not log; the miss has been folded
+        into the counters the next due line will carry, so no miss is ever
+        silently dropped — it is reported as a count instead of a row.
+
+        ``worst_tick_ms`` is the slowest tick seen since the last emitted
+        line (including this one), which is the number that actually tells
+        an operator how far past budget the host is running. The plain
+        ``tick_ms`` on the line is merely whichever tick happened to land
+        on the boundary.
+        """
+        now = time.monotonic()
+        self._deadline_worst_ms = max(self._deadline_worst_ms, tick_ms)
+        if now < self._deadline_log_next_due:
+            self._deadline_suppressed += 1
+            return False, 0, 0.0
+        suppressed, worst_ms = self._deadline_suppressed, self._deadline_worst_ms
+        self._deadline_suppressed = 0
+        self._deadline_worst_ms = 0.0
+        self._deadline_log_next_due = now + _DEADLINE_LOG_PERIOD_S
+        return True, suppressed, worst_ms
+
     def _on_deadline_overrun(self, result: TickResult) -> None:
         """Apply the configured :class:`DeadlineOverrunPolicy`.
 
@@ -388,22 +441,30 @@ class InferenceRunnerBase(ABC):
             )
 
         if self.deadline_overrun_policy == DeadlineOverrunPolicy.WARN:
-            log.warning(
-                "inference_runner.deadline_missed",
-                runner=self._runner_name,
-                tick_idx=result.tick_idx,
-                tick_ms=result.tick_ms,
-                budget_ms=budget_ms,
-            )
+            due, suppressed, worst_ms = self._deadline_log_due(result.tick_ms)
+            if due:
+                log.warning(
+                    "inference_runner.deadline_missed",
+                    runner=self._runner_name,
+                    tick_idx=result.tick_idx,
+                    tick_ms=result.tick_ms,
+                    budget_ms=budget_ms,
+                    suppressed_since_last=suppressed,
+                    worst_tick_ms=worst_ms,
+                )
         elif self.deadline_overrun_policy == DeadlineOverrunPolicy.DROP:
-            log.warning(
-                "inference_runner.deadline_missed.drop",
-                runner=self._runner_name,
-                tick_idx=result.tick_idx,
-                tick_ms=result.tick_ms,
-                budget_ms=budget_ms,
-                action_applied=result.action_applied,
-            )
+            due, suppressed, worst_ms = self._deadline_log_due(result.tick_ms)
+            if due:
+                log.warning(
+                    "inference_runner.deadline_missed.drop",
+                    runner=self._runner_name,
+                    tick_idx=result.tick_idx,
+                    tick_ms=result.tick_ms,
+                    budget_ms=budget_ms,
+                    action_applied=result.action_applied,
+                    suppressed_since_last=suppressed,
+                    worst_tick_ms=worst_ms,
+                )
         elif self.deadline_overrun_policy == DeadlineOverrunPolicy.RAISE:
             exc = ROSDeadlineMissed(
                 f"Tick {result.tick_idx} exceeded {budget_ms:.3f} ms "

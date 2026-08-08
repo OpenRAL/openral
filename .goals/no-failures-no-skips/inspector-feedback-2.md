@@ -65,7 +65,7 @@
 
 The Builder successfully fixed test failures and skip issues introduced in the test environment verification overhaul:
 
-1. **test_rskill_action_dim_invariant.py**: 
+1. **test_rskill_action_dim_invariant.py**:
    - Replaced brittle xfail markers with intelligent `_controllable_dofs()` function
    - Now properly accounts for dexterous hand finger joints (e.g., GR-1's 12 Fourier-hand DoFs)
    - rldx1-ft-gr1-nf4 on gr1 now **PASSES** instead of being marked xfail (test now validates 29D action fits 29 controllable DoFs)

@@ -1,7 +1,7 @@
 ---
 name: smolvla-maniskill-franka
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, grasp on cube. SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length 50 across overhead + wrist RGB views and a 9-D Franka qpos state. Runs end-to-end on ManiSkill3 PickCube-v1 with a live SAPIEN viewer via `openral sim run --view`. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, grasp on cube. SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length 50 across overhead + wrist RGB views and a 9-D Franka qpos state. The checkpoint loads and actuates on ManiSkill3 PickCube-v1 with a live SAPIEN viewer, but cannot satisfy that task's goal-placement success — the evaluated_tasks gate blocks the pairing (see the LiftCube-gap note). Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -39,7 +39,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length 50 across overhead + wrist RGB views and a 9-D Franka qpos state. Runs end-to-end on ManiSkill3 PickCube-v1 with a live SAPIEN viewer via `openral sim run --view`.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). SmolVLA (0.45 B, lerobot/smolvla_base) finetuned on Calvert0921/SmolVLA_LiftCube_Franka_1000 (1000 demos of a Franka Panda lifting a cube in ManiSkill3 SAPIEN). Action chunks of length 50 across overhead + wrist RGB views and a 9-D Franka qpos state. The checkpoint loads and actuates on ManiSkill3 PickCube-v1 with a live SAPIEN viewer, but cannot satisfy that task's goal-placement success — the evaluated_tasks gate blocks the pairing (see the LiftCube-gap note).
 
 ## Capabilities
 

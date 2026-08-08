@@ -18,12 +18,13 @@ plus a bounded dispatch/abort soak over the multithreaded executor.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` like
 ``test_reasoner_node_end_to_end.py`` (rclpy + DDS init clash with glib
-pulled in by torch/pyarrow in the regular pytest invocation)::
+pulled in by torch/pyarrow in the regular pytest invocation). Part of the
+live-ROS suite (``scripts/ros_live_tests.sh``); CI runs it inside
+``openral:x86`` (the ``docker-build`` workflow). Locally::
 
-    just ros2-build
+    source /opt/ros/jazzy/setup.bash && just ros2-build
     source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 uv run pytest tests/integration/test_reasoner_async_llm.py \\
-        -v -p no:launch_testing -p no:launch_ros
+    just test-ros-live            # whole suite; `-k <expr>` narrows it
 """
 
 from __future__ import annotations

@@ -92,7 +92,14 @@ runtime:
   enable_nav2: false
   enable_octomap: false
   enable_octomap_kernel_check: true
-  enable_object_detector: true
+  # Detector OFF by default on this bench: the two detector processes
+  # (continuous + on-demand locator) held 2.2 GB of the 8 GB card, and with
+  # Robometer (5.3 GB incl. CUDA context) resident the VLA's own 1.4 GB
+  # weights load hit CUDA OOM (125 MiB free) — measured live 2026-08-03.
+  # The 8 GB budget fits exactly TWO GPU tenants: the reward monitor and the
+  # VLA. Flip back on (or via a CLI override) on a ≥12 GB host where
+  # locate_in_view is worth its VRAM.
+  enable_object_detector: false
   object_detector_onnx: null
   object_detector_manifest: null
   object_detector_query: null
@@ -102,6 +109,14 @@ runtime:
   reward_monitor_task: null
   enable_critic: false
   spatial_memory_ingest: true
+  # Deliberately null: the MoveIt approach path needs a move_group server in
+  # the deploy graph, and the SO-101 has no MoveIt config in-repo (no SRDF /
+  # moveit_config; sim_e2e.launch spawns no move_group). Setting an
+  # approach_skill_id here would make EVERY ExecuteRskill goal abort at the
+  # pre-inference approach step ("fatal approach attempt failed"). The
+  # starting-pose reset instead rides the HAL's ResetToPose service —
+  # SO100FollowerHAL.reset_to_pose, the slow real-arm ramp. Wire approach
+  # only after an so101 MoveIt config + move_group land in the graph.
   approach_skill_id: null
 
 # NOTE: an earlier `extra_allowed_collision_pairs: [[base, lower_arm]]` ACM

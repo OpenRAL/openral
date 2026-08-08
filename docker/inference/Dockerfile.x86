@@ -50,6 +50,30 @@
 # `--network host` is recommended so the host can share the DDS bus. ROS 2
 # Jazzy + the local colcon overlay are sourced by the entrypoint.
 
+# ── Stage 0: workspace manifests ─────────────────────────────────────
+#
+# Prunes `python/` down to just the workspace members' `pyproject.toml` files.
+# The builder installs the third-party dependency set against THIS tree, not the
+# real one, so editing Python source no longer invalidates the dependency layer.
+#
+# Why a pruning stage instead of listing the manifests by hand: the uv workspace
+# is `members = ["python/*"]`, so a hand-written `COPY python/core/pyproject.toml
+# …` list silently drifts the moment a 15th package lands under `python/`. The
+# glob cannot drift.
+#
+# This stage re-runs on every `python/` edit (it takes ~3 s), but it emits a
+# byte-identical tree whenever no `pyproject.toml` changed. BuildKit keys the
+# downstream `COPY --from=manifests` on the *content* of what it copies, so the
+# expensive `uv sync` below stays cached across ordinary source edits.
+#
+# The base is the same CUDA image the builder uses, purely so this stage costs
+# no extra registry pull — nothing from the base is used beyond GNU find.
+FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS manifests
+
+COPY python/ /manifests/python/
+RUN find /manifests/python -type f ! -name pyproject.toml -delete \
+    && find /manifests/python -depth -type d -empty -delete
+
 # ── Stage 1: builder ─────────────────────────────────────────────────
 
 FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04 AS builder
@@ -130,14 +154,56 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # uv installs to /usr/local/bin so it's on the default PATH.
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
+# Precompile bytecode at install time. uv skips .pyc generation by default, so
+# without this the FIRST import of the torch/lerobot/transformers stack inside
+# a fresh container byte-compiles the whole tree at runtime — measured live on
+# an SO-101 deploy: the lazy SmolVLA import inside runtime_node crawled for
+# 15+ minutes, GIL-starved to ~12% of a core by the two 30 fps camera threads
+# sharing its process. Compiling at build time costs a few minutes once and
+# moves cold-start skill loads back to seconds.
+ENV UV_COMPILE_BYTECODE=1
+
+# The uv cache lives on a BuildKit cache mount and the target venv lives in the
+# image layer — two different filesystems, so uv's default hardlink install
+# mode always fails and falls back, printing:
+#   warning: Failed to hardlink files; falling back to full copy.
+# Naming the copy mode up front skips the failed-hardlink probe on every one of
+# the ~229 installed packages and silences a warning that has been in every
+# build log to date.
+ENV UV_LINK_MODE=copy
+
 WORKDIR /workspace
 
 # Copy workspace metadata + lockfile first so dep resolution is layer-cacheable.
 COPY pyproject.toml uv.lock ./
-COPY python/ python/
 
-# Workspace install. Groups needed for a real VLA deploy with the perception
-# legs, all gstreamer-free:
+# The manifests-only view of `python/` (see stage 0). This is what the
+# third-party install below resolves against.
+COPY --from=manifests /manifests/python/ python/
+
+# ── Phase 1: third-party dependencies ────────────────────────────────
+#
+# `--no-install-workspace` installs the 215-package third-party closure (torch
+# 2.9.1, the whole nvidia-cu12 stack, transformers, lerobot, mujoco, …) and
+# skips every `openral-*` workspace member. Those members need no source tree to
+# be *excluded*, which is the entire point: this layer's cache key is
+# `pyproject.toml` + `uv.lock` + the 14 member manifests, and nothing else.
+#
+# Before this split, `COPY python/ python/` sat directly above the sync, so a
+# one-line edit to any Python source file — the most-churned tree in the repo,
+# 33 of the last 60 commits — re-downloaded 4.42 GiB of wheels (torch 858 MiB,
+# cudnn 674 MiB, cublas 567 MiB, …) and re-ran the whole builder stage. The uv
+# cache mount does NOT save you here: BuildKit cache mounts are not exported by
+# the registry cache exporter, so on an ephemeral CI runner it is always cold.
+#
+# An earlier attempt at this split (see Dockerfile.dev's comment) hand-wrote
+# *fake* stub src trees and failed — uv rejected them with "references a
+# workspace ... but is not a workspace member". Real manifests plus
+# `--no-install-workspace` is the supported path: uv never builds the members,
+# so it never looks for their sources.
+#
+# Groups needed for a real VLA deploy with the perception legs, all
+# gstreamer-free:
 #   sim   — the lerobot / transformers / accelerate / bitsandbytes stack the VLA
 #           policy adapters AND the in-process Robometer reward monitor import at
 #           load time (needed on REAL hardware too).
@@ -145,6 +211,18 @@ COPY python/ python/
 #           the ros_image_detector_node runs when enable_object_detector is on.
 #   lingbot — the msgpack + synchronous-websocket protocol dependencies used by
 #           the out-of-process LingBot policy adapters, including Galaxea A1.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --all-packages \
+        --group sim --group omdet --group lingbot \
+        --no-install-workspace
+
+# ── Phase 2: the workspace members themselves ────────────────────────
+#
+# Now the real source tree. This layer DOES rebuild on every Python edit, but
+# all it does is install the 14 local packages into the venv phase 1 already
+# populated — seconds, not minutes, and no network.
+COPY python/ python/
+
 # The `opencv_thread` camera path needs cv2 (opencv-python). It is a per-member
 # EXTRA (openral-runner `opencv`), NOT pulled by `uv sync --all-packages`, so it
 # is installed explicitly post-sync alongside onnxruntime (which lives only in
@@ -158,9 +236,42 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         --group sim --group omdet --group lingbot \
     && uv pip install --python /workspace/.venv/bin/python onnxruntime opencv-python
 
-# Copy the colcon-buildable trees AFTER the venv resolve so a packages/ tweak
-# doesn't bust the (much larger) Python dep layer. `cpp/` carries the C++ safety
-# kernel + the opentelemetry_cpp_vendor package the kernel links against.
+# ── opentelemetry_cpp_vendor, on its own cache line ──────────────────
+#
+# This package clones and builds opentelemetry-cpp from source via
+# `ExternalProject_Add`, and it is the single most expensive thing in the image
+# after the Python deps: 154s of the 211.7s colcon step, measured on run
+# 31244132105. Worse, it is a *serial gate* — `openral_safety_kernel` links its
+# CMake targets and cannot start until it finishes, so the vendor build and the
+# kernel together accounted for 210 of those 211.7 seconds while the other 14
+# packages finished in parallel by t=92s.
+#
+# It is also the most stable thing in the image: `cpp/opentelemetry_cpp_vendor/`
+# is two files, and `cpp/` as a whole changed in 3 of the last 60 commits.
+# Copying it alone and building it alone gives it a cache key that a `packages/`
+# or `python/` diff cannot invalidate, which takes it off the critical path for
+# essentially every PR.
+#
+# It has no in-repo dependencies (`package.xml`: ament_cmake + curl), so it is
+# safe to build before any other tree is present. The kernel is NOT built here:
+# it also depends on `openral_msgs`, which lives under `packages/`.
+COPY cpp/opentelemetry_cpp_vendor/ cpp/opentelemetry_cpp_vendor/
+
+RUN bash -lc 'set -eo pipefail \
+    && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && set -u \
+    && colcon build --merge-install \
+        --base-paths cpp \
+        --packages-select opentelemetry_cpp_vendor \
+        --cmake-args -DCMAKE_C_COMPILER=/usr/bin/gcc \
+                     -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+                     -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf build log'
+
+# The remaining colcon-buildable trees. Copied AFTER the venv resolve so a
+# packages/ tweak doesn't bust the (much larger) Python dep layer. `cpp/` carries
+# the C++ safety kernel (and re-lands the vendor sources copied above, which is
+# a no-op for the already-installed vendor prefix).
 COPY packages/ packages/
 COPY cpp/ cpp/
 
@@ -174,11 +285,19 @@ COPY benchmarks/ benchmarks/
 COPY tools/ tools/
 COPY scenes/ scenes/
 
-# Build every ROS 2 + C++ package the deploy image needs in one shot. The set
-# mirrors `just ros2-build` so the on-host dev loop and the image stay aligned —
-# including openral_perception_ros (the gstreamer-free ros_image_detector_node +
+# Build the remaining ROS 2 + C++ packages the deploy image needs. Together with
+# the opentelemetry_cpp_vendor build above this is 16 packages: the
+# deploy-relevant subset of `just ros2-build` (which additionally builds the
+# HALs and bringup packages for robots this image does not target), kept aligned
+# with it so the on-host dev loop and the image agree on the shared packages.
+# Includes openral_perception_ros (the gstreamer-free ros_image_detector_node +
 # reward_monitor_node) and the C++ safety kernel (binary lands at
 # /workspace/install/lib/openral_safety_kernel/safety_kernel_node).
+#
+# `source /workspace/install/setup.bash` overlays the vendor prefix built in the
+# earlier layer so `openral_safety_kernel` finds its opentelemetry-cpp CMake
+# targets. It is sourced BEFORE `set -u` because colcon's generated setup
+# scripts reference unbound variables.
 #
 # `Python3_EXECUTABLE=/workspace/.venv/bin/python` is essential so the
 # ament-python packages resolve openral_* + structlog against the venv, not the
@@ -187,11 +306,11 @@ COPY scenes/ scenes/
 # runtime stage copies install/ over and cross-tree symlinks would dangle.
 RUN bash -lc 'set -eo pipefail \
     && source /opt/ros/${ROS_DISTRO}/setup.bash \
+    && source /workspace/install/setup.bash \
     && set -u \
     && colcon build --merge-install \
         --base-paths packages cpp \
         --packages-select openral_msgs \
-                          opentelemetry_cpp_vendor \
                           openral_hal_so100 \
                           openral_hal_galaxea_a1 \
                           openral_hal_openarm \
@@ -325,6 +444,27 @@ ENV PATH=/workspace/.venv/bin:$PATH \
 FROM runtime-base AS final
 
 WORKDIR /workspace
+
+# Pin the Hugging Face cache to a stable, mountable path.
+#
+# Without this it defaults to ``$HOME/.cache/huggingface`` inside the
+# container's writable layer, which is discarded on every ``docker run --rm``
+# — so each run re-downloads the rSkill's weights from scratch. That is
+# gigabytes and minutes per launch for a real deploy (SmolVLA ~1.4 GB,
+# Robometer-4B ~3.5 GB), repeated forever, and it is invisible in a
+# `phase_timer` breakdown because the cost lands inside `from_pretrained`.
+#
+# This MUST live in the final stage. An `ENV` in `builder` does not reach the
+# runtime image — verified the hard way: the first cut set it next to
+# `UV_COMPILE_BYTECODE` in the builder and `docker run ... env` showed
+# `HF_HOME=` empty. (`UV_COMPILE_BYTECODE` is correctly builder-only: it
+# only affects install-time .pyc generation.)
+#
+# Naming the path does not by itself persist anything — the operator still
+# has to mount it (`-v ~/.cache/huggingface:/opt/openral/hf-cache`) — but it
+# makes the mount point stable and documentable instead of depending on
+# whatever $HOME the container runs as. See docker/inference/README.md.
+ENV HF_HOME=/opt/openral/hf-cache
 
 # Entrypoint is the bare `openral` CLI, not a hardcoded `deploy run`:
 # deploying on real hardware starts with `doctor` / `detect` / calibration

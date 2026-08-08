@@ -639,32 +639,14 @@ def _check_just() -> CheckResult:
     # `just` is a developer-convenience task runner, not a runtime requirement
     # of `openral`; report absence with `warn` rather than `missing` so doctor
     # still exits 0 on hosts that only need to run skills.
-    return CheckResult("just", "ok" if path else "warn", path or "not found")
-
-
-# PROVIDER values whose endpoint enforces auth and so require
-# OPENRAL_REASONER_LLM_API_KEY. Bare ``openai-compatible`` and ``ollama``
-# are the exceptions because a local Ollama / llama-server doesn't.
-_REASONER_PROVIDERS_REQUIRING_KEY: frozenset[str] = frozenset(
-    {"anthropic", "openrouter", "gemini", "xai", "deepseek", "huggingface"}
-)
-
-# Provider-default base URLs used when the user hasn't set
-# OPENRAL_REASONER_LLM_BASE_URL. Mirrors tool_use.py constants but kept
-# local to avoid forcing the CLI to import the (optionally-installed)
-# reasoner package on every `openral doctor` invocation.
-_REASONER_PROVIDER_DEFAULT_BASE_URL: dict[str, str] = {
-    "anthropic": "https://api.anthropic.com",
-    "openai-compatible": "https://api.openai.com/v1",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "ollama": "http://localhost:11434/v1",
-    "vllm": "http://localhost:8000/v1",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-    "xai": "https://api.x.ai/v1",
-    "deepseek": "https://api.deepseek.com",
-    "huggingface": "https://router.huggingface.co/v1",
-    "cosmos": "http://127.0.0.1:8901/v1",
-}
+    if path:
+        return CheckResult("just", "ok", path)
+    # …and on a Tier-0 install there is no checkout, so there are no recipes for
+    # `just` to run: warning about it is noise. Only a host with a Justfile
+    # nearby is actually missing something.
+    if not any((Path.cwd() / name).is_file() for name in ("Justfile", "justfile")):
+        return CheckResult("just", "info", "not installed (no Justfile here — nothing to run)")
+    return CheckResult("just", "warn", "not found")
 
 
 def _cosmos_autostart_enabled() -> bool:
@@ -754,7 +736,12 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     Resolve the registry entry and check each real precondition (curated? auth?
     endpoint reachable / managed?).
     """
-    from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
+    # Local imports: keep the doctor import graph flat. The preset table is
+    # the SAME object the factory uses (openral_core, no reasoner-package
+    # import needed) — a hand-mirrored copy here drifted twice (2fe732a,
+    # 131a489: doctor rejected valid named endpoints, then passed a dialect
+    # clash the factory refuses).
+    from openral_core import REASONER_ENDPOINT_PRESETS, REASONER_MODELS
 
     curated = sorted(REASONER_MODELS)
     entry = REASONER_MODELS.get(model_key)
@@ -762,16 +749,26 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     api_key = os.environ.get("OPENRAL_REASONER_API_KEY", "").strip()
     key_status = "set" if api_key else "unset"
 
+    # A named endpoint carries its own URL, dialect and auth posture, so it has
+    # to resolve here exactly as it does in the factory — otherwise doctor
+    # reports `ENDPOINT=ollama` as invalid config that runs fine.
+    preset = REASONER_ENDPOINT_PRESETS.get(endpoint_override.lower())
+    if preset is not None:
+        endpoint_override = preset.url
+
     if entry is None:
         dialect = os.environ.get("OPENRAL_REASONER_DIALECT", "").strip().lower()
+        if preset is not None:
+            dialect = dialect or preset.dialect
         if not endpoint_override or dialect not in {"anthropic", "openai"}:
             return [
                 CheckResult(
                     "Reasoner LLM",
                     "fail",
                     f"OPENRAL_REASONER_MODEL={model_key!r} is not a curated model "
-                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT (a URL) "
-                    "and OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
+                    f"({', '.join(curated)}); set OPENRAL_REASONER_ENDPOINT to a named "
+                    f"endpoint ({', '.join(sorted(REASONER_ENDPOINT_PRESETS))}) or to a "
+                    "URL plus OPENRAL_REASONER_DIALECT (anthropic|openai) to use an "
                     "uncurated endpoint.",
                 )
             ]
@@ -784,6 +781,15 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
                 "robotics tool calling.",
             )
         ]
+        if preset is not None and preset.auth_required and not api_key:
+            hatch_rows.append(
+                CheckResult(
+                    "Reasoner API_KEY",
+                    "missing",
+                    "OPENRAL_REASONER_API_KEY unset — required for "
+                    f"OPENRAL_REASONER_ENDPOINT={endpoint_override}.",
+                )
+            )
         if _is_local_base_url(endpoint_override):
             hatch_rows.append(
                 _reasoner_endpoint_probe_row(
@@ -792,11 +798,27 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
             )
         return hatch_rows
 
+    if preset is not None and preset.dialect != entry.dialect:
+        # The factory refuses this outright — a named endpoint cannot re-dialect
+        # a curated model. Reporting `ok` here would tell the operator their
+        # config is fine right up until the reasoner refuses to configure.
+        return [
+            CheckResult(
+                "Reasoner LLM",
+                "fail",
+                f"OPENRAL_REASONER_ENDPOINT speaks the {preset.dialect!r} dialect but model "
+                f"{model_key!r} speaks {entry.dialect!r}; a named endpoint cannot "
+                "re-dialect a curated model. Use a URL for a proxy that translates.",
+            )
+        ]
+
     endpoint = _resolve_reasoner_endpoint(entry, endpoint_override)
-    # OpenAI-compatible endpoint overrides may be unauthenticated (local vLLM,
-    # proxy-owned auth). Anthropic's SDK path still requires a key.
-    auth_required = bool(entry.auth_required) and not (
-        endpoint_override and entry.dialect == "openai"
+    # A named endpoint states its own auth posture; a bare URL means the operator
+    # owns the endpoint (local vLLM, proxy-owned auth), so auth is not forced there.
+    auth_required = (
+        preset.auth_required
+        if preset is not None
+        else bool(entry.auth_required) and not (endpoint_override and entry.dialect == "openai")
     )
     summary = (
         f"model={model_key} dialect={entry.dialect} hosting={entry.hosting} "
@@ -828,28 +850,14 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
 def _check_reasoner_llm() -> list[CheckResult]:
     """Reasoner LLM doctor rows, model-first (ADR-0088).
 
-    Reads ``OPENRAL_REASONER_MODEL`` and resolves the curated registry entry;
-    the legacy ``OPENRAL_REASONER_LLM_PROVIDER`` contract still works this
-    release, flagged with a deprecation row. The API key value is never printed
-    — only ``set`` / ``unset``.
+    Reads ``OPENRAL_REASONER_MODEL`` and resolves the curated registry entry.
+    The API key value is never printed — only ``set`` / ``unset``.
     """
     from openral_core import REASONER_MODELS  # local import: keep doctor import graph flat
 
     model_key = os.environ.get("OPENRAL_REASONER_MODEL", "").strip()
-    legacy_provider = os.environ.get("OPENRAL_REASONER_LLM_PROVIDER", "").strip()
     curated = ", ".join(sorted(REASONER_MODELS))
     if not model_key:
-        if legacy_provider:
-            rows = [
-                CheckResult(
-                    "Reasoner env",
-                    "warn",
-                    "OPENRAL_REASONER_LLM_PROVIDER is deprecated (ADR-0088) — migrate to "
-                    f"OPENRAL_REASONER_MODEL ({curated}).",
-                )
-            ]
-            rows.extend(_check_reasoner_llm_legacy(legacy_provider))
-            return rows
         return [
             CheckResult(
                 "Reasoner LLM",
@@ -859,133 +867,6 @@ def _check_reasoner_llm() -> list[CheckResult]:
             )
         ]
     return _check_reasoner_model(model_key)
-
-
-def _check_reasoner_llm_legacy(provider_raw: str) -> list[CheckResult]:
-    """Deprecated provider-first doctor path (ADR-0088 shim).
-
-    Preserved so the legacy ``OPENRAL_REASONER_LLM_*`` contract keeps
-    diagnosing correctly for one release; :func:`_check_reasoner_llm` prepends a
-    deprecation row before delegating here.
-    """
-    rows: list[CheckResult] = []
-    provider = provider_raw.lower()
-
-    if provider not in _REASONER_PROVIDER_DEFAULT_BASE_URL:
-        rows.append(
-            CheckResult(
-                "Reasoner LLM",
-                "fail",
-                f"OPENRAL_REASONER_LLM_PROVIDER={provider_raw!r}; expected one of "
-                f"{sorted(_REASONER_PROVIDER_DEFAULT_BASE_URL)!r}.",
-            )
-        )
-        return rows
-
-    model = os.environ.get("OPENRAL_REASONER_LLM_MODEL", "").strip()
-    api_key = os.environ.get("OPENRAL_REASONER_LLM_API_KEY", "").strip()
-    base_url_env = os.environ.get("OPENRAL_REASONER_LLM_BASE_URL", "").strip()
-    base_url = base_url_env or _REASONER_PROVIDER_DEFAULT_BASE_URL[provider]
-
-    key_required = provider in _REASONER_PROVIDERS_REQUIRING_KEY
-    key_status = "set" if api_key else "unset"
-    # `cosmos` defaults the model (build_tool_use_client_from_env applies
-    # nvidia/Cosmos3-Edge); surface the *effective* id so an operator pointing
-    # BASE_URL at a self-managed endpoint can spot a served-name mismatch here
-    # instead of at tick time.
-    if not model and provider == "cosmos":
-        shown_model = "nvidia/Cosmos3-Edge (default)"
-    else:
-        shown_model = model or "<unset>"
-    parts = [
-        f"provider={provider}",
-        f"model={shown_model}",
-        f"api_key={key_status}",
-        f"base_url={base_url}",
-    ]
-    summary = " ".join(parts)
-
-    incomplete: list[CheckResult] = []
-    # ``cosmos`` is the one provider with a canonical default checkpoint
-    # (nvidia/Cosmos3-Edge, applied by build_tool_use_client_from_env), so an
-    # unset MODEL is complete config there, not a gap.
-    if not model and provider != "cosmos":
-        incomplete.append(
-            CheckResult(
-                "Reasoner MODEL",
-                "missing",
-                "OPENRAL_REASONER_LLM_MODEL unset — required for every provider "
-                "except cosmos (defaults to nvidia/Cosmos3-Edge).",
-            )
-        )
-    if key_required and not api_key:
-        incomplete.append(
-            CheckResult(
-                "Reasoner API_KEY",
-                "missing",
-                f"OPENRAL_REASONER_LLM_API_KEY unset — required for provider={provider}.",
-            )
-        )
-
-    if incomplete:
-        rows.append(CheckResult("Reasoner LLM", "warn", summary))
-        rows.extend(incomplete)
-    else:
-        rows.append(CheckResult("Reasoner LLM", "ok", summary))
-
-    # Local-endpoint probe. Only meaningful when the resolved base_url is
-    # loopback; we never reach out to a cloud endpoint from `openral doctor`.
-    if _is_local_base_url(base_url):
-        rows.append(_probe_local_reasoner_endpoint(provider, base_url))
-
-    return rows
-
-
-def _probe_local_reasoner_endpoint(provider: str, base_url: str) -> CheckResult:
-    """TCP-probe a loopback reasoner endpoint into one provider-aware row.
-
-    Label + remediation are provider-aware so a vLLM endpoint isn't
-    mislabelled as Ollama; the default port matches each daemon's own
-    (8000 vLLM, 8901 cosmos sidecar, 11434 Ollama). For ``cosmos`` a down
-    endpoint is benign (``info``) ONLY while the managed autostart is
-    enabled — with ``OPENRAL_COSMOS3_AUTOSTART`` disabled it is a real
-    problem and keeps ``warn`` severity, with a hint that does not falsely
-    claim the server auto-starts.
-    """
-    parsed = urlparse(base_url)
-    host = parsed.hostname or "localhost"
-    cosmos_autostart = False  # only meaningful for provider == "cosmos"
-    if provider == "vllm":
-        probe_label = "vLLM"
-        default_port = 8000
-        hint = "start the server with `vllm serve <model>`"
-    elif provider == "cosmos":
-        probe_label = "Cosmos 3"
-        default_port = 8901
-        cosmos_autostart = _cosmos_autostart_enabled()
-        if cosmos_autostart:
-            hint = (
-                "auto-starts on the first reasoner tick (managed vLLM sidecar); "
-                "pre-warm with `python tools/cosmos3_reasoner_sidecar.py`"
-            )
-        else:
-            hint = (
-                "OPENRAL_COSMOS3_AUTOSTART is disabled — start your server "
-                "(`python tools/cosmos3_reasoner_sidecar.py` or your own vLLM / NIM)"
-            )
-    else:
-        probe_label = "Ollama"
-        default_port = 11434
-        hint = "run `just bootstrap-ollama` or `ollama serve`"
-    port = parsed.port or default_port
-    if _probe_tcp(host, port):
-        return CheckResult(probe_label, "ok", f"endpoint reachable at {host}:{port}")
-    benign = provider == "cosmos" and cosmos_autostart
-    return CheckResult(
-        probe_label,
-        "info" if benign else "warn",
-        f"endpoint unreachable at {host}:{port} — {hint}.",
-    )
 
 
 def _gather_checks() -> list[CheckResult]:
@@ -3007,27 +2888,7 @@ def benchmark_run(
         scenes = [s.model_copy(update={"n_episodes": n_episodes}) for s in scenes]
 
     if dry_run:
-        # Suite invariants (openral_core.raise_on_invalid_suite) guarantee
-        # every BenchmarkScene shares robot_id / n_episodes / seed; read
-        # from scenes[0] for the summary.
-        first = scenes[0]
-        eff_episodes = first.n_episodes
-        # ``robot_id`` is non-None per raise_on_invalid_suite; coerce for printing.
-        robot_id = first.robot_id or "<unset>"
-        # When every scene shares one scene.id we print it; otherwise
-        # show how many distinct scenes the suite covers.
-        scene_ids = {scene.scene.id for scene in scenes}
-        scene_summary = next(iter(scene_ids)) if len(scene_ids) == 1 else f"{len(scene_ids)} scenes"
-        console.print(
-            f"[cyan]suite[/cyan] {suite_id} — robot={robot_id} "
-            f"scene={scene_summary} tasks={len(scenes)} "
-            f"n_episodes={eff_episodes}"
-        )
-        console.print(f"[cyan]vla[/cyan]   id={vla_spec.id} weights={vla_spec.weights_uri}")
-        console.print(
-            f"[cyan]plan[/cyan]  {len(scenes) * eff_episodes} "
-            f"episodes ({len(scenes)} tasks x {eff_episodes} reps)"
-        )
+        _print_benchmark_run_plan(scenes, suite_id=suite_id, vla_spec=vla_spec)
         return
 
     out_path = out if out is not None else _default_benchmark_out_path(vla_spec, suite_id)
@@ -3090,6 +2951,65 @@ def benchmark_run(
             console.print(
                 f"[yellow]skipped manifest update:[/yellow] {exc} (eval JSON was still written)"
             )
+
+
+def _print_benchmark_run_plan(
+    scenes: list[BenchmarkScene],
+    *,
+    suite_id: str,
+    vla_spec: VLASpec,
+) -> None:
+    """Print `openral benchmark run --dry-run`'s plan, or exit if nothing would run.
+
+    Applies the same ``evaluated_tasks`` filter :func:`run_benchmark` applies,
+    so the printed plan is the plan that would actually execute. Without it a
+    suite the rSkill covers for zero tasks dry-ran clean and then raised
+    ``ROSCapabilityMismatch`` on the real invocation, and a partially covered
+    suite over-reported its episode count.
+
+    Raises:
+        typer.Exit: The rSkill's ``evaluated_tasks`` match no task in the suite.
+    """
+    from openral_sim.benchmark import _manifest_for_filter, filter_scenes_for_skill
+
+    # _manifest_for_filter returns None for mock / hf:// skills, which
+    # filter_scenes_for_skill treats as permissive — same as the real run.
+    kept, skipped = filter_scenes_for_skill(scenes, _manifest_for_filter(vla_spec))
+    if not kept:
+        console.print(
+            f"[red]✗ task gate:[/red] rSkill {vla_spec.weights_uri!r} covers none of "
+            f"the {len(scenes)} task(s) in suite {suite_id!r} "
+            f"(e.g. {[s.task.id for s in scenes][:3]}). Nothing would run."
+        )
+        raise typer.Exit(1)
+    if skipped:
+        console.print(
+            f"[yellow]note[/yellow]  {len(skipped)} of {len(scenes)} suite tasks are "
+            f"outside this rSkill's evaluated_tasks and would be skipped: "
+            f"{[s.task.id for s in skipped][:5]}"
+        )
+    scenes = kept
+    # Suite invariants (openral_core.raise_on_invalid_suite) guarantee
+    # every BenchmarkScene shares robot_id / n_episodes / seed; read
+    # from scenes[0] for the summary.
+    first = scenes[0]
+    eff_episodes = first.n_episodes
+    # ``robot_id`` is non-None per raise_on_invalid_suite; coerce for printing.
+    robot_id = first.robot_id or "<unset>"
+    # When every scene shares one scene.id we print it; otherwise
+    # show how many distinct scenes the suite covers.
+    scene_ids = {scene.scene.id for scene in scenes}
+    scene_summary = next(iter(scene_ids)) if len(scene_ids) == 1 else f"{len(scene_ids)} scenes"
+    console.print(
+        f"[cyan]suite[/cyan] {suite_id} — robot={robot_id} "
+        f"scene={scene_summary} tasks={len(scenes)} "
+        f"n_episodes={eff_episodes}"
+    )
+    console.print(f"[cyan]vla[/cyan]   id={vla_spec.id} weights={vla_spec.weights_uri}")
+    console.print(
+        f"[cyan]plan[/cyan]  {len(scenes) * eff_episodes} "
+        f"episodes ({len(scenes)} tasks x {eff_episodes} reps)"
+    )
 
 
 def _resolve_benchmark_suite(
@@ -3279,9 +3199,10 @@ def benchmark_scene(
         False,
         "--dry-run",
         help=(
-            "Resolve the scene + rSkill and print the planned (task x "
-            "seed) matrix without running any rollouts. Useful in CI to "
-            "validate config wiring."
+            "Resolve the scene + rSkill, apply the evaluated_tasks gate, and "
+            "print the planned (task x seed) matrix without running any "
+            "rollouts or fetching weights. Useful in CI to validate config "
+            "wiring; exits non-zero if the pairing would be rejected."
         ),
     ),
     update_manifest: bool = typer.Option(
@@ -3338,14 +3259,41 @@ def benchmark_scene(
         scene = scene.model_copy(update={"n_episodes": n_episodes})
 
     if dry_run:
-        # Dry-run validates config wiring only — do not touch the Hub or
-        # load weights. Print the raw --rskill argument as-typed.
+        # Resolve the rSkill here rather than echoing it as-typed: a dry run
+        # that never parses --rskill lets a broken manifest (or a non-VLA
+        # kind) through the exact check it is run to perform. Manifest-only —
+        # no weights are fetched. Built-in mock policies have no manifest
+        # (same carve-out as openral_sim.benchmark._manifest_for_filter), so
+        # they keep the as-typed echo.
+        from openral_core.exceptions import ROSCapabilityMismatch  # reason: defer
+        from openral_sim.sim_runner import _MOCK_PLACEHOLDER_URI, _MOCK_POLICY_IDS
+
+        vla_line = f"rskill={rskill}"
+        if rskill not in _MOCK_POLICY_IDS and rskill != _MOCK_PLACEHOLDER_URI:
+            spec = _parse_rskill_cli_arg(rskill)
+            vla_line = f"rskill={rskill} id={spec.id}"
+
+            # Same task gate `run_benchmark_scene` applies, so a task-mismatched
+            # pairing fails here instead of looking planned and then raising.
+            from openral_rskill.loader import load_rskill_manifest
+            from openral_sim.benchmark import check_benchmark_task_compatibility
+
+            try:
+                check_benchmark_task_compatibility(
+                    load_rskill_manifest(spec.weights_uri),
+                    task_id=scene.task.id,
+                    scene_id=scene.scene.id,
+                )
+            except ROSCapabilityMismatch as exc:
+                console.print(f"[red]✗ task gate:[/red] {exc}")
+                raise typer.Exit(code=1) from exc
+
         console.print(
             f"[cyan]scene[/cyan] {scene.scene.id} — robot={scene.robot_id} "
             f"task={scene.task.id} n_episodes={scene.n_episodes} "
             f"seed={scene.seed}"
         )
-        console.print(f"[cyan]vla[/cyan]   rskill={rskill}")
+        console.print(f"[cyan]vla[/cyan]   {vla_line}")
         console.print(
             f"[cyan]plan[/cyan]  {scene.n_episodes} episodes (seeds "
             f"{scene.seed}..{scene.seed + scene.n_episodes - 1})"
@@ -3353,6 +3301,7 @@ def benchmark_scene(
         return
 
     vla_spec = _parse_rskill_cli_arg(rskill)
+
     out_path = out if out is not None else _default_benchmark_scene_out_path(vla_spec, scene)
 
     from openral_observability.dashboard import attached_dashboard

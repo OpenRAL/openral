@@ -94,6 +94,16 @@ def test_should_idle_step_yields_within_hold_engages_after() -> None:
 
     # A real action 50 ms ago — still inside the hold → yield (False).
     assert should_idle_step(now, last_action_ns=now - 50_000_000, idle_hold_ns=hold) is False
+    # Bare MuJoCo arms keep integrating their held target while active.
+    assert (
+        should_idle_step(
+            now,
+            last_action_ns=now - 50_000_000,
+            idle_hold_ns=hold,
+            step_while_active=True,
+        )
+        is True
+    )
     # Exactly at the boundary (200 ms ago) → engage (>= is True).
     assert should_idle_step(now, last_action_ns=now - hold, idle_hold_ns=hold) is True
     # 500 ms ago — well past the hold → engage.

@@ -1,4 +1,4 @@
-# Unsloth writes a compiled-kernel cache into CWD when the robometer sidecar runs 
+# Unsloth writes a compiled-kernel cache into CWD when the robometer sidecar runs
 unsloth_compiled_cache/
 
 # Python
@@ -33,9 +33,6 @@ build/
 # MuJoCo
 *.mjb
 mjx_tmp/
-
-# Docker
-.dockerignore
 
 # Editors
 .vscode/

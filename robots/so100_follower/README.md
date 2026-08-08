@@ -50,11 +50,15 @@ acceleration ≤ 2.0 m/s². Deadman required (`deadman_required: true`).
 | `elbow_flex` | revolute | ±1.7453 | 4.5 | 5.0 |
 | `wrist_flex` | revolute | ±1.7453 | 4.5 | 3.0 |
 | `wrist_roll` | revolute | ±3.1416 | 4.5 | 3.0 |
-| `gripper` | revolute | 0 — 1.5708 | 4.5 | 1.5 |
+| `gripper` | revolute | 0 — 1 (normalised, **not** rad) | 4.5 | 1.5 |
 
-URDF reference: `robot_descriptions` / `mujoco_menagerie` SO-100. Units
+URDF reference: `robot_descriptions` / `mujoco_menagerie` SO-100. Arm units
 are radians (the lerobot SDK exposes degrees but OpenRAL keeps the
-URDF-native units).
+URDF-native units). The gripper is the exception: that channel carries a
+normalised `[0 = closed, 1 = open]` jaw fraction, and `position_limits`
+declares the unit the safety envelope and the runner's pre-clamp compare
+against — the jaw's mechanical range lives in `sim.grippers[].ctrl_range`
+(issue #62).
 
 ## Sensors
 

@@ -120,7 +120,19 @@ def build_hal(
                     "null and there is no `sim:` block to derive MujocoArmHAL from. "
                     "It is real-hardware-only — use `deploy run`."
                 )
-            return MujocoArmHAL.from_description(description)
+            # The DERIVED twin takes the same transport the class-based HALs
+            # do, under one renamed key: `deploy sim` composes a scene MJCF
+            # from `DeployScene.composition` and threads it in as `mjcf_path`
+            # (openral_hal.lifecycle._compose_scene_mjcf), but
+            # `from_description` spells it `mjcf_path_override`. Dropping the
+            # transport here — as this branch used to — silently ignored the
+            # scene composition for every `hal.sim: null` robot (so100 /
+            # so101): the stack booted a bare arm on an empty plane while the
+            # log still said it had composed the scene.
+            derived = dict(resolved)
+            if "mjcf_path" in derived:
+                derived["mjcf_path_override"] = derived.pop("mjcf_path")
+            return _construct(MujocoArmHAL.from_description, description, derived)
         return _construct(_import_object(entry), description, resolved)
     if mode == "real":
         entry = description.hal.real

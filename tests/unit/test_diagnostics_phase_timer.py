@@ -21,6 +21,7 @@ processor to capture events.
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -149,3 +150,86 @@ def test_exception_inside_block_still_emits_done(cap: _CaptureProcessor) -> None
     assert names == ["unit_phase_fail_start", "unit_phase_fail_done"]
     elapsed = cap.events[-1][1].get("elapsed_s")
     assert isinstance(elapsed, float)
+
+
+def test_switch_interval_raised_inside_and_restored(cap: _CaptureProcessor) -> None:
+    """The GIL switch interval is raised while the block runs and restored after.
+
+    Regression test for the SO-101 deploy cold-start starvation: load
+    phases share runtime_node with two 30 fps camera threads, and at the
+    default 5 ms switch interval the loading thread was starved to ~12%
+    of a core (a 6 s SmolVLA import stretched past 15 minutes).
+    """
+    before = sys.getswitchinterval()
+    with phase_timer("phase_gil", prefix="unit"):
+        assert sys.getswitchinterval() == pytest.approx(0.05)
+    assert sys.getswitchinterval() == pytest.approx(before)
+
+
+def test_switch_interval_restored_on_exception() -> None:
+    """A raising block must not leak the raised switch interval."""
+    before = sys.getswitchinterval()
+    with pytest.raises(RuntimeError, match="synthetic"), phase_timer("phase_gil2", prefix="unit"):
+        raise RuntimeError("synthetic")
+    assert sys.getswitchinterval() == pytest.approx(before)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs accounting is Linux-only")
+def test_done_carries_rss_and_major_fault_delta(cap: _CaptureProcessor) -> None:
+    """``_done`` reports live RSS and major faults counted from phase entry.
+
+    This is the attribution seam for a load phase that is slow while
+    burning no CPU: page reclaim shows up here and nowhere in CPU time.
+    Allocating inside the block must move ``rss_mb`` upward, and the
+    fault counter is a delta (>= 0), never the process-lifetime total.
+    """
+    with phase_timer("phase_mem", prefix="unit"):
+        ballast = bytearray(64 * 1024 * 1024)
+        ballast[::4096] = b"\x01" * len(ballast[::4096])  # fault the pages in
+    payload = cap.events[-1][1]
+    assert payload["rss_mb"] > 64.0
+    assert payload["major_faults"] >= 0
+    # Lifetime totals for a pytest process are far larger than a delta
+    # taken across a sub-second block; this is what catches a missing
+    # baseline subtraction.
+    assert payload["major_faults"] < 10_000
+
+
+def test_overlapping_phase_timers_restore_the_original_interval() -> None:
+    """Two overlapping contexts must not leave 50 ms installed forever.
+
+    Regression: the save/restore was non-reentrant on the process-global
+    switch interval — A enters saving 5 ms, B enters saving A's 50 ms, A
+    exits restoring 5 ms, B exits re-installing 50 ms permanently. The
+    depth-counted guard makes the OUTERMOST holder own both transitions,
+    in whichever order the contexts unwind.
+    """
+    import threading
+
+    before = sys.getswitchinterval()
+
+    a_entered = threading.Event()
+    b_entered = threading.Event()
+    a_exited = threading.Event()
+
+    def _a() -> None:
+        with phase_timer("phase_gil_a", prefix="unit"):
+            a_entered.set()
+            assert b_entered.wait(timeout=10.0)
+        a_exited.set()
+
+    def _b() -> None:
+        assert a_entered.wait(timeout=10.0)
+        with phase_timer("phase_gil_b", prefix="unit"):
+            b_entered.set()
+            # B outlives A — the interleaving that used to leak 0.05.
+            assert a_exited.wait(timeout=10.0)
+            assert sys.getswitchinterval() == pytest.approx(0.05)
+
+    threads = [threading.Thread(target=_a), threading.Thread(target=_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15.0)
+
+    assert sys.getswitchinterval() == pytest.approx(before)

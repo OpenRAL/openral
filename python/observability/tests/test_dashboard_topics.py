@@ -463,3 +463,187 @@ def test_reasoner_tick_without_mission_leaves_mission_none() -> None:
     store = TelemetryStore()
     store.ingest_spans(_wrap([_make_span("reasoner.tick", attrs={"reasoner.tick.idx": 1})]))
     assert store.snapshot()["topics"]["reasoner"]["mission"] is None
+
+
+# ── event-log severity banding ────────────────────────────────────────────────
+
+
+def test_per_tick_spans_land_in_the_debug_band() -> None:
+    """30 Hz spans must not drown the Event Log's INFO view.
+
+    Before this banding every span appended at `info`, so on a real 30 Hz arm
+    `hal.read_state` was ~99% of the rows and every lifecycle line scrolled
+    past in well under a second.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span("hal.read_state", attrs={"openral.hal.adapter": "so100"}),
+                _make_span("hal.send_action", attrs={"openral.hal.adapter": "so100"}),
+                _make_span("sensors.read_latest", attrs={"openral.sensors.sensor_id": "top"}),
+            ]
+        )
+    )
+    events = store.snapshot()["events"]
+    per_tick = [
+        e
+        for e in events
+        if e["kind"] in {"hal.read_state", "hal.send_action", "sensors.read_latest"}
+    ]
+    assert len(per_tick) == 3
+    assert {e["severity"] for e in per_tick} == {"debug"}
+
+
+def test_non_per_tick_spans_stay_info() -> None:
+    """Only the per-tick stream is demoted; lifecycle spans keep their INFO band."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("rskill.configure", attrs={"openral.rskill.id": "x/y"})]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "rskill.configure"]
+    assert events and events[0]["severity"] == "info"
+
+
+def test_rskill_execute_is_debug_because_the_name_is_per_tick_too() -> None:
+    """One name, two rates — so it cannot be a headline.
+
+    `rskill_runner_node` opens a `rskill.execute` per dispatched goal, but
+    `rSkillBase.step()` opens one per *tick*. Measured on a live deploy sim:
+    promoting it put 60 rows into a 20 s window, reproducing the exact flood
+    the allow-list exists to prevent.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("rskill.execute", attrs={"openral.rskill.id": "x/y"})]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "rskill.execute"]
+    assert events and events[0]["severity"] == "debug"
+
+
+def test_the_thirty_hz_spans_the_deny_list_missed_are_also_debug() -> None:
+    """Four more span families tick at the control rate, and all were `info`.
+
+    The original deny-list named only `hal.read_state` / `hal.send_action` /
+    `sensors.read_latest`. These four tick just as fast — `world_state.snapshot`
+    once per runner tick, `safety.check` once per candidate action chunk from
+    three separate emitters — so the Event Log's INFO view was still ~120
+    rows/s and the 200-slot ring still cycled in under two seconds.
+    """
+    store = TelemetryStore()
+    missed = [
+        "world_state.snapshot",
+        "rskill.tick",
+        "safety.check",
+        "rskill.chunk_inference",
+    ]
+    store.ingest_spans(_wrap([_make_span(name) for name in missed]))
+
+    events = {e["kind"]: e for e in store.snapshot()["events"] if e["kind"] in set(missed)}
+
+    assert set(events) == set(missed)
+    assert {e["severity"] for e in events.values()} == {"debug"}
+
+
+def test_an_unrecognised_span_defaults_to_debug() -> None:
+    """New spans are quiet until deliberately promoted.
+
+    This is the point of inverting the rule: a deny-list makes "noisy" the
+    thing you have to remember to declare, and that memory failed four times.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("some.brand.new.span")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "some.brand.new.span"]
+    assert events and events[0]["severity"] == "debug"
+
+
+def test_bringup_spans_stay_info() -> None:
+    """Lifecycle transitions are rare and are the point of the bringup trace.
+
+    A `deploy.bringup` row per node is exactly what an operator needs when a
+    deploy is slow to come up — the case that previously had no telemetry at
+    all, only launch-file comments claiming "~6 s, or ~27 s on a cold
+    robocasa kitchen".
+    """
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("deploy.bringup")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "deploy.bringup"]
+    assert events and events[0]["severity"] == "info"
+
+
+def test_bringup_row_names_the_node_that_held_the_graph_up() -> None:
+    """The row must answer "which node", not just "something took 6 s".
+
+    This is why there is no separate bringup panel: the Event Log row is
+    already the whole answer.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "deploy.bringup",
+                    duration_ms=6203.4,
+                    attrs={
+                        "openral.bringup.node": "openral_hal_so100",
+                        "openral.bringup.transition": "on_configure",
+                        "openral.bringup.result": "SUCCESS",
+                    },
+                )
+            ]
+        )
+    )
+    title = next(e for e in store.snapshot()["events"] if e["kind"] == "deploy.bringup")["title"]
+    assert "openral_hal_so100" in title
+    assert "on_configure" in title
+    assert "6203.4ms" in title
+
+
+def test_detect_probe_spans_stay_info() -> None:
+    """`detect.probe.*` is a handful of one-shot rows, not a stream."""
+    store = TelemetryStore()
+    store.ingest_spans(_wrap([_make_span("detect.probe.gpu")]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "detect.probe.gpu"]
+    assert events and events[0]["severity"] == "info"
+
+
+def test_errored_per_tick_span_still_reports_error() -> None:
+    """A failing read_state must NOT be hidden in the debug band."""
+    store = TelemetryStore()
+    span = _make_span("hal.read_state", attrs={"openral.hal.adapter": "so100"})
+    span.status.code = 2  # ERROR
+    store.ingest_spans(_wrap([span]))
+    events = [e for e in store.snapshot()["events"] if e["kind"] == "hal.read_state"]
+    assert events and events[0]["severity"] == "error"
+
+
+def test_a_rare_info_row_survives_the_debug_flood() -> None:
+    """Demoting the per-tick spans is not enough on its own.
+
+    Measured on a live `deploy sim`: the 200-slot main ring held 193
+    `hal.read_state` rows — ~7 s of history at 30 Hz — so a `deploy.bringup`
+    or `rskill.execute` row was evicted within seconds of being emitted.
+    Only the ERROR bringup row survived, because errors were the only thing
+    mirrored into the protected lane. An info row that cannot outlive the
+    flood is no more useful than one that was never emitted.
+    """
+    store = TelemetryStore()
+    store.ingest_spans(
+        _wrap(
+            [
+                _make_span(
+                    "deploy.bringup",
+                    attrs={
+                        "openral.bringup.node": "openral_hal_so100",
+                        "openral.bringup.transition": "on_activate",
+                    },
+                )
+            ]
+        )
+    )
+
+    # Two full main rings of per-tick debug traffic.
+    for _ in range(4):
+        store.ingest_spans(_wrap([_make_span("hal.read_state") for _ in range(100)]))
+
+    kinds = [e["kind"] for e in store.snapshot()["events"]]
+    assert "deploy.bringup" in kinds, (
+        "the bringup row was evicted by routine debug traffic — an operator "
+        "debugging a slow start would never see which node held the graph up"
+    )

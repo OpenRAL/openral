@@ -424,3 +424,40 @@ class TestInstallerShellScript:
         # touch the user's machine state without consent).
         text = self.SCRIPT.read_text()
         assert "id -u" in text and "root" in text.lower()
+
+
+class TestPackagedBootstrapScripts:
+    """``openral install ros`` must work without a workspace checkout.
+
+    The Tier-0 installer is `curl … | bash` → `uv tool install openral-cli`,
+    which never clones the repo. Resolving the bootstrap through
+    ``importlib.resources`` (package data) instead of a ``scripts/`` directory
+    is what makes that install path usable; these tests fail if the scripts
+    ever drift back out of the wheel.
+    """
+
+    @pytest.mark.parametrize("name", ["bootstrap_ubuntu.sh", "bootstrap_macos.sh"])
+    def test_bootstrap_ships_with_the_package(self, name: str) -> None:
+        import subprocess
+        from importlib import resources
+
+        resource = resources.files("openral_cli") / "bootstrap" / name
+        with resources.as_file(resource) as path:
+            assert path.is_file(), f"{name} is not packaged with openral_cli"
+            text = path.read_text()
+            # `install_ros` invokes it as `bash <path>`; it must parse.
+            proc = subprocess.run(
+                ["bash", "-n", str(path)], check=False, capture_output=True, text=True
+            )
+            assert proc.returncode == 0, proc.stderr
+        assert text.startswith("#!/usr/bin/env bash"), "missing or wrong shebang"
+
+    def test_install_ros_does_not_depend_on_a_checkout(self) -> None:
+        # The pre-fix failure mode: a curl-installed CLI hunted for
+        # `scripts/bootstrap_*.sh` under $OPENRAL_REPO_ROOT / $PWD and told the
+        # user to clone the repo. Nothing in the command may reach for either.
+        from openral_cli import install as install_mod
+
+        source = Path(install_mod.__file__).read_text()
+        assert "OPENRAL_REPO_ROOT" not in source
+        assert "git clone" not in source

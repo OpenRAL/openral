@@ -33,6 +33,7 @@ import contextlib
 import math
 import os
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import structlog
@@ -82,6 +83,20 @@ _SO100_JOINT_NAMES: list[str] = [
     "wrist_roll",
     "gripper",
 ]
+
+# ── reset_to_pose ramp tuning ─────────────────────────────────────────────────
+# The real-arm starting-pose ramp (see ``reset_to_pose``). 0.5 rad/s is well
+# under teleop speeds on these servos; the [min, max] duration clamp keeps
+# micro-moves from finishing instantly and giant moves from taking forever.
+# ponytail: module constants, promote to HAL params if a robot ever needs
+# per-deploy tuning.
+_RESET_MAX_RAD_S = 0.5
+_RESET_MIN_S = 1.0
+_RESET_MAX_S = 6.0
+_RESET_STEP_HZ = 30.0
+# Below this max joint delta (rad) the arm counts as already at the target
+# and the ramp is skipped entirely.
+_RESET_DEADBAND_RAD = 1e-3
 
 # ── Canonical RobotDescription for the SO-100 follower arm ────────────────────
 
@@ -233,6 +248,26 @@ def so100_with_sensors(
 def _deg_to_rad(deg: float) -> float:
     """Convert degrees to radians."""
     return deg * math.pi / 180.0
+
+
+def _joint_values_to_lerobot(step: Sequence[float]) -> dict[str, float]:
+    """Manifest-order joint values → lerobot's ``{"<joint>.pos": float}`` dict.
+
+    THE single unit conversion on the SO-100/101 actuation path — radians →
+    degrees for the five arm joints, ``[0, 1]`` → ``[0, 100]`` for the gripper
+    channel. Both ``send_action`` (via ``_action_to_lerobot``) and the
+    ``reset_to_pose`` ramp route through here so a calibration offset or
+    range change can never apply to one path and not the other. Callers
+    validate ``len(step) == len(_SO100_JOINT_NAMES)``.
+    """
+    out: dict[str, float] = {}
+    for i, name in enumerate(_SO100_JOINT_NAMES):
+        val = step[i]
+        if name == "gripper":
+            out[f"{name}.pos"] = val * 100.0  # [0, 1] → [0, 100]
+        else:
+            out[f"{name}.pos"] = _rad_to_deg(val)
+    return out
 
 
 def _rad_to_deg(rad: float) -> float:
@@ -501,6 +536,69 @@ class SO100FollowerHAL(HALBase):
         except Exception as exc:
             raise ROSRuntimeError(f"send_action() failed: {exc}") from exc
 
+    def reset_to_pose(self, pose: list[float]) -> None:
+        """Ramp the real arm to ``pose`` with a slow linear interpolation.
+
+        The real-hardware counterpart of the sim arms' ``qpos`` snap
+        (``_mujoco_arm.reset_to_pose``): the ``rskill_runner_node`` calls the
+        HAL's ``/openral/<robot>/reset_to_pose`` service before the first
+        inference tick so the VLA starts from its manifest ``starting_pose``
+        instead of wherever the arm was left. A snap is fine for a simulator;
+        on real Feetech servos an instantaneous position command is a violent
+        full-speed move, so this interpolates current → target at
+        ``_RESET_STEP_HZ`` with the per-joint speed capped by
+        ``_RESET_MAX_RAD_S`` (duration clamped to
+        [``_RESET_MIN_S``, ``_RESET_MAX_S``]).
+
+        Args:
+            pose: Target joint positions in manifest order — radians for the
+                five arm joints, ``[0, 1]`` for the gripper channel (the same
+                contract as ``read_state`` / ``send_action``).
+
+        Raises:
+            ROSRuntimeError: If not connected (or a bus write fails mid-ramp).
+            ROSConfigError: If ``pose`` length doesn't match the joint count.
+
+        Example:
+            >>> # hal.connect()
+            >>> # hal.reset_to_pose([-0.115, -1.79, 1.57, 1.03, 0.10, 0.02])
+        """
+        self._require_connected("reset_to_pose")
+        n = len(_SO100_JOINT_NAMES)
+        if len(pose) != n:
+            raise ROSConfigError(
+                f"reset_to_pose expects {n} values (SO-100 joint order); got {len(pose)}."
+            )
+
+        current = self.read_state().position
+        deltas = [t - c for t, c in zip(pose, current, strict=True)]
+        max_delta = max(abs(d) for d in deltas)
+        if max_delta < _RESET_DEADBAND_RAD:
+            return  # already there — no motion
+
+        # ponytail: fixed-rate linear ramp; per-joint trapezoids if anyone
+        # ever needs smoother-than-gentle. The gripper channel is [0, 1] not
+        # radians, so the shared speed cap treats a full gripper stroke like
+        # a 1-rad joint move — conservative, never fast.
+        duration_s = min(max(max_delta / _RESET_MAX_RAD_S, _RESET_MIN_S), _RESET_MAX_S)
+        steps = max(int(duration_s * _RESET_STEP_HZ), 1)
+        log.info(
+            "hal.reset_to_pose.ramp",
+            robot="so100_follower",
+            max_delta_rad=round(max_delta, 3),
+            duration_s=round(duration_s, 2),
+            steps=steps,
+        )
+        assert self._robot is not None  # guaranteed by _require_connected
+        for i in range(1, steps + 1):
+            alpha = i / steps
+            waypoint = [c + d * alpha for c, d in zip(current, deltas, strict=True)]
+            try:
+                self._robot.send_action(_joint_values_to_lerobot(waypoint))
+            except Exception as exc:
+                raise ROSRuntimeError(f"reset_to_pose send_action failed: {exc}") from exc
+            time.sleep(1.0 / _RESET_STEP_HZ)
+
     def estop(self) -> None:
         """Trigger an emergency stop: disconnect motors then raise.
 
@@ -555,12 +653,4 @@ class SO100FollowerHAL(HALBase):
             raise ROSConfigError(
                 f"action.joint_targets[0] has {len(step)} values; SO-100 has {n} joints."
             )
-
-        out: dict[str, float] = {}
-        for i, name in enumerate(_SO100_JOINT_NAMES):
-            val = step[i]
-            if name == "gripper":
-                out[f"{name}.pos"] = val * 100.0  # [0, 1] → [0, 100]
-            else:
-                out[f"{name}.pos"] = _rad_to_deg(val)
-        return out
+        return _joint_values_to_lerobot(step)
