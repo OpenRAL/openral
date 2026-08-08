@@ -104,7 +104,23 @@ def test_score_rejects_mismatched_frame_sizes() -> None:
 
 
 def _gpu_present() -> bool:
-    return shutil.which("nvidia-smi") is not None
+    """Whether a CUDA device is actually reachable *from torch*.
+
+    ``nvidia-smi`` on PATH proves the driver is installed; it does not prove
+    the installed torch wheel was built with CUDA. On a host that has an
+    NVIDIA GPU but a CPU-only torch, the nvidia-smi probe passes and the test
+    then dies inside torch with "Torch not compiled with CUDA enabled"
+    instead of skipping (CLAUDE.md §1.11 — an unavailable dependency skips).
+    Mirrors the ``torch.cuda.is_available()`` guard already used by
+    ``tests/unit/test_release_torch_modules.py``.
+    """
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
 
 
 def _missing_live_deps() -> list[str]:
