@@ -37,6 +37,18 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    Review the number and the notes there — the changelog body is editable, so
    curate it in the PR if a release deserves a narrative.
 
+   Its CI is deliberately thin. `test-selective` short-circuits on the
+   `release-please--*` branch and selects nothing: rewriting all 15 pyprojects
+   matches the `pyproject.toml` full-run glob *and* marks every package
+   changed, so the selector would otherwise run the entire suite plus every
+   opt-in dependency lane — including `isaacsim` / `robotwin` / `gr00t`, whose
+   sidecars a hosted runner cannot provision — for a diff that cannot change
+   behaviour. Every commit the release covers already passed on its own PR.
+   The job still *runs* and reports green, because it is a required check and
+   a skipped required check is never reported. `quality` and `DCO` are
+   unaffected, and `release-pypi.yml` re-runs the full `precheck` gate against
+   the tag before anything reaches an index.
+
 3. **Merging it** tags `vX.Y.Z` and publishes the GitHub release. The tag push
    triggers [`release-pypi.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-pypi.yml),
    which runs the same fast quality gate as PR CI and then publishes each

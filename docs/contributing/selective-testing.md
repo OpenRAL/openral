@@ -36,6 +36,14 @@ suite.
    inputs — it emits `full_run = true` and the caller runs everything. We never
    try to be clever about a wide-blast change; a wrong *negative* would silently
    skip a regression.
+
+   The one exception is release-please's release PR, and it is handled in the
+   workflow rather than here — precisely so the selector keeps no special
+   cases. `test-selective` short-circuits the `release-please--*` branch before
+   invoking the selector at all; see
+   [Releasing](releasing.md). That PR rewrites all 15 pyprojects, so it would
+   otherwise trip both this rule and the package graph below, for a diff whose
+   every commit already ran on its own PR.
 2. **Dependency graph, derived not hand-written.** The package graph is read
    straight from each `python/<pkg>/pyproject.toml` (`openral-*` deps). It can
    never drift from the real workspace.

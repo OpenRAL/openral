@@ -158,3 +158,39 @@ def test_manifest_matches_the_tree() -> None:
         f"manifest says {manifest['.']}, root pyproject says {_root_version()}. "
         "release-please computes the next bump from the manifest — they must agree."
     )
+
+
+def test_selective_tests_short_circuit_the_release_pr() -> None:
+    """The release PR is version churn only, and must not drag in the sim lanes.
+
+    Rewriting all 15 pyprojects matches the ``pyproject.toml`` full-run glob and
+    marks every package changed, which would otherwise select the whole suite
+    plus every opt-in lane — including ones whose sidecars a hosted runner
+    cannot provision. The guard has to live *inside* the job: ``select-and-test``
+    is a required check, and a required check skipped by a job-level condition
+    is never reported, so GitHub blocks the merge forever.
+    """
+    path = REPO_ROOT / ".github/workflows/test-selective.yml"
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["select-and-test"]
+
+    assert "if" not in job, (
+        "select-and-test is a required check; a job-level `if:` leaves it "
+        "reported as Expected forever and blocks every merge it skips."
+    )
+
+    select = next(s for s in job["steps"] if s.get("id") == "select")
+    assert select["env"]["HEAD_REF"] == "${{ github.head_ref }}", (
+        "the release-PR guard reads the head branch from HEAD_REF"
+    )
+    # release-please names the branch from RELEASE_PLEASE_BRANCH_PREFIX,
+    # "release-please--branches"; the guard globs the shorter prefix so the
+    # --components-- variant is covered too.
+    assert "release-please--*)" in select["run"], (
+        "the select step must short-circuit release-please's branch"
+    )
+    for output in ("any=false", "full_run=false"):
+        assert output in select["run"], (
+            f"the guard must emit {output!r} — the full-suite step is gated on "
+            "full_run alone, the rest on any."
+        )
