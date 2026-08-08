@@ -22,7 +22,6 @@
   ],
   "packages": {
     ".": {
-      "package-name": "openral",
       "extra-files": [
         "python/cli/pyproject.toml",
         "python/core/pyproject.toml",
