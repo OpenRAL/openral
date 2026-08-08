@@ -477,14 +477,78 @@ class LaunchInvocation:
 
 
 def _repo_root_from(start: Path) -> Path:
-    """Walk up from ``start`` until a directory with ``robots/`` and ``rskills/``."""
-    here = start.resolve()
-    for ancestor in (here, *here.parents):
-        if (ancestor / "robots").is_dir() and (ancestor / "rskills").is_dir():
-            return ancestor
+    """Locate the repo root holding the ``robots/`` + ``rskills/`` manifest trees.
+
+    Resolution order — first hit wins:
+
+        1. ``$OPENRAL_REPO_ROOT`` when set (explicit override always wins).
+        2. Walking up from ``start`` (normally this module's ``__file__``),
+           which resolves a source checkout or an editable install.
+        3. Walking up from the current working directory, which resolves a
+           **wheel** install (``pip``/``uv tool install openral-cli``) invoked
+           from inside a checkout.
+
+    Step 3 is what makes this work off a published wheel at all. The manifest
+    trees are repo data, not package data, so a site-packages ``__file__`` has
+    no ``robots/`` ancestor and step 2 can never succeed there — without a cwd
+    fallback ``openral deploy sim`` was unusable from any wheel install, with
+    no flag or env var to point it at a checkout.
+
+    Note this is a genuinely different problem from the one ``openral install
+    ros`` solved by packaging its bootstrap scripts as wheel data: ``robots/``
+    and ``rskills/`` are user-editable fixture trees that a deploy is expected
+    to read (and that operators add their own robots to), not fixed assets we
+    could vendor into the distribution.
+
+    Args:
+        start: Path to begin the upward walk from.
+
+    Returns:
+        The absolute repo root containing both ``robots/`` and ``rskills/``.
+
+    Raises:
+        ROSConfigError: When no candidate yields a directory holding both
+            manifest trees.
+
+    Example:
+        >>> from pathlib import Path
+        >>> root = _repo_root_from(Path(__file__))
+        >>> (root / "robots").is_dir() and (root / "rskills").is_dir()
+        True
+    """
+
+    def _walk_up(origin: Path) -> Path | None:
+        here = origin.resolve()
+        for ancestor in (here, *here.parents):
+            if (ancestor / "robots").is_dir() and (ancestor / "rskills").is_dir():
+                return ancestor
+        return None
+
+    env_root = os.environ.get("OPENRAL_REPO_ROOT")
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if (candidate / "robots").is_dir() and (candidate / "rskills").is_dir():
+            return candidate
+        raise ROSConfigError(
+            f"OPENRAL_REPO_ROOT={env_root} does not look like an OpenRAL checkout; "
+            f"expected {candidate} to contain both robots/ and rskills/."
+        )
+
+    for origin in (start, Path.cwd()):
+        found = _walk_up(origin)
+        if found is not None:
+            return found
+
     raise ROSConfigError(
-        f"Could not locate OpenRAL repo root above {start}; "
-        "expected a parent containing both robots/ and rskills/."
+        f"Could not locate the OpenRAL repo root (searched upward from {start} "
+        f"and from the current directory {Path.cwd()}); expected an ancestor "
+        "containing both robots/ and rskills/.\n"
+        "The robots/ and rskills/ manifest trees ship with the git repo, not "
+        "inside the installed package, so a wheel install needs to be pointed "
+        "at a checkout:\n"
+        "  git clone https://github.com/OpenRAL/openral.git\n"
+        "  cd openral && openral deploy sim --config <scene.yaml>\n"
+        "or set OPENRAL_REPO_ROOT=/path/to/openral."
     )
 
 
