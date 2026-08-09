@@ -139,7 +139,11 @@ def compose_runtime(
         dataset_out: when set, attach a
             :class:`~openral_runner.dataset_recorder_bridge.DatasetRecorderBridge`
             that records the deploy session (proprio + action + camera
-            frames + episode markers) to this rosbag2 ``.mcap`` path. The
+            frames + episode markers) to this rosbag2 ``.mcap`` file (a
+            single file, not a bag directory; parent must exist, file must
+            not). Content is segmented by the ``/openral/episode`` markers an
+            *executing* rSkill emits, so a session in which no skill runs
+            writes nothing — the bridge reports that at ``destroy()``. The
             caller must call ``runtime.dataset_recorder_bridge.destroy()``
             on teardown to finalize the bag. ``None`` disables recording.
         dataset_repo_id: repo_id stamped into the recorded frames /
@@ -264,6 +268,7 @@ def compose_runtime(
             robot=description,
             aggregator=aggregator,
             recorder=recorder,
+            output_path=str(dataset_out),
         )
         del dataset_license  # carried into the bag's LeRobot conversion via `from-bag`
     return ComposedRuntime(

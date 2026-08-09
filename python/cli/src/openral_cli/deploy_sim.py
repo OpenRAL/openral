@@ -2471,7 +2471,12 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         "--dataset-out",
         help=(
             "record the deploy session (proprio + action + camera "
-            "frames + episode markers) to this rosbag2 mcap path. Convert to a "
+            "frames + episode markers) to this rosbag2 mcap FILE (not a bag "
+            "directory): its parent must exist and the file must not. "
+            "Recording is segmented by episode markers, which only an "
+            "EXECUTING rSkill emits — a session where every dispatch is "
+            "rejected writes no file (reported as "
+            "`dataset_recorder.nothing_recorded` at shutdown). Convert to a "
             "LeRobotDataset v3 offline with `openral dataset from-bag`. Empty "
             "disables recording."
         ),

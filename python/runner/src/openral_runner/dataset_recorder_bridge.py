@@ -93,6 +93,9 @@ class DatasetRecorderBridge:
             feeds; read (never written) for proprio + image frames.
         recorder: A configured :class:`openral_dataset.RolloutRecorder`
             (typically fronting a :class:`openral_dataset.Rosbag2Sink`).
+        output_path: Where the recorder's sink writes, echoed in the
+            armed / summary log lines so the operator can find (or fail to
+            find) the artefact by path. Purely informational.
         action_topic: ``ActionChunk`` topic. Defaults to
             :data:`ACTION_TOPIC_DEFAULT`.
         episode_topic: ``Episode`` marker topic. Defaults to
@@ -106,6 +109,7 @@ class DatasetRecorderBridge:
         robot: RobotDescription,
         aggregator: WorldStateAggregator,
         recorder: RolloutRecorder,
+        output_path: str | None = None,
         action_topic: str = ACTION_TOPIC_DEFAULT,
         episode_topic: str = EPISODE_TOPIC_DEFAULT,
     ) -> None:
@@ -121,9 +125,15 @@ class DatasetRecorderBridge:
         self._robot = robot
         self._aggregator = aggregator
         self._recorder = recorder
+        self._output_path = output_path
         self._sensor_to_slot = _sensor_name_to_slot(robot)
         self._episode_open = False
         self._n_frames = 0
+        # Run totals, reported at destroy() — including the zero case, which
+        # is the whole point: a session where no rSkill ever executed opens no
+        # episode and writes no file, and used to say nothing at all.
+        self._n_episodes = 0
+        self._n_frames_total = 0
         # Per-tick action reassembly (slot dispatch): the node emits
         # one ActionChunk per slot per tick (e.g. LIBERO = cartesian_delta +
         # gripper; RoboCasa composite = cartesian + gripper + body_twist), in a
@@ -154,9 +164,29 @@ class DatasetRecorderBridge:
         self._action_sub: Any = node.create_subscription(
             ActionChunk, action_topic, self._on_action, action_qos
         )
+        # Say so BEFORE the run: recording is armed, and it is contingent on a
+        # skill actually reaching execution (the only publisher of the episode
+        # markers we segment on). Without this the dependency is invisible
+        # until the operator goes looking for a file that was never written.
+        _log.info(
+            "dataset_recorder.armed",
+            output_path=self._output_path,
+            episode_topic=episode_topic,
+            hint=(
+                "recording starts at the first executing rSkill "
+                f"({episode_topic} PHASE_START); a run where every dispatch is "
+                "rejected records nothing"
+            ),
+        )
 
     def destroy(self) -> None:
-        """Close any open episode, finalize the recorder, release subs. Idempotent."""
+        """Close any open episode, finalize the recorder, release subs.
+
+        Idempotent — a second call returns before re-finalizing or
+        re-emitting the summary.
+        """
+        if self._action_sub is None and self._episode_sub is None:
+            return
         if self._episode_open:
             # Open episode at teardown → mark failure (deactivate-with-open
             # contract, same as the offline converter's EOF handling).
@@ -175,6 +205,27 @@ class DatasetRecorderBridge:
                 self._node.destroy_subscription(sub)
         self._action_sub = None
         self._episode_sub = None
+        # Always report — the zero case is the one an operator most needs to
+        # see, and it is exactly the case that used to exit silently.
+        if self._n_episodes:
+            _log.info(
+                "dataset_recorder.summary",
+                output_path=self._output_path,
+                n_episodes=self._n_episodes,
+                n_frames=self._n_frames_total,
+            )
+        else:
+            _log.warning(
+                "dataset_recorder.nothing_recorded",
+                output_path=self._output_path,
+                n_episodes=0,
+                n_frames=0,
+                hint=(
+                    "no rSkill reached execution, so no episode marker ever "
+                    "fired and no file was written — check the "
+                    "rskill_runner.goal_rejected / goal_failed logs above"
+                ),
+            )
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
@@ -194,6 +245,7 @@ class DatasetRecorderBridge:
             self._recorder.episode_start(task_string=str(msg.task_string))
             self._episode_open = True
             self._n_frames = 0
+            self._n_episodes += 1
         elif phase == _PHASE_END:
             if not self._episode_open:
                 return
@@ -281,6 +333,7 @@ class DatasetRecorderBridge:
             )
             return
         self._n_frames += 1
+        self._n_frames_total += 1
 
     def _decode_images(self, image_frames: Any) -> dict[str, np.ndarray[Any, Any]]:  # noqa: ANN401
         """Decode aggregator ``image_frames`` (sensor-name keyed) → slot-keyed HWC arrays."""
