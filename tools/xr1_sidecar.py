@@ -23,6 +23,25 @@ _LABEL = "xr1-sidecar"
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "xr1-sidecar"
 _SERVER = Path(__file__).resolve().parent / "_xr1_server.py"
 
+# Pinned deps, installed in three passes (torch index redirect / plain PyPI /
+# no-build-isolation for flash-attn). Named constants rather than inline lists
+# so the same pins key the provisioning sentinel — editing one repairs an
+# already-provisioned venv instead of being ignored (see ``ensure_pip_venv``).
+_XR1_TORCH_DEPS = ("torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0")
+_XR1_RUNTIME_DEPS = (
+    "transformers==4.57.1",
+    "accelerate==1.11.0",
+    "safetensors==0.6.2",
+    "liger-kernel==0.6.5",
+    "qwen-vl-utils>=0.0.14",
+    "einops",
+    "pillow",
+    "pyzmq",
+    "msgpack",
+    "bitsandbytes==0.49.2",
+)
+_XR1_ATTN_DEPS = ("flash-attn==2.8.3",)
+
 
 def _ensure_venv(home: Path) -> Path:
     override = os.environ.get("OPENRAL_XR1_SIDECAR_PYTHON")
@@ -35,49 +54,12 @@ def _ensure_venv(home: Path) -> Path:
     def _install(uv: str, py: Path) -> None:
         run_cmd(
             _LABEL,
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(py),
-                "--torch-backend=cu128",
-                "torch==2.8.0",
-                "torchvision==0.23.0",
-                "torchaudio==2.8.0",
-            ],
+            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", *_XR1_TORCH_DEPS],
         )
+        run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), *_XR1_RUNTIME_DEPS])
         run_cmd(
             _LABEL,
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(py),
-                "transformers==4.57.1",
-                "accelerate==1.11.0",
-                "safetensors==0.6.2",
-                "liger-kernel==0.6.5",
-                "qwen-vl-utils>=0.0.14",
-                "einops",
-                "pillow",
-                "pyzmq",
-                "msgpack",
-                "bitsandbytes==0.49.2",
-            ],
-        )
-        run_cmd(
-            _LABEL,
-            [
-                uv,
-                "pip",
-                "install",
-                "--python",
-                str(py),
-                "--no-build-isolation",
-                "flash-attn==2.8.3",
-            ],
+            [uv, "pip", "install", "--python", str(py), "--no-build-isolation", *_XR1_ATTN_DEPS],
         )
 
     return ensure_pip_venv(
@@ -87,6 +69,7 @@ def _ensure_venv(home: Path) -> Path:
         install=_install,
         override_env="OPENRAL_XR1_SIDECAR_VENV",
         sentinel_name=".xr1-nf4-deps-installed",
+        spec=(*_XR1_TORCH_DEPS, *_XR1_RUNTIME_DEPS, *_XR1_ATTN_DEPS),
     )
 
 

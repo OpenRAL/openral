@@ -92,6 +92,8 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         install=_install,
         override=override,
         override_env=_VENV_ENV,
+        # Keyed on the lock text so recompiling it repairs an existing venv.
+        spec=(_LOCK.read_text(encoding="utf-8"),),
     )
 
 

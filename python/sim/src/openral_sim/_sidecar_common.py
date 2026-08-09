@@ -24,12 +24,13 @@ the sidecar, *then* ``exec`` into the isolated 3.10 venv. The isolation
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 # Where each booted sidecar records *what* it is serving, so the openral-side
@@ -121,6 +122,22 @@ def ensure_source(label: str, work: Path, repo_url: str) -> Path:
     return source
 
 
+def spec_marker(spec: Sequence[str] | None) -> str:
+    """Sentinel content identifying the dependency ``spec`` a venv was built from.
+
+    A digest — not the spec itself — so a lockfile's whole text can be keyed on
+    without writing it into the venv. ``None`` keeps the historical opaque
+    ``ok`` marker, for callers whose install recipe has no stable spec to hash.
+    """
+    if spec is None:
+        return "ok\n"
+    digest = hashlib.sha256()
+    for part in spec:
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\0")
+    return f"{digest.hexdigest()}\n"
+
+
 def ensure_pip_venv(
     *,
     label: str,
@@ -130,8 +147,9 @@ def ensure_pip_venv(
     override: str | None = None,
     override_env: str | None = None,
     sentinel_name: str = ".deps-installed",
+    spec: Sequence[str] | None = None,
 ) -> Path:
-    """Create or reuse a ``<home>/.venv`` on ``python``, populated by ``install``.
+    """Create, reuse, or repair a ``<home>/.venv`` on ``python``, populated by ``install``.
 
     Returns the venv's ``python``. Shared provisioning order for the
     *pip-installable* sidecars (LocateAnything
@@ -142,11 +160,22 @@ def ensure_pip_venv(
        ``override_env`` environment variable points at an existing venv to reuse
        verbatim — the operator-provided escape hatch. Raises ``SystemExit`` if
        that path has no ``bin/python``.
-    2. An already-provisioned ``<home>/.venv`` carrying the completion sentinel
+    2. An already-provisioned ``<home>/.venv`` whose sentinel matches ``spec``
        is reused as-is.
-    3. Otherwise ``uv venv --python <python>`` creates it and ``install`` runs
-       once; the sentinel is written only on success, so an interrupted install
-       is retried rather than silently treated as done.
+    3. Otherwise ``uv venv --python <python>`` creates it (when absent) and
+       ``install`` runs; the sentinel is written only on success, so an
+       interrupted install is retried rather than silently treated as done.
+
+    ``spec`` is the dependency spec ``install`` will apply — the pinned
+    requirement strings, or a lockfile's text. It is hashed into the sentinel
+    (:func:`spec_marker`) so that **correcting a pin repairs existing venvs**:
+    a sentinel written from a different spec (or from the pre-digest ``ok``
+    marker) no longer counts as provisioned, and ``install`` re-runs. Without
+    it a venv is frozen at whatever it first resolved, with no supported way to
+    pick up a dependency fix short of deleting it — which is how an Isaac venv
+    kept an ``nvidia-nvjitlink-cu12`` too old for its own prebundled cusparse
+    long after the pin was raised (issue #89). Pass ``None`` only when the
+    caller has no stable spec (e.g. an injected custom ``install``).
 
     ``install`` receives ``(uv_path, venv_python)`` and is responsible for the
     actual ``uv pip install`` (typically ``--require-hashes -r <lockfile>``).
@@ -164,18 +193,21 @@ def ensure_pip_venv(
     venv = home / ".venv"
     py = venv / "bin" / "python"
     sentinel = venv / sentinel_name
+    marker = spec_marker(spec)
     if py.exists():
-        if sentinel.exists():
+        current = sentinel.read_text(encoding="utf-8") if sentinel.exists() else None
+        if current == marker:
             print(f"[{label}] reusing venv at {venv}", flush=True)
             return py
-        print(f"[{label}] repairing incomplete venv at {venv}", flush=True)
+        why = "incomplete" if current is None else "stale (dependency spec changed)"
+        print(f"[{label}] repairing {why} venv at {venv}", flush=True)
         install(uv, py)
-        sentinel.write_text("ok\n")
+        sentinel.write_text(marker)
         return py
     home.mkdir(parents=True, exist_ok=True)
     run_cmd(label, [uv, "venv", str(venv), "--python", python])
     install(uv, py)
-    sentinel.write_text("ok\n")
+    sentinel.write_text(marker)
     return py
 
 

@@ -224,28 +224,50 @@ class SidecarClient:
         _log.info("sidecar_connected", sidecar=self.name, endpoint=endpoint, mode="auto-spawned")
 
     def _boot_failure_error(self, endpoint: str, returncode: int | None) -> ROSConfigError:
-        """Build the right boot-failure error: crash-at-boot vs ping timeout.
+        """Build the right boot-failure error: crash-at-boot vs stall vs slow boot.
 
         ``returncode`` is the child's exit code (``None`` if it was still
-        running == genuine timeout, a non-zero int if it crashed during boot).
+        running == it never answered, a non-zero int if it crashed during boot).
         A crash is NOT a slow bootstrap, so reporting "did not answer ping
         within {timeout}s" is misleading — surface the exit code and the
         common causes instead (e.g. evaluating a pretrain base like RLDX-1-PT
         directly: its processor has no modality config for the requested
         embodiment, so ``get_modality_configs()[<tag>]`` KeyErrors at boot).
+
+        A live-but-silent child is likewise not necessarily slow: it may have
+        finished its own startup and then stalled (the Isaac case of issue #89 —
+        Kit logged ``app ready`` at 12 s, then sat there for the remaining
+        1188 s). "Raise the boot timeout" is only the right advice when the
+        child's log shows it still making progress, so the message says which
+        of the two it is rather than asserting the slow-bootstrap reading.
+        ``_is_port_busy`` splits the stall further: a bound-but-mute port means
+        the sidecar reached its serve loop and the fault is on the wire.
         """
         if returncode is not None and returncode != 0:
             return ROSConfigError(
                 f"{self.name} sidecar process exited with code {returncode} during boot on "
-                f"{endpoint} — it crashed, it did not time out. Inspect the sidecar stdout "
-                "above. Common causes: the checkpoint's processor has no modality config for "
+                f"{endpoint} — it crashed, it did not time out. The reason is in the sidecar "
+                "stdout above; common ones are a failed dependency-floor check (it names the "
+                "offending versions), a checkpoint whose processor has no modality config for "
                 "the requested embodiment (e.g. running a pretrain base such as RLDX-1-PT "
                 "directly instead of a task finetune), missing/incompatible weights, or CUDA OOM."
             )
+        if self._is_port_busy():
+            return ROSConfigError(
+                f"{self.name} sidecar bound {endpoint} but never answered ping within "
+                f"{self.boot_timeout_s:.0f}s. It reached its serve loop, so this is not a "
+                "slow bootstrap and raising the boot timeout will not help — the fault is "
+                "between the client and the serve loop (a wedged request, or another "
+                "process holding the port)."
+            )
         return ROSConfigError(
-            f"{self.name} sidecar spawned but did not answer ping within "
-            f"{self.boot_timeout_s:.0f}s on {endpoint}. Inspect the sidecar stdout "
-            "above, or raise the boot timeout if the first-run bootstrap is slow."
+            f"{self.name} sidecar spawned but never bound {endpoint} within "
+            f"{self.boot_timeout_s:.0f}s; it was still running when we gave up. Read the "
+            "sidecar stdout above: if it is still logging progress, raise the boot timeout "
+            "(backend_options['boot_timeout_s']). If it went quiet after reporting its own "
+            "startup as complete, it stalled — raising the timeout only lengthens the wait. "
+            "Look for errors it logged before falling silent (a failed extension or plugin "
+            "load, a mismatched CUDA/driver library, a missing display for a renderer)."
         )
 
     def call(self, endpoint: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

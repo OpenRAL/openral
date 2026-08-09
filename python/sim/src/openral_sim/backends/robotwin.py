@@ -357,6 +357,8 @@ def _provision_robotwin_venv() -> Path:
         home=_ROBOTWIN_SIDECAR_HOME,
         python=_ROBOTWIN_PYTHON,
         install=_install,
+        # Keyed on the pins so editing them repairs an already-provisioned venv.
+        spec=(*_ROBOTWIN_BASE_DEPS, *_ROBOTWIN_MPLIB_DEPS),
     )
     root = _ROBOTWIN_SIDECAR_HOME / "RoboTwin"
     if not root.is_dir():
@@ -372,9 +374,13 @@ def _provision_robotwin_venv() -> Path:
 def _sidecar_python() -> Path:
     """Resolve the robotwin sidecar venv interpreter, or raise with the install hint.
 
-    Resolution order: ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` override → an existing
-    default venv → opt-in auto-provision (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) → a
-    typed error carrying the exact manual commands.
+    Resolution order: ``OPENRAL_ROBOTWIN_SIDECAR_PYTHON`` override → opt-in
+    auto-provision (``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``) → an existing default
+    venv → a typed error carrying the exact manual commands.
+
+    Auto-provision precedes the existing-venv shortcut so a venv built from
+    superseded pins is repaired rather than returned untouched (same ordering
+    fix as the Isaac backend — see :func:`ensure_pip_venv`'s ``spec``).
     """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
@@ -382,11 +388,11 @@ def _sidecar_python() -> Path:
         if not p.is_file():
             raise ROSConfigError(f"{_SIDECAR_PYTHON_ENV}={override!r} is not a file.")
         return p
+    if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
+        return _provision_robotwin_venv()
     default = _ROBOTWIN_SIDECAR_HOME / ".venv" / "bin" / "python"
     if default.is_file():
         return default
-    if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
-        return _provision_robotwin_venv()
     raise ROSConfigError(
         "RoboTwin sidecar venv not found. It is an externally-provisioned dependency "
         "(SAPIEN + RoboTwin 2.0, Python 3.12, Linux-only, multi-GB). "
