@@ -229,6 +229,21 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     the ``benchmark scene`` smoke wrapper did). Set here so every sidecar boot
     gets it regardless of how ``openral`` was launched; ``setdefault`` lets an
     explicit caller value win.
+
+    Finally, points ``TRITON_PTXAS_PATH`` at a CUDA 12.9 ``ptxas`` when the venv
+    ships one. Triton bundles its own ``ptxas``, and triton 3.5.1's is CUDA
+    12.8, whose newest target is ``sm_120``. On a GB10 / Jetson Thor
+    (``sm_121``) that makes *every* Triton kernel fail to compile — even a
+    three-line ``tl.store`` — with::
+
+        ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'
+
+    A sidecar that installs ``nvidia-cuda-nvcc-cu12>=12.9`` gets a ``ptxas``
+    that does know ``sm_121a``, and this redirects Triton onto it. Deliberately
+    resolved from inside the venv rather than from ``/usr/local/cuda``: the
+    host toolkit may be absent or a different version, and the venv is the
+    thing we pin. A no-op wherever that wheel isn't installed (all x86_64
+    sidecars today), so it cannot perturb the validated x86_64 path.
     """
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -238,7 +253,24 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
     env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    ptxas = venv_ptxas(venv)
+    if ptxas is not None:
+        env.setdefault("TRITON_PTXAS_PATH", str(ptxas))
     return env
+
+
+def venv_ptxas(venv: Path) -> Path | None:
+    """Return the ``nvidia-cuda-nvcc-cu12`` ``ptxas`` inside ``venv``, if present.
+
+    Split out of :func:`make_isolated_env` so a sidecar that execs by some other
+    route — or a test — can ask the same question. Returns ``None`` when the
+    wheel isn't installed, which is the normal case on x86_64.
+    """
+    for lib in sorted(venv.glob("lib/python3.*/site-packages")):
+        candidate = lib / "nvidia" / "cuda_nvcc" / "bin" / "ptxas"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def exec_server(venv: Path, wrapper: Path, env: dict[str, str]) -> None:

@@ -4,7 +4,12 @@
 # Regenerate the lock with:
 #   uv pip compile tools/sidecar_requirements/qwen_vlm.in \
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/qwen_vlm.lock
+# The --overrides file raises nvrtc past the sm_121 cliff on aarch64 (GB10 /
+# Jetson Thor). Without it EVERY query on this host dies in nvrtc: Qwen3.5
+# reduces the vision grid with `image_grid_thw.prod(-1)`, and `prod` is a
+# jiterator op. Read that file's header before dropping the flag.
 transformers==5.3.0
 # torch 2.9.1, not 2.8.0: the cu128 build of 2.8.0 publishes no linux_aarch64
 # wheel (manylinux x86_64 + win_amd64 only) and its required triton==3.4.0 has

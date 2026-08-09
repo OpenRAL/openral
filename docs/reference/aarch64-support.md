@@ -23,8 +23,11 @@ aarch64 wheel on any index either. Both gaps close at torch 2.9:
 | `torch==2.9.0/2.9.1+cu130` | ✅ `manylinux_2_28_aarch64` | requires `triton==3.5.x` ✅ |
 | `triton` ≤ `3.4.0` | ❌ x86_64 only | |
 | `triton` ≥ `3.5.0` | ✅ `manylinux_2_28_aarch64` | |
-| `torchvision` / `torchaudio` `cu128` | ❌ *no* aarch64 wheel on the index | resolve to the PyPI build, which is CUDA-enabled on aarch64 — `torchvision.ops.nms` on CUDA tensors verified working on GB10 |
+| `torchvision` / `torchaudio` on `cu128` | ✅ `manylinux_2_28_aarch64` | **but the filename carries no `+cu128` local tag**, unlike the x86_64 wheel — grepping the index for `+cu128` misses it entirely |
+| `torchvision` on **PyPI**, aarch64 | ⚠️ CPU-only | different file from the index build (`7fb7590c…`, 2.39 MB vs `bd33a7cc…`, 8.49 MB). `readelf -d` shows the index build links `libtorch_cuda.so` / `libc10_cuda.so` / `libcudart.so.12` and the PyPI one does not; on the PyPI build `torchvision.ops.nms` on CUDA tensors raises `NotImplementedError: Could not run 'torchvision::nms' with arguments from the 'CUDA' backend` |
 | `torchcodec` < `0.11.0` | ❌ x86_64 + darwin-arm64 only | first aarch64 wheel is 0.11.0 |
+| `decord` (all versions) | ❌ x86_64 + win only | use `decord2`, which ships aarch64 and installs the same `decord` module |
+| `open3d` | ❌ no `cp312` aarch64 build exists | 0.19.0 is x86_64/macOS/win; ≤0.18.0 stops at `cp311` |
 
 So torch 2.8.0 is a single-release hole in an otherwise continuous series, and
 it is the version several upstream VLA projects happen to pin. Every sidecar
@@ -49,25 +52,69 @@ Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
 Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)
 ```
 
-The warning is not fatal — `sm_120` code runs on `sm_121`. Verified live on a
-GB10 (driver 580.126.09, CUDA 13.0) with `torch==2.9.1`: bf16 matmul,
-`torchvision.ops.nms`, and a `bitsandbytes` NF4 `Linear4bit` forward all
-succeed. Both indexes work and both emit the same warning, so there is no
-reason to move off `cu128`:
-
 | index | `torch.cuda.get_arch_list()` |
 |---|---|
 | `cu128` | `sm_80 sm_90 sm_100 sm_120` |
 | `cu130` | `sm_80 sm_90 sm_100 sm_110 sm_120 compute_120` |
 
+**That warning is only half the story, and the benign half.** It is about
+*precompiled* SASS, and there it really is harmless — `sm_120` cubins run on
+`sm_121`. Verified live on a GB10 (driver 580.126.09, CUDA 13.0) with
+`torch==2.9.1+cu128`: bf16 matmul, `torchvision.ops.nms`, a `bitsandbytes` NF4
+`Linear4bit` forward and a `flash_attn_func` bf16 forward all succeed.
+
+The dangerous half is silent: **anything compiled at *runtime* for the live
+device fails**, because the `cu128` wheels bundle CUDA 12.8 compilers that do
+not know `sm_121`. Two separate compilers, two separate failures:
+
+| compiler | shipped by | ceiling | symptom on GB10 |
+|---|---|---|---|
+| `nvrtc` | `nvidia-cuda-nvrtc-cu12==12.8.93` (torch's exact pin) | `sm_120` | `nvrtc: error: invalid value for --gpu-architecture (-arch)` |
+| `ptxas` | bundled inside `triton==3.5.1` | `sm_120a` | `ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'` |
+
+This is not theoretical, and it does not fail cleanly:
+
+- **Every** Qwen scene-VLM query died — `modeling_qwen3_5.py` reduces the vision
+  grid with `image_grid_thw.prod(-1)`, and `prod` is a jiterator op. `torch.sum`
+  is precompiled and works; `torch.prod` is not and does not.
+- **DA3 depth failed on request #2, not #1** — its `@torch.jit.script
+  affine_inverse` only gets NVRTC-fused once the profiling executor warms up.
+  The worst possible shape for a provider streaming frames.
+- **LingBot-VLA v2** hit nvrtc first, then ptxas: *every* Triton kernel failed,
+  down to a three-line `tl.store`.
+
+### The fix
+
+Both compilers are swappable without touching the torch build:
+
+- `tools/sidecar_requirements/aarch64-nvrtc-override.txt` — a uv `--overrides`
+  file raising nvrtc to **12.9.86**, whose arch list is
+  `[50 … 100, 101, 103, 120, **121**]`. It must carry *both* marker branches
+  (`== "aarch64"` and `!= "aarch64"`): a uv override replaces every requirement
+  for the package it names, so a lone aarch64 line leaves x86_64 with no nvrtc
+  at all instead of falling back to torch's pin. Passed at **install** time as
+  well as compile time — torch pins `nvidia-cuda-nvrtc-cu12==12.8.93` exactly,
+  so uv otherwise rejects the lock's aarch64 line as a conflict.
+- `nvidia-cuda-nvcc-cu12==12.9.86` — a pip-installable `ptxas` that does list
+  `sm_121 sm_121a`. `openral_sim._sidecar_common.make_isolated_env` points
+  `TRITON_PTXAS_PATH` at the venv-local copy (`venv_ptxas`), so no host CUDA
+  toolkit is required. Installed only by sidecars that run Triton kernels.
+
+Moving aarch64 to the `cu130` index fixes both too (nvrtc 13.0 and its ptxas
+know `sm_121`) and was verified working end-to-end. It was not chosen: it swaps
+the whole stack onto a parallel `nvidia-*-cu13` package set and, because
+`--torch-backend` is one global choice per compile, would force a
+per-architecture lockfile. Replacing two compiler shims keeps the torch build,
+the CUDA runtime and all of x86_64 byte-identical.
+
 ## Per-sidecar status
 
 | sidecar | aarch64 | notes |
 |---|---|---|
-| `tools/qwen_vlm_sidecar.py` | ✅ | `torch==2.9.1` in `sidecar_requirements/qwen_vlm.lock`; whole lock resolves on aarch64 (63 packages) |
-| `tools/locateanything_sidecar.py` | ✅ | `torch==2.9.1` in `sidecar_requirements/locateanything.lock`. `decord` — an unused video reader inherited from the upstream NVIDIA Space requirements, x86_64/win-only — is marker-scoped off aarch64; it was the second blocker after torch. |
-| `tools/da3_depth_sidecar.py` | ❌ | not a torch problem: `depth-anything-3` requires `open3d`, whose only cp312 release (0.19.0) is `manylinux_2_31_x86_64` / macOS / win. No aarch64 build exists. |
-| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | upstream `requirements.txt` pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper feeds `uv pip install --overrides` a 2.9.1 / 3.5.1 torch stack (`_V2_OVERRIDES`), with torchcodec marker-scoped off aarch64. Full upstream requirement set verified to resolve on **both** platforms (aarch64: 129 packages, no torchcodec; x86_64: 130 with `torchcodec==0.9.1+cu128`). |
+| `tools/qwen_vlm_sidecar.py` | ✅ | `torch==2.9.1` + the nvrtc override in `sidecar_requirements/qwen_vlm.lock`. **Live-verified end to end on GB10**: a real image question answered correctly over the ZMQ wire, 3.29 GB VRAM, 90.7 s load. Was the sidecar that exposed the nvrtc ceiling — before the override every single query died, because `modeling_qwen3_5.py` reduces the vision grid with `image_grid_thw.prod(-1)`. |
+| `tools/locateanything_sidecar.py` | ✅ | `torch==2.9.1` in `sidecar_requirements/locateanything.lock`. `decord` (x86_64/win-only) was the second blocker after torch, and it is **not** droppable — the checkpoint's `trust_remote_code` `processing_locateanything.py` imports it at top level and transformers' `check_imports` rejects the module without it. Resolved by marker-swapping in `decord2` on aarch64: a maintained Apache-2.0 fork that publishes `manylinux_2_28_aarch64` and installs the same top-level `decord` package. |
+| `tools/da3_depth_sidecar.py` | ✅ | not a torch problem — two `depth-anything-3` dependencies have no aarch64 wheel (`open3d`, `pycolmap`), and its scripted `affine_inverse` is where the sm_121 nvrtc ceiling was first found. Fixed by an aarch64-only `--no-deps` install recipe + the shared nvrtc override; verified live on GB10 — see below. |
+| `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | upstream `requirements.txt` pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper feeds `uv pip install --overrides` a 2.9.1 / 3.5.1 torch stack (`_V2_OVERRIDES`), with torchcodec marker-scoped off aarch64. Full upstream requirement set verified to resolve on **both** platforms (aarch64: 129 packages, no torchcodec; x86_64: 130 with `torchcodec==0.9.1+cu128`). Also installs `nvidia-cuda-nvcc-cu12` for a `sm_121`-capable `ptxas` — it is the only sidecar running Triton kernels of its own. **Live-verified end to end on GB10** from a fresh home with no manual intervention: real `(50, 14)` action chunk, finite and input-responsive, `min`/`max` bit-identical to the pre-fix baseline; the upstream MoE kernels compile at `arch: sm121` and the primary `robby_moe` path runs (the fallback-only kernels never appear in the Triton cache). 6.97 GB VRAM, 6.2 s warmed chunk. |
 | `tools/xr1_sidecar.py` | ✅ | all three install passes verified live on GB10 — see below |
 | `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; the versions with aarch64 wheels are all outside that cap (2.9.x above it, 2.7.x below it but needs x86-only `triton==3.3.1`). Also pins `torchcodec==0.6.0`, x86-only. Lifting this means moving V1 off lerobot 0.4.2. |
 | `tools/rldx_sidecar.py` | ❌ | upstream RLDX-1 packaging, not a torch-version issue — `uv sync`s a `pyproject.toml` needing `torchcodec==0.4.0` (x86-only) and a required `flash-attn` with no wheel anywhere. Upstream's Blackwell path (`pixi.toml`) is hard-pinned `platforms = ["linux-64"]`. Not fixable from OpenRAL's side. |
@@ -89,6 +136,97 @@ flash_attn.flash_attn_func  bf16 (1,8,4,64)           → ok
 
 That is the dependency stack, not an end-to-end XR-1 rollout — the checkpoint
 itself has not been run on this host.
+
+### DA3 depth verified live on GB10
+
+The DA3 depth sidecar hit three separate aarch64 walls, none of them the torch
+version. The first two are packaging:
+
+| dependency | aarch64 wheel | used by | resolution |
+|---|---|---|---|
+| `open3d` | ❌ the only cp312 release (0.19.0) is `manylinux_2_31_x86_64` / macOS / win; aarch64 builds stop at 0.18.0 / cp311 | `depth_anything_3.bench.*` only (DTU / ETH3D / ScanNet++ / 7-Scenes evaluators) | dropped — never on the inference path |
+| `pycolmap` | ❌ **every** release ever published is x86_64-linux / macOS-arm64 / win_amd64, and there is no sdist to build from | `depth_anything_3/utils/export/colmap.py`, which `api.py` pulls in eagerly via `utils/export/__init__` | import deferred (see below) |
+
+Open3D *does* publish `manylinux_2_35_aarch64` cp312 wheels on its rolling
+`main-devel` GitHub release, so that one was solvable two ways; dropping it is
+the cheaper of the two. `pycolmap` has a conda-forge `linux-aarch64` build but
+no pip route to it, and building it means building COLMAP itself from source.
+
+So `tools/da3_depth_sidecar.py` installs `depth-anything-3` with `--no-deps` on
+aarch64 against an explicit pin set (upstream's dependency list minus `open3d`,
+`pycolmap`, `xformers` — x86-only and already optional upstream — and
+`pre-commit`, plus `addict`, an undeclared upstream dependency that `--no-deps`
+stops arriving transitively), then rewrites the one module-level `import
+pycolmap` into a deferred proxy. That is a deferred import, not a stub:
+`export_to_colmap` still raises the real `ModuleNotFoundError` if anyone calls
+it. The rewrite is anchored to `depth-anything-3==0.1.1` and raises rather than
+patching blind if upstream moves.
+
+The third wall was the sm_121 nvrtc ceiling described above, and DA3 is where it
+first surfaced — in its nastiest form, because the failure starts at request #2:
+
+```
+[0] OK    shape=(378,504) min=0.6887 max=1.3081
+[1] FAIL  RuntimeError: nvrtc: error: invalid value for --gpu-architecture (-arch)
+[2] FAIL  ... and every request after it
+```
+
+`@torch.jit.script affine_inverse` (`utils/geometry.py`) is a 4×4 affine inverse
+whose two `torch.cat`s the TensorExpr fuser hands to NVRTC — but only once the
+profiling executor has warmed up, which is why the first frame is clean. So the
+aarch64 install pass also carries `--overrides
+sidecar_requirements/aarch64-nvrtc-override.txt`, raising nvrtc to 12.9.86.
+Nothing about DA3 is disabled: TorchScript and the fuser stay on and the kernel
+is compiled, correctly, for the live device.
+
+Confirmed inside the provisioned sidecar venv — the fuser is not merely
+tolerated, it runs:
+
+```
+nvrtc supported archs : [50 … 90, 100, 101, 103, 120, 121]   # 121 present
+device capability     : (12, 1)  NVIDIA GB10
+texpr_fuser_enabled   : True
+affine_inverse        : ScriptFunction
+TensorExprGroup in last optimized graph : True   # the fused kernel really built
+```
+
+Re-enabling the fuser does **not** perturb the output. Same image, same
+checkpoint, fuser on vs `PYTORCH_JIT=0`, comparing raw bytes:
+
+```
+sha256 fuser ON  = d65b2af66c10a787f6272bd178dbd6bd36ca399131db8e48f68a2396ad09e9d0
+sha256 fuser OFF = d65b2af66c10a787f6272bd178dbd6bd36ca399131db8e48f68a2396ad09e9d0
+max |Δ| = 0.0        intrinsics byte-identical
+```
+
+Verified end-to-end on GB10 — real `depth-anything/DA3-SMALL` weights, real
+image, real ZMQ REQ/REP + msgpack wire, **10 consecutive requests, all ok**
+(the old failure mode would have killed #2):
+
+```
+depth-anything/DA3-SMALL   torch 2.9.1+cu128   nvidia-cuda-nvrtc-cu12 12.9.86
+VRAM 0.14 GB   582 MiB process
+input 640×480 RGB → depth (378, 504) float32, all finite
+min 0.6886822 m   max 1.3080868 m   mean 0.9340287 m   median 0.9099 m
+intrinsics fx 466.7730  fy 467.9905  cx 252.0  cy 189.0
+load 5.3 s;  first request 1227 ms, warmed 95–134 ms (~9 Hz over the wire)
+in-process, no PNG/ZMQ overhead: warmed median 89.6 ms (fuser on) vs
+94.6 ms (fuser off) — within run-to-run noise on a contended GPU
+```
+
+Latency is *not* a reason to prefer either setting: this host was running four
+other CUDA processes throughout, and the fused kernel is 12 elements. The reason
+to keep the fuser on is that leaving it off is a permanent behavioural change to
+dodge a stale assembler.
+
+Do not treat the `cuda capability 12.1` warning quoted above as a signal for
+any of this. It *is* emitted on this host under torch 2.9.1+cu128 (re-checked
+directly: `python -c "import torch; torch.zeros(1, device='cuda')"` prints it),
+but it fires on the first CUDA call regardless, it is about SASS, and it is
+benign. The nvrtc/ptxas ceiling is a separate and completely silent limit —
+nothing is logged until a runtime-compiled op actually throws. That is why it
+went unnoticed here, and why "the warning is harmless" was a trap rather than a
+reassurance.
 
 ## The workspace venv itself
 

@@ -35,6 +35,15 @@ _SERVER = Path(__file__).resolve().parent / "_xr1_server.py"
 # Spark, Jetson Thor). 2.9.1+cu128 publishes ``manylinux_2_28_aarch64`` and
 # pulls triton 3.5.1, which does too. See ``docs/reference/aarch64-support.md``.
 _XR1_TORCH_DEPS = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
+# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor). torch's
+# own metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, whose newest supported
+# arch is sm_120, so any kernel torch compiles at runtime through the nvrtc
+# jiterator dies with "invalid value for --gpu-architecture". Precompiled
+# kernels are unaffected, which is why this hides until a jiterator op is hit.
+# Shared with the other sidecars — see the file's header.
+_NVRTC_OVERRIDE = (
+    Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
+)
 _XR1_RUNTIME_DEPS = (
     "transformers==4.57.1",
     "accelerate==1.11.0",
@@ -59,15 +68,18 @@ def _ensure_venv(home: Path) -> Path:
         return path
 
     def _install(uv: str, py: Path) -> None:
-        run_cmd(
-            _LABEL,
-            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", *_XR1_TORCH_DEPS],
-        )
-        run_cmd(_LABEL, [uv, "pip", "install", "--python", str(py), *_XR1_RUNTIME_DEPS])
-        run_cmd(
-            _LABEL,
-            [uv, "pip", "install", "--python", str(py), "--no-build-isolation", *_XR1_ATTN_DEPS],
-        )
+        # The override rides on ALL THREE passes, not just the torch one. uv
+        # re-resolves the whole environment on every `pip install`, so a later
+        # pass without the override file sees torch's exact
+        # `nvidia-cuda-nvrtc-cu12==12.8.93` pin again and silently downgrades
+        # the shim an earlier pass installed — the fix would survive exactly one
+        # command. (Observed exactly that way in the LingBot sidecar, whose
+        # extras pass undid it.) Invariant: every uv pass that can re-resolve
+        # carries the override file.
+        pip = [uv, "pip", "install", "--python", str(py), "--overrides", str(_NVRTC_OVERRIDE)]
+        run_cmd(_LABEL, [*pip, "--torch-backend=cu128", *_XR1_TORCH_DEPS])
+        run_cmd(_LABEL, [*pip, *_XR1_RUNTIME_DEPS])
+        run_cmd(_LABEL, [*pip, "--no-build-isolation", *_XR1_ATTN_DEPS])
 
     return ensure_pip_venv(
         label=_LABEL,
@@ -76,7 +88,12 @@ def _ensure_venv(home: Path) -> Path:
         install=_install,
         override_env="OPENRAL_XR1_SIDECAR_VENV",
         sentinel_name=".xr1-nf4-deps-installed",
-        spec=(*_XR1_TORCH_DEPS, *_XR1_RUNTIME_DEPS, *_XR1_ATTN_DEPS),
+        spec=(
+            *_XR1_TORCH_DEPS,
+            *_XR1_RUNTIME_DEPS,
+            *_XR1_ATTN_DEPS,
+            _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
+        ),
     )
 
 

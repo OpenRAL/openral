@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -78,6 +79,12 @@ _VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
 _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 
 _SERVER = Path(__file__).resolve().parent / "_lingbot_vla2_server.py"
+# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor); shared
+# with the other sidecars, see that file's header. Passed as a SECOND
+# ``--overrides`` alongside the generated torch-stack overrides below.
+_NVRTC_OVERRIDE = (
+    Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
+)
 
 # V2 torch stack, deliberately *newer* than the ``torch==2.8.0`` /
 # ``torchvision==0.23.0`` / ``torchaudio==2.8.0`` / ``triton==3.4.0`` pins in
@@ -269,15 +276,43 @@ def _ensure_venv(
                 "--torch-backend=cu128",
                 "--overrides",
                 str(overrides),
+                "--overrides",
+                str(_NVRTC_OVERRIDE),
                 "-r",
                 str(reqs),
             ],
         )
         # openral-side wire (pyzmq/msgpack — msgpack is already in the upstream
         # reqs) + NF4 quantization (bitsandbytes); neither is in requirements.txt.
+        # On aarch64, add a CUDA 12.9 ptxas: this is the only sidecar that runs
+        # Triton kernels of its own (lingbotvla's MoE), and triton 3.5.1 bundles
+        # a CUDA 12.8 ptxas that cannot target sm_121 — every kernel dies with
+        # "Value 'sm_121a' is not defined for option 'gpu-name'". The kernels
+        # themselves are fine under triton 3.5.1; only the assembler is too old.
+        # `make_isolated_env` points TRITON_PTXAS_PATH at this on exec.
+        # The override goes on THIS pass too. uv re-resolves the whole
+        # environment on every `pip install`, so a later pass without the
+        # override file sees torch's exact `nvidia-cuda-nvrtc-cu12==12.8.93`
+        # pin again and silently downgrades the shim the previous pass just
+        # installed — the fix survives exactly one command. Verified live: the
+        # extras pass printed `- nvidia-cuda-nvrtc-cu12==12.9.86 /
+        # + nvidia-cuda-nvrtc-cu12==12.8.93` and inference went back to dying
+        # in nvrtc. Invariant: every uv pass that can re-resolve carries it.
+        extras = ["pyzmq", "bitsandbytes"]
+        if platform.machine() == "aarch64":
+            extras.append("nvidia-cuda-nvcc-cu12==12.9.86")
         run_cmd(
             _LABEL,
-            [uv, "pip", "install", "--python", str(py), "pyzmq", "bitsandbytes"],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(py),
+                "--overrides",
+                str(_NVRTC_OVERRIDE),
+                *extras,
+            ],
         )
 
     ensure_uv()
@@ -296,6 +331,7 @@ def _ensure_venv(
             else (
                 reqs.read_text(encoding="utf-8"),
                 *_V2_OVERRIDES,
+                _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
                 "pyzmq",
                 "bitsandbytes",
             )

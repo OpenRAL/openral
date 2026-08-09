@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,85 @@ def test_lingbot_v2_overrides_cover_every_upstream_torch_pin() -> None:
 def test_sidecar_requirement_files_have_aarch64_wheels(filename: str) -> None:
     path = _REQS / filename
     _assert_installable_on_aarch64(_pins(path.read_text(encoding="utf-8")), str(path))
+
+
+def test_nvrtc_override_covers_both_marker_branches() -> None:
+    """The nvrtc override must pin every platform, not just aarch64.
+
+    A uv override *replaces* every requirement for the package it names. An
+    override listing only the ``== "aarch64"`` branch therefore leaves x86_64
+    with no nvrtc requirement at all rather than falling back to torch's own
+    pin — the first cut of this file did exactly that and silently dropped
+    nvrtc from the x86_64 half of both locks.
+    """
+    pins = _pins((_REQS / "aarch64-nvrtc-override.txt").read_text(encoding="utf-8"))
+    assert ("nvidia-cuda-nvrtc-cu12", "12.9.86") in pins, "aarch64 must get an sm_121-aware nvrtc"
+    assert ("nvidia-cuda-nvrtc-cu12", "12.8.93") in pins, "non-aarch64 must keep torch's own pin"
+
+
+@pytest.mark.parametrize("filename", _PIN_LOCK_FILES)
+def test_locks_carry_both_nvrtc_branches(filename: str) -> None:
+    """Both nvrtc branches must survive into the compiled lock.
+
+    Regression guard for the same failure one level down: a lock recompiled
+    without ``--overrides``, or with a one-sided override, installs the wrong
+    nvrtc (or none) on one of the two platforms. The markers are what make a
+    single universal lock serve both.
+    """
+    lock = (_REQS / filename).read_text(encoding="utf-8")
+    for marker in ("platform_machine == 'aarch64'", "platform_machine != 'aarch64'"):
+        assert re.search(rf"^nvidia-cuda-nvrtc-cu12==[\d.]+ ; {re.escape(marker)}", lock, re.M), (
+            f"{filename} is missing the nvrtc branch for `{marker}`; recompile it with the "
+            "`uv pip compile … --overrides` command in the .in file's header."
+        )
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="ensure_pip_venv provisions through uv")
+def test_every_xr1_install_pass_carries_the_nvrtc_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A multi-pass sidecar must pass ``--overrides`` on *every* uv pass.
+
+    uv re-resolves the whole environment on each ``pip install``. A pass that
+    omits the override file sees torch's exact ``nvidia-cuda-nvrtc-cu12==12.8.93``
+    pin again and silently downgrades the shim an earlier pass installed, so the
+    fix survives exactly one command and inference goes back to dying in nvrtc.
+    That regression was observed live in the LingBot sidecar's extras pass; XR-1
+    has the same three-pass shape.
+
+    ``run_cmd`` is the module's subprocess boundary, which §1.11 allows doubling;
+    the venv itself is really provisioned by the un-patched ``ensure_pip_venv``.
+    """
+    xr1 = _load("xr1_sidecar")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(xr1, "run_cmd", lambda label, cmd, **kw: calls.append(list(cmd)))
+    xr1._ensure_venv(tmp_path)
+
+    installs = [c for c in calls if "install" in c]
+    assert len(installs) == 3, f"expected torch/runtime/attn passes, got {len(installs)}"
+    for cmd in installs:
+        assert "--overrides" in cmd, f"uv pass without the nvrtc override: {' '.join(cmd)}"
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="ensure_pip_venv provisions through uv")
+def test_every_lingbot_v2_install_pass_carries_the_nvrtc_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression that actually shipped: LingBot's extras pass dropped it."""
+    lingbot = _load("lingbot_vla2_sidecar")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "requirements.txt").write_text("numpy==1.26.4\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(lingbot, "run_cmd", lambda label, cmd, **kw: calls.append(list(cmd)))
+    lingbot._ensure_venv(tmp_path / "home", source)
+
+    installs = [c for c in calls if "install" in c]
+    assert len(installs) == 2, f"expected the requirements + extras passes, got {len(installs)}"
+    for cmd in installs:
+        assert str(lingbot._NVRTC_OVERRIDE) in cmd, (
+            f"uv pass without the nvrtc override: {' '.join(cmd)}"
+        )
 
 
 @pytest.mark.parametrize("filename", _PIN_LOCK_FILES)
