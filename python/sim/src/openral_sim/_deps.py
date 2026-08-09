@@ -455,6 +455,93 @@ def _refresh_editable_finders() -> None:
             break
 
 
+_STEP_TAIL_BYTES = 8192
+"""How much trailing step output is retained to explain a failure."""
+
+_STEP_TAIL_LINES = 25
+"""How many of those trailing lines are quoted in the raised error."""
+
+
+def _run_install_step(step: InstallStep, env: dict[str, str]) -> None:
+    """Run one install step, streaming its output *and* keeping the tail.
+
+    The step's stdout+stderr are merged and echoed to this process's stderr
+    byte-for-byte as they arrive, so `uv`'s carriage-return progress bars and a
+    multi-GB download's throughput line render live exactly as they would if the
+    child owned the terminal. The last :data:`_STEP_TAIL_BYTES` are retained so
+    :func:`_step_failure_detail` can quote *why* a step failed.
+
+    The retention is the point. ``subprocess.run(..., check=True)`` raises a
+    ``CalledProcessError`` whose message is only ``Command [...] returned
+    non-zero exit status 2``. That string is what reaches the ``ROSConfigError``,
+    and from there the rSkill runner's ``goal_rejected`` and the reasoner's
+    replanning ladder — so an operator watching the reasoner sees an exit code
+    and no cause. The child's real diagnostic did reach the launch log, but
+    detached from the error and buried among unrelated node output. Observed on
+    a GB10 (aarch64) host, where the whole explanation was one `uv` line:
+    ``Distribution `torchcodec==0.4.0` can't be installed because it doesn't
+    have a source distribution or wheel for the current platform``.
+
+    Raises:
+        subprocess.CalledProcessError: The step exited non-zero. ``output``
+            carries the retained tail.
+        OSError: The executable could not be spawned (e.g. ``FileNotFoundError``
+            when ``argv[0]`` is missing).
+    """
+    proc = subprocess.Popen(  # reason: argv is plan-controlled, shell=False
+        step.argv,
+        env=env,
+        cwd=str(step.cwd) if step.cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    tail = bytearray()
+    sink = getattr(sys.stderr, "buffer", None)
+    stream = proc.stdout
+    if stream is not None:
+        with stream:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                if sink is not None:
+                    sink.write(chunk)
+                    sink.flush()
+                else:
+                    sys.stderr.write(chunk.decode("utf-8", "replace"))
+                    sys.stderr.flush()
+                tail.extend(chunk)
+                if len(tail) > _STEP_TAIL_BYTES:
+                    del tail[:-_STEP_TAIL_BYTES]
+    returncode = proc.wait()
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, step.argv, output=bytes(tail))
+
+
+def _step_failure_detail(exc: BaseException) -> str:
+    """Render a failed step's exception plus its captured tail, ready to embed.
+
+    Always ends with a newline (or a space) so the caller can append
+    ``"Finish manually:"`` without gluing words together. Returns just the
+    exception text when nothing was captured — a spawn failure
+    (``FileNotFoundError``) produces no output at all.
+    """
+    # CalledProcessError already ends in a period; OSError does not.
+    summary = str(exc).rstrip(". ")
+    output = getattr(exc, "output", None)
+    if not isinstance(output, bytes | str):
+        return f"{summary}. "
+    text = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
+    # Progress bars overwrite one line with \r; treat each rewrite as its own
+    # line so the tail is the *final* state, not one long unreadable run.
+    lines = [ln.rstrip() for ln in text.replace("\r", "\n").splitlines()]
+    kept = [ln for ln in lines if ln.strip()][-_STEP_TAIL_LINES:]
+    if not kept:
+        return f"{summary}. "
+    quoted = "\n".join(f"    {ln}" for ln in kept)
+    return f"{summary}.\n  Last {len(kept)} line(s) of step output:\n{quoted}\n  "
+
+
 def _uv() -> str:
     """Return the path to the ``uv`` executable or raise ROSConfigError."""
     found = shutil.which("uv")
@@ -1936,16 +2023,12 @@ def ensure_backend_deps(backend_id: str) -> None:
         for step in plan.steps:
             run_env = {**os.environ, **step.env}
             try:
-                subprocess.run(
-                    step.argv,
-                    env=run_env,
-                    cwd=str(step.cwd) if step.cwd else None,
-                    check=True,
-                )
-            except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                _run_install_step(step, run_env)
+            except (subprocess.CalledProcessError, OSError) as exc:
                 raise ROSConfigError(
                     f"{plan.backend_id} install failed at step "
-                    f"{step.description!r}: {exc}. Finish manually:\n  " + plan.manual_hint
+                    f"{step.description!r}: {_step_failure_detail(exc)}Finish manually:\n  "
+                    + plan.manual_hint
                 ) from exc
 
         # Some packages need importlib's caches invalidated for newly-installed

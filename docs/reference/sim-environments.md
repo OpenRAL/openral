@@ -21,6 +21,16 @@ conflicting robosuite versions, so swap groups per task. Full recipe →
 [Managing the Python environment & dependency
 groups](../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
+An install step's output streams to your terminal as it runs, and the tail of
+it is quoted back inside the `ROSConfigError` if the step fails — so when a
+backend or sidecar won't provision, read the quoted lines rather than the exit
+code. That matters most when the step ran *inside a ROS node*, where the raw
+output is scattered through the launch log: the reasoner reports the failure as
+`goal_rejected`, and the quoted tail is the only place the cause travels with
+it. A sidecar pinned to wheels that don't exist for your platform (aarch64 is
+the common case) shows up there as a `uv` "no source distribution or wheel for
+the current platform" line naming the offending package.
+
 ## Quick CLI
 
 ```bash
