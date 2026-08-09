@@ -22,6 +22,7 @@ verification happened on the GPU host.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -866,8 +867,8 @@ def test_live_dependency_swap_is_refused_before_the_venv_is_mutated(monkeypatch)
     )
     monkeypatch.setattr(_deps, "get_plan", lambda _bid: plan)
     monkeypatch.setattr(
-        _deps.subprocess,
-        "run",
+        _deps,
+        "_run_install_step",
         lambda *a, **k: ran.append("ran"),  # must never fire
     )
     monkeypatch.setitem(sys.modules, "robosuite", SimpleNamespace(__version__="1.5.2"))
@@ -911,3 +912,92 @@ def test_every_robosuite_swapping_plan_declares_the_repin() -> None:
     """
     for backend_id in ("libero", "robocasa_kitchen", "robocasa_gr1", "openarm_robosuite"):
         assert "robosuite" in _deps.get_plan(backend_id).repins, backend_id
+
+
+# ── Install-step output capture ───────────────────────────────────────────
+#
+# A failing step used to surface as bare "returned non-zero exit status 2":
+# `subprocess.run(..., check=True)` puts nothing but the exit code in the
+# CalledProcessError, and that string is what `ensure_backend_deps` embeds in
+# its ROSConfigError — which the rSkill runner then reports as `goal_rejected`
+# and the reasoner replans against. The child's real diagnostic reached the
+# launch log but was detached from the error and buried among other nodes'
+# output. Observed on a GB10 (aarch64) host, where the entire explanation was
+# one `uv` line about `torchcodec` having no aarch64 wheel.
+#
+# These drive REAL subprocesses (no mocks, CLAUDE.md §1.11) — the child is a
+# `sys.executable -c` one-liner that writes known text and exits non-zero.
+
+
+def _echoing_step(stdout_text: str, stderr_text: str, code: int) -> _deps.InstallStep:
+    """An InstallStep whose child writes known text to both streams, then exits."""
+    prog = (
+        "import sys;"
+        f"sys.stdout.write({stdout_text!r});"
+        f"sys.stderr.write({stderr_text!r});"
+        f"sys.exit({code})"
+    )
+    return _deps.InstallStep(description="probe step", argv=[sys.executable, "-c", prog])
+
+
+def test_failing_install_step_surfaces_the_child_stderr(monkeypatch, capsysbinary) -> None:
+    """The raised ROSConfigError quotes what the child actually said."""
+    real_uv_error = (
+        "error: Distribution `torchcodec==0.4.0` can't be installed because it "
+        "doesn't have a source distribution or wheel for the current platform\n"
+    )
+    plan = _deps.BackendInstallPlan(
+        backend_id="rldx_sidecar_setup",
+        display_name="RLDX sidecar",
+        license_note="test",
+        probe=lambda: False,
+        steps=(_echoing_step("Resolved 210 packages\n", real_uv_error, 2),),
+        manual_hint="git clone ... && uv sync",
+    )
+    monkeypatch.setattr(_deps, "get_plan", lambda _bid: plan)
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "1")
+
+    with pytest.raises(ROSConfigError) as excinfo:
+        _deps.ensure_backend_deps("rldx_sidecar_setup")
+
+    message = str(excinfo.value)
+    assert "torchcodec==0.4.0" in message, (
+        "the child's own diagnostic must reach the typed error; got:\n" + message
+    )
+    assert "exit status 2" in message, "the exit code is still useful context"
+    assert "git clone ... && uv sync" in message, "the manual hint must survive"
+    # Streamed live as well as captured — an 11 GB download must stay watchable.
+    assert b"Resolved 210 packages" in capsysbinary.readouterr().err
+
+
+def test_install_step_streams_output_while_it_runs(capsysbinary) -> None:
+    """A succeeding step writes through to stderr and raises nothing."""
+    step = _echoing_step("to stdout\n", "to stderr\n", 0)
+    _deps._run_install_step(step, dict(os.environ))
+    streamed = capsysbinary.readouterr().err
+    assert b"to stdout" in streamed and b"to stderr" in streamed
+
+
+def test_install_step_tail_keeps_the_end_of_a_long_log(capsysbinary) -> None:
+    """Only the tail is quoted, so a chatty build cannot bury its own error."""
+    noise = "".join(f"compiling module_{i}\n" for i in range(4000))
+    step = _echoing_step(noise, "error: the last line is the real one\n", 1)
+    with pytest.raises(_deps.subprocess.CalledProcessError) as excinfo:
+        _deps._run_install_step(step, dict(os.environ))
+
+    detail = _deps._step_failure_detail(excinfo.value)
+    assert "error: the last line is the real one" in detail
+    assert "compiling module_0\n" not in detail, "the head of a long log must be dropped"
+    quoted = [ln for ln in detail.splitlines() if ln.startswith("    ")]
+    assert len(quoted) <= _deps._STEP_TAIL_LINES
+    capsysbinary.readouterr()  # drain the 4000 streamed lines
+
+
+def test_step_failure_detail_handles_a_spawn_failure() -> None:
+    """A missing executable yields no output; the detail must still read cleanly."""
+    step = _deps.InstallStep(description="missing", argv=["openral-does-not-exist-xyz"])
+    with pytest.raises(OSError) as excinfo:
+        _deps._run_install_step(step, dict(os.environ))
+    detail = _deps._step_failure_detail(excinfo.value)
+    assert "line(s) of step output" not in detail
+    assert detail.endswith(". ")
