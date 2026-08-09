@@ -1,0 +1,136 @@
+"""Only cameras the RoboCasa scene can render get a ``/openral/cameras/*`` topic.
+
+``robots/panda_mobile/robot.yaml`` declares four RGB sensors, but one of them
+— ``head`` — is a *synthetic* forward navigation camera that the RoboCasa
+backend renders only when ``OPENRAL_ROBOCASA_HEAD_CAM=1`` is exported and the
+scene carries a mobile base. Nothing in the repo exports it, so on every
+manipulation scene the manifest declares a camera the backend never produces.
+
+``SimSensorBridge`` used to advertise a publisher for every declared RGB
+sensor at configure time, so ``/openral/cameras/head/image`` appeared on the
+graph and then stayed silent forever. A subscriber cannot tell that apart from
+a slow stream, so it waits indefinitely (observed live on
+``scenes/deploy/robocasa_baguette.yaml``: the topic was listed by ``ros2 topic
+list`` and a recorder captured 0 frames). Cameras are now advertised lazily,
+on their first real frame.
+
+No mocks (CLAUDE.md §1.11): real ``panda_mobile`` manifest, real RoboCasa
+``PickPlaceCounterToCabinet`` env via the deploy-sim HAL path, real rclpy node,
+real ``SimSensorBridge``.
+
+Gates: RoboCasa assets + ``mujoco`` for the backend, ``ROS_DISTRO`` + ``rclpy``
+for the bridge. Skips cleanly when either half is missing.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+pytest.importorskip("openral_sim")
+pytest.importorskip("mujoco")
+pytest.importorskip("robocasa")  # robocasa (robosuite >=1.5) ⊥ libero (robosuite 1.4)
+
+_ROS2_AVAILABLE = bool(os.environ.get("ROS_DISTRO")) and (
+    importlib.util.find_spec("openral_msgs") is not None
+)
+pytestmark = pytest.mark.skipif(
+    not _ROS2_AVAILABLE,
+    reason="ROS_DISTRO not set — the bridge half of this test needs a sourced ROS 2 install.",
+)
+
+rclpy = pytest.importorskip("rclpy")
+
+from openral_core import RobotDescription  # noqa: E402  # reason: after importorskip gates
+from openral_hal import build_hal  # noqa: E402
+from openral_hal.sim_sensor_bridge import SimSensorBridge  # noqa: E402
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PANDA_MOBILE = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
+_BAGUETTE = _REPO_ROOT / "scenes" / "deploy" / "robocasa_baguette.yaml"
+
+# The three arm-mounted cameras robosuite really owns for a PandaMobile scene
+# (robot0_agentview_left / _right / eye_in_hand). The HAL hands them up keyed by
+# the VLA camera slot; ``SimSensorBridge`` maps each manifest sensor name onto
+# its slot via ``vla_feature_key`` at publish time.
+_RENDERED = {"shoulder_left", "shoulder_right", "wrist"}
+_RENDERED_OBS_KEYS = {"camera1", "camera2", "camera3"}
+# ``head`` is the odd one out: its manifest ``vla_feature_key`` is
+# ``observation.images.head``, so sensor name and obs key coincide — neither
+# appears in the backend's obs dict unless the synth renderer is switched on.
+_SYNTHETIC_OPT_IN = "head"
+
+
+@pytest.fixture
+def hal() -> Iterator[Any]:
+    """A connected panda_mobile HAL attached to the real baguette scene."""
+    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    built = build_hal(desc, mode="sim", sim_env_yaml=str(_BAGUETTE))
+    built.connect()
+    try:
+        yield built
+    finally:
+        built.disconnect()
+
+
+def test_head_camera_is_not_rendered_without_the_opt_in(
+    hal: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ground truth: the backend supplies no ``head`` frame by default.
+
+    This is the fact the whole bug rests on — robosuite/RoboCasa own no
+    nav-facing camera, and OpenRAL's synthetic replacement is env-gated off.
+    """
+    monkeypatch.delenv("OPENRAL_ROBOCASA_HEAD_CAM", raising=False)
+    images = hal.read_images()
+    assert set(images) >= _RENDERED_OBS_KEYS, f"expected the arm cameras, got {sorted(images)}"
+    assert _SYNTHETIC_OPT_IN not in images, (
+        "robocasa rendered a 'head' frame with OPENRAL_ROBOCASA_HEAD_CAM unset — "
+        "the opt-in gate regressed"
+    )
+
+
+def test_bridge_advertises_only_renderable_cameras(
+    hal: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bridge puts a topic on the graph only for cameras that produce frames."""
+    monkeypatch.delenv("OPENRAL_ROBOCASA_HEAD_CAM", raising=False)
+    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    assert _SYNTHETIC_OPT_IN in {s.name for s in desc.sensors if s.modality == "rgb"}, (
+        "fixture drift: panda_mobile no longer declares a 'head' RGB sensor, so "
+        "this regression guard would pass vacuously"
+    )
+
+    rclpy.init()
+    node = rclpy.create_node("test_sim_bridge_camera_advertise")
+    bridge = SimSensorBridge(node=node, hal=hal, description=desc, viewer_enabled=False)
+    try:
+        bridge.setup()
+        # Nothing is advertised until a frame lands, so drive the publish tick
+        # directly rather than racing the timer.
+        for _ in range(3):
+            hal.read_state()
+            bridge._publish_images()
+
+        advertised = {
+            name
+            for name, _types in node.get_topic_names_and_types()
+            if name.startswith("/openral/cameras/") and name.endswith("/image")
+        }
+        for cam in _RENDERED:
+            assert f"/openral/cameras/{cam}/image" in advertised, (
+                f"'{cam}' renders frames but was never advertised; got {sorted(advertised)}"
+            )
+        assert f"/openral/cameras/{_SYNTHETIC_OPT_IN}/image" not in advertised, (
+            "a camera the backend never renders was advertised — a subscriber "
+            "would block on it forever"
+        )
+    finally:
+        bridge.teardown()
+        node.destroy_node()
+        rclpy.shutdown()
