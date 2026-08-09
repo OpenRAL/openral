@@ -217,7 +217,10 @@ class SimSensorBridge:
         self._depth_rate_hz = depth_rate_hz
         self._depth_max_range_m = depth_max_range_m
         self._depth_pixel_stride = depth_pixel_stride
+        # Advertised lazily, keyed by camera name — a manifest camera earns its
+        # topic on its first real frame (see _advertise_camera).
         self._image_pubs: dict[str, Any] = {}
+        self._camera_qos: Any = None
         # RGB CameraInfo per camera: cuVSLAM/nvblox need the pinhole intrinsics
         # + a TF-valid frame, which plain RGB streams don't otherwise carry.
         self._camera_info_pubs: dict[str, Any] = {}
@@ -328,6 +331,7 @@ class SimSensorBridge:
         self._camera_info_pubs.clear()
         self._camera_info_specs.clear()
         self._image_obs_key.clear()
+        self._camera_qos = None
         self._last_thumb_ns.clear()
         self._image_missing_warned.clear()
         if self._scan_pub is not None:
@@ -363,28 +367,24 @@ class SimSensorBridge:
         if not rgb:
             return
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-        from sensor_msgs.msg import CameraInfo
-        from sensor_msgs.msg import Image as RosImage
 
-        qos = QoSProfile(
+        self._camera_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=1,
         )
-        # Publish CameraInfo alongside every RGB stream so any manifest camera
-        # can serve a pinhole consumer (cuVSLAM rig build, nvblox mono-depth
-        # framing) — link-framed cameras get TF from robot_state_publisher,
-        # optical-frame cameras from _publish_camera_optical_tfs. Published
-        # per-frame (VOLATILE) so a late-joining subscriber never misses a
-        # latched-once message.
+        # Record what the manifest declares, but do NOT advertise yet — each
+        # camera earns its topic in :meth:`_advertise_camera` on its first real
+        # frame. A manifest may legitimately declare a camera the *current*
+        # scene cannot supply: robocasa's synthetic ``head`` nav cam is
+        # opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM`` and mobile-base-only, so
+        # every manipulation scene on panda_mobile declares it and no backend
+        # ever renders it. Advertising eagerly published a permanently silent
+        # ``/openral/cameras/head/image`` onto the graph, which reads to any
+        # subscriber (dashboard panel, recorder, nav policy) as a live stream
+        # that is merely slow — so it waits forever instead of failing.
         for s in rgb:
-            self._image_pubs[s.name] = self._node.create_publisher(
-                RosImage, f"/openral/cameras/{s.name}/image", qos
-            )
             self._image_obs_key[s.name] = _obs_key_for_sensor(s)
-            self._camera_info_pubs[s.name] = self._node.create_publisher(
-                CameraInfo, f"/openral/cameras/{s.name}/camera_info", qos
-            )
             self._camera_info_specs[s.name] = s
         self._image_timer = self._node.create_timer(
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_images
@@ -401,9 +401,44 @@ class SimSensorBridge:
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_camera_optical_tfs
         )
         self._node.get_logger().info(
-            f"SimSensorBridge: publishing {len(rgb)} camera(s): "
-            + ", ".join(f"{s.name}<-{self._image_obs_key[s.name]}" for s in rgb)
+            f"SimSensorBridge: {len(rgb)} camera(s) declared, each advertised on "
+            "its first frame: " + ", ".join(f"{s.name}<-{self._image_obs_key[s.name]}" for s in rgb)
         )
+
+    def _advertise_camera(self, name: str) -> Any:
+        """Create (once) and return the ``Image`` publisher for one camera.
+
+        Called from :meth:`_publish_images` the first time the backend supplies
+        a frame for ``name``, so the topic set on the graph is exactly the set
+        of cameras this scene can actually render — never a superset drawn from
+        the manifest (CLAUDE.md §1.4, explicit beats implicit).
+
+        The matching ``camera_info`` publisher is created alongside so any
+        manifest camera can serve a pinhole consumer (cuVSLAM rig build, nvblox
+        mono-depth framing) — link-framed cameras get TF from
+        ``robot_state_publisher``, optical-frame cameras from
+        :meth:`_publish_camera_optical_tfs`. Both are published per-frame
+        (VOLATILE) so a late-joining subscriber never misses a latched-once
+        message.
+        """
+        pub = self._image_pubs.get(name)
+        if pub is not None:
+            return pub
+        from sensor_msgs.msg import CameraInfo
+        from sensor_msgs.msg import Image as RosImage
+
+        pub = self._node.create_publisher(
+            RosImage, f"/openral/cameras/{name}/image", self._camera_qos
+        )
+        self._image_pubs[name] = pub
+        self._camera_info_pubs[name] = self._node.create_publisher(
+            CameraInfo, f"/openral/cameras/{name}/camera_info", self._camera_qos
+        )
+        self._node.get_logger().info(
+            f"SimSensorBridge: advertising /openral/cameras/{name}/image "
+            f"(obs key '{self._image_obs_key.get(name, name)}')"
+        )
+        return pub
 
     def _publish_images(self) -> None:
         """Republish cached camera frames from the HAL as sensor_msgs/Image.
@@ -422,7 +457,7 @@ class SimSensorBridge:
         updates without ballooning the OTLP payload.
         """
         reader = getattr(self._hal, "read_images", None)
-        if reader is None or not self._image_pubs:
+        if reader is None or not self._image_obs_key:
             return
         from sensor_msgs.msg import Image as RosImage
 
@@ -438,8 +473,7 @@ class SimSensorBridge:
 
         tracer = trace.get_tracer(__name__)
         now_ns = time.monotonic_ns()
-        for name, pub in self._image_pubs.items():
-            obs_key = self._image_obs_key.get(name, name)
+        for name, obs_key in self._image_obs_key.items():
             arr = _frame_for_camera(images, obs_key, name)
             if arr is None:
                 if name not in self._image_missing_warned:
@@ -448,11 +482,16 @@ class SimSensorBridge:
                         f"SimSensorBridge: no frame for camera '{name}' "
                         f"(expected obs key '{obs_key}' or name '{name}'); "
                         f"available keys: {sorted(images.keys())}. "
-                        "Check the scene's --robot override matches sensor layout."
+                        f"/openral/cameras/{name}/image stays unadvertised "
+                        "until a frame arrives. Check the scene's --robot "
+                        "override matches sensor layout, and whether this "
+                        "camera is opt-in (robocasa's synthetic 'head' nav cam "
+                        "needs OPENRAL_ROBOCASA_HEAD_CAM=1 and a mobile base)."
                     )
                 continue
             if arr.ndim != _IMAGE_DIM or arr.shape[2] not in (1, _RGB_CHANNELS, 4):
                 continue
+            pub = self._advertise_camera(name)
             h, w, c = arr.shape
             msg = RosImage()
             msg.header.stamp = stamp
@@ -549,7 +588,10 @@ class SimSensorBridge:
         ``robot_state_publisher`` and must not be clobbered. No-op for non-MuJoCo
         backends or cameras whose MJCF name doesn't resolve (warned once).
         """
-        if self._tf_broadcaster is None or not self._image_pubs:
+        # Keyed off the *declared* set, not the advertised one: the optical
+        # extrinsic is a property of the manifest + MJCF, so it stays available
+        # from configure time rather than waiting on the first rendered frame.
+        if self._tf_broadcaster is None or not self._camera_info_specs:
             return
         handle = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handle is None:
@@ -571,7 +613,7 @@ class SimSensorBridge:
         base_frame_id = getattr(self._description, "base_frame", "base_link")
         stamp = self._node.get_clock().now().to_msg()
         specs = {s.name: s for s in _optical_frame_rgb_cameras(self._description.sensors)}
-        for name in self._image_pubs:
+        for name in self._camera_info_specs:
             spec = specs.get(name)
             if spec is None or name in self._camera_tf_disabled:
                 continue
