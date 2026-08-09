@@ -1406,12 +1406,6 @@ class SimAttachedHAL:
         # Wrap to [-π, π] so long sessions don't accumulate drift.
         new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
         data.qpos[addrs[2]] = new_yaw
-        # The direct-qpos path intentionally bypasses env.step, but it is still
-        # a simulation timestep. Advance MuJoCo's elapsed time by the same
-        # command interval used for kinematic integration so SimRollout
-        # sim_time_ns() (and therefore deploy-sim /clock) cannot freeze while
-        # Nav2 is actively streaming BODY_TWIST commands.
-        data.time = float(data.time) + dt
         # Propagate the qpos change into derived state (body xforms +
         # sensor positions) so the live MuJoCo viewer + ``/scan``
         # ray-cast see the new base pose on the same tick. No physics
@@ -1425,11 +1419,30 @@ class SimAttachedHAL:
         # (in-process digital twins, gymnasium-wrapped envs) silently
         # keep the cached frame — visual lag is the documented
         # tradeoff for those paths.
+        #
+        # ``refresh_obs`` MUST NOT step physics — see
+        # ``_RoboCasaSim.refresh_obs``. It used to drive a zero-action
+        # ``env.step``, and robosuite's mobile-base controller treats that step
+        # as an instruction to regulate the base back to its held setpoint,
+        # erasing the qpos write above. Measured on the real baguette scene:
+        # of 1.0000 m written over 40 commands only 0.0396 m survived (4.0%),
+        # with the per-command survival decaying 1.000 -> 0.458 -> 0.085 ->
+        # 0.015 -> 0.002 -> 0.000 as the regulator caught up. That is what
+        # starved Nav2's ``SimpleProgressChecker`` and aborted every
+        # ``navigate_to_pose`` goal with "Failed to make progress".
         refresh = getattr(self._env, "refresh_obs", None)
         if refresh is not None:
             refreshed = refresh()
             if refreshed is not None:
                 self._merge_refreshed_obs(refreshed)
+        # This path deliberately runs no ``env.step``, but it is still a
+        # simulation timestep: advance the clock by the same interval used for
+        # the kinematic integration above so ``SimRollout.sim_time_ns`` (and
+        # therefore deploy-sim ``/clock``) cannot freeze while Nav2 streams
+        # BODY_TWIST commands. Exactly one advance per command — pairing this
+        # with a stepping ``refresh_obs`` double-counted it, making the clock
+        # run at 2x the rate of the motion it was timing.
+        data.time = float(data.time) + dt
 
     def _apply_body_twist_via_env_step(self, row: list[float]) -> None:
         """Integrate a BODY_TWIST through ``env.step`` (non-MuJoCo planar base).

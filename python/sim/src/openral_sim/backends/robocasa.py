@@ -444,48 +444,47 @@ class _RoboCasaSim:
         return None if self._last_image is None else self._last_image.copy()
 
     def refresh_obs(self) -> Observation | None:
-        """Drive a zero-action env.step so observations + cameras refresh.
+        """Re-read observations + cameras WITHOUT advancing physics.
 
         Used by :class:`openral_hal.sim_attached.SimAttachedHAL` after a
         BODY_TWIST qpos write. The ``sim run`` path works correctly
         because every iteration calls ``env.step(action)`` which
         re-renders cameras through robosuite's standard pipeline; the
-        ``deploy sim`` BODY_TWIST path was bypassing ``env.step``
+        ``deploy sim`` BODY_TWIST path bypasses ``env.step``
         entirely (because robocasa's BASIC composite controller does
         NOT interpret the first 3 action slots as planar velocities
         on OmronMobileBase — non-zero base ctrl is a no-op) so
-        cameras + state slots never refreshed.
+        cameras + state slots would otherwise never refresh.
 
-        Fix: keep the direct base-qpos write (it's how the base
-        actually moves), then drive ``env.step`` with a ZERO action
-        purely as the "tick the env" call. Zero action means:
+        This used to drive ``env.step`` with a ZERO action as a "tick the env"
+        call, on the reasoning that a zero action means no controller effort.
+        **That reasoning was wrong**, and it is why the base barely moved under
+        Nav2. A zero action is not "do nothing": robosuite's mobile-base
+        controller reads it as a command to hold its setpoint, so each step
+        regulated the base back toward where it sat *before* the qpos write.
+        Measured on the real ``robocasa_baguette`` scene, 40 commands at
+        0.5 m/s wrote 1.0000 m of displacement and kept 0.0396 m — 4.0% — with
+        per-command survival decaying 1.000 → 0.458 → 0.085 → 0.015 → 0.002 →
+        0.000 as the regulator caught up. Nav2's ``SimpleProgressChecker``
+        then aborted every goal with "Failed to make progress".
 
-        * arm OSC delta == 0    → arm holds its current pose
-        * base velocity == 0    → no controller effort on the base
-                                  (and qvel is 0 because we never wrote
-                                   it — physics step keeps qpos at the
-                                   value we just wrote)
-        * gripper == 0          → no gripper actuation
+        ``_get_observations(force_update=True)`` is robosuite's own
+        non-stepping refresh: it re-samples every observable (cameras
+        included, through the same renderer ``step`` uses) against the current
+        ``sim.data``, without running the controllers or integrating physics.
+        So the qpos write stands and the dashboard still updates per twist.
 
-        This re-renders every camera (same path ``sim run`` uses), so
-        the dashboard PERCEPTION cards now update on every twist
-        application instead of staying on the connect-time frame.
-
-        Returns ``None`` for backends without ``env.step`` / a
-        readable ``action_dim`` — those paths keep the
-        cached-from-last-step images.
+        Returns ``None`` for backends exposing no such refresh — those paths
+        keep the cached-from-last-step images.
         """
         env = self._env
-        action_dim = getattr(env, "action_dim", None)
-        step = getattr(env, "step", None)
-        if action_dim is None or step is None:
+        refresh = getattr(env, "_get_observations", None)
+        if not callable(refresh):
             return None
-        zero_action = np.zeros(int(action_dim), dtype=np.float32)
         try:
-            result = step(zero_action)
-        except Exception:  # reason: defensive — env step failure must not crash the HAL
+            raw = refresh(force_update=True)
+        except Exception:  # reason: defensive — a refresh failure must not crash the HAL
             return None
-        raw = result[0] if isinstance(result, tuple) and result else None
         if not isinstance(raw, dict):
             return None
         wrapped = self._wrap_obs(raw)
