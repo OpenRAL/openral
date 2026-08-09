@@ -94,8 +94,10 @@ steps per re-inference.
 
 The upstream `lingbotvla` package pins `torch==2.8.0` / `transformers==4.57.3` /
 `triton==3.4.0` and ships custom Triton MoE kernels, which cannot coexist with the
-OpenRAL `torch>=2.9` / `transformers>=5` runtime (CLAUDE.md §3). The model
-therefore runs in an **auto-provisioned Python 3.12 + torch-2.8 ZMQ sidecar**
+OpenRAL `transformers>=5` runtime (CLAUDE.md §3). The model therefore runs in an
+**auto-provisioned Python 3.12 + torch-2.9.1 ZMQ sidecar** — the boot helper
+overrides upstream's torch 2.8.0 / triton 3.4.0, neither of which publishes a
+linux-aarch64 wheel ([aarch64 support](../../docs/reference/aarch64-support.md))
 (`tools/lingbot_vla2_sidecar.py` clones the pinned upstream repo + builds the venv;
 `tools/_lingbot_vla2_server.py` serves `ping`/`reset`/`get_action`/`close`). Because
 `flash-attn` is not installed, the server coerces the upstream `flash_attention_2`
@@ -252,7 +254,7 @@ print(pkg.manifest.name, pkg.manifest.version)  # OpenRAL/rskill-lingbot_vla2-al
 
 ## Reproduction
 
-The 6.38 B model runs out-of-process in an auto-provisioned Python 3.12 + torch-2.8
+The 6.38 B model runs out-of-process in an auto-provisioned Python 3.12 + torch-2.9.1
 sidecar; the OpenRAL side only needs the ZMQ wire:
 
 ```bash
@@ -260,7 +262,7 @@ sidecar; the OpenRAL side only needs the ZMQ wire:
 just sync --all-packages --group lingbot --inexact
 
 # the sidecar auto-clones github.com/robbyant/lingbot-vla-v2 @ 69729b4 and builds
-# its torch-2.8 venv on first use; the RoboTwin 5-task suite (needs a ≥12 GB GPU):
+# its torch-2.9 venv on first use; the RoboTwin 5-task suite (needs a ≥12 GB GPU):
 openral benchmark run --suite robotwin --vla lingbot_vla2:rskills/lingbot-vla2-robotwin
 ```
 

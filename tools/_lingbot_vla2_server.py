@@ -6,10 +6,10 @@ Robbyant's ``lingbotvla`` package (https://github.com/robbyant/lingbot-vla-v2,
 Apache-2.0 code + weights) and answers ``ping`` / ``reset`` / ``get_action`` /
 ``close`` over ZMQ REQ/REP framed by msgpack — the same ndarray wire the
 :class:`openral_sim.sidecar.SidecarClient` speaks. It is ``os.execvpe``-d by the
-boot helper :mod:`tools.lingbot_vla2_sidecar` *after* the repo checkout + torch-2.8
+boot helper :mod:`tools.lingbot_vla2_sidecar` *after* the repo checkout + torch-2.9
 venv are provisioned, so it only ever runs under the sidecar interpreter and never
-imports ``openral_*`` (that stack pins torch>=2.9 / transformers>=5, incompatible
-with the upstream torch==2.8.0 / transformers==4.57.3 pins — CLAUDE.md §3).
+imports ``openral_*`` (that stack pins transformers>=5, incompatible with the
+upstream transformers==4.57.3 pin — CLAUDE.md §3).
 
 Wire protocol (msgpack ``{"endpoint","data"}`` in, dict out; ndarrays via the
 ``__ndarray__`` / ``np.save`` sentinel that mirrors

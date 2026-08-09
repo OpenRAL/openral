@@ -17,6 +17,10 @@ Mirrors the :mod:`openral_sim.policies.rldx` rationale:
   ``triton==3.4.0`` + ``transformers==4.57.3``; the openral workspace is
   ``torch>=2.9`` / ``transformers>=5`` (CLAUDE.md §3). Force-installing would
   clobber smolvla / pi05 / ACT / GR00T (the documented ``--group`` clobber).
+  (The boot helper does override the torch half of that pin set up to 2.9.1 /
+  triton 3.5.1 — torch 2.8.0 publishes no linux-aarch64 ``cu128`` wheel, see
+  ``docs/reference/aarch64-support.md``. ``transformers==4.57.3`` still can't
+  coexist, so the sidecar stays out-of-process regardless.)
 * **Vendoring is intractable.** The inference path is ~6 kLOC of tightly
   coupled model code (``modeling_lingbot_vla_v2`` + ``qwen2_action_expert`` +
   ``qwen3vl_in_vla`` + ``flex_attention``) plus ``lingbotvla/ops`` Triton
@@ -29,7 +33,7 @@ Mirrors the :mod:`openral_sim.policies.rldx` rationale:
   escape.
 
 So the sidecar runs the upstream ``LingbotVLAv2Server`` in its own py3.12 +
-torch-2.8 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +
+torch-2.9.1 venv and answers ``ping`` / ``reset`` / ``get_action`` over ZMQ +
 msgpack, exactly like the rldx / rlbench-3dda sidecars. The boot helper
 ``tools/lingbot_vla2_sidecar.py`` (openral interpreter) auto-provisions the
 clone + venv on first use, then execs the server ``tools/_lingbot_vla2_server.py``
@@ -104,7 +108,7 @@ _DEFAULT_REPLAN_STEPS = 25
 _PORT_MIN = 20_000
 _PORT_MAX = 39_999
 _DEFAULT_TIMEOUT_MS = 120_000
-_DEFAULT_BOOT_TIMEOUT_S = 1200.0  # first boot clones the repo + builds a torch-2.8 venv
+_DEFAULT_BOOT_TIMEOUT_S = 1200.0  # first boot clones the repo + builds a torch-2.9 venv
 
 
 def _opt_int(value: object, default: int) -> int:
@@ -186,7 +190,7 @@ def _locate_sidecar_script() -> Path:
 
     The boot helper runs under the openral interpreter (:data:`sys.executable`)
     so it can import :mod:`openral_sim._sidecar_common`; it clones the upstream
-    repo + builds the torch-2.8 venv on first use, then execs the server. The
+    repo + builds the torch-2.9 venv on first use, then execs the server. The
     venv itself no longer needs to exist when this adapter is constructed —
     provisioning is the boot helper's job (escape hatch:
     ``OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` to reuse a prebuilt interpreter).
@@ -337,7 +341,7 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
     auto_spawn = os.environ.get(f"{env_prefix}_AUTO_SPAWN", "1") != "0"
 
     # Launch the boot helper with the OPENRAL interpreter (it imports
-    # openral_sim._sidecar_common to auto-provision the clone + torch-2.8 venv,
+    # openral_sim._sidecar_common to auto-provision the clone + torch-2.9 venv,
     # then execs tools/_lingbot_vla2_server.py --variant inside that venv).
     # PYTHONPATH is stripped by SidecarClient._spawn; expandable_segments is
     # re-set by the boot helper's make_isolated_env.

@@ -2,7 +2,7 @@
 
 Drives ``POLICIES['lingbot_vla2']`` (openral_sim.policies.lingbot_vla2) through the
 real ZMQ sidecar: the boot helper provisions/execs the upstream ``LingbotVLAv2Server``
-(NF4 Qwen3-VL backbone + bf16 sparse-MoE expert) in its torch-2.8 venv, and the
+(NF4 Qwen3-VL backbone + bf16 sparse-MoE expert) in its torch-2.9 venv, and the
 openral-side adapter connects and drives ``ping`` / ``reset`` / ``get_action`` /
 ``close`` on a RoboTwin-shaped observation (three 256x256 RGB views + 14-D proprio).
 
@@ -28,7 +28,7 @@ the pixel/state input is synthesized to the verified RoboTwin contract.
 
 Skip policy
 -----------
-The sidecar is an externally-provisioned torch-2.8 venv (multi-GB, CUDA-pinned;
+The sidecar is an externally-provisioned torch-2.9 venv (multi-GB, CUDA-pinned;
 CLAUDE.md §1.9/§1.12). The test skips unless BOTH the openral-side wire
 (pyzmq/msgpack) is importable AND the sidecar interpreter + upstream checkout +
 a local checkpoint are resolvable via env overrides

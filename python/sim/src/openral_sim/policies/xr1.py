@@ -1,10 +1,12 @@
 """Xiaomi Robotics XR-1 policy adapter via an isolated sidecar.
 
 The released benchmark checkpoints use ``MiBoTForActionGeneration`` custom
-Transformers code and pin torch 2.8, transformers 4.57.1, and FlashAttention
-2.8.3. Those versions cannot coexist with the OpenRAL workspace, so inference
-runs in ``tools/_xr1_server.py`` and this adapter only owns observation packing,
-action replay, and the ZMQ wire.
+Transformers code and pin transformers 4.57.1 + FlashAttention 2.8.3. Those
+versions cannot coexist with the OpenRAL workspace, so inference runs in
+``tools/_xr1_server.py`` and this adapter only owns observation packing, action
+replay, and the ZMQ wire. The sidecar installs torch 2.9.1 rather than the 2.8
+upstream validated against — 2.8.0 publishes no linux-aarch64 ``cu128`` wheel
+(``docs/reference/aarch64-support.md``); the rest of the stack is unchanged.
 
 Quantization follows the same two-stage pattern as π0.5 and MolmoAct2:
 

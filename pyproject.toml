@@ -336,10 +336,12 @@ lingbot = [
     #
     # Same shape as the `rldx` / `robotwin` groups: the 6.38 B LingBot-VLA 2.0
     # server (`tools/lingbot_vla2_sidecar.py`, wrapping the upstream `lingbotvla`
-    # package) runs in its OWN auto-provisioned Python 3.12 + torch-2.8 venv that
-    # this group does NOT touch — `lingbotvla` pins torch==2.8.0 /
-    # transformers==4.57.3 + custom Triton MoE kernels, incompatible with this
-    # repo's torch>=2.9 / transformers>=5 (CLAUDE.md §3). Apache-2.0 code + weights.
+    # package) runs in its OWN auto-provisioned Python 3.12 venv that this group
+    # does NOT touch — `lingbotvla` pins transformers==4.57.3 + custom Triton MoE
+    # kernels, incompatible with this repo's transformers>=5 (CLAUDE.md §3).
+    # (Its upstream torch==2.8.0 pin is overridden to 2.9.1 by the boot helper,
+    # which has no aarch64 wheel — docs/reference/aarch64-support.md.)
+    # Apache-2.0 code + weights.
     { include-group = "sidecar-wire" },
     "websockets>=15",
 ]

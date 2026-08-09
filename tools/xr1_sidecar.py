@@ -27,7 +27,14 @@ _SERVER = Path(__file__).resolve().parent / "_xr1_server.py"
 # no-build-isolation for flash-attn). Named constants rather than inline lists
 # so the same pins key the provisioning sentinel — editing one repairs an
 # already-provisioned venv instead of being ignored (see ``ensure_pip_venv``).
-_XR1_TORCH_DEPS = ("torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0")
+#
+# torch is 2.9.1, not the 2.8.0 upstream XR-1 validated against: the ``cu128``
+# 2.8.0 build publishes no ``linux_aarch64`` wheel (only manylinux x86_64 +
+# win_amd64) and its required ``triton==3.4.0`` has no aarch64 wheel either, so
+# the sidecar could not provision at all on an aarch64 CUDA host (GB10 / DGX
+# Spark, Jetson Thor). 2.9.1+cu128 publishes ``manylinux_2_28_aarch64`` and
+# pulls triton 3.5.1, which does too. See ``docs/reference/aarch64-support.md``.
+_XR1_TORCH_DEPS = ("torch==2.9.1", "torchvision==0.24.1", "torchaudio==2.9.1")
 _XR1_RUNTIME_DEPS = (
     "transformers==4.57.1",
     "accelerate==1.11.0",

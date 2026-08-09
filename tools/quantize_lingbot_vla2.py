@@ -14,7 +14,7 @@ tool: its inference graph only exists inside the upstream ``lingbotvla`` package
 reconstructed exactly as the sidecar server does (config from the repo's
 ``configs/vla/robotwin/robotwin.yaml``, a ``lerobot`` import stub, and the
 flash-attention fallback patch). So this script **runs in the sidecar venv**
-(torch 2.8 / transformers 4.57.3 / bitsandbytes) and imports the server module's
+(torch 2.9 / transformers 4.57.3 / bitsandbytes) and imports the server module's
 helpers, guaranteeing the produced pack is byte-for-byte what the runtime
 ``_nf4_backbone_in_place`` would have built.
 
