@@ -1037,6 +1037,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     reward_monitor_manifest: str | None = None,
     reward_monitor_task: str | None = None,
     enable_critic: bool | None = None,
+    enable_scene_vlm: bool | None = None,
+    scene_vlm_manifest: str | None = None,
     object_detector_locators: list[str] | None = None,
     spatial_memory_ingest: bool | None = None,
     memory_dir: str | None = None,
@@ -1130,6 +1132,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         reward_monitor_task = reward_monitor_task or rt.reward_monitor_task
         if enable_critic is None:
             enable_critic = rt.enable_critic
+        if enable_scene_vlm is None:
+            enable_scene_vlm = rt.enable_scene_vlm
+        scene_vlm_manifest = scene_vlm_manifest or _scene_path(rt.scene_vlm_manifest)
         if spatial_memory_ingest is None:
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
@@ -1149,6 +1154,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         enable_reward_monitor = False
     if enable_critic is None:
         enable_critic = False
+    if enable_scene_vlm is None:
+        enable_scene_vlm = False
     if not enable_reasoner and _resolved_initial_prompt:
         raise ROSConfigError(
             "an initial task requires runtime.enable_reasoner=true; "
@@ -1445,6 +1452,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # Tier-C critic producer; emits FailureTrigger on
         # /openral/failure/critic when a reward model's score stalls.
         f"enable_critic:={'true' if enable_critic else 'false'}",
+        # scene VLM co-active with the VLA; the reasoner asks
+        # /openral/perception/query_scene when scene_query_available.
+        f"enable_scene_vlm:={'true' if enable_scene_vlm else 'false'}",
         f"spatial_memory_ingest:={'true' if spatial_memory_ingest else 'false'}",
         f"enable_dashboard:={'true' if enable_dashboard else 'false'}",
         # read-only Foxglove live-scene bridge. Off by default;
@@ -1479,6 +1489,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # to the robometer default when unset).
     if resolved_reward_monitor_manifest:
         argv_template.append(f"reward_monitor_manifest:={resolved_reward_monitor_manifest}")
+    # Same empty-value rule for the scene-VLM manifest: the launch file defaults
+    # it to "" and falls back to the in-tree qwen35-4b-nf4 rSkill.
+    if enable_scene_vlm and scene_vlm_manifest:
+        argv_template.append(f"scene_vlm_manifest:={scene_vlm_manifest}")
     # The reward monitor's always-on critic_score path scores against its
     # `task` param; an empty task makes `_publish_critic_score` silently skip
     # every tick. Default
@@ -2636,6 +2650,21 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "co-resident with a VLA wants a small NF4 VLA on an 8 GB GPU (~3.3 GB)."
         ),
     ),
+    enable_scene_vlm: bool | None = typer.Option(
+        None,
+        "--enable-scene-vlm/--no-enable-scene-vlm",
+        help=(
+            "bring up the scene-VLM query service "
+            "(openral_perception_ros/scene_vlm_node) alongside the detectors: it "
+            "caches every manifest RGB camera's latest frame and serves "
+            "/openral/perception/query_scene, and the reasoner is told "
+            "scene_query_available=True so its LLM may ask open-ended questions "
+            "about the current view ('has the robot grasped the mug?'). Read-only. "
+            "Unset = the scene's runtime block, else off. "
+            "Needs the openral_perception_ros package colcon-built and the Qwen VLM "
+            "sidecar provisionable (~3 GB VRAM co-resident)."
+        ),
+    ),
     enable_critic: bool | None = typer.Option(
         None,
         "--enable-critic/--no-enable-critic",
@@ -2788,6 +2817,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             reward_monitor_manifest=reward_monitor_manifest,
             reward_monitor_task=reward_monitor_task,
             enable_critic=enable_critic,
+            enable_scene_vlm=enable_scene_vlm,
             object_detector_locators=object_detector_locator,
             spatial_memory_ingest=spatial_memory_ingest,
             memory_dir=memory_dir,

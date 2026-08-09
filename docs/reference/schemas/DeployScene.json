@@ -267,6 +267,30 @@
           "default": null,
           "title": "Enable Critic"
         },
+        "enable_scene_vlm": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enable Scene Vlm"
+        },
+        "scene_vlm_manifest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Vlm Manifest"
+        },
         "spatial_memory_ingest": {
           "anyOf": [
             {

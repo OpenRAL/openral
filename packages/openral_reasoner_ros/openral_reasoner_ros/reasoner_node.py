@@ -520,6 +520,27 @@ def _resets_search_episode(call: Any) -> bool:
     return not isinstance(call, RecallObjectTool | ResolvePlaceTool | LocateInViewTool | WaitTool)
 
 
+def _search_term(call: RecallObjectTool | ResolvePlaceTool) -> str:
+    """Return the term a spatial-search miss should escalate to the detector on.
+
+    The two search variants name it differently — ``recall_object`` carries
+    ``query``, ``resolve_place`` carries ``reference`` — which is why the
+    open-vocab ``locate_in_view`` escalation used to be gated on
+    ``isinstance(call, RecallObjectTool)`` and skipped places entirely. A
+    ``resolve_place`` miss then fell through to a re-prompt saying only "not in
+    memory", the LLM read that as "try again", and it looped on the same tool
+    until the search budget handed off to a human — with an open-vocab detector
+    sitting idle in the same graph.
+
+    Example:
+        >>> _search_term(RecallObjectTool(query="baguette"))
+        'baguette'
+        >>> _search_term(ResolvePlaceTool(reference="the counter"))
+        'the counter'
+    """
+    return call.query if isinstance(call, RecallObjectTool) else call.reference
+
+
 def _should_offer_subdivision(
     active: TaskState,
     offered: set[str],
@@ -2993,19 +3014,22 @@ class ReasonerNode(LifecycleNode):
         # "bread"). This is policy — it does not depend on the LLM choosing locate_in_view. One
         # escalation per query term per search streak so a repeated miss can't spam the detector; if
         # locate also misses, the normal budget/handoff path resumes.
+        #
+        # ``resolve_place`` escalates on the same policy — see :func:`_search_term`
+        # for why it used to be excluded and what that cost.
+        search_term = _search_term(call)
         if (
-            isinstance(call, RecallObjectTool)
-            and not outcome.found
+            not outcome.found
             and self._detector_available
-            and call.query not in self._locate_escalated
+            and search_term not in self._locate_escalated
         ):
-            self._locate_escalated.add(call.query)
+            self._locate_escalated.add(search_term)
             self.get_logger().info(
-                f"dispatch: recall_object miss for {call.query!r} → escalating to "
+                f"dispatch: {call.tool} miss for {search_term!r} → escalating to "
                 "locate_in_view (live detector) before handoff",
             )
             self._dispatch_locate_in_view(
-                LocateInViewTool(query=call.query, detector=self._default_on_demand_detector),
+                LocateInViewTool(query=search_term, detector=self._default_on_demand_detector),
                 traceparent=traceparent,
             )
             return

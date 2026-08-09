@@ -564,6 +564,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     ).lower() in ("1", "true", "yes")
     reward_monitor_manifest = LaunchConfiguration("reward_monitor_manifest").perform(context)
     reward_monitor_task = LaunchConfiguration("reward_monitor_task").perform(context)
+    # Scene-VLM leg. Off by default; when on, a scene_vlm_node caches every
+    # manifest RGB camera's latest frame and serves
+    # /openral/perception/query_scene, and the reasoner is told
+    # scene_query_available=True so its LLM may ask open-ended questions about the
+    # current view (the query_scene tool). Read-only — never actuates.
+    enable_scene_vlm = LaunchConfiguration("enable_scene_vlm").perform(context).lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    scene_vlm_manifest = LaunchConfiguration("scene_vlm_manifest").perform(context)
     # Tier-C critic-producer leg. Off by default; when on, a
     # critic_producer_node watches the generic /openral/critic/score topic and
     # turns a critic stall into a Tier-C FailureTrigger on /openral/failure/critic
@@ -877,6 +888,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # Offer the read-only query_task_progress tool only when a reward
     # monitor is co-active (otherwise the tool would dispatch to a dead service).
     reasoner_params["task_progress_available"] = enable_reward_monitor
+    # Offer the read-only query_scene tool only when the scene VLM is co-active
+    # (otherwise the tool would dispatch to a dead service). The reasoner's own
+    # default is False, so a deploy without this leg never sees the tool.
+    reasoner_params["scene_query_available"] = enable_scene_vlm
     # Give the reasoner the SAME reward-model manifest the
     # monitor loads (incl. the robometer default when the arg is empty — mirrors
     # the monitor's resolution below) so it reads the active RewardContract
@@ -1648,6 +1663,53 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         )
         extra_nodes.append(reward_monitor)
 
+    if enable_scene_vlm:
+        # Scene VLM runs PARALLEL to the VLA, like the reward monitor: it is a
+        # read-only reasoning aid that publishes nothing continuously and answers
+        # only on demand, so it is NOT a lifecycle/VRAM peer the reasoner frees
+        # before dispatching a policy.
+        #
+        # Every manifest RGB camera is offered, not just the first: the reasoner
+        # picks a viewpoint by camera id per query ("is the bowl on the shelf?"
+        # wants a different view than "did the gripper close?"), and the node
+        # caches each stream's latest frame precisely so it can answer about any
+        # of them. The detector leg above resolves cameras the same way.
+        import yaml  # local: the base graph (no scene VLM) never imports it
+
+        scene_vlm_cameras: list[str] = []
+        try:
+            with pathlib.Path(robot_yaml).open(encoding="utf-8") as _vh:
+                _vdoc = yaml.safe_load(_vh) or {}
+            scene_vlm_cameras = [
+                f"{_s['name']}=/openral/cameras/{_s['name']}/image"
+                for _s in _vdoc.get("sensors", [])
+                if _s.get("modality") == "rgb" and _s.get("name")
+            ]
+        except (OSError, yaml.YAMLError):
+            scene_vlm_cameras = []
+        scene_vlm_params: dict[str, object] = {
+            "manifest_path": scene_vlm_manifest
+            or str(pathlib.Path(_RSKILLS_DIR) / "qwen35-4b-nf4" / "rskill.yaml"),
+            "use_sim_time": use_sim_time,
+        }
+        if scene_vlm_cameras:
+            # Same empty-list-omission rule as lifecycle_peer_node_ids: launch_ros
+            # collapses an empty typed array to ``()`` and then rejects it. The node
+            # declares its own default (single primary_camera on image_topic).
+            scene_vlm_params["cameras"] = scene_vlm_cameras
+            scene_vlm_params["primary_camera"] = scene_vlm_cameras[0].split("=", 1)[0]
+        extra_nodes.append(
+            Node(
+                package="openral_perception_ros",
+                executable="scene_vlm_node.py",
+                name="openral_scene_vlm",
+                namespace="",
+                parameters=[scene_vlm_params],
+                additional_env=otel_env,
+                output="screen",
+            )
+        )
+
     if enable_critic:
         # Tier-C critic producer. Plain Node co-active with the graph:
         # subscribes /openral/critic/score (any reward model — Robometer, a future
@@ -2105,6 +2167,30 @@ def generate_launch_description() -> LaunchDescription:
                 "built and Robometer/TOPReward deps in the current env; "
                 "co-resident with a VLA needs ~3.3 GB "
                 "free VRAM (use a small NF4 VLA on an 8 GB GPU)."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "enable_scene_vlm",
+            default_value="false",
+            description=(
+                "Bring up the scene-VLM query service "
+                "(openral_perception_ros/scene_vlm_node) alongside the detectors. "
+                "It caches every manifest RGB camera's latest frame and serves "
+                "/openral/perception/query_scene; the reasoner is told "
+                "scene_query_available=True so its LLM may ask open-ended questions "
+                "about the current view ('has the robot grasped the mug?'). "
+                "Read-only — never actuates. Default off. Needs the "
+                "openral_perception_ros package built and the Qwen VLM sidecar "
+                "provisionable; ~3 GB VRAM co-resident."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "scene_vlm_manifest",
+            default_value="",
+            description=(
+                "Path to a kind:vlm rSkill manifest backing query_scene. "
+                "Empty defaults to the in-tree rskills/qwen35-4b-nf4/rskill.yaml. "
+                "Ignored unless enable_scene_vlm."
             ),
         ),
         DeclareLaunchArgument(

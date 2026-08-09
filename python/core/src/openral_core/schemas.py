@@ -7066,6 +7066,15 @@ class DeployRuntime(BaseModel):
     reward_monitor_manifest: str | None = None
     reward_monitor_task: str | None = None
     enable_critic: bool | None = None
+    enable_scene_vlm: bool | None = None
+    """Bring up the scene-VLM query service so the reasoner is offered the
+    read-only ``query_scene`` tool. ``None`` = off unless the CLI passes
+    ``--enable-scene-vlm``. Backward-compatible addition: a scene that omits it
+    behaves exactly as before."""
+    scene_vlm_manifest: str | None = None
+    """Path to the ``kind: "vlm"`` rSkill manifest backing ``query_scene``.
+    Scene-relative like the other manifest paths. ``None`` defaults to the
+    in-tree ``rskills/qwen35-4b-nf4``. Ignored unless ``enable_scene_vlm``."""
     spatial_memory_ingest: bool | None = None
     approach_skill_id: str | None = None
     slam_visual_impl: Literal["isaac_ros", "pycuvslam"] | None = None
