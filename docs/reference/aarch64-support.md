@@ -230,19 +230,54 @@ reassurance.
 
 ## The workspace venv itself
 
-`just sync` resolves torch from **PyPI**, not from a `cu128` index. On x86_64
-the PyPI wheel is CUDA-enabled; on aarch64 it is **CPU-only** — a freshly
-synced workspace on a DGX Spark reports:
+The sidecars each pass `--torch-backend=cu128` to their own `uv pip install`,
+so they always got real CUDA builds. The **workspace** venv did not: `uv sync`
+resolved torch from PyPI, whose aarch64 wheel is CPU-only, and a freshly synced
+DGX Spark reported `torch.__version__ == '2.9.1+cpu'`. Every *in-process*
+policy — SmolVLA, ACT, diffusion, pi05, GR00T N1.7, MolmoAct2, the Robometer
+reward model — ran on CPU.
+
+`--torch-backend` is a `uv pip`-only flag; it does not exist on `uv sync` or
+`uv lock`. So the root `pyproject.toml` expresses the same intent two ways:
+
+- an `explicit = true` `[[tool.uv.index]]` for `download.pytorch.org/whl/cu128`,
+  with `[tool.uv.sources]` pinning **torch and torchvision** to it under
+  `platform_machine == 'aarch64' and sys_platform == 'linux'`. torchvision must
+  be pinned too, and must additionally be named as a direct dependency — it is
+  otherwise purely transitive (lerobot / timm / open-clip), and
+  `[tool.uv.sources]` only binds direct requirements, so the pin would be a
+  silent no-op and you would get a CPU vision stack under a CUDA torch;
+- an `[tool.uv] override-dependencies` pair raising `nvidia-cuda-nvrtc-cu12` to
+  12.9.86 on aarch64 — the workspace hits the same sm_121 jiterator ceiling as
+  the sidecars, so without it an in-process policy dies the moment it touches a
+  jitted op.
+
+Verified on the GB10 after `just sync`:
 
 ```
->>> import torch; torch.__version__
-'2.9.1+cpu'
+torch       2.9.1+cu128
+torchvision 0.24.1
+cuda avail  True
+device      NVIDIA GB10 (12, 1)
+tv nms cuda [0]        # torchvision CUDA op
+jit prod    24         # the nvrtc jiterator path
 ```
 
-In-process policies (SmolVLA, ACT, diffusion, GR00T N1.7, …) therefore run on
-CPU there. The sidecars are unaffected: they pass `--torch-backend=cu128`
-explicitly and get real CUDA builds. Pointing the workspace itself at the
-aarch64 CUDA index is a separate change from this page's scope.
+x86_64 resolution is unchanged — still PyPI `torch==2.9.1`, `torchcodec==0.9.1`,
+`torchvision==0.24.1`, `nvidia-cuda-nvrtc-cu12==12.8.93`.
+
+> **Upgrading an existing aarch64 venv needs one extra step.** The CPU and CUDA
+> torchvision wheels share the version string `0.24.1` (the index build carries
+> no `+cu128` local tag), so `uv sync` sees the installed version as satisfying
+> the lock and does **not** swap it — you end up with a CUDA torch and a
+> CPU-only torchvision, and `torchvision.ops.nms` on a CUDA tensor raises
+> `NotImplementedError`. Force it once:
+>
+> ```bash
+> uv sync --frozen --reinstall-package torchvision
+> ```
+>
+> Fresh venvs are unaffected.
 
 ## Related
 

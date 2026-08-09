@@ -49,6 +49,16 @@ which aborts the resolve and leaves the venv half-broken (missing `h5py`,
 just sync                       # the only correct full-workspace sync
 ```
 
+**On aarch64 Linux, `just sync` needs `download.pytorch.org` reachable.** PyPI's
+aarch64 torch wheel is CPU-only, so the root `pyproject.toml` pins torch +
+torchvision to the `cu128` index (and raises `nvidia-cuda-nvrtc-cu12`) under a
+`platform_machine == 'aarch64'` marker; without it every in-process policy runs
+on CPU on a DGX Spark / Jetson. x86_64 resolution is untouched and never
+contacts that host. Upgrading an *existing* aarch64 venv also needs a one-time
+`uv sync --frozen --reinstall-package torchvision`, because both torchvision
+builds share the version string. Full detail →
+[aarch64 CUDA hosts](../reference/aarch64-support.md).
+
 **2. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
 `metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers>=5.4.0,<5.14.0`,
