@@ -1039,8 +1039,11 @@ _OMRON_BASE_JOINT_NAMES_FALLBACK: tuple[str, str, str] = (
 # no such camera in the MJCF, so we synthesize one with a MuJoCo free camera
 # placed just ahead of the mobile base, looking forward + slightly down. It
 # is surfaced as ``observation.images.head`` (and drives the
-# ``rskill-internvla_n1-...`` nav skill). Off by default; the deploy path
-# sets ``OPENRAL_ROBOCASA_HEAD_CAM=1``. Camera geometry (mount height /
+# ``rskill-internvla_n1-...`` nav skill). Off by default and **nothing in the
+# repo turns it on**: no scene YAML, launch file or CLI path sets
+# ``OPENRAL_ROBOCASA_HEAD_CAM=1``, so a VLN run must export it by hand. (This
+# comment previously claimed "the deploy path sets" it, which was never true —
+# `openral deploy sim` does not touch the variable.) Camera geometry (mount height /
 # forward offset) comes from the robot.yaml ``head`` sensor's
 # ``metadata.height_m`` / ``metadata.forward_offset_m``; the constants
 # below are only the fallback for a robot.yaml that omits them.
