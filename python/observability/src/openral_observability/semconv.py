@@ -207,6 +207,15 @@ REASONER_RSKILL_ID: Final[str] = "reasoner.rskill_id"
 REASONER_SUPPRESSED_REASON: Final[str] = "reasoner.suppressed_reason"
 REASONER_ERROR_KIND: Final[str] = "reasoner.error_kind"
 REASONER_FORCE: Final[str] = "reasoner.force"
+# Tick wall-clock (``ReasonerTickResult.elapsed_s``) covers context render +
+# LLM round-trip + bookkeeping, so a slow tick can't be attributed from the
+# trace alone. These two split it: provider time, and the prompt size that
+# drives it.
+REASONER_LLM_S: Final[str] = "reasoner.llm_s"
+"""Wall-clock of the LLM round-trip alone (:meth:`ReasonerCore.run_prepared_llm`)."""
+REASONER_PROMPT_TOKENS: Final[str] = "reasoner.prompt_tokens"
+"""Provider-reported prompt (input) tokens for the tick's call, cache reads
+included. Absent when the client does not surface usage."""
 # The active MissionState task queue, serialized as JSON
 # (``MissionState.to_summary``) so the live dashboard renders the task
 # checklist (status / attempts / verdict) rather than only the text ledger.
@@ -425,8 +434,10 @@ __all__ = [
     "METRIC_WORLD_STATE_STALENESS_MS",
     "REASONER_ERROR_KIND",
     "REASONER_FORCE",
+    "REASONER_LLM_S",
     "REASONER_MISSION_JSON",
     "REASONER_MODEL",
+    "REASONER_PROMPT_TOKENS",
     "REASONER_RSKILL_ID",
     "REASONER_SUPPRESSED_REASON",
     "REASONER_TICK_IDX",

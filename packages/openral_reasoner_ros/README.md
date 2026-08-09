@@ -110,7 +110,12 @@ The env contract is:
   endpoints still require a key.
 - `OPENRAL_REASONER_API_KEY` — required only when the resolved endpoint needs it.
 - `OPENRAL_REASONER_MAX_TOKENS` / `OPENRAL_REASONER_TIMEOUT_S` — optional
-  per-call overrides.
+  per-call overrides. The `ollama` / `vllm` named endpoints cap a call at
+  **60 s**; a large local model on a long-running mission reaches that ceiling
+  (`tick error: … Request timed out`), and `OPENRAL_REASONER_TIMEOUT_S` is the
+  way past it. Before raising it, read `llm_s` / `prompt_tokens` on the tick
+  (below) — a ceiling hit driven by a growing prompt wants context management,
+  not a longer timeout.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
 
@@ -313,6 +318,11 @@ Each `ReasonerCore.tick` opens an OTel span named `reasoner.tick`
 | `reasoner.tier` | Always | Trigger tier that drove this call: `A` (safety), `B` (replan: hal/sensor/rskill/wam), `C` (critic), `D` (operator/perception), or `heartbeat`. |
 | `reasoner.mission_json` | When a mission is active | `MissionState.to_summary()` JSON — the ordered task queue (id/text/status/attempts/verdict) the live dashboard renders as the Mission card checklist. Absent on bare-goal deploys. |
 | `reasoner.error_kind` | Provider failure | `ROSPlanningError` subclass name; an `exception` event is added to the span. |
+| `reasoner.llm_s` | Every tick that reached the LLM | Wall-clock of the provider round-trip **alone**. `ReasonerTickResult.elapsed_s` is end-to-end tick time (context render + call + bookkeeping), so `elapsed_s - llm_s` is the reasoner-side overhead — without the split a tick that grew from 6 s to 99 s cannot be attributed. |
+| `reasoner.prompt_tokens` | When the client reports usage | Provider-reported prompt tokens (Anthropic cache reads included). Tick latency that grows in step with this is a context-size problem — window or summarize the history rather than raising `OPENRAL_REASONER_TIMEOUT_S`. |
+
+Both also appear on the `reasoner.tick.selected` structured log, so the split
+is readable from the log stream without opening Jaeger.
 
 The active W3C `traceparent` captured inside this span is threaded
 through onto the outbound `EmitPromptTool` `PromptStamped.metadata_json`

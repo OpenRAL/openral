@@ -493,6 +493,11 @@ class ToolUseClient(Protocol):
         model_id: Provider-specific identifier (``claude-opus-4-7``,
             ``gpt-4o``, ``qwen2.5-7b-instruct``, ...). Recorded on the
             reasoner span.
+
+    Optional (not part of the Protocol, read via ``getattr``): an
+    implementation that can see provider usage may expose
+    ``last_prompt_tokens: int | None`` — the prompt tokens of its most recent
+    :meth:`select_tool` call — and the reasoner records it on the tick span.
     """
 
     model_id: str
@@ -569,6 +574,32 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+
+
+def _prompt_tokens(response: object) -> int | None:
+    """Provider-reported prompt-token count, or ``None`` when unreported.
+
+    Reads whichever usage fields the provider actually sent and sums them:
+    OpenAI-compatible endpoints report ``prompt_tokens``; Anthropic splits the
+    same quantity across ``input_tokens`` + the two ``cache_*_input_tokens``
+    counters, and the reasoner enables prompt caching, so summing is what
+    keeps the number comparable across providers and across ticks.
+
+    :class:`~openral_reasoner.core.ReasonerCore` picks this up off the client
+    (``last_prompt_tokens``) to record how prompt size tracks tick latency.
+    """
+    usage = getattr(response, "usage", None)
+    total: int | None = None
+    for name in (
+        "prompt_tokens",
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        value = getattr(usage, name, None)
+        if isinstance(value, int):
+            total = value if total is None else total + value
+    return total
 
 
 def _openai_choices(response: object) -> list[Any]:
@@ -1422,6 +1453,10 @@ class AnthropicToolUseClient:
         self._base_url = base_url
         self._max_tokens = max_tokens
         self._timeout_s = timeout_s
+        self.last_prompt_tokens: int | None = None
+        """Prompt tokens (cache reads included) the provider reported for the
+        most recent :meth:`select_tool` call; read by
+        ``ReasonerCore.run_prepared_llm``."""
         # SDK client built once on first use and reused across ticks —
         # rebuilding per call throws away the HTTP connection pool and pays
         # a fresh TLS handshake on every reasoner tick.
@@ -1480,6 +1515,7 @@ class AnthropicToolUseClient:
             )
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"Anthropic call failed: {exc!s}") from exc
+        self.last_prompt_tokens = _prompt_tokens(response)
         for block in response.content:
             if getattr(block, "type", None) == "tool_use":
                 return _decode_tool_payload(
@@ -1589,6 +1625,9 @@ class OpenAICompatibleToolUseClient:
         self._timeout_s = timeout_s
         self._tool_choice = tool_choice
         self._max_tokens = max_tokens
+        self.last_prompt_tokens: int | None = None
+        """Prompt tokens the endpoint reported for the most recent
+        :meth:`select_tool` call; read by ``ReasonerCore.run_prepared_llm``."""
         # SDK client built once on first use and reused across ticks (see
         # AnthropicToolUseClient._client for the rationale).
         self._sdk_client: Any = None
@@ -1654,6 +1693,7 @@ class OpenAICompatibleToolUseClient:
                 choices = _openai_choices(response)
         except Exception as exc:  # reason: provider SDK boundary
             raise ROSPlanningError(f"OpenAI-compatible call failed: {exc!s}") from exc
+        self.last_prompt_tokens = _prompt_tokens(response)
         if not choices or not choices[0].message.tool_calls:
             raise ROSReasonerInvalidPlan(
                 "OpenAI-compatible response did not contain a tool_calls block",
