@@ -233,6 +233,28 @@ def _check_vlabench_assets() -> None:
     )
 
 
+def provision_vlabench() -> None:
+    """Install VLABench and verify its ~12 GB bundle ahead of ``ros2 launch``.
+
+    ``ensure_backend_deps`` clones + installs the package; the asset bundle is
+    a separate Google-Drive pull we deliberately never automate, so
+    :func:`_check_vlabench_assets` only verifies it and raises the recipe when
+    it is missing. Preflighting both means the operator reads that recipe on a
+    terminal instead of hitting the HAL's 300 s ``on_configure`` bound.
+
+    Idempotent — the install probe and the ``assets/obj`` check both
+    short-circuit once warm.
+
+    Raises:
+        ROSConfigError: When the install fails or the asset bundle is absent.
+    """
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("vlabench")
+    _resolve_vlabench_root()
+    _check_vlabench_assets()
+
+
 def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
     """Lazily construct a VLABench primitive-task env via lerobot's config."""
     if env_cfg.scene.id != _VLABENCH_SCENE_ID:
@@ -273,4 +295,6 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
     return _VLABenchSim(scene=env_cfg.scene, task=env_cfg.task, _env=env)
 
 
-SCENES.register(_VLABENCH_SCENE_ID, fixed_robot="franka_panda")(_build_vlabench_scene)
+SCENES.register(_VLABENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_vlabench)(
+    _build_vlabench_scene
+)

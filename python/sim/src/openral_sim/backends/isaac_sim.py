@@ -575,7 +575,32 @@ def _write_robot_spec(env_cfg: SimEnvironment) -> str:
     return path
 
 
-@SCENES.register(_ISAAC_SCENE_ID, fixed_robot=None)
+def provision_isaac_sim() -> None:
+    """Build the Isaac sidecar venv — the slow half of a first run.
+
+    ``_sidecar_python`` auto-provisions a multi-GB, RTX-only, license-gated
+    install from NVIDIA's index when ``OPENRAL_ISAAC_AUTO_PROVISION=1``, and
+    otherwise raises with the manual recipe. Either way that belongs in front
+    of ``ros2 launch`` rather than inside the HAL's ``on_configure``, which
+    ``tools/lifecycle_autostart.py`` bounds at 300 s: the download cannot
+    finish inside the deadline, and the refusal error is far more legible on
+    a terminal than as a lifecycle timeout.
+
+    Idempotent — an existing venv short-circuits on its sentinel, so a warm
+    host pays one ``is_file()``. :func:`_build_isaac_sim_scene` resolves the
+    same interpreter again on the build path.
+
+    Raises:
+        ROSConfigError: When the venv is absent and auto-provisioning is off,
+            or when the NVIDIA-index install fails.
+    """
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("isaac_client")
+    _sidecar_python()
+
+
+@SCENES.register(_ISAAC_SCENE_ID, fixed_robot=None, provision=provision_isaac_sim)
 def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     """Build an Isaac Lab scene behind the out-of-process sidecar.
 

@@ -447,7 +447,30 @@ def _robotwin_root() -> Path:
     return root.resolve()
 
 
-@SCENES.register(_ROBOTWIN_SCENE_ID, fixed_robot=_ROBOTWIN_ROBOT_ID)
+def provision_robotwin() -> None:
+    """Build the RoboTwin sidecar venv — the slow half of a first run.
+
+    ``_sidecar_python`` auto-provisions the multi-GB LeRobot + SAPIEN venv
+    when ``OPENRAL_ROBOTWIN_AUTO_PROVISION=1``, and otherwise raises with the
+    manual recipe. Running it in front of ``ros2 launch`` keeps that work out
+    of the HAL's ``on_configure``, which ``tools/lifecycle_autostart.py``
+    bounds at 300 s — shorter than both the provisioning download and this
+    backend's own 600 s sidecar boot budget.
+
+    Idempotent — an existing venv short-circuits on its sentinel.
+    :func:`_build_robotwin_scene` resolves the same interpreter again.
+
+    Raises:
+        ROSConfigError: When the venv is absent and auto-provisioning is off,
+            or when the install fails.
+    """
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("robotwin_client")
+    _sidecar_python()
+
+
+@SCENES.register(_ROBOTWIN_SCENE_ID, fixed_robot=_ROBOTWIN_ROBOT_ID, provision=provision_robotwin)
 def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
     """Build a RoboTwin 2.0 SAPIEN scene behind the out-of-process sidecar.
 

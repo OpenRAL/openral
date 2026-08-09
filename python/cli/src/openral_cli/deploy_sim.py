@@ -2062,11 +2062,14 @@ def assert_ros2_packages_discoverable(
 def _preflight_scene_assets(config: Path | None) -> None:
     """Provision the scene's sim backend BEFORE ``ros2 launch``.
 
-    RoboCasa's first run clones the fork and downloads ~11 GB of kitchen
-    assets. Both steps live in ``openral_sim.backends.robocasa._build_robocasa_sim``,
-    which the HAL calls from ``on_configure`` — a callback that
-    ``tools/lifecycle_autostart.py`` bounds at 300 s, while the nav2 palette
-    re-seed helper alongside it waits only 120 s for ``/navigate_to_pose``.
+    Several backends do genuinely slow out-of-tree setup on their first run —
+    RoboCasa clones a fork and downloads ~11 GB of assets, Isaac Sim and
+    RoboTwin build multi-GB sidecar venvs, RLBench / BEHAVIOR / VLABench
+    demand an externally-provisioned install and raise a recipe when it is
+    absent. All of it happens inside the scene factory, which the HAL calls
+    from ``on_configure`` — a callback ``tools/lifecycle_autostart.py`` bounds
+    at 300 s, while the nav2 palette re-seed helper alongside it waits only
+    120 s for ``/navigate_to_pose``.
 
     On a fresh machine that race is unwinnable. The download runs for tens of
     minutes, so both helpers time out and exit non-zero: the HAL never reaches
@@ -2074,19 +2077,27 @@ def _preflight_scene_assets(config: Path | None) -> None:
     ``navigate_to_pose`` — for a scene whose whole point is find → navigate →
     grab. Nothing reports the actual cause; you get two dead helper processes
     and a quietly reduced skill palette while the download carries on in the
-    background.
+    background. The backends that only *refuse* are no better off: their
+    actionable "run ./setup.sh" error reads as a bare lifecycle timeout.
 
     Doing it here moves that work in front of the launch, where it is an
     ordinary foreground download against a TTY rather than hidden work inside
-    a lifecycle callback on a deadline. It also puts RoboCasa's asset LICENSE
-    banner and its ``typer.confirm()`` somewhere the operator can actually see
-    and answer; inside the ROS node the prompt had no reachable terminal.
+    a lifecycle callback on a deadline. It also puts each backend's license
+    banner and ``typer.confirm()`` somewhere the operator can actually see and
+    answer; inside the ROS node the prompt had no reachable terminal.
 
-    Idempotent and near-free once warm: both helpers short-circuit on a
-    readiness sentinel, so later launches pay two ``stat()`` calls. Advisory
-    by design — a provisioning failure is reported and the launch continues,
-    because the HAL will retry and raise its own typed error with the full
-    upstream context.
+    Which scenes need it is the backend's own declaration, not a table here:
+    each one passes ``provision=`` to ``SCENES.register`` and the same
+    callable runs on the build path, so preflight and build cannot drift. A
+    scene with no hook (LIBERO, MetaWorld, ManiSkill3, the native MuJoCo
+    scenes — pip installs, nothing to fetch) is a no-op.
+
+    Idempotent and near-free once warm: every hook short-circuits on an
+    install probe or readiness sentinel, so later launches pay a couple of
+    ``stat()`` calls. Advisory by design — a provisioning failure is reported
+    and the launch continues, because the backend will retry at
+    ``on_configure`` and raise its own typed error with the full upstream
+    context.
 
     Args:
         config: DeployScene YAML path, or None when the caller resolved the
@@ -2104,30 +2115,30 @@ def _preflight_scene_assets(config: Path | None) -> None:
         # Scene errors are the launch resolver's to report, not ours.
         return
 
-    # Only the RoboCasa family provisions out-of-tree assets today. Mirrors
-    # the kitchen-vs-GR1 split in `_build_robocasa_sim`.
-    if not scene_id.startswith("robocasa"):
-        return
-    backend_id = "robocasa_gr1" if scene_id.startswith("robocasa/gr1/") else "robocasa_kitchen"
-
     try:
-        from openral_sim._assets import ensure_robocasa_assets
-        from openral_sim._deps import ensure_backend_deps
+        # Importing the package fires `_register_backends()`, which is what
+        # populates the provisioner table. Decoration-time imports are thin by
+        # construction (the heavy backends load inside the factory bodies), so
+        # this costs well under a second.
+        from openral_sim import SCENES
     except ImportError:
         # No openral_sim in this env — the HAL will fail with its own
         # actionable error rather than us guessing at one.
         return
 
+    provision = SCENES.provision(scene_id)
+    if provision is None:
+        return
+
     _console.print(
-        f"[dim]preflight: provisioning {backend_id} (first run clones the fork "
-        "and downloads ~11 GB of assets; cached afterwards)[/dim]"
+        f"[dim]preflight: provisioning the {scene_id!r} backend (a first run may "
+        "clone repos and download several GB; cached afterwards)[/dim]"
     )
     try:
-        ensure_backend_deps(backend_id)
-        ensure_robocasa_assets()
-    except Exception as exc:  # reason: advisory — the HAL retries and raises typed
+        provision()
+    except Exception as exc:  # reason: advisory — the backend retries and raises typed
         _console.print(
-            f"[yellow]preflight: could not provision {backend_id} ({exc}); "
+            f"[yellow]preflight: could not provision {scene_id!r} ({exc}); "
             "continuing — the HAL will retry at on_configure[/yellow]"
         )
 

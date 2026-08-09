@@ -34,6 +34,25 @@ returns the bound robot or ``None``):
   (franka_panda — native in-process on lerobot's VLABenchEnv), ``behavior``
   (r1pro — the BEHAVIOR-1K 2026 OmniGibson evaluator behind an
   out-of-process sidecar in the official BEHAVIOR Python environment).
+
+Declaring out-of-tree provisioning
+----------------------------------
+A backend whose first run does something genuinely slow before it can build —
+clone a repo, pull a multi-GB asset bundle, construct a sidecar venv, or
+refuse with an "install it yourself" recipe — MUST also pass ``provision=`` to
+``@SCENES.register``. Without it that work lands inside the HAL's
+``on_configure``, which ``tools/lifecycle_autostart.py`` bounds at 300 s and
+the nav2 palette re-seed helper at 120 s: on a fresh machine both time out,
+the HAL never reaches ACTIVE, and the reasoner silently loses skills. With it,
+``openral deploy sim`` runs the hook in front of ``ros2 launch``, where the
+download is ordinary foreground work and the license prompt has a real TTY.
+
+The hook must be idempotent and must be the same callable the factory itself
+invokes, so the preflight and the build cannot drift — see
+``robocasa.provision_robocasa`` (deps + assets) and
+``isaac_sim.provision_isaac_sim`` (deps + sidecar venv) for the two shapes.
+Backends whose only setup is a ``uv sync`` dependency group (LIBERO, MetaWorld,
+ManiSkill3, gym-aloha, gym-pusht, the native MuJoCo scenes) leave it unset.
 """
 
 from __future__ import annotations

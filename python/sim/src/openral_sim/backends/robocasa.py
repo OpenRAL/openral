@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -1537,21 +1538,46 @@ def _robosuite_conflict_hint(exc: ImportError) -> ROSConfigError | None:
     return None
 
 
-def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / camera / state-layout branching is intrinsic to the GR1 vs kitchen split; factoring out would just add indirection
-    env_cfg: SimEnvironment, *, scene_id: str | None = None
-) -> _RoboCasaSim:
-    """Resolve a SimEnvironment to a running RoboCasa env."""
-    # Provision the right fork from the scene id (kitchen `robocasa/<task>` vs
-    # GR1 `robocasa/gr1/<task>`; the procedural `robocasa` id falls back to
-    # kitchen, the historical default). ensure_backend_deps relaxes the fork's
-    # import-time micro-version asserts at provision time
-    # (`_relax_robocasa_version_asserts_step`), so a plain `import robocasa`
-    # registers its env classes on the workspace's mujoco/numpy/robosuite — no
-    # runtime version spoof needed.
+def _robocasa_backend_id(scene_id: str) -> str:
+    """Map a scene id to its fork: GR1 tabletop vs the kitchen default.
+
+    The procedural ``robocasa`` id and every ``robocasa/<Task>`` prebuilt
+    resolve to the kitchen package; only the ``robocasa/gr1/<Task>`` family
+    comes from the ``robocasa-gr1-tabletop-tasks`` fork.
+    """
+    return "robocasa_gr1" if scene_id.startswith(_GR1_SCENE_PREFIX + "/") else "robocasa_kitchen"
+
+
+def provision_robocasa(backend_id: str) -> None:
+    """Install the fork and fetch its assets — the slow half of a first run.
+
+    Clones + editable-installs the right ``robocasa`` fork and downloads the
+    ~11 GB asset bundle. Split out of :func:`_build_robocasa_sim` so
+    ``openral deploy sim`` can run it in front of ``ros2 launch`` instead of
+    letting it land inside the HAL's ``on_configure``, which
+    ``tools/lifecycle_autostart.py`` bounds at 300 s — a deadline no fresh
+    download can meet. Registered per scene via ``SCENES.register(...,
+    provision=...)``; the build path below calls the very same function, so
+    the two cannot drift.
+
+    Idempotent: ``ensure_backend_deps`` short-circuits on its install probe
+    and ``ensure_robocasa_assets`` on its readiness sentinel, so a warm host
+    pays a couple of ``stat()`` calls.
+
+    Args:
+        backend_id: ``"robocasa_kitchen"`` or ``"robocasa_gr1"`` — see
+            :func:`_robocasa_backend_id`.
+
+    Raises:
+        ROSConfigError: When the install or the asset download fails, or
+            when an older LIBERO-pinned robosuite shadows the fork.
+    """
+    # ensure_backend_deps relaxes the fork's import-time micro-version asserts
+    # at provision time (`_relax_robocasa_version_asserts_step`), so a plain
+    # `import robocasa` registers its env classes on the workspace's
+    # mujoco/numpy/robosuite — no runtime version spoof needed.
     from openral_sim._deps import ensure_backend_deps
 
-    sid = scene_id or env_cfg.scene.id
-    backend_id = "robocasa_gr1" if sid.startswith(_GR1_SCENE_PREFIX + "/") else "robocasa_kitchen"
     ensure_backend_deps(backend_id)
 
     try:
@@ -1566,7 +1592,21 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
     import robosuite  # reason: probe -- ensure_backend_deps above guarantees this resolves
 
     _ = (robocasa, robosuite)  # silence unused-import; the imports are the probe
+    # Must follow the import probe: the kitchen downloader is driven as
+    # `runpy.run_module("robocasa.scripts.download_kitchen_assets")`, which
+    # needs an importable robocasa to resolve at all.
     ensure_robocasa_assets()
+
+
+def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / camera / state-layout branching is intrinsic to the GR1 vs kitchen split; factoring out would just add indirection
+    env_cfg: SimEnvironment, *, scene_id: str | None = None
+) -> _RoboCasaSim:
+    """Resolve a SimEnvironment to a running RoboCasa env."""
+    # Normally a no-op: `openral deploy sim` already ran this via the scene's
+    # registered `provision=` hook before launching. Kept here so the direct
+    # in-process entry points (`openral sim run`, `openral benchmark run`)
+    # still provision on demand.
+    provision_robocasa(_robocasa_backend_id(scene_id or env_cfg.scene.id))
 
     opts = _validate_backend_options(env_cfg.scene)
     sid = scene_id or env_cfg.scene.id
@@ -1703,12 +1743,14 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         import gymnasium as gym
 
         # Side-effect import: registers the `gr1_unified/...` gym env ids.
-        import robocasa.utils.gym_utils.gymnasium_groot
+        import robocasa.utils.gym_utils.gymnasium_groot  # noqa: F401  # reason: import IS the registration
 
         gym_env_id = f"gr1_unified/{env_name}_{opts.robots[0]}_Env"
         env = gym.make(gym_env_id, enable_render=True, seed=int(env_cfg.seed))
         is_gymnasium_wrapped = True
     else:
+        import robosuite  # reason: provisioned above; robocasa pins its own fork
+
         env = robosuite.make(
             env_name=env_name,
             robots=opts.robots,
@@ -1756,7 +1798,11 @@ def _make_prebuilt_factory(scene_id: str) -> Any:
 # from `_resolve_env_name` (and can patch the tuple in their fork).
 for _task in _CURATED_PREBUILT_TASKS:
     _scene = f"{_PREBUILT_SCENE_PREFIX}/{_task}"
-    SCENES.register(_scene, fixed_robot="panda_mobile")(_make_prebuilt_factory(_scene))
+    SCENES.register(
+        _scene,
+        fixed_robot="panda_mobile",
+        provision=partial(provision_robocasa, "robocasa_kitchen"),
+    )(_make_prebuilt_factory(_scene))
 
 
 # Register the GR1 tabletop tasks against the `gr1` robot.
@@ -1768,10 +1814,18 @@ for _task in _CURATED_PREBUILT_TASKS:
 # "unknown env_name" rather than at import time.
 for _task in _GR1_TABLETOP_TASKS:
     _scene = f"{_GR1_SCENE_PREFIX}/{_task}"
-    SCENES.register(_scene, fixed_robot="gr1")(_make_prebuilt_factory(_scene))
+    SCENES.register(
+        _scene,
+        fixed_robot="gr1",
+        provision=partial(provision_robocasa, "robocasa_gr1"),
+    )(_make_prebuilt_factory(_scene))
 
 
-@SCENES.register(_PROCEDURAL_SCENE_ID, fixed_robot="panda_mobile")
+@SCENES.register(
+    _PROCEDURAL_SCENE_ID,
+    fixed_robot="panda_mobile",
+    provision=partial(provision_robocasa, "robocasa_kitchen"),
+)
 def _build_robocasa_procedural(env_cfg: SimEnvironment) -> _RoboCasaSim:
     """Procedural scenario surface -- (style x layout x fixtures x objects x verb)."""
     return _build_robocasa_sim(env_cfg)

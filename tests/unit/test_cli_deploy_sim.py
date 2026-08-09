@@ -2226,10 +2226,13 @@ def test_repo_root_from_unresolvable_names_both_escape_hatches(
 # ---------------------------------------------------------------------------
 # Scene-asset preflight (`_preflight_scene_assets`)
 #
-# RoboCasa's first run downloads ~11 GB inside the HAL's on_configure, which
+# Slow out-of-tree provisioning — RoboCasa's ~11 GB asset pull, the Isaac /
+# RoboTwin sidecar venvs, the RLBench / BEHAVIOR / VLABench "install it
+# yourself" refusals — otherwise happens inside the HAL's on_configure, which
 # tools/lifecycle_autostart.py bounds at 300 s and the nav2 palette re-seed
 # helper at 120 s. Provisioning ahead of `ros2 launch` takes that work out of
-# the deadline. Real in-tree scene YAMLs, no mocks (CLAUDE.md §1.11).
+# the deadline. Real in-tree scene YAMLs + the real registry, no mocks
+# (CLAUDE.md §1.11).
 # ---------------------------------------------------------------------------
 
 
@@ -2238,45 +2241,66 @@ def test_scene_asset_preflight_is_a_noop_without_a_config() -> None:
     deploy_sim._preflight_scene_assets(None)
 
 
-def test_scene_asset_preflight_skips_non_robocasa_scenes(
+def test_scene_asset_preflight_skips_scenes_with_nothing_to_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the RoboCasa family provisions out-of-tree assets.
+    """A pip-only backend must not reach `ensure_backend_deps` at all.
 
-    A non-RoboCasa deploy scene must not reach `ensure_backend_deps` at all;
-    importing the sim provisioner for, say, an Isaac scene would be wasted
-    work and could prompt about a download the scene never needs.
+    LIBERO installs from a dependency group and fetches no out-of-tree asset
+    bundle, so it registers no `provision=` hook. Prompting about an install
+    the launch does not need would be pure noise.
     """
     called: list[str] = []
 
     def _boom(backend_id: str) -> None:
         called.append(backend_id)
-        raise AssertionError("provisioner reached for a non-robocasa scene")
+        raise AssertionError("provisioner reached for a scene with no provision hook")
 
     monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _boom)
-    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/libero_object.yaml"))
     assert called == []
 
 
-def test_scene_asset_preflight_provisions_the_kitchen_backend(
+def test_scene_asset_preflight_provisions_the_kitchen_fork(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A `robocasa/<task>` scene provisions the kitchen fork before launch."""
-    seen: dict[str, object] = {}
+    """A `robocasa/<task>` scene provisions the kitchen fork before launch.
 
-    monkeypatch.setattr(
-        "openral_sim._deps.ensure_backend_deps",
-        lambda backend_id: seen.__setitem__("backend", backend_id),
-    )
-    monkeypatch.setattr(
-        "openral_sim._assets.ensure_robocasa_assets",
-        lambda: seen.__setitem__("assets", True),
-    )
+    Stops at `ensure_backend_deps` so the assertion holds on a host without
+    robocasa installed — the fork id is the part that was historically wrong,
+    and raising from there also re-checks the advisory contract.
+    """
+    seen: list[str] = []
 
+    def _record_then_stop(backend_id: str) -> None:
+        seen.append(backend_id)
+        raise RuntimeError("stop before the import probe")
+
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _record_then_stop)
     deploy_sim._preflight_scene_assets(Path("scenes/deploy/robocasa_baguette.yaml"))
+    assert seen == ["robocasa_kitchen"]
 
-    assert seen["backend"] == "robocasa_kitchen"
-    assert seen["assets"] is True
+
+def test_scene_asset_preflight_provisions_a_sidecar_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preflight generalises past RoboCasa to the sidecar backends.
+
+    An Isaac scene builds a multi-GB NVIDIA-index venv on first use; that is
+    the same 300 s `on_configure` race RoboCasa hit, so it must be provisioned
+    ahead of the launch too.
+    """
+    seen: list[str] = []
+
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", seen.append)
+    monkeypatch.setattr(
+        "openral_sim.backends.isaac_sim._sidecar_python",
+        lambda: seen.append("venv"),
+    )
+
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+
+    assert seen == ["isaac_client", "venv"]
 
 
 def test_scene_asset_preflight_is_advisory_when_provisioning_fails(
@@ -2284,14 +2308,68 @@ def test_scene_asset_preflight_is_advisory_when_provisioning_fails(
 ) -> None:
     """A provisioning failure must not abort the launch.
 
-    The HAL retries at on_configure and raises a typed error carrying the
+    The backend retries at on_configure and raises a typed error carrying the
     upstream stderr, which is a better message than anything we could
     synthesise here — so the preflight warns and returns.
     """
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", lambda backend_id: None)
 
-    def _fail(backend_id: str) -> None:
+    def _fail() -> None:
         raise RuntimeError("network is down")
 
-    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _fail)
+    monkeypatch.setattr("openral_sim.backends.isaac_sim._sidecar_python", _fail)
     # Must not raise.
-    deploy_sim._preflight_scene_assets(Path("scenes/deploy/robocasa_baguette.yaml"))
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+
+
+@pytest.mark.parametrize(
+    ("scene_id", "backend_id"),
+    [
+        ("robocasa", "robocasa_kitchen"),
+        ("robocasa/PickPlaceCounterToCabinet", "robocasa_kitchen"),
+        ("robocasa/gr1/PnPCanToDrawerClose", "robocasa_gr1"),
+    ],
+)
+def test_robocasa_scenes_declare_their_own_fork(
+    scene_id: str, backend_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each robocasa scene's hook provisions the fork that scene actually needs.
+
+    The kitchen and GR1 packages both import as `robocasa` and ship different
+    asset trees, so provisioning the wrong one leaves the scene unrunnable.
+    """
+    from openral_sim import SCENES
+
+    seen: list[str] = []
+
+    def _record_then_stop(requested: str) -> None:
+        seen.append(requested)
+        raise RuntimeError("stop before the import probe")
+
+    monkeypatch.setattr("openral_sim._deps.ensure_backend_deps", _record_then_stop)
+
+    provision = SCENES.provision(scene_id)
+    assert provision is not None
+    with pytest.raises(RuntimeError):
+        provision()
+    assert seen == [backend_id]
+
+
+def test_every_backend_with_out_of_tree_assets_declares_a_provisioner() -> None:
+    """The registry, not the CLI, is the list of what needs preflighting.
+
+    A new backend that clones a repo or downloads an asset bundle inside its
+    scene factory silently reintroduces the `on_configure` timeout unless it
+    declares `provision=`. Pinning both sides of the split makes that an
+    explicit choice rather than an omission.
+    """
+    from openral_sim import SCENES
+
+    needs_assets = {"robocasa", "isaac_sim", "robotwin", "rlbench", "behavior", "vlabench"}
+    # Pip-installed backends: a dependency group is all they need.
+    pip_only = {"libero_object", "metaworld", "maniskill3", "aloha_transfer_cube", "pusht"}
+
+    for scene_id in sorted(needs_assets):
+        assert SCENES.provision(scene_id) is not None, f"{scene_id} lost its provision hook"
+    for scene_id in sorted(pip_only):
+        assert SCENES.provision(scene_id) is None, f"{scene_id} gained an unexpected hook"

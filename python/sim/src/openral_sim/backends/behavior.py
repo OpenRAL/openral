@@ -314,7 +314,27 @@ class _BehaviorSidecar:
         return obs
 
 
-@SCENES.register(_SCENE_ID, fixed_robot=_ROBOT_ID)
+def provision_behavior() -> None:
+    """Resolve the BEHAVIOR-1K sidecar interpreter ahead of ``ros2 launch``.
+
+    OmniGibson + the BEHAVIOR dataset install out-of-band via upstream's
+    ``./setup.sh``, so ``_sidecar_python`` only locates that environment and
+    otherwise raises with the setup command. Preflighting it turns a 300 s
+    ``tools/lifecycle_autostart.py`` timeout into the actual instruction the
+    operator needs, printed before the launch starts.
+
+    Idempotent — a plain interpreter lookup.
+
+    Raises:
+        ROSConfigError: When the BEHAVIOR environment cannot be found.
+    """
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("behavior_groot_client")
+    _sidecar_python()
+
+
+@SCENES.register(_SCENE_ID, fixed_robot=_ROBOT_ID, provision=provision_behavior)
 def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
     from openral_sim._deps import ensure_backend_deps
 
