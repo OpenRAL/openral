@@ -263,3 +263,74 @@ def build_sim_env_from_yaml(
         record_video=False,
     )
     return SCENES.get(scene_id)(sim_env), scene_env.seed
+
+
+# ── Lifecycle budget ─────────────────────────────────────────────────────────
+
+HAL_TRANSITION_TIMEOUT_FLOOR_S = 300.0
+# Slack over the backend's own boot budget: the callback also imports the sim
+# stack and runs the first ``env.reset()`` after the sidecar answers.
+HAL_TRANSITION_TIMEOUT_MARGIN_S = 60.0
+
+
+def hal_transition_timeout_s(deploy_config: str | None) -> str:
+    """Per-transition budget for the HAL autostart, derived from the scene.
+
+    Lives beside :func:`build_sim_env_from_yaml` because that is the call
+    whose duration this bounds: the launch file spawns
+    ``tools/lifecycle_autostart.py`` with this value, and the transition it
+    waits on is the ``on_configure`` that runs the function above.
+
+    The floor is 300 s. The HAL's ``on_configure`` runs synchronously on its
+    executor and blocks for over a minute on a robocasa-kitchen first boot
+    (MuJoCo + robosuite import, ``env.reset``, and — on a cold env — a uv
+    resolve+build of robocasa that alone logs ~27 s). Below that the autostart
+    times out mid-configure and false-fails with "did not advance the FSM".
+
+    A fixed 300 s is not enough for the sidecar backends. ``on_configure``
+    also *boots* the sidecar — the scene factory's ``connect()`` spawns the
+    process and blocks in ``_wait_for_boot`` — and those carry much larger
+    budgets of their own (``isaac_sim`` 900 s, ``behavior`` 1200 s,
+    ``robotwin`` 600 s), which the in-tree Isaac / BEHAVIOR deploy scenes
+    raise to ``boot_timeout_s: 1200``. Measured on an RTX 4070 Laptop, Isaac
+    Sim 5.1 reaches ``app ready`` in ~13 s — but a sidecar that wedges after
+    that point burns the client's whole ``boot_timeout_s`` before
+    ``connect()`` raises, which is exactly the case that matters: the
+    transition's worst case is the declared budget, not the nominal boot
+    time. So those five scenes were declaring a budget the launcher would not
+    honour: the autostart died at 300 s while
+    ``on_configure`` kept running, and the HAL could finish configuring with
+    nothing left alive to drive ACTIVATE — parked in INACTIVE with no
+    ``/joint_states``, no cameras, and no message naming the cause.
+
+    Reading the scene's own ``boot_timeout_s`` keeps the two numbers from
+    contradicting each other: raising it in the YAML now also buys the
+    lifecycle the time to wait. Note the cost — a genuinely wedged HAL on such
+    a scene goes unreported for that much longer, which is why the floor
+    applies to every scene that does not ask for more.
+
+    Args:
+        deploy_config: DeployScene YAML path, or ``None`` / ``""`` when the
+            launch was not given one (then the floor applies).
+
+    Returns:
+        The timeout in seconds as a string, ready for an ``ExecuteProcess``
+        argv.
+
+    Example:
+        >>> hal_transition_timeout_s("")
+        '300.0'
+    """
+    if not deploy_config:
+        return str(HAL_TRANSITION_TIMEOUT_FLOOR_S)
+    try:
+        boot_s = float(
+            DeployScene.from_yaml(deploy_config).scene.backend_options[  # type: ignore[arg-type]  # reason: arbitrary YAML value; the except below is the guard
+                "boot_timeout_s"
+            ]
+        )
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        # An absent or malformed value is not this helper's to report — the
+        # scene resolver and the backend both validate it downstream.
+        return str(HAL_TRANSITION_TIMEOUT_FLOOR_S)
+    return str(max(HAL_TRANSITION_TIMEOUT_FLOOR_S, boot_s + HAL_TRANSITION_TIMEOUT_MARGIN_S))
