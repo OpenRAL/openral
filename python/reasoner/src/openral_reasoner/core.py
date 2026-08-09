@@ -109,6 +109,15 @@ class PreparedTick:
     prompts: tuple[PromptRecord, ...]
     force: bool
     tier: str
+    llm_s: float = 0.0
+    """Wall-clock of the LLM round-trip alone, written by
+    :meth:`~ReasonerCore.run_prepared_llm` (the only field the LLM phase
+    mutates) and read back by :meth:`~ReasonerCore.finish_tick`. Split out
+    from the tick's ``elapsed_s`` because a slow tick is otherwise
+    unattributable: provider time and reasoner overhead look identical."""
+    prompt_tokens: int | None = None
+    """Provider-reported prompt-token count for that call, or ``None`` when
+    the client does not surface usage."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -460,11 +469,21 @@ class ReasonerCore:
         with use_span(
             prep.span, end_on_exit=False, record_exception=False, set_status_on_exception=False
         ):
-            return self._client.select_tool(
-                context_text=prep.context_text,
-                palette=prep.palette,
-                system_prompt=prep.system_prompt,
-            )
+            llm_started = self._clock()
+            try:
+                return self._client.select_tool(
+                    context_text=prep.context_text,
+                    palette=prep.palette,
+                    system_prompt=prep.system_prompt,
+                )
+            finally:
+                # ``finally``: a timed-out / failed call is exactly the one
+                # whose duration matters most.
+                prep.llm_s = self._clock() - llm_started
+                # Optional client attribute — absent on clients that don't
+                # surface provider usage, hence getattr rather than a
+                # Protocol member every implementation would have to carry.
+                prep.prompt_tokens = getattr(self._client, "last_prompt_tokens", None)
 
     def finish_tick(
         self,
@@ -492,6 +511,12 @@ class ReasonerCore:
             prep.span, end_on_exit=True, record_exception=False, set_status_on_exception=False
         ):
             span = prep.span
+            # Stamped before the error/suppression branches: an errored or
+            # capped tick still burned the LLM round-trip, and those are the
+            # ticks worth attributing.
+            span.set_attribute(semconv.REASONER_LLM_S, round(prep.llm_s, 4))
+            if prep.prompt_tokens is not None:
+                span.set_attribute(semconv.REASONER_PROMPT_TOKENS, prep.prompt_tokens)
             if error is not None:
                 self._last_tick_s = prep.started
                 self._last_seen_seq = prep.seq
@@ -554,7 +579,13 @@ class ReasonerCore:
                 "tool": call.tool,
                 "tier": prep.tier,
                 "elapsed_s": round(self._clock() - prep.started, 4),
+                # elapsed_s minus llm_s is the reasoner-side overhead; without
+                # the split a growing tick can't be blamed on the provider or
+                # on us (issue #92).
+                "llm_s": round(prep.llm_s, 4),
             }
+            if prep.prompt_tokens is not None:
+                _log_kwargs["prompt_tokens"] = prep.prompt_tokens
             if rskill_id:
                 _log_kwargs["rskill_id"] = rskill_id
             rationale = getattr(call, "rationale", None)
