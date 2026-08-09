@@ -122,9 +122,10 @@ the `libero` / `metaworld` dependency groups today).
   with real ACT weights + gym-aloha physics + SVT-AV1 video encoding, then
   re-opens the produced v3 dataset (CUDA + `lerobot` + `gym_aloha` gated; skips
   on CPU/CI).
-- **Hardware / rosbag path** is covered only in unit isolation:
-  `tests/unit/test_deploy_runner_dataset_recording.py` drives
-  `DeployRunner` + `Rosbag2Sink` directly, plus the converter / CLI unit
-  tests. It has **not** been exercised through `openral deploy sim` or a live
-  ROS 2 graph — the deploy-sim node (`rskill_runner_node.py`) does not yet
-  construct or attach a `RolloutRecorder`.
+- **Hardware / rosbag path**: `tests/unit/test_deploy_runner_dataset_recording.py`
+  drives `DeployRunner` + `Rosbag2Sink` directly, plus the converter / CLI unit
+  tests. The deploy graph's own recorder — `DatasetRecorderBridge`, attached by
+  `compose_runtime(dataset_out=...)` — is covered against a real aggregator,
+  real `Rosbag2Sink` and real bag read-back in
+  `tests/integration/test_dataset_recorder_bridge.py`, but not yet through a
+  full live `ros2 launch` graph.
