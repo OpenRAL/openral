@@ -2143,6 +2143,51 @@ def _preflight_scene_assets(config: Path | None) -> None:
         )
 
 
+_HEAD_CAM_ENV = "OPENRAL_ROBOCASA_HEAD_CAM"
+_HEAD_CAM_FEATURE_KEY = "observation.images.head"
+
+
+def _apply_palette_head_cam(matched: Iterable[RSkillManifest]) -> bool:
+    """Enable the synthetic RoboCasa ``head`` camera when the palette needs it.
+
+    The RoboCasa backend synthesises a forward egocentric ``head`` camera for
+    navigation policies (``openral_sim.backends.robocasa.render_head_view``),
+    gated on ``OPENRAL_ROBOCASA_HEAD_CAM`` because the robosuite scenes own no
+    such camera and every manipulation run would otherwise pay for a second
+    offscreen render. Nothing used to set it, so pairing
+    ``scenes/deploy/robocasa_navigate.yaml`` with the InternVLA-N1 VLN rSkill
+    silently produced no ``observation.images.head`` at all (issue #91).
+
+    Derive it from the palette instead of per-scene bookkeeping: if any rSkill
+    the reasoner may dispatch declares ``observation.images.head`` in its
+    ``sensors_required``, the run needs that camera, so turn it on. The launch
+    env is ``os.environ.copy()`` (:func:`_prepare_launch_env`), so setting it
+    here carries into the HAL process that renders it.
+
+    Derived from the capability-matched set, not the post-drop dispatchable
+    one: a nav skill blocked on missing extras costs one wasted render per
+    step, which is cheaper than a nav skill that boots blind.
+
+    An operator-set ``OPENRAL_ROBOCASA_HEAD_CAM`` always wins — including
+    ``=0``, so the render can still be forced off. Returns True iff this call
+    turned it on.
+    """
+    if _HEAD_CAM_ENV in os.environ:
+        return False
+    if not any(
+        sensor.vla_feature_key == _HEAD_CAM_FEATURE_KEY
+        for manifest in matched
+        for sensor in manifest.sensors_required
+    ):
+        return False
+    os.environ[_HEAD_CAM_ENV] = "1"
+    _console.print(
+        f"[cyan]preflight:[/cyan] {_HEAD_CAM_ENV}=1 — a capability-matched rSkill "
+        f"consumes {_HEAD_CAM_FEATURE_KEY} (RoboCasa renders the forward nav camera)."
+    )
+    return True
+
+
 def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow — split would obscure the prompt → install → re-probe contract
     *,
     repo_root: Path,
@@ -2224,6 +2269,11 @@ def _preflight_palette_deps(  # noqa: PLR0912, PLR0915  # reason: linear flow �
         # Palette would be empty for capability / role / license reasons,
         # not deps. Reasoner already logs this clearly at on_configure.
         return
+
+    # Both entrypoints route their palette build through here, so this is the
+    # one place that knows what the reasoner may dispatch before launch.
+    matched_names = set(matching_ids)
+    _apply_palette_head_cam(m for m in manifests if m.name in matched_names)
 
     blocked: list[tuple[str, str]] = []  # (manifest_name, model_family)
     install_groups: set[str] = set()
