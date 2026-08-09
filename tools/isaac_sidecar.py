@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import io
 import os
+import re
 import sys
 from typing import Any
 
@@ -90,11 +91,64 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="path to the JSON isaac robot spec (manifest layout only)",
     )
+    p.add_argument(
+        "--require-min",
+        action="append",
+        default=[],
+        metavar="DIST>=VERSION",
+        help=(
+            "installed-version floor to verify before Kit boots (repeatable). "
+            "The openral side passes the CUDA runtime pins its venv provisioning "
+            "applies, so a venv that predates a pin correction fails in a second "
+            "with the actual versions instead of hanging (issue #89)."
+        ),
+    )
     return p.parse_args(argv)
+
+
+def _check_required_versions(requirements: list[str]) -> None:
+    """Fail loudly when an installed dist is older than the floor openral pins.
+
+    Isaac's own extensions prebundle CUDA libraries that resolve against the
+    venv's ``nvidia-*`` wheels; too-old ones do not raise, they make extension
+    startup fail and leave Kit alive but never serving. Checking first turns a
+    silent ``boot_timeout_s`` burn into an immediate, actionable error.
+
+    Versions are compared as digit tuples (``12.6.85`` -> ``(12, 6, 85)``) —
+    enough for the CUDA runtime wheels, and it keeps this launcher free of
+    ``packaging``, which the sidecar venv is not guaranteed to carry.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    def _tuple(v: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", v))
+
+    problems: list[str] = []
+    for requirement in requirements:
+        dist, _, floor = requirement.partition(">=")
+        if not floor:
+            raise SystemExit(f"--require-min expects 'DIST>=VERSION', got {requirement!r}")
+        try:
+            installed = version(dist)
+        except PackageNotFoundError:
+            problems.append(f"{dist}: not installed (need >={floor})")
+            continue
+        if _tuple(installed) < _tuple(floor):
+            problems.append(f"{dist}: {installed} installed, need >={floor}")
+    if problems:
+        raise SystemExit(
+            "[isaac_sidecar] sidecar venv fails its dependency floors:\n  "
+            + "\n  ".join(problems)
+            + f"\nRepair it:\n  {sys.executable} -m pip install --upgrade --no-deps "
+            + " ".join(f"'{r},<13'" for r in requirements)
+            + "\nOr delete the venv and re-run with OPENRAL_ISAAC_AUTO_PROVISION=1."
+        )
 
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    # Before the ~50 s Kit boot: a stale venv must not cost a full boot timeout.
+    _check_required_versions(args.require_min)
 
     # 1) Launch the Kit app FIRST — every omni.* / isaaclab import below depends
     #    on a live SimulationApp.

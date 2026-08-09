@@ -216,7 +216,16 @@ def _ensure_venv(
         )
 
     ensure_uv()
-    return ensure_pip_venv(label=_LABEL, home=home, python="3.12", install=install or _install)
+    return ensure_pip_venv(
+        label=_LABEL,
+        home=home,
+        python="3.12",
+        install=install or _install,
+        # Keyed on the upstream pins (which move with _PINNED_SHA) + our extras,
+        # so a repinned checkout repairs an existing venv. An injected custom
+        # ``install`` has no spec we can key on, so it keeps the opaque marker.
+        spec=None if install else (reqs.read_text(encoding="utf-8"), "pyzmq", "bitsandbytes"),
+    )
 
 
 def main() -> int:

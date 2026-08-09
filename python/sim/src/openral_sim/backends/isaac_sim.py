@@ -99,10 +99,20 @@ _ISAAC_DEPS = (
     "pyzmq",
     "msgpack",
 )
-_ISAAC_CUDA_DEPS = (
-    "nvidia-nvjitlink-cu12>=12.8,<13",
-    "nvidia-cusparse-cu12>=12.5,<13",
-)
+# CUDA runtime floors, forced on top of the Isaac install (``--upgrade --no-deps``).
+# The Kit extension ``omni.isaac.ml_archive`` prebundles a CUDA-12.8 libcusparse
+# but NOT libnvJitLink, so nvJitLink resolves against the venv's copy — and
+# torch 2.7's own ``nvidia-nvjitlink-cu12==12.6.85`` pin is too old for it
+# (``undefined symbol: __nvJitLinkCreate_12_8``). The mismatch does not raise;
+# extension startup fails and Kit sits there, so the client burns its whole boot
+# timeout with no useful error (issue #89). Floors are declared here as
+# ``dist -> minimum`` because both the pip spec above and the sidecar's boot
+# probe (``--require-min``) are derived from them — one source of truth.
+_ISAAC_CUDA_FLOORS = {
+    "nvidia-nvjitlink-cu12": "12.8",
+    "nvidia-cusparse-cu12": "12.5",
+}
+_ISAAC_CUDA_DEPS = tuple(f"{dist}>={floor},<13" for dist, floor in _ISAAC_CUDA_FLOORS.items())
 # Default ZMQ endpoint. Distinct port from the RLDX sidecar (5555-ish) so the
 # two can coexist on one host.
 _DEFAULT_HOST = "127.0.0.1"
@@ -356,15 +366,24 @@ def _provision_isaac_venv() -> Path:
         home=_ISAAC_SIDECAR_HOME,
         python=_ISAAC_PYTHON,
         install=_install,
+        # Keyed on the pins so raising a floor (e.g. the nvJitLink one) repairs
+        # an already-provisioned venv instead of being ignored forever.
+        spec=(*_ISAAC_DEPS, *_ISAAC_CUDA_DEPS),
     )
 
 
 def _sidecar_python() -> Path:
     """Resolve the isaac sidecar venv interpreter, or raise with the install hint.
 
-    Resolution order: ``OPENRAL_ISAAC_SIDECAR_PYTHON`` override → an existing
-    default venv → opt-in auto-provision (``OPENRAL_ISAAC_AUTO_PROVISION=1``) →
-    a typed error carrying the exact manual commands.
+    Resolution order: ``OPENRAL_ISAAC_SIDECAR_PYTHON`` override → opt-in
+    auto-provision (``OPENRAL_ISAAC_AUTO_PROVISION=1``) → an existing default
+    venv → a typed error carrying the exact manual commands.
+
+    Auto-provision is tried *before* the existing-venv shortcut so a venv built
+    from superseded pins gets repaired: :func:`ensure_pip_venv` reuses it when
+    its sentinel still matches (cheap) and re-installs when it does not. The
+    old order returned any existing venv untouched, which is why the stale
+    nvJitLink of issue #89 survived every re-provision attempt.
     """
     override = os.environ.get(_SIDECAR_PYTHON_ENV)
     if override:
@@ -372,11 +391,11 @@ def _sidecar_python() -> Path:
         if not p.is_file():
             raise ROSConfigError(f"{_SIDECAR_PYTHON_ENV}={override!r} is not a file.")
         return p
+    if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
+        return _provision_isaac_venv()
     default = _ISAAC_SIDECAR_HOME / ".venv" / "bin" / "python"
     if default.is_file():
         return default
-    if os.environ.get(_AUTO_PROVISION_ENV, "").strip() not in ("", "0", "false", "False"):
-        return _provision_isaac_venv()
     raise ROSConfigError(
         "Isaac Sim sidecar venv not found. It is an externally-provisioned "
         "dependency (NVIDIA Isaac Sim / Isaac Lab, separate license, RTX GPU). "
@@ -659,6 +678,13 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         "--port",
         str(port),
     ]
+    # Boot probe: the sidecar verifies these floors before Kit starts, so a venv
+    # provisioned before a pin correction (or by hand from the recipe in
+    # _sidecar_python's error) reports the actual versions in a second instead of
+    # loading a CUDA library too old for Isaac's own prebundled one and hanging
+    # for the whole boot_timeout_s (issue #89).
+    for dist, floor in _ISAAC_CUDA_FLOORS.items():
+        launch_argv += ["--require-min", f"{dist}>={floor}"]
     if headless:
         launch_argv.append("--headless")
 

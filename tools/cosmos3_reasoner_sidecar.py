@@ -155,6 +155,9 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         install=_install,
         override=override,
         override_env=_VENV_ENV,
+        # Keyed on the lock text + the overlay SHA so bumping either repairs an
+        # existing venv instead of being ignored.
+        spec=(_LOCK.read_text(encoding="utf-8"), _TRANSFORMERS_EDGE_SHA),
     )
 
 
