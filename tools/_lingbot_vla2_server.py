@@ -219,6 +219,38 @@ def _coerce_attn_config(config: Any, target: str) -> None:
             _coerce_attn_config(child, target)
 
 
+def _install_moe_logger() -> None:
+    """Bind the ``logger`` name upstream's MoE fallback handler references but never defines.
+
+    ``qwen2_action_expert.py`` catches a failure in ``robby_moe_forward`` and
+    logs ``logger.warning_once(...)`` before falling back to ``fused_moe_forward``
+    — but the module never imports or defines ``logger`` (2 references, 0
+    bindings). So *any* MoE kernel fault becomes ``NameError: name 'logger' is
+    not defined``, which names nothing and points nowhere.
+
+    That is not hypothetical: it masked a real ``PTXASError`` during the aarch64
+    bring-up and cost a full boot cycle to see past. The fallback it unblocks is
+    nearly worthless (``fused_moe_forward`` uses the same Triton kernels), so the
+    value here is purely diagnostic — the real error reaches the log instead of a
+    lie. Same shape as :func:`_patch_eager_vision_rotary_v1`, which fills an
+    identical upstream gap: a name referenced but never bound.
+
+    Uses upstream's own factory rather than ``logging.getLogger`` to guarantee
+    ordering, not type: ``get_logger`` returns a plain stdlib ``logging.Logger``,
+    and ``warning_once`` exists only because ``lingbotvla/utils/logging.py``
+    assigns it onto ``logging.Logger`` at import time. A bare
+    ``logging.getLogger`` would therefore work *iff* something else had already
+    imported that module — correct by accident, order-dependent. Going through
+    the factory forces the class-level patch (and their root-logger config) to be
+    installed first.
+    """
+    import lingbotvla.models.vla.lingbot_vla.qwen2_action_expert as _qae
+    from lingbotvla.utils import logging as _lbl
+
+    if not hasattr(_qae, "logger"):
+        _qae.logger = _lbl.get_logger(__name__)  # type: ignore[attr-defined]  # reason: fill upstream gap
+
+
 def _install_attn_fallback(*, target: str) -> None:
     """Patch the two Qwen ``_from_config`` classmethods to drop flash attention.
 
@@ -502,6 +534,9 @@ class _LingBotPolicy:
         # The model import chain pulls training-only lerobot imports; stub them
         # before importing the deploy module (see _install_lerobot_stub).
         _install_lerobot_stub()
+        # Must follow the stub and precede the deploy import, which is what
+        # pulls `qwen2_action_expert` in (see _install_moe_logger).
+        _install_moe_logger()
 
         from deploy.lingbot_vla_v2_policy import LingbotVLAv2Server
         from lingbotvla.models.vla.lingbot_vla.qwen3vl_in_vla import apply_lingbot_qwen3_vl_patch
