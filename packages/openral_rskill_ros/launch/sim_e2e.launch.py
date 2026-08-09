@@ -1091,6 +1091,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # /odom, no /openral/cameras/*/image publishers. Nav2 + dashboard
     # cameras can't come up. Mirror the slam_toolbox workaround.
     hal_autostart_path = str(_REPO_ROOT / "tools" / "lifecycle_autostart.py")
+    from openral_hal.sim_bringup import hal_transition_timeout_s
+
     autostart.append(
         ExecuteProcess(
             cmd=[
@@ -1102,15 +1104,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "active",
                 "--service-timeout-s",
                 "60.0",
-                # The HAL's ``on_configure`` runs synchronously on its
-                # executor and can block for over a minute on a robocasa-
-                # kitchen first-boot (MuJoCo + robosuite import, env.reset,
-                # and — on a cold/rebuilt env — a uv resolve+build of
-                # robocasa that alone logs ~27 s). The autostart's per-
-                # transition spin must outlast that or it times out mid-
-                # configure and false-fails with "did not advance the FSM".
+                # Derived from the scene, not fixed: a sidecar backend boots
+                # inside ``on_configure`` and a measured cold Isaac Sim boot
+                # runs past the old 300 s literal. See
+                # ``openral_hal.sim_bringup.hal_transition_timeout_s``.
                 "--transition-timeout-s",
-                "300.0",
+                hal_transition_timeout_s(deploy_config),
             ],
             output="log",
         )
