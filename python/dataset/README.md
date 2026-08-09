@@ -95,6 +95,22 @@ offline:
 - `openral dataset push DS [--repo-id ID] [--yes] [--dry-run]` — consent-gated
   upload of a local dataset root to the HF Hub. PR5.
 
+**Deploy path** — `openral deploy sim --dataset-out PATH` attaches a
+`DatasetRecorderBridge` to the live graph (`compose_runtime`), writing the same
+`Rosbag2Sink` mcap for offline `from-bag` conversion. Two contract details the
+flag name does not carry:
+
+- `PATH` is a single **`.mcap` file**, not a rosbag2 bag *directory*. Its parent
+  directory must already exist and the file must not (mcap refuses to
+  overwrite); either violation fails the launch at compose time.
+- Recording is segmented by `/openral/episode` PHASE_START/PHASE_END markers,
+  which only an **executing** rSkill publishes. A session where every dispatch
+  is rejected at goal acceptance opens no episode and writes no file. The
+  bridge logs `dataset_recorder.armed` at startup and, at shutdown, either
+  `dataset_recorder.summary` (episode + frame counts) or
+  `dataset_recorder.nothing_recorded` — the zero case is reported, never
+  silent.
+
 ## Verification
 
 ```bash
@@ -127,5 +143,6 @@ the `libero` / `metaworld` dependency groups today).
   tests. The deploy graph's own recorder — `DatasetRecorderBridge`, attached by
   `compose_runtime(dataset_out=...)` — is covered against a real aggregator,
   real `Rosbag2Sink` and real bag read-back in
-  `tests/integration/test_dataset_recorder_bridge.py`, but not yet through a
-  full live `ros2 launch` graph.
+  `tests/integration/test_dataset_recorder_bridge.py` (including the
+  nothing-recorded reporting path), but not yet through a full live
+  `ros2 launch` graph.

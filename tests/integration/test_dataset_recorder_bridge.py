@@ -21,11 +21,15 @@ Requires ``openral_msgs`` (built ROS workspace) for the ``ActionChunk`` /
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import structlog
+from structlog.testing import capture_logs
 
 pytest.importorskip("openral_msgs", reason="openral_msgs not built; source the ROS workspace")
 pytest.importorskip("rclpy", reason="rclpy unavailable; source the ROS workspace")
@@ -51,6 +55,32 @@ class _StandinNode:
 
     def destroy_subscription(self, sub: Any) -> None:
         self.subs.remove(sub)
+
+
+@pytest.fixture
+def bridge_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[dict[str, Any]]]:
+    """Capture the bridge module's INFO+ structlog records.
+
+    The repo ``conftest.py`` filters below WARNING and caches bound loggers on
+    first use (to keep test stdout clean). Both have to be lifted here: the
+    armed / summary records are INFO, and the module-level logger is already
+    pinned to the filtering wrapper by the ``_on_episode`` debug call the other
+    tests in this file make. Rebinding the module's real ``structlog`` logger
+    (not a mock) under a permissive config is the smallest way to see them.
+    """
+    from openral_runner import dataset_recorder_bridge as module
+
+    prior = structlog.get_config()
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+        cache_logger_on_first_use=False,
+    )
+    monkeypatch.setattr(module, "_log", structlog.get_logger(module.__name__))
+    try:
+        with capture_logs() as logs:
+            yield logs
+    finally:
+        structlog.configure(**prior)
 
 
 def _rgb_sensor_names(robot: RobotDescription) -> list[str]:
@@ -236,6 +266,97 @@ def test_bridge_reassembles_slot_dispatched_action(tmp_path: Path) -> None:
     for step, tick in enumerate(sorted(ticks, key=lambda t: t["step_idx"])):
         # Full 7-D action = 6 cartesian + 1 gripper, concatenated in slot order.
         assert tick["action"] == pytest.approx([float(step)] * 6 + [float(step) + 0.9])
+
+
+def test_bridge_reports_when_no_skill_ever_executed(
+    tmp_path: Path, bridge_logs: list[dict[str, Any]]
+) -> None:
+    """A session where no episode marker fires reports it instead of exiting silently.
+
+    Regression guard for issue #93: every dispatched rSkill was rejected at
+    goal acceptance, so ``rskill_runner_node`` never published an
+    ``/openral/episode`` marker, the recorder never opened an episode, no file
+    was written — and nothing said so. The operator only found out when the
+    requested ``--dataset-out`` path turned out not to exist.
+    """
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"))
+    from openral_world_state import WorldStateAggregator
+
+    bag_path = tmp_path / "never_written.mcap"
+    recorder = RolloutRecorder(
+        robot=robot,
+        task_string="",
+        fps=30.0,
+        sinks=[Rosbag2Sink(bag_path=bag_path)],
+    )
+    bridge = DatasetRecorderBridge(
+        _StandinNode(),
+        robot=robot,
+        aggregator=WorldStateAggregator(robot),
+        recorder=recorder,
+        output_path=str(bag_path),
+    )
+    # No episode marker, ever — the rejected-dispatch case. Stray action
+    # chunks (a skill may publish before its goal is rejected) change nothing.
+    bridge._on_action(SimpleNamespace(flat=[0.1] * 6, n_dof=6))
+    bridge.destroy()
+
+    armed = [e for e in bridge_logs if e["event"] == "dataset_recorder.armed"]
+    assert len(armed) == 1, "recording must announce itself BEFORE the run"
+    assert armed[0]["output_path"] == str(bag_path)
+
+    reported = [e for e in bridge_logs if e["event"] == "dataset_recorder.nothing_recorded"]
+    assert len(reported) == 1, "the zero case must be reported, not silent"
+    assert reported[0]["log_level"] == "warning"
+    assert reported[0]["n_episodes"] == 0
+    assert reported[0]["output_path"] == str(bag_path)
+
+    # The silence was accurate about the artefact: still no file on disk.
+    assert not bag_path.exists()
+
+    # destroy() is idempotent — no duplicate report on a second teardown.
+    n_before = len(bridge_logs)
+    bridge.destroy()
+    assert len(bridge_logs) == n_before
+
+
+def test_bridge_reports_recorded_episode_counts(
+    tmp_path: Path, bridge_logs: list[dict[str, Any]]
+) -> None:
+    """A run that did record reports its episode + frame totals at shutdown."""
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"))
+    from openral_world_state import WorldStateAggregator
+
+    aggregator = WorldStateAggregator(robot)
+    bag_path = tmp_path / "recorded.mcap"
+    recorder = RolloutRecorder(
+        robot=robot, task_string="", fps=30.0, sinks=[Rosbag2Sink(bag_path=bag_path)]
+    )
+    bridge = DatasetRecorderBridge(
+        _StandinNode(),
+        robot=robot,
+        aggregator=aggregator,
+        recorder=recorder,
+        output_path=str(bag_path),
+    )
+    n_episodes, n_ticks = 2, 3
+    for episode in range(n_episodes):
+        bridge._on_episode(SimpleNamespace(phase=0, task_string="pick", success=False))
+        for step in range(n_ticks):
+            _feed_snapshot(aggregator, robot, state_dim=6, fill=100 + step, step=step)
+            bridge._on_action(SimpleNamespace(flat=[float(step)] * 6, n_dof=6, tick_index=step + 1))
+        bridge._on_episode(SimpleNamespace(phase=1, task_string="pick", success=bool(episode)))
+
+    with capture_logs() as logs:
+        bridge.destroy()
+
+    summary = [e for e in logs if e["event"] == "dataset_recorder.summary"]
+    assert len(summary) == 1
+    assert summary[0]["n_episodes"] == n_episodes
+    # The last tick of each episode flushes on PHASE_END, so every tick lands.
+    assert summary[0]["n_frames"] == n_episodes * n_ticks
+    assert summary[0]["output_path"] == str(bag_path)
+    assert bag_path.exists()
 
 
 def test_bridge_tick_index_groups_same_key_slots(tmp_path: Path) -> None:
