@@ -377,9 +377,11 @@ class SimSensorBridge:
         # camera earns its topic in :meth:`_advertise_camera` on its first real
         # frame. A manifest may legitimately declare a camera the *current*
         # scene cannot supply: robocasa's synthetic ``head`` nav cam is
-        # opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM`` and mobile-base-only, so
-        # every manipulation scene on panda_mobile declares it and no backend
-        # ever renders it. Advertising eagerly published a permanently silent
+        # mobile-base-only and opt-in via ``OPENRAL_ROBOCASA_HEAD_CAM``, which
+        # ``openral deploy`` sets only when a capability-matched rSkill
+        # consumes ``observation.images.head`` — so on a palette without one,
+        # panda_mobile still declares the sensor and no backend renders it.
+        # Advertising eagerly published a permanently silent
         # ``/openral/cameras/head/image`` onto the graph, which reads to any
         # subscriber (dashboard panel, recorder, nav policy) as a live stream
         # that is merely slow — so it waits forever instead of failing.
@@ -486,7 +488,9 @@ class SimSensorBridge:
                         "until a frame arrives. Check the scene's --robot "
                         "override matches sensor layout, and whether this "
                         "camera is opt-in (robocasa's synthetic 'head' nav cam "
-                        "needs OPENRAL_ROBOCASA_HEAD_CAM=1 and a mobile base)."
+                        "needs a mobile base plus OPENRAL_ROBOCASA_HEAD_CAM=1, "
+                        "which `openral deploy` sets only when a "
+                        "capability-matched rSkill consumes it)."
                     )
                 continue
             if arr.ndim != _IMAGE_DIM or arr.shape[2] not in (1, _RGB_CHANNELS, 4):

@@ -351,7 +351,9 @@ sensors:
   # camera — synthesized by the robocasa backend as a MuJoCo free camera
   # placed just ahead of the mobile base looking down its travel direction
   # (see `openral_sim.backends.robocasa.render_head_view`, gated on
-  # `OPENRAL_ROBOCASA_HEAD_CAM=1`). The arm-mounted agentview / eye_in_hand
+  # `OPENRAL_ROBOCASA_HEAD_CAM=1`, which `openral deploy` sets for you when a
+  # capability-matched rSkill consumes `observation.images.head`).
+  # The arm-mounted agentview / eye_in_hand
   # cameras below all stare at the counter manipulation workspace, which is
   # useless for a VLN policy; `head` is the view the InternVLA-N1 nav rSkill
   # consumes (`observation.images.head`). Listed first so it is the base's

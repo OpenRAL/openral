@@ -21,7 +21,10 @@ from pathlib import Path
 import pytest
 from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
+    _HEAD_CAM_ENV,
     _ROBOT_HAL_REGISTRY,
+    _apply_palette_head_cam,
+    _capability_matched_manifests,
     _cmdline_is_openral_graph_process,
     _preflight_palette_deps,
     _prepare_launch_env,
@@ -34,7 +37,7 @@ from openral_cli.deploy_sim import (
     run_launch_invocation,
 )
 from openral_cli.main import app
-from openral_core import RobotDescription
+from openral_core import RobotDescription, RSkillManifest
 from openral_core.exceptions import ROSConfigError
 from pydantic import ValidationError
 from typer.testing import CliRunner
@@ -2373,3 +2376,63 @@ def test_every_backend_with_out_of_tree_assets_declares_a_provisioner() -> None:
         assert SCENES.provision(scene_id) is not None, f"{scene_id} lost its provision hook"
     for scene_id in sorted(pip_only):
         assert SCENES.provision(scene_id) is None, f"{scene_id} gained an unexpected hook"
+
+
+# ── Synthetic RoboCasa `head` nav camera, derived from the palette (issue #91) ──
+
+
+def _matched(robot_id: str) -> list[RSkillManifest]:
+    """Capability-matched in-tree manifests for a robot, as the preflight sees them."""
+    robot_yaml = _REPO_ROOT / "robots" / robot_id / "robot.yaml"
+    if not robot_yaml.is_file():
+        pytest.skip(f"missing fixture: {robot_yaml}")
+    return _capability_matched_manifests(_REPO_ROOT, RobotDescription.from_yaml(str(robot_yaml)))
+
+
+def test_bh_head_cam_enabled_when_palette_consumes_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """panda_mobile matches the InternVLA-N1 VLN rSkill → head cam turned on.
+
+    The nav rSkill declares ``observation.images.head`` in ``sensors_required``
+    and RoboCasa only renders that camera under ``OPENRAL_ROBOCASA_HEAD_CAM``.
+    Nothing used to set it, so the pairing the nav scene exists for produced no
+    head frames at all (issue #91).
+    """
+    monkeypatch.delenv(_HEAD_CAM_ENV, raising=False)
+    matched = _matched("panda_mobile")
+    assert any(
+        s.vla_feature_key == "observation.images.head" for m in matched for s in m.sensors_required
+    ), "fixture drift: no capability-matched panda_mobile rSkill consumes the head camera"
+
+    assert _apply_palette_head_cam(matched) is True
+    assert os.environ[_HEAD_CAM_ENV] == "1"
+
+
+def test_bh_head_cam_left_off_for_manipulation_only_palette(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A palette with no head-camera consumer pays for no extra render."""
+    monkeypatch.delenv(_HEAD_CAM_ENV, raising=False)
+    assert _apply_palette_head_cam(_matched("franka_panda")) is False
+    assert _HEAD_CAM_ENV not in os.environ
+
+
+def test_bh_head_cam_respects_operator_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit ``OPENRAL_ROBOCASA_HEAD_CAM=0`` still forces the render off."""
+    monkeypatch.setenv(_HEAD_CAM_ENV, "0")
+    assert _apply_palette_head_cam(_matched("panda_mobile")) is False
+    assert os.environ[_HEAD_CAM_ENV] == "0"
+
+
+def test_bh_head_cam_wired_into_the_shared_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_preflight_palette_deps`` is the hook — both deploy entrypoints call it."""
+    monkeypatch.delenv(_HEAD_CAM_ENV, raising=False)
+    # Advisory drop-and-proceed path only: never shell `just sync` from a test.
+    monkeypatch.setenv("OPENRAL_AUTO_INSTALL_DEPS", "0")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+
+    _preflight_palette_deps(
+        repo_root=_REPO_ROOT,
+        robot_yaml=_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml",
+    )
+    assert os.environ.get(_HEAD_CAM_ENV) == "1"

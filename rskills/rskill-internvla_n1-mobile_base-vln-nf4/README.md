@@ -99,7 +99,9 @@ on Unitree Go2 / H1 / Booster T1 with per-robot locomotion policies downstream.
 The `head` camera is a **forward-facing egocentric** view down the base's
 travel direction — not an arm-mounted manipulation camera. On `panda_mobile`
 in RoboCasa it is synthesized by the sim backend as a MuJoCo free camera just
-ahead of the mobile base (`OPENRAL_ROBOCASA_HEAD_CAM=1`); on real hardware it
+ahead of the mobile base — `openral deploy sim` sets the backend's
+`OPENRAL_ROBOCASA_HEAD_CAM=1` opt-in automatically whenever this skill is in
+the capability-matched palette, so no manual export is needed; on real hardware it
 is the robot's forward nav camera. The arm-workspace cameras
 (`agentview` / `eye_in_hand`) are useless for VLN and are not consumed.
 
