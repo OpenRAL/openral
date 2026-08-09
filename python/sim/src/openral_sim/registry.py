@@ -55,6 +55,7 @@ class _Registry(Generic[T]):
         self._kind = kind
         self._items: dict[str, Callable[..., T]] = {}
         self._fixed_robots: dict[str, str] = {}
+        self._provisioners: dict[str, Callable[[], None]] = {}
 
     @property
     def kind(self) -> str:
@@ -65,6 +66,7 @@ class _Registry(Generic[T]):
         name: str,
         *,
         fixed_robot: str | None = None,
+        provision: Callable[[], None] | None = None,
     ) -> Callable[[Callable[..., T]], Callable[..., T]]:
         """Decorator to register a factory under ``name``.
 
@@ -78,6 +80,17 @@ class _Registry(Generic[T]):
                 with a typed :class:`ROSConfigError`, instead of silently
                 running the scene's hardcoded robot. Leave ``None`` for
                 free-axis scenes (``mock``, ``maniskill3``, ``simpler_env``).
+            provision: Only meaningful on the ``SCENES`` registry. Declares
+                the scene's out-of-tree provisioning step — the multi-GB
+                asset download, fork clone, or sidecar-venv build that the
+                factory would otherwise trigger on its first call. Callers
+                that can afford to do slow work up front (``openral deploy
+                sim`` before ``ros2 launch``) run it via :meth:`provision`
+                so it does not land inside the HAL's ``on_configure``, a
+                callback ``tools/lifecycle_autostart.py`` bounds at 300 s.
+                Must be idempotent — the factory calls the same helpers
+                again and they short-circuit on their own sentinels. Leave
+                ``None`` for backends whose only setup is a pip install.
 
         Returns:
             A decorator that records the factory and returns it unchanged.
@@ -95,6 +108,8 @@ class _Registry(Generic[T]):
             self._items[name] = fn
             if fixed_robot is not None:
                 self._fixed_robots[name] = fixed_robot
+            if provision is not None:
+                self._provisioners[name] = provision
             return fn
 
         return _decorator
@@ -106,6 +121,17 @@ class _Registry(Generic[T]):
         care about "does this scene exist" should use :meth:`get`.
         """
         return self._fixed_robots.get(name)
+
+    def provision(self, name: str) -> Callable[[], None] | None:
+        """Return the scene's pre-launch provisioner, or ``None``.
+
+        ``None`` means "nothing slow to do ahead of time" — either the
+        backend needs no out-of-tree assets, or ``name`` is not registered
+        at all. Both are a no-op for the caller, so this deliberately does
+        not raise on an unknown id the way :meth:`get` does: a preflight is
+        advisory and the scene resolver owns reporting a bad scene id.
+        """
+        return self._provisioners.get(name)
 
     def get(self, name: str) -> Callable[..., T]:
         """Look up a factory by ID.

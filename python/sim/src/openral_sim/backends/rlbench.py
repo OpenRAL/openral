@@ -256,7 +256,28 @@ def _sidecar_display_prefix() -> list[str]:
     return [xvfb_run, "-a", "--server-args=-screen 0 1280x1024x24"]
 
 
-@SCENES.register(_RLBENCH_SCENE_ID, fixed_robot="franka_panda")
+def provision_rlbench() -> None:
+    """Resolve the RLBench sidecar interpreter ahead of ``ros2 launch``.
+
+    CoppeliaSim is a proprietary multi-GB download with no auto-install plan,
+    so ``_sidecar_python`` either finds an externally-provisioned venv or
+    raises with the manual recipe. Surfacing that refusal during preflight is
+    the whole point: inside the HAL's ``on_configure`` the same error reads as
+    a 300 s ``tools/lifecycle_autostart.py`` timeout with the cause buried in
+    node logs.
+
+    Idempotent — a plain interpreter lookup once the venv exists.
+
+    Raises:
+        ROSConfigError: When the sidecar venv is missing.
+    """
+    from openral_sim._deps import ensure_backend_deps
+
+    ensure_backend_deps("rlbench_client")
+    _sidecar_python()
+
+
+@SCENES.register(_RLBENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_rlbench)
 def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
     """Build an RLBench task behind the out-of-process CoppeliaSim sidecar.
 
