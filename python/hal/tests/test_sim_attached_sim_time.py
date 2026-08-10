@@ -138,12 +138,11 @@ def test_sim_attached_sim_time_ns_monotonic_across_steps_real_mujoco() -> None:
 
 
 @_requires_renderer
-def test_sim_attached_sim_time_ns_does_not_rewind_across_reset_real_mujoco() -> None:
-    """The cross-reset offset prevents a rewind even when MjData.time resets to 0.
+def test_sim_attached_sim_time_ns_does_not_rewind_across_reconnect_real_mujoco() -> None:
+    """The cross-reset offset prevents a rewind on lifecycle reconnect.
 
-    Drive the auto-reset via the ``_episode_done`` latch (the env's
-    own ``reset`` rewinds the real ``MjData.time``), then assert the
-    HAL-published value never goes backwards.
+    The env's explicit reset rewinds real ``MjData.time``; deploy-sim
+    actions and terminal signals never reset it.
     """
     pytest.importorskip("openral_sim")
     pytest.importorskip("mujoco")
@@ -154,9 +153,7 @@ def test_sim_attached_sim_time_ns_does_not_rewind_across_reset_real_mujoco() -> 
     pre_reset = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: SimAttachedHAL surface
     assert pre_reset is not None and pre_reset > 0
 
-    # The next idle_step resets the env (rewinding MjData.time to 0) before
-    # stepping; the offset must absorb the finished episode's elapsed time.
-    hal._episode_done = True  # type: ignore[attr-defined]  # reason: white-box latch (mirrors idle_step test)
+    hal.connect()  # type: ignore[attr-defined]  # reason: SimAttachedHAL surface
     hal.idle_step()  # type: ignore[attr-defined]  # reason: SimAttachedHAL surface
     post_reset = hal.sim_time_ns()  # type: ignore[attr-defined]  # reason: SimAttachedHAL surface
 

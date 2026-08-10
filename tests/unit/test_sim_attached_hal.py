@@ -104,25 +104,34 @@ def test_pack_action_body_twist_maps_planar_components() -> None:
     assert np.all(out[3:] == 0.0)
 
 
-def test_atomic_step_exposes_simulator_task_success() -> None:
-    env = FakeSimEnv(action_dim=11, step_info={"is_success": True})
+def test_deploy_sim_ignores_success_and_terminal_without_resetting() -> None:
+    env = FakeSimEnv(
+        action_dim=11,
+        step_info={"is_success": True},
+        step_terminated=True,
+    )
     hal = SimAttachedHAL(env, _two_dof_description())
     hal.connect()
-    cart = Action(
-        control_mode=ControlMode.CARTESIAN_DELTA,
-        cartesian_delta=[(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
-        tick_index=1,
-        tick_group_size=2,
-    )
-    grip = Action(
-        control_mode=ControlMode.GRIPPER_POSITION,
-        gripper=[-1.0],
-        tick_index=1,
-        tick_group_size=2,
-    )
-    hal.send_action(cart)
-    hal.send_action(grip)
-    assert hal.task_success
+    for tick in (1, 2):
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.CARTESIAN_DELTA,
+                cartesian_delta=[(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
+                tick_index=tick,
+                tick_group_size=2,
+            )
+        )
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[-1.0],
+                tick_index=tick,
+                tick_group_size=2,
+            )
+        )
+    assert env.step_calls == 2
+    assert env.reset_calls == [None]
+    assert not hasattr(hal, "task_success")
 
 
 def test_pack_action_joint_position_arm_only_fills_arm_slots() -> None:
@@ -682,12 +691,12 @@ def test_sim_time_ns_advances_with_steps() -> None:
     assert authority.publishes_ros_clock is True
 
 
-def test_sim_time_ns_does_not_rewind_across_reset() -> None:
-    """The cross-reset offset keeps sim_time_ns monotonic across env.reset.
+def test_sim_time_ns_does_not_rewind_across_lifecycle_reconnect() -> None:
+    """The cross-reset offset keeps sim_time_ns monotonic across reconnect.
 
     The FakeSimEnv rewinds its per-episode clock to 0 on ``reset`` (modelling
-    robocasa's ``MjData.time``). Drive the auto-reset via the
-    ``_episode_done`` latch and assert the HAL-published value never goes back.
+    robocasa's ``MjData.time``). A lifecycle reconnect may explicitly reset;
+    deploy-sim action/terminal handling never does.
     """
     env = FakeSimEnv(action_dim=11, has_sim_clock=True, sim_dt_ns=20_000_000)
     hal = SimAttachedHAL(env, _two_dof_description())
@@ -697,10 +706,7 @@ def test_sim_time_ns_does_not_rewind_across_reset() -> None:
     pre_reset = hal.sim_time_ns()
     assert pre_reset == 20_000_000 * 4
 
-    # Simulate the prior step having reported terminal so the next send_action
-    # resets the env (which rewinds the fake's per-episode clock to 0) before
-    # stepping. The offset must absorb the pre-reset elapsed time.
-    hal._episode_done = True  # white-box latch set (mirrors the idle_step test)
+    hal.connect()
     hal.send_action(_joint_position_chunk())
     post_reset = hal.sim_time_ns()
 

@@ -70,6 +70,8 @@ class FakeSimEnv:
     step_calls: int = 0
     handles: tuple[Any, Any] | None = None
     step_info: dict[str, object] = field(default_factory=dict)
+    step_terminated: bool = False
+    step_truncated: bool = False
     # Opt-in: emit a ``raw_proprio`` block (``robot0_base_pos`` +
     # ``robot0_base_quat``) derived from the live base qpos, mirroring
     # what the real RoboCasa backend's observable produces. Lets tests
@@ -111,6 +113,8 @@ class FakeSimEnv:
         self._sim_time_ns += self.sim_dt_ns
         return FakeStepResult(
             observation={"images": {}, "state": np.zeros(0, dtype=np.float32)},
+            terminated=self.step_terminated,
+            truncated=self.step_truncated,
             info=dict(self.step_info),
         )
 

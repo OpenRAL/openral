@@ -215,26 +215,6 @@ def test_idle_step_suppressed_when_estop_latched_native_so101() -> None:
 
 
 @_requires_renderer
-def test_idle_step_resets_then_steps_after_episode_termination() -> None:
-    """Terminated episode → idle_step does reset-then-zero-step (no raise; latch cleared).
-
-    Mirrors the reset test for ``send_action``.
-    """
-    pytest.importorskip("openral_sim")
-    pytest.importorskip("mujoco")
-    pytest.importorskip("robosuite")
-    pytest.importorskip("libero")
-    hal = _build_libero_hal()
-
-    # Simulate the env having reported a terminal step on the previous tick.
-    hal._episode_done = True  # type: ignore[attr-defined]  # reason: white-box latch set
-    # Must NOT raise — the reset branch resets the env before zero-stepping.
-    assert hal.idle_step() is True  # type: ignore[attr-defined]  # reason: SimAttachedHAL surface
-    # A single zero step on the fresh episode does not terminate → latch clear.
-    assert hal._episode_done is False  # type: ignore[attr-defined]  # reason: white-box latch read
-
-
-@_requires_renderer
 def test_idle_step_suppressed_when_estop_latched() -> None:
     """Estop latched → idle_step() returns False and _last_obs is unchanged (freeze)."""
     pytest.importorskip("openral_sim")

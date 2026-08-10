@@ -405,7 +405,6 @@ if _ROS2_AVAILABLE:
             self._safe_group_count: int = 0
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
-            self._reset_episode_srv: Any = None
             # Decouple the cheap, latency-sensitive publishers (odom /
             # joint_state / TF) from the single executor thread, which is
             # head-of-line-blocked by env.step + render + scan raycast. They run
@@ -579,10 +578,7 @@ if _ROS2_AVAILABLE:
                 QoSReliabilityPolicy,
             )
             from sensor_msgs.msg import JointState as RosJointState
-            from std_msgs.msg import Empty, Float32MultiArray, UInt64MultiArray
-            from std_srvs.srv import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: ROS is absent or untyped
-                Trigger,
-            )
+            from std_msgs.msg import Empty, Float32MultiArray, UInt64
 
             control_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
@@ -604,7 +600,7 @@ if _ROS2_AVAILABLE:
                 control_qos,
             )
             self._action_applied_pub = self.create_publisher(
-                UInt64MultiArray,
+                UInt64,
                 "/openral/action_applied",
                 control_qos,
             )
@@ -688,13 +684,6 @@ if _ROS2_AVAILABLE:
             self._estop_reset_sub = self.create_subscription(
                 Empty, "/openral/estop_cleared", self._on_estop_cleared, estop_qos
             )
-            if callable(getattr(self._hal, "reset_episode", None)):
-                self._reset_episode_srv = self.create_service(
-                    Trigger,
-                    "/openral/sim/reset_episode",
-                    self._on_reset_episode,
-                )
-
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
@@ -744,9 +733,6 @@ if _ROS2_AVAILABLE:
             if self._action_applied_pub is not None:
                 self.destroy_publisher(self._action_applied_pub)
                 self._action_applied_pub = None
-            if self._reset_episode_srv is not None:
-                self.destroy_service(self._reset_episode_srv)
-                self._reset_episode_srv = None
             if self._publisher is not None:
                 self.destroy_publisher(self._publisher)
                 self._publisher = None
@@ -996,24 +982,6 @@ if _ROS2_AVAILABLE:
                 return
             self._publish_action_applied_if_complete(action)
 
-        def _on_reset_episode(self, _request: Any, response: Any) -> Any:  # noqa: ANN401  # reason: rosidl service types are untyped
-            """Reset a sim-attached episode after policy loading, before tick one."""
-            reset = getattr(self._hal, "reset_episode", None)
-            if not callable(reset):
-                response.success = False
-                response.message = "HAL does not expose reset_episode"
-                return response
-            try:
-                reset()
-                self._capture_proprio()
-            except Exception as exc:
-                response.success = False
-                response.message = str(exc)
-                return response
-            response.success = True
-            response.message = "simulator episode reset"
-            return response
-
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
             """Acknowledge a grouped tick only after its HAL application completes."""
             if self._action_applied_pub is None:
@@ -1035,13 +1003,10 @@ if _ROS2_AVAILABLE:
                 complete = self._safe_group_count == group_size
             if not complete:
                 return
-            from std_msgs.msg import UInt64MultiArray
+            from std_msgs.msg import UInt64
 
-            msg = UInt64MultiArray()
-            msg.data = [
-                tick,
-                int(bool(getattr(self._hal, "task_success", False))),
-            ]
+            msg = UInt64()
+            msg.data = tick
             self._action_applied_pub.publish(msg)
             self._last_action_applied_tick = tick
             self._safe_group_tick = None

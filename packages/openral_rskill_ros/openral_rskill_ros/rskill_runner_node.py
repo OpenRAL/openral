@@ -614,7 +614,7 @@ if _ROS2_AVAILABLE:
             with self._execute_serial:
                 return self._execute_locked(goal_handle)
 
-        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0912, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
@@ -718,19 +718,9 @@ if _ROS2_AVAILABLE:
                 # stamped at/after this instant.
                 reset_wall_ns = time.time_ns()
                 self._hal.begin_goal()
-                sim_episode_reset = self._hal.reset_episode_if_pristine()
                 if self._apply_starting_pose_or_abort(skill, goal_handle, result):
                     return result
-                self._wait_for_post_reset_joint_state(
-                    skill,
-                    reset_wall_ns,
-                    force=sim_episode_reset,
-                )
-                if sim_episode_reset:
-                    # The camera bridge publishes at 10 Hz; wait one full
-                    # period after the fresh joint-state gate so tick one
-                    # cannot reuse the pre-reset image cache.
-                    time.sleep(0.12)
+                self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
 
                 # Frame the episode on the bus so a dataset
                 # recorder (DatasetRecorderBridge) / `openral record` can
@@ -957,7 +947,7 @@ if _ROS2_AVAILABLE:
             self._last_deadline_elapsed_s = elapsed_s
             return True
 
-        def _run_until_done_or_deadline(  # noqa: PLR0915  # reason: one bounded inference-loop statement sequence
+        def _run_until_done_or_deadline(
             self,
             *,
             goal_handle: ServerGoalHandle,
@@ -1091,12 +1081,6 @@ if _ROS2_AVAILABLE:
                     self._hal.send_action(action)
                     self._chunks_published += 1
                 chunk_index += 1
-                if self._hal.task_success:
-                    self.get_logger().info(
-                        f"rskill_runner.sim_task_success tick={chunk_index} "
-                        f"rskill_id={self._active_skill_id!r}"
-                    )
-                    return "completed"
 
                 feedback = ExecuteRskill.Feedback()
                 feedback.progress = (
@@ -1175,8 +1159,6 @@ if _ROS2_AVAILABLE:
             self,
             skill: Any,
             reset_wall_ns: int,
-            *,
-            force: bool = False,
         ) -> None:
             """Block until the aggregator's joint state is newer than the reset.
 
@@ -1194,14 +1176,9 @@ if _ROS2_AVAILABLE:
             """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
-            if not pose and not force:
+            if not pose:
                 return
-            if (
-                not force
-                and not self.get_parameter("reset_to_pose_service")
-                .get_parameter_value()
-                .string_value
-            ):
+            if not self.get_parameter("reset_to_pose_service").get_parameter_value().string_value:
                 return
             if self._aggregator is None:
                 return

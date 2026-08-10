@@ -7272,12 +7272,6 @@ class DeployScene(BaseModel):
     seed: int = 0
     """Simulator reset seed for ``deploy sim``. Ignored by ``deploy run``.
     Defaults to 0, preserving the pre-field deploy-sim episode."""
-    rskill_rate_hz: float | None = Field(default=None, gt=0)
-    """Optional deploy-sim policy tick rate.
-
-    Use when the sensor publication cadence is part of the checkpoint's
-    observation contract. ``None`` keeps the runtime's 30 Hz default.
-    """
     composition: SceneComposition | None = None
     safety: SafetyEnvelope | None = None
     extra_allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)

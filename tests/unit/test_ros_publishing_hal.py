@@ -237,7 +237,7 @@ def test_publish_action_chunk_round_trip() -> None:
 )
 def test_grouped_action_waits_for_real_applied_ack() -> None:
     """The final slot blocks until an ActionApplied ROS message arrives."""
-    from std_msgs.msg import UInt64MultiArray
+    from std_msgs.msg import UInt64
 
     class _StubNode:
         pass
@@ -257,8 +257,8 @@ def test_grouped_action_waits_for_real_applied_ack() -> None:
 
     def _ack_after_delay() -> None:
         time.sleep(0.05)
-        ack = UInt64MultiArray()
-        ack.data = [7, 1]
+        ack = UInt64()
+        ack.data = 7
         hal._on_action_applied(ack)
 
     ack_thread = threading.Thread(target=_ack_after_delay)
@@ -268,18 +268,16 @@ def test_grouped_action_waits_for_real_applied_ack() -> None:
     elapsed = time.monotonic() - started
     ack_thread.join(timeout=1.0)
     assert elapsed >= 0.04
-    assert hal.task_success
 
     hal.begin_goal()
-    assert not hal.task_success
     next_first = first.model_copy(update={"tick_index": 8})
     next_second = second.model_copy(update={"tick_index": 8})
     hal._wait_for_group_applied(next_first)
 
     def _ack_next_goal() -> None:
         time.sleep(0.05)
-        ack = UInt64MultiArray()
-        ack.data = [8, 0]
+        ack = UInt64()
+        ack.data = 8
         hal._on_action_applied(ack)
 
     next_ack_thread = threading.Thread(target=_ack_next_goal)

@@ -47,7 +47,7 @@ matching Python HAL class and call `openral_hal.lifecycle.make_lifecycle_main(..
 ### `python/runner/src/openral_runner/ros_publishing_hal.py`
 _HAL Protocol adapter that publishes `ActionChunk` on `/openral/candidate_action`._
 
-- `ROSPublishingHAL(*, node, description, skill_id_getter=..., skill_revision_getter=..., tick_index_getter=lambda: 0, joint_state_topic="/joint_states", candidate_action_topic="/openral/candidate_action", action_applied_topic="/openral/action_applied")` (L109) — Publishes typed candidate `ActionChunk`s and applies bounded backpressure after the final slot of an atomic tick until the HAL acknowledges simulator application. The acknowledgement also carries canonical task success. `reset_episode_if_pristine()` resets deploy-sim after heavy policy loading only before any real action has been published. `estop` raises `ROSEStopRequested`.
+- `ROSPublishingHAL(*, node, description, skill_id_getter=..., skill_revision_getter=..., tick_index_getter=lambda: 0, joint_state_topic="/joint_states", candidate_action_topic="/openral/candidate_action", action_applied_topic="/openral/action_applied")` (L109) — Publishes typed candidate `ActionChunk`s and applies bounded backpressure after the final slot of an atomic tick until the HAL acknowledges application. The acknowledgement carries only the monotonic tick id; deploy sim has no simulator-oracle completion or reset channel. `estop` raises `ROSEStopRequested`.
 - `_row_major_flatten(rows) -> list[float]` (L49) — Private helper used by `_action_to_chunk`; preserves row-major ordering for the chunk `flat` array.
 - `_CONTROL_MODE_TO_UINT8: dict[ControlMode, int]` (L106) — Stable mapping from `openral_core.ControlMode` to the uint8 slot in `ActionChunk.control_mode`.
 

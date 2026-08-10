@@ -10099,19 +10099,6 @@
           "title": "Seed",
           "type": "integer"
         },
-        "rskill_rate_hz": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rskill Rate Hz"
-        },
         "composition": {
           "anyOf": [
             {
@@ -11516,19 +11503,6 @@
           "default": 0,
           "title": "Seed",
           "type": "integer"
-        },
-        "rskill_rate_hz": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rskill Rate Hz"
         },
         "composition": {
           "anyOf": [
@@ -13017,19 +12991,6 @@
         "seed": {
           "title": "Seed",
           "type": "integer"
-        },
-        "rskill_rate_hz": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rskill Rate Hz"
         },
         "composition": {
           "anyOf": [
