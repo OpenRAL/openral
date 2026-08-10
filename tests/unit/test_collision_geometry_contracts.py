@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openral_core import (
+    BoxShape,
     CapsuleShape,
     CollisionEvidence,
     FailureEvidence,
@@ -221,12 +222,11 @@ def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
     assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
 
 
-def test_panda_mobile_link7_reuses_the_generated_franka_envelope() -> None:
-    """Mobile Panda wrists use the same mesh-enclosing primitive as fixed Panda."""
+def test_panda_mobile_link7_uses_the_mesh_enclosing_obb() -> None:
+    """Both mobile Panda manifests use the measured link-7 mesh bounds."""
     descriptions = [
         RobotDescription.from_yaml(path)
         for path in (
-            "robots/franka_panda/robot.yaml",
             "robots/panda_mobile/robot.yaml",
             "robots/panda_mobile_vslam/robot.yaml",
         )
@@ -239,7 +239,9 @@ def test_panda_mobile_link7_reuses_the_generated_franka_envelope() -> None:
     ]
 
     assert link7[1] == link7[0]
-    assert link7[2] == link7[0]
+    assert isinstance(link7[0].shape, BoxShape)
+    assert link7[0].shape.half_extents_m == (0.0295, 0.044, 0.071)
+    assert link7[0].origin_xyz_rpy == (0.0123, 0.0123, 0.08, 3.138, -1.5171, -2.352)
 
 
 def test_panda_mobile_acm_matches_franka_srdf() -> None:

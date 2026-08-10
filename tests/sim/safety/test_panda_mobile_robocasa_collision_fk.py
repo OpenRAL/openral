@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from tests.sim.conftest import mujoco_renderer_probe_error
 
@@ -72,3 +73,52 @@ def test_collision_root_matches_robocasa_mobile_base(panda_mobile_hal: Any) -> N
     )
 
     assert link1_in_base == pytest.approx(joint1.origin_xyz, abs=1e-6)
+
+
+def test_link7_box_encloses_the_real_robocasa_collision_mesh(
+    panda_mobile_hal: Any,
+) -> None:
+    """The tighter world-collision OBB still contains every link-7 mesh vertex."""
+    import mujoco
+    from openral_core import BoxShape
+
+    model, _data = panda_mobile_hal.mujoco_handles()
+    geom_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        "robot0_link7_collision",
+    )
+    geometry = next(
+        item
+        for item in panda_mobile_hal.description.collision_geometry
+        if item.link_name == "panda_link7"
+    )
+    assert isinstance(geometry.shape, BoxShape)
+
+    aabb_center = np.asarray(model.geom_aabb[geom_id, :3], dtype=np.float64)
+    aabb_half = np.asarray(model.geom_aabb[geom_id, 3:], dtype=np.float64)
+    geom_rotation = Rotation.from_quat(
+        [
+            model.geom_quat[geom_id, 1],
+            model.geom_quat[geom_id, 2],
+            model.geom_quat[geom_id, 3],
+            model.geom_quat[geom_id, 0],
+        ]
+    ).as_matrix()
+    corners = np.asarray(
+        [
+            aabb_center + aabb_half * np.asarray([x, y, z], dtype=np.float64)
+            for x in (-1.0, 1.0)
+            for y in (-1.0, 1.0)
+            for z in (-1.0, 1.0)
+        ]
+    )
+    corners_in_link = corners @ geom_rotation.T + np.asarray(model.geom_pos[geom_id])
+
+    box_origin = np.asarray(geometry.origin_xyz_rpy[:3])
+    box_rotation = Rotation.from_euler("xyz", geometry.origin_xyz_rpy[3:]).as_matrix()
+    corners_in_box = (corners_in_link - box_origin) @ box_rotation
+
+    assert np.all(
+        np.abs(corners_in_box) <= np.asarray(geometry.shape.half_extents_m, dtype=np.float64) + 1e-6
+    )
