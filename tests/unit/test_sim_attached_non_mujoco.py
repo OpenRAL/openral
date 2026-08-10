@@ -212,8 +212,8 @@ def test_atomic_action_group_steps_once_after_every_safe_slot() -> None:
     assert hal.read_policy_state() == list(np.arange(8, dtype=np.float32))
 
 
-def test_incomplete_action_group_drops_fail_loud_after_streak() -> None:
-    """Consecutive incomplete groups raise instead of silently never stepping.
+def test_incomplete_action_group_fails_on_first_tick_transition() -> None:
+    """An incomplete group raises instead of silently never stepping.
 
     A skill that emits fewer typed slots per tick than the backend's
     ``action_group_size`` (or a safety supervisor persistently rejecting one
@@ -234,10 +234,8 @@ def test_incomplete_action_group_drops_fail_loud_after_streak() -> None:
         )
 
     hal.send_action(one_slot(1))  # stages tick 1 (1/2 slots)
-    hal.send_action(one_slot(2))  # drops tick 1 (drop #1), stages tick 2
-    hal.send_action(one_slot(3))  # drop #2
-    with pytest.raises(ROSRuntimeError, match="consecutive"):
-        hal.send_action(one_slot(4))  # drop #3 -> typed failure
+    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+        hal.send_action(one_slot(2))
     assert env.steps == 0  # atomicity preserved: nothing partial ever stepped
 
 
