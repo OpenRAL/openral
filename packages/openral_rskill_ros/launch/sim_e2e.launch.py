@@ -980,7 +980,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
-                "image_staleness_limit_s": 2.5 if hal_mode == "sim" else 0.5,
+                "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
