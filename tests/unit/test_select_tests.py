@@ -155,7 +155,7 @@ def test_aloha_rskill_change_selects_sim_lane() -> None:
 def test_hyphenated_requirement_group_is_reported() -> None:
     target = "tests/unit/test_qwen_scene_vlm.py"
     result = select_tests.select(REPO_ROOT, [target], CONFIG)
-    assert target in result.targets
+    assert target in result.isolated_targets
     assert result.requirement_targets["qwen-vlm"] == [target]
 
 
