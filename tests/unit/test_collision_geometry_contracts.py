@@ -211,14 +211,14 @@ _PANDA_SRDF_ARM_DISABLES = frozenset(
 _PANDA_CAPSULE_JUNCTION_EXTRAS = frozenset({frozenset({"panda_link5", "panda_link7"})})
 
 
-def test_panda_mobile_collision_fk_starts_at_the_arm_mount() -> None:
-    """The safety FK must not add the mobile-base height above ``base_link`` twice."""
+def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
+    """Both PandaMobile manifests place joint 1 above the ground-level base frame."""
     desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    vslam_desc = RobotDescription.from_yaml("robots/panda_mobile_vslam/robot.yaml")
     joint1 = next(joint for joint in desc.joints if joint.name == "panda_joint1")
+    vslam_joint1 = next(joint for joint in vslam_desc.joints if joint.name == "panda_joint1")
 
-    assert desc.assets.urdf is not None
-    assert desc.assets.urdf.base_to_root_xyz_rpy == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    assert joint1.origin_xyz == (0.0, 0.0, 0.333)
+    assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
 
 
 def test_panda_mobile_acm_matches_franka_srdf() -> None:
