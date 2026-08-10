@@ -123,6 +123,11 @@ def _world_voxel_margin_m(hal_mode: str) -> float:
     return 0.0 if hal_mode == "sim" else 0.02
 
 
+def _octomap_occupancy_threshold(hal_mode: str) -> float:
+    """Require repeated simulated hits while preserving real-map behavior."""
+    return 0.8 if hal_mode == "sim" else 0.6
+
+
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
@@ -1408,7 +1413,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # occupancy threshold + speckle filter clears transient /
                     # isolated noise voxels faster so they don't linger as
                     # phantom obstacles in front of the arm.
-                    "occupancy_thres": 0.6,
+                    # One default 0.7-probability hit exceeds a 0.6 threshold;
+                    # sim uses 0.8 so a transient self/floating point cannot
+                    # become a safety voxel until a second frame confirms it.
+                    "occupancy_thres": _octomap_occupancy_threshold(hal_mode),
                     "sensor_model.miss": 0.4,
                     "filter_speckles": True,
                     # Graph-wide clock domain (see _resolve_clock_origin). With no

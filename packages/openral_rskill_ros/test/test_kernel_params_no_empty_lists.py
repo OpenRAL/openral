@@ -94,6 +94,14 @@ def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
     assert module._world_voxel_margin_m("real") == 0.02
 
 
+def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
+    """Sim rejects one-frame voxels; real mapping keeps its current threshold."""
+    module = _import_launch_module()
+
+    assert module._octomap_occupancy_threshold("sim") == 0.8
+    assert module._octomap_occupancy_threshold("real") == 0.6
+
+
 def _make_launch_context(robot_yaml: Path) -> object:
     """Return a :class:`launch.LaunchContext` populated from the launch itself.
 
