@@ -221,6 +221,27 @@ def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
     assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
 
 
+def test_panda_mobile_link7_reuses_the_generated_franka_envelope() -> None:
+    """Mobile Panda wrists use the same mesh-enclosing primitive as fixed Panda."""
+    descriptions = [
+        RobotDescription.from_yaml(path)
+        for path in (
+            "robots/franka_panda/robot.yaml",
+            "robots/panda_mobile/robot.yaml",
+            "robots/panda_mobile_vslam/robot.yaml",
+        )
+    ]
+    link7 = [
+        next(
+            geometry for geometry in desc.collision_geometry if geometry.link_name == "panda_link7"
+        )
+        for desc in descriptions
+    ]
+
+    assert link7[1] == link7[0]
+    assert link7[2] == link7[0]
+
+
 def test_panda_mobile_acm_matches_franka_srdf() -> None:
     """panda_mobile's self-collision ACM mirrors the Franka SRDF.
 
