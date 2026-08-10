@@ -155,7 +155,8 @@ def resolve_image_preprocessing(
     Precedence (strict, no auto-derivation):
 
     1. ``spec_extra`` keys (``flip_180``, ``image_input_template``,
-       ``camera_aliases``, ``image_max_crops``) — per-rollout YAML override.
+       ``camera_aliases``, ``image_max_crops``, ``resize_width``,
+       ``resize_height``) — per-rollout YAML override.
     2. ``manifest.image_preprocessing`` — per-checkpoint contract from
        ``rskill.yaml``.
     3. ``ImagePreprocessing()`` schema defaults (``flip_180=False``,
@@ -216,6 +217,14 @@ def resolve_image_preprocessing(
         manifest_ip.image_max_crops if manifest_ip is not None else None,
     )
     image_max_crops = int(raw_max_crops) if raw_max_crops is not None else None
+    raw_resize_width = spec_extra.get(
+        "resize_width",
+        manifest_ip.resize_width if manifest_ip is not None else None,
+    )
+    raw_resize_height = spec_extra.get(
+        "resize_height",
+        manifest_ip.resize_height if manifest_ip is not None else None,
+    )
 
     return _ImagePreprocessing(
         flip_180=flip_180,
@@ -224,6 +233,8 @@ def resolve_image_preprocessing(
         aliases=aliases,
         norm_tag=manifest_ip.norm_tag if manifest_ip is not None else None,
         image_max_crops=image_max_crops,
+        resize_width=int(raw_resize_width) if raw_resize_width is not None else None,
+        resize_height=int(raw_resize_height) if raw_resize_height is not None else None,
     )
 
 

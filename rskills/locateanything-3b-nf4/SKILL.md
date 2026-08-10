@@ -21,7 +21,7 @@ metadata:
   latency_budget: {per_chunk_ms: 1000.0}
   license_code: Apache-2.0
   license_weights: nvidia_non_commercial   # NOT permissive — see License section
-  weights_uri: hf://OpenRAL/rskill-locateanything_3b-any-general-nf4
+  weights_uri: hf://OpenRAL/rskill-locateanything_3b-any-general-nf4@25a9bec53791029dfcc1badc727bbf80cecac9a1
   source_repo: hf://nvidia/LocateAnything-3B@7a81d810571dc5f244b2f0b6868128f24b1cbd85
   paper_url: https://arxiv.org/abs/2605.27365
 ---

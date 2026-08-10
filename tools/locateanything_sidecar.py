@@ -91,7 +91,11 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument("--model", default="nvidia/LocateAnything-3B")
+    p.add_argument(
+        "--model",
+        required=True,
+        help="Immutable Hugging Face reference in repo@revision form.",
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=5757)
     p.add_argument("--max-side", type=int, default=1024)

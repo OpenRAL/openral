@@ -42,7 +42,18 @@ from PIL import Image
 from transformers import AutoConfig, AutoModel, AutoProcessor, AutoTokenizer, BitsAndBytesConfig
 
 
-def _load(model_id: str) -> tuple[object, object, object]:
+def _split_model_ref(model_ref: str) -> tuple[str, str]:
+    """Split the required ``repo@revision`` custom-code reference."""
+    repo_id, separator, revision = model_ref.partition("@")
+    if not separator or not revision:
+        raise ValueError(
+            "LocateAnything executes checkpoint-supplied code; "
+            "--model must be an immutable 'repo@revision' reference."
+        )
+    return repo_id, revision
+
+
+def _load(model_ref: str) -> tuple[object, object, object]:
     """Load tokenizer, processor, and the NF4-quantized model on the GPU.
 
     The OpenRAL mirror ships a *prequantized* bnb-NF4 model: config.json already
@@ -53,10 +64,16 @@ def _load(model_id: str) -> tuple[object, object, object]:
     ("Error(s) in loading state_dict for Linear"). So we only supply a config when
     the source is *not* self-describing (e.g. pointed at the upstream bf16 repo).
     """
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    model_id, revision = _split_model_ref(model_ref)
+    config = AutoConfig.from_pretrained(
+        model_id,
+        revision=revision,
+        trust_remote_code=True,
+    )
     prequantized = getattr(config, "quantization_config", None) is not None
     load_kwargs: dict[str, object] = {
         "dtype": torch.bfloat16,
+        "revision": revision,
         "trust_remote_code": True,
         "device_map": {"": 0},
     }
@@ -67,8 +84,16 @@ def _load(model_id: str) -> tuple[object, object, object]:
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        revision=revision,
+        trust_remote_code=True,
+    )
+    processor = AutoProcessor.from_pretrained(
+        model_id,
+        revision=revision,
+        trust_remote_code=True,
+    )
     model = AutoModel.from_pretrained(model_id, **load_kwargs).eval()
     return tokenizer, processor, model
 

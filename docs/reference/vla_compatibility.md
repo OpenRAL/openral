@@ -116,7 +116,15 @@ Columns:
 | `lerobot/smolvla_robocasa` | RoboCasa | `franka_panda`, `manipulator` | TBD | TBD | TBD | — | Apache-2.0 | Kitchen manipulation; no rSkill stub yet |
 | `RLWRLD/RLDX-1-FT-RC365` | RoboCasa-365 | `panda_mobile` | 3-camera layout (`state_contract.layout`) | 3 RGB streams | Processor sidecars in rSkill | `rskills/rldx1-ft-rc365-nf4/` | RLWRLD non-commercial | Out-of-process ZMQ sidecar; mobile-manipulator kitchen fine-tune |
 | `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa` | RoboCasa v0.2 | `panda_mobile` | **8-D** arm joints(7)+gripper(1) | 3 RGB 256x256 views | Action mean/std in plain `preprocessor_config.json`; state is raw | `rskills/xr1-robocasa/` | Apache-2.0 | Custom-code MiBoT sidecar; 7-D delta-EEF output, 10-step replay. OpenRAL's current RoboCasa stack is an integration check, not upstream-score reproduction. |
-| `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa365` | RoboCasa365 | `panda_mobile` | **14-D** EE axis-angle + gripper + base, from 4-frame history | 3 RGB videos, 4 frames sampled at interval 2; exact 256x256 policy resize | Action mean/std in checkpoint processor; state is raw | `rskills/xr1-robocasa365/` | Apache-2.0 | Custom-code MiBoT sidecar; 12-D action, 16-step replay; executable `weights_uri` pinned to the reviewed HF revision. RTX 4070 deploy-sim succeeds with atomic action acknowledgement and envelope+self-collision safety; the dense OctoMap kernel gate remains off because its 2 cm voxel margin rejects the valid initial kitchen pose. |
+| `XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa365` | RoboCasa365 | `panda_mobile` | **14-D** EE axis-angle + gripper + base, from 4-frame history | 3 RGB videos, 4 frames sampled at interval 2; exact 256x256 policy resize | Action mean/std in checkpoint processor; state is raw | `rskills/xr1-robocasa365/` | Apache-2.0 | Custom-code MiBoT sidecar; 12-D action, 16-step replay; executable `weights_uri` pinned to the reviewed HF revision. Deploy sim applies grouped actions atomically but deliberately does not consume the simulator success oracle or reset episodes. |
+
+Cross-policy contract audit: normalized Cartesian scales apply to the shipped
+RoboSuite/LIBERO delta policies; normalized joint input bounds additionally
+apply to the XR-1/RLDX RoboCasa365 mobile-base slots. Atomic application is
+generic for every multi-slot action contract. Exact voxel-cube geometry is a
+global safety-kernel concern, not policy metadata. An exact image resize is
+currently evidenced only for XR-1 RoboCasa365; other adapters keep their
+checkpoint-native preprocessing until a manifest provides evidence otherwise.
 
 ### 3.5 SO-100 / SO-101 (real robot or sim)
 
@@ -136,7 +144,7 @@ Columns:
 
 | VLA (HF ID) | Sim env | Robot tag | State dim | Cameras | Norm stats in ckpt | rSkill | License | Notes |
 |---|---|---|---|---|---|---|---|---|
-| `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` | SimplerEnv `PutCarrotOnPlateInScene-v1` (ManiSkill3) | `widowx` | **8-D** `simpler_widowx` surfaced by env; checkpoint uses no proprio (`use_proprio=False`) ✓ | single 224×224 RGB (`camera1` / 3rd-view) ✓ | Yes — `config.json` `norm_stats.bridge_orig`, 7-D action, chunk 8 ✓ | `rskills/openvla-oft-simpler-widowx-nf4/` | MIT | OpenVLA-OFT custom-code model; NF4 fits 8 GB. Requires RLinf eval path in manifest `policy_extras` (`generate_action_verl`, padding length 30, temperature 0.6, torch seed 0, action scale 2.0, binary gripper). Locally verified 2/5 success on carrot, 60-step horizon. Keep in a dedicated transformers<5 runtime; the default lerobot workspace pins transformers 5.3. |
+| `RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood` | SimplerEnv `PutCarrotOnPlateInScene-v1` (ManiSkill3) | `widowx` | **8-D** `simpler_widowx` surfaced by env; checkpoint uses no proprio (`use_proprio=False`) ✓ | single 224×224 RGB (`camera1` / 3rd-view) ✓ | Yes — `config.json` `norm_stats.bridge_orig`, 7-D action, chunk 8 ✓ | `rskills/openvla-oft-simpler-widowx-nf4/` | MIT | OpenVLA-OFT custom-code model; immutable `weights_uri` revision and `OPENRAL_ALLOW_REMOTE_CODE=1` are both mandatory. NF4 fits 8 GB. Requires RLinf eval path in manifest `policy_extras` (`generate_action_verl`, padding length 30, temperature 0.6, torch seed 0, action scale 2.0, binary gripper). |
 | `RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX` | SimplerEnv `PutCarrotOnPlateInScene-v1` | `widowx` | **8-D** `simpler_widowx` ✓ | single RGB stream ✓ | Processor sidecars in rSkill ✓ | `rskills/rldx1-ft-simpler-widowx-nf4/` | RLWRLD non-commercial | Sidecar runtime; sibling Bridge baseline. |
 
 ### 3.7 Other platforms

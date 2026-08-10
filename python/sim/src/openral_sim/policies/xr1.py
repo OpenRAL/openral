@@ -36,7 +36,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
-from openral_rskill._vla_core import resolve_camera_keys
+from openral_rskill._vla_core import resolve_camera_keys, resolve_image_preprocessing
 
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
@@ -437,14 +437,10 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
         },
     )
     client.connect()
-    preprocessing = manifest.image_preprocessing
+    preprocessing = resolve_image_preprocessing(manifest, spec.extra)
     resize = (
         (int(preprocessing.resize_width), int(preprocessing.resize_height))
-        if (
-            preprocessing is not None
-            and preprocessing.resize_width is not None
-            and preprocessing.resize_height is not None
-        )
+        if preprocessing.resize_width is not None and preprocessing.resize_height is not None
         else None
     )
     return _XR1Adapter(
@@ -455,6 +451,6 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
         _camera_keys=tuple(camera_keys),
         _replan_steps=replan_steps,
         _crop_ratio=crop_ratio,
-        _flip_180=(preprocessing.flip_180 if preprocessing is not None else False),
+        _flip_180=preprocessing.flip_180,
         _resize=resize,
     )
