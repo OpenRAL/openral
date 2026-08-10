@@ -342,6 +342,33 @@ class TestImageUpdates:
         now_ns[0] += 200_000_000
         assert agg.snapshot().diagnostics["wrist"] == "stale"
 
+    def test_image_staleness_window_is_independent(self) -> None:
+        now_ns = [time.time_ns()]
+
+        def fake_clock() -> int:
+            return now_ns[0]
+
+        desc = _make_description(sensor_names=["wrist"])
+        agg = WorldStateAggregator(
+            desc,
+            staleness_limit_s=0.1,
+            image_staleness_limit_s=2.5,
+            clock_fn=fake_clock,
+        )
+        agg.update_image("wrist", "/wrist/image_raw", now_ns[0])
+        agg.update_joint_state(
+            JointState(
+                name=["shoulder", "elbow", "wrist"],
+                position=[0.0, 0.0, 0.0],
+                stamp_ns=now_ns[0],
+            )
+        )
+
+        now_ns[0] += 1_000_000_000
+        snapshot = agg.snapshot()
+        assert snapshot.diagnostics["wrist"] == "ok"
+        assert snapshot.diagnostics["joint_state"] == "stale"
+
     def test_multiple_sensors_tracked_independently(self) -> None:
         now_ns = [time.time_ns()]
 

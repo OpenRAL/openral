@@ -99,6 +99,7 @@ def compose_runtime(
     dataset_repo_id: str | None = None,
     dataset_license: str = "CC-BY-4.0",
     dataset_fps: float | None = None,
+    image_staleness_limit_s: float | None = None,
 ) -> ComposedRuntime:
     """Build the composed world_state + skill_runner runtime for any robot.
 
@@ -152,6 +153,8 @@ def compose_runtime(
             ``openral dataset from-bag`` conversion. Defaults to ``CC-BY-4.0``.
         dataset_fps: Recording cadence. Defaults to the robot's
             ``action_spec.control_freq_hz`` or 30.0.
+        image_staleness_limit_s: Camera-specific freshness window for the
+            shared world-state aggregator. ``None`` keeps its general default.
 
     Returns:
         A :class:`ComposedRuntime` bundle. The caller is responsible
@@ -167,7 +170,10 @@ def compose_runtime(
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode
 
     description = RobotDescription.from_yaml(str(robot_yaml))
-    aggregator = WorldStateAggregator(description)
+    aggregator = WorldStateAggregator(
+        description,
+        image_staleness_limit_s=image_staleness_limit_s,
+    )
     world_state_node = _WorldStateLifecycleNode(aggregator=aggregator)
     # Override the world_state node's default ``robot_name`` parameter
     # so its /diagnostics ``hardware_id`` matches the composed runtime.

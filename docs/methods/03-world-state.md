@@ -18,18 +18,18 @@ _Layout adapter registry. Assembles per-checkpoint state vectors from manifest-d
 _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
 - `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L114)
-  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — `policy_state` gets its own staleness window (default 5.0 s, `DEFAULT_POLICY_STATE_STALENESS_S`): it is step-locked (one publish per env.step, never a latched republish), and a heavy sidecar sim legitimately steps at ~1 s wall — the general 0.5 s window would flap it stale on every normal tick, while 5 s still trips on a wedged simulator in seconds. (L171)
-  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L250)
+  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — camera and policy-state streams have independent staleness windows. `image_staleness_limit_s` defaults to the general window; deploy sim passes 2.5 s for slow rendered frames while real deploys keep 0.5 s. `policy_state` defaults to 5.0 s because it is step-locked and heavy sidecar sims legitimately step at ~1 s wall. (L172)
+  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L257)
   - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`.
-  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L261)
-  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L328)
-  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L342)
-  - `update_battery(pct) -> None` — Record battery %. (L359)
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L383)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L399)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition (`staleness_latched` only for a component that has had data — a never-received one is `"stale"` in `diag` and counted in `components_stale`, but has not *latched*, so bringup no longer emits a WARN before the HAL's first publish), records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L410)
-  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L368)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L535)
+  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L268)
+  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L335)
+  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L349)
+  - `update_battery(pct) -> None` — Record battery %. (L366)
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L390)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L406)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition (`staleness_latched` only for a component that has had data — a never-received one is `"stale"` in `diag` and counted in `components_stale`, but has not *latched*, so bringup no longer emits a WARN before the HAL's first publish), records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L417)
+  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set. Thread-safe; the next `snapshot()` call returns the new list. Called by the world-state lifecycle node's memory tick. (L375)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L544)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
