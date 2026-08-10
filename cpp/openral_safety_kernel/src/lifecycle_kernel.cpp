@@ -480,6 +480,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
   view.n_dof = msg->n_dof;
   view.flat_data = msg->flat.empty() ? nullptr : msg->flat.data();
   view.flat_size = msg->flat.size();
+  view.cartesian_delta_scale =
+      msg->cartesian_delta_scale.empty() ? nullptr : msg->cartesian_delta_scale.data();
+  view.cartesian_delta_scale_size = msg->cartesian_delta_scale.size();
 
   const auto result = validate(view, envelope_);
   if (result) {
@@ -693,7 +696,17 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             // trajectory correct even when a step's check is skipped by the cap.
             fk_config(q_predict_.data());
             const double* row = view.flat_data + static_cast<std::size_t>(s) * view.n_dof;
-            const double twist[6] = {row[0], row[1], row[2], row[3], row[4], row[5]};
+            const auto physical_delta_at = [&](std::size_t i) {
+              if (view.cartesian_delta_scale_size == 0) {
+                return row[i];  // identity: policy already emits physical units
+              }
+              // Native normalized OSC controllers clip to [-1, 1] before
+              // multiplying by their per-axis output range.
+              return std::clamp(row[i], -1.0, 1.0) * view.cartesian_delta_scale[i];
+            };
+            const double twist[6] = {physical_delta_at(0), physical_delta_at(1),
+                                     physical_delta_at(2), physical_delta_at(3),
+                                     physical_delta_at(4), physical_delta_at(5)};
             if (!jacobian_dls_step(collision_model_, collision_scratch_, collision_ee_link_, twist,
                                    collision_predict_lambda_, dq_.data(), robot_ndof,
                                    dof_blocked_.data())) {
@@ -937,6 +950,7 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     const std::string state = (v.sub == ControllerSubKind::kNanInAction)    ? "nan_in_action"
                               : (v.sub == ControllerSubKind::kNdofMismatch) ? "ndof_mismatch"
                               : (v.sub == ControllerSubKind::kDimMismatch)  ? "dim_mismatch"
+                              : (v.sub == ControllerSubKind::kInvalidScale) ? "invalid_scale"
                               : (v.sub == ControllerSubKind::kEnvelopeUnconfigured)
                                   ? "envelope_unconfigured"
                                   : "controller_error";

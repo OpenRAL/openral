@@ -875,7 +875,9 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  // Wall far away (y>=1.9); the +y chunk reaches only ~y=1.5.
+  // Wall far away (y>=2.3). The native controller clips raw +5 to +1,
+  // then applies scale 0.1, so the chunk stays clear. Ignoring either
+  // clipping or scale drives the prediction into the wall.
   openral_msgs::msg::OccupancyVoxels vox;
   vox.resolution = 0.1;
   vox.size_x = 20;
@@ -888,7 +890,7 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
   for (std::uint32_t iz = 0; iz < vox.size_z; ++iz) {
     for (std::uint32_t iy = 0; iy < vox.size_y; ++iy) {
       const double cy = vox.origin.y + (iy + 0.5) * vox.resolution;
-      if (cy >= 1.9) {
+      if (cy >= 2.3) {
         for (std::uint32_t ix = 0; ix < vox.size_x; ++ix) {
           vox.occupancy[ix + vox.size_x * (iy + vox.size_y * iz)] = 1;
         }
@@ -904,9 +906,10 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictivePassesWhenTrajectoryStaysCle
   cart.control_mode = 5;
   cart.horizon = 8;
   cart.n_dof = 6;
+  cart.cartesian_delta_scale = {0.1, 0.1, 0.1, 1.0, 1.0, 1.0};
   cart.flat.clear();
   for (int s = 0; s < 8; ++s) {
-    cart.flat.insert(cart.flat.end(), {0.0, 0.05, 0.0, 0.0, 0.0, 0.0});
+    cart.flat.insert(cart.flat.end(), {0.0, 5.0, 0.0, 0.0, 0.0, 0.0});
   }
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);

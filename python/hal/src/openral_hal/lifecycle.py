@@ -155,6 +155,8 @@ def decode_action_chunk(msg: object) -> object | None:
         kwargs["joint_torques"] = rows
     elif mode is ControlMode.CARTESIAN_DELTA:
         kwargs["cartesian_delta"] = [tuple(r) for r in rows]
+        scale = tuple(float(v) for v in (getattr(msg, "cartesian_delta_scale", []) or []))
+        kwargs["cartesian_delta_scale"] = scale or None
     elif mode is ControlMode.CARTESIAN_TWIST:
         kwargs["cartesian_twist"] = [tuple(r) for r in rows]
     elif mode is ControlMode.BODY_TWIST:

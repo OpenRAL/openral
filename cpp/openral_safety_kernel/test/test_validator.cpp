@@ -37,13 +37,19 @@ osk::EnvelopeIntersection make_env(std::size_t n_dof = 3, double pos_lo = -1.0, 
 
 osk::ChunkView make_chunk_view(const std::vector<double>& flat, std::uint16_t horizon,
                                std::uint8_t n_dof,
-                               osk::ControlMode mode = osk::ControlMode::kJointPosition) {
+                               osk::ControlMode mode = osk::ControlMode::kJointPosition,
+                               const std::vector<double>* cartesian_delta_scale = nullptr) {
   osk::ChunkView view{};
   view.control_mode = static_cast<std::uint8_t>(mode);
   view.horizon = horizon;
   view.n_dof = n_dof;
   view.flat_data = flat.empty() ? nullptr : flat.data();
   view.flat_size = flat.size();
+  if (cartesian_delta_scale != nullptr) {
+    view.cartesian_delta_scale =
+        cartesian_delta_scale->empty() ? nullptr : cartesian_delta_scale->data();
+    view.cartesian_delta_scale_size = cartesian_delta_scale->size();
+  }
   return view;
 }
 
@@ -65,6 +71,26 @@ TEST(Validator, AcceptsValidJointPositionChunk) {
   const auto view = make_chunk_view(flat, 2, 3);
   const auto rc = osk::validate(view, env);
   EXPECT_TRUE(rc) << "field=" << rc.error().field;
+}
+
+TEST(Validator, AcceptsCartesianDeltaScaleAndRejectsMalformedScale) {
+  const auto env = make_env();
+  const std::vector<double> flat = {0.5, 0.0, -0.5, 0.0, 0.25, 0.0};
+  const std::vector<double> valid_scale = {0.05, 0.05, 0.05, 0.5, 0.5, 0.5};
+  auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta, &valid_scale);
+  EXPECT_TRUE(osk::validate(view, env));
+
+  const std::vector<double> wrong_width = {0.05, 0.05, 0.05};
+  view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta, &wrong_width);
+  auto result = osk::validate(view, env);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().sub, osk::ControllerSubKind::kInvalidScale);
+
+  const std::vector<double> nonpositive = {0.05, 0.05, 0.0, 0.5, 0.5, 0.5};
+  view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta, &nonpositive);
+  result = osk::validate(view, env);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().sub, osk::ControllerSubKind::kInvalidScale);
 }
 
 TEST(Validator, RejectsJointPositionAboveCeiling) {

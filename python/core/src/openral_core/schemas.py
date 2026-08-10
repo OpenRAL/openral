@@ -2566,6 +2566,10 @@ class Action(BaseModel):
         stamp_ns: Action timestamp in nanoseconds.
         ee_name: Target end-effector name.
         frame_id: Reference frame for Cartesian actions.
+        cartesian_delta_scale: Per-axis physical range for a native normalized
+            Cartesian-delta controller. Predictive safety applies
+            ``clip(raw, -1, 1) * scale``; the raw delta remains unchanged for
+            the HAL. ``None`` means the policy already emits physical units.
         tick_index: Shared 1-based inference tick for every slot emitted by one
             policy step. Preserved across the ROS safety wire so a simulation HAL
             can commit a multi-surface action atomically after every slot passes.
@@ -2593,8 +2597,32 @@ class Action(BaseModel):
     stamp_ns: int = 0
     ee_name: str | None = None
     frame_id: str | None = None
+    cartesian_delta_scale: tuple[float, ...] | None = None
     tick_index: int = Field(default=0, ge=0)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_cartesian_delta_scale(self) -> Action:
+        scale = self.cartesian_delta_scale
+        if scale is None:
+            return self
+        if self.control_mode is not ControlMode.CARTESIAN_DELTA:
+            raise ValueError(
+                "Action.cartesian_delta_scale is allowed only for CARTESIAN_DELTA actions"
+            )
+        if not self.cartesian_delta:
+            raise ValueError(
+                "Action.cartesian_delta_scale requires a non-empty cartesian_delta payload"
+            )
+        widths = {len(row) for row in self.cartesian_delta}
+        if widths != {len(scale)}:
+            raise ValueError(
+                "Action.cartesian_delta_scale length must match every Cartesian row; "
+                f"scale={len(scale)}, row_widths={sorted(widths)}"
+            )
+        if any(not math.isfinite(value) or value <= 0.0 for value in scale):
+            raise ValueError("Action.cartesian_delta_scale values must be finite and > 0")
+        return self
 
 
 # ─── Compute / Quantization ────────────────────────────────────────────────────
@@ -3264,6 +3292,10 @@ class ActionContract(BaseModel):
             vector). Manifests carrying ``slots`` are exempt from the
             ``dim <= len(robot.joints)`` invariant because
             the slot decoder gives a typed contract per slice instead.
+        cartesian_delta_scale: Per-axis physical range for a normalized
+            Cartesian controller. Predictive safety applies
+            ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy
+            already emits physical units).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -3271,6 +3303,7 @@ class ActionContract(BaseModel):
     dim: int = Field(gt=0)
     representation: ActionRepresentation | None = None
     slots: list[ActionSlot] | None = None
+    cartesian_delta_scale: tuple[float, ...] | None = None
     # Angular convention the checkpoint's joint state/action are in. openral's
     # Action/JointState contract is radians, so the skill_runner converts
     # deg↔rad at the policy boundary when this is DEGREES. When None the runner
@@ -3281,38 +3314,70 @@ class ActionContract(BaseModel):
 
     @model_validator(mode="after")
     def _validate_slots_cover_dim(self) -> ActionContract:
-        if self.slots is None:
-            return self
-        if not self.slots:
-            raise ValueError(
-                "ActionContract.slots: must be omitted (None) or a non-empty list; "
-                "empty lists silently lose the whole policy vector"
-            )
-        # Range bounds vs dim.
-        for slot in self.slots:
-            lo, hi = slot.range
-            if hi >= self.dim:
+        if self.slots is not None:
+            if not self.slots:
                 raise ValueError(
-                    f"ActionContract.slots: slot range [{lo}, {hi}] exceeds "
-                    f"action_contract.dim={self.dim}"
+                    "ActionContract.slots: must be omitted (None) or a non-empty list; "
+                    "empty lists silently lose the whole policy vector"
                 )
-        # Coverage: every index in [0, dim) appears in exactly one slot.
-        covered: list[int] = [0] * self.dim
-        for slot in self.slots:
-            lo, hi = slot.range
-            for i in range(lo, hi + 1):
-                covered[i] += 1
-        missing = [i for i, n in enumerate(covered) if n == 0]
-        overlapping = [i for i, n in enumerate(covered) if n > 1]
-        if missing:
+            # Range bounds vs dim.
+            for slot in self.slots:
+                lo, hi = slot.range
+                if hi >= self.dim:
+                    raise ValueError(
+                        f"ActionContract.slots: slot range [{lo}, {hi}] exceeds "
+                        f"action_contract.dim={self.dim}"
+                    )
+            # Coverage: every index in [0, dim) appears in exactly one slot.
+            covered: list[int] = [0] * self.dim
+            for slot in self.slots:
+                lo, hi = slot.range
+                for i in range(lo, hi + 1):
+                    covered[i] += 1
+            missing = [i for i, n in enumerate(covered) if n == 0]
+            overlapping = [i for i, n in enumerate(covered) if n > 1]
+            if missing:
+                raise ValueError(
+                    f"ActionContract.slots: indices {missing!r} are not covered by any "
+                    f"slot (dim={self.dim}). Declare a discard slot for unused channels."
+                )
+            if overlapping:
+                raise ValueError(
+                    f"ActionContract.slots: indices {overlapping!r} are covered by "
+                    "multiple slots; ranges must be disjoint."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cartesian_delta_scale(self) -> ActionContract:
+        scale = self.cartesian_delta_scale
+        if scale is None:
+            return self
+        if any(not math.isfinite(value) or value <= 0.0 for value in scale):
+            raise ValueError("ActionContract.cartesian_delta_scale values must be finite and > 0")
+        widths: list[int] = []
+        if self.slots is not None:
+            widths = [
+                slot.range[1] - slot.range[0] + 1
+                for slot in self.slots
+                if slot.control_mode is ControlMode.CARTESIAN_DELTA
+            ]
+        elif self.representation in (
+            ActionRepresentation.DELTA_EE_6D,
+            ActionRepresentation.DELTA_EE_6D_PLUS_GRIPPER,
+        ):
+            widths = [_EE_6D_WIDTH]
+        elif self.representation is ActionRepresentation.DELTA_EE_3D_PLUS_GRIPPER:
+            widths = [_EE_3D_WIDTH]
+        if not widths:
             raise ValueError(
-                f"ActionContract.slots: indices {missing!r} are not covered by any "
-                f"slot (dim={self.dim}). Declare a discard slot for unused channels."
+                "ActionContract.cartesian_delta_scale requires a CARTESIAN_DELTA "
+                "slot or delta-EE representation"
             )
-        if overlapping:
+        if any(width != len(scale) for width in widths):
             raise ValueError(
-                f"ActionContract.slots: indices {overlapping!r} are covered by "
-                "multiple slots; ranges must be disjoint."
+                "ActionContract.cartesian_delta_scale length must match every "
+                f"CARTESIAN_DELTA slot; scale={len(scale)}, slot_widths={widths}"
             )
         return self
 

@@ -139,6 +139,7 @@ def test_pack_action_cartesian_delta_packs_arm_slots() -> None:
         control_mode=ControlMode.CARTESIAN_DELTA,
         horizon=1,
         cartesian_delta=[(0.01, 0.02, 0.03, 0.1, 0.2, 0.3)],
+        cartesian_delta_scale=(0.05, 0.05, 0.05, 0.5, 0.5, 0.5),
         ee_name="panda_hand",
         frame_id="panda_link0",
     )

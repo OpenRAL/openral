@@ -306,6 +306,7 @@ class ROSPublishingHAL:
         chunk.n_dof = int(n_dof) & 0xFF
         chunk.ee_name = action.ee_name or ""
         chunk.frame_id = action.frame_id or ""
+        chunk.cartesian_delta_scale = list(action.cartesian_delta_scale or ())
         chunk.confidence = float(action.confidence)
         chunk.rskill_id = self._skill_id_getter()
         chunk.rskill_revision = self._skill_revision_getter()

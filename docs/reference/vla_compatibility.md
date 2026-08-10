@@ -19,6 +19,11 @@ embodiments; every other robot follows the same pattern.
 | SO-100 / SO-101 (LeRobot) | `so100_follower`, `so101_follower` | 6 arm + 1 gripper | `joint_position` | `openral_hal.so100_follower` | SO-100/SO-101 digital twin (MuJoCo, in-process) |
 | Franka Panda (LIBERO sim only) | `libero`, `franka_panda` | 7 + gripper | `cartesian_delta` (6-D EEF + axis-angle) | LiberoEnv (lerobot) | LIBERO (MuJoCo via robosuite) |
 
+Normalized OSC checkpoints declare `action_contract.cartesian_delta_scale`.
+RoboSuite/LIBERO policies use `[0.05, 0.05, 0.05, 0.5, 0.5, 0.5]`: the raw
+`[-1, 1]` command still reaches the native controller, while predictive safety
+multiplies it into metres/radians before Jacobian look-ahead.
+
 Hardware-in-loop tested:
 - **UR5e / UR10e / Franka Panda / Sawyer / ALOHA**: `tests/hil/` gates require the
   matching self-hosted lab runner and vendor controller environment.

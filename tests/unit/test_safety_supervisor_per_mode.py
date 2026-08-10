@@ -47,6 +47,7 @@ class _StubChunk:
     control_mode: int
     n_dof: int
     flat: list[float]
+    cartesian_delta_scale: list[float] | None = None
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +140,24 @@ def test_cartesian_delta_passes_when_within_xyz_bound(node: Any) -> None:
     kind, _ = node._envelope_violation(msg)
     # |dxyz| = sqrt(0.0001 + 0.0004 + 0.0009) = ~0.0374, under 0.05.
     assert kind is None
+
+
+def test_cartesian_delta_applies_normalized_controller_scale(node: Any) -> None:
+    _set(node, "max_cartesian_step_m", 0.05)
+    msg = _chunk(ControlMode.CARTESIAN_DELTA, n_dof=6, flat=[2.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    msg.cartesian_delta_scale = [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
+    kind, _ = node._envelope_violation(msg)
+    # Native controller clips raw +2 to +1, then maps it to +0.05 m.
+    assert kind is None
+
+
+def test_cartesian_delta_rejects_invalid_scale(node: Any) -> None:
+    _set(node, "max_cartesian_step_m", 0.05)
+    msg = _chunk(ControlMode.CARTESIAN_DELTA, n_dof=6, flat=[0.1] * 6)
+    msg.cartesian_delta_scale = [0.05, 0.05, 0.05]
+    kind, reason = node._envelope_violation(msg)
+    assert kind == "cartesian_scale"
+    assert "6 finite positive" in reason
 
 
 def test_cartesian_delta_rejects_rotation_step_too_large(node: Any) -> None:

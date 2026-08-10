@@ -2323,6 +2323,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
     policy_action: Any,
     *,
     description: Any | None = None,
+    cartesian_delta_scale: tuple[float, ...] | None = None,
 ) -> list:
     """Build one typed :class:`Action` per non-discard :class:`ActionSlot`.
 
@@ -2340,6 +2341,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
             ``adapter.step()``. Indexed directly per slot range — no
             permutation / clamp, since per-mode safety bounds live on
             the supervisor side.
+        cartesian_delta_scale: Optional per-axis conversion from the
+            policy's native Cartesian values to physical metres/radians
+            for predictive safety. The raw policy bytes are not changed.
         description: Optional ``RobotDescription`` used to pad
             sub-slot JOINT_* chunks to full-dof (so the
             C++ safety kernel's ``chunk.n_dof == envelope.n_dof``
@@ -2381,6 +2385,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
                     control_mode=mode,
                     horizon=1,
                     cartesian_delta=[tuple(sl)],
+                    cartesian_delta_scale=cartesian_delta_scale,
                     ee_name=slot.ee,
                     frame_id=slot.frame,
                 )
@@ -2928,7 +2933,12 @@ def _make_policy_adapter_skill(
                 # ``description`` is the closure var from
                 # ``_make_policy_adapter_skill``; used to pad sub-slot
                 # JOINT_* chunks to full-dof.
-                return _dispatch_slots(slots, policy_action, description=description)
+                return _dispatch_slots(
+                    slots,
+                    policy_action,
+                    description=description,
+                    cartesian_delta_scale=getattr(ac, "cartesian_delta_scale", None),
+                )
             if joint_limits and robot_action.shape[0] == len(joint_limits):
                 # Strictly INSIDE the envelope — the safety_kernel
                 # validates ``value > limit_max`` / ``value < limit_min``

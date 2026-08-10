@@ -140,6 +140,7 @@ scenes:
 # bind the LeRobot v3 `action` feature shape). LIBERO Franka uses a 7-D
 # end-effector action (6-DoF delta pose + gripper).
 action_contract:
+  cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
   dim: 7
   # LIBERO action space is 6-D OSC end-effector delta + gripper.
   representation: "delta_ee_6d_plus_gripper"

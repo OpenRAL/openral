@@ -164,14 +164,14 @@ _Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a p
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 6, §7.7). No enforcement logic._
 
-- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L616)
-  - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L99)
-  - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L149)
-  - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L224)
-  - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L232)
-  - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L239)
-  - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L262)
-- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L619)
+- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L638)
+  - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L100)
+  - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L150)
+  - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L225)
+  - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L233)
+  - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L240)
+  - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L263)
+- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L641)
 
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._

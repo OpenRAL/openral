@@ -74,6 +74,13 @@ Strip the pi0.5-shaped knobs (`image_preprocessing`, `state_contract`,
 `processors`) if your policy is a simpler ACT/Diffusion model that doesn't
 need them.
 
+For a normalized Cartesian controller, declare
+`action_contract.cartesian_delta_scale` as its per-axis physical range.
+Predictive safety applies `clip(raw, -1, 1) * scale`, while the unchanged raw
+command continues to the native controller. RoboSuite `OSC_POSE` uses
+`[0.05, 0.05, 0.05, 0.5, 0.5, 0.5]` (metres, then radians). Omit the field
+when the policy already emits physical deltas.
+
 ### Naming convention
 
 The `name` is **enforced** at publish time. Hyphens are ONLY the segment

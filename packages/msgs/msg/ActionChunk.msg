@@ -3,6 +3,10 @@ uint8 control_mode      # enum mirroring openral_core.ControlMode
 uint16 horizon
 float64[] flat          # row-major: [horizon][n_dof]
 uint8 n_dof
+# Per-axis physical range for a normalized CARTESIAN_DELTA controller.
+# Predictive safety applies clip(raw, -1, 1) * scale. Empty = identity
+# (the policy already emits physical units). Raw `flat` is preserved for HAL.
+float64[] cartesian_delta_scale
 string ee_name
 string frame_id
 float32 confidence
