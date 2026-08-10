@@ -28,6 +28,7 @@ topic, behind which sits ``safety_node`` → ``<robot>_hal_node``.
 from __future__ import annotations
 
 import itertools
+import threading
 import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
@@ -144,6 +145,7 @@ class ROSPublishingHAL:
         tick_index_getter: Callable[[], int] = lambda: 0,
         joint_state_topic: str = "/joint_states",
         candidate_action_topic: str = "/openral/candidate_action",
+        action_applied_topic: str = "/openral/action_applied",
     ) -> None:
         """Store references; opens no ROS resources until :meth:`connect`."""
         self._node = node
@@ -155,8 +157,18 @@ class ROSPublishingHAL:
         self._tick_index_getter = tick_index_getter
         self._joint_state_topic = joint_state_topic
         self._candidate_action_topic = candidate_action_topic
+        self._action_applied_topic = action_applied_topic
         self._publisher: Any = None
         self._subscription: Any = None
+        self._applied_subscription: Any = None
+        self._reset_episode_client: Any = None
+        self._applied_condition = threading.Condition()
+        self._last_applied_tick: int = 0
+        self._task_success: bool = False
+        self._published_group_tick: int | None = None
+        self._published_group_count: int = 0
+        self._has_published_action: bool = False
+        self._episode_reset_attempted: bool = False
         # Cached JointState; populated on every /joint_states callback.
         # ``read_state`` raises ROSRuntimeError if this is still ``None``
         # when called (matches the HAL Protocol contract — connect-then-
@@ -173,20 +185,22 @@ class ROSPublishingHAL:
         from openral_msgs.msg import ActionChunk  # type: ignore[import-not-found,unused-ignore]
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from sensor_msgs.msg import JointState as RosJointState
+        from std_msgs.msg import UInt64MultiArray
+        from std_srvs.srv import (  # type: ignore[import-untyped]  # reason: rosidl is untyped
+            Trigger,
+        )
 
         # The slot dispatcher publishes N chunks per policy
         # tick (arm CARTESIAN_DELTA + gripper GRIPPER_POSITION, etc.).
         # KEEP_LAST=1 + back-to-back publishes => the kernel's subscriber
         # buffer holds only the most recent and silently drops the
-        # earlier per-tick chunks. Symptom: in deploy_sim, ONLY the last
-        # slot's chunks (gripper) reach the HAL, the arm freezes even
-        # though policy_step keeps emitting big OSC deltas. Depth=10
-        # matches the safety/sensor guidance in CLAUDE.md §3 and is the
-        # minimum that survives slot fan-out at 30 Hz tick rate.
+        # earlier per-tick chunks. A four-slot mobile-manipulator tick plus
+        # predictive collision work can backlog beyond depth=10; depth=50
+        # holds 12 complete ticks while remaining bounded.
         chunk_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10,
+            depth=50,
         )
         state_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
@@ -202,6 +216,16 @@ class ROSPublishingHAL:
                 self._joint_state_topic,
                 self._on_joint_state,
                 state_qos,
+            )
+            self._applied_subscription = self._node.create_subscription(
+                UInt64MultiArray,
+                self._action_applied_topic,
+                self._on_action_applied,
+                chunk_qos,
+            )
+            self._reset_episode_client = self._node.create_client(
+                Trigger,
+                "/openral/sim/reset_episode",
             )
         except Exception as exc:  # reason: surface as typed error
             raise ROSConfigError(f"ROSPublishingHAL.connect failed: {exc!r}") from exc
@@ -219,6 +243,12 @@ class ROSPublishingHAL:
         if self._subscription is not None:
             self._node.destroy_subscription(self._subscription)
             self._subscription = None
+        if self._applied_subscription is not None:
+            self._node.destroy_subscription(self._applied_subscription)
+            self._applied_subscription = None
+        if self._reset_episode_client is not None:
+            self._node.destroy_client(self._reset_episode_client)
+            self._reset_episode_client = None
         if self._publisher is not None:
             self._node.destroy_publisher(self._publisher)
             self._publisher = None
@@ -246,6 +276,91 @@ class ROSPublishingHAL:
             raise ROSRuntimeError("ROSPublishingHAL.send_action called before connect")
         chunk = self._action_to_chunk(action)
         self._publisher.publish(chunk)
+        self._has_published_action = True
+        chunk_message: Any = chunk
+        self._wait_for_group_applied(action, tick_index=int(chunk_message.tick_index))
+
+    def reset_episode_if_pristine(self) -> bool:
+        """Reset deploy-sim after model loading, before the first real action."""
+        if self._episode_reset_attempted or self._has_published_action:
+            return False
+        self._episode_reset_attempted = True
+        if self._reset_episode_client is None:
+            return False
+        if not self._reset_episode_client.wait_for_service(timeout_sec=2.0):
+            return False
+        from std_srvs.srv import (
+            Trigger,
+        )
+
+        future = self._reset_episode_client.call_async(Trigger.Request())
+        completed = threading.Event()
+        future.add_done_callback(lambda _future: completed.set())
+        if not completed.wait(timeout=30.0):
+            raise ROSRuntimeError("ROSPublishingHAL: simulator episode reset timed out")
+        response = future.result()
+        if response is None or not response.success:
+            reason = response.message if response is not None else "no response"
+            raise ROSRuntimeError(f"ROSPublishingHAL: simulator episode reset failed: {reason}")
+        return True
+
+    def begin_goal(self) -> None:
+        """Reset goal-local success and partial-group state."""
+        with self._applied_condition:
+            self._task_success = False
+        self._published_group_tick = None
+        self._published_group_count = 0
+
+    def _wait_for_group_applied(self, action: Action, *, tick_index: int | None = None) -> None:
+        """Apply backpressure after publishing the last slot of an atomic tick."""
+        group_size = int(action.tick_group_size)
+        if group_size <= 1:
+            return
+        tick = int(action.tick_index if tick_index is None else tick_index)
+        if tick <= 0:
+            raise ROSConfigError("ROSPublishingHAL: grouped action requires a positive tick_index")
+        if self._published_group_tick is None:
+            self._published_group_tick = tick
+        elif self._published_group_tick != tick:
+            raise ROSRuntimeError(
+                "ROSPublishingHAL: started tick "
+                f"{tick} before publishing all {group_size} slots for "
+                f"tick {self._published_group_tick}"
+            )
+        self._published_group_count += 1
+        if self._published_group_count < group_size:
+            return
+        if self._published_group_count > group_size:
+            raise ROSRuntimeError(
+                f"ROSPublishingHAL: tick {tick} published more than {group_size} slots"
+            )
+        self._published_group_tick = None
+        self._published_group_count = 0
+        deadline = time.monotonic() + 5.0
+        with self._applied_condition:
+            while self._last_applied_tick < tick:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    raise ROSRuntimeError(
+                        f"ROSPublishingHAL: action group tick {tick} was not applied within 5.0 s"
+                    )
+                self._applied_condition.wait(timeout=remaining)
+
+    def _on_action_applied(self, msg: Any) -> None:  # noqa: ANN401  # reason: ROS message untyped
+        data = list(msg.data)
+        if not data:
+            return
+        tick = int(data[0])
+        with self._applied_condition:
+            self._last_applied_tick = max(self._last_applied_tick, tick)
+            self._task_success = self._task_success or (len(data) > 1 and bool(data[1]))
+            self._applied_condition.notify_all()
+
+    @property
+    def task_success(self) -> bool:
+        """Whether the simulator reported task success on an applied tick."""
+        with self._applied_condition:
+            return self._task_success
 
     def estop(self) -> None:
         """Trigger an emergency stop.
@@ -311,6 +426,7 @@ class ROSPublishingHAL:
         chunk.rskill_id = self._skill_id_getter()
         chunk.rskill_revision = self._skill_revision_getter()
         chunk.tick_index = int(self._tick_index_getter()) & 0xFFFFFFFF
+        chunk.tick_group_size = int(action.tick_group_size) & 0xFFFF
         # trace_id is the join key. Source it from the
         # active OTel span context via the existing W3C helper so the
         # field stays in lock-step with the OTel parent.

@@ -30,9 +30,11 @@ runtime: "pytorch"
 quantization:
   dtype: "int4"
   backend: "pytorch"
-weights_uri: "hf://OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"
+weights_uri: "hf://OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4@045c87106a8a6a98fcdb431a976f18f45215cae2"
 image_preprocessing:
   flip_180: false
+  resize_width: 256
+  resize_height: 256
 state_contract:
   layout: "rc365"
   dim: 16
@@ -69,6 +71,6 @@ action_contract:
   slots:
     - {range: [0, 5], control_mode: "cartesian_delta", ee: "panda_gripper", frame: "panda_link0"}
     - {range: [6, 6], control_mode: "gripper_position", ee: "panda_gripper"}
-    - {range: [7, 9], control_mode: "joint_velocity", joint_names: ["base_x", "base_y", "base_yaw"]}
+    - {range: [7, 9], control_mode: "joint_velocity", joint_names: ["base_x", "base_y", "base_yaw"], input_bounds: [-1.0, 1.0]}
     - {range: [10, 10], discard: true}
     - {range: [11, 11], control_mode: "composite_mode"}

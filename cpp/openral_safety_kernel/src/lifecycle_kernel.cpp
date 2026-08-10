@@ -32,10 +32,10 @@ rclcpp::QoS chunk_qos() {
   // on the subscriber side coalesces back-to-back publishes inside
   // the same callback batch: only the last slot's chunk survives, so
   // in deploy_sim the arm freezes while the gripper keeps streaming
-  // because that's the LAST published slot per tick. Depth=10 matches
-  // CLAUDE.md §3's "safety/e-stop = KEEP_LAST=10" guidance and is the
-  // minimum that survives slot fan-out at 30 Hz tick rate.
-  rclcpp::QoS q(rclcpp::KeepLast(10));
+  // because that's the LAST published slot per tick. Four-slot mobile
+  // manipulation plus predictive collision work can backlog beyond ten
+  // samples; fifty holds twelve complete ticks while staying bounded.
+  rclcpp::QoS q(rclcpp::KeepLast(50));
   q.reliable();
   q.durability_volatile();
   return q;

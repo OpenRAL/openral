@@ -26,3 +26,11 @@ scene:
     robots: ["PandaMobile"]
     controller: OSC_POSE
     obj_groups: baguette
+
+# Pin the complete kitchen layout / robot start, not only the object group.
+# This is the real episode XR-1 completes in direct sim (197 steps).
+seed: 1
+# The camera bridge publishes fresh checkpoint frames at 10 Hz. Running XR-1
+# at 5 Hz guarantees each acknowledged simulator step is visible to the next
+# inference tick instead of reusing the previous frame.
+rskill_rate_hz: 5.0

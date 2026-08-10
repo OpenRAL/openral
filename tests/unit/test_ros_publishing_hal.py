@@ -22,6 +22,7 @@ Per CLAUDE.md §1.11 — no mocks. All Pydantic schemas are real,
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -228,6 +229,66 @@ def test_publish_action_chunk_round_trip() -> None:
         if host is not None:
             host.destroy_node()
         rclpy.shutdown()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_grouped_action_waits_for_real_applied_ack() -> None:
+    """The final slot blocks until an ActionApplied ROS message arrives."""
+    from std_msgs.msg import UInt64MultiArray
+
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+    )
+    first = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        joint_targets=[[0.0] * 6],
+        tick_index=7,
+        tick_group_size=2,
+    )
+    second = first.model_copy(update={"joint_targets": [[0.1] * 6]})
+    hal._wait_for_group_applied(first)
+
+    def _ack_after_delay() -> None:
+        time.sleep(0.05)
+        ack = UInt64MultiArray()
+        ack.data = [7, 1]
+        hal._on_action_applied(ack)
+
+    ack_thread = threading.Thread(target=_ack_after_delay)
+    ack_thread.start()
+    started = time.monotonic()
+    hal._wait_for_group_applied(second)
+    elapsed = time.monotonic() - started
+    ack_thread.join(timeout=1.0)
+    assert elapsed >= 0.04
+    assert hal.task_success
+
+    hal.begin_goal()
+    assert not hal.task_success
+    next_first = first.model_copy(update={"tick_index": 8})
+    next_second = second.model_copy(update={"tick_index": 8})
+    hal._wait_for_group_applied(next_first)
+
+    def _ack_next_goal() -> None:
+        time.sleep(0.05)
+        ack = UInt64MultiArray()
+        ack.data = [8, 0]
+        hal._on_action_applied(ack)
+
+    next_ack_thread = threading.Thread(target=_ack_next_goal)
+    next_ack_thread.start()
+    started = time.monotonic()
+    hal._wait_for_group_applied(next_second)
+    elapsed = time.monotonic() - started
+    next_ack_thread.join(timeout=1.0)
+    assert elapsed >= 0.04
 
 
 @pytest.mark.skipif(

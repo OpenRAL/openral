@@ -37,9 +37,12 @@ __all__ = ["FakeSimEnv", "FakeStepResult"]
 
 @dataclass
 class FakeStepResult:
-    """Minimal step-result shape — only ``observation`` is consumed."""
+    """Minimal real ``StepResult`` shape consumed by the attached HAL."""
 
     observation: dict[str, Any]
+    terminated: bool = False
+    truncated: bool = False
+    info: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -66,6 +69,7 @@ class FakeSimEnv:
     reset_calls: list[int | None] = field(default_factory=list)
     step_calls: int = 0
     handles: tuple[Any, Any] | None = None
+    step_info: dict[str, object] = field(default_factory=dict)
     # Opt-in: emit a ``raw_proprio`` block (``robot0_base_pos`` +
     # ``robot0_base_quat``) derived from the live base qpos, mirroring
     # what the real RoboCasa backend's observable produces. Lets tests
@@ -105,7 +109,10 @@ class FakeSimEnv:
         self.last_action = np.asarray(action, dtype=np.float32)
         self.step_calls += 1
         self._sim_time_ns += self.sim_dt_ns
-        return FakeStepResult(observation={"images": {}, "state": np.zeros(0, dtype=np.float32)})
+        return FakeStepResult(
+            observation={"images": {}, "state": np.zeros(0, dtype=np.float32)},
+            info=dict(self.step_info),
+        )
 
     def sim_time_ns(self) -> int | None:
         """Per-episode elapsed sim time in ns, or ``None`` when clock-less.

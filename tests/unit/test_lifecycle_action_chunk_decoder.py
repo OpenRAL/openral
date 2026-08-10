@@ -42,6 +42,7 @@ class FakeChunk:
     frame_id: str = ""
     confidence: float = 1.0
     tick_index: int = 0
+    tick_group_size: int = 1
     cartesian_delta_scale: list[float] = field(default_factory=list)
 
 
@@ -109,6 +110,7 @@ class TestDecodeActionChunk:
             frame_id="base_link",
             confidence=0.75,
             tick_index=42,
+            tick_group_size=3,
         )
         action = decode_action_chunk(chunk)
         assert isinstance(action, Action)
@@ -116,6 +118,7 @@ class TestDecodeActionChunk:
         assert action.frame_id == "base_link"
         assert action.confidence == pytest.approx(0.75)
         assert action.tick_index == 42
+        assert action.tick_group_size == 3
 
     def test_zero_confidence_round_trips(self) -> None:
         """confidence=0.0 (policy disowns the action) must not decode as 1.0.

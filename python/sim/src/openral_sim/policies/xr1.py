@@ -137,11 +137,20 @@ def _vlabench_targets(
     return np.stack(targets)
 
 
-def _preprocess_image(image: object, *, flip_180: bool) -> NDArray[np.uint8]:
-    """Apply the manifest's explicit orientation transform; false is byte-preserving."""
+def _preprocess_image(
+    image: object,
+    *,
+    flip_180: bool,
+    resize: tuple[int, int] | None,
+) -> NDArray[np.uint8]:
+    """Apply the manifest's explicit orientation and input-size contract."""
     arr = np.asarray(image, dtype=np.uint8)
     if flip_180:
         arr = np.flip(arr, axis=(0, 1))
+    if resize is not None and (arr.shape[1], arr.shape[0]) != resize:
+        from PIL import Image
+
+        arr = np.asarray(Image.fromarray(arr).resize(resize, Image.Resampling.BILINEAR))
     return np.ascontiguousarray(arr, dtype=np.uint8)
 
 
@@ -152,9 +161,12 @@ def _resolve_model_id(spec: VLASpec) -> str:
     from openral_rskill.loader import resolve_rskill_to_hf_with_revision
 
     target, revision = resolve_rskill_to_hf_with_revision(spec.weights_uri)
-    if revision is not None:
-        return f"hf://{target}@{revision}"
-    return target
+    if revision is None:
+        raise ROSConfigError(
+            "XR-1 executes checkpoint-supplied Python under trust_remote_code; "
+            "weights_uri must pin an immutable Hugging Face revision with '@<sha>'."
+        )
+    return f"hf://{target}@{revision}"
 
 
 def _quantization_mode(manifest: RSkillManifest) -> str:
@@ -239,6 +251,7 @@ class _XR1Adapter:
     _replan_steps: int
     _crop_ratio: float
     _flip_180: bool
+    _resize: tuple[int, int] | None
     _queue: deque[NDArray[np.float32]] = field(default_factory=deque)
     _image_history: dict[str, deque[NDArray[np.float32]]] = field(default_factory=dict)
     _state_history: deque[NDArray[np.float32]] = field(
@@ -280,7 +293,11 @@ class _XR1Adapter:
                 raise ROSConfigError(
                     f"XR-1 expected camera {key!r}; observation provides {sorted(raw_images)}."
                 )
-            images[key] = _preprocess_image(image, flip_180=self._flip_180)
+            images[key] = _preprocess_image(
+                image,
+                flip_180=self._flip_180,
+                resize=self._resize,
+            )
         self._last_input = images[self._camera_keys[0]]
 
         raw_state = observation.get("state")
@@ -420,6 +437,16 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
         },
     )
     client.connect()
+    preprocessing = manifest.image_preprocessing
+    resize = (
+        (int(preprocessing.resize_width), int(preprocessing.resize_height))
+        if (
+            preprocessing is not None
+            and preprocessing.resize_width is not None
+            and preprocessing.resize_height is not None
+        )
+        else None
+    )
     return _XR1Adapter(
         spec=spec,
         device="cuda",
@@ -428,9 +455,6 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
         _camera_keys=tuple(camera_keys),
         _replan_steps=replan_steps,
         _crop_ratio=crop_ratio,
-        _flip_180=(
-            manifest.image_preprocessing.flip_180
-            if manifest.image_preprocessing is not None
-            else False
-        ),
+        _flip_180=(preprocessing.flip_180 if preprocessing is not None else False),
+        _resize=resize,
     )

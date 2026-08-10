@@ -355,6 +355,11 @@ class _RoboCasaSim:
         self._debug_step += 1
         self._log_eef_distance(raw, step=self._debug_step, action=action_arr)
         step_info: dict[str, object] = dict(info)
+        # Canonical deploy-sim completion signal. DeployScene has no TaskSpec,
+        # so its synthesized task may not carry success_key even though the
+        # RoboCasa environment exposes `_check_success()`. Always preserve the
+        # result under the stable key consumed by SimAttachedHAL.
+        step_info["is_success"] = success
         if self.task.success_key is not None:
             step_info[self.task.success_key] = success
         return StepResult(

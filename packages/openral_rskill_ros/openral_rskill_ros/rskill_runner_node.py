@@ -184,6 +184,7 @@ if _ROS2_AVAILABLE:
             # 1-based inference-tick index stamped onto every
             # ActionChunk via the HAL's tick_index_getter (0 = no goal running).
             self._current_tick_index: int = 0
+            self._next_tick_index: int = 1
             self._heartbeat: Any = None
             # State-adapter wiring. Populated by
             # ``_init_tf_lookup`` at on_configure; ``None`` until then.
@@ -613,7 +614,7 @@ if _ROS2_AVAILABLE:
             with self._execute_serial:
                 return self._execute_locked(goal_handle)
 
-        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0915, PLR0911  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0912, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
@@ -716,9 +717,20 @@ if _ROS2_AVAILABLE:
                 # self-collision wedge). Gate the first tick on a joint state
                 # stamped at/after this instant.
                 reset_wall_ns = time.time_ns()
+                self._hal.begin_goal()
+                sim_episode_reset = self._hal.reset_episode_if_pristine()
                 if self._apply_starting_pose_or_abort(skill, goal_handle, result):
                     return result
-                self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
+                self._wait_for_post_reset_joint_state(
+                    skill,
+                    reset_wall_ns,
+                    force=sim_episode_reset,
+                )
+                if sim_episode_reset:
+                    # The camera bridge publishes at 10 Hz; wait one full
+                    # period after the fresh joint-state gate so tick one
+                    # cannot reuse the pre-reset image cache.
+                    time.sleep(0.12)
 
                 # Frame the episode on the bus so a dataset
                 # recorder (DatasetRecorderBridge) / `openral record` can
@@ -945,7 +957,7 @@ if _ROS2_AVAILABLE:
             self._last_deadline_elapsed_s = elapsed_s
             return True
 
-        def _run_until_done_or_deadline(
+        def _run_until_done_or_deadline(  # noqa: PLR0915  # reason: one bounded inference-loop statement sequence
             self,
             *,
             goal_handle: ServerGoalHandle,
@@ -1073,11 +1085,18 @@ if _ROS2_AVAILABLE:
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
-                self._current_tick_index = chunk_index + 1
+                self._current_tick_index = self._next_tick_index
+                self._next_tick_index += 1
                 for action in actions:
                     self._hal.send_action(action)
                     self._chunks_published += 1
                 chunk_index += 1
+                if self._hal.task_success:
+                    self.get_logger().info(
+                        f"rskill_runner.sim_task_success tick={chunk_index} "
+                        f"rskill_id={self._active_skill_id!r}"
+                    )
+                    return "completed"
 
                 feedback = ExecuteRskill.Feedback()
                 feedback.progress = (
@@ -1152,7 +1171,13 @@ if _ROS2_AVAILABLE:
                 return f"ROSQuantizationError: {text}"
             return f"{type(exc).__name__}: {text}"
 
-        def _wait_for_post_reset_joint_state(self, skill: Any, reset_wall_ns: int) -> None:
+        def _wait_for_post_reset_joint_state(
+            self,
+            skill: Any,
+            reset_wall_ns: int,
+            *,
+            force: bool = False,
+        ) -> None:
             """Block until the aggregator's joint state is newer than the reset.
 
             Closes the cross-node staleness race after a ``starting_pose`` reset:
@@ -1169,9 +1194,14 @@ if _ROS2_AVAILABLE:
             """
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
-            if not pose:
+            if not pose and not force:
                 return
-            if not self.get_parameter("reset_to_pose_service").get_parameter_value().string_value:
+            if (
+                not force
+                and not self.get_parameter("reset_to_pose_service")
+                .get_parameter_value()
+                .string_value
+            ):
                 return
             if self._aggregator is None:
                 return
@@ -2338,9 +2368,10 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         slots: ``manifest.action_contract.slots``, a list of
             :class:`openral_core.ActionSlot`.
         policy_action: The raw 1-D ``np.float32`` policy vector from
-            ``adapter.step()``. Indexed directly per slot range — no
-            permutation / clamp, since per-mode safety bounds live on
-            the supervisor side.
+            ``adapter.step()``. Indexed directly per slot range. A slot
+            with declared ``input_bounds`` is clipped to the native
+            controller's accepted input range before safety and HAL
+            dispatch; physical safety bounds remain supervisor-owned.
         cartesian_delta_scale: Optional per-axis conversion from the
             policy's native Cartesian values to physical metres/radians
             for predictive safety. The raw policy bytes are not changed.
@@ -2369,6 +2400,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
             continue
         lo, hi = slot.range
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
+        if slot.input_bounds is not None:
+            input_min, input_max = slot.input_bounds
+            sl = [max(input_min, min(input_max, value)) for value in sl]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
@@ -2432,6 +2466,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
                 f"range [{lo}, {hi}]. Supported: joint_*, cartesian_delta, "
                 "cartesian_twist, body_twist, gripper_*."
             )
+    group_size = len(out)
+    for action in out:
+        action.tick_group_size = group_size
     return out
 
 

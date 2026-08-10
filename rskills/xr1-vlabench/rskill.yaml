@@ -30,7 +30,7 @@ runtime: "pytorch"
 quantization:
   dtype: "int4"
   backend: "pytorch"
-weights_uri: "hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4"
+weights_uri: "hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564376d57b3edf4be14a5ec439b7bcfbfd28"
 min_vram_gb:
   int4: 4.0  # measured 3.66 GiB process VRAM on RTX 4070 Laptop
 image_preprocessing:

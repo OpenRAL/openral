@@ -167,7 +167,6 @@ _PLANAR_TWIST_EPS = 1e-6
 # pending partial group older than this releases the idle stepper (a skill
 # that died mid-tick must not freeze scene physics/cameras forever). Inference
 # ticks are budgeted <= ~1.5 s, so 5 s is unambiguously a dead tick.
-_MAX_CONSECUTIVE_GROUP_DROPS = 3
 _PENDING_GROUP_STALE_NS = 5_000_000_000
 
 
@@ -487,13 +486,10 @@ class SimAttachedHAL:
         # ``action_group_size`` is complete.
         self._pending_action_tick: int | None = None
         self._pending_actions: list[Action] = []
-        # Fail-loud accounting for the atomic group path: consecutive
-        # incomplete-group drops (a persistent slot-count mismatch or a
-        # persistently-rejected slot must surface as a typed error, not a
-        # silent actuation no-op) and the wall-clock stamp of the oldest
-        # pending slot (so a skill that dies mid-tick cannot block
-        # ``idle_step`` forever).
-        self._dropped_group_streak: int = 0
+        self._last_committed_tick: int = 0
+        self._task_success: bool = False
+        # Wall-clock stamp of the oldest pending slot so a skill that dies
+        # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
         # Latched when the last env.step reported terminal
         # (terminated/truncated). The next send_action resets the env
@@ -553,10 +549,18 @@ class SimAttachedHAL:
         self._episode_done = False  # fresh episode after (re)connect
         self._pending_action_tick = None
         self._pending_actions.clear()
-        self._dropped_group_streak = 0
+        self._last_committed_tick = 0
+        self._task_success = False
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
+
+    def reset_episode(self) -> None:
+        """Reset the wrapped simulator to its configured deterministic seed."""
+        self.connect()
+        # Suppress the autonomous idle stepper while the first post-reset
+        # policy observation propagates through the sensor bridge.
+        self._last_action_ns = time.monotonic_ns()
 
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.
@@ -713,8 +717,8 @@ class SimAttachedHAL:
                 "re-connect or pass it explicitly to the constructor."
             )
         group_step = getattr(self._env, "step_action_group", None)
-        if callable(group_step):
-            self._stage_action_group(action, group_step)
+        if action.tick_group_size > 1 or callable(group_step):
+            self._stage_action_group(action, group_step if callable(group_step) else None)
             return
         # BODY_TWIST direct-qpos path. The default ``pack_action_for_env``
         # packs ``[vx, vy, wz]`` into slots 0-2 of robocasa's composite-
@@ -801,17 +805,18 @@ class SimAttachedHAL:
             self._last_env_action = None  # stale: belongs to the prior episode
         self._step_and_cache(env_action, source="send_action")
 
-    def _stage_action_group(
+    def _stage_action_group(  # noqa: PLR0912  # reason: bounded action-group state machine (tick transition, incomplete-drop escalation, backend/native commit)
         self,
         action: Action,
-        group_step: Callable[[list[Action]], Any],
+        group_step: Callable[[list[Action]], Any] | None,
     ) -> None:
         """Commit one simulator step after every slot in an inference tick is safe."""
-        group_size = int(getattr(self._env, "action_group_size", 0) or 0)
+        group_size = int(action.tick_group_size)
+        if group_size <= 1 and group_step is not None:
+            group_size = int(getattr(self._env, "action_group_size", 0) or 0)
         if group_size <= 0:
             raise ROSConfigError(
-                "SimAttachedHAL: backend exposes step_action_group() without a positive "
-                "action_group_size."
+                "SimAttachedHAL: atomic action group requires a positive group size."
             )
         tick = int(action.tick_index)
         if tick <= 0:
@@ -819,37 +824,35 @@ class SimAttachedHAL:
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
-            # Atomicity is preserved (a group missing a safety-rejected slot
-            # must NOT commit its other slots), but the drop must be loud: a
-            # persistent mismatch means actuation is a permanent no-op. One
-            # transient drop (a single safety rejection) is tolerated; a
-            # streak fails with a typed error naming the likely causes.
-            self._dropped_group_streak += 1
+            # Atomicity is preserved: a group missing a safety-rejected slot
+            # must never commit its other slots. Under the producer's applied-
+            # tick barrier, any transition to a newer tick is a contract error.
             dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
                 f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
                 f"tick={self._pending_action_tick} "
                 f"slots={len(self._pending_actions)}/{group_size} "
-                f"modes={dropped_modes} consecutive_drops={self._dropped_group_streak}; "
-                f"starting tick={tick}",
+                f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
             self._pending_actions.clear()
             self._pending_action_tick = None
-            if self._dropped_group_streak >= _MAX_CONSECUTIVE_GROUP_DROPS:
-                self._dropped_group_streak = 0
-                raise ROSRuntimeError(
-                    f"SimAttachedHAL: {_MAX_CONSECUTIVE_GROUP_DROPS} consecutive inference "
-                    f"ticks each staged an incomplete action group (last: "
-                    f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}) — the "
-                    "simulator has not stepped once. Either the rSkill emits fewer typed "
-                    "slots per tick than the backend's action_group_size (contract "
-                    "mismatch — pair this backend with a full-group rSkill), or the "
-                    "safety supervisor is persistently rejecting one slot (see its log "
-                    "for the violation)."
-                )
+            raise ROSRuntimeError(
+                f"SimAttachedHAL: incomplete action group tick staged "
+                f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
+                "the safety supervisor rejected/dropped a slot or the rSkill contract "
+                "declared the wrong group size."
+            )
         if self._pending_action_tick is None:
             self._pending_action_tick = tick
+        elif action.tick_group_size != self._pending_actions[0].tick_group_size:
+            expected_group_size = self._pending_actions[0].tick_group_size
+            self._pending_actions.clear()
+            self._pending_action_tick = None
+            raise ROSRuntimeError(
+                f"SimAttachedHAL: action group tick={tick} changed size from "
+                f"{expected_group_size} to {action.tick_group_size}."
+            )
         self._pending_actions.append(action)
         self._pending_since_ns = time.monotonic_ns()
         if len(self._pending_actions) < group_size:
@@ -865,13 +868,16 @@ class SimAttachedHAL:
         actions = list(self._pending_actions)
         self._pending_actions.clear()
         self._pending_action_tick = None
+        if group_step is None:
+            self._step_packed_action_group(actions)
+            self._last_committed_tick = tick
+            return
         try:
             step_result = group_step(actions)
         except Exception as exc:
             raise ROSRuntimeError(
                 f"SimAttachedHAL.send_action_group: env step failed: {exc}"
             ) from exc
-        self._dropped_group_streak = 0
         # Latch the commanded base twist from the group's BODY_TWIST slot so
         # ``base_twist`` (and the /odom publisher reading it) reflects what the
         # policy commanded — the group path bypasses send_action's per-mode
@@ -898,6 +904,42 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
+        self._last_committed_tick = tick
+
+    def _step_packed_action_group(self, actions: list[Action]) -> None:
+        """Pack every safe slot, then execute exactly one simulator step."""
+        if any(action.control_mode is ControlMode.BODY_TWIST for action in actions):
+            raise ROSConfigError(
+                "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
+                "use the backend's step_action_group implementation."
+            )
+        env_action: NDArray[np.float32] | None = None
+        if self._has_composite_split():
+            for action in actions:
+                env_action = self._pack_with_composite_split(action)
+        else:
+            previous = (
+                self._last_env_action.copy()
+                if self._last_env_action is not None
+                else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
+            )
+            for action in actions:
+                if action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+                    env_action = previous.copy()
+                    env_action[-1] = float(action.gripper[0])
+                else:
+                    env_action = self._action_packer(
+                        action,
+                        self.description,
+                        int(self._env_action_dim or 0),
+                        previous,
+                    )
+                previous = env_action
+            if env_action is not None:
+                self._last_env_action = env_action.copy()
+        if env_action is None:
+            raise ROSConfigError("SimAttachedHAL: packed action group produced no env action.")
+        self._step_and_cache(env_action, source="send_action_group")
 
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
         """Deferred-reset → ``env.step`` → re-cache ``_last_obs`` → re-latch terminal.
@@ -972,6 +1014,9 @@ class SimAttachedHAL:
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
+        info = getattr(step_result, "info", None)
+        if isinstance(info, dict):
+            self._task_success = bool(info.get("is_success", False) or info.get("success", False))
         # Latch terminal so the NEXT step resets before stepping.
         self._episode_done = bool(
             getattr(step_result, "terminated", False) or getattr(step_result, "truncated", False)
@@ -1528,6 +1573,16 @@ class SimAttachedHAL:
         ``mujoco_handles()`` works.
         """
         return self._mujoco_handles()
+
+    @property
+    def last_committed_tick(self) -> int:
+        """Most recent atomic action-group tick committed to the simulator."""
+        return self._last_committed_tick
+
+    @property
+    def task_success(self) -> bool:
+        """Whether the most recent simulator transition satisfied the task."""
+        return self._task_success
 
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.

@@ -19,3 +19,5 @@ string trace_id
 # The DatasetRecorderBridge groups chunks by this to reassemble the full
 # per-tick action robustly, without relying on the slot-cycle heuristic.
 uint32 tick_index
+# Number of non-discard slots emitted for this tick. 1 = single-surface.
+uint16 tick_group_size

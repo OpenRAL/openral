@@ -1037,6 +1037,10 @@ class SimSensorBridge:
             [j.sim_joint_name for j in description.joints] if description is not None else []
         )
         self._depth_self_bodies = robot_self_body_ids(model, sim_names)
+        self._node.get_logger().info(
+            "SimSensorBridge: depth self-filter "
+            f"base_body={self._depth_base_body!r} robot_bodies={len(self._depth_self_bodies)}"
+        )
 
     def _render_size(self) -> tuple[int, int] | None:
         """Resolution the scene actually rendered its RGB frames at, or ``None``.

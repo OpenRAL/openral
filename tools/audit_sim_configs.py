@@ -720,15 +720,6 @@ def _run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow:
     # auto-accepts; the operator can still cancel by interrupting the
     # whole audit.
     env.setdefault("OPENRAL_AUTO_INSTALL_DEPS", "1")
-    # MolmoAct2 ships custom modelling code in the HF repo and requires
-    # OPENRAL_ALLOW_REMOTE_CODE=1 to proceed past the safety gate; without
-    # it the process exits with ROSConfigError before the model even loads,
-    # and the audit reports fail-other instead of the real failure reason
-    # (fail-oom on 8 GiB GPUs, or pass on 16+ GiB). The audit acknowledges
-    # this risk because it runs against rSkills in the local tree whose
-    # source_repo is pinned in rskill.yaml (§3).
-    env.setdefault("OPENRAL_ALLOW_REMOTE_CODE", "1")
-
     # `--no-view` is incompatible with `MUJOCO_GL=egl` (cli.py rejects the
     # combination). The default view tri-state auto-disables the viewer when
     # EGL is set, so we don't pass --view/--no-view at all.

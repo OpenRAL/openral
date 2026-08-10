@@ -54,6 +54,7 @@ def test_deploy_scene_minimal():
     d = DeployScene(scene=s)
     assert d.robot_id is None
     assert d.base_pose is None
+    assert d.seed == 0
     assert d.composition is None
 
 

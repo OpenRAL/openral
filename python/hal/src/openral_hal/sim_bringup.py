@@ -145,6 +145,7 @@ def _load_scene_for_hal(path: str) -> SimScene:
         task=noop_task,
         robot_id=deploy.robot_id,
         base_pose=deploy.base_pose,
+        seed=deploy.seed,
     )
 
 
@@ -194,8 +195,8 @@ def build_sim_env_from_yaml(
 
     Returns:
         ``(env, seed)`` — the instantiated :class:`SimRollout` env and
-        the YAML's ``seed`` field (``None`` for DeployScene; SimScene
-        defaults to 0). The caller is responsible for plumbing the seed
+        the YAML's ``seed`` field (both DeployScene and SimScene default to 0).
+        The caller is responsible for plumbing the seed
         into ``env.reset(seed=...)`` (via :class:`SimAttachedHAL`'s
         ``env_reset_seed`` kwarg) so that the deploy_sim and sim_run
         paths reach the same episode of the same scene from the same YAML.

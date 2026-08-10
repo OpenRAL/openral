@@ -2573,6 +2573,8 @@ class Action(BaseModel):
         tick_index: Shared 1-based inference tick for every slot emitted by one
             policy step. Preserved across the ROS safety wire so a simulation HAL
             can commit a multi-surface action atomically after every slot passes.
+        tick_group_size: Number of non-discard slots emitted for this inference
+            tick. ``1`` keeps single-surface actions unchanged.
         safety_overrides: Operator-approved safety override tokens.
     """
 
@@ -2599,6 +2601,7 @@ class Action(BaseModel):
     frame_id: str | None = None
     cartesian_delta_scale: tuple[float, ...] | None = None
     tick_index: int = Field(default=0, ge=0)
+    tick_group_size: int = Field(default=1, ge=1)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -2951,6 +2954,12 @@ class ImagePreprocessing(BaseModel):
             MolmoAct2). A per-rollout ``vla.extra["image_max_crops"]`` (or
             the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this
             per-checkpoint default. Must be ``>= 1`` when set.
+        resize_width: Exact checkpoint input width. When set with
+            :attr:`resize_height`, adapters resize the source frame before
+            policy inference. This lets a high-resolution detector feed coexist
+            with a policy trained at a lower native render size.
+        resize_height: Exact checkpoint input height; must be set together
+            with :attr:`resize_width`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -2961,6 +2970,16 @@ class ImagePreprocessing(BaseModel):
     aliases: dict[str, str] = Field(default_factory=dict)
     norm_tag: str | None = None
     image_max_crops: int | None = Field(default=None, ge=1)
+    resize_width: int | None = Field(default=None, gt=0)
+    resize_height: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_resize_pair(self) -> ImagePreprocessing:
+        if (self.resize_width is None) != (self.resize_height is None):
+            raise ValueError(
+                "ImagePreprocessing.resize_width and resize_height must be set together"
+            )
+        return self
 
 
 StateLayout: TypeAlias = Literal[
@@ -3171,6 +3190,10 @@ class ActionSlot(BaseModel):
             / ``JOINT_TORQUE`` when the slot covers fewer than all
             robot joints; FORBIDDEN for non-joint modes. Length must
             equal ``range[1] - range[0] + 1``.
+        input_bounds: Optional inclusive controller-input bounds. The
+            skill runner clips this slot before safety and HAL dispatch,
+            matching native controllers that clip normalized policy
+            outputs before applying physical scaling.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -3181,6 +3204,7 @@ class ActionSlot(BaseModel):
     ee: str | None = None
     frame: str | None = None
     joint_names: list[str] = Field(default_factory=list)
+    input_bounds: tuple[float, float] | None = None
 
     @model_validator(mode="after")
     def _validate_slot(self) -> ActionSlot:  # noqa: PLR0912, PLR0915  # reason: validates each control-mode slot's field requirements; one branch per mode family
@@ -3195,14 +3219,28 @@ class ActionSlot(BaseModel):
                     "ActionSlot: discard=True is mutually exclusive with control_mode "
                     f"(got {self.control_mode!r})"
                 )
-            if self.ee is not None or self.frame is not None or self.joint_names:
+            if (
+                self.ee is not None
+                or self.frame is not None
+                or self.joint_names
+                or self.input_bounds is not None
+            ):
                 raise ValueError(
-                    "ActionSlot: discard=True forbids ee / frame / joint_names "
+                    "ActionSlot: discard=True forbids ee / frame / joint_names / input_bounds "
                     "(no routing target needed for a discarded slice)"
                 )
             return self
         if self.control_mode is None:
             raise ValueError("ActionSlot: control_mode is required when discard is False")
+        if self.input_bounds is not None:
+            input_min, input_max = self.input_bounds
+            if not math.isfinite(input_min) or not math.isfinite(input_max):
+                raise ValueError("ActionSlot.input_bounds values must be finite")
+            if input_min >= input_max:
+                raise ValueError(
+                    "ActionSlot.input_bounds must satisfy min < max; "
+                    f"got [{input_min}, {input_max}]"
+                )
         # Per-mode field requirements.
         mode = self.control_mode
         width = hi - lo + 1
@@ -7231,6 +7269,15 @@ class DeployScene(BaseModel):
     scene: SceneSpec
     robot_id: str | None = None
     base_pose: Pose6D | None = None
+    seed: int = 0
+    """Simulator reset seed for ``deploy sim``. Ignored by ``deploy run``.
+    Defaults to 0, preserving the pre-field deploy-sim episode."""
+    rskill_rate_hz: float | None = Field(default=None, gt=0)
+    """Optional deploy-sim policy tick rate.
+
+    Use when the sensor publication cadence is part of the checkpoint's
+    observation contract. ``None`` keeps the runtime's 30 Hz default.
+    """
     composition: SceneComposition | None = None
     safety: SafetyEnvelope | None = None
     extra_allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)

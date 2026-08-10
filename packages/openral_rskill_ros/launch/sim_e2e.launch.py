@@ -978,6 +978,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "robot_yaml": robot_yaml,
                 "camera_names": rgb_camera_names,
                 "rskill_search_paths": [_RSKILLS_DIR],
+                "rate_hz": (
+                    DeployScene.from_yaml(deploy_config).rskill_rate_hz or 30.0
+                    if deploy_config
+                    else 30.0
+                ),
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a

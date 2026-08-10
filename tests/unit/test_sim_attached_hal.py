@@ -104,6 +104,27 @@ def test_pack_action_body_twist_maps_planar_components() -> None:
     assert np.all(out[3:] == 0.0)
 
 
+def test_atomic_step_exposes_simulator_task_success() -> None:
+    env = FakeSimEnv(action_dim=11, step_info={"is_success": True})
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    cart = Action(
+        control_mode=ControlMode.CARTESIAN_DELTA,
+        cartesian_delta=[(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
+        tick_index=1,
+        tick_group_size=2,
+    )
+    grip = Action(
+        control_mode=ControlMode.GRIPPER_POSITION,
+        gripper=[-1.0],
+        tick_index=1,
+        tick_group_size=2,
+    )
+    hal.send_action(cart)
+    hal.send_action(grip)
+    assert hal.task_success
+
+
 def test_pack_action_joint_position_arm_only_fills_arm_slots() -> None:
     """JOINT_POSITION 7-vec lands at slots [3:10]."""
     arm = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
@@ -149,6 +170,33 @@ def test_pack_action_cartesian_delta_packs_arm_slots() -> None:
     assert list(out[:3]) == [0.0, 0.0, 0.0]
     assert list(out[3:9]) == pytest.approx([0.01, 0.02, 0.03, 0.1, 0.2, 0.3])
     assert out[10] == 0.0
+
+
+def test_multi_slot_tick_commits_one_atomic_env_step() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    cart = Action(
+        control_mode=ControlMode.CARTESIAN_DELTA,
+        cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
+        tick_index=1,
+        tick_group_size=2,
+    )
+    grip = Action(
+        control_mode=ControlMode.GRIPPER_POSITION,
+        gripper=[-1.0],
+        tick_index=1,
+        tick_group_size=2,
+    )
+    hal.send_action(cart)
+    assert env.step_calls == 0
+    assert hal.last_committed_tick == 0
+    hal.send_action(grip)
+    assert env.step_calls == 1
+    assert hal.last_committed_tick == 1
+    assert env.last_action is not None
+    assert list(env.last_action[3:9]) == pytest.approx(list(cart.cartesian_delta[0]))
+    assert env.last_action[-1] == pytest.approx(-1.0)
 
 
 def test_pack_action_gripper_position_packs_last_slot() -> None:
