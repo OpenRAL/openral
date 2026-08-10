@@ -541,6 +541,22 @@ def _search_term(call: RecallObjectTool | ResolvePlaceTool) -> str:
     return call.query if isinstance(call, RecallObjectTool) else call.reference
 
 
+def _palette_after_rskill_failure(
+    palette: ToolPalette,
+    rskill_id: str,
+    detail: str,
+) -> ToolPalette:
+    """Drop a skill after a typed, session-persistent availability failure."""
+    if not detail.startswith(("ROSConfigError:", "ROSCapabilityMismatch:")):
+        return palette
+    return palette.model_copy(
+        update={
+            "skills": tuple(skill for skill in palette.skills if skill.rskill_id != rskill_id),
+            "execute_rskill_ids": palette.execute_rskill_ids - {rskill_id},
+        }
+    )
+
+
 def _should_offer_subdivision(
     active: TaskState,
     offered: set[str],
@@ -4866,6 +4882,13 @@ class ReasonerNode(LifecycleNode):
                 stamp_ns=now_ns,
             )
         )
+        updated_palette = _palette_after_rskill_failure(self._palette, call.rskill_id, detail)
+        if updated_palette != self._palette:
+            self._palette = updated_palette
+            self.get_logger().warning(
+                f"execute_rskill removing unavailable rskill_id={call.rskill_id!r} "
+                "from the palette until it is rebuilt",
+            )
         self._publish_skill_failure(
             kind=_KIND_CONTROLLER,
             rskill_id=call.rskill_id,
