@@ -580,7 +580,9 @@ if _ROS2_AVAILABLE:
             )
             from sensor_msgs.msg import JointState as RosJointState
             from std_msgs.msg import Empty, Float32MultiArray, UInt64MultiArray
-            from std_srvs.srv import Trigger
+            from std_srvs.srv import (  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: ROS is absent or untyped
+                Trigger,
+            )
 
             control_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
