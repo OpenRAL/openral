@@ -118,6 +118,11 @@ def _run_resource_attrs(hal_mode: str) -> str:
     return ",".join(f"{k}={v}" for k, v in attrs.items())
 
 
+def _world_voxel_margin_m(hal_mode: str) -> float:
+    """Return the calibrated world-voxel clearance for this boundary."""
+    return 0.01 if hal_mode == "sim" else 0.02
+
+
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
@@ -768,12 +773,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         kernel_params = {
             **kernel_params,
             "world_voxel_enabled": True,
-            # 2 cm buffer on top of the already-conservative capsule radii.
-            # 5 cm was too eager for a cluttered kitchen (vetoed close work);
-            # 2 cm lets the arm approach surfaces while still catching imminent
-            # contact. The gripper + base are exempt from the model (see
-            # robots/panda_mobile/robot.yaml), so the gripper can reach targets.
-            "world_voxel_margin_m": 0.02,
+            # Sim uses exact digital-twin OBBs plus conservative occupied cubes;
+            # 1 cm preserves clearance without vetoing trained close-contact
+            # manipulation. Real deploy keeps 2 cm.
+            "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
             "world_voxel_max_cells": 262144,
             "world_voxel_deadline_ms": 1000.0,
         }
