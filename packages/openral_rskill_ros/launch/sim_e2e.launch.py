@@ -120,7 +120,7 @@ def _run_resource_attrs(hal_mode: str) -> str:
 
 def _world_voxel_margin_m(hal_mode: str) -> float:
     """Return the calibrated world-voxel clearance for this boundary."""
-    return 0.01 if hal_mode == "sim" else 0.02
+    return 0.0 if hal_mode == "sim" else 0.02
 
 
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
@@ -774,8 +774,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             **kernel_params,
             "world_voxel_enabled": True,
             # Sim uses exact digital-twin OBBs plus conservative occupied cubes;
-            # 1 cm preserves clearance without vetoing trained close-contact
-            # manipulation. Real deploy keeps 2 cm.
+            # No additional sim margin avoids vetoing trained close-contact
+            # manipulation; exact OBB-vs-cube overlap still E-stops. Real
+            # deploy keeps 2 cm.
             "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
             "world_voxel_max_cells": 262144,
             "world_voxel_deadline_ms": 1000.0,

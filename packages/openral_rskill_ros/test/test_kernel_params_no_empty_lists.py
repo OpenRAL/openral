@@ -87,10 +87,10 @@ def _import_launch_module() -> object:
 
 
 def test_world_voxel_margin_is_lowered_only_in_sim() -> None:
-    """Digital twins use 1 cm; real hardware retains the 2 cm margin."""
+    """Digital twins use exact overlap; real hardware retains the 2 cm margin."""
     module = _import_launch_module()
 
-    assert module._world_voxel_margin_m("sim") == 0.01
+    assert module._world_voxel_margin_m("sim") == 0.0
     assert module._world_voxel_margin_m("real") == 0.02
 
 
