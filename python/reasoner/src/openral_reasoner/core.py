@@ -371,6 +371,26 @@ class ReasonerCore:
                 elapsed_s=0.0,
                 suppressed_reason="retry_cap_hold",
             )
+        # A terminal mission has nothing left to plan. World-state and
+        # perception updates may keep changing ``renderer.seq`` after handoff,
+        # so the ordinary heartbeat-idle gate cannot suppress these calls.
+        # A new operator goal rebuilds the mission before forcing a tick; safety
+        # and other urgent events still bypass this gate via ``force=True``.
+        mission = renderer.mission
+        if (
+            not force
+            and mission is not None
+            and mission.active() is None
+            and renderer.inflight_skill is None
+        ):
+            self._last_tick_s = started
+            self._last_seen_seq = renderer.seq
+            return ReasonerTickResult(
+                tool_call=None,
+                error=None,
+                elapsed_s=0.0,
+                suppressed_reason="mission_finished",
+            )
         # heartbeat-idle gate — gate
         # BEFORE the OTel span for the same reason. A non-forced tick
         # whose ContextRenderer has not received any new failure /

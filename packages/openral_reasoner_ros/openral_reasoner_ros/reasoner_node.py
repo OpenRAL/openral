@@ -3051,6 +3051,7 @@ class ReasonerNode(LifecycleNode):
             return
 
         within_budget = self._spatial_search.record_attempt()
+        handoff_reason: str | None = None
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         if within_budget:
@@ -3065,6 +3066,10 @@ class ReasonerNode(LifecycleNode):
                 f"{result_text}\nactive_search: query budget exhausted after "
                 f"{self._spatial_search.attempts} consecutive lookups — handing off to a human."
             )
+            handoff_reason = (
+                f"active search for {search_term!r} exhausted after "
+                f"{self._spatial_search.attempts} consecutive lookups"
+            )
             self.get_logger().warning(
                 f"dispatch: {call.tool} search budget exhausted "
                 f"({self._spatial_search.attempts} queries) — handing off",
@@ -3078,6 +3083,48 @@ class ReasonerNode(LifecycleNode):
             self.get_logger().info(
                 f"dispatch: {call.tool} → re-prompt ({len(result_text)} chars)",
             )
+        elif handoff_reason is not None:
+            self._finish_active_search_handoff(handoff_reason, traceparent=traceparent)
+
+    def _finish_active_search_handoff(
+        self,
+        reason: str,
+        *,
+        traceparent: str | None,
+    ) -> None:
+        """Abandon the active task when the search ladder reaches human handoff."""
+        mission = self._renderer.mission
+        if mission is None:
+            return
+        active = mission.active()
+        if active is None:
+            return
+        self._renderer.append_execution(
+            ExecutionEventRecord(
+                rskill_id="(active-search)",
+                outcome="failed",
+                summary=reason,
+                reflection="Human input or a new goal is required; do not repeat the same search.",
+                stamp_ns=self.get_clock().now().nanoseconds,
+            )
+        )
+        nxt = self._renderer.advance_mission(done=False, verdict=reason)
+        self._persist_ladder_state()
+        if self._core is not None:
+            self._core.reset_kind_streak()
+        if nxt is None:
+            self.get_logger().warning(
+                f"mission: task {active.task_id} abandoned ✗ ({reason}); MISSION COMPLETE",
+            )
+            self._emit_mission_complete(mission, traceparent=traceparent)
+            return
+        self._spatial_search.reset()
+        self._locate_escalated.clear()
+        self.get_logger().warning(
+            f"mission: task {active.task_id} abandoned ✗ ({reason}); "
+            f"advancing to {nxt.task_id}={nxt.text[:60]!r}",
+        )
+        self._on_tick(force=True, tier="C")
 
     def _reset_task_locate_budget(self) -> None:
         """Reset the per-task locate budget (VLM-adjudicated completion amendment).
@@ -3253,6 +3300,7 @@ class ReasonerNode(LifecycleNode):
         # instead of looping; a hit ends the search streak so the next find
         # starts fresh.
         frame_id = "detector"  # consumed by _on_prompt → feeds the next tick
+        handoff_reason: str | None = None
         if resp.found:
             self._spatial_search.reset()
             self._locate_escalated.clear()
@@ -3269,6 +3317,10 @@ class ReasonerNode(LifecycleNode):
                 f"detections={resp.metadata_json}"
             )
         elif self._spatial_search.record_attempt():
+            # A miss can be transient (the service may be up before its first
+            # camera frame). Let the next recall retry the detector; the shared
+            # SearchProgress budget still bounds the total attempts.
+            self._locate_escalated.discard(call.query)
             text = f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now."
         else:
             # Budget exhausted → hand off. The reasoner's own frame_id makes
@@ -3278,6 +3330,10 @@ class ReasonerNode(LifecycleNode):
                 f"locate_in_view: {call.query!r} is NOT visible in camera {cam!r} right now.\n"
                 f"active_search: query budget exhausted after {self._spatial_search.attempts} "
                 "consecutive lookups — handing off to a human."
+            )
+            handoff_reason = (
+                f"active search for {call.query!r} exhausted after "
+                f"{self._spatial_search.attempts} consecutive lookups"
             )
             self.get_logger().warning(
                 f"dispatch: locate_in_view {call.query!r} budget exhausted "
@@ -3295,6 +3351,8 @@ class ReasonerNode(LifecycleNode):
         self.get_logger().info(
             f"dispatch: locate_in_view → re-prompt found={resp.found} ({len(text)} chars)",
         )
+        if handoff_reason is not None:
+            self._finish_active_search_handoff(handoff_reason, traceparent=traceparent)
 
     def _dispatch_query_scene(
         self,
