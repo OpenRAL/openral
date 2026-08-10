@@ -137,8 +137,8 @@ joints:
     joint_type: "revolute"
     parent_link: "base_link"
     child_link: "panda_link1"
-    # Fixed parent->joint transform (from Franka URDF; joint1 absorbs the 0.7 m arm-base mount). Lets the kernel FK place the collision capsules.
-    origin_xyz: [0.0, 0.0, 1.033]
+    # base_link is already the arm mount; use the Franka URDF joint1 transform.
+    origin_xyz: [0.0, 0.0, 0.333]
     origin_rpy: [0.0, 0.0, 0.0]
     position_limits: [-2.8973, 2.8973]
     velocity_limit: 2.175
