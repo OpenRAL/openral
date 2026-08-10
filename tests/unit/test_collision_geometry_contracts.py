@@ -222,8 +222,8 @@ def test_panda_mobile_collision_fk_includes_the_mobile_pedestal() -> None:
     assert joint1.origin_xyz == vslam_joint1.origin_xyz == (0.0, 0.0, 1.033)
 
 
-def test_panda_mobile_link7_uses_the_mesh_enclosing_obb() -> None:
-    """Both mobile Panda manifests use the measured link-7 mesh bounds."""
+def test_panda_mobile_arms_use_matching_mesh_enclosing_obbs() -> None:
+    """Both mobile Panda manifests use the same measured arm mesh bounds."""
     descriptions = [
         RobotDescription.from_yaml(path)
         for path in (
@@ -231,17 +231,18 @@ def test_panda_mobile_link7_uses_the_mesh_enclosing_obb() -> None:
             "robots/panda_mobile_vslam/robot.yaml",
         )
     ]
-    link7 = [
-        next(
-            geometry for geometry in desc.collision_geometry if geometry.link_name == "panda_link7"
-        )
+    arm_geometry = [
+        {
+            geometry.link_name: geometry
+            for geometry in desc.collision_geometry
+            if geometry.link_name.startswith("panda_link")
+        }
         for desc in descriptions
     ]
 
-    assert link7[1] == link7[0]
-    assert isinstance(link7[0].shape, BoxShape)
-    assert link7[0].shape.half_extents_m == (0.0295, 0.044, 0.071)
-    assert link7[0].origin_xyz_rpy == (0.0123, 0.0123, 0.08, 3.138, -1.5171, -2.352)
+    assert arm_geometry[1] == arm_geometry[0]
+    assert set(arm_geometry[0]) == {f"panda_link{i}" for i in range(1, 8)}
+    assert all(isinstance(geometry.shape, BoxShape) for geometry in arm_geometry[0].values())
 
 
 def test_panda_mobile_acm_matches_franka_srdf() -> None:
