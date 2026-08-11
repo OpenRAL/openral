@@ -60,6 +60,7 @@ from numpy.typing import NDArray
 from openral_core import (
     BODY_TWIST_DIM,
     SIM_EXECUTABLE_CONTROL_MODES,
+    AttachedCollisionObject,
     ClockAuthority,
     RobotDescription,
 )
@@ -466,6 +467,10 @@ class SimAttachedHAL:
         self._pending_since_ns: int = 0
         # send_action tick counter for the throttled diagnostic log.
         self._send_log_tick: int = 0
+        # Complete atomic attachment snapshot plus exact MuJoCo body ids masked
+        # from world perception while the same geometry remains collision-active.
+        self._attached_objects: dict[str, AttachedCollisionObject] = {}
+        self._attached_body_ids: frozenset[int] = frozenset()
         # Last commanded base body twist (vx, vy, vz, wx, wy, wz) in the
         # base_link frame. The base moves by exact Euler integration of
         # this command, so it IS the base velocity — the panda_mobile
@@ -645,6 +650,69 @@ class SimAttachedHAL:
             effort=[0.0] * len(self.description.joints),
             stamp_ns=self._last_state_ns,
         )
+
+    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
+        """Atomically replace attached objects and resolve their MuJoCo bodies.
+
+        Sim evidence uses ``evidence_ref="mujoco_body:<body-name>"``. Every
+        descendant body is masked too, so multipart payloads cannot leak into
+        depth/OctoMap through child geoms.
+
+        Args:
+            objects: Complete current attachment set.
+
+        Raises:
+            ROSConfigError: On duplicate ids, non-MuJoCo backends, malformed
+                evidence refs, or unknown body names. The previous snapshot is
+                preserved on failure.
+        """
+        by_id = {obj.object_id: obj for obj in objects}
+        if len(by_id) != len(objects):
+            raise ROSConfigError("Attached collision object ids must be unique.")
+        handles = self._mujoco_handles()
+        if handles is None:
+            if objects:
+                raise ROSConfigError(
+                    "SimAttachedHAL attachment body masking requires MuJoCo handles."
+                )
+            self._attached_objects = {}
+            self._attached_body_ids = frozenset()
+            return
+
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency guarded by handles
+
+        model, _data = handles
+        roots: set[int] = set()
+        for obj in objects:
+            prefix = "mujoco_body:"
+            if obj.evidence_ref is None or not obj.evidence_ref.startswith(prefix):
+                raise ROSConfigError(
+                    f"Attached object {obj.object_id!r} requires "
+                    "evidence_ref='mujoco_body:<body-name>' in deploy sim."
+                )
+            body_name = obj.evidence_ref.removeprefix(prefix)
+            body_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+            if body_id < 0:
+                raise ROSConfigError(
+                    f"Attached object {obj.object_id!r} references unknown "
+                    f"MuJoCo body {body_name!r}."
+                )
+            roots.add(body_id)
+
+        body_ids = set(roots)
+        for body_id in range(1, int(model.nbody)):
+            if int(model.body_parentid[body_id]) in body_ids:
+                body_ids.add(body_id)
+        self._attached_objects = by_id
+        self._attached_body_ids = frozenset(body_ids)
+
+    def read_attached_objects(self) -> list[AttachedCollisionObject]:
+        """Return the current attachment snapshot in stable object-id order."""
+        return [self._attached_objects[key] for key in sorted(self._attached_objects)]
+
+    def read_attached_body_ids(self) -> frozenset[int]:
+        """Return exact MuJoCo payload body ids excluded from world perception."""
+        return self._attached_body_ids
 
     def send_action(self, action: Action) -> None:
         """Step the env with the packed action vector.

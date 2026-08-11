@@ -27,6 +27,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   msg/OccupancyVoxels.msg
   # typed WorldState publication.
   msg/AttachedCollisionObject.msg
+  msg/AttachmentState.msg
   msg/WorldStateStamped.msg
   # rosbag2 ↔ LeRobotDataset bridge.
   msg/Tick.msg
