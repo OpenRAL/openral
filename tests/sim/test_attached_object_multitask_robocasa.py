@@ -20,6 +20,12 @@ from openral_core import (
     TaskSpec,
     VLASpec,
 )
+from openral_hal._sim_attachment_evidence import (
+    SimAttachmentEvidenceTracker,
+    SimObjectMobility,
+    classify_body_mobility,
+    extract_body_primitives,
+)
 from openral_hal.depth_cloud import depth_synth_kwargs, robot_self_body_ids
 from openral_hal.sim_attached import SimAttachedHAL
 from openral_sim._deps import _has_robocasa_kitchen
@@ -180,3 +186,43 @@ def test_two_unknown_payloads_mask_and_restore_across_tasks(task_name: str) -> N
 
         hal.update_attached_objects([])
         assert count_points() == baseline
+
+
+@pytest.mark.parametrize(
+    "task_name",
+    ["PickPlaceCounterToCabinet", "PickPlaceCounterToSink"],
+)
+def test_runtime_evidence_resolves_unknown_free_objects(task_name: str) -> None:
+    import mujoco
+
+    with _build_hal(task_name) as hal:
+        handles = hal.mujoco_handles()
+        assert handles is not None
+        model, data = handles
+        tracker = SimAttachmentEvidenceTracker(model, hal.description)
+        assert tracker.update(data, stamp_ns=1) is None
+
+        free_roots = [
+            int(model.jnt_bodyid[joint_id])
+            for joint_id in range(int(model.njnt))
+            if int(model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_FREE)
+            and (
+                name := mujoco.mj_id2name(
+                    model,
+                    mujoco.mjtObj.mjOBJ_BODY,
+                    int(model.jnt_bodyid[joint_id]),
+                )
+            )
+            and not name.startswith("robot")
+        ]
+        assert len(free_roots) >= 2
+        for root in free_roots[:2]:
+            assert classify_body_mobility(model, root) is SimObjectMobility.FREE
+            body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, root)
+            primitives = extract_body_primitives(
+                model,
+                data,
+                root_body_id=root,
+                object_id=f"sim:{body_name}",
+            )
+            assert primitives
