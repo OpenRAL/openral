@@ -179,6 +179,7 @@ if _ROS2_AVAILABLE:
             # `left_wrist`, `right_wrist`).
             self.declare_parameter("camera_names", [""])
             self.declare_parameter("camera_topic_prefix", "/openral/cameras")
+            self.declare_parameter("attachment_state_topic", "/openral/attachment_state")
             # Sensors whose frames the co-located sensor
             # leg writes straight into the shared aggregator (zero-copy NVMM
             # handles intact). ``_on_image`` keeps serving observability
@@ -212,6 +213,7 @@ if _ROS2_AVAILABLE:
             self._pub_slow = None
             self._joint_sub = None
             self._policy_state_sub = None
+            self._attachment_sub = None
             self._camera_subs: dict[str, object] = {}
             self._slow_divider = 1
             self._tick_count = 0
@@ -328,6 +330,22 @@ if _ROS2_AVAILABLE:
                 "/openral/policy_state",
                 self._on_policy_state,
                 sensor_qos,
+            )
+            from openral_msgs.msg import AttachmentState
+
+            attachment_qos = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            )
+            attachment_topic = (
+                self.get_parameter("attachment_state_topic").get_parameter_value().string_value
+            )
+            self._attachment_sub = self.create_subscription(
+                AttachmentState,
+                attachment_topic,
+                self._on_attachment_state,
+                attachment_qos,
             )
 
             # Per-camera image subscriptions on `<prefix>/<name>/image`.
@@ -529,6 +547,9 @@ if _ROS2_AVAILABLE:
             if self._policy_state_sub is not None:
                 self.destroy_subscription(self._policy_state_sub)
                 self._policy_state_sub = None
+            if self._attachment_sub is not None:
+                self.destroy_subscription(self._attachment_sub)
+                self._attachment_sub = None
             for sub in self._camera_subs.values():
                 self.destroy_subscription(sub)  # type: ignore[arg-type]
             self._camera_subs.clear()
@@ -692,6 +713,19 @@ if _ROS2_AVAILABLE:
             self._aggregator.update_policy_state(
                 [float(value) for value in (getattr(msg, "data", []) or [])]
             )
+
+        def _on_attachment_state(self, msg: object) -> None:
+            """Validate and atomically apply one complete attachment snapshot."""
+            if self._aggregator is None:
+                return
+            try:
+                objects = [
+                    _attached_object_from_idl(item)
+                    for item in msg.objects  # type: ignore[attr-defined]
+                ]
+                self._aggregator.update_attached_objects(objects)
+            except (ValueError, TypeError) as exc:
+                self.get_logger().error(f"attachment state rejected: {exc}")
 
         def _on_voxels(self, msg: object) -> None:  # OccupancyVoxels
             """Store the latest occupancy voxel grid (best-effort; cheap)."""
