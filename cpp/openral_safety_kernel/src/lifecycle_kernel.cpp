@@ -167,6 +167,21 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("world_voxel_deadline_ms", 500.0);
   this->declare_parameter<std::int64_t>("world_voxel_max_cells", 262144);
 
+  // Attached-payload phase — grasped objects carried on
+  // /openral/world_state_fast (ADR-0092). Each object leaves world occupancy
+  // and is re-checked as collision-active robot geometry (vs world, voxels, and
+  // the robot's own links except its attach link + explicit touch links). Caps
+  // are fixed-capacity: an over-capacity, unknown-link, or malformed attachment
+  // set fails closed (the next candidate action is dropped until a clean message
+  // lands). Today each object carries exactly one primitive, so the object and
+  // primitive caps guard the same count; both are enforced.
+  this->declare_parameter<bool>("attached_collision_enabled", false);
+  this->declare_parameter<double>("attached_collision_margin_m", 0.0);
+  this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
+  this->declare_parameter<std::int64_t>("attached_max_objects", 8);
+  this->declare_parameter<std::int64_t>("attached_max_primitives", 8);
+  this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
+
   // Measured joint-state seed for non-position collision checks.
   // `collision_joint_names` is the actuated joint order (length n_dof) the
   // launch forwards from the robot manifest; it maps /joint_states names to the
@@ -337,7 +352,8 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
 
   // Subscribe /joint_states only when a geometric check is enabled
   // and the joint-name map is plumbed (otherwise there is nothing to seed).
-  if ((self_collision_enabled_ || world_collision_enabled_ || world_voxel_enabled_) &&
+  if ((self_collision_enabled_ || world_collision_enabled_ || world_voxel_enabled_ ||
+       attached_collision_enabled_) &&
       !collision_joint_names_.empty()) {
     rclcpp::QoS js_qos(rclcpp::KeepLast(1));
     js_qos.best_effort();
@@ -362,6 +378,16 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     voxel_sub_ = this->create_subscription<openral_msgs::msg::OccupancyVoxels>(
         "/openral/world_voxels", voxel_qos,
         std::bind(&SafetyKernelLifecycleNode::on_world_voxels, this, std::placeholders::_1));
+  }
+  if (attached_collision_enabled_) {
+    // WorldStateStamped is published RELIABLE+VOLATILE+KL=1 at 30 Hz; the kernel
+    // only consumes the bounded attached_objects array (grasped payloads).
+    rclcpp::QoS world_state_qos(rclcpp::KeepLast(1));
+    world_state_qos.reliable();
+    world_state_qos.durability_volatile();
+    world_state_sub_ = this->create_subscription<openral_msgs::msg::WorldStateStamped>(
+        "/openral/world_state_fast", world_state_qos,
+        std::bind(&SafetyKernelLifecycleNode::on_world_state, this, std::placeholders::_1));
   }
 
   estop_reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
@@ -402,6 +428,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   estop_sub_.reset();
   world_sub_.reset();
   voxel_sub_.reset();
+  world_state_sub_.reset();
   joint_state_sub_.reset();
   q_meas_received_ = false;
   safe_pub_.reset();
@@ -491,8 +518,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // Geometric collision over the chunk horizon (self + world).
     // Runs only for absolute joint-position chunks (the rows are full joint
     // configs FK can place). Allocation-free: FK reuses the pre-sized scratch.
-    const bool geom_enabled =
-        self_collision_enabled_ || world_collision_enabled_ || world_voxel_enabled_;
+    const bool geom_enabled = self_collision_enabled_ || world_collision_enabled_ ||
+                              world_voxel_enabled_ || attached_collision_enabled_;
     const auto mode = static_cast<ControlMode>(view.control_mode);
     const bool is_position = (mode == ControlMode::kJointPosition);
     // Non-position chunks carry velocities / EE deltas, not joint
@@ -556,6 +583,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           return;
         }
       }
+      if (attached_collision_enabled_) {
+        // A grasped payload we cannot verify (never received, over-capacity /
+        // unknown-link, or stale) is fail-closed: we do not know what the robot
+        // is carrying, so we must not certify the motion. An empty-but-fresh
+        // attachment set is valid (nothing carried).
+        const bool fresh =
+            attached_received_ && !attached_overflow_ &&
+            (this->now() - attached_stamp_).seconds() <= attached_collision_deadline_s_;
+        if (!fresh) {
+          unavailable(attached_overflow_ ? "attached_overflow" : "attached_unavailable");
+          return;
+        }
+      }
 
       const auto link_name = [this](int idx) -> std::string {
         if (idx >= 0 && static_cast<std::size_t>(idx) < collision_link_names_.size()) {
@@ -569,6 +609,13 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           return world_labels_[static_cast<std::size_t>(idx)];
         }
         return std::string("world_") + std::to_string(idx);
+      };
+      const auto attached_label = [this](int idx) -> std::string {
+        if (idx >= 0 && static_cast<std::size_t>(idx) < attached_labels_.size() &&
+            !attached_labels_[static_cast<std::size_t>(idx)].empty()) {
+          return std::string("attached:") + attached_labels_[static_cast<std::size_t>(idx)];
+        }
+        return std::string("attached_") + std::to_string(idx);
       };
       const auto report = [&](const char* kind, const std::string& a, const std::string& b,
                               int step, double dist) {
@@ -636,6 +683,39 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           if (hit.hit) {
             report("world", link_name(hit.link_a),
                    std::string("voxel_") + std::to_string(hit.link_b), step, hit.min_distance);
+            return true;
+          }
+        }
+        if (attached_collision_enabled_ && attached_model_.n_objects > 0) {
+          // Grasped payloads (ADR-0092): check the attach-link-composed payload
+          // geometry against world obstacles, occupancy voxels, and the robot's
+          // own links (except the attach link + explicit touch links). The
+          // collision_kind stays "self"/"world" to satisfy CollisionEvidence;
+          // the attach:<object_id> label marks it as a payload hit.
+          const double amargin = attached_collision_margin_m_ + extra_margin;
+          if (world_collision_enabled_) {
+            const auto hit = check_attached_world_collision(
+                collision_model_, attached_model_, collision_scratch_, world_model_, amargin);
+            if (hit.hit) {
+              report("world", attached_label(hit.link_a), world_label(hit.link_b), step,
+                     hit.min_distance);
+              return true;
+            }
+          }
+          if (world_voxel_enabled_) {
+            const auto hit = check_attached_voxel_collision(
+                collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin);
+            if (hit.hit) {
+              report("world", attached_label(hit.link_a),
+                     std::string("voxel_") + std::to_string(hit.link_b), step, hit.min_distance);
+              return true;
+            }
+          }
+          const auto hit = check_attached_self_collision(collision_model_, attached_model_,
+                                                         collision_scratch_, amargin);
+          if (hit.hit) {
+            report("self", attached_label(hit.link_a), link_name(hit.link_b), step,
+                   hit.min_distance);
             return true;
           }
         }
@@ -1002,9 +1082,32 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   voxel_occupancy_.assign(world_voxel_max_cells_, 0);
   voxel_grid_.occupancy = voxel_occupancy_.data();
 
+  // Attached-payload config (ADR-0092). Pre-size the fixed-capacity attached
+  // model + label buffer once so the world-state callback fills in place and the
+  // hot path never allocates.
+  attached_collision_enabled_ = this->get_parameter("attached_collision_enabled").as_bool();
+  attached_collision_margin_m_ = this->get_parameter("attached_collision_margin_m").as_double();
+  attached_collision_deadline_s_ =
+      this->get_parameter("attached_collision_deadline_ms").as_double() / 1000.0;
+  attached_max_objects_ =
+      static_cast<std::size_t>(this->get_parameter("attached_max_objects").as_int());
+  attached_max_primitives_ =
+      static_cast<std::size_t>(this->get_parameter("attached_max_primitives").as_int());
+  attached_max_touch_links_ =
+      static_cast<std::size_t>(this->get_parameter("attached_max_touch_links").as_int());
+  attached_received_ = false;
+  attached_overflow_ = false;
+  attached_model_ = AttachedModel{};
+  attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
+  attached_model_.touch_links.assign(attached_max_touch_links_, 0);
+  attached_labels_.assign(attached_max_objects_, std::string{});
+  attached_ingest_scratch_.clear();
+  attached_ingest_scratch_.reserve(attached_max_objects_);
+
   // The robot collision model is needed for any geometric check; skip loading
   // only when all of them are disabled.
-  if (!self_collision_enabled_ && !world_collision_enabled_ && !world_voxel_enabled_) {
+  if (!self_collision_enabled_ && !world_collision_enabled_ && !world_voxel_enabled_ &&
+      !attached_collision_enabled_) {
     return true;
   }
 
@@ -1176,6 +1279,95 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   voxel_grid_.sz = static_cast<int>(msg->size_z);
   voxel_received_ = true;
   voxel_stamp_ = this->now();
+}
+
+void SafetyKernelLifecycleNode::on_world_state(
+    const openral_msgs::msg::WorldStateStamped::SharedPtr msg) {
+  if (msg == nullptr) {
+    return;
+  }
+  // Parse the wire attachments into the by-name ingest scratch, then validate +
+  // resolve into the fixed-capacity attached model. Any malformed shape,
+  // capacity overflow, or unknown attach/touch link fails closed: the model is
+  // emptied and the world state is marked invalid so the next candidate action
+  // is dropped until a clean message lands (never a silently-unchecked payload).
+  const auto fail_closed = [this]() {
+    attached_model_.n_objects = 0;
+    attached_overflow_ = true;
+    attached_received_ = true;
+    attached_stamp_ = this->now();
+  };
+
+  const auto& wire = msg->attached_objects;
+  if (wire.size() > attached_max_objects_ || wire.size() > attached_max_primitives_) {
+    fail_closed();
+    return;
+  }
+
+  attached_ingest_scratch_.clear();
+  for (const auto& obj : wire) {
+    AttachedObjectInput in;
+    const std::size_t n_dims = obj.shape_dimensions.size();
+    // Decode the shape by SHAPE_* tag and required dimension count.
+    if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_SPHERE) {
+      if (n_dims < 1) {
+        fail_closed();
+        return;
+      }
+      in.kind = AttachedShapeKind::kSphere;
+      in.radius = obj.shape_dimensions[0];
+      in.half_length = 0.0;
+    } else if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_CAPSULE) {
+      if (n_dims < 2) {
+        fail_closed();
+        return;
+      }
+      in.kind = AttachedShapeKind::kCapsule;
+      in.radius = obj.shape_dimensions[0];
+      // The wire carries the full central-segment length; the kernel capsule
+      // uses the half-length convention.
+      in.half_length = 0.5 * obj.shape_dimensions[1];
+    } else if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_BOX) {
+      if (n_dims < 3) {
+        fail_closed();
+        return;
+      }
+      in.kind = AttachedShapeKind::kBox;
+      in.half_extents =
+          Vec3{obj.shape_dimensions[0], obj.shape_dimensions[1], obj.shape_dimensions[2]};
+    } else {
+      // Unknown shape tag → fail closed (an unrecognised payload is not safe to
+      // ignore).
+      fail_closed();
+      return;
+    }
+    in.pose_in_link = transform_from_translation_quat(
+        obj.pose_in_link.position.x, obj.pose_in_link.position.y, obj.pose_in_link.position.z,
+        obj.pose_in_link.orientation.x, obj.pose_in_link.orientation.y,
+        obj.pose_in_link.orientation.z, obj.pose_in_link.orientation.w);
+    in.attach_link = obj.attach_link;
+    in.touch_links.assign(obj.touch_links.begin(), obj.touch_links.end());
+    attached_ingest_scratch_.push_back(std::move(in));
+  }
+
+  const AttachIngestStatus status = ingest_attached_objects(
+      attached_ingest_scratch_, collision_link_names_, attached_max_objects_,
+      attached_max_primitives_, attached_max_touch_links_, attached_model_);
+  if (status != AttachIngestStatus::kOk) {
+    attached_overflow_ = true;
+    attached_received_ = true;
+    attached_stamp_ = this->now();
+    RCLCPP_WARN(this->get_logger(), "safety.attached_ingest_rejected status=%d n=%zu",
+                static_cast<int>(status), wire.size());
+    return;
+  }
+  // Labels parallel the accepted objects (object_id for evidence).
+  for (std::size_t i = 0; i < attached_model_.n_objects; ++i) {
+    attached_labels_[i] = wire[i].object_id;
+  }
+  attached_overflow_ = false;
+  attached_received_ = true;
+  attached_stamp_ = this->now();
 }
 
 }  // namespace openral_safety_kernel
