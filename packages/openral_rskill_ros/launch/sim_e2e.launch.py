@@ -787,7 +787,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "attached_collision_margin_m": 0.0,
             "attached_collision_deadline_ms": 5000.0,
             "attached_max_objects": 8,
-            "attached_max_primitives": 8,
+            "attached_max_primitives": 16,
             "attached_max_touch_links": 32,
         }
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
