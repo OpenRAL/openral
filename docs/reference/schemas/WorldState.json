@@ -589,7 +589,7 @@
       "type": "object"
     }
   },
-  "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor :class:`SensorFrame` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via :attr:`images` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    collision_primitives: Bounded set of placed convex obstacle volumes\n        the kernel checks robot links against (world-collision). Empty\n        until a perception / SLAM source populates it.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
+  "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor :class:`SensorFrame` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via :attr:`images` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    collision_primitives: Bounded set of placed convex obstacle volumes\n        the kernel checks robot links against (world-collision). Empty\n        until a perception / SLAM source populates it.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    attachment_revision: Monotonic producer revision for atomic snapshots.\n    attachment_stamp_ns: Timestamp of the last accepted attachment update.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
   "properties": {
     "stamp_ns": {
       "title": "Stamp Ns",
@@ -756,6 +756,18 @@
       },
       "title": "Attached Objects",
       "type": "array"
+    },
+    "attachment_revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Attachment Revision",
+      "type": "integer"
+    },
+    "attachment_stamp_ns": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Attachment Stamp Ns",
+      "type": "integer"
     },
     "occupancy_grid": {
       "anyOf": [

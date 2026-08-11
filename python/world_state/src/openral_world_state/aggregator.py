@@ -218,6 +218,8 @@ class WorldStateAggregator:
         self._detected_objects: list[DetectedObject] = []
         # Atomic attached-payload snapshot keyed by stable world object id.
         self._attached_objects: dict[str, AttachedCollisionObject] = {}
+        self._attachment_revision: int = 0
+        self._attachment_stamp_ns: int = 0
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
         # Stale components from the previous snapshot — used by snapshot() to
@@ -390,20 +392,35 @@ class WorldStateAggregator:
             self._detected_objects = list(objects)
         log.debug("world_state.detected_objects.updated", count=len(objects))
 
-    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
+    def update_attached_objects(
+        self,
+        objects: list[AttachedCollisionObject],
+        *,
+        revision: int = 0,
+        stamp_ns: int | None = None,
+    ) -> None:
         """Atomically replace the attached-payload set.
 
         Args:
             objects: Complete current attachment set. Object ids must be unique.
+            revision: Monotonic producer revision.
+            stamp_ns: Producer confirmation time; arrival time when omitted.
 
         Raises:
-            ValueError: If the update contains duplicate object ids.
+            ValueError: If ids duplicate or the revision moves backwards.
         """
         by_id = {obj.object_id: obj for obj in objects}
         if len(by_id) != len(objects):
             raise ValueError("Attached collision object ids must be unique.")
         with self._lock:
+            if revision < self._attachment_revision:
+                raise ValueError(
+                    f"Attachment revision moved backwards: "
+                    f"{revision} < {self._attachment_revision}."
+                )
             self._attached_objects = by_id
+            self._attachment_revision = revision
+            self._attachment_stamp_ns = self._clock_fn() if stamp_ns is None else stamp_ns
         log.info("world_state.attached_objects.updated", count=len(objects))
 
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
@@ -560,6 +577,8 @@ class WorldStateAggregator:
                     self._attached_objects[object_id]
                     for object_id in sorted(self._attached_objects)
                 ],
+                attachment_revision=self._attachment_revision,
+                attachment_stamp_ns=self._attachment_stamp_ns,
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
             )

@@ -142,6 +142,8 @@ def test_attachment_state_callback_applies_multiple_objects_atomically() -> None
     try:
         node._on_attachment_state(state_msg)
         assert aggregator.snapshot().attached_objects == attachments
+        assert aggregator.snapshot().attachment_revision == 7
+        assert aggregator.snapshot().attachment_stamp_ns > 0
     finally:
         node.destroy_node()
         rclpy.shutdown()

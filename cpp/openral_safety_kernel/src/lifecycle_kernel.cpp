@@ -650,9 +650,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         // unknown-link, or stale) is fail-closed: we do not know what the robot
         // is carrying, so we must not certify the motion. An empty-but-fresh
         // attachment set is valid (nothing carried).
-        const bool fresh =
-            attached_received_ && !attached_overflow_ &&
-            (this->now() - attached_stamp_).seconds() <= attached_collision_deadline_s_;
+        const double attached_age_s = (this->now() - attached_stamp_).seconds();
+        const bool fresh = attached_received_ && !attached_overflow_ && attached_age_s >= 0.0 &&
+                           attached_age_s <= attached_collision_deadline_s_;
         if (!fresh) {
           unavailable(attached_overflow_ ? "attached_overflow" : "attached_unavailable",
                       attached_overflow_
@@ -1413,14 +1413,21 @@ void SafetyKernelLifecycleNode::on_world_state(
   // capacity overflow, or unknown attach/touch link fails closed: the model is
   // emptied and the world state is marked invalid so the next candidate action
   // is dropped until a clean message lands (never a silently-unchecked payload).
-  const auto fail_closed = [this]() {
+  const auto clock_type = this->get_clock()->get_clock_type();
+  const bool stamp_valid = msg->attachment_stamp_ns > 0;
+  const rclcpp::Time producer_stamp(stamp_valid ? msg->attachment_stamp_ns : 0, clock_type);
+  const auto fail_closed = [this, producer_stamp]() {
     attached_model_.n_objects = 0;
     attached_overflow_ = true;
     attached_received_ = true;
-    attached_stamp_ = this->now();
+    attached_stamp_ = producer_stamp;
   };
 
   const auto& wire = msg->attached_objects;
+  if (!stamp_valid) {
+    fail_closed();
+    return;
+  }
   if (wire.size() > attached_max_objects_ || wire.size() > attached_max_primitives_) {
     fail_closed();
     return;
@@ -1478,7 +1485,7 @@ void SafetyKernelLifecycleNode::on_world_state(
   if (status != AttachIngestStatus::kOk) {
     attached_overflow_ = true;
     attached_received_ = true;
-    attached_stamp_ = this->now();
+    attached_stamp_ = producer_stamp;
     RCLCPP_WARN(this->get_logger(), "safety.attached_ingest_rejected status=%d n=%zu",
                 static_cast<int>(status), wire.size());
     return;
@@ -1489,7 +1496,7 @@ void SafetyKernelLifecycleNode::on_world_state(
   }
   attached_overflow_ = false;
   attached_received_ = true;
-  attached_stamp_ = this->now();
+  attached_stamp_ = producer_stamp;
 }
 
 }  // namespace openral_safety_kernel

@@ -723,7 +723,15 @@ if _ROS2_AVAILABLE:
                     _attached_object_from_idl(item)
                     for item in msg.objects  # type: ignore[attr-defined]
                 ]
-                self._aggregator.update_attached_objects(objects)
+                header_stamp = msg.header.stamp  # type: ignore[attr-defined]
+                stamp_ns = int(header_stamp.sec) * 1_000_000_000 + int(header_stamp.nanosec)
+                if stamp_ns == 0:
+                    stamp_ns = int(self.get_clock().now().nanoseconds)
+                self._aggregator.update_attached_objects(
+                    objects,
+                    revision=int(msg.revision),  # type: ignore[attr-defined]
+                    stamp_ns=stamp_ns,
+                )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
 
@@ -1058,6 +1066,8 @@ def world_state_from_idl(msg: object) -> object:
         diagnostics=diagnostics,
         detected_objects=detected_objects,
         attached_objects=attached_objects,
+        attachment_revision=int(msg.attachment_revision),  # type: ignore[attr-defined]
+        attachment_stamp_ns=int(msg.attachment_stamp_ns),  # type: ignore[attr-defined]
     )
 
 
@@ -1083,61 +1093,9 @@ def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
 
 def _attached_object_from_idl(msg: object) -> object:
     """Convert one ROS attached-object message into the normative schema."""
-    from openral_core.schemas import (
-        AttachedCollisionObject,
-        AttachmentEvidenceKind,
-        BoxShape,
-        CapsuleShape,
-        SphereShape,
-    )
+    from openral_core.schemas import AttachedCollisionObject
 
-    dimensions = [float(value) for value in msg.shape_dimensions]  # type: ignore[attr-defined]
-    shape_type = int(msg.shape_type)  # type: ignore[attr-defined]
-    if shape_type == int(msg.SHAPE_SPHERE):  # type: ignore[attr-defined]
-        if len(dimensions) != 1:
-            raise ValueError("Attached sphere requires one shape dimension.")
-        shape = SphereShape(radius_m=dimensions[0])
-    elif shape_type == int(msg.SHAPE_CAPSULE):  # type: ignore[attr-defined]
-        if len(dimensions) != 2:
-            raise ValueError("Attached capsule requires two shape dimensions.")
-        shape = CapsuleShape(radius_m=dimensions[0], length_m=dimensions[1])
-    elif shape_type == int(msg.SHAPE_BOX):  # type: ignore[attr-defined]
-        if len(dimensions) != 3:
-            raise ValueError("Attached box requires three shape dimensions.")
-        shape = BoxShape(half_extents_m=(dimensions[0], dimensions[1], dimensions[2]))
-    else:
-        raise ValueError(f"Unknown attached collision shape type: {shape_type}")
-
-    center_of_mass = None
-    if bool(msg.center_of_mass_valid):  # type: ignore[attr-defined]
-        center = msg.center_of_mass_m  # type: ignore[attr-defined]
-        center_of_mass = (float(center.x), float(center.y), float(center.z))
-    inertia = (
-        tuple(float(value) for value in msg.inertia_kg_m2)  # type: ignore[attr-defined]
-        if bool(msg.inertia_valid)  # type: ignore[attr-defined]
-        else None
-    )
-    return AttachedCollisionObject(
-        object_id=str(msg.object_id),  # type: ignore[attr-defined]
-        attach_link=str(msg.attach_link),  # type: ignore[attr-defined]
-        touch_links=list(msg.touch_links),  # type: ignore[attr-defined]
-        shape=shape,
-        pose_in_link=_ros_pose_to_pose6d(
-            msg.pose_in_link,  # type: ignore[attr-defined]
-            frame_id=str(msg.attach_link),  # type: ignore[attr-defined]
-        ),
-        mass_kg=(
-            float(msg.mass_kg)  # type: ignore[attr-defined]
-            if bool(msg.mass_valid)  # type: ignore[attr-defined]
-            else None
-        ),
-        center_of_mass_m=center_of_mass,
-        inertia_kg_m2=inertia,
-        confidence=float(msg.confidence),  # type: ignore[attr-defined]
-        evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
-        evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
-        stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
-    )
+    return AttachedCollisionObject.from_idl(msg)
 
 
 def build_world_state_stamped_msg(node: object, world_state: object) -> object:
@@ -1171,6 +1129,8 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     msg.header.frame_id = ""
     msg.trace_id = propagation.current_traceparent() or ""
     msg.stamp_ns = int(world_state.stamp_ns)  # type: ignore[attr-defined]
+    msg.attachment_revision = int(world_state.attachment_revision)  # type: ignore[attr-defined]
+    msg.attachment_stamp_ns = int(world_state.attachment_stamp_ns)  # type: ignore[attr-defined]
 
     msg.joint_state = _build_joint_state_msg(
         world_state.joint_state,  # type: ignore[attr-defined]
