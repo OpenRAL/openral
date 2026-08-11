@@ -22,6 +22,8 @@ from openral_core import (
 from openral_core.exceptions import ROSPlanningError, ROSReasonerInvalidPlan
 from openral_reasoner import (
     ContextRenderer,
+    MissionState,
+    PerceptionEventRecord,
     PromptRecord,
     ReasonerCore,
     ToolPalette,
@@ -481,6 +483,31 @@ def test_new_event_resets_heartbeat_idle_gate() -> None:
     r2 = core.tick(world_state=None, renderer=renderer, palette=palette)
     assert r2.tool_call is not None
     assert r2.suppressed_reason == ""
+
+
+def test_finished_mission_suppresses_heartbeat_even_when_context_changes() -> None:
+    """Perception churn after handoff must not restart planning."""
+    palette = _palette()
+    client = FakeToolUseClient(
+        responses=[EmitPromptTool(target_topic="/openral/prompt", text="should not run")],
+    )
+    core = ReasonerCore(client=client, min_interval_s=0.0)
+    renderer = ContextRenderer()
+    renderer.set_mission(MissionState.from_prompt("find the teapot"))
+    renderer.advance_mission(done=False, verdict="search exhausted")
+    renderer.append_perception(
+        PerceptionEventRecord(
+            kind="objects",
+            text="scene changed after handoff",
+            metadata_json="{}",
+            stamp_ns=1,
+        )
+    )
+
+    result = core.tick(world_state=None, renderer=renderer, palette=palette)
+
+    assert result.suppressed_reason == "mission_finished"
+    assert client.calls == 0
 
 
 # ── Multi-task structured observability ───────────────────────────────────

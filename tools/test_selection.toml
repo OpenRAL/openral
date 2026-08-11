@@ -75,6 +75,12 @@ isolate_globs = [
   # there — the isolated runner tolerates that (see test-selective.yml run_lane).
   "python/hal/tests/test_sim_attached_action_dim.py",
   "python/hal/tests/test_sim_attached_idle_step.py",
+  # Mixed CPU/GPU sidecar files: the hosted selective runner exercises the
+  # CPU contract tests, while the one real-model smoke test correctly skips
+  # without a local GPU + provisioned sidecar. Batched opt-in lanes reject any
+  # skip; isolated files intentionally permit that partial skip.
+  "tests/unit/test_locateanything_detector.py",
+  "tests/unit/test_qwen_scene_vlm.py",
 ]
 
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`

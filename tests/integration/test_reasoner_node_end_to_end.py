@@ -654,8 +654,9 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
         )
         reasoner = ReasonerNode(
             client=client,
-            palette=ToolPalette(execute_rskill_ids=frozenset()),
+            palette=ToolPalette(execute_rskill_ids=frozenset({"dummy-skill"})),
             spatial_memory=memory,
+            tick_hz=10.0,
         )
         reasoner.trigger_configure()
         reasoner.trigger_activate()
@@ -694,6 +695,13 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
         while time.monotonic() < deadline and not handoff.is_set():
             executor.spin_once(timeout_sec=0.05)
 
+        calls_at_handoff = client.calls
+        # The terminal handoff must also terminate the active mission. Before
+        # the fix, the filtered self-prompt stopped only the immediate cascade;
+        # every heartbeat selected recall_object again forever.
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.05)
+
         executor.remove_node(reasoner)
         executor.remove_node(sub_node)
         sub_node.destroy_node()
@@ -705,6 +713,7 @@ def test_active_search_cascade_is_bounded_and_hands_off() -> None:
     assert handoff.is_set(), "cascade did not terminate in human-handoff within 10 s"
     # Bounded: re-prompts capped below the budget; not all 12 queries ran.
     assert len(spatial_reprompts) <= 5, f"cascade not bounded: {len(spatial_reprompts)} re-prompts"
+    assert client.calls == calls_at_handoff, "heartbeat restarted search after terminal handoff"
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)

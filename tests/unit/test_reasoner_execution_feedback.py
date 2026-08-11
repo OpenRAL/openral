@@ -13,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+from openral_core import RSkillAction
 from openral_reasoner.context import (
     ContextRenderer,
     ExecutionEventRecord,
@@ -20,6 +21,7 @@ from openral_reasoner.context import (
     reflect_on_retry_cap,
     reflect_on_reward_plateau,
 )
+from openral_reasoner.palette import RSkillToolEntry, ToolPalette
 
 
 def test_reflect_on_failure_branches() -> None:
@@ -81,3 +83,36 @@ def test_execution_section_ordered_after_world_state_before_failures() -> None:
     assert out.index("## WORLD_STATE") < out.index("## EXECUTION") < out.index("## FAILURES")
     # Empty buffer renders the explicit placeholder.
     assert "## EXECUTION\n(none)" in out
+
+
+def test_permanent_skill_failure_removes_only_that_skill() -> None:
+    """A broken sidecar is not offered again, but runtime failures remain retryable."""
+    import pytest
+
+    pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+    from openral_reasoner_ros.reasoner_node import _palette_after_rskill_failure
+
+    broken = RSkillToolEntry(
+        rskill_id="broken",
+        description="broken sidecar",
+        actions=(RSkillAction.PICK,),
+    )
+    healthy = RSkillToolEntry(
+        rskill_id="healthy",
+        description="healthy policy",
+        actions=(RSkillAction.PICK,),
+    )
+    palette = ToolPalette(skills=(broken, healthy))
+
+    filtered = _palette_after_rskill_failure(
+        palette,
+        "broken",
+        "ROSConfigError: sidecar dependencies cannot be installed",
+    )
+    assert filtered.execute_rskill_ids == frozenset({"healthy"})
+    assert tuple(skill.rskill_id for skill in filtered.skills) == ("healthy",)
+    assert (
+        _palette_after_rskill_failure(palette, "broken", "controller failed to make progress")
+        == palette
+    )
