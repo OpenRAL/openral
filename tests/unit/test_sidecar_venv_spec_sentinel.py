@@ -110,8 +110,10 @@ def test_alloc_conf_var_tracks_the_torch_rename() -> None:
 
     The old name still works on 2.9 but logs a deprecation warning on every
     process start, so setting both spellings — the previous approach — meant
-    that warning forever. Sidecars span torch 2.6 (InternVLA nav) through 2.9.1,
-    so the choice has to follow the venv rather than be a constant.
+    that warning forever. Sidecars span torch 2.8 (LingBot ``--variant v1``,
+    capped by ``lerobot==0.4.2``) through 2.9.1, plus whatever an
+    upstream-locked sidecar brings, so the choice has to follow the venv rather
+    than be a constant.
     """
     assert alloc_conf_var("2.9.1") == "PYTORCH_ALLOC_CONF"
     assert alloc_conf_var("2.10.0") == "PYTORCH_ALLOC_CONF"

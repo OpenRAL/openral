@@ -267,8 +267,9 @@ def alloc_conf_var(torch_version: str | None) -> str:
     the old spelling still works there but logs a deprecation warning on every
     process start. Setting *both* — the repo's previous approach — is safe but
     guarantees that warning forever, so pick the one the target torch actually
-    wants. Sidecars deliberately span a wide torch range (2.6 for the InternVLA
-    nav sidecar through 2.9.1 for the rest), which is why this is a lookup
+    wants. Sidecars deliberately span a wide torch range (LingBot ``--variant
+    v1`` is held at 2.8 by ``lerobot==0.4.2``, upstream-locked sidecars bring
+    their own; every pin this repo owns is 2.9.1), which is why this is a lookup
     rather than a constant.
 
     ``None`` (torch not installed, or an unparseable version) falls back to the

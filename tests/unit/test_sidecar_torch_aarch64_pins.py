@@ -106,6 +106,24 @@ def test_lingbot_v2_overrides_cover_every_upstream_torch_pin() -> None:
     assert overridden == {"torch", "torchvision", "torchaudio", "torchcodec", "triton"}
 
 
+def test_internvla_n1_torch_pins_have_aarch64_wheels() -> None:
+    """The InternVLA-N1 nav sidecar's torch pin must be a CUDA-capable one.
+
+    Its failure mode was quieter than the others': ``torch==2.6.0`` with no
+    ``--torch-backend`` resolved PyPI's aarch64 wheel, which is **CPU-only**, so
+    the 8.3B dual-system model provisioned, booted and answered — on the CPU.
+    The ``transformers==4.51.0`` bound the old pin comment cited is not real
+    (4.51.0 declares ``torch>=2.0``, diffusers 0.32.2 ``torch>=1.4``).
+    """
+    ivn = _load("internvla_n1_sidecar")
+    pins = _pins(ivn._PINNED_DEPS)
+    _assert_installable_on_aarch64(pins, "tools/internvla_n1_sidecar.py::_PINNED_DEPS")
+    assert ("torch", "2.9.1") in pins, "the torch pin moved without updating this test"
+    assert ("torchvision", "0.24.1") in pins
+    # The checkpoint-compatibility pin, not a torch one — see the file's comment.
+    assert ("diffusers", "0.32.2") in pins, "diffusers 0.33 breaks the DualVLN NextDiT load"
+
+
 @pytest.mark.parametrize("filename", _PIN_REQUIREMENT_FILES + _PIN_LOCK_FILES)
 def test_sidecar_requirement_files_have_aarch64_wheels(filename: str) -> None:
     path = _REQS / filename
@@ -187,6 +205,33 @@ def test_every_lingbot_v2_install_pass_carries_the_nvrtc_override(
     assert len(installs) == 2, f"expected the requirements + extras passes, got {len(installs)}"
     for cmd in installs:
         assert str(lingbot._NVRTC_OVERRIDE) in cmd, (
+            f"uv pass without the nvrtc override: {' '.join(cmd)}"
+        )
+
+
+def test_every_internvla_n1_install_pass_carries_the_cuda_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All four InternVLA-N1 passes need ``--torch-backend`` *and* the override.
+
+    This sidecar installs in four passes (pins, ``diffusion_policy``, the
+    editable ``internnav``, bitsandbytes). uv re-resolves on each one, so a pass
+    missing ``--torch-backend=cu128`` can swap the CUDA torch back for PyPI's
+    aarch64 CPU build, and a pass missing the override lets torch's exact
+    ``nvidia-cuda-nvrtc-cu12==12.8.93`` pin downgrade the sm_121-aware shim.
+    """
+    ivn = _load("internvla_n1_sidecar")
+    source = tmp_path / "checkout"
+    source.mkdir()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(ivn, "run_cmd", lambda label, cmd, **kw: calls.append(list(cmd)))
+    ivn._install_deps(source=source, uv="uv", quantization="nf4")
+
+    installs = [c for c in calls if "install" in c]
+    assert len(installs) == 4, f"expected pins/diffusion_policy/editable/bnb, got {len(installs)}"
+    for cmd in installs:
+        assert "--torch-backend=cu128" in cmd, f"uv pass without the CUDA index: {' '.join(cmd)}"
+        assert str(ivn._NVRTC_OVERRIDE) in cmd, (
             f"uv pass without the nvrtc override: {' '.join(cmd)}"
         )
 

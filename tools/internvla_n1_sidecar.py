@@ -46,11 +46,20 @@ _PYTHON = "3.11"
 
 # Inference-only pin set, mirroring upstream requirements/internvla_n1.txt
 # (transformers/diffusers/accelerate) minus flash-attn (sdpa instead) and
-# minus depth-camera-filtering (only used by their Go2 ROS scripts). torch
-# is pinned to the newest release transformers 4.51.0 supports.
+# minus depth-camera-filtering (only used by their Go2 ROS scripts).
+#
+# torch is 2.9.1 on the ``cu128`` index, matching every other sidecar. It was
+# 2.6.0 installed from plain PyPI, on the belief that transformers 4.51.0
+# capped it — it does not: 4.51.0, diffusers 0.32.2 and accelerate 1.4.0 all
+# declare `torch>=2.0` / `>=1.4` with no upper bound. Two things were wrong
+# with the old pin on an aarch64 CUDA host (GB10 / DGX Spark, Jetson Thor):
+# PyPI's aarch64 torch wheel is the **CPU** build, so without
+# ``--torch-backend=cu128`` the whole 8.3B dual-system model silently ran on
+# the CPU; and 2.6.0 predates the ``cu128`` index entirely. See
+# ``docs/reference/aarch64-support.md``.
 _PINNED_DEPS = [
-    "torch==2.6.0",
-    "torchvision==0.21.0",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
     "transformers==4.51.0",
     # 0.32.2 (NOT the 0.33.1 in requirements/internvla_n1.txt): the DualVLN
     # checkpoint's NextDiT was trained against 0.32.2's LuminaFeedForward, which
@@ -78,6 +87,16 @@ _DIFFUSION_POLICY_PIN = (
     "diffusion_policy @ git+https://github.com/real-stanford/diffusion_policy.git"
     "@5ba07ac6661db573af695b419a7947ecb704690f"
 )
+# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor). torch's
+# own metadata pins ``nvidia-cuda-nvrtc-cu12==12.8.93``, whose newest arch is
+# sm_120, so anything torch compiles at runtime through the nvrtc jiterator
+# dies with "invalid value for --gpu-architecture". Not hypothetical here:
+# transformers 4.51's Qwen2.5-VL vision stack reduces the patch grid with
+# ``.prod()``, a jiterator op, so *every* System-2 replan would fail.
+# Marker-scoped inside the file — see its header.
+_NVRTC_OVERRIDE = (
+    Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
+)
 
 
 def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
@@ -95,7 +114,24 @@ def _install_deps(*, source: Path, uv: str, quantization: str) -> Path:
     py = venv / "bin" / "python"
     if not py.exists():
         run_cmd(_LABEL, [uv, "venv", str(venv), "--python", _PYTHON], cwd=source)
-    pip = [uv, "pip", "install", "--python", str(py)]
+    # Both flags ride on EVERY pass, not just the torch one. uv re-resolves the
+    # whole environment on each ``pip install``, so a pass that omits the
+    # override file sees torch's exact ``nvidia-cuda-nvrtc-cu12==12.8.93`` pin
+    # again and silently downgrades the sm_121-aware shim an earlier pass
+    # installed — the fix would survive exactly one command. (Observed that way
+    # in the LingBot and XR-1 sidecars.) ``--torch-backend`` rides along for the
+    # same reason: it is what selects the CUDA wheel over PyPI's aarch64
+    # CPU-only build, and re-resolving without it can swap torch back out.
+    pip = [
+        uv,
+        "pip",
+        "install",
+        "--python",
+        str(py),
+        "--torch-backend=cu128",
+        "--overrides",
+        str(_NVRTC_OVERRIDE),
+    ]
     run_cmd(_LABEL, [*pip, *_PINNED_DEPS], cwd=source)
     run_cmd(_LABEL, [*pip, "--no-deps", _DIFFUSION_POLICY_PIN], cwd=source)
     run_cmd(_LABEL, [*pip, "--no-deps", "-e", str(source)], cwd=source)

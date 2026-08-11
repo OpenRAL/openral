@@ -158,6 +158,16 @@ OPENRAL_ALLOW_NONCOMMERCIAL=1 \
   checkpoint required pinning **`diffusers==0.32.2`** (0.33.1's `LuminaFeedForward`
   dropped the SwiGLU 2/3 inner-dim reduction the checkpoint's NextDiT was trained
   with) — an upstream repo↔checkpoint drift, handled in the boot helper.
+- **aarch64 CUDA (NVIDIA GB10 / DGX Spark): PASSED.** From a fresh sidecar home:
+  torch 2.9.1+cu128 on py3.11, model on the GPU at **6.06 GB** (8499 MiB
+  process), 106.5 s load, 21 real steps over the ZMQ wire from this rSkill's own
+  recorded head-camera frames + real DA3 depth, every reply a finite 6-D
+  `BODY_TWIST` (15.00 °/s yaw — the same output the RTX 4070 run recorded),
+  1.0–2.7 s per System-2 replan. Until this, the sidecar pinned `torch==2.6.0`
+  with no `--torch-backend`, which on aarch64 resolves the CPU-only wheel — and
+  the server's default `--device cuda:0` cannot run on it at all
+  (`Torch not compiled with CUDA enabled`).
+  See [`docs/reference/aarch64-support.md`](../../docs/reference/aarch64-support.md).
 - Schema / adapter / manifest / DA3 wiring / robot-compat / dispatch chain:
   validated (unit tests + `check_compatibility` against `panda_mobile`; full unit
   suite green; mypy + ruff clean).

@@ -118,7 +118,7 @@ the CUDA runtime and all of x86_64 byte-identical.
 | `tools/xr1_sidecar.py` | ✅ | all three install passes verified live on GB10 — see below |
 | `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; the versions with aarch64 wheels are all outside that cap (2.9.x above it, 2.7.x below it but needs x86-only `triton==3.3.1`). Also pins `torchcodec==0.6.0`, x86-only. Lifting this means moving V1 off lerobot 0.4.2. |
 | `tools/rldx_sidecar.py` | ✅ | upstream RLDX-1 packaging, not a torch-version issue — but fixable, contrary to the first read of issue #88. `uv sync` really does die on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>` instead of `uv sync`; `torchcodec` and `flash-attn` are marker-dropped and torch moves to 2.9.1. **Live-verified end to end on GB10** with real `RLWRLD/RLDX-1-FT-LIBERO` weights — see below. |
-| `tools/internvla_n1_sidecar.py` | ⚠️ | `torch==2.6.0` installs from PyPI (no `--torch-backend`), which on aarch64 is the **CPU** build — the sidecar runs, on CPU. Raising it is bounded by the upstream `transformers==4.51.0` pin. |
+| `tools/internvla_n1_sidecar.py` | ✅ | was `torch==2.6.0` from plain PyPI (no `--torch-backend`), which on aarch64 is the **CPU** build. The `transformers==4.51.0` bound that was thought to hold it there is not real — 4.51.0 declares `torch>=2.0`, diffusers 0.32.2 `torch>=1.4`, neither has an upper bound — so `_PINNED_DEPS` moved to `torch==2.9.1` / `torchvision==0.24.1` on `cu128` with the shared nvrtc override. **Live-verified end to end on GB10** — see below. |
 
 ### RLDX-1 verified live on GB10
 
@@ -292,6 +292,77 @@ benign. The nvrtc/ptxas ceiling is a separate and completely silent limit —
 nothing is logged until a runtime-compiled op actually throws. That is why it
 went unnoticed here, and why "the warning is harmless" was a trap rather than a
 reassurance.
+
+### InternVLA-N1 verified live on GB10
+
+This sidecar was the last ⚠️ row. `_PINNED_DEPS` carried `torch==2.6.0` with a
+plain `uv pip install` (no `--torch-backend`), so on aarch64 uv resolved PyPI's
+CPU-only wheel. The ⚠️ ("runs, on CPU") was in fact generous: the server's
+default `--device cuda:0` becomes `device_map={"": "cuda:0"}`, and that venv
+cannot honour it —
+
+```
+$ <old-venv>/bin/python -c "import torch; torch.zeros(1).to('cuda:0')"
+torch 2.6.0+cpu   cuda_avail False
+AssertionError: Torch not compiled with CUDA enabled
+```
+
+— so on this host the pre-fix sidecar could not serve the checkpoint at all
+without also being forced onto `--device cpu`. Note also that `torch==2.6.0`
+predates the `cu128` index entirely (`--torch-backend=cu128 torch==2.6.0` →
+"no version of torch==2.6.0"), so the flag alone would not have been a fix.
+
+The pin's own comment claimed torch was "the newest release transformers 4.51.0
+supports". That is not a real constraint — checked against the published
+metadata, `transformers==4.51.0` declares `torch>=2.0`, `diffusers==0.32.2`
+declares `torch>=1.4`, and `accelerate==1.4.0` declares `torch>=2.0.0`; none of
+the three has an upper bound. So the pin moved to the repo-standard
+`torch==2.9.1` / `torchvision==0.24.1` on `cu128`, with the shared nvrtc
+override on **every** uv pass (this sidecar has four). The `diffusers==0.32.2`
+pin is untouched — it is a checkpoint-compatibility pin, not a torch one.
+
+Verified from a **fresh** `--home` (clone, submodule, venv, four install passes,
+no manual intervention) with the real `InternRobotics/InternVLA-N1-DualVLN`
+weights, real head-camera frames from this rSkill's own recorded run, real DA3
+metric depth, over the real ZMQ REQ/REP + msgpack wire, driven by the real
+`_InternVLAN1Adapter`:
+
+```
+py3.11   torch 2.9.1+cu128   torchvision 0.24.1   transformers 4.51.0
+diffusers 0.32.2   bitsandbytes 0.50.0   triton 3.5.1   numpy 1.26.4
+nvidia-cuda-nvrtc-cu12 12.9.86   nvrtc archs [50 … 120, 121]
+
+torch.cuda.is_available() True   NVIDIA GB10 (12, 1)
+load 106.5 s   VRAM 6.06 GB allocator / 8499 MiB process (nvidia-smi)
+21 real steps, every reply finite:
+  BODY_TWIST [0, 0, 0, 0, 0, ±0.261799]  = 15.00 deg/s yaw, vx 0.0
+  1.0–2.7 s per System-2 replan (budget 2500 ms)
+```
+
+The `±0.261799` rad/s turn is the same output the pre-existing x86_64 8 GB
+RTX 4070 validation recorded on this frame, and 6.06 GB matches its 6.02 GB —
+the bump changed the device, not the model.
+
+The System-1 NextDiT was checked separately, because a torch/diffusers bump is
+exactly how a DiT silently loads at the wrong width (the `LuminaFeedForward`
+SwiGLU trap this sidecar already pins `diffusers==0.32.2` for). Built standalone
+under the new stack and compared against the checkpoint's real tensors:
+**330 / 330 parameters present, zero missing, zero extra, zero shape
+mismatches**, with `layers.0.feed_forward.linear_{1,3}` at the checkpoint's
+`(1024, 384)` — the reduced SwiGLU width, not 1536. It also *runs*: a real S2
+latent `(1, 4, 3584)` from a real frame through `generate_traj` gives a finite
+`(22, 3)` trajectory in 0.36 s.
+
+> **Unrelated pre-existing gap found while doing that.** Under `--quantization
+> nf4` the System-1 branch cannot run at all: `llm_int8_skip_modules` skips
+> `traj_dit` / `navdp` / `action_{encoder,decoder}` but not `memory_encoder`,
+> whose `nn.TransformerEncoder` self-attention gets bitsandbytes-quantized.
+> `F.multi_head_attention_forward` then calls plain `linear()` on the packed
+> weight and raises `RuntimeError: self and mat2 must have the same dtype, but
+> got BFloat16 and Byte`. The same call succeeds at `--quantization none`, and
+> nothing in the failing path is torch-version-dependent, so this is not a
+> regression from the bump — but the NF4 rSkill would hit it the first time
+> System-2 emits a pixel goal instead of a discrete action.
 
 ## The workspace venv itself
 
