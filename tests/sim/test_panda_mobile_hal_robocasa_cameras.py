@@ -48,6 +48,7 @@ rclpy = pytest.importorskip("rclpy")
 
 from openral_core import (  # noqa: E402  # reason: after importorskip gates
     AttachedCollisionObject,
+    AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BoxShape,
     JointState,
@@ -79,7 +80,16 @@ def _attachment(object_id: str, body_name: str) -> AttachedCollisionObject:
         object_id=object_id,
         attach_link="panda_link7",
         touch_links=["panda_finger_pair"],
-        shape=BoxShape(half_extents_m=(0.1, 0.03, 0.03)),
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.1, 0.03, 0.03)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0),
+                    quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                    frame_id=object_id,
+                ),
+            )
+        ],
         pose_in_link=Pose6D(
             xyz=(0.0, 0.0, 0.16),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),

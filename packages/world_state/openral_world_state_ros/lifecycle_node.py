@@ -1275,11 +1275,14 @@ def _fill_attached_objects(msg: object, world_state: object) -> None:
     from openral_msgs.msg import (  # type: ignore[import-untyped]
         AttachedCollisionObject as RosAttachedCollisionObject,
     )
+    from openral_msgs.msg import (
+        AttachedCollisionPrimitive as RosAttachedCollisionPrimitive,
+    )
 
     attached = []
     for obj in sorted(world_state.attached_objects, key=lambda item: item.object_id):  # type: ignore[attr-defined]
         item = RosAttachedCollisionObject()
-        obj.fill_idl(item)
+        obj.fill_idl(item, primitive_factory=RosAttachedCollisionPrimitive)
         attached.append(item)
         if obj.attach_link not in msg.frame_ids:  # type: ignore[attr-defined]
             msg.frame_ids.append(obj.attach_link)  # type: ignore[attr-defined]

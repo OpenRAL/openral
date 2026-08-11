@@ -10,6 +10,7 @@ pytest.importorskip("rclpy")
 import rclpy
 from openral_core.schemas import (
     AttachedCollisionObject,
+    AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BoxShape,
     CapsuleShape,
@@ -65,7 +66,16 @@ def _attached(
         object_id=object_id,
         attach_link="panda_link7",
         touch_links=["panda_finger_pair"],
-        shape=shape,
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=shape,
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0),
+                    quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                    frame_id=object_id,
+                ),
+            )
+        ],
         pose_in_link=Pose6D(
             xyz=(0.0, 0.0, 0.16),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
@@ -106,8 +116,27 @@ def test_round_trip_back_to_worldstate() -> None:
 
 
 def test_multiple_attached_objects_round_trip() -> None:
+    baguette = _attached(
+        "baguette_seed1",
+        BoxShape(half_extents_m=(0.12, 0.025, 0.025)),
+    )
+    baguette = baguette.model_copy(
+        update={
+            "primitives": [
+                *baguette.primitives,
+                AttachedCollisionPrimitive(
+                    shape=SphereShape(radius_m=0.02),
+                    pose_in_object=Pose6D(
+                        xyz=(0.1, 0.0, 0.0),
+                        quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                        frame_id="baguette_seed1",
+                    ),
+                ),
+            ]
+        }
+    )
     attachments = [
-        _attached("baguette_seed1", BoxShape(half_extents_m=(0.12, 0.025, 0.025))),
+        baguette,
         _attached("cabinet_handle_tool", SphereShape(radius_m=0.03)),
         _attached("spatula_payload", CapsuleShape(radius_m=0.02, length_m=0.18)),
     ]
@@ -118,9 +147,22 @@ def test_multiple_attached_objects_round_trip() -> None:
         "cabinet_handle_tool",
         "spatula_payload",
     ]
-    assert msg.attached_objects[0].shape_type == msg.attached_objects[0].SHAPE_BOX
-    assert msg.attached_objects[1].shape_type == msg.attached_objects[1].SHAPE_SPHERE
-    assert msg.attached_objects[2].shape_type == msg.attached_objects[2].SHAPE_CAPSULE
+    assert (
+        msg.attached_objects[0].primitives[0].shape_type
+        == msg.attached_objects[0].primitives[0].SHAPE_BOX
+    )
+    assert (
+        msg.attached_objects[0].primitives[1].shape_type
+        == msg.attached_objects[0].primitives[1].SHAPE_SPHERE
+    )
+    assert (
+        msg.attached_objects[1].primitives[0].shape_type
+        == msg.attached_objects[1].primitives[0].SHAPE_SPHERE
+    )
+    assert (
+        msg.attached_objects[2].primitives[0].shape_type
+        == msg.attached_objects[2].primitives[0].SHAPE_CAPSULE
+    )
 
     decoded = world_state_from_idl(msg)
     assert decoded.attached_objects == attachments

@@ -4,21 +4,12 @@
 # geometry remains collision-active as robot payload; only touch_links may
 # contact it.
 
-uint8 SHAPE_SPHERE  = 1
-uint8 SHAPE_CAPSULE = 2
-uint8 SHAPE_BOX     = 3
-
 string object_id
 string attach_link
 string[] touch_links
 
-# Shape dimensions:
-#   sphere  -> [radius]
-#   capsule -> [radius, central_segment_length]
-#   box     -> [half_extent_x, half_extent_y, half_extent_z]
-uint8 shape_type
-float64[] shape_dimensions
 geometry_msgs/Pose pose_in_link
+AttachedCollisionPrimitive[] primitives
 
 bool mass_valid
 float64 mass_kg
