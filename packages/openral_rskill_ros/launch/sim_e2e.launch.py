@@ -128,6 +128,11 @@ def _octomap_occupancy_threshold(hal_mode: str) -> float:
     return 0.8 if hal_mode == "sim" else 0.6
 
 
+def _attached_collision_enabled(hal_mode: str) -> bool:
+    """Enable payload collision only where the sim attachment manager exists."""
+    return hal_mode == "sim"
+
+
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
@@ -712,6 +717,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             for a, b in workcell.extra_allowed_collision_pairs:
                 print(f"[sim_e2e] ACM +pair {a}<->{b} (deploy override)", flush=True)
     kernel_params = {**kernel_params_from_envelope(envelope), **collision_params}
+    kernel_params["use_sim_time"] = use_sim_time
     # The actuated joint order (length n_dof) so the kernel can map
     # /joint_states (named) into q_meas in the action's dof index space, the seed
     # the geometric check needs to reconstruct non-position chunks. Same order as
@@ -774,6 +780,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # observability), but the kernel voxel check stays off so the kernel
     # configures cleanly on its scalar envelope.
     has_collision_capsules = int(collision_params.get("collision_n_links", 0)) > 0
+    if has_collision_capsules and _attached_collision_enabled(hal_mode):
+        kernel_params = {
+            **kernel_params,
+            "attached_collision_enabled": True,
+            "attached_collision_margin_m": 0.0,
+            "attached_collision_deadline_ms": 5000.0,
+            "attached_max_objects": 8,
+            "attached_max_primitives": 8,
+            "attached_max_touch_links": 32,
+        }
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         kernel_params = {
             **kernel_params,

@@ -102,6 +102,14 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     assert module._octomap_occupancy_threshold("real") == 0.6
 
 
+def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
+    """Sim has an attachment heartbeat; real remains off until its manager lands."""
+    module = _import_launch_module()
+
+    assert module._attached_collision_enabled("sim") is True
+    assert module._attached_collision_enabled("real") is False
+
+
 def _make_launch_context(robot_yaml: Path) -> object:
     """Return a :class:`launch.LaunchContext` populated from the launch itself.
 
@@ -241,3 +249,5 @@ def test_mobile_base_arm_kernel_params_have_collision_base_dofs(robot_id: str) -
     assert isinstance(base_dofs, list | tuple) and len(base_dofs) > 0, (
         f"{robot_id!r} ``collision_base_dofs`` must be non-empty; got {base_dofs!r}"
     )
+    assert params["use_sim_time"] is False
+    assert params["attached_collision_enabled"] is True
