@@ -301,6 +301,23 @@ def test_sim_attached_hal_send_action_packs_and_steps_env() -> None:
     assert float(env.last_action[9]) == pytest.approx(0.7, abs=1e-6)
 
 
+def test_sim_attached_hal_notifies_post_step_observer_once_per_env_step() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    observed_steps: list[int] = []
+
+    def observe() -> None:
+        observed_steps.append(env.step_calls)
+
+    hal.add_post_step_observer(observe)
+    hal.add_post_step_observer(observe)
+    hal.connect()
+
+    hal.send_action(_joint_position_chunk())
+
+    assert observed_steps == [1]
+
+
 def test_sim_attached_hal_estop_drops_subsequent_sends() -> None:
     """Estop is mode-agnostic — gates JOINT_POSITION env.step + BODY_TWIST qpos write."""
     env = FakeSimEnv(action_dim=11)

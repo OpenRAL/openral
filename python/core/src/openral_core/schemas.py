@@ -2167,7 +2167,7 @@ class AttachedCollisionObject(BaseModel):
     object_id: str = Field(min_length=1)
     attach_link: str = Field(min_length=1)
     touch_links: list[str] = Field(min_length=1)
-    primitives: list[AttachedCollisionPrimitive] = Field(min_length=1, max_length=8)
+    primitives: list[AttachedCollisionPrimitive] = Field(min_length=1, max_length=16)
     pose_in_link: Pose6D
     mass_kg: float | None = Field(default=None, ge=0.0)
     center_of_mass_m: tuple[float, float, float] | None = None

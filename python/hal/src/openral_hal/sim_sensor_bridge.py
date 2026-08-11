@@ -261,6 +261,7 @@ class SimSensorBridge:
         self._attachment_applied_revision: int = -1
         self._attachment_desired: list[Any] = []
         self._attachment_pending: list[Any] | None = None
+        self._attachment_tracker: Any = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
         self._depth_base_body_id: int = -1
@@ -997,6 +998,33 @@ class SimSensorBridge:
             0.2,
             self._publish_attachment_state,
         )
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is not None:
+            from openral_core.exceptions import ROSConfigError
+
+            from openral_hal._sim_attachment_evidence import SimAttachmentEvidenceTracker
+
+            model, _data = handles
+            try:
+                self._attachment_tracker = SimAttachmentEvidenceTracker(
+                    model,
+                    self._description,
+                    stable_ticks=1,
+                )
+                add_observer = getattr(self._hal, "add_post_step_observer", None)
+                if callable(add_observer):
+                    add_observer(self._observe_attachment_evidence)
+                    self._node.get_logger().info(
+                        "automatic sim attachment evidence armed at the post-step boundary"
+                    )
+                else:
+                    self._node.get_logger().warning(
+                        "automatic sim attachment evidence has no post-step observer"
+                    )
+            except ROSConfigError as exc:
+                self._node.get_logger().warning(
+                    f"automatic sim attachment evidence disabled: {exc}"
+                )
 
     def _on_attachment_state(self, msg: object) -> None:
         """Apply one complete attachment snapshot to the sim perception mask."""
@@ -1019,16 +1047,27 @@ class SimSensorBridge:
                 )
             if revision == self._attachment_revision and objects == self._attachment_desired:
                 return
-            current = {obj.object_id: obj for obj in read()}
-            desired_ids = {obj.object_id for obj in objects}
-            # Detach ordering is conservative: unmask removed objects first
-            # while the kernel still carries their old payload geometry.
-            update([obj for object_id, obj in current.items() if object_id in desired_ids])
-            self._attachment_desired = objects
-            self._attachment_pending = objects
-            self._attachment_revision = revision
+            self._stage_attachment_objects(objects, revision=revision, update=update, read=read)
         except (ROSConfigError, ValueError, TypeError) as exc:
             self._node.get_logger().error(f"attachment state rejected by sim HAL: {exc}")
+
+    def _stage_attachment_objects(
+        self,
+        objects: list[Any],
+        *,
+        revision: int,
+        update: Any,
+        read: Any,
+    ) -> None:
+        """Stage one atomic revision with conservative detach/attach ordering."""
+        current = {obj.object_id: obj for obj in read()}
+        desired_ids = {obj.object_id for obj in objects}
+        # Detach ordering is conservative: unmask removed objects first while
+        # the kernel still carries their old payload geometry.
+        update([obj for object_id, obj in current.items() if object_id in desired_ids])
+        self._attachment_desired = objects
+        self._attachment_pending = objects
+        self._attachment_revision = revision
 
     def _on_attachment_state_applied(self, msg: object) -> None:
         """Mask newly attached bodies only after the kernel accepts the revision."""
@@ -1051,6 +1090,40 @@ class SimSensorBridge:
 
     def _publish_attachment_state(self) -> None:
         """Heartbeat the authoritative sim attachment set for kernel freshness."""
+        if self._attachment_pub is None:
+            return
+        self._publish_attachment_message()
+
+    def _observe_attachment_evidence(self) -> None:
+        """Stage and publish exact MuJoCo attach/release transitions post-step."""
+        if self._attachment_tracker is None or self._attachment_pending is not None:
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if handles is None or not callable(update) or not callable(read):
+            return
+        _model, data = handles
+        transition = self._attachment_tracker.update(
+            data,
+            stamp_ns=int(self._node.get_clock().now().nanoseconds),
+        )
+        if transition is None:
+            return
+        self._stage_attachment_objects(
+            transition,
+            revision=self._attachment_revision + 1,
+            update=update,
+            read=read,
+        )
+        object_ids = [obj.object_id for obj in transition]
+        self._node.get_logger().info(
+            f"automatic sim attachment revision {self._attachment_revision}: {object_ids}"
+        )
+        self._publish_attachment_message()
+
+    def _publish_attachment_message(self) -> None:
+        """Publish the current authoritative attachment snapshot."""
         if self._attachment_pub is None:
             return
         from openral_msgs.msg import (

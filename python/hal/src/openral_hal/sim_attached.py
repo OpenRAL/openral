@@ -471,6 +471,7 @@ class SimAttachedHAL:
         # from world perception while the same geometry remains collision-active.
         self._attached_objects: dict[str, AttachedCollisionObject] = {}
         self._attached_body_ids: frozenset[int] = frozenset()
+        self._post_step_observers: list[Callable[[], None]] = []
         # Last commanded base body twist (vx, vy, vz, wx, wy, wz) in the
         # base_link frame. The base moves by exact Euler integration of
         # this command, so it IS the base velocity — the panda_mobile
@@ -713,6 +714,11 @@ class SimAttachedHAL:
     def read_attached_body_ids(self) -> frozenset[int]:
         """Return exact MuJoCo payload body ids excluded from world perception."""
         return self._attached_body_ids
+
+    def add_post_step_observer(self, observer: Callable[[], None]) -> None:
+        """Register a synchronous observer invoked after each simulator step."""
+        if observer not in self._post_step_observers:
+            self._post_step_observers.append(observer)
 
     def send_action(self, action: Action) -> None:
         """Step the env with the packed action vector.
@@ -989,6 +995,8 @@ class SimAttachedHAL:
         # ``getattr(..., 'observation', None)`` is enough because every
         # in-tree backend returns a ``StepResult`` with this attribute.
         self._cache_step_result(step_result)
+        for observer in self._post_step_observers:
+            observer()
         return True
 
     def _cache_step_result(self, step_result: object) -> None:
