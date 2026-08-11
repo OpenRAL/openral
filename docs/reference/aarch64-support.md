@@ -117,8 +117,73 @@ the CUDA runtime and all of x86_64 byte-identical.
 | `tools/lingbot_vla2_sidecar.py` (v2) | ✅ | upstream `requirements.txt` pins torch 2.8.0 / triton 3.4.0 / torchcodec 0.6.0; the boot helper feeds `uv pip install --overrides` a 2.9.1 / 3.5.1 torch stack (`_V2_OVERRIDES`), with torchcodec marker-scoped off aarch64. Full upstream requirement set verified to resolve on **both** platforms (aarch64: 129 packages, no torchcodec; x86_64: 130 with `torchcodec==0.9.1+cu128`). Also installs `nvidia-cuda-nvcc-cu12` for a `sm_121`-capable `ptxas` — it is the only sidecar running Triton kernels of its own. **Live-verified end to end on GB10** from a fresh home with no manual intervention: real `(50, 14)` action chunk, finite and input-responsive, `min`/`max` bit-identical to the pre-fix baseline; the upstream MoE kernels compile at `arch: sm121` and the primary `robby_moe` path runs (the fallback-only kernels never appear in the Triton cache). 6.97 GB VRAM, 6.2 s warmed chunk. |
 | `tools/xr1_sidecar.py` | ✅ | all three install passes verified live on GB10 — see below |
 | `tools/lingbot_vla2_sidecar.py --variant v1` | ❌ | `lerobot==0.4.2` caps `torch<2.8.0`; the versions with aarch64 wheels are all outside that cap (2.9.x above it, 2.7.x below it but needs x86-only `triton==3.3.1`). Also pins `torchcodec==0.6.0`, x86-only. Lifting this means moving V1 off lerobot 0.4.2. |
-| `tools/rldx_sidecar.py` | ❌ | upstream RLDX-1 packaging, not a torch-version issue — `uv sync`s a `pyproject.toml` needing `torchcodec==0.4.0` (x86-only) and a required `flash-attn` with no wheel anywhere. Upstream's Blackwell path (`pixi.toml`) is hard-pinned `platforms = ["linux-64"]`. Not fixable from OpenRAL's side. |
+| `tools/rldx_sidecar.py` | ✅ | upstream RLDX-1 packaging, not a torch-version issue — but fixable, contrary to the first read of issue #88. `uv sync` really does die on `torchcodec==0.4.0`, so aarch64 takes an override-driven `uv pip install -e <source>` instead of `uv sync`; `torchcodec` and `flash-attn` are marker-dropped and torch moves to 2.9.1. **Live-verified end to end on GB10** with real `RLWRLD/RLDX-1-FT-LIBERO` weights — see below. |
 | `tools/internvla_n1_sidecar.py` | ⚠️ | `torch==2.6.0` installs from PyPI (no `--torch-backend`), which on aarch64 is the **CPU** build — the sidecar runs, on CPU. Raising it is bounded by the upstream `transformers==4.51.0` pin. |
+
+### RLDX-1 verified live on GB10
+
+RLDX-1 was written off as unfixable in the first pass at issue #88, on three
+claims. Re-tested on this host, one held, one was half-true, and one was
+backwards:
+
+| claim | verdict |
+|---|---|
+| `uv sync` fails on `torchcodec==0.4.0` | **True, still.** `uv sync --dry-run` in a fresh clone resolves 168 packages and then dies: *"Distribution `torchcodec==0.4.0` can't be installed because it doesn't have a source distribution or wheel for the current platform … only has wheels for `manylinux_2_28_x86_64`, `macosx_11_0_arm64`."* But torchcodec is a video **dataset** decoder — `rldx/utils/video_utils.py` imports it inside `try/except (ImportError, RuntimeError)` and only reaches it via `video_backend="torchcodec"` on the training / replay / open-loop-eval path. `run_rldx_server` → `RLDXPolicy` never decodes a video; the sidecar is handed decoded uint8 frames over ZMQ. Marker-dropping it costs nothing at inference. |
+| `flash-attn` has "no wheel anywhere" | **Half-true, and not the blocker.** PyPI carries only `flash_attn-2.8.3.tar.gz` — correct. But the real wheels live on the GitHub release, which flash-attn's own `setup.py` fetches by `linux_<machine>` + torch minor + cpython tag; v2.8.3 ships 53 of them, including two `linux_aarch64` — and both are **cp312**, while `rldx` pins `requires-python = "==3.10.*"`. (That cp312 aarch64 prebuilt is also what XR-1's "18 s flash-attn build" actually was.) So aarch64+cp310 would need a real hour-plus source build. It never has to: **nothing in `rldx` imports `flash_attn`** — the backbone reaches it through transformers' `ALL_ATTENTION_FUNCTIONS` — and upstream ships the opt-out itself in `rldx/model/modules/backbone/adapter.py`: `_DEFAULT_ATTN_IMPL = os.environ.get("RLDX_ATTN_IMPL", "flash_attention_2")`, documented for "environments that cannot build flash-attn". |
+| upstream's Blackwell path (`pixi.toml`) is `platforms = ["linux-64"]`, so it's irrelevant | **Backwards.** pixi is indeed x86_64-only and is not the install mechanism here, but its *contents* are the strongest evidence the fix is safe: for Blackwell upstream themselves bump **torch to 2.8.0+cu128 or 2.10.0+cu130**, **torchcodec to 0.7.0**, and **flash-attn to 2.8.3 source-built** — while leaving `transformers==4.57.0` and every other pin identical. Moving torch off the `pyproject.toml` 2.7.0 pin is upstream's own supported posture on new hardware, not an OpenRAL invention. |
+
+So the aarch64 branch replaces `uv sync` (which cannot succeed) with
+`uv pip install -e <source> --torch-backend=cu128` under two `--overrides`
+files — `sidecar_requirements/rldx-aarch64-override.txt` (torch 2.9.1 /
+torchvision 0.24.1; `torchcodec` and `flash-attn` marker-dropped) and the shared
+`aarch64-nvrtc-override.txt`. Same `<source>/.venv`, same Python 3.10, same
+wrapper. x86_64 still runs upstream's `uv sync` against upstream's `uv.lock`,
+byte-identical. The boot wrapper sets `RLDX_ATTN_IMPL=sdpa` only when
+`flash_attn` is genuinely not importable, so the x86_64 venv keeps
+FlashAttention-2.
+
+Upstream's full `[project] dependencies` set resolves and installs on aarch64
+cp310 — 126 packages, including `deepspeed==0.17.6` from sdist:
+
+```
+python 3.10.20   torch 2.9.1+cu128   torchvision 0.24.1   transformers 4.57.0
+numpy 1.26.4     triton 3.5.1        bitsandbytes 0.50.0  rldx 1.0.1
+nvidia-cuda-nvrtc-cu12 12.9.86       flash_attn: absent   torchcodec: absent
+```
+
+Verified end-to-end on GB10 with real `RLWRLD/RLDX-1-FT-LIBERO` weights (13 GiB
+on disk, NF4 backbone), booted through `tools/rldx_sidecar.py` and driven over
+the real ZMQ REQ/REP + msgpack ndarray wire the `rldx` adapter uses —
+`ping` → `reset` → four `get_action` calls with the LIBERO-flat obs contract
+(two `(1, 4, 256, 256, 3)` uint8 camera stacks + seven `state.*` scalars +
+`annotation.human.action.task_description`):
+
+```
+ping   {'status': 'ok', 'message': 'Server is running'}
+reset  {'cleared_sessions': []}
+action keys: action.{x,y,z,roll,pitch,yaw,gripper}  →  (16, 7) chunk
+all four chunks finite; values change with the observation
+first request 9.1 s, warmed 8.4-8.6 s;  VRAM 6335 MiB process
+```
+
+Run on the exact shipped configuration — `nvidia-cuda-nvcc-cu12` uninstalled,
+`flash_attn` and `torchcodec` absent — after `ensure_pip_venv` repaired the
+existing venv off the changed sentinel (`repairing stale (dependency spec
+changed) venv`), which also exercises the self-repair path.
+
+That is the sidecar's contract satisfied, not a rollout: LIBERO success rate
+under sdpa attention has not been measured here. Two caveats worth carrying:
+
+- **Latency.** ~8 s per 16-action chunk is far above the manifest's
+  `latency_budget.per_chunk_ms: 1500`. Some of that is the host — three other
+  CUDA processes were resident throughout — and some is sdpa instead of
+  FlashAttention-2 on an 8 B backbone with a 4-frame × 2-camera video stack.
+  Treat the number as "finite and sane", not as a budget measurement.
+- **No `ptxas` shim.** Unlike LingBot, this sidecar does *not* install
+  `nvidia-cuda-nvcc-cu12`: `~/.triton/cache` gained no entries across the four
+  real inferences, so no Triton kernel is compiled on the serving path and the
+  `sm_121` assembler ceiling is never reached. The nvrtc override is still
+  carried — that one is torch's own jiterator and is not opt-in.
 
 ### XR-1 verified live on GB10
 
