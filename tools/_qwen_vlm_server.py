@@ -126,7 +126,26 @@ def _query(
             ],
         }
     ]
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # enable_thinking=False pre-closes the <think> block in the *prompt*
+    # (`…assistant\n<think>\n\n</think>\n\n`) so the model answers directly
+    # instead of opening a reasoning trace it has to finish within the token
+    # budget. Without it the trace routinely outruns `max_new_tokens` and the
+    # </think> strip below silently no-ops, so the sidecar returns a **truncated
+    # scratchpad as the answer** — a reasoner parsing "The tray is on the right
+    # side [603, 126," for a completion signal acts on garbage. Raising the
+    # budget is not a fix: 256 and 512 both truncate on a question that 1024
+    # answers, and the threshold is question-dependent.
+    #
+    # Measured on a GB10, same image + question: a complete, correct answer in
+    # ~132 tokens / 8.4 s without thinking, versus 801 tokens / 28.9 s with it.
+    # Absolute numbers are host-specific; the point is that the non-thinking
+    # path is several times faster on a call the reasoner makes synchronously,
+    # and its answers fit comfortably inside the token budget. Tradeoff worth
+    # knowing: non-thinking mode is measurably weaker at fine spatial reasoning
+    # (it has been observed calling an occupied gripper empty).
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+    )
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
         text=[text],
@@ -144,9 +163,30 @@ def _query(
     )[0]
     # Qwen3.5 is a "thinking" model: it emits a <think>…</think> reasoning trace
     # before the answer. The reasoner wants the conclusion, not the scratchpad, so
-    # return only the text after the final </think> when present.
+    # return only the text after the final </think> when present. With
+    # enable_thinking=False above this normally no-ops — kept for a checkpoint
+    # whose template ignores the toggle.
     if "</think>" in answer:
         answer = answer.rsplit("</think>", 1)[-1]
+    # Guard on *truncation*, not on a tag. Hitting the token ceiling means the
+    # reply stops mid-sentence — either a half-finished answer or, if the
+    # enable_thinking toggle ever stops working, a reasoning scratchpad that
+    # reads exactly like one. Returning either as {"ok": True} is the dangerous
+    # outcome: a reasoner parsing "The tray is on the right side [603, 126," for
+    # a completion signal acts on garbage.
+    #
+    # A tag-based check cannot do this job, which was verified the hard way: the
+    # chat template puts the *opening* <think> in the prompt, and the prompt
+    # tokens are trimmed above, so a completion can only ever contain the
+    # closing </think>. `elif "<think>" in answer` is therefore unreachable, and
+    # replaying the original defect showed it staying silent while the sidecar
+    # handed back the scratchpad.
+    if len(trimmed[0]) >= max_new_tokens:
+        raise RuntimeError(
+            f"Qwen hit the {max_new_tokens}-token ceiling, so the reply is cut off "
+            "mid-generation rather than a complete answer. Raise --max-new-tokens, "
+            "or check that the checkpoint still honours enable_thinking=False."
+        )
     return answer.strip()
 
 
@@ -156,7 +196,13 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5759)
     ap.add_argument("--max-side", type=int, default=1024)
-    ap.add_argument("--max-new-tokens", type=int, default=256)
+    # 1024, not 256. With enable_thinking=False a scene answer runs ~130-250
+    # tokens, so 256 looks sufficient — but it is not: a legitimate "describe
+    # what the wrist camera sees" question ran past it on real weights, and with
+    # the truncation guard in `_query` that now fails the query outright instead
+    # of quietly returning a clipped answer. 1024 leaves headroom for the long
+    # tail while keeping the guard meaningful for genuinely runaway generations.
+    ap.add_argument("--max-new-tokens", type=int, default=1024)
     args = ap.parse_args()
 
     print(f"[qwen-server] loading {args.model} (NF4)...", flush=True)
