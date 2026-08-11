@@ -1007,6 +1007,10 @@ def world_state_from_idl(msg: object) -> object:
             strict=False,
         )
     ]
+    attached_objects = [
+        _attached_object_from_idl(item)
+        for item in msg.attached_objects  # type: ignore[attr-defined]
+    ]
 
     return WorldState(
         stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
@@ -1019,6 +1023,7 @@ def world_state_from_idl(msg: object) -> object:
         battery_pct=battery_pct,
         diagnostics=diagnostics,
         detected_objects=detected_objects,
+        attached_objects=attached_objects,
     )
 
 
@@ -1039,6 +1044,65 @@ def _ros_pose_to_pose6d(ros_pose: object, *, frame_id: str) -> object:
             float(ros_pose.orientation.w),  # type: ignore[attr-defined]
         ),
         frame_id=frame_id,
+    )
+
+
+def _attached_object_from_idl(msg: object) -> object:
+    """Convert one ROS attached-object message into the normative schema."""
+    from openral_core.schemas import (
+        AttachedCollisionObject,
+        AttachmentEvidenceKind,
+        BoxShape,
+        CapsuleShape,
+        SphereShape,
+    )
+
+    dimensions = [float(value) for value in msg.shape_dimensions]  # type: ignore[attr-defined]
+    shape_type = int(msg.shape_type)  # type: ignore[attr-defined]
+    if shape_type == int(msg.SHAPE_SPHERE):  # type: ignore[attr-defined]
+        if len(dimensions) != 1:
+            raise ValueError("Attached sphere requires one shape dimension.")
+        shape = SphereShape(radius_m=dimensions[0])
+    elif shape_type == int(msg.SHAPE_CAPSULE):  # type: ignore[attr-defined]
+        if len(dimensions) != 2:
+            raise ValueError("Attached capsule requires two shape dimensions.")
+        shape = CapsuleShape(radius_m=dimensions[0], length_m=dimensions[1])
+    elif shape_type == int(msg.SHAPE_BOX):  # type: ignore[attr-defined]
+        if len(dimensions) != 3:
+            raise ValueError("Attached box requires three shape dimensions.")
+        shape = BoxShape(half_extents_m=(dimensions[0], dimensions[1], dimensions[2]))
+    else:
+        raise ValueError(f"Unknown attached collision shape type: {shape_type}")
+
+    center_of_mass = None
+    if bool(msg.center_of_mass_valid):  # type: ignore[attr-defined]
+        center = msg.center_of_mass_m  # type: ignore[attr-defined]
+        center_of_mass = (float(center.x), float(center.y), float(center.z))
+    inertia = (
+        tuple(float(value) for value in msg.inertia_kg_m2)  # type: ignore[attr-defined]
+        if bool(msg.inertia_valid)  # type: ignore[attr-defined]
+        else None
+    )
+    return AttachedCollisionObject(
+        object_id=str(msg.object_id),  # type: ignore[attr-defined]
+        attach_link=str(msg.attach_link),  # type: ignore[attr-defined]
+        touch_links=list(msg.touch_links),  # type: ignore[attr-defined]
+        shape=shape,
+        pose_in_link=_ros_pose_to_pose6d(
+            msg.pose_in_link,  # type: ignore[attr-defined]
+            frame_id=str(msg.attach_link),  # type: ignore[attr-defined]
+        ),
+        mass_kg=(
+            float(msg.mass_kg)  # type: ignore[attr-defined]
+            if bool(msg.mass_valid)  # type: ignore[attr-defined]
+            else None
+        ),
+        center_of_mass_m=center_of_mass,
+        inertia_kg_m2=inertia,
+        confidence=float(msg.confidence),  # type: ignore[attr-defined]
+        evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
+        evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
+        stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
     )
 
 
@@ -1091,6 +1155,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     _fill_diagnostics(msg, world_state)
     _fill_battery(msg, world_state)
     _fill_detected_objects(msg, world_state)
+    _fill_attached_objects(msg, world_state)
 
     return msg
 
@@ -1209,6 +1274,62 @@ def _fill_detected_objects(msg: object, world_state: object) -> None:
     msg.detected_object_frame = (  # type: ignore[attr-defined]
         objects[0].pose.frame_id if objects else ""
     )
+
+
+def _fill_attached_objects(msg: object, world_state: object) -> None:
+    """Populate attached payloads in stable object-id order."""
+    from geometry_msgs.msg import Vector3  # type: ignore[import-untyped]
+    from openral_core.schemas import BoxShape, CapsuleShape, SphereShape
+    from openral_msgs.msg import (  # type: ignore[import-untyped]
+        AttachedCollisionObject as RosAttachedCollisionObject,
+    )
+
+    attached = []
+    for obj in sorted(world_state.attached_objects, key=lambda item: item.object_id):  # type: ignore[attr-defined]
+        item = RosAttachedCollisionObject()
+        item.object_id = obj.object_id
+        item.attach_link = obj.attach_link
+        item.touch_links = list(obj.touch_links)
+        if isinstance(obj.shape, SphereShape):
+            item.shape_type = item.SHAPE_SPHERE
+            item.shape_dimensions = [float(obj.shape.radius_m)]
+        elif isinstance(obj.shape, CapsuleShape):
+            item.shape_type = item.SHAPE_CAPSULE
+            item.shape_dimensions = [
+                float(obj.shape.radius_m),
+                float(obj.shape.length_m),
+            ]
+        elif isinstance(obj.shape, BoxShape):
+            item.shape_type = item.SHAPE_BOX
+            item.shape_dimensions = [float(value) for value in obj.shape.half_extents_m]
+        item.pose_in_link = _pose6d_to_ros_pose(
+            obj.pose_in_link,
+            pose_cls=type(item.pose_in_link),
+            quat_cls=type(item.pose_in_link.orientation),
+        )
+        item.mass_valid = obj.mass_kg is not None
+        item.mass_kg = float(obj.mass_kg or 0.0)
+        item.center_of_mass_valid = obj.center_of_mass_m is not None
+        if obj.center_of_mass_m is not None:
+            item.center_of_mass_m = Vector3(
+                x=float(obj.center_of_mass_m[0]),
+                y=float(obj.center_of_mass_m[1]),
+                z=float(obj.center_of_mass_m[2]),
+            )
+        item.inertia_valid = obj.inertia_kg_m2 is not None
+        item.inertia_kg_m2 = (
+            [float(value) for value in obj.inertia_kg_m2]
+            if obj.inertia_kg_m2 is not None
+            else [0.0] * 9
+        )
+        item.confidence = float(obj.confidence)
+        item.evidence_kind = obj.evidence_kind.value
+        item.evidence_ref = obj.evidence_ref or ""
+        item.stamp_ns = int(obj.stamp_ns)
+        attached.append(item)
+        if obj.attach_link not in msg.frame_ids:  # type: ignore[attr-defined]
+            msg.frame_ids.append(obj.attach_link)  # type: ignore[attr-defined]
+    msg.attached_objects = attached  # type: ignore[attr-defined]
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:

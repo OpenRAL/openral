@@ -22,6 +22,8 @@ from openral_core.schemas import (
     Action,
     ActuatorRequirement,
     ApproachViewpoint,
+    AttachedCollisionObject,
+    AttachmentEvidenceKind,
     BenchmarkName,
     BoxShape,
     CameraSimPlacement,
@@ -286,6 +288,25 @@ _box_shape_st = st.builds(
 )
 _collision_shape_st = st.one_of(_capsule_shape_st, _sphere_shape_st, _box_shape_st)
 
+
+@st.composite
+def _attached_collision_object(draw: st.DrawFn) -> AttachedCollisionObject:
+    attach_link = draw(_name)
+    pose = draw(_pose6d_st).model_copy(update={"frame_id": attach_link})
+    return AttachedCollisionObject(
+        object_id=draw(_name),
+        attach_link=attach_link,
+        touch_links=draw(st.lists(_name, min_size=1, max_size=4, unique=True)),
+        shape=draw(_collision_shape_st),
+        pose_in_link=pose,
+        mass_kg=draw(st.one_of(st.none(), st.floats(min_value=0.0, max_value=100.0))),
+        confidence=draw(_prob),
+        evidence_kind=draw(st.sampled_from(list(AttachmentEvidenceKind))),
+        evidence_ref=draw(st.one_of(st.none(), _name)),
+        stamp_ns=draw(_ns),
+    )
+
+
 _link_collision_geometry_st = st.builds(
     LinkCollisionGeometry,
     link_name=_name,
@@ -530,6 +551,13 @@ def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
 def test_fuzz_world_collision_primitive(instance: WorldCollisionPrimitive) -> None:
     """WorldCollisionPrimitive round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(WorldCollisionPrimitive, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_attached_collision_object())
+def test_fuzz_attached_collision_object(instance: AttachedCollisionObject) -> None:
+    """AttachedCollisionObject round-trips through JSON and validates its schema."""
+    _round_trip_and_validate(AttachedCollisionObject, instance)
 
 
 @_FUZZ_SETTINGS

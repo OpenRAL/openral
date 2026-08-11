@@ -2,6 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "openral_core",
   "schemas": {
+    "AttachmentEvidenceKind": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "AttachmentEvidenceKind",
+      "description": "Evidence source that confirmed a robot/object attachment.",
+      "type": "string",
+      "enum": [
+        "sim_contact",
+        "gripper_force",
+        "perception_track",
+        "operator"
+      ]
+    },
     "EmbodimentKind": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "EmbodimentKind",
@@ -7033,8 +7045,441 @@
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
+    "AttachedCollisionObject": {
+      "$defs": {
+        "AttachmentEvidenceKind": {
+          "description": "Evidence source that confirmed a robot/object attachment.",
+          "enum": [
+            "sim_contact",
+            "gripper_force",
+            "perception_track",
+            "operator"
+          ],
+          "title": "AttachmentEvidenceKind",
+          "type": "string"
+        },
+        "BoxShape": {
+          "additionalProperties": false,
+          "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
+          "properties": {
+            "shape": {
+              "const": "box",
+              "default": "box",
+              "title": "Shape",
+              "type": "string"
+            },
+            "half_extents_m": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                }
+              ],
+              "title": "Half Extents M",
+              "type": "array"
+            }
+          },
+          "required": [
+            "half_extents_m"
+          ],
+          "title": "BoxShape",
+          "type": "object"
+        },
+        "CapsuleShape": {
+          "additionalProperties": false,
+          "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (:attr:`LinkCollisionGeometry.origin_xyz_rpy`\nfor a link, :attr:`WorldCollisionPrimitive.pose` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+          "properties": {
+            "shape": {
+              "const": "capsule",
+              "default": "capsule",
+              "title": "Shape",
+              "type": "string"
+            },
+            "radius_m": {
+              "exclusiveMinimum": 0.0,
+              "title": "Radius M",
+              "type": "number"
+            },
+            "length_m": {
+              "minimum": 0.0,
+              "title": "Length M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "radius_m",
+            "length_m"
+          ],
+          "title": "CapsuleShape",
+          "type": "object"
+        },
+        "Pose6D": {
+          "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+          "properties": {
+            "xyz": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Xyz",
+              "type": "array"
+            },
+            "quat_xyzw": {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Quat Xyzw",
+              "type": "array"
+            },
+            "frame_id": {
+              "title": "Frame Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "xyz",
+            "quat_xyzw",
+            "frame_id"
+          ],
+          "title": "Pose6D",
+          "type": "object"
+        },
+        "SphereShape": {
+          "additionalProperties": false,
+          "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+          "properties": {
+            "shape": {
+              "const": "sphere",
+              "default": "sphere",
+              "title": "Shape",
+              "type": "string"
+            },
+            "radius_m": {
+              "exclusiveMinimum": 0.0,
+              "title": "Radius M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "radius_m"
+          ],
+          "title": "SphereShape",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    shape: Bounded collision geometry carried with the robot.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.",
+      "properties": {
+        "object_id": {
+          "minLength": 1,
+          "title": "Object Id",
+          "type": "string"
+        },
+        "attach_link": {
+          "minLength": 1,
+          "title": "Attach Link",
+          "type": "string"
+        },
+        "touch_links": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Touch Links",
+          "type": "array"
+        },
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            },
+            {
+              "$ref": "#/$defs/BoxShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "pose_in_link": {
+          "$ref": "#/$defs/Pose6D"
+        },
+        "mass_kg": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mass Kg"
+        },
+        "center_of_mass_m": {
+          "anyOf": [
+            {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Center Of Mass M"
+        },
+        "inertia_kg_m2": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 9,
+              "minItems": 9,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inertia Kg M2"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "evidence_kind": {
+          "$ref": "#/$defs/AttachmentEvidenceKind"
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Ref"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "object_id",
+        "attach_link",
+        "touch_links",
+        "shape",
+        "pose_in_link",
+        "confidence",
+        "evidence_kind",
+        "stamp_ns"
+      ],
+      "title": "AttachedCollisionObject",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
     "WorldState": {
       "$defs": {
+        "AttachedCollisionObject": {
+          "additionalProperties": false,
+          "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    shape: Bounded collision geometry carried with the robot.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.",
+          "properties": {
+            "object_id": {
+              "minLength": 1,
+              "title": "Object Id",
+              "type": "string"
+            },
+            "attach_link": {
+              "minLength": 1,
+              "title": "Attach Link",
+              "type": "string"
+            },
+            "touch_links": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Touch Links",
+              "type": "array"
+            },
+            "shape": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CapsuleShape"
+                },
+                {
+                  "$ref": "#/$defs/SphereShape"
+                },
+                {
+                  "$ref": "#/$defs/BoxShape"
+                }
+              ],
+              "title": "Shape"
+            },
+            "pose_in_link": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "mass_kg": {
+              "anyOf": [
+                {
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Mass Kg"
+            },
+            "center_of_mass_m": {
+              "anyOf": [
+                {
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Center Of Mass M"
+            },
+            "inertia_kg_m2": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 9,
+                  "minItems": 9,
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Inertia Kg M2"
+            },
+            "confidence": {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Confidence",
+              "type": "number"
+            },
+            "evidence_kind": {
+              "$ref": "#/$defs/AttachmentEvidenceKind"
+            },
+            "evidence_ref": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Evidence Ref"
+            },
+            "stamp_ns": {
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "object_id",
+            "attach_link",
+            "touch_links",
+            "shape",
+            "pose_in_link",
+            "confidence",
+            "evidence_kind",
+            "stamp_ns"
+          ],
+          "title": "AttachedCollisionObject",
+          "type": "object"
+        },
+        "AttachmentEvidenceKind": {
+          "description": "Evidence source that confirmed a robot/object attachment.",
+          "enum": [
+            "sim_contact",
+            "gripper_force",
+            "perception_track",
+            "operator"
+          ],
+          "title": "AttachmentEvidenceKind",
+          "type": "string"
+        },
         "BoxShape": {
           "additionalProperties": false,
           "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
@@ -7479,7 +7924,7 @@
           "type": "object"
         }
       },
-      "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor :class:`SensorFrame` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via :attr:`images` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    collision_primitives: Bounded set of placed convex obstacle volumes\n        the kernel checks robot links against (world-collision). Empty\n        until a perception / SLAM source populates it.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
+      "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor :class:`SensorFrame` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via :attr:`images` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    collision_primitives: Bounded set of placed convex obstacle volumes\n        the kernel checks robot links against (world-collision). Empty\n        until a perception / SLAM source populates it.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
       "properties": {
         "stamp_ns": {
           "title": "Stamp Ns",
@@ -7638,6 +8083,13 @@
             "$ref": "#/$defs/WorldCollisionPrimitive"
           },
           "title": "Collision Primitives",
+          "type": "array"
+        },
+        "attached_objects": {
+          "items": {
+            "$ref": "#/$defs/AttachedCollisionObject"
+          },
+          "title": "Attached Objects",
           "type": "array"
         },
         "occupancy_grid": {
