@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -113,12 +114,82 @@ struct CollisionHit {
   double min_distance{0.0};
 };
 
+/// Convex shape of a collision object rigidly attached to a robot link
+/// (grasped payload). Numeric values match
+/// ``openral_msgs/AttachedCollisionObject.SHAPE_*`` so the ingest path can
+/// decode the wire field without translation.
+enum class AttachedShapeKind : std::uint8_t {
+  kSphere = 1,
+  kCapsule = 2,
+  kBox = 3,
+};
+
+/// One collision object rigidly attached to a robot link (a grasped payload).
+/// The shape is expressed in the attach-link frame by `pose_in_link`; on each
+/// checked configuration the kernel composes it through FK
+/// (`scratch.link_world[attach_link]`) into the base frame. `touch_first` /
+/// `touch_count` index a slice of `AttachedModel.touch_links` naming the robot
+/// links explicitly allowed to contact this object (the attach link itself is
+/// always allowed). A sphere is a capsule with `half_length == 0`.
+struct AttachedObject {
+  AttachedShapeKind kind{AttachedShapeKind::kSphere};
+  double radius{0.0};        ///< sphere / capsule radius
+  double half_length{0.0};   ///< capsule half-length (0 for a sphere)
+  Vec3 half_extents{};       ///< box half-extents
+  Transform pose_in_link{};  ///< object pose in the attach-link frame
+  int attach_link{-1};       ///< robot link index the object is attached to
+  int touch_first{0};        ///< offset into AttachedModel.touch_links
+  int touch_count{0};        ///< number of touch-link entries for this object
+};
+
+/// Bounded, fixed-capacity set of attached payloads ingested from the world
+/// state. `objects` and `touch_links` are pre-sized to their configured caps at
+/// configure time; the ingest path fills the first `n_objects` entries and the
+/// hot path never allocates. `n_objects == 0` means nothing is carried.
+struct AttachedModel {
+  std::size_t n_objects{0};             ///< active object count (<= objects.size())
+  std::vector<AttachedObject> objects;  ///< capacity = max attached objects
+  std::vector<int> touch_links;         ///< flattened touch-link indices, capacity = cap
+};
+
+/// Parsed, still-by-name attached-object record produced by the ROS ingest
+/// callback and handed to `ingest_attached_objects` for capacity + link-name
+/// validation. Not on the hot path (built once per world-state message).
+struct AttachedObjectInput {
+  AttachedShapeKind kind{AttachedShapeKind::kSphere};
+  double radius{0.0};
+  double half_length{0.0};
+  Vec3 half_extents{};
+  Transform pose_in_link{};
+  std::string attach_link;               ///< attach-link name (resolved against link_names)
+  std::vector<std::string> touch_links;  ///< touch-link names (resolved against link_names)
+};
+
+/// Outcome of an attachment-ingest attempt. Anything other than `kOk` is
+/// fail-closed at the call site (the world state is marked invalid and the next
+/// candidate action is dropped until a clean message lands).
+enum class AttachIngestStatus : std::uint8_t {
+  kOk = 0,
+  kOverflow = 1,     ///< object/primitive/touch-link cap exceeded
+  kUnknownLink = 2,  ///< attach_link or a touch_link not in the robot model
+  kMalformed = 3,    ///< bad shape dimensions (non-finite / non-positive radius etc.)
+};
+
 /// Build a rigid transform from a translation and fixed-axis XYZ Euler angles
 /// (roll about X, pitch about Y, yaw about Z), i.e. R = Rz(yaw)·Ry(pitch)·Rx(roll)
 /// — the URDF / ROS `<origin xyz rpy>` convention. Used at configure time to
 /// lower manifest origins into the `CollisionModel`; not on the hot path.
 Transform transform_from_xyz_rpy(double x, double y, double z, double roll, double pitch,
                                  double yaw) noexcept;
+
+/// Build a rigid transform from a translation and a (x, y, z, w) unit
+/// quaternion — the ``geometry_msgs/Pose`` convention used by
+/// ``openral_msgs/AttachedCollisionObject.pose_in_link``. A non-unit quaternion
+/// is normalised; a zero quaternion degrades to the identity rotation. Used at
+/// ingest time (not the hot path) to lower a wire pose into the kernel's
+/// `Transform`.
+Transform transform_from_translation_quat(double x, double y, double z, double qx, double qy,
+                                          double qz, double qw) noexcept;
 
 /// Closest distance between the surfaces of two capsules, given each capsule's
 /// frame in a common frame. Negative means interpenetration. Allocation-free.
@@ -197,5 +268,50 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// the robot link index and `link_b` is the linear voxel index. Allocation-free.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin) noexcept;
+
+/// Validate + resolve parsed attached-object inputs into the fixed-capacity
+/// `out` model. `out.objects` / `out.touch_links` must already be sized to
+/// their configured caps (`max_objects`, `max_touch_links`); this fills the
+/// first N entries and sets `out.n_objects`. Link names are resolved against
+/// `link_names` (the robot collision-link name table). Fail-closed: any cap
+/// overflow, unknown attach/touch link, or malformed shape leaves
+/// `out.n_objects == 0` and returns the offending status — the caller must then
+/// treat the attachment set as unavailable (drop the candidate action). Not on
+/// the hot path (called once per world-state message). Allocation-free with
+/// respect to `out` (only reads/writes the pre-sized buffers).
+AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
+                                           const std::vector<std::string>& link_names,
+                                           std::size_t max_objects, std::size_t max_primitives,
+                                           std::size_t max_touch_links,
+                                           AttachedModel& out) noexcept;
+
+/// Check every attached payload (FK'd via `scratch` through its attach link)
+/// against every world obstacle capsule at a `margin` clearance. On a hit,
+/// `link_a` is the attached-object index and `link_b` is the world obstacle
+/// index; `min_distance` carries the minimum surface distance seen.
+/// Allocation-free.
+CollisionHit check_attached_world_collision(const CollisionModel& model,
+                                            const AttachedModel& attached,
+                                            const CollisionScratch& scratch,
+                                            const WorldModel& world, double margin) noexcept;
+
+/// Check every attached payload against the occupied cells of a dense voxel
+/// `grid` (same conservative per-voxel cube treatment as
+/// `check_voxel_collision`). On a hit, `link_a` is the attached-object index and
+/// `link_b` is the linear voxel index. Allocation-free.
+CollisionHit check_attached_voxel_collision(const CollisionModel& model,
+                                            const AttachedModel& attached,
+                                            const CollisionScratch& scratch, const VoxelGrid& grid,
+                                            double margin) noexcept;
+
+/// Check every attached payload against the robot's own link geometry
+/// (capsules + boxes), skipping each object's attach link and its explicit
+/// touch links (a grasped object legitimately contacts the fingers that hold
+/// it). On a hit, `link_a` is the attached-object index and `link_b` is the
+/// robot link index; `min_distance` carries the minimum surface distance seen.
+/// Allocation-free.
+CollisionHit check_attached_self_collision(const CollisionModel& model,
+                                           const AttachedModel& attached,
+                                           const CollisionScratch& scratch, double margin) noexcept;
 
 }  // namespace openral_safety_kernel

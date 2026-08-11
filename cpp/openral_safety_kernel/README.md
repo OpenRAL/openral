@@ -39,6 +39,7 @@ Published on **every transition**:
 | external `/openral/estop` | `true` | `DROP_EXTERNAL_ESTOP` |
 | `envelope_unconfigured` drop | `false` | `DROP_ENVELOPE_UNCONFIGURED` |
 | world/voxel/state unavailable or overflow | `false` | `DROP_{WORLD,VOXEL,STATE}_UNAVAILABLE`, `DROP_{WORLD,VOXEL}_OVERFLOW` |
+| attached payload unverifiable (ADR-0092) | `false` | `DROP_ATTACHED_UNAVAILABLE`, `DROP_ATTACHED_OVERFLOW` |
 | chunk accepted after a drop | `false` | `DROP_NONE` |
 | `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |
 

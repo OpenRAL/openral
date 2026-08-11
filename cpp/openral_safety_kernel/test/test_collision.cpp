@@ -573,6 +573,73 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
       << "collision hot path allocated; the self-collision core must stay allocation-free.";
 }
 
+TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
+  // Robot: base + one movable link carrying a capsule.
+  osk::CollisionModel m;
+  m.n_links = 2;
+  m.parent = {-1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kRevolute};
+  m.dof_index = {-1, 0};
+  m.origin = {identity(), translate(0.0, 0.0, 0.2)};
+  m.axis = {{0, 0, 1}, {0, 1, 0}};
+  osk::Capsule c;
+  c.radius = 0.05;
+  c.half_length = 0.1;
+  c.origin = identity();
+  m.capsule_link = {1};
+  m.capsules = {c};
+
+  osk::CollisionScratch scratch;
+  scratch.link_world.resize(m.n_links);
+
+  // Pre-sized attached model (fixed capacity), a world obstacle and a voxel
+  // grid — all built OUTSIDE the counted window.
+  osk::AttachedModel att;
+  att.objects.assign(4, osk::AttachedObject{});
+  att.touch_links.assign(8, 0);
+  att.objects[0].kind = osk::AttachedShapeKind::kSphere;
+  att.objects[0].radius = 0.08;
+  att.objects[0].pose_in_link = translate(0.0, 0.0, 0.15);
+  att.objects[0].attach_link = 1;
+  att.objects[0].touch_first = 0;
+  att.objects[0].touch_count = 0;
+  att.n_objects = 1;
+
+  osk::WorldModel world;
+  osk::Capsule obs;
+  obs.radius = 0.05;
+  obs.half_length = 0.1;
+  obs.origin = translate(0.3, 0.0, 0.3);
+  world.capsules = {obs, obs};
+
+  std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
+  occ[42] = 1;
+  osk::VoxelGrid grid;
+  grid.origin = {-0.4, -0.4, -0.4};
+  grid.resolution = 0.1;
+  grid.sx = 8;
+  grid.sy = 8;
+  grid.sz = 8;
+  grid.occupancy = occ.data();
+
+  const std::vector<double> qpos = {0.3};
+
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  for (int i = 0; i < 10000; ++i) {
+    osk::forward_kinematics(m, qpos.data(), qpos.size(), scratch);
+    const auto self_hit = osk::check_attached_self_collision(m, att, scratch, 0.0);
+    const auto world_hit = osk::check_attached_world_collision(m, att, scratch, world, 0.0);
+    const auto voxel_hit = osk::check_attached_voxel_collision(m, att, scratch, grid, 0.0);
+    (void)self_hit;
+    (void)world_hit;
+    (void)voxel_hit;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "attached-object collision checks allocated; the hot path must stay allocation-free.";
+}
+
 TEST(NoAlloc, JacobianDlsStepIsAllocationFree) {
   // 2R arm + pre-sized scratch + caller-owned dq, all OUTSIDE the counted window.
   osk::CollisionModel m;
@@ -780,4 +847,346 @@ TEST(VoxelCollisionBox, BoxLinkIsCheckedAgainstOccupiedVoxel) {
   EXPECT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_a, 0);
   EXPECT_LT(hit.min_distance, 0.0);
+}
+
+// ── Attached collision objects (grasped payload; ADR-0092) ─────────────
+//
+// A grasped payload is removed from world occupancy and re-checked as
+// collision-active robot geometry: against world obstacles, occupancy voxels,
+// and the robot's own links EXCEPT the attach link and explicit touch links
+// (the fingers legitimately holding it). Ground truth is hand-computed
+// analytically; the full FK + wire-ingest path is exercised in the sim tier.
+
+namespace {
+
+// A sphere payload rigidly attached to `attach_link`, placed by `pose_in_link`.
+osk::AttachedObject sphere_payload(int attach_link, double radius, const osk::Transform& pose) {
+  osk::AttachedObject o;
+  o.kind = osk::AttachedShapeKind::kSphere;
+  o.radius = radius;
+  o.half_length = 0.0;
+  o.pose_in_link = pose;
+  o.attach_link = attach_link;
+  o.touch_first = 0;
+  o.touch_count = 0;
+  return o;
+}
+
+// Robot capsule `c` attached to link index `link`.
+void add_capsule(osk::CollisionModel& m, int link, double radius, double half_length,
+                 const osk::Transform& origin) {
+  osk::Capsule c;
+  c.radius = radius;
+  c.half_length = half_length;
+  c.origin = origin;
+  m.capsule_link.push_back(link);
+  m.capsules.push_back(c);
+}
+
+// A 4-link fixed-chain hand: 0=base, 1=hand (attach), 2=finger, 3=arm.
+osk::CollisionModel hand_model() {
+  osk::CollisionModel m;
+  m.n_links = 4;
+  m.parent = {-1, 0, 1, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed,
+                  osk::JointKind::kFixed};
+  m.dof_index = {-1, -1, -1, -1};
+  m.origin = {identity(), identity(), identity(), identity()};
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  return m;
+}
+
+}  // namespace
+
+TEST(AttachedSelfCollision, AllowedFingerContactIsNotAHit) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 2, 0.05, 0.0, identity());  // finger capsule at origin (overlaps payload)
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};  // payload at origin
+  att.touch_links = {2};                               // finger (link 2) may touch
+  att.objects[0].touch_first = 0;
+  att.objects[0].touch_count = 1;
+  att.n_objects = 1;
+
+  const auto hit = osk::check_attached_self_collision(m, att, s, 0.0);
+  EXPECT_FALSE(hit.hit) << "a grasped payload legitimately overlaps its touch-link finger";
+}
+
+TEST(AttachedSelfCollision, AttachLinkIsAlwaysAllowed) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 1, 0.05, 0.0, identity());  // capsule on the ATTACH link itself
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};  // touch_count 0
+  att.n_objects = 1;
+
+  const auto hit = osk::check_attached_self_collision(m, att, s, 0.0);
+  EXPECT_FALSE(hit.hit) << "the attach link is implicitly allowed even without a touch entry";
+}
+
+TEST(AttachedSelfCollision, PayloadHittingNonTouchLinkIsRejected) {
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 2, 0.05, 0.0, identity());                // finger (touch) at origin
+  add_capsule(m, 3, 0.1, 0.0, translate(0.15, 0.0, 0.0));  // arm (non-touch) near payload
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};
+  att.touch_links = {2};  // only the finger is a touch link
+  att.objects[0].touch_count = 1;
+  att.n_objects = 1;
+
+  const auto hit = osk::check_attached_self_collision(m, att, s, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0);                    // attached object 0
+  EXPECT_EQ(hit.link_b, 3);                    // the non-touch arm link
+  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);  // centerline 0.15, radii 0.2
+}
+
+TEST(AttachedWorldCollision, PayloadVsWorldObstacleIsRejected) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};
+  att.n_objects = 1;
+
+  osk::WorldModel w;
+  osk::Capsule obs;
+  obs.radius = 0.1;
+  obs.half_length = 0.2;
+  obs.origin = translate(0.15, 0.0, 0.0);
+  w.capsules = {obs};
+
+  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0);
+  EXPECT_EQ(hit.link_b, 0);
+  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
+}
+
+TEST(AttachedWorldCollision, ClearPayloadReportsMinDistanceNoHit) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};
+  att.n_objects = 1;
+
+  osk::WorldModel w;
+  osk::Capsule obs;
+  obs.radius = 0.1;
+  obs.half_length = 0.2;
+  obs.origin = translate(1.0, 0.0, 0.0);
+  w.capsules = {obs};
+
+  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  EXPECT_FALSE(hit.hit);
+  EXPECT_NEAR(hit.min_distance, 0.8, 1e-9);  // centerline 1.0 - 0.1 - 0.1
+}
+
+TEST(AttachedVoxelCollision, PayloadVsOccupiedVoxelIsRejected) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};  // sphere at origin
+  att.n_objects = 1;
+
+  // 5x5x5 grid, 0.1 m voxels, centre voxel (2,2,2) at the base-frame origin.
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 0);
+  EXPECT_EQ(hit.link_b, voxel_index(2, 2, 2));
+  EXPECT_LT(hit.min_distance, 0.0);
+}
+
+TEST(AttachedVoxelCollision, FreeGridNeverHits) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  att.objects = {sphere_payload(1, 0.1, identity())};
+  att.n_objects = 1;
+  const std::vector<std::uint8_t> occ(125, 0);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
+  EXPECT_FALSE(hit.hit);
+}
+
+TEST(AttachedObjects, MultipleObjectsAreAllChecked) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  // Attach link 1 at origin; attach link 3 shifted to x=1.0.
+  s.link_world = {identity(), identity(), identity(), translate(1.0, 0.0, 0.0)};
+
+  osk::AttachedModel att;
+  att.objects = {
+      sphere_payload(1, 0.1, identity()),  // object 0: at origin, clear of the obstacle
+      sphere_payload(3, 0.1, identity()),  // object 1: at x=1.0, overlaps the obstacle
+  };
+  att.n_objects = 2;
+
+  osk::WorldModel w;
+  osk::Capsule obs;
+  obs.radius = 0.1;
+  obs.half_length = 0.2;
+  obs.origin = translate(1.15, 0.0, 0.0);  // near object 1 only
+  w.capsules = {obs};
+
+  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  EXPECT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_a, 1) << "the second attached object must be reached and reported";
+  EXPECT_EQ(hit.link_b, 0);
+}
+
+// ── transform_from_translation_quat ────────────────────────────────────
+
+TEST(TransformFromQuat, IdentityQuaternionKeepsAxes) {
+  const osk::Transform t = osk::transform_from_translation_quat(1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0);
+  EXPECT_NEAR(t.r[0], 1.0, 1e-12);
+  EXPECT_NEAR(t.r[4], 1.0, 1e-12);
+  EXPECT_NEAR(t.r[8], 1.0, 1e-12);
+  EXPECT_NEAR(t.t.x, 1.0, 1e-12);
+  EXPECT_NEAR(t.t.y, 2.0, 1e-12);
+  EXPECT_NEAR(t.t.z, 3.0, 1e-12);
+}
+
+TEST(TransformFromQuat, NinetyAboutZMatchesRpy) {
+  // Quaternion for +90 deg about Z: (0,0,sin45,cos45).
+  const double s = std::sqrt(0.5);
+  const osk::Transform q = osk::transform_from_translation_quat(0.0, 0.0, 0.0, 0.0, 0.0, s, s);
+  const osk::Transform r = osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, 0.0, 0.0, kPi / 2.0);
+  for (int i = 0; i < 9; ++i) {
+    EXPECT_NEAR(q.r[i], r.r[i], 1e-9) << "rotation element " << i;
+  }
+}
+
+TEST(TransformFromQuat, NonUnitQuaternionIsNormalised) {
+  // Same rotation as a unit +90-about-Z quaternion, scaled by 5.
+  const double s = std::sqrt(0.5) * 5.0;
+  const osk::Transform q = osk::transform_from_translation_quat(0.0, 0.0, 0.0, 0.0, 0.0, s, s);
+  EXPECT_NEAR(q.r[0], 0.0, 1e-9);
+  EXPECT_NEAR(q.r[1], -1.0, 1e-9);
+  EXPECT_NEAR(q.r[3], 1.0, 1e-9);
+}
+
+// ── ingest_attached_objects (fixed-capacity, fail-closed) ──────────────
+
+namespace {
+
+osk::AttachedModel presized_model(std::size_t max_objects, std::size_t max_touch) {
+  osk::AttachedModel m;
+  m.objects.assign(max_objects, osk::AttachedObject{});
+  m.touch_links.assign(max_touch, 0);
+  m.n_objects = 0;
+  return m;
+}
+
+osk::AttachedObjectInput sphere_input(const std::string& attach,
+                                      const std::vector<std::string>& touch) {
+  osk::AttachedObjectInput in;
+  in.kind = osk::AttachedShapeKind::kSphere;
+  in.radius = 0.05;
+  in.half_length = 0.0;
+  in.attach_link = attach;
+  in.touch_links = touch;
+  return in;
+}
+
+const std::vector<std::string> kLinkNames = {"base", "hand", "finger_left", "finger_right", "arm"};
+
+}  // namespace
+
+TEST(IngestAttached, ResolvesLinkAndTouchNames) {
+  auto model = presized_model(4, 8);
+  const std::vector<osk::AttachedObjectInput> in = {
+      sphere_input("hand", {"finger_left", "finger_right"})};
+  const auto st = osk::ingest_attached_objects(in, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kOk);
+  ASSERT_EQ(model.n_objects, 1U);
+  EXPECT_EQ(model.objects[0].attach_link, 1);  // "hand"
+  ASSERT_EQ(model.objects[0].touch_count, 2);
+  EXPECT_EQ(model.touch_links[0], 2);  // finger_left
+  EXPECT_EQ(model.touch_links[1], 3);  // finger_right
+}
+
+TEST(IngestAttached, UnknownAttachLinkFailsClosed) {
+  auto model = presized_model(4, 8);
+  const std::vector<osk::AttachedObjectInput> in = {sphere_input("gripper_typo", {"finger_left"})};
+  const auto st = osk::ingest_attached_objects(in, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kUnknownLink);
+  EXPECT_EQ(model.n_objects, 0U) << "an unknown attach link must leave nothing checkable";
+}
+
+TEST(IngestAttached, UnknownTouchLinkFailsClosed) {
+  auto model = presized_model(4, 8);
+  const std::vector<osk::AttachedObjectInput> in = {sphere_input("hand", {"third_finger"})};
+  const auto st = osk::ingest_attached_objects(in, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kUnknownLink);
+  EXPECT_EQ(model.n_objects, 0U);
+}
+
+TEST(IngestAttached, ObjectOverflowFailsClosed) {
+  auto model = presized_model(1, 8);
+  const std::vector<osk::AttachedObjectInput> in = {sphere_input("hand", {"finger_left"}),
+                                                    sphere_input("arm", {"finger_right"})};
+  const auto st = osk::ingest_attached_objects(in, kLinkNames, 1, 1, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kOverflow);
+  EXPECT_EQ(model.n_objects, 0U);
+}
+
+TEST(IngestAttached, TouchLinkOverflowFailsClosed) {
+  auto model = presized_model(4, 1);
+  const std::vector<osk::AttachedObjectInput> in = {
+      sphere_input("hand", {"finger_left", "finger_right"})};
+  const auto st = osk::ingest_attached_objects(in, kLinkNames, 4, 4, 1, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kOverflow);
+  EXPECT_EQ(model.n_objects, 0U);
+}
+
+TEST(IngestAttached, MalformedRadiusFailsClosed) {
+  auto model = presized_model(4, 8);
+  osk::AttachedObjectInput bad = sphere_input("hand", {"finger_left"});
+  bad.radius = 0.0;  // non-positive radius
+  const auto st = osk::ingest_attached_objects({bad}, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kMalformed);
+  EXPECT_EQ(model.n_objects, 0U);
+}
+
+TEST(IngestAttached, CapsuleAndBoxDimensionsIngest) {
+  auto model = presized_model(4, 8);
+  osk::AttachedObjectInput cap;
+  cap.kind = osk::AttachedShapeKind::kCapsule;
+  cap.radius = 0.03;
+  cap.half_length = 0.06;
+  cap.attach_link = "hand";
+  cap.touch_links = {"finger_left"};
+  osk::AttachedObjectInput box;
+  box.kind = osk::AttachedShapeKind::kBox;
+  box.half_extents = {0.02, 0.03, 0.04};
+  box.attach_link = "arm";
+  box.touch_links = {};
+  const auto st = osk::ingest_attached_objects({cap, box}, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kOk);
+  ASSERT_EQ(model.n_objects, 2U);
+  EXPECT_EQ(model.objects[0].kind, osk::AttachedShapeKind::kCapsule);
+  EXPECT_NEAR(model.objects[0].half_length, 0.06, 1e-12);
+  EXPECT_EQ(model.objects[1].kind, osk::AttachedShapeKind::kBox);
+  EXPECT_NEAR(model.objects[1].half_extents.z, 0.04, 1e-12);
+  EXPECT_EQ(model.objects[1].touch_count, 0);
+}
+
+TEST(IngestAttached, EmptyInputIsOkAndEmpty) {
+  auto model = presized_model(4, 8);
+  const auto st = osk::ingest_attached_objects({}, kLinkNames, 4, 4, 8, model);
+  EXPECT_EQ(st, osk::AttachIngestStatus::kOk);
+  EXPECT_EQ(model.n_objects, 0U);
 }

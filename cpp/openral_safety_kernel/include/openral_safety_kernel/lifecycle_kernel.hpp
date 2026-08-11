@@ -25,6 +25,7 @@
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
 #include <openral_msgs/msg/world_collision.hpp>
+#include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
@@ -128,6 +129,14 @@ private:
   // Voxel phase — ingest a dense occupancy grid into a pre-sized buffer.
   void on_world_voxels(const openral_msgs::msg::OccupancyVoxels::SharedPtr msg);
 
+  // Attached-payload phase — ingest attached collision objects carried on
+  // /openral/world_state_fast into the fixed-capacity attached model. A grasped
+  // payload leaves world occupancy and becomes collision-active robot geometry.
+  // Malformed / over-capacity / unknown-link attachments fail closed (the next
+  // candidate action is dropped until a clean message lands). Single-threaded
+  // executor → direct write, no lock.
+  void on_world_state(const openral_msgs::msg::WorldStateStamped::SharedPtr msg);
+
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint
   // name) so a velocity chunk can be reconstructed into the configurations FK
@@ -144,6 +153,7 @@ private:
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldCollision>::SharedPtr world_sub_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_sub_;
+  rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr estop_sub_;
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::ActionChunk>::SharedPtr safe_pub_;
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Empty>::SharedPtr estop_pub_;
@@ -189,6 +199,22 @@ private:
   bool voxel_received_{false};
   bool voxel_overflow_{false};
   rclcpp::Time voxel_stamp_{};
+
+  // Attached-payload phase — grasped objects moved out of world occupancy and
+  // re-checked as collision-active robot geometry (ADR-0092). Fixed-capacity
+  // preallocated storage sized at configure; the hot path never allocates.
+  AttachedModel attached_model_;
+  std::vector<std::string> attached_labels_;  ///< per-object id label, capacity = max objects
+  bool attached_collision_enabled_{false};
+  double attached_collision_margin_m_{0.0};
+  double attached_collision_deadline_s_{0.5};
+  std::size_t attached_max_objects_{0};
+  std::size_t attached_max_primitives_{0};
+  std::size_t attached_max_touch_links_{0};
+  bool attached_received_{false};
+  bool attached_overflow_{false};
+  rclcpp::Time attached_stamp_{};
+  std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
 
   // Measured joint-state seed (Phase 1) + velocity-mode reconstruction
   // (Phase 2). All sized to n_dof at configure; the hot path never allocates.

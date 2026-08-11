@@ -69,6 +69,14 @@ uint8 DROP_VOXEL_OVERFLOW        = 105
 # nobody reported (CLAUDE.md §1.2).
 uint8 DROP_EXTERNAL_ESTOP        = 106
 
+# ADR-0092 attached payloads. A grasped object the kernel cannot verify
+# (never received, stale, or over-capacity / unknown-link) is its own
+# fail-closed drop cause: "we do not know what the robot is carrying" is
+# a different operator action from "the world model went stale", so it
+# gets its own code rather than borrowing DROP_WORLD_*.
+uint8 DROP_ATTACHED_UNAVAILABLE   = 107
+uint8 DROP_ATTACHED_OVERFLOW      = 108
+
 # Nothing is being dropped. Published explicitly on every clear /
 # recovery transition and on lifecycle activation; never left implicit,
 # because a default-initialised message would otherwise read as
