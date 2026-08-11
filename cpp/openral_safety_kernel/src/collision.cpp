@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <string>
 #include <utility>
 
 namespace openral_safety_kernel {
@@ -225,6 +226,34 @@ Transform transform_from_xyz_rpy(double x, double y, double z, double roll, doub
   out.r[6] = -sp;
   out.r[7] = cp * sr;
   out.r[8] = cp * cr;
+  out.t = Vec3{x, y, z};
+  return out;
+}
+
+Transform transform_from_translation_quat(double x, double y, double z, double qx, double qy,
+                                          double qz, double qw) noexcept {
+  Transform out;
+  const double norm = std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+  if (norm < 1e-12) {
+    // Degenerate (zero) quaternion — keep the identity rotation.
+    out.t = Vec3{x, y, z};
+    return out;
+  }
+  const double s = 1.0 / norm;
+  const double xn = qx * s;
+  const double yn = qy * s;
+  const double zn = qz * s;
+  const double wn = qw * s;
+  // Standard unit-quaternion → row-major rotation matrix.
+  out.r[0] = 1.0 - 2.0 * (yn * yn + zn * zn);
+  out.r[1] = 2.0 * (xn * yn - zn * wn);
+  out.r[2] = 2.0 * (xn * zn + yn * wn);
+  out.r[3] = 2.0 * (xn * yn + zn * wn);
+  out.r[4] = 1.0 - 2.0 * (xn * xn + zn * zn);
+  out.r[5] = 2.0 * (yn * zn - xn * wn);
+  out.r[6] = 2.0 * (xn * zn - yn * wn);
+  out.r[7] = 2.0 * (yn * zn + xn * wn);
+  out.r[8] = 1.0 - 2.0 * (xn * xn + yn * yn);
   out.t = Vec3{x, y, z};
   return out;
 }
@@ -697,6 +726,283 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
             result.link_b = static_cast<int>(idx);
           }
         }
+      }
+    }
+  }
+  return result;
+}
+
+namespace {
+
+// World-frame transform of an attached object: compose the attach-link's
+// FK'd frame with the object's link-relative pose. FK must already be run.
+Transform attached_world_transform(const AttachedObject& obj,
+                                   const CollisionScratch& scratch) noexcept {
+  return compose(scratch.link_world[static_cast<std::size_t>(obj.attach_link)], obj.pose_in_link);
+}
+
+// True when robot link `link` is the object's attach link or one of its
+// explicit touch links (grasped payloads legitimately contact those).
+bool attached_allows_link(const AttachedModel& attached, const AttachedObject& obj,
+                          int link) noexcept {
+  if (link == obj.attach_link) {
+    return true;
+  }
+  for (int k = 0; k < obj.touch_count; ++k) {
+    if (attached.touch_links[static_cast<std::size_t>(obj.touch_first + k)] == link) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Surface distance between an attached object (world frame `obj_xf`) and a
+// robot/world capsule (world frame `cap_xf`). A sphere is a capsule with
+// half_length 0; a box uses the exact box↔capsule routine.
+double attached_capsule_distance(const AttachedObject& obj, const Transform& obj_xf,
+                                 const Transform& cap_xf, double cap_radius,
+                                 double cap_half_length) noexcept {
+  if (obj.kind == AttachedShapeKind::kBox) {
+    return box_capsule_distance(obj_xf, obj.half_extents, cap_xf, cap_radius, cap_half_length);
+  }
+  return capsule_distance(obj_xf, obj.radius, obj.half_length, cap_xf, cap_radius, cap_half_length);
+}
+
+}  // namespace
+
+AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
+                                           const std::vector<std::string>& link_names,
+                                           std::size_t max_objects, std::size_t max_primitives,
+                                           std::size_t max_touch_links,
+                                           AttachedModel& out) noexcept {
+  out.n_objects = 0;
+  // Cap check first (fail-closed on overflow). Each object carries exactly one
+  // primitive today, so the object and primitive caps guard the same count; we
+  // enforce both so a future multi-primitive object cannot silently exceed the
+  // configured budget.
+  const std::size_t n = inputs.size();
+  if (n > max_objects || n > max_primitives || n > out.objects.size()) {
+    return AttachIngestStatus::kOverflow;
+  }
+  const auto resolve = [&link_names](const std::string& name) -> int {
+    for (std::size_t i = 0; i < link_names.size(); ++i) {
+      if (link_names[i] == name) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  };
+  std::size_t touch_cursor = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const AttachedObjectInput& in = inputs[i];
+    const int attach = resolve(in.attach_link);
+    if (attach < 0) {
+      out.n_objects = 0;
+      return AttachIngestStatus::kUnknownLink;
+    }
+    // Shape sanity: dimensions must be finite and non-negative (radius > 0).
+    if (in.kind == AttachedShapeKind::kBox) {
+      if (!(std::isfinite(in.half_extents.x) && std::isfinite(in.half_extents.y) &&
+            std::isfinite(in.half_extents.z)) ||
+          in.half_extents.x <= 0.0 || in.half_extents.y <= 0.0 || in.half_extents.z <= 0.0) {
+        out.n_objects = 0;
+        return AttachIngestStatus::kMalformed;
+      }
+    } else {
+      if (!std::isfinite(in.radius) || in.radius <= 0.0 || !std::isfinite(in.half_length) ||
+          in.half_length < 0.0) {
+        out.n_objects = 0;
+        return AttachIngestStatus::kMalformed;
+      }
+    }
+    const std::size_t n_touch = in.touch_links.size();
+    if (touch_cursor + n_touch > max_touch_links ||
+        touch_cursor + n_touch > out.touch_links.size()) {
+      out.n_objects = 0;
+      return AttachIngestStatus::kOverflow;
+    }
+    AttachedObject& o = out.objects[i];
+    o.kind = in.kind;
+    o.radius = in.radius;
+    o.half_length = in.half_length;
+    o.half_extents = in.half_extents;
+    o.pose_in_link = in.pose_in_link;
+    o.attach_link = attach;
+    o.touch_first = static_cast<int>(touch_cursor);
+    o.touch_count = static_cast<int>(n_touch);
+    for (std::size_t t = 0; t < n_touch; ++t) {
+      const int tl = resolve(in.touch_links[t]);
+      if (tl < 0) {
+        out.n_objects = 0;
+        return AttachIngestStatus::kUnknownLink;
+      }
+      out.touch_links[touch_cursor++] = tl;
+    }
+  }
+  out.n_objects = n;
+  return AttachIngestStatus::kOk;
+}
+
+CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
+                                            const AttachedModel& attached,
+                                            const CollisionScratch& scratch,
+                                            const WorldModel& world, double margin) noexcept {
+  CollisionHit result;
+  result.min_distance = std::numeric_limits<double>::infinity();
+  const std::size_t n_world = world.capsules.size();
+  for (std::size_t i = 0; i < attached.n_objects; ++i) {
+    const AttachedObject& obj = attached.objects[i];
+    const Transform obj_xf = attached_world_transform(obj, scratch);
+    for (std::size_t w = 0; w < n_world; ++w) {
+      const double d =
+          attached_capsule_distance(obj, obj_xf, world.capsules[w].origin, world.capsules[w].radius,
+                                    world.capsules[w].half_length);
+      if (d < result.min_distance) {
+        result.min_distance = d;
+      }
+      if (d <= margin && !result.hit) {
+        result.hit = true;
+        result.link_a = static_cast<int>(i);  // attached object index
+        result.link_b = static_cast<int>(w);  // world obstacle index
+      }
+    }
+  }
+  return result;
+}
+
+CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
+                                            const AttachedModel& attached,
+                                            const CollisionScratch& scratch, const VoxelGrid& grid,
+                                            double margin) noexcept {
+  CollisionHit result;
+  result.min_distance = std::numeric_limits<double>::infinity();
+  if (grid.occupancy == nullptr || grid.sx <= 0 || grid.sy <= 0 || grid.sz <= 0 ||
+      grid.resolution <= 0.0) {
+    return result;
+  }
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
+  const double inv_res = 1.0 / grid.resolution;
+  const auto rng = [&](double lo, double hi, double org, int dim) {
+    const int i0 = static_cast<int>(std::floor((lo - org) * inv_res));
+    const int i1 = static_cast<int>(std::floor((hi - org) * inv_res));
+    return std::pair<int, int>{clamp_index(i0, 0, dim - 1), clamp_index(i1, 0, dim - 1)};
+  };
+  for (std::size_t i = 0; i < attached.n_objects; ++i) {
+    const AttachedObject& obj = attached.objects[i];
+    const Transform obj_xf = attached_world_transform(obj, scratch);
+    // World-AABB half-size of the object (|R| * extents). For a sphere/capsule
+    // the swept radius plus the endpoint span is the conservative extent.
+    double ex;
+    double ey;
+    double ez;
+    if (obj.kind == AttachedShapeKind::kBox) {
+      const Vec3 he = obj.half_extents;
+      ex = std::fabs(obj_xf.r[0]) * he.x + std::fabs(obj_xf.r[1]) * he.y +
+           std::fabs(obj_xf.r[2]) * he.z;
+      ey = std::fabs(obj_xf.r[3]) * he.x + std::fabs(obj_xf.r[4]) * he.y +
+           std::fabs(obj_xf.r[5]) * he.z;
+      ez = std::fabs(obj_xf.r[6]) * he.x + std::fabs(obj_xf.r[7]) * he.y +
+           std::fabs(obj_xf.r[8]) * he.z;
+    } else {
+      // Capsule/sphere: axis is local +Z; half-length projects onto each axis.
+      const double zx = std::fabs(obj_xf.r[2]) * obj.half_length;
+      const double zy = std::fabs(obj_xf.r[5]) * obj.half_length;
+      const double zz = std::fabs(obj_xf.r[8]) * obj.half_length;
+      ex = zx + obj.radius;
+      ey = zy + obj.radius;
+      ez = zz + obj.radius;
+    }
+    const double reach = margin + half_side;
+    const auto [ix0, ix1] =
+        rng(obj_xf.t.x - ex - reach, obj_xf.t.x + ex + reach, grid.origin.x, grid.sx);
+    const auto [iy0, iy1] =
+        rng(obj_xf.t.y - ey - reach, obj_xf.t.y + ey + reach, grid.origin.y, grid.sy);
+    const auto [iz0, iz1] =
+        rng(obj_xf.t.z - ez - reach, obj_xf.t.z + ez + reach, grid.origin.z, grid.sz);
+    for (int iz = iz0; iz <= iz1; ++iz) {
+      for (int iy = iy0; iy <= iy1; ++iy) {
+        for (int ix = ix0; ix <= ix1; ++ix) {
+          const std::size_t idx = static_cast<std::size_t>(ix + grid.sx * (iy + grid.sy * iz));
+          if (grid.occupancy[idx] == 0) {
+            continue;
+          }
+          const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
+                            grid.origin.y + (iy + 0.5) * grid.resolution,
+                            grid.origin.z + (iz + 0.5) * grid.resolution};
+          Transform voxel;
+          voxel.t = center;
+          double d;
+          if (obj.kind == AttachedShapeKind::kBox) {
+            d = box_box_distance(obj_xf, obj.half_extents, voxel, voxel_half);
+          } else {
+            d = box_capsule_distance(voxel, voxel_half, obj_xf, obj.radius, obj.half_length);
+          }
+          if (d < result.min_distance) {
+            result.min_distance = d;
+          }
+          if (d <= margin && !result.hit) {
+            result.hit = true;
+            result.link_a = static_cast<int>(i);
+            result.link_b = static_cast<int>(idx);
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+CollisionHit check_attached_self_collision(const CollisionModel& model,
+                                           const AttachedModel& attached,
+                                           const CollisionScratch& scratch,
+                                           double margin) noexcept {
+  CollisionHit result;
+  result.min_distance = std::numeric_limits<double>::infinity();
+  const std::size_t n_caps = model.capsules.size();
+  const std::size_t n_boxes = model.boxes.size();
+  for (std::size_t i = 0; i < attached.n_objects; ++i) {
+    const AttachedObject& obj = attached.objects[i];
+    const Transform obj_xf = attached_world_transform(obj, scratch);
+    for (std::size_t c = 0; c < n_caps; ++c) {
+      const int lc = model.capsule_link[c];
+      if (attached_allows_link(attached, obj, lc)) {
+        continue;
+      }
+      const Transform cap_j =
+          compose(scratch.link_world[static_cast<std::size_t>(lc)], model.capsules[c].origin);
+      const double d = attached_capsule_distance(obj, obj_xf, cap_j, model.capsules[c].radius,
+                                                 model.capsules[c].half_length);
+      if (d < result.min_distance) {
+        result.min_distance = d;
+      }
+      if (d <= margin && !result.hit) {
+        result.hit = true;
+        result.link_a = static_cast<int>(i);
+        result.link_b = lc;
+      }
+    }
+    for (std::size_t b = 0; b < n_boxes; ++b) {
+      const int lb = model.box_link[b];
+      if (attached_allows_link(attached, obj, lb)) {
+        continue;
+      }
+      const Transform box_j =
+          compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
+      double d;
+      if (obj.kind == AttachedShapeKind::kBox) {
+        d = box_box_distance(obj_xf, obj.half_extents, box_j, model.boxes[b].half_extents);
+      } else {
+        d = box_capsule_distance(box_j, model.boxes[b].half_extents, obj_xf, obj.radius,
+                                 obj.half_length);
+      }
+      if (d < result.min_distance) {
+        result.min_distance = d;
+      }
+      if (d <= margin && !result.hit) {
+        result.hit = true;
+        result.link_a = static_cast<int>(i);
+        result.link_b = lb;
       }
     }
   }
