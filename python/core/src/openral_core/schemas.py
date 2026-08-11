@@ -2119,6 +2119,71 @@ class AttachedCollisionObject(BaseModel):
             raise ValueError("AttachedCollisionObject payload CoG/inertia requires mass_kg.")
         return self
 
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        dimensions = [float(value) for value in msg.shape_dimensions]  # type: ignore[attr-defined]
+        shape_type = int(msg.shape_type)  # type: ignore[attr-defined]
+        if shape_type == int(msg.SHAPE_SPHERE):  # type: ignore[attr-defined]
+            if len(dimensions) != 1:
+                raise ValueError("Attached sphere requires one shape dimension.")
+            shape: CollisionShape = SphereShape(radius_m=dimensions[0])
+        elif shape_type == int(msg.SHAPE_CAPSULE):  # type: ignore[attr-defined]
+            capsule_dimensions = 2
+            if len(dimensions) != capsule_dimensions:
+                raise ValueError("Attached capsule requires two shape dimensions.")
+            shape = CapsuleShape(radius_m=dimensions[0], length_m=dimensions[1])
+        elif shape_type == int(msg.SHAPE_BOX):  # type: ignore[attr-defined]
+            box_dimensions = 3
+            if len(dimensions) != box_dimensions:
+                raise ValueError("Attached box requires three shape dimensions.")
+            shape = BoxShape(half_extents_m=(dimensions[0], dimensions[1], dimensions[2]))
+        else:
+            raise ValueError(f"Unknown attached collision shape type: {shape_type}")
+
+        center_of_mass = None
+        if bool(msg.center_of_mass_valid):  # type: ignore[attr-defined]
+            center = msg.center_of_mass_m  # type: ignore[attr-defined]
+            center_of_mass = (float(center.x), float(center.y), float(center.z))
+        inertia = (
+            tuple(float(value) for value in msg.inertia_kg_m2)  # type: ignore[attr-defined]
+            if bool(msg.inertia_valid)  # type: ignore[attr-defined]
+            else None
+        )
+        pose = msg.pose_in_link  # type: ignore[attr-defined]
+        attach_link = str(msg.attach_link)  # type: ignore[attr-defined]
+        return cls(
+            object_id=str(msg.object_id),  # type: ignore[attr-defined]
+            attach_link=attach_link,
+            touch_links=list(msg.touch_links),  # type: ignore[attr-defined]
+            shape=shape,
+            pose_in_link=Pose6D(
+                xyz=(
+                    float(pose.position.x),
+                    float(pose.position.y),
+                    float(pose.position.z),
+                ),
+                quat_xyzw=(
+                    float(pose.orientation.x),
+                    float(pose.orientation.y),
+                    float(pose.orientation.z),
+                    float(pose.orientation.w),
+                ),
+                frame_id=attach_link,
+            ),
+            mass_kg=(
+                float(msg.mass_kg)  # type: ignore[attr-defined]
+                if bool(msg.mass_valid)  # type: ignore[attr-defined]
+                else None
+            ),
+            center_of_mass_m=center_of_mass,
+            inertia_kg_m2=inertia,
+            confidence=float(msg.confidence),  # type: ignore[attr-defined]
+            evidence_kind=AttachmentEvidenceKind(str(msg.evidence_kind)),  # type: ignore[attr-defined]
+            evidence_ref=str(msg.evidence_ref) or None,  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+        )
+
 
 class OccupancyGridRef(BaseModel):
     """Reference to a 2D occupancy grid for mobile-base world-collision.
@@ -2292,6 +2357,8 @@ class WorldState(BaseModel):
             until a perception / SLAM source populates it.
         attached_objects: Collision objects carried by robot links. These are
             absent from world occupancy and remain collision-active as payloads.
+        attachment_revision: Monotonic producer revision for atomic snapshots.
+        attachment_stamp_ns: Timestamp of the last accepted attachment update.
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
@@ -2314,6 +2381,8 @@ class WorldState(BaseModel):
     # Bounded world surface for kernel world-collision checking.
     collision_primitives: list[WorldCollisionPrimitive] = Field(default_factory=list)
     attached_objects: list[AttachedCollisionObject] = Field(default_factory=list)
+    attachment_revision: int = Field(default=0, ge=0)
+    attachment_stamp_ns: int = Field(default=0, ge=0)
     occupancy_grid: OccupancyGridRef | None = None
 
 

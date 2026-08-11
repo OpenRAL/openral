@@ -110,3 +110,21 @@ def test_aggregator_rejects_duplicate_attachment_ids() -> None:
 
     with pytest.raises(ValueError, match="ids must be unique"):
         aggregator.update_attached_objects([_attachment(), _attachment()])
+
+
+def test_aggregator_preserves_producer_revision_and_timestamp() -> None:
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    attachment = _attachment()
+    aggregator.update_attached_objects(
+        [attachment],
+        revision=4,
+        stamp_ns=123_000_000,
+    )
+
+    snapshot = aggregator.snapshot()
+    assert snapshot.attachment_revision == 4
+    assert snapshot.attachment_stamp_ns == 123_000_000
+
+    with pytest.raises(ValueError, match="moved backwards"):
+        aggregator.update_attached_objects([], revision=3, stamp_ns=124_000_000)
+    assert aggregator.snapshot().attached_objects == [attachment]
