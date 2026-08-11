@@ -168,6 +168,7 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
     from openral_msgs.msg import AttachmentState
     from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
     from openral_world_state_ros.lifecycle_node import build_world_state_stamped_msg
+    from std_msgs.msg import UInt64
 
     desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
     handles = hal.mujoco_handles()
@@ -201,9 +202,13 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
         baguette = _attachment("baguette_seed1", "obj_main")
         distractor = _attachment("counter_distractor_seed1", "distr_counter_main")
 
+        revision = 0
+
         def publish_attachment_state(
             attachments: list[AttachedCollisionObject],
-        ) -> None:
+        ) -> int:
+            nonlocal revision
+            revision += 1
             wire = build_world_state_stamped_msg(
                 None,
                 WorldState(
@@ -217,19 +222,26 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
                 ),
             )
             state = AttachmentState()
-            state.revision = 1
+            state.revision = revision
             state.objects = list(wire.attached_objects)
             bridge._on_attachment_state(state)
+            return revision
 
-        publish_attachment_state([baguette, distractor])
+        attached_revision = publish_attachment_state([baguette, distractor])
+        assert point_count() == baseline  # additions wait for kernel acknowledgement
+        bridge._on_attachment_state_applied(UInt64(data=attached_revision))
         both_masked = point_count()
         assert both_masked < baseline
 
-        publish_attachment_state([baguette])
+        detached_revision = publish_attachment_state([baguette])
         baguette_only = point_count()
         assert both_masked < baguette_only < baseline
+        bridge._on_attachment_state_applied(UInt64(data=detached_revision))
+        assert point_count() == baguette_only
 
-        publish_attachment_state([])
+        empty_revision = publish_attachment_state([])
+        assert point_count() == baseline
+        bridge._on_attachment_state_applied(UInt64(data=empty_revision))
         assert point_count() == baseline
     finally:
         node.destroy_node()
