@@ -67,6 +67,7 @@ from typing import Literal
 
 import structlog
 from openral_core.schemas import (
+    AttachedCollisionObject,
     DetectedObject,
     JointState,
     Pose6D,
@@ -215,6 +216,8 @@ class WorldStateAggregator:
         # ObjectMemory in the enclosing node). Stored verbatim; no staleness
         # logic here (the memory owns lifecycle and refreshes every tick).
         self._detected_objects: list[DetectedObject] = []
+        # Atomic attached-payload snapshot keyed by stable world object id.
+        self._attached_objects: dict[str, AttachedCollisionObject] = {}
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
         # Stale components from the previous snapshot — used by snapshot() to
@@ -387,6 +390,22 @@ class WorldStateAggregator:
             self._detected_objects = list(objects)
         log.debug("world_state.detected_objects.updated", count=len(objects))
 
+    def update_attached_objects(self, objects: list[AttachedCollisionObject]) -> None:
+        """Atomically replace the attached-payload set.
+
+        Args:
+            objects: Complete current attachment set. Object ids must be unique.
+
+        Raises:
+            ValueError: If the update contains duplicate object ids.
+        """
+        by_id = {obj.object_id: obj for obj in objects}
+        if len(by_id) != len(objects):
+            raise ValueError("Attached collision object ids must be unique.")
+        with self._lock:
+            self._attached_objects = by_id
+        log.info("world_state.attached_objects.updated", count=len(objects))
+
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
 
@@ -537,6 +556,10 @@ class WorldStateAggregator:
                 images=images,
                 image_frames=image_frames,
                 battery_pct=self._battery_pct,
+                attached_objects=[
+                    self._attached_objects[object_id]
+                    for object_id in sorted(self._attached_objects)
+                ],
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
             )
