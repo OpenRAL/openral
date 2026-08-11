@@ -14,7 +14,7 @@ tool: its inference graph only exists inside the upstream ``lingbotvla`` package
 reconstructed exactly as the sidecar server does (config from the repo's
 ``configs/vla/robotwin/robotwin.yaml``, a ``lerobot`` import stub, and the
 flash-attention fallback patch). So this script **runs in the sidecar venv**
-(torch 2.8 / transformers 4.57.3 / bitsandbytes) and imports the server module's
+(torch 2.9 / transformers 4.57.3 / bitsandbytes) and imports the server module's
 helpers, guaranteeing the produced pack is byte-for-byte what the runtime
 ``_nf4_backbone_in_place`` would have built.
 
@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import importlib.metadata
 import json
 import os
 import shutil
@@ -360,7 +361,14 @@ def main(argv: list[str]) -> int:
     )
     args = p.parse_args(argv)
 
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+    # and warns on every run when the old spelling is present; resolve it from
+    # metadata rather than hardcoding either name, since this script runs in the
+    # same sidecar venv as both LingBot variants and they sit on opposite sides
+    # of the rename (v2 torch 2.9.1, v1 held at 2.8 by lerobot's cap).
+    _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
+    _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    os.environ.setdefault(_alloc_var, "expandable_segments:True")
     import torch
 
     if not torch.cuda.is_available():

@@ -1,0 +1,36 @@
+# Shared uv `--overrides` file: raise nvrtc above the sm_121 cliff on aarch64.
+#
+# torch's `cu128` wheels pin `nvidia-cuda-nvrtc-cu12==12.8.93` exactly, and that
+# nvrtc tops out at sm_120:
+#
+#     nvrtcGetSupportedArchs() -> [50 … 90, 100, 101, 120]
+#
+# GB10 (DGX Spark) and Jetson Thor are **sm_121**. Precompiled sm_120 kernels
+# run fine there, which is why a matmul, `torchvision.ops.nms` and a
+# bitsandbytes NF4 forward all pass — but anything torch compiles at runtime
+# through the nvrtc jiterator asks for `compute_121` and dies:
+#
+#     nvrtc: error: invalid value for --gpu-architecture (-arch)
+#
+# That is not an edge case. It killed every Qwen3.5 scene-VLM query on GB10,
+# because `modeling_qwen3_5.py` reduces the vision grid with
+# `image_grid_thw.prod(-1)` and `prod` is a jiterator op. `torch.sum` is
+# precompiled and works; `torch.prod` is not and does not.
+#
+# nvrtc 12.9.86 adds 103 and **121** to that list and fixes the whole class of
+# failure, verified live on GB10 with an otherwise-unchanged torch 2.9.1+cu128.
+# Overriding just this one shim keeps the torch build, the CUDA runtime and the
+# entire x86_64 resolution byte-identical — the alternative, moving aarch64 to
+# the `cu130` index, also works but swaps the whole stack and would need a
+# per-architecture lockfile. Marker-scoped so only aarch64 is affected.
+#
+# BOTH branches must be listed. A uv override *replaces* every requirement for
+# the package it names, so a lone aarch64-marked line would leave non-aarch64
+# platforms with no nvrtc requirement at all rather than falling back to torch's
+# own pin — verified: the first compile dropped nvrtc from the x86_64 half of
+# the lock entirely. The `!=` line restates torch 2.9.1+cu128's exact pin so
+# x86_64 resolution is unchanged.
+#
+# See docs/reference/aarch64-support.md.
+nvidia-cuda-nvrtc-cu12==12.9.86 ; platform_machine == "aarch64"
+nvidia-cuda-nvrtc-cu12==12.8.93 ; platform_machine != "aarch64"

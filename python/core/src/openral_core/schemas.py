@@ -4550,8 +4550,9 @@ string-matching the skill name. Adding a family here means landing the
 matching adapter under ``python/sim/src/openral_sim/adapters/``.
 
 ``xr1`` (Xiaomi Robotics XR-1 / ``MiBoTForActionGeneration``) runs
-out-of-process because its released checkpoints pin torch 2.8,
-transformers 4.57.1, and FlashAttention 2.8.3. The adapter consumes the
+out-of-process because its released checkpoints pin transformers 4.57.1
+and FlashAttention 2.8.3 (the sidecar installs torch 2.9.1 rather than
+upstream's 2.8.0, which publishes no linux-aarch64 wheel). The adapter consumes the
 three public benchmark checkpoints; the bare 5B ``model_states.pt`` is
 a post-training seed, not an executable policy.
 
@@ -4561,10 +4562,11 @@ sidecar in an isolated Python 3.10 venv, sharing the architecture of the
 
 ``lingbot_vla2`` (Robbyant LingBot-VLA 2.0, Qwen3-VL-4B backbone + sparse-MoE
 flow-matching action expert, Apache-2.0 code + weights) runs out-of-process
-via a ZMQ sidecar in its own Python 3.12 + torch-2.8 venv — the upstream
+via a ZMQ sidecar in its own Python 3.12 + torch-2.9.1 venv — the upstream
 ``lingbotvla`` package pins ``torch==2.8.0`` / ``transformers==4.57.3`` +
-custom Triton MoE kernels, incompatible with the workspace torch>=2.9 /
-transformers>=5 (adapter: ``openral_sim.policies.lingbot_vla2``).
+custom Triton MoE kernels, incompatible with the workspace transformers>=5
+(the torch half of that pin set is overridden to 2.9.1 because 2.8.0 has no
+linux-aarch64 wheel; adapter: ``openral_sim.policies.lingbot_vla2``).
 
 ``lingbot_vla`` (Robbyant LingBot-VLA 1.0, 4B Qwen2.5-VL-3B backbone + a *dense*
 Qwen2 flow-matching action expert; paper "A Pragmatic VLA Foundation Model",

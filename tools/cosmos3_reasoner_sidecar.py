@@ -83,7 +83,12 @@ import os
 import sys
 from pathlib import Path
 
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import (
+    alloc_conf_var,
+    ensure_pip_venv,
+    run_cmd,
+    venv_torch_version,
+)
 
 _DEFAULT_HOME = Path.home() / ".cache" / "openral" / "cosmos3-reasoner-sidecar"
 _VENV_ENV = "OPENRAL_COSMOS3_SIDECAR_VENV"
@@ -354,7 +359,10 @@ def main() -> int:
     # Fragmentation fix, verified live on the 8 GB RTX 4070: without it the
     # Edge load OOMs with ~670 MiB "reserved but unallocated". Must be set
     # before the first CUDA allocation, which exec-ing the server guarantees.
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+    # and warns on every boot when the old spelling is present, so resolve it
+    # from the venv's actual torch rather than hardcoding either name.
+    env.setdefault(alloc_conf_var(venv_torch_version(py.parent.parent)), "expandable_segments:True")
 
     # Download + (for the Edge diffusers layout) build the flat reasoner view
     # vLLM can load; served_name keeps the public model id stable.

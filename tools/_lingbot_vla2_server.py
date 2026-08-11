@@ -6,10 +6,10 @@ Robbyant's ``lingbotvla`` package (https://github.com/robbyant/lingbot-vla-v2,
 Apache-2.0 code + weights) and answers ``ping`` / ``reset`` / ``get_action`` /
 ``close`` over ZMQ REQ/REP framed by msgpack — the same ndarray wire the
 :class:`openral_sim.sidecar.SidecarClient` speaks. It is ``os.execvpe``-d by the
-boot helper :mod:`tools.lingbot_vla2_sidecar` *after* the repo checkout + torch-2.8
+boot helper :mod:`tools.lingbot_vla2_sidecar` *after* the repo checkout + torch-2.9
 venv are provisioned, so it only ever runs under the sidecar interpreter and never
-imports ``openral_*`` (that stack pins torch>=2.9 / transformers>=5, incompatible
-with the upstream torch==2.8.0 / transformers==4.57.3 pins — CLAUDE.md §3).
+imports ``openral_*`` (that stack pins transformers>=5, incompatible with the
+upstream transformers==4.57.3 pin — CLAUDE.md §3).
 
 Wire protocol (msgpack ``{"endpoint","data"}`` in, dict out; ndarrays via the
 ``__ndarray__`` / ``np.save`` sentinel that mirrors
@@ -42,6 +42,7 @@ weights carry no license guard.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
 import os
 import sys
@@ -217,6 +218,38 @@ def _coerce_attn_config(config: Any, target: str) -> None:
         child = getattr(config, name, None)
         if child is not None and hasattr(child, "_attn_implementation"):
             _coerce_attn_config(child, target)
+
+
+def _install_moe_logger() -> None:
+    """Bind the ``logger`` name upstream's MoE fallback handler references but never defines.
+
+    ``qwen2_action_expert.py`` catches a failure in ``robby_moe_forward`` and
+    logs ``logger.warning_once(...)`` before falling back to ``fused_moe_forward``
+    — but the module never imports or defines ``logger`` (2 references, 0
+    bindings). So *any* MoE kernel fault becomes ``NameError: name 'logger' is
+    not defined``, which names nothing and points nowhere.
+
+    That is not hypothetical: it masked a real ``PTXASError`` during the aarch64
+    bring-up and cost a full boot cycle to see past. The fallback it unblocks is
+    nearly worthless (``fused_moe_forward`` uses the same Triton kernels), so the
+    value here is purely diagnostic — the real error reaches the log instead of a
+    lie. Same shape as :func:`_patch_eager_vision_rotary_v1`, which fills an
+    identical upstream gap: a name referenced but never bound.
+
+    Uses upstream's own factory rather than ``logging.getLogger`` to guarantee
+    ordering, not type: ``get_logger`` returns a plain stdlib ``logging.Logger``,
+    and ``warning_once`` exists only because ``lingbotvla/utils/logging.py``
+    assigns it onto ``logging.Logger`` at import time. A bare
+    ``logging.getLogger`` would therefore work *iff* something else had already
+    imported that module — correct by accident, order-dependent. Going through
+    the factory forces the class-level patch (and their root-logger config) to be
+    installed first.
+    """
+    import lingbotvla.models.vla.lingbot_vla.qwen2_action_expert as _qae
+    from lingbotvla.utils import logging as _lbl
+
+    if not hasattr(_qae, "logger"):
+        _qae.logger = _lbl.get_logger(__name__)  # type: ignore[attr-defined]  # reason: fill upstream gap
 
 
 def _install_attn_fallback(*, target: str) -> None:
@@ -502,6 +535,9 @@ class _LingBotPolicy:
         # The model import chain pulls training-only lerobot imports; stub them
         # before importing the deploy module (see _install_lerobot_stub).
         _install_lerobot_stub()
+        # Must follow the stub and precede the deploy import, which is what
+        # pulls `qwen2_action_expert` in (see _install_moe_logger).
+        _install_moe_logger()
 
         from deploy.lingbot_vla_v2_policy import LingbotVLAv2Server
         from lingbotvla.models.vla.lingbot_vla.qwen3vl_in_vla import apply_lingbot_qwen3_vl_patch
@@ -925,7 +961,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
+    # and warns whenever the old spelling is present. This server serves BOTH
+    # variants and they sit on opposite sides of that rename — v2 runs torch
+    # 2.9.1, v1 is held at 2.8 by lerobot 0.4.2's `torch<2.8.0` cap — so the
+    # spelling has to follow the installed torch rather than being a constant.
+    # Read from metadata, not `import torch`, so nothing initializes the CUDA
+    # allocator before the var is set.
+    _torch_mm = tuple(int(part) for part in importlib.metadata.version("torch").split(".")[:2])
+    _var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    os.environ.setdefault(_var, "expandable_segments:True")
     args = _parse_args(argv)
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)

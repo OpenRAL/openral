@@ -1,0 +1,67 @@
+# uv `--overrides` file: make the upstream RLDX-1 dependency set installable on
+# an aarch64 CUDA host (GB10 / DGX Spark, Jetson Thor).
+#
+# Applied ONLY by the aarch64 branch of ``tools/rldx_sidecar.py`` — x86_64 still
+# runs upstream's own ``uv sync`` against their ``uv.lock``, untouched. Every
+# pin below therefore restates upstream's exact ``pyproject.toml`` requirement on
+# the ``!= "aarch64"`` branch, so the file stays correct if it is ever reused on
+# a pass that also runs on x86_64. A uv override *replaces* every requirement for
+# the package it names, so a lone aarch64-marked line would leave x86_64 with no
+# requirement at all rather than falling back to upstream's pin — see the header
+# of ``aarch64-nvrtc-override.txt`` for the failure that taught us this.
+#
+# ── torch / torchvision ───────────────────────────────────────────────────────
+# Upstream pins ``torch==2.7.0`` / ``torchvision==0.22.0``. Both publish
+# ``manylinux_2_28_aarch64`` cp310 wheels on the ``cu128`` index, so 2.7.0 is not
+# itself the blocker — but the rest of this file forces a re-resolve, and the
+# repo has standardised every sidecar on ``torch==2.9.1`` for aarch64 (the one
+# release line whose triton dependency also ships aarch64 wheels; see
+# docs/reference/aarch64-support.md). Keeping RLDX on the same 2.9.1 + nvrtc
+# 12.9.86 stack as XR-1 / LingBot / Qwen means one validated CUDA stack on this
+# host instead of two. torchvision 0.24.1 is the matching release.
+#
+# NOTE: the aarch64 ``cu128`` torchvision wheel carries **no** ``+cu128`` local
+# tag (the x86_64 one does), so ``0.24.1`` here resolves to the CUDA build only
+# because ``--torch-backend=cu128`` selects the index — do not "fix" the missing
+# local version.
+torch==2.9.1 ; platform_machine == "aarch64"
+torch==2.7.0 ; platform_machine != "aarch64"
+torchvision==0.24.1 ; platform_machine == "aarch64"
+torchvision==0.22.0 ; platform_machine != "aarch64"
+#
+# ── torchcodec ────────────────────────────────────────────────────────────────
+# Dropped entirely on aarch64: the missing aarch64 branch below means "no
+# requirement". ``torchcodec`` publishes its first aarch64 wheel at 0.11.0, which
+# is a torch-2.10 build — there is no version of it that co-exists with any torch
+# that RLDX can run. This is the wall the original issue-88 investigation hit,
+# and it is real: ``uv sync`` in the upstream checkout still dies here with
+# "doesn't have a source distribution or wheel for the current platform".
+#
+# It is also *not* load-bearing for inference. torchcodec is a video **dataset**
+# decoder: ``rldx/utils/video_utils.py`` imports it inside a
+# ``try/except (ImportError, RuntimeError)`` and only reaches it through
+# ``video_backend="torchcodec"`` on the training / replay / open-loop-eval data
+# path. ``rldx/eval/run_rldx_server.py`` → ``RLDXPolicy`` never decodes a video;
+# the sidecar is handed decoded uint8 frames over the ZMQ wire.
+torchcodec==0.4.0 ; platform_machine != "aarch64"
+#
+# ── flash-attn ────────────────────────────────────────────────────────────────
+# Also dropped on aarch64, and this one costs a little accuracy-neutral speed.
+# flash-attn publishes **no** wheels on PyPI for any platform (only
+# ``flash_attn-<v>.tar.gz``); the real wheels live on its GitHub release, which
+# its ``setup.py`` fetches by ``linux_<machine>`` + torch minor + cpython tag.
+# For 2.8.3 that release carries exactly two aarch64 wheels and both are
+# **cp312** (``cu12torch2.9`` and ``cu13torch2.10``) — this sidecar is cp310,
+# because ``rldx`` pins ``requires-python = "==3.10.*"``. So aarch64 + cp310 has
+# no wheel and would fall back to an hour-plus nvcc source build, on every fresh
+# host, for a kernel we can do without. (XR-1's aarch64 flash-attn "18 s build"
+# is that cp312 prebuilt wheel being downloaded, not a source build.)
+#
+# Nothing in ``rldx`` imports ``flash_attn`` directly — the backbone selects it
+# through transformers' ``ALL_ATTENTION_FUNCTIONS``, and upstream ships the
+# escape hatch itself: ``rldx/model/modules/backbone/adapter.py`` reads
+# ``_DEFAULT_ATTN_IMPL = os.environ.get("RLDX_ATTN_IMPL", "flash_attention_2")``
+# for exactly "environments that cannot build flash-attn". The boot wrapper sets
+# ``RLDX_ATTN_IMPL=sdpa`` only when ``flash_attn`` is genuinely not importable,
+# so x86_64 keeps FlashAttention-2 verbatim.
+flash-attn==2.7.4.post1 ; platform_machine != "aarch64"

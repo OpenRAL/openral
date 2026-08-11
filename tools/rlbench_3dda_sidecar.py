@@ -31,6 +31,7 @@ VRAM: inference peaks ~0.43 GB (8 GB-host friendly); runs under ``no_grad`` (the
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
 import json
 import os
@@ -217,7 +218,15 @@ def _serve(policy: _Diffuser3DActor, *, host: str, port: int) -> int:
 
 
 def main(argv: list[str]) -> int:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+    # and warns on every boot when the old spelling is present; resolve from the
+    # externally-provisioned venv's actual torch rather than hardcoding a name.
+    try:
+        _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
+        _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        _alloc_var = "PYTORCH_CUDA_ALLOC_CONF"
+    os.environ.setdefault(_alloc_var, "expandable_segments:True")
     args = _parse_args(argv)
     policy = _Diffuser3DActor(args)
     return _serve(policy, host=args.host, port=args.port)

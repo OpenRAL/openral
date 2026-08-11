@@ -42,7 +42,7 @@ inference: false
 ## How it works
 
 XR-1 combines Qwen3-VL-4B-Instruct with a 36-layer DiT action head. OpenRAL
-runs the exact torch 2.8 / transformers 4.57.1 / FlashAttention stack in a
+runs the exact torch 2.9.1 / transformers 4.57.1 / FlashAttention stack in a
 sidecar, pads the 8-D physical state to XR-1's internal 60-D state tensor, and
 applies Xiaomi's 0.95 center crop before returning the checkpoint's first seven
 decoded action channels.

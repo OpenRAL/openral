@@ -148,9 +148,10 @@ The workaround only matters when *quantizing at load* from the raw upstream
 (the build step, or `--model Qwen/Qwen3.5-4B`): transformers 5.x's parallel
 loader materializes weights in bf16 on-GPU *before* bitsandbytes quantizes, and
 the 4-way-concurrent ~7.4 GB transient OOMs an 8 GB card, so the sidecar forces
-**serial materialization** (`core_model_loading.GLOBAL_WORKERS = 1`) +
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. The sidecar auto-detects
-which path applies. The Gated-DeltaNet fast kernels (`fla` / `causal-conv1d`)
+**serial materialization** (`core_model_loading.GLOBAL_WORKERS = 1`) + the
+expandable-segments allocator config (`PYTORCH_ALLOC_CONF` on this sidecar's
+torch 2.9.1; `PYTORCH_CUDA_ALLOC_CONF` was renamed in 2.9). The sidecar
+auto-detects which path applies and sets the correct env var name for you. The Gated-DeltaNet fast kernels (`fla` / `causal-conv1d`)
 are optional — without them transformers uses a slower torch fallback (the model
 still loads and answers). The model loads via `AutoModelForImageTextToText` (it
 registers as `Qwen3_5ForConditionalGeneration`).

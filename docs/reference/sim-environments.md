@@ -29,7 +29,9 @@ output is scattered through the launch log: the reasoner reports the failure as
 `goal_rejected`, and the quoted tail is the only place the cause travels with
 it. A sidecar pinned to wheels that don't exist for your platform (aarch64 is
 the common case) shows up there as a `uv` "no source distribution or wheel for
-the current platform" line naming the offending package.
+the current platform" line naming the offending package — see [aarch64 CUDA
+hosts](aarch64-support.md) for the per-sidecar status on GB10 / DGX Spark and
+Jetson Thor.
 
 ## Quick CLI
 

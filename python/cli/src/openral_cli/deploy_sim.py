@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import importlib.metadata
 import json
 import os
 import shlex
@@ -1596,6 +1597,28 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     )
 
 
+def _alloc_conf_var() -> str:
+    """Return the allocator-config env var name this workspace's torch reads.
+
+    torch renamed ``PYTORCH_CUDA_ALLOC_CONF`` to ``PYTORCH_ALLOC_CONF`` in 2.9.
+    The old name still works there but logs a deprecation warning at every
+    process start, so setting both spellings — which is what this did
+    previously — bought cross-version safety at the cost of permanent noise on
+    every launch. Resolved from installed metadata rather than by importing
+    torch, which would add seconds to CLI startup for one string.
+
+    Falls back to the old spelling when torch is absent or its version is
+    unparseable: every torch that reads either name understands that one, so the
+    worst case is the warning, never a lost allocator setting.
+    """
+    try:
+        version = importlib.metadata.version("torch")
+        major, minor = (int(part) for part in version.split(".")[:2])
+    except (importlib.metadata.PackageNotFoundError, ValueError):
+        return "PYTORCH_CUDA_ALLOC_CONF"
+    return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+
+
 def _prepare_launch_env() -> dict[str, str]:
     """Build the environment for the ``ros2 launch`` subprocess (deploy sim + deploy run).
 
@@ -1609,9 +1632,12 @@ def _prepare_launch_env() -> dict[str, str]:
       tight 8 GiB card the default allocator fragments and OOMs at the forward
       pass even for an NF4 model that otherwise fits (molmoact2-libero-nf4 peaks
       ~7.6 GiB; without this it dies on a small alloc with ~165 MiB stuck in
-      reserved-but-unallocated). ``setdefault`` so an operator override wins;
-      both env-var spellings are set because the name was renamed across torch
-      releases (``PYTORCH_CUDA_ALLOC_CONF`` → ``PYTORCH_ALLOC_CONF``).
+      reserved-but-unallocated). ``setdefault`` so an operator override wins.
+      The name was renamed across torch releases
+      (``PYTORCH_CUDA_ALLOC_CONF`` → ``PYTORCH_ALLOC_CONF`` in 2.9), so the
+      spelling is chosen from the installed torch rather than setting both:
+      the old name still works on 2.9 but logs a deprecation warning on every
+      process start, which is noise on every launch.
     * Clean stale Fast-DDS SHM (``_apply_rmw_default``).
     """
     env = os.environ.copy()
@@ -1622,8 +1648,7 @@ def _prepare_launch_env() -> dict[str, str]:
     venv_bin = os.path.dirname(sys.executable)
     existing_path = env.get("PATH", "")
     env["PATH"] = f"{venv_bin}{os.pathsep}{existing_path}" if existing_path else venv_bin
-    env.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    env.setdefault(_alloc_conf_var(), "expandable_segments:True")
     _apply_rmw_default(env)
     return env
 

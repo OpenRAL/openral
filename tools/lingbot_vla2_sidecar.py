@@ -2,9 +2,10 @@
 
 Robbyant's ``lingbotvla`` package (https://github.com/robbyant/lingbot-vla-v2,
 Apache-2.0 code + weights) pins ``torch==2.8.0`` / ``transformers==4.57.3`` /
-``triton==3.4.0`` and carries custom Triton MoE kernels + a ``sys.path``-based
-layout, so it cannot coexist in the openral py3.12 (torch>=2.9 / transformers>=5)
-workspace (CLAUDE.md §3). We run the upstream ``LingbotVLAv2Server`` out-of-process
+``triton==3.4.0`` (we override the torch stack to 2.9.1 / triton 3.5.1 — see
+:data:`_V2_OVERRIDES`) and carries custom Triton MoE kernels + a ``sys.path``-based
+layout, so it cannot coexist in the openral py3.12 (transformers>=5) workspace
+(CLAUDE.md §3). We run the upstream ``LingbotVLAv2Server`` out-of-process
 and drive it from :mod:`openral_sim.policies.lingbot_vla2` over ZMQ REQ/REP framed
 by msgpack — the same transport the rldx / rlbench-3dda sidecars use.
 
@@ -20,10 +21,12 @@ a pinned-SHA git clone of the upstream repo added (the ``lingbotvla`` package +
 1. **Clone** ``lingbot-vla-v2`` at :data:`_PINNED_SHA` into ``<home>/source``
    (skipped when ``$OPENRAL_LINGBOT_VLA2_REPO`` points at an existing checkout).
 2. **Venv** — a Python 3.12 ``<home>/.venv`` populated from the upstream
-   ``requirements.txt`` (fully version-pinned: torch==2.8.0, transformers==4.57.3,
-   triton==3.4.0, numpy==1.26.4, …) plus the openral-side wire/quant extras
-   (``pyzmq`` + ``bitsandbytes``). flash-attn is deliberately NOT installed — the
-   server coerces the upstream ``flash_attention_2`` hardcode to sdpa/eager.
+   ``requirements.txt`` (fully version-pinned: transformers==4.57.3,
+   numpy==1.26.4, …) under the :data:`_V2_OVERRIDES` torch-stack overrides
+   (torch 2.9.1 / triton 3.5.1 rather than upstream's aarch64-less 2.8.0 / 3.4.0
+   — see the constant), plus the openral-side wire/quant extras (``pyzmq`` +
+   ``bitsandbytes``). flash-attn is deliberately NOT installed — the server
+   coerces the upstream ``flash_attention_2`` hardcode to sdpa/eager.
    Skipped when ``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` points at an existing
    interpreter.
 3. **Exec** ``tools/_lingbot_vla2_server.py`` in that venv with the resolved
@@ -42,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -75,6 +79,45 @@ _VENV_ENV_V1 = "OPENRAL_LINGBOT_VLA_SIDECAR_PYTHON"
 _REPO_ENV_V1 = "OPENRAL_LINGBOT_VLA_REPO"
 
 _SERVER = Path(__file__).resolve().parent / "_lingbot_vla2_server.py"
+# Raises nvrtc past the sm_121 ceiling on aarch64 (GB10 / Jetson Thor); shared
+# with the other sidecars, see that file's header. Passed as a SECOND
+# ``--overrides`` alongside the generated torch-stack overrides below.
+_NVRTC_OVERRIDE = (
+    Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
+)
+
+# V2 torch stack, deliberately *newer* than the ``torch==2.8.0`` /
+# ``torchvision==0.23.0`` / ``torchaudio==2.8.0`` / ``triton==3.4.0`` pins in
+# upstream's ``requirements.txt``. The ``cu128`` build of torch 2.8.0 publishes
+# no ``linux_aarch64`` wheel (manylinux x86_64 + win_amd64 only), and triton
+# 3.4.0 has no aarch64 wheel on any index, so the upstream pin set cannot be
+# installed at all on an aarch64 CUDA host (GB10 / DGX Spark, Jetson Thor).
+# 2.9.1+cu128 ships ``manylinux_2_28_aarch64`` and pulls triton 3.5.1, which
+# does too. Fed to ``uv pip install --overrides`` so the fully-pinned upstream
+# requirements still resolve. ``lingbotvla`` is consumed off ``sys.path`` from
+# the checkout, not installed, so it carries no metadata cap of its own to
+# fight. V1 is NOT covered — see :func:`_install_v1`.
+# See ``docs/reference/aarch64-support.md``.
+_TORCH_PIN = "torch==2.9.1"
+_TORCHVISION_PIN = "torchvision==0.24.1"
+_TORCHAUDIO_PIN = "torchaudio==2.9.1"
+# torchcodec ships per-torch-minor builds (0.6.x ↔ torch 2.8, 0.9.x ↔ torch
+# 2.9); keeping upstream's 0.6.0 next to torch 2.9 would break the c10 ABI the
+# same way the workspace's own torchcodec pin guards against (root
+# pyproject.toml [tool.uv] constraint-dependencies). The marker drops it
+# entirely on aarch64 — torchcodec publishes no aarch64 wheel below 0.11.0,
+# which is a torch-2.10 build. It is a video *dataset* decoder (upstream needs
+# it for training); the inference server never imports it, and lerobot's own
+# metadata excludes it on aarch64 for the same reason.
+_TORCHCODEC_PIN = 'torchcodec==0.9.1 ; platform_machine != "aarch64"'
+_TRITON_PIN = "triton==3.5.1"
+_V2_OVERRIDES = (
+    _TORCH_PIN,
+    _TORCHVISION_PIN,
+    _TORCHAUDIO_PIN,
+    _TORCHCODEC_PIN,
+    _TRITON_PIN,
+)
 
 
 def _ensure_source(
@@ -116,6 +159,15 @@ def _install_v1(uv: str, py: Path) -> None:
     only carries transformers as an optional extra, so base install coexists with
     the pinned ``transformers==4.51.3``. flash-attn is deliberately NOT installed —
     the server coerces the upstream flash_attention_2 hardcode to eager.
+
+    **x86_64 only.** Unlike V2 this path does NOT take the :data:`_TORCH_PIN`
+    2.9.1 bump: ``lerobot==0.4.2`` — a hard requirement of the V1 server, which
+    uses the real lerobot rather than V2's stub — caps ``torch<2.8.0``, so the
+    torch versions that publish an aarch64 ``cu128`` wheel are all out of reach
+    (2.9.x is above the cap; 2.7.x is under it but drags ``triton==3.3.1``,
+    x86_64-only). ``torchcodec`` is likewise x86_64/darwin-arm64-only below
+    0.11.0. Lifting this means moving V1 off lerobot 0.4.2, which is a
+    different change. See ``docs/reference/aarch64-support.md``.
     """
     run_cmd(
         _LABEL,
@@ -185,8 +237,9 @@ def _ensure_venv(
 
     ``$OPENRAL_LINGBOT_VLA2_SIDECAR_PYTHON`` reuses an existing interpreter
     verbatim (dev escape hatch). Otherwise a Python 3.12 venv is built and the
-    fully-pinned upstream ``requirements.txt`` is installed (cu128 torch wheels),
-    plus the openral-side wire/quant deps (``pyzmq`` + ``bitsandbytes``).
+    fully-pinned upstream ``requirements.txt`` is installed (cu128 torch wheels)
+    under the :data:`_V2_OVERRIDES` torch-stack overrides, plus the openral-side
+    wire/quant deps (``pyzmq`` + ``bitsandbytes``).
     """
     override = os.environ.get(venv_env)
     if override:
@@ -204,15 +257,62 @@ def _ensure_venv(
         # --require-hashes: the cu128 torch wheels surface marker-only transitives
         # uv's resolver drops, which --require-hashes would reject even though they
         # never install on this platform (same rationale as locateanything.lock).
+        #
+        # --overrides replaces the five upstream torch-stack pins (see
+        # _V2_OVERRIDES), two of which cannot be installed on aarch64 at all.
+        # Written into the sidecar home rather than the checkout so the
+        # pinned-SHA clone stays pristine.
+        overrides = home / "torch-overrides.txt"
+        home.mkdir(parents=True, exist_ok=True)
+        overrides.write_text("\n".join(_V2_OVERRIDES) + "\n", encoding="utf-8")
         run_cmd(
             _LABEL,
-            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "-r", str(reqs)],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(py),
+                "--torch-backend=cu128",
+                "--overrides",
+                str(overrides),
+                "--overrides",
+                str(_NVRTC_OVERRIDE),
+                "-r",
+                str(reqs),
+            ],
         )
         # openral-side wire (pyzmq/msgpack — msgpack is already in the upstream
         # reqs) + NF4 quantization (bitsandbytes); neither is in requirements.txt.
+        # On aarch64, add a CUDA 12.9 ptxas: this is the only sidecar that runs
+        # Triton kernels of its own (lingbotvla's MoE), and triton 3.5.1 bundles
+        # a CUDA 12.8 ptxas that cannot target sm_121 — every kernel dies with
+        # "Value 'sm_121a' is not defined for option 'gpu-name'". The kernels
+        # themselves are fine under triton 3.5.1; only the assembler is too old.
+        # `make_isolated_env` points TRITON_PTXAS_PATH at this on exec.
+        # The override goes on THIS pass too. uv re-resolves the whole
+        # environment on every `pip install`, so a later pass without the
+        # override file sees torch's exact `nvidia-cuda-nvrtc-cu12==12.8.93`
+        # pin again and silently downgrades the shim the previous pass just
+        # installed — the fix survives exactly one command. Verified live: the
+        # extras pass printed `- nvidia-cuda-nvrtc-cu12==12.9.86 /
+        # + nvidia-cuda-nvrtc-cu12==12.8.93` and inference went back to dying
+        # in nvrtc. Invariant: every uv pass that can re-resolve carries it.
+        extras = ["pyzmq", "bitsandbytes"]
+        if platform.machine() == "aarch64":
+            extras.append("nvidia-cuda-nvcc-cu12==12.9.86")
         run_cmd(
             _LABEL,
-            [uv, "pip", "install", "--python", str(py), "pyzmq", "bitsandbytes"],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(py),
+                "--overrides",
+                str(_NVRTC_OVERRIDE),
+                *extras,
+            ],
         )
 
     ensure_uv()
@@ -221,10 +321,21 @@ def _ensure_venv(
         home=home,
         python="3.12",
         install=install or _install,
-        # Keyed on the upstream pins (which move with _PINNED_SHA) + our extras,
-        # so a repinned checkout repairs an existing venv. An injected custom
-        # ``install`` has no spec we can key on, so it keeps the opaque marker.
-        spec=None if install else (reqs.read_text(encoding="utf-8"), "pyzmq", "bitsandbytes"),
+        # Keyed on the upstream pins (which move with _PINNED_SHA) + our torch
+        # overrides + our extras, so a repinned checkout *or* a corrected torch
+        # override repairs an existing venv. An injected custom ``install`` has
+        # no spec we can key on, so it keeps the opaque marker.
+        spec=(
+            None
+            if install
+            else (
+                reqs.read_text(encoding="utf-8"),
+                *_V2_OVERRIDES,
+                _NVRTC_OVERRIDE.read_text(encoding="utf-8"),
+                "pyzmq",
+                "bitsandbytes",
+            )
+        ),
     )
 
 

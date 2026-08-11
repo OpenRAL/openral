@@ -10,9 +10,11 @@
 # manipulation on the RoboTwin / AgileX "Cobot Magic" embodiment. Routed via the
 # out-of-process `lingbot_vla2` adapter (openral_sim.policies.lingbot_vla2): the
 # upstream `lingbotvla` package pins torch==2.8.0 / transformers==4.57.3 + custom
-# Triton MoE kernels (incompatible with the openral torch>=2.9 / transformers>=5
-# workspace, CLAUDE.md §3), so the model runs in an auto-provisioned Python 3.12 +
-# torch-2.8 ZMQ sidecar (tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py).
+# Triton MoE kernels (incompatible with the openral transformers>=5 workspace,
+# CLAUDE.md §3), so the model runs in an auto-provisioned Python 3.12 +
+# torch-2.9.1 ZMQ sidecar (tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py);
+# the boot helper overrides upstream's torch 2.8.0 / triton 3.4.0, which publish
+# no linux-aarch64 wheels (docs/reference/aarch64-support.md).
 #
 # Contract (verified against the upstream configs/vla/robotwin/robotwin.yaml +
 # assets/norm_stats/robotwin.json):
@@ -135,7 +137,7 @@ description: >
   action expert) for dual-arm manipulation on the RoboTwin 2.0 / AgileX
   Cobot Magic embodiment. Predicts 50-step action chunks from three RGB views
   (head + per-wrist) driving a 14-DoF dual-arm joint command (25-step
-  replay). Runs in a torch-2.8 ZMQ sidecar; NF4 backbone
+  replay). Runs in a torch-2.9 ZMQ sidecar; NF4 backbone
   quantization targets 8 GB GPUs. NOTE: pre-trained FOUNDATION checkpoint —
   zero-shot actions collapse to the distribution mean; post-train on
   RoboTwin first.

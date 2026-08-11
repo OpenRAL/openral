@@ -49,8 +49,16 @@ _HOME_ENV = "OPENRAL_LOCATEANYTHING_SIDECAR_HOME"
 # .in source with:
 #   uv pip compile tools/sidecar_requirements/locateanything.in \
 #     --universal --torch-backend=cu128 --generate-hashes --python-version 3.12 \
+#     --overrides tools/sidecar_requirements/aarch64-nvrtc-override.txt \
 #     -o tools/sidecar_requirements/locateanything.lock
 _LOCK = Path(__file__).resolve().parent / "sidecar_requirements" / "locateanything.lock"
+# Raises nvrtc past the sm_121 cliff on aarch64 (see the file's header). Passed
+# at *install* time as well as compile time: torch's own metadata pins
+# ``nvidia-cuda-nvrtc-cu12==12.8.93``, so without the override uv rejects the
+# lock's aarch64 line as a conflict instead of honouring it.
+_NVRTC_OVERRIDE = (
+    Path(__file__).resolve().parent / "sidecar_requirements" / "aarch64-nvrtc-override.txt"
+)
 
 
 def ensure_venv(home: Path, *, override: str | None = None) -> Path:
@@ -72,7 +80,18 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         # reproducibility we want (CLAUDE.md §1.8).
         run_cmd(
             "la-sidecar",
-            [uv, "pip", "install", "--python", str(py), "--torch-backend=cu128", "-r", str(_LOCK)],
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(py),
+                "--torch-backend=cu128",
+                "--overrides",
+                str(_NVRTC_OVERRIDE),
+                "-r",
+                str(_LOCK),
+            ],
         )
 
     return ensure_pip_venv(
@@ -82,8 +101,9 @@ def ensure_venv(home: Path, *, override: str | None = None) -> Path:
         install=_install,
         override=override,
         override_env=_VENV_ENV,
-        # Keyed on the lock text so recompiling it repairs an existing venv.
-        spec=(_LOCK.read_text(encoding="utf-8"),),
+        # Keyed on the lock text + the nvrtc override so recompiling either
+        # repairs an existing venv.
+        spec=(_LOCK.read_text(encoding="utf-8"), _NVRTC_OVERRIDE.read_text(encoding="utf-8")),
     )
 
 

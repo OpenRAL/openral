@@ -9,6 +9,13 @@ dependencies = [
     "matplotlib>=3.10.9",
     "pillow>=12.2.0",
     "qwen-vl-utils>=0.0.14", # reason: lerobot Robometer/TOPReward Qwen3-VL video processors run in-process in reward_monitor_node; needed by deploy sim/run.
+    # torchvision is otherwise purely transitive (lerobot / timm / open-clip),
+    # and `[tool.uv.sources]` only binds *direct* requirements — so without this
+    # line the aarch64 index pin below is a silent no-op and aarch64 keeps the
+    # PyPI torchvision, whose `_C.so` links libtorch_cpu only (`ops.nms` on a
+    # CUDA tensor then raises NotImplementedError). Marker-scoped so x86_64 /
+    # macOS / Windows resolution is byte-identical to before.
+    "torchvision; platform_machine == 'aarch64' and sys_platform == 'linux'",
 ]
 
 [tool.uv.workspace]
@@ -22,6 +29,21 @@ members = ["python/*"]
 # does not affect rendering.
 override-dependencies = [
     "egl-probe; python_version == '3.99'",  # impossible marker → never installed
+    # torch pins `nvidia-cuda-nvrtc-cu12==12.8.93`, whose newest target is
+    # sm_120. GB10 / Jetson Thor are sm_121, so every kernel torch compiles at
+    # RUNTIME through the nvrtc jiterator dies with "invalid value for
+    # --gpu-architecture" — `torch.sum` is precompiled and fine, `torch.prod` is
+    # jitted and is not. Precompiled SASS is unaffected, so this stays hidden
+    # until an in-process policy happens to hit a jiterator op. 12.9.86 knows
+    # sm_121. Same fix the sidecars carry via `uv pip install --overrides`
+    # (tools/sidecar_requirements/aarch64-nvrtc-override.txt); `uv sync` has no
+    # `--overrides`, so it is expressed here instead.
+    # BOTH linux branches must be listed: an override replaces every requirement
+    # for the package it names, so an aarch64-only line would leave x86_64 with
+    # no nvrtc at all rather than falling back to torch's own pin. The `!=` line
+    # restates that pin exactly, so x86_64 resolution is unchanged.
+    "nvidia-cuda-nvrtc-cu12==12.9.86; platform_machine == 'aarch64' and sys_platform == 'linux'",
+    "nvidia-cuda-nvrtc-cu12==12.8.93; platform_machine != 'aarch64' and sys_platform == 'linux'",
 ]
 # torchcodec ships per-torch-minor builds (0.9.x ↔ torch 2.9, 0.10.x ↔
 # torch 2.10). The workspace resolves torch 2.9.1 on linux/x86_64, but an
@@ -51,7 +73,35 @@ conflicts = [
     ],
 ]
 
+# PyPI's aarch64 torch wheel is CPU-only (the x86_64 one is CUDA-enabled), so a
+# plain `just sync` on an aarch64 GPU host (GB10 / DGX Spark, Jetson Thor,
+# GH200) leaves every *in-process* policy — SmolVLA, ACT, diffusion, pi05,
+# GR00T N1.7, MolmoAct2, the Robometer reward model — silently running on CPU.
+# download.pytorch.org's cu128 index does publish `manylinux_2_28_aarch64`
+# builds for torch 2.9.x and torchvision 0.24.x, so pin those two to it on
+# aarch64-linux only. `explicit = true` means the index is consulted *only* for
+# packages that name it below, so nothing else can drift onto it.
+#
+# This has to be an index pin rather than the `--torch-backend=cu128` the
+# sidecars use: that flag exists only on `uv pip`, not on `uv sync` / `uv lock`.
+#
+# Deliberately cu128, not cu130: the `nvidia-*-cu12` runtime packages are
+# already in the lock for x86_64 torch 2.9.1, so this reuses them instead of
+# adding a parallel cu13 set, and it matches what the sidecars pin. Verified on
+# a GB10 (sm_121): `torch.cuda.is_available()` True and `torchvision.ops.nms`
+# runs on CUDA. See docs/reference/aarch64-support.md.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu128", marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
+]
 # Only declare workspace sources for packages that actually exist under python/.
 # Future packages (re-add when directories land under python/):
 #   openral-dispatcher
@@ -336,10 +386,12 @@ lingbot = [
     #
     # Same shape as the `rldx` / `robotwin` groups: the 6.38 B LingBot-VLA 2.0
     # server (`tools/lingbot_vla2_sidecar.py`, wrapping the upstream `lingbotvla`
-    # package) runs in its OWN auto-provisioned Python 3.12 + torch-2.8 venv that
-    # this group does NOT touch — `lingbotvla` pins torch==2.8.0 /
-    # transformers==4.57.3 + custom Triton MoE kernels, incompatible with this
-    # repo's torch>=2.9 / transformers>=5 (CLAUDE.md §3). Apache-2.0 code + weights.
+    # package) runs in its OWN auto-provisioned Python 3.12 venv that this group
+    # does NOT touch — `lingbotvla` pins transformers==4.57.3 + custom Triton MoE
+    # kernels, incompatible with this repo's transformers>=5 (CLAUDE.md §3).
+    # (Its upstream torch==2.8.0 pin is overridden to 2.9.1 by the boot helper,
+    # which has no aarch64 wheel — docs/reference/aarch64-support.md.)
+    # Apache-2.0 code + weights.
     { include-group = "sidecar-wire" },
     "websockets>=15",
 ]

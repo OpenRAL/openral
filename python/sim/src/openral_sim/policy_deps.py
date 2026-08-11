@@ -103,7 +103,7 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
     "xr1": (
         "Install the shared sidecar wire: "
         "`just sync --all-packages --group sidecar-wire`. "
-        "XR-1 itself runs in an auto-provisioned torch-2.8 / transformers-4.57.1 "
+        "XR-1 itself runs in an auto-provisioned torch-2.9.1 / transformers-4.57.1 "
         "sidecar because its pinned stack cannot coexist with the workspace."
     ),
     "rldx": (
@@ -127,7 +127,7 @@ _FAMILY_INSTALL_HINTS: dict[str, str] = {
         "Install the lingbot extras: `just sync --all-packages --group lingbot` "
         "(adds pyzmq + msgpack for the LingBot-VLA 2.0 sidecar client). The policy "
         "runs in tools/lingbot_vla2_sidecar.py's own auto-provisioned Python 3.12 "
-        "+ torch-2.8 venv."
+        "+ torch-2.9.1 venv."
     ),
     "lingbot_va_a1": (
         "Install the LingBot wire dependencies with `just sync --all-packages "
@@ -198,7 +198,7 @@ _FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
     "diffuser_actor": ("zmq", "msgpack"),
     # LingBot-VLA 2.0 shares the out-of-process sidecar contract; the openral
     # side only needs the ZMQ + msgpack wire (the 6.38 B model runs in the
-    # sidecar's own auto-provisioned py3.12 + torch-2.8 venv). See
+    # sidecar's own auto-provisioned py3.12 + torch-2.9.1 venv). See
     # openral_sim.policies.lingbot_vla2.
     "lingbot_vla2": ("zmq", "msgpack"),
     "lingbot_va_a1": ("websockets", "msgpack"),

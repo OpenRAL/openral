@@ -35,6 +35,7 @@ checkpoint reloads directly as 4-bit and answers a smoke query.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import sys
 from pathlib import Path
@@ -42,7 +43,16 @@ from pathlib import Path
 # Same allocator + serial-loader settings as the sidecar server: the *build*
 # still loads the raw bf16 model once to quantize it, so it needs the 8 GB
 # headroom workaround. Must be set before torch initializes CUDA.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+#
+# torch renamed the var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+# and warns on every run when the old spelling is present; resolve it from
+# metadata rather than hardcoding either name.
+try:
+    _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
+    _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+except (importlib.metadata.PackageNotFoundError, ValueError):
+    _alloc_var = "PYTORCH_CUDA_ALLOC_CONF"
+os.environ.setdefault(_alloc_var, "expandable_segments:True")
 
 
 def main() -> int:

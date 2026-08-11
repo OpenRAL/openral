@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import shlex
@@ -229,6 +230,21 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     the ``benchmark scene`` smoke wrapper did). Set here so every sidecar boot
     gets it regardless of how ``openral`` was launched; ``setdefault`` lets an
     explicit caller value win.
+
+    Finally, points ``TRITON_PTXAS_PATH`` at a CUDA 12.9 ``ptxas`` when the venv
+    ships one. Triton bundles its own ``ptxas``, and triton 3.5.1's is CUDA
+    12.8, whose newest target is ``sm_120``. On a GB10 / Jetson Thor
+    (``sm_121``) that makes *every* Triton kernel fail to compile — even a
+    three-line ``tl.store`` — with::
+
+        ptxas fatal: Value 'sm_121a' is not defined for option 'gpu-name'
+
+    A sidecar that installs ``nvidia-cuda-nvcc-cu12>=12.9`` gets a ``ptxas``
+    that does know ``sm_121a``, and this redirects Triton onto it. Deliberately
+    resolved from inside the venv rather than from ``/usr/local/cuda``: the
+    host toolkit may be absent or a different version, and the venv is the
+    thing we pin. A no-op wherever that wheel isn't installed (all x86_64
+    sidecars today), so it cannot perturb the validated x86_64 path.
     """
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -237,8 +253,81 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     env["PATH"] = f"{venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    env.setdefault(alloc_conf_var(venv_torch_version(venv)), "expandable_segments:True")
+    ptxas = venv_ptxas(venv)
+    if ptxas is not None:
+        env.setdefault("TRITON_PTXAS_PATH", str(ptxas))
     return env
+
+
+def alloc_conf_var(torch_version: str | None) -> str:
+    """Return the allocator-config env var name that ``torch_version`` reads.
+
+    torch renamed ``PYTORCH_CUDA_ALLOC_CONF`` to ``PYTORCH_ALLOC_CONF`` in 2.9;
+    the old spelling still works there but logs a deprecation warning on every
+    process start. Setting *both* — the repo's previous approach — is safe but
+    guarantees that warning forever, so pick the one the target torch actually
+    wants. Sidecars deliberately span a wide torch range (LingBot ``--variant
+    v1`` is held at 2.8 by ``lerobot==0.4.2``, upstream-locked sidecars bring
+    their own; every pin this repo owns is 2.9.1), which is why this is a lookup
+    rather than a constant.
+
+    ``None`` (torch not installed, or an unparseable version) falls back to the
+    old spelling: it is understood by every torch that has ever read either
+    name, so the worst case is the warning we are trying to remove, never a lost
+    allocator setting.
+    """
+    if torch_version is None:
+        return "PYTORCH_CUDA_ALLOC_CONF"
+    try:
+        major, minor = (int(part) for part in torch_version.split(".")[:2])
+    except ValueError:
+        return "PYTORCH_CUDA_ALLOC_CONF"
+    return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+
+
+def installed_alloc_conf_var() -> str:
+    """:func:`alloc_conf_var` for the torch installed in *this* interpreter.
+
+    For in-process policies (MolmoAct2, OpenVLA, the reward monitors), which set
+    the allocator config on themselves rather than on a child. Read from
+    metadata rather than ``torch.__version__`` so importing this module never
+    drags torch in.
+    """
+    try:
+        return alloc_conf_var(importlib.metadata.version("torch"))
+    except importlib.metadata.PackageNotFoundError:
+        return alloc_conf_var(None)
+
+
+def venv_torch_version(venv: Path) -> str | None:
+    """Return the torch version installed in ``venv``, or ``None`` if absent.
+
+    Read from the ``.dist-info`` directory name rather than by importing torch:
+    this runs in the *parent* interpreter, which generally cannot import the
+    sidecar's torch at all (different Python minor, different ABI), and importing
+    it would cost seconds even where it could.
+    """
+    for lib in sorted(venv.glob("lib/python3.*/site-packages")):
+        for dist in lib.glob("torch-*.dist-info"):
+            version = dist.name.removeprefix("torch-").removesuffix(".dist-info")
+            # Strip any local version tag (`2.9.1+cu128` → `2.9.1`).
+            return version.split("+", 1)[0]
+    return None
+
+
+def venv_ptxas(venv: Path) -> Path | None:
+    """Return the ``nvidia-cuda-nvcc-cu12`` ``ptxas`` inside ``venv``, if present.
+
+    Split out of :func:`make_isolated_env` so a sidecar that execs by some other
+    route — or a test — can ask the same question. Returns ``None`` when the
+    wheel isn't installed, which is the normal case on x86_64.
+    """
+    for lib in sorted(venv.glob("lib/python3.*/site-packages")):
+        candidate = lib / "nvidia" / "cuda_nvcc" / "bin" / "ptxas"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def exec_server(venv: Path, wrapper: Path, env: dict[str, str]) -> None:
