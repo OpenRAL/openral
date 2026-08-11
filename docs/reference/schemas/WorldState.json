@@ -2,7 +2,7 @@
   "$defs": {
     "AttachedCollisionObject": {
       "additionalProperties": false,
-      "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    shape: Bounded collision geometry carried with the robot.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.",
+      "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.",
       "properties": {
         "object_id": {
           "minLength": 1,
@@ -22,19 +22,14 @@
           "title": "Touch Links",
           "type": "array"
         },
-        "shape": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CapsuleShape"
-            },
-            {
-              "$ref": "#/$defs/SphereShape"
-            },
-            {
-              "$ref": "#/$defs/BoxShape"
-            }
-          ],
-          "title": "Shape"
+        "primitives": {
+          "items": {
+            "$ref": "#/$defs/AttachedCollisionPrimitive"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Primitives",
+          "type": "array"
         },
         "pose_in_link": {
           "$ref": "#/$defs/Pose6D"
@@ -125,13 +120,42 @@
         "object_id",
         "attach_link",
         "touch_links",
-        "shape",
+        "primitives",
         "pose_in_link",
         "confidence",
         "evidence_kind",
         "stamp_ns"
       ],
       "title": "AttachedCollisionObject",
+      "type": "object"
+    },
+    "AttachedCollisionPrimitive": {
+      "additionalProperties": false,
+      "description": "One bounded payload primitive positioned in its object frame.",
+      "properties": {
+        "shape": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapsuleShape"
+            },
+            {
+              "$ref": "#/$defs/SphereShape"
+            },
+            {
+              "$ref": "#/$defs/BoxShape"
+            }
+          ],
+          "title": "Shape"
+        },
+        "pose_in_object": {
+          "$ref": "#/$defs/Pose6D"
+        }
+      },
+      "required": [
+        "shape",
+        "pose_in_object"
+      ],
+      "title": "AttachedCollisionPrimitive",
       "type": "object"
     },
     "AttachmentEvidenceKind": {

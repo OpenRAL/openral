@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from openral_core import (
     AttachedCollisionObject,
+    AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BoxShape,
     JointState,
@@ -28,7 +29,24 @@ def _attachment(object_id: str = "baguette_seed1") -> AttachedCollisionObject:
         object_id=object_id,
         attach_link="panda_link7",
         touch_links=["panda_finger_pair"],
-        shape=BoxShape(half_extents_m=(0.12, 0.025, 0.025)),
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.12, 0.025, 0.025)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0),
+                    quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                    frame_id=object_id,
+                ),
+            ),
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=(0.025, 0.04, 0.02)),
+                pose_in_object=Pose6D(
+                    xyz=(0.09, 0.0, 0.0),
+                    quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                    frame_id=object_id,
+                ),
+            ),
+        ],
         pose_in_link=Pose6D(
             xyz=(0.0, 0.0, 0.16),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
@@ -49,6 +67,7 @@ def test_attached_collision_object_uses_real_robot_links() -> None:
 
     assert attachment.attach_link == "panda_link7"
     assert attachment.touch_links == ["panda_finger_pair"]
+    assert len(attachment.primitives) == 2
     assert attachment.pose_in_link.frame_id == attachment.attach_link
 
 
@@ -68,11 +87,27 @@ def test_attachment_rejects_duplicate_touch_links() -> None:
         AttachedCollisionObject.model_validate(payload)
 
 
+def test_attachment_rejects_primitive_in_another_object_frame() -> None:
+    payload = _attachment().model_dump()
+    payload["primitives"][0]["pose_in_object"]["frame_id"] = "another_object"
+
+    with pytest.raises(ValidationError, match="frame_id must equal object_id"):
+        AttachedCollisionObject.model_validate(payload)
+
+
 def test_payload_dynamics_require_mass() -> None:
     payload = _attachment().model_dump()
     payload["mass_kg"] = None
 
     with pytest.raises(ValidationError, match="requires mass_kg"):
+        AttachedCollisionObject.model_validate(payload)
+
+
+def test_attachment_rejects_more_than_eight_primitives() -> None:
+    payload = _attachment().model_dump()
+    payload["primitives"] = payload["primitives"] * 5
+
+    with pytest.raises(ValidationError, match="at most 8"):
         AttachedCollisionObject.model_validate(payload)
 
 
