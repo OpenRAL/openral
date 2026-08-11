@@ -50,8 +50,10 @@ from openral_core import (  # noqa: E402  # reason: after importorskip gates
     AttachedCollisionObject,
     AttachmentEvidenceKind,
     BoxShape,
+    JointState,
     Pose6D,
     RobotDescription,
+    WorldState,
 )
 from openral_hal import build_hal  # noqa: E402
 from openral_hal.sim_sensor_bridge import SimSensorBridge  # noqa: E402
@@ -163,7 +165,9 @@ def test_bridge_advertises_only_renderable_cameras(
 def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
     """Two carried RoboCasa bodies leave depth atomically and detach independently."""
     from openral_hal.depth_cloud import depth_synth_kwargs
+    from openral_msgs.msg import AttachmentState
     from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
+    from openral_world_state_ros.lifecycle_node import build_world_state_stamped_msg
 
     desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
     handles = hal.mujoco_handles()
@@ -196,15 +200,36 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
         baseline = point_count()
         baguette = _attachment("baguette_seed1", "obj_main")
         distractor = _attachment("counter_distractor_seed1", "distr_counter_main")
-        hal.update_attached_objects([baguette, distractor])
+
+        def publish_attachment_state(
+            attachments: list[AttachedCollisionObject],
+        ) -> None:
+            wire = build_world_state_stamped_msg(
+                None,
+                WorldState(
+                    stamp_ns=1,
+                    joint_state=JointState(
+                        name=["panda_joint1"],
+                        position=[0.0],
+                        stamp_ns=1,
+                    ),
+                    attached_objects=attachments,
+                ),
+            )
+            state = AttachmentState()
+            state.revision = 1
+            state.objects = list(wire.attached_objects)
+            bridge._on_attachment_state(state)
+
+        publish_attachment_state([baguette, distractor])
         both_masked = point_count()
         assert both_masked < baseline
 
-        hal.update_attached_objects([baguette])
+        publish_attachment_state([baguette])
         baguette_only = point_count()
         assert both_masked < baguette_only < baseline
 
-        hal.update_attached_objects([])
+        publish_attachment_state([])
         assert point_count() == baseline
     finally:
         node.destroy_node()
