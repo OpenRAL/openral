@@ -1053,14 +1053,18 @@ class SimSensorBridge:
         """Heartbeat the authoritative sim attachment set for kernel freshness."""
         if self._attachment_pub is None:
             return
-        from openral_msgs.msg import AttachedCollisionObject, AttachmentState
+        from openral_msgs.msg import (
+            AttachedCollisionObject,
+            AttachedCollisionPrimitive,
+            AttachmentState,
+        )
 
         msg = AttachmentState()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.revision = self._attachment_revision
         for obj in self._attachment_desired:
             item = AttachedCollisionObject()
-            obj.fill_idl(item)
+            obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)
             msg.objects.append(item)
         self._attachment_pub.publish(msg)
 

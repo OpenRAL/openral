@@ -1,45 +1,5 @@
 {
   "$defs": {
-    "AttachedCollisionPrimitive": {
-      "additionalProperties": false,
-      "description": "One bounded payload primitive positioned in its object frame.",
-      "properties": {
-        "shape": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CapsuleShape"
-            },
-            {
-              "$ref": "#/$defs/SphereShape"
-            },
-            {
-              "$ref": "#/$defs/BoxShape"
-            }
-          ],
-          "title": "Shape"
-        },
-        "pose_in_object": {
-          "$ref": "#/$defs/Pose6D"
-        }
-      },
-      "required": [
-        "shape",
-        "pose_in_object"
-      ],
-      "title": "AttachedCollisionPrimitive",
-      "type": "object"
-    },
-    "AttachmentEvidenceKind": {
-      "description": "Evidence source that confirmed a robot/object attachment.",
-      "enum": [
-        "sim_contact",
-        "gripper_force",
-        "perception_track",
-        "operator"
-      ],
-      "title": "AttachmentEvidenceKind",
-      "type": "string"
-    },
     "BoxShape": {
       "additionalProperties": false,
       "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
@@ -182,131 +142,31 @@
     }
   },
   "additionalProperties": false,
-  "description": "Collision geometry rigidly attached to a robot link.\n\nThe object is removed from world occupancy only when the same geometry is\npresent here, so collision checking never loses the carried payload.\n\nAttributes:\n    object_id: Stable perception/world identity.\n    attach_link: Robot link that owns the link-relative pose.\n    touch_links: Explicit robot links allowed to contact the object.\n    primitives: Bounded collision geometry in the object frame.\n    pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.\n    mass_kg: Optional payload mass for real controller integration.\n    center_of_mass_m: Optional payload CoG in the attached-object frame.\n    inertia_kg_m2: Optional row-major 3x3 inertia matrix.\n    confidence: Attachment confidence in ``[0, 1]``.\n    evidence_kind: Source that confirmed the attachment.\n    evidence_ref: Optional trace/contact/track reference.\n    stamp_ns: Confirmation timestamp.",
+  "description": "One bounded payload primitive positioned in its object frame.",
   "properties": {
-    "object_id": {
-      "minLength": 1,
-      "title": "Object Id",
-      "type": "string"
+    "shape": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CapsuleShape"
+        },
+        {
+          "$ref": "#/$defs/SphereShape"
+        },
+        {
+          "$ref": "#/$defs/BoxShape"
+        }
+      ],
+      "title": "Shape"
     },
-    "attach_link": {
-      "minLength": 1,
-      "title": "Attach Link",
-      "type": "string"
-    },
-    "touch_links": {
-      "items": {
-        "type": "string"
-      },
-      "minItems": 1,
-      "title": "Touch Links",
-      "type": "array"
-    },
-    "primitives": {
-      "items": {
-        "$ref": "#/$defs/AttachedCollisionPrimitive"
-      },
-      "maxItems": 8,
-      "minItems": 1,
-      "title": "Primitives",
-      "type": "array"
-    },
-    "pose_in_link": {
+    "pose_in_object": {
       "$ref": "#/$defs/Pose6D"
-    },
-    "mass_kg": {
-      "anyOf": [
-        {
-          "minimum": 0.0,
-          "type": "number"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Mass Kg"
-    },
-    "center_of_mass_m": {
-      "anyOf": [
-        {
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Center Of Mass M"
-    },
-    "inertia_kg_m2": {
-      "anyOf": [
-        {
-          "items": {
-            "type": "number"
-          },
-          "maxItems": 9,
-          "minItems": 9,
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Inertia Kg M2"
-    },
-    "confidence": {
-      "maximum": 1.0,
-      "minimum": 0.0,
-      "title": "Confidence",
-      "type": "number"
-    },
-    "evidence_kind": {
-      "$ref": "#/$defs/AttachmentEvidenceKind"
-    },
-    "evidence_ref": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Evidence Ref"
-    },
-    "stamp_ns": {
-      "minimum": 0,
-      "title": "Stamp Ns",
-      "type": "integer"
     }
   },
   "required": [
-    "object_id",
-    "attach_link",
-    "touch_links",
-    "primitives",
-    "pose_in_link",
-    "confidence",
-    "evidence_kind",
-    "stamp_ns"
+    "shape",
+    "pose_in_object"
   ],
-  "title": "AttachedCollisionObject",
+  "title": "AttachedCollisionPrimitive",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

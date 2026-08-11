@@ -11,6 +11,7 @@ import base64
 import binascii
 import math
 import re
+from collections.abc import Callable
 from enum import Enum
 from typing import Any, ClassVar, Literal, NamedTuple, Self, TypeAlias, TypeVar, get_args
 
@@ -2068,6 +2069,78 @@ class AttachmentEvidenceKind(str, Enum):
     OPERATOR = "operator"
 
 
+class AttachedCollisionPrimitive(BaseModel):
+    """One bounded payload primitive positioned in its object frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shape: CollisionShape
+    pose_in_object: Pose6D
+
+    @classmethod
+    def from_idl(cls, msg: object, *, object_id: str) -> Self:
+        """Decode one duck-typed attached primitive without importing ROS."""
+        dimensions = [float(value) for value in msg.shape_dimensions]  # type: ignore[attr-defined]
+        shape_type = int(msg.shape_type)  # type: ignore[attr-defined]
+        if shape_type == int(msg.SHAPE_SPHERE):  # type: ignore[attr-defined]
+            if len(dimensions) != 1:
+                raise ValueError("Attached sphere requires one shape dimension.")
+            shape: CollisionShape = SphereShape(radius_m=dimensions[0])
+        elif shape_type == int(msg.SHAPE_CAPSULE):  # type: ignore[attr-defined]
+            if len(dimensions) != 2:  # noqa: PLR2004
+                raise ValueError("Attached capsule requires two shape dimensions.")
+            shape = CapsuleShape(radius_m=dimensions[0], length_m=dimensions[1])
+        elif shape_type == int(msg.SHAPE_BOX):  # type: ignore[attr-defined]
+            if len(dimensions) != 3:  # noqa: PLR2004
+                raise ValueError("Attached box requires three shape dimensions.")
+            shape = BoxShape(half_extents_m=(dimensions[0], dimensions[1], dimensions[2]))
+        else:
+            raise ValueError(f"Unknown attached collision shape type: {shape_type}")
+        pose = msg.pose_in_object  # type: ignore[attr-defined]
+        return cls(
+            shape=shape,
+            pose_in_object=Pose6D(
+                xyz=(
+                    float(pose.position.x),
+                    float(pose.position.y),
+                    float(pose.position.z),
+                ),
+                quat_xyzw=(
+                    float(pose.orientation.x),
+                    float(pose.orientation.y),
+                    float(pose.orientation.z),
+                    float(pose.orientation.w),
+                ),
+                frame_id=object_id,
+            ),
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate one duck-typed attached primitive without importing ROS."""
+        if isinstance(self.shape, SphereShape):
+            msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
+            msg.shape_dimensions = [float(self.shape.radius_m)]  # type: ignore[attr-defined]
+        elif isinstance(self.shape, CapsuleShape):
+            msg.shape_type = msg.SHAPE_CAPSULE  # type: ignore[attr-defined]
+            msg.shape_dimensions = [  # type: ignore[attr-defined]
+                float(self.shape.radius_m),
+                float(self.shape.length_m),
+            ]
+        elif isinstance(self.shape, BoxShape):
+            msg.shape_type = msg.SHAPE_BOX  # type: ignore[attr-defined]
+            msg.shape_dimensions = [  # type: ignore[attr-defined]
+                float(value) for value in self.shape.half_extents_m
+            ]
+        pose = msg.pose_in_object  # type: ignore[attr-defined]
+        pose.position.x, pose.position.y, pose.position.z = self.pose_in_object.xyz
+        (
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ) = self.pose_in_object.quat_xyzw
+
+
 class AttachedCollisionObject(BaseModel):
     """Collision geometry rigidly attached to a robot link.
 
@@ -2078,7 +2151,7 @@ class AttachedCollisionObject(BaseModel):
         object_id: Stable perception/world identity.
         attach_link: Robot link that owns the link-relative pose.
         touch_links: Explicit robot links allowed to contact the object.
-        shape: Bounded collision geometry carried with the robot.
+        primitives: Bounded collision geometry in the object frame.
         pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.
         mass_kg: Optional payload mass for real controller integration.
         center_of_mass_m: Optional payload CoG in the attached-object frame.
@@ -2094,7 +2167,7 @@ class AttachedCollisionObject(BaseModel):
     object_id: str = Field(min_length=1)
     attach_link: str = Field(min_length=1)
     touch_links: list[str] = Field(min_length=1)
-    shape: CollisionShape
+    primitives: list[AttachedCollisionPrimitive] = Field(min_length=1, max_length=8)
     pose_in_link: Pose6D
     mass_kg: float | None = Field(default=None, ge=0.0)
     center_of_mass_m: tuple[float, float, float] | None = None
@@ -2113,6 +2186,12 @@ class AttachedCollisionObject(BaseModel):
             )
         if len(set(self.touch_links)) != len(self.touch_links):
             raise ValueError("AttachedCollisionObject.touch_links must be unique.")
+        for primitive in self.primitives:
+            if primitive.pose_in_object.frame_id != self.object_id:
+                raise ValueError(
+                    "AttachedCollisionPrimitive.pose_in_object.frame_id must equal "
+                    f"object_id ({primitive.pose_in_object.frame_id!r} != {self.object_id!r})."
+                )
         if self.mass_kg is None and (
             self.center_of_mass_m is not None or self.inertia_kg_m2 is not None
         ):
@@ -2122,25 +2201,6 @@ class AttachedCollisionObject(BaseModel):
     @classmethod
     def from_idl(cls, msg: object) -> Self:
         """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
-        dimensions = [float(value) for value in msg.shape_dimensions]  # type: ignore[attr-defined]
-        shape_type = int(msg.shape_type)  # type: ignore[attr-defined]
-        if shape_type == int(msg.SHAPE_SPHERE):  # type: ignore[attr-defined]
-            if len(dimensions) != 1:
-                raise ValueError("Attached sphere requires one shape dimension.")
-            shape: CollisionShape = SphereShape(radius_m=dimensions[0])
-        elif shape_type == int(msg.SHAPE_CAPSULE):  # type: ignore[attr-defined]
-            capsule_dimensions = 2
-            if len(dimensions) != capsule_dimensions:
-                raise ValueError("Attached capsule requires two shape dimensions.")
-            shape = CapsuleShape(radius_m=dimensions[0], length_m=dimensions[1])
-        elif shape_type == int(msg.SHAPE_BOX):  # type: ignore[attr-defined]
-            box_dimensions = 3
-            if len(dimensions) != box_dimensions:
-                raise ValueError("Attached box requires three shape dimensions.")
-            shape = BoxShape(half_extents_m=(dimensions[0], dimensions[1], dimensions[2]))
-        else:
-            raise ValueError(f"Unknown attached collision shape type: {shape_type}")
-
         center_of_mass = None
         if bool(msg.center_of_mass_valid):  # type: ignore[attr-defined]
             center = msg.center_of_mass_m  # type: ignore[attr-defined]
@@ -2156,7 +2216,10 @@ class AttachedCollisionObject(BaseModel):
             object_id=str(msg.object_id),  # type: ignore[attr-defined]
             attach_link=attach_link,
             touch_links=list(msg.touch_links),  # type: ignore[attr-defined]
-            shape=shape,
+            primitives=[
+                AttachedCollisionPrimitive.from_idl(item, object_id=str(msg.object_id))  # type: ignore[attr-defined]
+                for item in msg.primitives  # type: ignore[attr-defined]
+            ],
             pose_in_link=Pose6D(
                 xyz=(
                     float(pose.position.x),
@@ -2184,25 +2247,16 @@ class AttachedCollisionObject(BaseModel):
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
         )
 
-    def fill_idl(self, msg: object) -> None:
+    def fill_idl(self, msg: object, *, primitive_factory: Callable[[], object]) -> None:
         """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
         msg.object_id = self.object_id  # type: ignore[attr-defined]
         msg.attach_link = self.attach_link  # type: ignore[attr-defined]
         msg.touch_links = list(self.touch_links)  # type: ignore[attr-defined]
-        if isinstance(self.shape, SphereShape):
-            msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
-            msg.shape_dimensions = [float(self.shape.radius_m)]  # type: ignore[attr-defined]
-        elif isinstance(self.shape, CapsuleShape):
-            msg.shape_type = msg.SHAPE_CAPSULE  # type: ignore[attr-defined]
-            msg.shape_dimensions = [  # type: ignore[attr-defined]
-                float(self.shape.radius_m),
-                float(self.shape.length_m),
-            ]
-        elif isinstance(self.shape, BoxShape):
-            msg.shape_type = msg.SHAPE_BOX  # type: ignore[attr-defined]
-            msg.shape_dimensions = [  # type: ignore[attr-defined]
-                float(value) for value in self.shape.half_extents_m
-            ]
+        msg.primitives = []  # type: ignore[attr-defined]
+        for primitive in self.primitives:
+            item = primitive_factory()
+            primitive.fill_idl(item)
+            msg.primitives.append(item)  # type: ignore[attr-defined]
         pose = msg.pose_in_link  # type: ignore[attr-defined]
         pose.position.x, pose.position.y, pose.position.z = self.pose_in_link.xyz
         (

@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # voxel phase — dense fixed-capacity 3-D occupancy grid (octomap path).
   msg/OccupancyVoxels.msg
   # typed WorldState publication.
+  msg/AttachedCollisionPrimitive.msg
   msg/AttachedCollisionObject.msg
   msg/AttachmentState.msg
   msg/WorldStateStamped.msg

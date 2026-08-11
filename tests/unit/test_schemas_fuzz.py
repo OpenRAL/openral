@@ -23,6 +23,7 @@ from openral_core.schemas import (
     ActuatorRequirement,
     ApproachViewpoint,
     AttachedCollisionObject,
+    AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
     BenchmarkName,
     BoxShape,
@@ -291,13 +292,21 @@ _collision_shape_st = st.one_of(_capsule_shape_st, _sphere_shape_st, _box_shape_
 
 @st.composite
 def _attached_collision_object(draw: st.DrawFn) -> AttachedCollisionObject:
+    object_id = draw(_name)
     attach_link = draw(_name)
     pose = draw(_pose6d_st).model_copy(update={"frame_id": attach_link})
+    primitives = [
+        AttachedCollisionPrimitive(
+            shape=draw(_collision_shape_st),
+            pose_in_object=draw(_pose6d_st).model_copy(update={"frame_id": object_id}),
+        )
+        for _ in range(draw(st.integers(min_value=1, max_value=4)))
+    ]
     return AttachedCollisionObject(
-        object_id=draw(_name),
+        object_id=object_id,
         attach_link=attach_link,
         touch_links=draw(st.lists(_name, min_size=1, max_size=4, unique=True)),
-        shape=draw(_collision_shape_st),
+        primitives=primitives,
         pose_in_link=pose,
         mass_kg=draw(st.one_of(st.none(), st.floats(min_value=0.0, max_value=100.0))),
         confidence=draw(_prob),
