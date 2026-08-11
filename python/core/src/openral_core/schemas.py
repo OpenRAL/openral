@@ -2184,6 +2184,50 @@ class AttachedCollisionObject(BaseModel):
             stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
         )
 
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed OpenRAL ROS IDL message without importing ROS."""
+        msg.object_id = self.object_id  # type: ignore[attr-defined]
+        msg.attach_link = self.attach_link  # type: ignore[attr-defined]
+        msg.touch_links = list(self.touch_links)  # type: ignore[attr-defined]
+        if isinstance(self.shape, SphereShape):
+            msg.shape_type = msg.SHAPE_SPHERE  # type: ignore[attr-defined]
+            msg.shape_dimensions = [float(self.shape.radius_m)]  # type: ignore[attr-defined]
+        elif isinstance(self.shape, CapsuleShape):
+            msg.shape_type = msg.SHAPE_CAPSULE  # type: ignore[attr-defined]
+            msg.shape_dimensions = [  # type: ignore[attr-defined]
+                float(self.shape.radius_m),
+                float(self.shape.length_m),
+            ]
+        elif isinstance(self.shape, BoxShape):
+            msg.shape_type = msg.SHAPE_BOX  # type: ignore[attr-defined]
+            msg.shape_dimensions = [  # type: ignore[attr-defined]
+                float(value) for value in self.shape.half_extents_m
+            ]
+        pose = msg.pose_in_link  # type: ignore[attr-defined]
+        pose.position.x, pose.position.y, pose.position.z = self.pose_in_link.xyz
+        (
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+        ) = self.pose_in_link.quat_xyzw
+        msg.mass_valid = self.mass_kg is not None  # type: ignore[attr-defined]
+        msg.mass_kg = float(self.mass_kg or 0.0)  # type: ignore[attr-defined]
+        msg.center_of_mass_valid = self.center_of_mass_m is not None  # type: ignore[attr-defined]
+        if self.center_of_mass_m is not None:
+            center = msg.center_of_mass_m  # type: ignore[attr-defined]
+            center.x, center.y, center.z = self.center_of_mass_m
+        msg.inertia_valid = self.inertia_kg_m2 is not None  # type: ignore[attr-defined]
+        msg.inertia_kg_m2 = (  # type: ignore[attr-defined]
+            [float(value) for value in self.inertia_kg_m2]
+            if self.inertia_kg_m2 is not None
+            else [0.0] * 9
+        )
+        msg.confidence = float(self.confidence)  # type: ignore[attr-defined]
+        msg.evidence_kind = self.evidence_kind.value  # type: ignore[attr-defined]
+        msg.evidence_ref = self.evidence_ref or ""  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+
 
 class OccupancyGridRef(BaseModel):
     """Reference to a 2D occupancy grid for mobile-base world-collision.

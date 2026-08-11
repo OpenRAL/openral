@@ -254,6 +254,13 @@ class SimSensorBridge:
         self._depth_info_pubs: dict[str, Any] = {}
         self._depth_timer: Any = None
         self._attachment_sub: Any = None
+        self._attachment_ack_sub: Any = None
+        self._attachment_pub: Any = None
+        self._attachment_timer: Any = None
+        self._attachment_revision: int = 0
+        self._attachment_applied_revision: int = -1
+        self._attachment_desired: list[Any] = []
+        self._attachment_pending: list[Any] | None = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
         self._depth_base_body_id: int = -1
@@ -319,15 +326,23 @@ class SimSensorBridge:
             self._cinecam_timer,
             self._scan_timer,
             self._depth_timer,
+            self._attachment_timer,
         ):
             if t is not None:
                 t.cancel()
         self._image_timer = self._idle_timer = self._camera_tf_timer = None
         self._viewer_timer = self._scan_timer = self._depth_timer = None
+        self._attachment_timer = None
         self._cinecam_timer = None
         if self._attachment_sub is not None:
             self._node.destroy_subscription(self._attachment_sub)
             self._attachment_sub = None
+        if self._attachment_ack_sub is not None:
+            self._node.destroy_subscription(self._attachment_ack_sub)
+            self._attachment_ack_sub = None
+        if self._attachment_pub is not None:
+            self._node.destroy_publisher(self._attachment_pub)
+            self._attachment_pub = None
         if self._cinecam_renderer is not None:
             with contextlib.suppress(Exception):  # reason: renderer GL ctx may be gone
                 self._cinecam_renderer.close()
@@ -944,7 +959,8 @@ class SimSensorBridge:
     def _setup_attachment_state(self) -> None:
         """Subscribe atomic attachment snapshots when the sim HAL supports them."""
         update = getattr(self._hal, "update_attached_objects", None)
-        if not callable(update):
+        read = getattr(self._hal, "read_attached_objects", None)
+        if not callable(update) or not callable(read):
             return
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
@@ -964,6 +980,23 @@ class SimSensorBridge:
             self._on_attachment_state,
             qos,
         )
+        from std_msgs.msg import UInt64
+
+        self._attachment_ack_sub = self._node.create_subscription(
+            UInt64,
+            "/openral/attachment_state_applied",
+            self._on_attachment_state_applied,
+            qos,
+        )
+        self._attachment_pub = self._node.create_publisher(
+            AttachmentState,
+            "/openral/attachment_state",
+            qos,
+        )
+        self._attachment_timer = self._node.create_timer(
+            0.2,
+            self._publish_attachment_state,
+        )
 
     def _on_attachment_state(self, msg: object) -> None:
         """Apply one complete attachment snapshot to the sim perception mask."""
@@ -971,16 +1004,65 @@ class SimSensorBridge:
         from openral_core.exceptions import ROSConfigError
 
         update = getattr(self._hal, "update_attached_objects", None)
-        if not callable(update):
+        read = getattr(self._hal, "read_attached_objects", None)
+        if not callable(update) or not callable(read):
             return
         try:
             objects = [
                 AttachedCollisionObject.from_idl(item)
                 for item in msg.objects  # type: ignore[attr-defined]
             ]
-            update(objects)
+            revision = int(msg.revision)  # type: ignore[attr-defined]
+            if revision < self._attachment_revision:
+                raise ValueError(
+                    f"attachment revision moved backwards: {revision} < {self._attachment_revision}"
+                )
+            if revision == self._attachment_revision and objects == self._attachment_desired:
+                return
+            current = {obj.object_id: obj for obj in read()}
+            desired_ids = {obj.object_id for obj in objects}
+            # Detach ordering is conservative: unmask removed objects first
+            # while the kernel still carries their old payload geometry.
+            update([obj for object_id, obj in current.items() if object_id in desired_ids])
+            self._attachment_desired = objects
+            self._attachment_pending = objects
+            self._attachment_revision = revision
         except (ROSConfigError, ValueError, TypeError) as exc:
             self._node.get_logger().error(f"attachment state rejected by sim HAL: {exc}")
+
+    def _on_attachment_state_applied(self, msg: object) -> None:
+        """Mask newly attached bodies only after the kernel accepts the revision."""
+        revision = int(msg.data)  # type: ignore[attr-defined]
+        if revision != self._attachment_revision or self._attachment_pending is None:
+            return
+        update = getattr(self._hal, "update_attached_objects", None)
+        if not callable(update):
+            return
+        from openral_core.exceptions import ROSConfigError
+
+        try:
+            update(self._attachment_pending)
+            self._attachment_applied_revision = revision
+            self._attachment_pending = None
+        except ROSConfigError as exc:
+            self._node.get_logger().error(
+                f"kernel accepted attachment revision {revision}, but sim mask update failed: {exc}"
+            )
+
+    def _publish_attachment_state(self) -> None:
+        """Heartbeat the authoritative sim attachment set for kernel freshness."""
+        if self._attachment_pub is None:
+            return
+        from openral_msgs.msg import AttachedCollisionObject, AttachmentState
+
+        msg = AttachmentState()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.revision = self._attachment_revision
+        for obj in self._attachment_desired:
+            item = AttachedCollisionObject()
+            obj.fill_idl(item)
+            msg.objects.append(item)
+        self._attachment_pub.publish(msg)
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.
