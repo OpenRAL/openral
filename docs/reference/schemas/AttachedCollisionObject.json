@@ -206,7 +206,7 @@
       "items": {
         "$ref": "#/$defs/AttachedCollisionPrimitive"
       },
-      "maxItems": 8,
+      "maxItems": 16,
       "minItems": 1,
       "title": "Primitives",
       "type": "array"

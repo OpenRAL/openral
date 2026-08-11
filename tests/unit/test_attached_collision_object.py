@@ -103,11 +103,11 @@ def test_payload_dynamics_require_mass() -> None:
         AttachedCollisionObject.model_validate(payload)
 
 
-def test_attachment_rejects_more_than_eight_primitives() -> None:
+def test_attachment_rejects_more_than_sixteen_primitives() -> None:
     payload = _attachment().model_dump()
-    payload["primitives"] = payload["primitives"] * 5
+    payload["primitives"] = payload["primitives"] * 9
 
-    with pytest.raises(ValidationError, match="at most 8"):
+    with pytest.raises(ValidationError, match="at most 16"):
         AttachedCollisionObject.model_validate(payload)
 
 
