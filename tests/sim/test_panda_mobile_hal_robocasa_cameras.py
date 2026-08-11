@@ -46,7 +46,13 @@ pytestmark = pytest.mark.skipif(
 
 rclpy = pytest.importorskip("rclpy")
 
-from openral_core import RobotDescription  # noqa: E402  # reason: after importorskip gates
+from openral_core import (  # noqa: E402  # reason: after importorskip gates
+    AttachedCollisionObject,
+    AttachmentEvidenceKind,
+    BoxShape,
+    Pose6D,
+    RobotDescription,
+)
 from openral_hal import build_hal  # noqa: E402
 from openral_hal.sim_sensor_bridge import SimSensorBridge  # noqa: E402
 
@@ -64,6 +70,24 @@ _RENDERED_OBS_KEYS = {"camera1", "camera2", "camera3"}
 # ``observation.images.head``, so sensor name and obs key coincide — neither
 # appears in the backend's obs dict unless the synth renderer is switched on.
 _SYNTHETIC_OPT_IN = "head"
+
+
+def _attachment(object_id: str, body_name: str) -> AttachedCollisionObject:
+    return AttachedCollisionObject(
+        object_id=object_id,
+        attach_link="panda_link7",
+        touch_links=["panda_finger_pair"],
+        shape=BoxShape(half_extents_m=(0.1, 0.03, 0.03)),
+        pose_in_link=Pose6D(
+            xyz=(0.0, 0.0, 0.16),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id="panda_link7",
+        ),
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref=f"mujoco_body:{body_name}",
+        stamp_ns=1,
+    )
 
 
 @pytest.fixture
@@ -132,5 +156,56 @@ def test_bridge_advertises_only_renderable_cameras(
         )
     finally:
         bridge.teardown()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
+    """Two carried RoboCasa bodies leave depth atomically and detach independently."""
+    from openral_hal.depth_cloud import depth_synth_kwargs
+    from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
+
+    desc = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    handles = hal.mujoco_handles()
+    assert handles is not None
+    model, data = handles
+    depth_spec = next(sensor for sensor in desc.sensors if sensor.name == "front_depth")
+    kwargs = depth_synth_kwargs(
+        depth_spec,
+        max_range_default=5.0,
+        render_size=(512, 512),
+    )
+
+    rclpy.init()
+    node = rclpy.create_node("test_sim_bridge_attached_object_mask")
+    bridge = SimSensorBridge(node=node, hal=hal, description=desc, viewer_enabled=False)
+    try:
+        bridge._resolve_depth_base_body(model)
+
+        def point_count() -> int:
+            return int(
+                synthesize_depth_pointcloud(
+                    model=model,
+                    data=data,
+                    stride=4,
+                    exclude_body_ids=bridge._depth_excluded_body_ids(),
+                    **kwargs,
+                ).shape[0]
+            )
+
+        baseline = point_count()
+        baguette = _attachment("baguette_seed1", "obj_main")
+        distractor = _attachment("counter_distractor_seed1", "distr_counter_main")
+        hal.update_attached_objects([baguette, distractor])
+        both_masked = point_count()
+        assert both_masked < baseline
+
+        hal.update_attached_objects([baguette])
+        baguette_only = point_count()
+        assert both_masked < baguette_only < baseline
+
+        hal.update_attached_objects([])
+        assert point_count() == baseline
+    finally:
         node.destroy_node()
         rclpy.shutdown()
