@@ -33,6 +33,8 @@ from openral_core.schemas import (  # reason: path manipulation above
     Action,
     ActionRepresentation,
     ActionSpec,
+    AttachedCollisionObject,
+    AttachmentEvidenceKind,
     BenchmarkMetadata,
     BenchmarkScene,
     CameraSimPlacement,
@@ -84,6 +86,7 @@ from openral_core.schemas import (  # reason: path manipulation above
 
 # ── Models to export (ordered: enums first, then leaf → root) ────────────────
 _ENUM_TYPES: list[type] = [
+    AttachmentEvidenceKind,
     EmbodimentKind,
     JointType,
     ControlMode,
@@ -117,6 +120,7 @@ _MODEL_TYPES: list[type] = [
     Pose6D,
     DetectedObject,
     SensorFrame,
+    AttachedCollisionObject,
     WorldState,
     Action,
     SceneSpec,

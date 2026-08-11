@@ -2059,6 +2059,67 @@ class WorldCollisionPrimitive(BaseModel):
     object_id: str | None = None
 
 
+class AttachmentEvidenceKind(str, Enum):
+    """Evidence source that confirmed a robot/object attachment."""
+
+    SIM_CONTACT = "sim_contact"
+    GRIPPER_FORCE = "gripper_force"
+    PERCEPTION_TRACK = "perception_track"
+    OPERATOR = "operator"
+
+
+class AttachedCollisionObject(BaseModel):
+    """Collision geometry rigidly attached to a robot link.
+
+    The object is removed from world occupancy only when the same geometry is
+    present here, so collision checking never loses the carried payload.
+
+    Attributes:
+        object_id: Stable perception/world identity.
+        attach_link: Robot link that owns the link-relative pose.
+        touch_links: Explicit robot links allowed to contact the object.
+        shape: Bounded collision geometry carried with the robot.
+        pose_in_link: Object pose whose ``frame_id`` equals ``attach_link``.
+        mass_kg: Optional payload mass for real controller integration.
+        center_of_mass_m: Optional payload CoG in the attached-object frame.
+        inertia_kg_m2: Optional row-major 3x3 inertia matrix.
+        confidence: Attachment confidence in ``[0, 1]``.
+        evidence_kind: Source that confirmed the attachment.
+        evidence_ref: Optional trace/contact/track reference.
+        stamp_ns: Confirmation timestamp.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    object_id: str = Field(min_length=1)
+    attach_link: str = Field(min_length=1)
+    touch_links: list[str] = Field(min_length=1)
+    shape: CollisionShape
+    pose_in_link: Pose6D
+    mass_kg: float | None = Field(default=None, ge=0.0)
+    center_of_mass_m: tuple[float, float, float] | None = None
+    inertia_kg_m2: tuple[float, ...] | None = Field(default=None, min_length=9, max_length=9)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_kind: AttachmentEvidenceKind
+    evidence_ref: str | None = None
+    stamp_ns: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_attachment(self) -> AttachedCollisionObject:
+        if self.pose_in_link.frame_id != self.attach_link:
+            raise ValueError(
+                "AttachedCollisionObject.pose_in_link.frame_id must equal attach_link "
+                f"({self.pose_in_link.frame_id!r} != {self.attach_link!r})."
+            )
+        if len(set(self.touch_links)) != len(self.touch_links):
+            raise ValueError("AttachedCollisionObject.touch_links must be unique.")
+        if self.mass_kg is None and (
+            self.center_of_mass_m is not None or self.inertia_kg_m2 is not None
+        ):
+            raise ValueError("AttachedCollisionObject payload CoG/inertia requires mass_kg.")
+        return self
+
+
 class OccupancyGridRef(BaseModel):
     """Reference to a 2D occupancy grid for mobile-base world-collision.
 
@@ -2229,6 +2290,8 @@ class WorldState(BaseModel):
         collision_primitives: Bounded set of placed convex obstacle volumes
             the kernel checks robot links against (world-collision). Empty
             until a perception / SLAM source populates it.
+        attached_objects: Collision objects carried by robot links. These are
+            absent from world occupancy and remain collision-active as payloads.
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
@@ -2250,6 +2313,7 @@ class WorldState(BaseModel):
     diagnostics: dict[str, Literal["ok", "warn", "error", "stale"]] = Field(default_factory=dict)
     # Bounded world surface for kernel world-collision checking.
     collision_primitives: list[WorldCollisionPrimitive] = Field(default_factory=list)
+    attached_objects: list[AttachedCollisionObject] = Field(default_factory=list)
     occupancy_grid: OccupancyGridRef | None = None
 
 

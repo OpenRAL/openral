@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AttachmentEvidenceKind",
+  "description": "Evidence source that confirmed a robot/object attachment.",
+  "type": "string",
+  "enum": [
+    "sim_contact",
+    "gripper_force",
+    "perception_track",
+    "operator"
+  ]
+}

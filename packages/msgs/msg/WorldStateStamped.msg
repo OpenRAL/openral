@@ -67,3 +67,7 @@ float32[]             detected_object_confidences
 geometry_msgs/Point[] detected_object_positions
 int32[]               detected_object_track_ids
 string                detected_object_frame
+
+# Objects carried by robot links. Each object is removed from world occupancy
+# only while the equivalent attached geometry is present here.
+AttachedCollisionObject[] attached_objects
