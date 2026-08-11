@@ -31,6 +31,7 @@ a provisioned sidecar venv — not asserted blind here (CLAUDE.md §1.2).
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
 import os
 import sys
@@ -40,7 +41,19 @@ import time
 # transformers 5.x's parallel tensor loader spikes VRAM before bitsandbytes
 # quantizes, and the recommended mitigation is expandable segments. Must be set
 # before torch initializes its CUDA caching allocator.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+#
+# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
+# and warns whenever the old spelling is present, so pick the one this venv's
+# torch reads. Resolved from installed metadata rather than `import torch`,
+# which must not happen before the var is set. The boot helper's
+# `make_isolated_env` normally sets this already; the duplicated rule is what
+# keeps `python tools/_qwen_vlm_server.py` correct when run directly, and the
+# logic cannot be shared because this module runs in the sidecar venv with no
+# `openral_*` on the path.
+if (_v := importlib.metadata.version("torch").split(".")[:2]) and tuple(map(int, _v)) >= (2, 9):
+    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+else:
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import msgpack
 import torch

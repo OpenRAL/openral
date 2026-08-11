@@ -80,6 +80,7 @@ from openral_sim._quantization import (
     tie_transformers_weights,
     torch_dtype_for,
 )
+from openral_sim._sidecar_common import installed_alloc_conf_var
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
@@ -123,7 +124,10 @@ _MAX_CROPS_ENV = "OPENRAL_MOLMOACT2_MAX_CROPS"
 # OOMs even with several hundred MiB nominally free. expandable_segments fixes the
 # fragmentation and the rollout fits reproducibly. bitsandbytes 4-bit + a tight
 # card is the textbook case for this setting.
-_CUDA_ALLOC_ENV = "PYTORCH_CUDA_ALLOC_CONF"
+# torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
+# and warns on every process start when the old spelling is present, so resolve
+# it from the installed torch instead of hardcoding either name.
+_CUDA_ALLOC_ENV = installed_alloc_conf_var()
 _EXPANDABLE_SEGMENTS = "expandable_segments:True"
 
 

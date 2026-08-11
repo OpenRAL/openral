@@ -20,7 +20,12 @@ import shutil
 from pathlib import Path
 
 import pytest
-from openral_sim._sidecar_common import ensure_pip_venv, spec_marker
+from openral_sim._sidecar_common import (
+    alloc_conf_var,
+    ensure_pip_venv,
+    spec_marker,
+    venv_torch_version,
+)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("uv") is None, reason="ensure_pip_venv provisions through uv"
@@ -98,3 +103,37 @@ def test_spec_marker_separates_adjacent_entries() -> None:
     """Concatenation must not let two different specs collide into one digest."""
     assert spec_marker(("ab", "c")) != spec_marker(("a", "bc"))
     assert spec_marker(None) == "ok\n"
+
+
+def test_alloc_conf_var_tracks_the_torch_rename() -> None:
+    """torch 2.9 renamed PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF.
+
+    The old name still works on 2.9 but logs a deprecation warning on every
+    process start, so setting both spellings — the previous approach — meant
+    that warning forever. Sidecars span torch 2.6 (InternVLA nav) through 2.9.1,
+    so the choice has to follow the venv rather than be a constant.
+    """
+    assert alloc_conf_var("2.9.1") == "PYTORCH_ALLOC_CONF"
+    assert alloc_conf_var("2.10.0") == "PYTORCH_ALLOC_CONF"
+    assert alloc_conf_var("2.8.0") == "PYTORCH_CUDA_ALLOC_CONF"
+    assert alloc_conf_var("2.6.0") == "PYTORCH_CUDA_ALLOC_CONF"
+    # Unknown / unparseable falls back to the old name: understood by every
+    # torch that reads either, so the worst case is the warning, not a lost
+    # allocator setting.
+    assert alloc_conf_var(None) == "PYTORCH_CUDA_ALLOC_CONF"
+    assert alloc_conf_var("not-a-version") == "PYTORCH_CUDA_ALLOC_CONF"
+
+
+def test_venv_torch_version_reads_dist_info(tmp_path: Path) -> None:
+    """Read from dist-info, not by importing torch.
+
+    ``make_isolated_env`` runs in the *parent* interpreter, which generally
+    cannot import the sidecar's torch at all (different Python minor / ABI).
+    The local version tag must be stripped so `2.9.1+cu128` compares as 2.9.
+    """
+    site = tmp_path / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    assert venv_torch_version(tmp_path) is None
+    (site / "torch-2.9.1+cu128.dist-info").mkdir()
+    assert venv_torch_version(tmp_path) == "2.9.1"
+    assert alloc_conf_var(venv_torch_version(tmp_path)) == "PYTORCH_ALLOC_CONF"

@@ -18,6 +18,7 @@ from openral_core import VLASpec
 from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import rSkill
 from openral_sim.policies.molmoact2 import (
+    _CUDA_ALLOC_ENV,
     _enable_expandable_segments,
     _hf_offline_if_cached,
     _resolve_max_crops,
@@ -31,7 +32,11 @@ class TestEnableExpandableSegments:
     segments allocator. The adapter enables it before the first CUDA allocation.
     Verified on an RTX 4070: OOM without, peak 7.63 GiB fit with (see PR)."""
 
-    _VAR = "PYTORCH_CUDA_ALLOC_CONF"
+    # Follows the installed torch: the var was renamed in 2.9
+    # (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF) and the old spelling now
+    # emits a deprecation warning, so the adapter picks one rather than setting
+    # both. Reuses the adapter's own resolution so the test cannot drift from it.
+    _VAR = _CUDA_ALLOC_ENV
 
     def test_sets_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(self._VAR, raising=False)

@@ -23,6 +23,7 @@ from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
     _HEAD_CAM_ENV,
     _ROBOT_HAL_REGISTRY,
+    _alloc_conf_var,
     _apply_palette_head_cam,
     _capability_matched_manifests,
     _cmdline_is_openral_graph_process,
@@ -1535,7 +1536,13 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     """_prepare_launch_env (shared by `deploy sim` AND `deploy run`) defaults the
     expandable-segments CUDA allocator so the runtime_node's VLA load doesn't
     fragment-OOM on a tight 8 GiB GPU. ``setdefault`` → an operator
-    override wins. Both env-var spellings are set (cross-torch-version).
+    override wins.
+
+    Only the spelling the installed torch reads is set. Setting both used to be
+    the cross-version story, but torch 2.9 renamed
+    ``PYTORCH_CUDA_ALLOC_CONF`` → ``PYTORCH_ALLOC_CONF`` and logs a deprecation
+    warning whenever the old one is present, so setting both meant that warning
+    on every single launch.
 
     Regression guard: the fix originally lived only in run_launch_invocation, but
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
@@ -1544,12 +1551,14 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     env = _prepare_launch_env()
-    assert env["PYTORCH_ALLOC_CONF"] == "expandable_segments:True"
-    assert env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+    chosen = _alloc_conf_var()
+    other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
+    assert env[chosen] == "expandable_segments:True"
+    assert other not in env, "setting both spellings is what triggers torch's deprecation warning"
     assert env["OPENRAL_VENV_SITE"]  # venv site is exported for editable .pth resolution
 
-    monkeypatch.setenv("PYTORCH_ALLOC_CONF", "garbage_collection_threshold:0.9")
-    assert _prepare_launch_env()["PYTORCH_ALLOC_CONF"] == "garbage_collection_threshold:0.9"
+    monkeypatch.setenv(chosen, "garbage_collection_threshold:0.9")
+    assert _prepare_launch_env()[chosen] == "garbage_collection_threshold:0.9"
 
 
 def test_bh_run_launch_invocation_sets_expandable_segments(
@@ -1561,8 +1570,9 @@ def test_bh_run_launch_invocation_sets_expandable_segments(
     default CUDA allocator fragments and OOMs at the forward pass even for an
     NF4 model that otherwise fits (molmoact2-libero-nf4 peaks ~7.6 GiB).
     expandable_segments recovers the fragmented headroom.
-    ``setdefault`` so an operator override wins. Both env-var spellings are set
-    (PYTORCH_ALLOC_CONF / PYTORCH_CUDA_ALLOC_CONF) for cross-torch-version safety.
+    ``setdefault`` so an operator override wins. Only the spelling the installed
+    torch reads is set — see the sibling `_prepare_launch_env` test for why
+    setting both is not free.
     """
     import openral_cli.deploy_sim as _ds
 
@@ -1584,13 +1594,12 @@ def test_bh_run_launch_invocation_sets_expandable_segments(
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     assert run_launch_invocation(inv, run_preflight=False) == 0
-    assert captured["env"]["PYTORCH_ALLOC_CONF"] == "expandable_segments:True"
-    assert captured["env"]["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+    assert captured["env"][_alloc_conf_var()] == "expandable_segments:True"
 
     # An explicit operator setting must win (setdefault, not overwrite).
-    monkeypatch.setenv("PYTORCH_ALLOC_CONF", "garbage_collection_threshold:0.9")
+    monkeypatch.setenv(_alloc_conf_var(), "garbage_collection_threshold:0.9")
     assert run_launch_invocation(inv, run_preflight=False) == 0
-    assert captured["env"]["PYTORCH_ALLOC_CONF"] == "garbage_collection_threshold:0.9"
+    assert captured["env"][_alloc_conf_var()] == "garbage_collection_threshold:0.9"
 
 
 def test_deploy_run_preflight_reaps_orphans_and_checks_the_overlay(

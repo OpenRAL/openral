@@ -24,9 +24,18 @@ from __future__ import annotations
 
 # expandable_segments must be set before the first CUDA allocation (fits NF4 +
 # an 8-frame Qwen3-VL forward on 8 GB — same trick as the MolmoAct2/Robometer rSkills).
+# torch renamed the var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF)
+# and warns on every run when the old spelling is present; resolve it from
+# metadata rather than hardcoding either name, and do it before `import torch`.
+import importlib.metadata
 import os
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+try:
+    _torch_mm = tuple(int(p) for p in importlib.metadata.version("torch").split(".")[:2])
+    _alloc_var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+except (importlib.metadata.PackageNotFoundError, ValueError):
+    _alloc_var = "PYTORCH_CUDA_ALLOC_CONF"
+os.environ.setdefault(_alloc_var, "expandable_segments:True")
 
 import argparse
 from typing import Any, cast

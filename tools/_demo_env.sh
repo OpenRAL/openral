@@ -24,7 +24,10 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 export OPENRAL_AUTO_INSTALL_DEPS=1
 
 # 6. 8 GB-GPU headroom: expandable segments reduces the first-forward spike OOM.
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+#    torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF -> PYTORCH_ALLOC_CONF,
+#    the workspace .venv this script targets); the old name still works but logs
+#    a deprecation warning on every process start.
+export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
 
 # 7. GUI on the user's X display for the viewer + dashboard.
 export DISPLAY="${DISPLAY:-:1}"

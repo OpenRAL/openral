@@ -51,8 +51,11 @@ def _native_available() -> bool:
 )
 def test_native_robometer_scores_real_clip() -> None:
     # expandable_segments must be set before the first CUDA alloc (8 GB fit).
-    os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # Only the spelling the installed torch reads: setting both is what
+    # triggers torch 2.9's deprecation warning for PYTORCH_CUDA_ALLOC_CONF.
+    from openral_sim._sidecar_common import installed_alloc_conf_var
+
+    os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
 
     import cv2
     import numpy as np

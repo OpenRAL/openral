@@ -176,9 +176,11 @@ vla:
 > usable). The decisive enabler is the **CUDA expandable-segments allocator**:
 > without it the first forward's ~1.5 GiB embedding `cat` cannot be placed
 > contiguously and OOMs. The molmoact2 adapter turns this on automatically
-> (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, via
-> `_enable_expandable_segments`) before its first CUDA allocation; export it
-> yourself if other GPU work in the process allocates before the policy loads.
+> (`expandable_segments:True`, via `_enable_expandable_segments`) before its
+> first CUDA allocation; export it yourself if other GPU work in the process
+> allocates before the policy loads — as `PYTORCH_ALLOC_CONF` on torch ≥2.9,
+> `PYTORCH_CUDA_ALLOC_CONF` on older torch (the var was renamed in 2.9 and the
+> old name now logs a deprecation warning).
 > `image_max_crops` (pinned to 4 here) is a *secondary* lever — it bounds the
 > vision tile count but does **not** by itself decide the 8 GiB fit on these
 > checkpoints, and transformers 5.x's fast image processor largely ignores it.

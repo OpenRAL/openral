@@ -27,7 +27,12 @@ _HAS_GPU = torch.cuda.is_available()
 
 @pytest.mark.skipif(not _HAS_GPU, reason="needs a local GPU + lerobot TOPReward + NF4 checkpoint")
 def test_topreward_monitor_scores_real_clip() -> None:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # Only the spelling the installed torch reads: setting both
+    # PYTORCH_CUDA_ALLOC_CONF and PYTORCH_ALLOC_CONF is what triggers torch
+    # 2.9's deprecation warning for the old name.
+    from openral_sim._sidecar_common import installed_alloc_conf_var
+
+    os.environ.setdefault(installed_alloc_conf_var(), "expandable_segments:True")
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from openral_core.schemas import RSkillManifest
     from openral_runner.backends.reward import TOPRewardMonitor, build_reward_monitor

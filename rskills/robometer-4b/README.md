@@ -145,8 +145,12 @@ End-to-end on an **NVIDIA RTX 4070 Laptop (8 GB)**:
   **success spiked to 0.90 exactly at task completion**, then eased — exactly
   the Reasoner signal intended.
 
-Run with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. The model loads via
-lerobot's in-tree Robometer module with plain `transformers`.
+Run with the expandable-segments allocator config set before the first CUDA
+allocation — `PYTORCH_ALLOC_CONF=expandable_segments:True` on torch ≥2.9,
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on older torch (renamed in
+2.9; the old name now logs a deprecation warning). The reward monitor sets this
+for you. The model loads via lerobot's in-tree Robometer module with plain
+`transformers`.
 
 ## Benchmark Numbers
 

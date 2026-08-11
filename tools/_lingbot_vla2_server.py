@@ -42,6 +42,7 @@ weights carry no license guard.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import io
 import os
 import sys
@@ -960,7 +961,16 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # torch renamed this var in 2.9 (PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF)
+    # and warns whenever the old spelling is present. This server serves BOTH
+    # variants and they sit on opposite sides of that rename — v2 runs torch
+    # 2.9.1, v1 is held at 2.8 by lerobot 0.4.2's `torch<2.8.0` cap — so the
+    # spelling has to follow the installed torch rather than being a constant.
+    # Read from metadata, not `import torch`, so nothing initializes the CUDA
+    # allocator before the var is set.
+    _torch_mm = tuple(int(part) for part in importlib.metadata.version("torch").split(".")[:2])
+    _var = "PYTORCH_ALLOC_CONF" if _torch_mm >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+    os.environ.setdefault(_var, "expandable_segments:True")
     args = _parse_args(argv)
     policy: _LingBotPolicy | _LingBotV1Policy = (
         _LingBotV1Policy(args) if args.variant == "v1" else _LingBotPolicy(args)

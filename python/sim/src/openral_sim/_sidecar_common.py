@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import shlex
@@ -252,11 +253,66 @@ def make_isolated_env(venv: Path) -> dict[str, str]:
     env["PATH"] = f"{venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     env.setdefault("TORCH_COMPILE_DISABLE", "1")
     env.setdefault("TORCHINDUCTOR_DISABLE", "1")
-    env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    env.setdefault(alloc_conf_var(venv_torch_version(venv)), "expandable_segments:True")
     ptxas = venv_ptxas(venv)
     if ptxas is not None:
         env.setdefault("TRITON_PTXAS_PATH", str(ptxas))
     return env
+
+
+def alloc_conf_var(torch_version: str | None) -> str:
+    """Return the allocator-config env var name that ``torch_version`` reads.
+
+    torch renamed ``PYTORCH_CUDA_ALLOC_CONF`` to ``PYTORCH_ALLOC_CONF`` in 2.9;
+    the old spelling still works there but logs a deprecation warning on every
+    process start. Setting *both* — the repo's previous approach — is safe but
+    guarantees that warning forever, so pick the one the target torch actually
+    wants. Sidecars deliberately span a wide torch range (2.6 for the InternVLA
+    nav sidecar through 2.9.1 for the rest), which is why this is a lookup
+    rather than a constant.
+
+    ``None`` (torch not installed, or an unparseable version) falls back to the
+    old spelling: it is understood by every torch that has ever read either
+    name, so the worst case is the warning we are trying to remove, never a lost
+    allocator setting.
+    """
+    if torch_version is None:
+        return "PYTORCH_CUDA_ALLOC_CONF"
+    try:
+        major, minor = (int(part) for part in torch_version.split(".")[:2])
+    except ValueError:
+        return "PYTORCH_CUDA_ALLOC_CONF"
+    return "PYTORCH_ALLOC_CONF" if (major, minor) >= (2, 9) else "PYTORCH_CUDA_ALLOC_CONF"
+
+
+def installed_alloc_conf_var() -> str:
+    """:func:`alloc_conf_var` for the torch installed in *this* interpreter.
+
+    For in-process policies (MolmoAct2, OpenVLA, the reward monitors), which set
+    the allocator config on themselves rather than on a child. Read from
+    metadata rather than ``torch.__version__`` so importing this module never
+    drags torch in.
+    """
+    try:
+        return alloc_conf_var(importlib.metadata.version("torch"))
+    except importlib.metadata.PackageNotFoundError:
+        return alloc_conf_var(None)
+
+
+def venv_torch_version(venv: Path) -> str | None:
+    """Return the torch version installed in ``venv``, or ``None`` if absent.
+
+    Read from the ``.dist-info`` directory name rather than by importing torch:
+    this runs in the *parent* interpreter, which generally cannot import the
+    sidecar's torch at all (different Python minor, different ABI), and importing
+    it would cost seconds even where it could.
+    """
+    for lib in sorted(venv.glob("lib/python3.*/site-packages")):
+        for dist in lib.glob("torch-*.dist-info"):
+            version = dist.name.removeprefix("torch-").removesuffix(".dist-info")
+            # Strip any local version tag (`2.9.1+cu128` → `2.9.1`).
+            return version.split("+", 1)[0]
+    return None
 
 
 def venv_ptxas(venv: Path) -> Path | None:
