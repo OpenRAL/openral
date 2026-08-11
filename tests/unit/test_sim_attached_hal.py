@@ -25,10 +25,14 @@ import numpy as np
 import pytest
 from openral_core import (
     Action,
+    AttachedCollisionObject,
+    AttachmentEvidenceKind,
+    BoxShape,
     ClockOrigin,
     ControlMode,
     JointSpec,
     JointType,
+    Pose6D,
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
@@ -361,6 +365,87 @@ def test_sim_attached_hal_mujoco_handles_forwards_env_handles() -> None:
     assert handles is not None
     assert handles[0] is sentinel_model
     assert handles[1] is sentinel_data
+
+
+_ATTACHMENT_MJCF = """
+<mujoco model="attached_objects">
+  <worldbody>
+    <body name="payload_a">
+      <geom type="box" size="0.1 0.02 0.02"/>
+      <body name="payload_a_child">
+        <geom type="sphere" size="0.01"/>
+      </body>
+    </body>
+    <body name="payload_b">
+      <geom type="sphere" size="0.03"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
+def _attached_object(object_id: str, body_name: str) -> AttachedCollisionObject:
+    return AttachedCollisionObject(
+        object_id=object_id,
+        attach_link="panda_link7",
+        touch_links=["panda_finger_pair"],
+        shape=BoxShape(half_extents_m=(0.1, 0.02, 0.02)),
+        pose_in_link=Pose6D(
+            xyz=(0.0, 0.0, 0.1),
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            frame_id="panda_link7",
+        ),
+        confidence=1.0,
+        evidence_kind=AttachmentEvidenceKind.SIM_CONTACT,
+        evidence_ref=f"mujoco_body:{body_name}",
+        stamp_ns=1,
+    )
+
+
+def test_multiple_attached_bodies_are_resolved_atomically() -> None:
+    """Multipart and multiple payload bodies enter one exact depth mask."""
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_ATTACHMENT_MJCF)
+    data = mujoco.MjData(model)
+    hal = SimAttachedHAL(
+        FakeSimEnv(handles=(model, data)),
+        _two_dof_description(),
+    )
+
+    hal.update_attached_objects(
+        [
+            _attached_object("baguette_seed1", "payload_a"),
+            _attached_object("cabinet_handle_tool", "payload_b"),
+        ]
+    )
+
+    names = {
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+        for body_id in hal.read_attached_body_ids()
+    }
+    assert names == {"payload_a", "payload_a_child", "payload_b"}
+    assert [obj.object_id for obj in hal.read_attached_objects()] == [
+        "baguette_seed1",
+        "cabinet_handle_tool",
+    ]
+
+
+def test_invalid_attachment_update_preserves_previous_snapshot() -> None:
+    """Unknown sim identity fails before replacing the active payload set."""
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(_ATTACHMENT_MJCF)
+    data = mujoco.MjData(model)
+    hal = SimAttachedHAL(
+        FakeSimEnv(handles=(model, data)),
+        _two_dof_description(),
+    )
+    valid = _attached_object("baguette_seed1", "payload_a")
+    hal.update_attached_objects([valid])
+
+    with pytest.raises(ROSConfigError, match="unknown MuJoCo body"):
+        hal.update_attached_objects([_attached_object("cabinet_handle_tool", "missing_payload")])
+
+    assert hal.read_attached_objects() == [valid]
 
 
 # ── BODY_TWIST direct-qpos integrator (issue B fix) ──────────────────────────

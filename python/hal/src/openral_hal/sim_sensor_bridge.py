@@ -1126,6 +1126,7 @@ class SimSensorBridge:
         if self._depth_base_body is None and self._depth_base_body_id < 0:
             self._resolve_depth_base_body(model)
         exclude_id = self._depth_base_body_id if self._depth_base_body_id >= 0 else None
+        excluded_bodies = self._depth_excluded_body_ids()
 
         max_range_default = float(self._depth_max_range_m)
         stride = max(int(self._depth_pixel_stride), 1)
@@ -1153,7 +1154,7 @@ class SimSensorBridge:
                     data=data,
                     stride=stride,
                     exclude_body_id=exclude_id,
-                    exclude_body_ids=self._depth_self_bodies or None,
+                    exclude_body_ids=excluded_bodies or None,
                     **kwargs,
                 )
                 h_eff, w_eff = (int(depth_grid.shape[0]), int(depth_grid.shape[1]))
@@ -1201,6 +1202,16 @@ class SimSensorBridge:
                     f"depth camera {name!r} disabled: {exc}; "
                     "check the SensorSpec's mjcf_camera metadata."
                 )
+
+    def _depth_excluded_body_ids(self) -> frozenset[int]:
+        """Robot and attached-payload bodies excluded from world perception."""
+        read_attached_ids = getattr(self._hal, "read_attached_body_ids", None)
+        attached_ids = (
+            frozenset(int(body_id) for body_id in read_attached_ids())
+            if callable(read_attached_ids)
+            else frozenset()
+        )
+        return self._depth_self_bodies | attached_ids
 
     def _publish_depth_clouds_from_obs(self) -> None:
         """Publish the HAL's ready ``base_link`` clouds as ``PointCloud2``.

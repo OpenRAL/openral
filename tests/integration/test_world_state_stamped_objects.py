@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 pytest.importorskip("openral_msgs")
+pytest.importorskip("rclpy")
 
+import rclpy
 from openral_core.schemas import (
     AttachedCollisionObject,
     AttachmentEvidenceKind,
@@ -14,10 +16,14 @@ from openral_core.schemas import (
     DetectedObject,
     JointState,
     Pose6D,
+    RobotDescription,
     SphereShape,
     WorldState,
 )
+from openral_msgs.msg import AttachmentState
+from openral_world_state import WorldStateAggregator
 from openral_world_state_ros.lifecycle_node import (
+    _WorldStateLifecycleNode,
     build_world_state_stamped_msg,
     world_state_from_idl,
 )
@@ -118,3 +124,24 @@ def test_multiple_attached_objects_round_trip() -> None:
 
     decoded = world_state_from_idl(msg)
     assert decoded.attached_objects == attachments
+
+
+def test_attachment_state_callback_applies_multiple_objects_atomically() -> None:
+    attachments = [
+        _attached("baguette_seed1", BoxShape(half_extents_m=(0.12, 0.025, 0.025))),
+        _attached("cabinet_handle_tool", SphereShape(radius_m=0.03)),
+    ]
+    wire_objects = list(build_world_state_stamped_msg(None, _ws([], attachments)).attached_objects)
+    state_msg = AttachmentState()
+    state_msg.revision = 7
+    state_msg.objects = wire_objects
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        node._on_attachment_state(state_msg)
+        assert aggregator.snapshot().attached_objects == attachments
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
