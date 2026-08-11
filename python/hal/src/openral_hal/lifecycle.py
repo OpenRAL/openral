@@ -147,6 +147,7 @@ def decode_action_chunk(msg: object) -> object | None:
     confidence_raw = getattr(msg, "confidence", None)
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
+    kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
     if mode in (ControlMode.JOINT_POSITION, ControlMode.JOINT_TRAJECTORY):
         kwargs["joint_targets"] = rows
     elif mode is ControlMode.JOINT_VELOCITY:
@@ -155,6 +156,8 @@ def decode_action_chunk(msg: object) -> object | None:
         kwargs["joint_torques"] = rows
     elif mode is ControlMode.CARTESIAN_DELTA:
         kwargs["cartesian_delta"] = [tuple(r) for r in rows]
+        scale = tuple(float(v) for v in (getattr(msg, "cartesian_delta_scale", []) or []))
+        kwargs["cartesian_delta_scale"] = scale or None
     elif mode is ControlMode.CARTESIAN_TWIST:
         kwargs["cartesian_twist"] = [tuple(r) for r in rows]
     elif mode is ControlMode.BODY_TWIST:
@@ -396,6 +399,10 @@ if _ROS2_AVAILABLE:
             # ROSPerceptionStale gate could never fire on a wedged sim.
             self._policy_state_last_frame: Any = None
             self._safe_action_sub: Any = None
+            self._action_applied_pub: Any = None
+            self._last_action_applied_tick: int = 0
+            self._safe_group_tick: int | None = None
+            self._safe_group_count: int = 0
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
             # Decouple the cheap, latency-sensitive publishers (odom /
@@ -571,7 +578,7 @@ if _ROS2_AVAILABLE:
                 QoSReliabilityPolicy,
             )
             from sensor_msgs.msg import JointState as RosJointState
-            from std_msgs.msg import Empty, Float32MultiArray
+            from std_msgs.msg import Empty, Float32MultiArray, UInt64
 
             control_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
@@ -590,6 +597,11 @@ if _ROS2_AVAILABLE:
             self._policy_state_pub = self.create_publisher(
                 Float32MultiArray,
                 "/openral/policy_state",
+                control_qos,
+            )
+            self._action_applied_pub = self.create_publisher(
+                UInt64,
+                "/openral/action_applied",
                 control_qos,
             )
             # Sim-attached HALs (those exposing ``idle_step``) read
@@ -635,18 +647,18 @@ if _ROS2_AVAILABLE:
                         "(sim_time_ns is None) — NO /clock will be published and the "
                         "graph would freeze at t=0. Use host_wall clock_origin for this backend."
                     )
-            # Consume /openral/safe_action. Depth=10
+            # Consume /openral/safe_action. Depth=50
             # mirrors the candidate_action upstream — depth=1 coalesces
             # the multi-slot chunks the safety kernel forwards per
             # policy tick (CARTESIAN_DELTA + GRIPPER_POSITION arrive
             # back-to-back) so only the last one survives, freezing
             # the arm in deploy_sim. See ros_publishing_hal.chunk_qos
             # + cpp/openral_safety_kernel chunk_qos() — all three sides
-            # must stay aligned at >=10.
+            # must stay aligned at 50.
             chunk_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.RELIABLE,
                 durability=QoSDurabilityPolicy.VOLATILE,
-                depth=10,
+                depth=50,
             )
             self._safe_action_sub = self.create_subscription(
                 ActionChunk,
@@ -672,7 +684,6 @@ if _ROS2_AVAILABLE:
             self._estop_reset_sub = self.create_subscription(
                 Empty, "/openral/estop_cleared", self._on_estop_cleared, estop_qos
             )
-
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
@@ -719,6 +730,9 @@ if _ROS2_AVAILABLE:
             if self._estop_reset_sub is not None:
                 self.destroy_subscription(self._estop_reset_sub)
                 self._estop_reset_sub = None
+            if self._action_applied_pub is not None:
+                self.destroy_publisher(self._action_applied_pub)
+                self._action_applied_pub = None
             if self._publisher is not None:
                 self.destroy_publisher(self._publisher)
                 self._publisher = None
@@ -964,9 +978,41 @@ if _ROS2_AVAILABLE:
             action = decode_action_chunk(msg)
             if action is None:
                 return
-            self._send_action_traced(action, source="safe_action")
+            if not self._send_action_traced(action, source="safe_action"):
+                return
+            self._publish_action_applied_if_complete(action)
 
-        def _send_action_traced(self, action: Any, *, source: str) -> None:  # noqa: ANN401  # reason: action shape is HAL-adapter-specific (numpy ndarray / dict / typed namedtuple)
+        def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
+            """Acknowledge a grouped tick only after its HAL application completes."""
+            if self._action_applied_pub is None:
+                return
+            group_size = int(action.tick_group_size)
+            tick = int(action.tick_index)
+            if group_size <= 1 or tick <= 0 or tick <= self._last_action_applied_tick:
+                return
+            committed_tick = getattr(self._hal, "last_committed_tick", None)
+            if committed_tick is not None:
+                complete = int(committed_tick) == tick
+            else:
+                if self._safe_group_tick is None:
+                    self._safe_group_tick = tick
+                elif self._safe_group_tick != tick:
+                    self._safe_group_tick = tick
+                    self._safe_group_count = 0
+                self._safe_group_count += 1
+                complete = self._safe_group_count == group_size
+            if not complete:
+                return
+            from std_msgs.msg import UInt64
+
+            msg = UInt64()
+            msg.data = tick
+            self._action_applied_pub.publish(msg)
+            self._last_action_applied_tick = tick
+            self._safe_group_tick = None
+            self._safe_group_count = 0
+
+        def _send_action_traced(self, action: Any, *, source: str) -> bool:  # noqa: ANN401  # reason: action shape is HAL-adapter-specific (numpy ndarray / dict / typed namedtuple)
             """Forward ``action`` to ``self._hal.send_action`` inside a ``hal.send_action`` span.
 
             Centralises OTel wiring for the
@@ -979,7 +1025,7 @@ if _ROS2_AVAILABLE:
             from opentelemetry import trace
 
             if self._hal is None:
-                return
+                return False
             tick_idx = self._send_tick_idx
             self._send_tick_idx += 1
             tracer = trace.get_tracer("openral_hal.lifecycle")
@@ -1041,6 +1087,7 @@ if _ROS2_AVAILABLE:
                     horizon=action.horizon,
                     applied=applied,
                 )
+            return applied
 
         def _on_estop(self, _msg: object) -> None:
             """Latch and invoke downstream stop for HALs that explicitly opt in."""

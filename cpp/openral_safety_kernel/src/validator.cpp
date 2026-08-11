@@ -70,7 +70,31 @@ Result<void, Violation> validate(const ChunkView& chunk,
     return Result<void, Violation>::err(v);
   }
 
-  // 4. NaN / Inf scan on the whole flat[].
+  // 4. Optional controller-native -> physical scale for CARTESIAN_DELTA.
+  // Empty means identity (physical-unit policies and old publishers).
+  if (chunk.cartesian_delta_scale_size > 0) {
+    if (mode != ControlMode::kCartesianDelta || chunk.cartesian_delta_scale_size != per_row ||
+        chunk.cartesian_delta_scale == nullptr) {
+      Violation v =
+          make_controller_violation(ControllerSubKind::kInvalidScale, "cartesian_delta_scale");
+      v.offending_value = static_cast<double>(chunk.cartesian_delta_scale_size);
+      v.limit_value = static_cast<double>(per_row);
+      return Result<void, Violation>::err(v);
+    }
+    for (std::size_t i = 0; i < chunk.cartesian_delta_scale_size; ++i) {
+      const double scale = chunk.cartesian_delta_scale[i];
+      if (!is_finite(scale) || scale <= 0.0) {
+        Violation v =
+            make_controller_violation(ControllerSubKind::kInvalidScale, "cartesian_delta_scale");
+        v.offending_value = scale;
+        v.limit_value = 0.0;
+        v.joint_index = static_cast<std::uint16_t>(i);
+        return Result<void, Violation>::err(v);
+      }
+    }
+  }
+
+  // 5. NaN / Inf scan on the whole flat[].
   for (std::size_t i = 0; i < chunk.flat_size; ++i) {
     if (!is_finite(chunk.flat_data[i])) {
       Violation v = make_controller_violation(ControllerSubKind::kNanInAction, "flat");
@@ -81,7 +105,7 @@ Result<void, Violation> validate(const ChunkView& chunk,
     }
   }
 
-  // 5. Per-step / per-joint enforcement keyed off control_mode.
+  // 6. Per-step / per-joint enforcement keyed off control_mode.
 
   switch (mode) {
   case ControlMode::kJointPosition: {

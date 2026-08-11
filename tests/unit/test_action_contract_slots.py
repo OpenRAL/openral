@@ -20,6 +20,7 @@ dispatcher lands. This file is the schema-side guard.
 from __future__ import annotations
 
 import itertools
+import math
 
 import pytest
 from hypothesis import given
@@ -149,6 +150,27 @@ def test_joint_position_joint_names_optional_when_omitted() -> None:
     assert s.joint_names == []
 
 
+def test_input_bounds_require_finite_increasing_values() -> None:
+    slot = ActionSlot(
+        range=(0, 2),
+        control_mode=ControlMode.JOINT_VELOCITY,
+        input_bounds=(-1.0, 1.0),
+    )
+    assert slot.input_bounds == (-1.0, 1.0)
+    with pytest.raises(ValidationError, match="min < max"):
+        ActionSlot(
+            range=(0, 2),
+            control_mode=ControlMode.JOINT_VELOCITY,
+            input_bounds=(1.0, 1.0),
+        )
+    with pytest.raises(ValidationError, match="finite"):
+        ActionSlot(
+            range=(0, 2),
+            control_mode=ControlMode.JOINT_VELOCITY,
+            input_bounds=(-1.0, math.inf),
+        )
+
+
 def test_discard_forbids_everything_else() -> None:
     with pytest.raises(ValidationError, match="mutually exclusive"):
         ActionSlot(range=(7, 7), discard=True, control_mode=ControlMode.JOINT_POSITION)
@@ -158,6 +180,8 @@ def test_discard_forbids_everything_else() -> None:
         ActionSlot(range=(7, 7), discard=True, frame="x")
     with pytest.raises(ValidationError, match="forbids ee"):
         ActionSlot(range=(7, 7), discard=True, joint_names=["a"])
+    with pytest.raises(ValidationError, match="input_bounds"):
+        ActionSlot(range=(7, 7), discard=True, input_bounds=(-1.0, 1.0))
 
 
 def test_non_discard_requires_control_mode() -> None:

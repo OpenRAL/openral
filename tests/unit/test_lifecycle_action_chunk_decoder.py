@@ -42,6 +42,8 @@ class FakeChunk:
     frame_id: str = ""
     confidence: float = 1.0
     tick_index: int = 0
+    tick_group_size: int = 1
+    cartesian_delta_scale: list[float] = field(default_factory=list)
 
 
 class TestDecodeActionChunk:
@@ -66,11 +68,13 @@ class TestDecodeActionChunk:
             n_dof=6,
             horizon=1,
             control_mode=CONTROL_MODE_TO_UINT8[ControlMode.CARTESIAN_DELTA],
+            cartesian_delta_scale=[0.05, 0.05, 0.05, 0.5, 0.5, 0.5],
         )
         action = decode_action_chunk(chunk)
         assert isinstance(action, Action)
         assert action.control_mode is ControlMode.CARTESIAN_DELTA
         assert action.cartesian_delta == [(-0.97, -0.28, -0.27, 0.0, -0.34, -0.10)]
+        assert action.cartesian_delta_scale == (0.05, 0.05, 0.05, 0.5, 0.5, 0.5)
         assert not action.joint_targets
 
     def test_gripper_position_uses_flat_list_not_nested_rows(self) -> None:
@@ -106,6 +110,7 @@ class TestDecodeActionChunk:
             frame_id="base_link",
             confidence=0.75,
             tick_index=42,
+            tick_group_size=3,
         )
         action = decode_action_chunk(chunk)
         assert isinstance(action, Action)
@@ -113,6 +118,7 @@ class TestDecodeActionChunk:
         assert action.frame_id == "base_link"
         assert action.confidence == pytest.approx(0.75)
         assert action.tick_index == 42
+        assert action.tick_group_size == 3
 
     def test_zero_confidence_round_trips(self) -> None:
         """confidence=0.0 (policy disowns the action) must not decode as 1.0.

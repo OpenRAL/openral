@@ -91,32 +91,6 @@ __all__ = [
 
 _ROBOSUITE_GROUP_PREFIX = re.compile(r"^[a-z]+[0-9]+_")  # robot0_ / gripper0_ / mobilebase0_
 
-# robosuite's post-terminal step guard (``environments/base.py``) raises
-# ``ValueError("executing action in terminated episode")`` whenever ``step`` is
-# called after the episode ended and ``ignore_done=False`` — the configuration
-# raw robosuite-backed adapters can use.
-# Matched by message substring (stable across robosuite releases) so
-# ``_step_and_cache`` can recover by resetting.
-_TERMINATED_EPISODE_MARKER = "terminated episode"
-
-
-def is_terminated_episode_error(exc: BaseException) -> bool:
-    """True iff ``exc`` is robosuite's "executing action in terminated episode" guard.
-
-    Raw-robosuite backends (``ignore_done=False``) HARD-RAISE this on a step
-    taken after the episode ended, instead of returning a terminal ``StepResult``.
-    :meth:`SimAttachedHAL._step_and_cache` treats that as a recoverable terminal
-    (reset + re-step) so deploy-sim's continuous twin keeps driving; any other
-    ``step`` failure (bad action, NaN, …) is a real fault and must propagate.
-
-    Args:
-        exc: The exception raised by ``env.step``.
-
-    Returns:
-        ``True`` when the message identifies the robosuite terminal-episode guard.
-    """
-    return _TERMINATED_EPISODE_MARKER in str(exc).lower()
-
 
 def normalized_joint_index(model_joint_names: list[str]) -> dict[str, int]:
     """Map MJCF joint names (exact + robosuite-prefix-stripped) to model index.
@@ -167,7 +141,6 @@ _PLANAR_TWIST_EPS = 1e-6
 # pending partial group older than this releases the idle stepper (a skill
 # that died mid-tick must not freeze scene physics/cameras forever). Inference
 # ticks are budgeted <= ~1.5 s, so 5 s is unambiguously a dead tick.
-_MAX_CONSECUTIVE_GROUP_DROPS = 3
 _PENDING_GROUP_STALE_NS = 5_000_000_000
 
 
@@ -445,7 +418,7 @@ class SimAttachedHAL:
         # a task succeeds (lerobot's LiberoEnv.step resets inline). In a continuous
         # deploy twin the reasoner/mission own episode boundaries, not the env, so
         # ask the env to run continuously when it supports the hook (no-op for
-        # backends without it, e.g. robocasa which already runs ignore_done).
+        # backends without it).
         enable_continuous = getattr(env, "enable_continuous", None)
         if callable(enable_continuous):
             enable_continuous()
@@ -487,19 +460,10 @@ class SimAttachedHAL:
         # ``action_group_size`` is complete.
         self._pending_action_tick: int | None = None
         self._pending_actions: list[Action] = []
-        # Fail-loud accounting for the atomic group path: consecutive
-        # incomplete-group drops (a persistent slot-count mismatch or a
-        # persistently-rejected slot must surface as a typed error, not a
-        # silent actuation no-op) and the wall-clock stamp of the oldest
-        # pending slot (so a skill that dies mid-tick cannot block
-        # ``idle_step`` forever).
-        self._dropped_group_streak: int = 0
+        self._last_committed_tick: int = 0
+        # Wall-clock stamp of the oldest pending slot so a skill that dies
+        # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
-        # Latched when the last env.step reported terminal
-        # (terminated/truncated). The next send_action resets the env
-        # before stepping so episodic backends (LIBERO) never step a
-        # terminated episode; robocasa runs ignore_done and never latches.
-        self._episode_done: bool = False
         # send_action tick counter for the throttled diagnostic log.
         self._send_log_tick: int = 0
         # Last commanded base body twist (vx, vy, vz, wx, wy, wz) in the
@@ -550,10 +514,9 @@ class SimAttachedHAL:
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._last_state_ns = time.time_ns()
         self._connected = True
-        self._episode_done = False  # fresh episode after (re)connect
         self._pending_action_tick = None
         self._pending_actions.clear()
-        self._dropped_group_streak = 0
+        self._last_committed_tick = 0
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         if self._env_action_dim is None:
             self._env_action_dim = self._probe_env_action_dim()
@@ -713,8 +676,8 @@ class SimAttachedHAL:
                 "re-connect or pass it explicitly to the constructor."
             )
         group_step = getattr(self._env, "step_action_group", None)
-        if callable(group_step):
-            self._stage_action_group(action, group_step)
+        if action.tick_group_size > 1 or callable(group_step):
+            self._stage_action_group(action, group_step if callable(group_step) else None)
             return
         # BODY_TWIST direct-qpos path. The default ``pack_action_for_env``
         # packs ``[vx, vy, wz]`` into slots 0-2 of robocasa's composite-
@@ -791,27 +754,20 @@ class SimAttachedHAL:
                 f"head=[{head}]",
                 flush=True,
             )
-        # If the prior step latched terminal, the commanded-slot merge state
-        # belongs to the now-finished episode — clear it BEFORE the shared
-        # step helper resets the env, so a fresh episode starts from a clean
-        # slot vector. This one reset is send_action-only: ``idle_step`` must
-        # NOT touch ``_last_env_action`` (an idle HOLD is orthogonal to the
-        # commanded slots), so it stays out of ``_step_and_cache``.
-        if self._episode_done:
-            self._last_env_action = None  # stale: belongs to the prior episode
         self._step_and_cache(env_action, source="send_action")
 
     def _stage_action_group(
         self,
         action: Action,
-        group_step: Callable[[list[Action]], Any],
+        group_step: Callable[[list[Action]], Any] | None,
     ) -> None:
         """Commit one simulator step after every slot in an inference tick is safe."""
-        group_size = int(getattr(self._env, "action_group_size", 0) or 0)
+        group_size = int(action.tick_group_size)
+        if group_size <= 1 and group_step is not None:
+            group_size = int(getattr(self._env, "action_group_size", 0) or 0)
         if group_size <= 0:
             raise ROSConfigError(
-                "SimAttachedHAL: backend exposes step_action_group() without a positive "
-                "action_group_size."
+                "SimAttachedHAL: atomic action group requires a positive group size."
             )
         tick = int(action.tick_index)
         if tick <= 0:
@@ -819,37 +775,35 @@ class SimAttachedHAL:
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
-            # Atomicity is preserved (a group missing a safety-rejected slot
-            # must NOT commit its other slots), but the drop must be loud: a
-            # persistent mismatch means actuation is a permanent no-op. One
-            # transient drop (a single safety rejection) is tolerated; a
-            # streak fails with a typed error naming the likely causes.
-            self._dropped_group_streak += 1
+            # Atomicity is preserved: a group missing a safety-rejected slot
+            # must never commit its other slots. Under the producer's applied-
+            # tick barrier, any transition to a newer tick is a contract error.
             dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
                 f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
                 f"tick={self._pending_action_tick} "
                 f"slots={len(self._pending_actions)}/{group_size} "
-                f"modes={dropped_modes} consecutive_drops={self._dropped_group_streak}; "
-                f"starting tick={tick}",
+                f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
             self._pending_actions.clear()
             self._pending_action_tick = None
-            if self._dropped_group_streak >= _MAX_CONSECUTIVE_GROUP_DROPS:
-                self._dropped_group_streak = 0
-                raise ROSRuntimeError(
-                    f"SimAttachedHAL: {_MAX_CONSECUTIVE_GROUP_DROPS} consecutive inference "
-                    f"ticks each staged an incomplete action group (last: "
-                    f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}) — the "
-                    "simulator has not stepped once. Either the rSkill emits fewer typed "
-                    "slots per tick than the backend's action_group_size (contract "
-                    "mismatch — pair this backend with a full-group rSkill), or the "
-                    "safety supervisor is persistently rejecting one slot (see its log "
-                    "for the violation)."
-                )
+            raise ROSRuntimeError(
+                f"SimAttachedHAL: incomplete action group tick staged "
+                f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
+                "the safety supervisor rejected/dropped a slot or the rSkill contract "
+                "declared the wrong group size."
+            )
         if self._pending_action_tick is None:
             self._pending_action_tick = tick
+        elif action.tick_group_size != self._pending_actions[0].tick_group_size:
+            expected_group_size = self._pending_actions[0].tick_group_size
+            self._pending_actions.clear()
+            self._pending_action_tick = None
+            raise ROSRuntimeError(
+                f"SimAttachedHAL: action group tick={tick} changed size from "
+                f"{expected_group_size} to {action.tick_group_size}."
+            )
         self._pending_actions.append(action)
         self._pending_since_ns = time.monotonic_ns()
         if len(self._pending_actions) < group_size:
@@ -860,18 +814,19 @@ class SimAttachedHAL:
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
-        if self._episode_done:
-            self._reset_terminated_episode("send_action_group", trigger="returned-terminal")
         actions = list(self._pending_actions)
         self._pending_actions.clear()
         self._pending_action_tick = None
+        if group_step is None:
+            self._step_packed_action_group(actions)
+            self._last_committed_tick = tick
+            return
         try:
             step_result = group_step(actions)
         except Exception as exc:
             raise ROSRuntimeError(
                 f"SimAttachedHAL.send_action_group: env step failed: {exc}"
             ) from exc
-        self._dropped_group_streak = 0
         # Latch the commanded base twist from the group's BODY_TWIST slot so
         # ``base_twist`` (and the /odom publisher reading it) reflects what the
         # policy commanded — the group path bypasses send_action's per-mode
@@ -898,28 +853,50 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
+        self._last_committed_tick = tick
+
+    def _step_packed_action_group(self, actions: list[Action]) -> None:
+        """Pack every safe slot, then execute exactly one simulator step."""
+        if any(action.control_mode is ControlMode.BODY_TWIST for action in actions):
+            raise ROSConfigError(
+                "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
+                "use the backend's step_action_group implementation."
+            )
+        env_action: NDArray[np.float32] | None = None
+        if self._has_composite_split():
+            for action in actions:
+                env_action = self._pack_with_composite_split(action)
+        else:
+            previous = (
+                self._last_env_action.copy()
+                if self._last_env_action is not None
+                else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
+            )
+            for action in actions:
+                if action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+                    env_action = previous.copy()
+                    env_action[-1] = float(action.gripper[0])
+                else:
+                    env_action = self._action_packer(
+                        action,
+                        self.description,
+                        int(self._env_action_dim or 0),
+                        previous,
+                    )
+                previous = env_action
+            if env_action is not None:
+                self._last_env_action = env_action.copy()
+        if env_action is None:
+            raise ROSConfigError("SimAttachedHAL: packed action group produced no env action.")
+        self._step_and_cache(env_action, source="send_action_group")
 
     def _step_and_cache(self, env_action: NDArray[np.float32], *, source: str) -> bool:
-        """Deferred-reset → ``env.step`` → re-cache ``_last_obs`` → re-latch terminal.
+        """Step the persistent deploy-sim environment and cache its observation.
 
-        The shared core of :meth:`send_action` and :meth:`idle_step`
-        so the subtle terminal-reset path cannot drift between the two callers.
-
-        Auto-reset on episode termination. Native episodic backends
-        (LIBERO) set ``StepResult.terminated`` / ``truncated`` when the task
-        ends (success / failure / horizon); robocasa runs with ``ignore_done``
-        and never does. Without a reset the next ``env.step`` raises "executing
-        action in terminated episode" and the deploy-sim continuous-control
-        loop spams failures. Resetting here makes every episodic backend behave
-        like robocasa's ``ignore_done`` (continuous operation) — safe in a
-        digital twin (no real motor), the arm simply starts a fresh episode.
-        The reset is deferred to the NEXT step (not done eagerly when the
-        terminal flag is set) so the terminal frame is still served to
-        read_state / read_images before the env re-randomises.
-
-        Does NOT touch ``_last_env_action`` — the send_action-only stale-slot
-        reset stays in :meth:`send_action` so an idle HOLD does not perturb the
-        commanded-slot merge state.
+        ``deploy sim`` is a long-lived deployment twin, not an evaluator. It
+        never interprets terminal/success signals and never resets after
+        startup. Backends that refuse post-terminal commands surface their
+        error explicitly instead of silently starting a new episode.
 
         Args:
             env_action: The flat env-frame action vector to step with.
@@ -931,33 +908,12 @@ class SimAttachedHAL:
             before reaching here return ``False`` themselves).
 
         Raises:
-            ROSRuntimeError: when ``env.reset`` (after termination) or
-                ``env.step`` raises.
+            ROSRuntimeError: when ``env.step`` raises.
         """
-        if self._episode_done:
-            self._reset_terminated_episode(source, trigger="returned-terminal")
         try:
             step_result = self._env.step(env_action)
         except Exception as exc:
-            # Raw robosuite-backed adapters can HARD-RAISE
-            # "executing action in terminated episode" on a post-terminal step instead of
-            # returning a terminal ``StepResult``, so the returned-flag latch
-            # above never fired and ``_episode_done`` is still False. Treat a
-            # *raised* terminal exactly like a *returned* one: reset once and
-            # re-step so deploy-sim's continuous twin keeps driving instead of
-            # spamming the failure with a frozen arm. robosuite's ``reset`` clears
-            # ``done`` (``environments/base.py``), so the re-step cannot re-raise
-            # the same guard. Gymnasium / native backends never raise this, so the
-            # branch is inert for them; any non-terminal failure propagates.
-            if not is_terminated_episode_error(exc):
-                raise ROSRuntimeError(f"SimAttachedHAL.{source}: env.step failed: {exc}") from exc
-            self._reset_terminated_episode(source, trigger="raised-terminal")
-            try:
-                step_result = self._env.step(env_action)
-            except Exception as exc2:
-                raise ROSRuntimeError(
-                    f"SimAttachedHAL.{source}: env.step failed after terminal-episode reset: {exc2}"
-                ) from exc2
+            raise ROSRuntimeError(f"SimAttachedHAL.{source}: env.step failed: {exc}") from exc
         # ``StepResult.observation`` carries the rendered camera frames
         # (see ``openral_sim.rollout.StepResult``). Cache so the
         # lifecycle node's camera publisher can serve them without
@@ -968,57 +924,10 @@ class SimAttachedHAL:
         return True
 
     def _cache_step_result(self, step_result: object) -> None:
-        """Cache one backend transition and latch its terminal state."""
+        """Cache one backend transition without evaluating or resetting it."""
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
-        # Latch terminal so the NEXT step resets before stepping.
-        self._episode_done = bool(
-            getattr(step_result, "terminated", False) or getattr(step_result, "truncated", False)
-        )
-
-    def _reset_terminated_episode(self, source: str, *, trigger: str) -> None:
-        """Reset the env after an episode terminal and clear the terminal latch.
-
-        Shared by both terminal paths in :meth:`_step_and_cache`:
-        the *returned*-terminal latch (``_episode_done`` set by the prior step's
-        ``StepResult``) and the *raised*-terminal recovery (raw-robosuite
-        ``ignore_done=False`` backends that throw
-        :func:`is_terminated_episode_error` instead of returning a terminal).
-        Re-caches ``_last_obs`` from the reset observation and drops
-        ``_joint_index`` so it is rebuilt against the fresh episode.
-
-        Args:
-            source: Caller tag (``"send_action"`` / ``"idle_step"``) for the
-                diagnostic log + the wrapped ``ROSRuntimeError`` message.
-            trigger: ``"returned-terminal"`` or ``"raised-terminal"`` — surfaced
-                in the log so the two paths are distinguishable in deploy-sim
-                output (observability).
-
-        Raises:
-            ROSRuntimeError: when ``env.reset`` itself fails.
-        """
-        # Accumulate the finished episode's elapsed sim-time
-        # into the cross-reset offset BEFORE the backend rewinds its clock, so
-        # ``sim_time_ns`` (and the ``/clock`` publisher reading it) stays
-        # monotonic non-decreasing across the auto-reset. Covers BOTH terminal
-        # paths (returned-terminal latch + raised-terminal recovery) since both
-        # funnel through this helper.
-        self._accumulate_sim_time_before_reset()
-        try:
-            reset_obs = self._env.reset(seed=self._reset_seed)
-        except Exception as exc:
-            raise ROSRuntimeError(
-                f"SimAttachedHAL.{source}: env.reset after episode termination failed: {exc}"
-            ) from exc
-        self._last_obs = dict(reset_obs) if isinstance(reset_obs, dict) else None
-        self._episode_done = False
-        self._joint_index = None  # rebuilt on next read_state
-        print(
-            f"[sim_attached.{source}] episode terminated ({trigger}); auto-reset "
-            f"(robot={self.description.name}) — continuous deploy-sim ",
-            flush=True,
-        )
 
     def idle_step(self, wall_dt_s: float | None = None) -> bool:
         """Advance the wrapped sim one tick with a zero/HOLD action when idle.
@@ -1108,11 +1017,10 @@ class SimAttachedHAL:
         # never define idle_step) is the real safety guarantee. Non-MuJoCo
         # backends (Isaac Sim sidecar, ManiSkill3) step via env.step(zeros) the
         # same as MJCF ones.
-        # Hold-action step — the same env.step idiom as the deferred-reset
-        # path / send_action's tail (NOT robocasa.refresh_obs, which
-        # re-renders WITHOUT stepping). The shared ``_step_and_cache`` does
-        # the deferred reset → step → obs re-cache → terminal re-latch so
-        # this path cannot drift from send_action. The hold vector is zeros
+        # Hold-action step — the same env.step idiom as send_action's tail
+        # (NOT robocasa.refresh_obs, which re-renders WITHOUT stepping).
+        # The shared ``_step_and_cache`` keeps observation caching identical
+        # across command and idle paths. The hold vector is zeros
         # (a true HOLD for velocity / OSC-delta controllers) UNLESS the
         # backend exposes ``idle_action()`` — position-controlled backends
         # (BEHAVIOR-1K joint targets) return their current hold pose there,
@@ -1529,6 +1437,11 @@ class SimAttachedHAL:
         """
         return self._mujoco_handles()
 
+    @property
+    def last_committed_tick(self) -> int:
+        """Most recent atomic action-group tick committed to the simulator."""
+        return self._last_committed_tick
+
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.
 
@@ -1548,8 +1461,8 @@ class SimAttachedHAL:
     def _accumulate_sim_time_before_reset(self) -> None:
         """Fold the current episode's elapsed sim-time into the cross-reset offset.
 
-        Called immediately BEFORE every ``env.reset`` (connect + both
-        auto-reset terminal paths). Backends such as robocasa rewind
+        Called immediately before lifecycle-driven ``connect`` resets.
+        Backends such as robocasa rewind
         ``MjData.time`` to 0 on reset, so without this the published value
         would jump backwards on each new episode. Reads the live per-episode
         sim time and, when the backend has a clock, adds it to
@@ -1566,9 +1479,9 @@ class SimAttachedHAL:
         The value a sim ``/clock`` publisher reads so the
         deploy-sim ROS graph runs on simulation time. Returns the wrapped
         :class:`~openral_sim.rollout.SimRollout`'s per-episode sim time plus the
-        accumulated offset from all prior episodes (:meth:`connect` and the
-        auto-resets fold each finished episode's elapsed time into the
-        offset before the backend rewinds its clock). The result is therefore
+        accumulated offset from prior lifecycle reconnects (:meth:`connect`
+        folds elapsed time into the offset before the backend rewinds its
+        clock). The result is therefore
         **monotonic non-decreasing across ``env.reset``**, unlike the raw
         backend clock (robocasa rewinds ``MjData.time`` to 0 on reset).
 

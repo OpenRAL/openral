@@ -507,7 +507,7 @@ def _strip_hf_uri(uri: str | None, *, field_name: str) -> tuple[str, str | None]
 
 
 def _require_remote_code_ack(source_repo: str, revision: str | None) -> None:
-    """Refuse to load a ``trust_remote_code`` model unless the operator opts in.
+    """Require an immutable revision and explicit remote-code acknowledgement.
 
     OpenVLA's ``from_pretrained`` executes ``modeling_prismatic.py`` shipped in
     the repo. The repo id is manifest/operator-supplied and rSkill signature
@@ -516,8 +516,13 @@ def _require_remote_code_ack(source_repo: str, revision: str | None) -> None:
     MolmoAct2 gate and ``OPENRAL_ALLOW_UNSAFE_PICKLE``.
 
     Raises:
-        ROSConfigError: If the acknowledgement env var is not set to ``"1"``.
+        ROSConfigError: If the revision is unpinned or acknowledgement is absent.
     """
+    if revision is None:
+        raise ROSConfigError(
+            f"OpenVLA executes checkpoint-supplied code from {source_repo!r}; "
+            "the rSkill weights_uri must pin an immutable '@<sha>' revision."
+        )
     if os.environ.get(_ALLOW_REMOTE_CODE_ENV, "0") != "1":
         raise ROSConfigError(
             f"OpenVLA loads custom code from '{source_repo}' via "
@@ -525,14 +530,7 @@ def _require_remote_code_ack(source_repo: str, revision: str | None) -> None:
             "(remote-code-execution risk for untrusted or unverified weights). rSkill "
             "signature verification is not yet implemented, so this is "
             f"blocked by default. To load a TRUSTED repo, set: export {_ALLOW_REMOTE_CODE_ENV}=1 "
-            "(pin a revision SHA in the manifest's weights_uri for reproducibility)."
-        )
-    if revision is None:
-        _log.warning(
-            "openvla.remote_code_unpinned",
-            repo=source_repo,
-            env=_ALLOW_REMOTE_CODE_ENV,
-            note="Executing custom code from an UNPINNED repo; pin @<sha> in weights_uri.",
+            "(the manifest must also pin an immutable revision SHA)."
         )
 
 

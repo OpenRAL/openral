@@ -22,7 +22,7 @@ ros2 interface show openral_msgs/action/ExecuteRskill
 
 | File | Role |
 | --- | --- |
-| `ActionChunk.msg` | A bounded action chunk (length × DoF) emitted by an S1 Skill. Mirrors `openral_core.Action`. |
+| `ActionChunk.msg` | A bounded action chunk (length × DoF) emitted by an S1 Skill. Mirrors `openral_core.Action`; optional `cartesian_delta_scale` converts controller-native deltas to physical metres/radians for predictive safety without changing raw actuator bytes. |
 | `PromptStamped.msg` | A natural-language prompt with stamped header and Pydantic metadata as JSON. Topic surface: `/openral/prompt` (operator prompts, Pydantic `SkillPrompt` in `metadata_json`); `/openral/perception/{motion,objects,ocr,scene_change}` (perception events published by `openral_runner.backends.gstreamer.perception_tee.PerceptionEventPublisher`, Pydantic `openral_core.PerceptionEventMetadata` discriminated union in `metadata_json`). |
 | `FailureTrigger.msg` | Typed failure event on the namespaced `/openral/failure/{hal,sensor,skill,safety,wam,critic}` bus. `kind` and `severity` are `uint8` constants (`KIND_TIMEOUT`, ..., `KIND_SUPPRESSED_SUMMARY=254`; `SEVERITY_INFO|WARN|FAIL|ABORT`); `evidence_json` is a serialized Pydantic `openral_core.FailureEvidence` discriminated union. Published via `openral_observability.FailureBusPublisher` with per-(kind, severity) token-bucket rate limiting + 1 Hz suppressed-summary roll-up. |
 | `WorldStateStamped.msg` | Typed WorldState wire format on `/openral/world_state_fast` (30 Hz) and `/openral/world_state_slow` (5 Hz). Carries joint state, base pose/twist, parallel arrays for EE poses / image refs / diagnostics / staleness, battery, and tf2 `frame_ids[]` (consumers read `/tf` themselves). `DIAG_OK | DIAG_WARN | DIAG_STALE | DIAG_ERROR` uint8 constants. |
@@ -37,7 +37,7 @@ ros2 interface show openral_msgs/action/ExecuteRskill
 
 | ROS 2 IDL | Pydantic counterpart | Notes |
 | --- | --- | --- |
-| `msg/ActionChunk` | `openral_core.Action` | `control_mode` enum mirrors `ControlMode`. |
+| `msg/ActionChunk` | `openral_core.Action` | `control_mode` enum mirrors `ControlMode`; empty `cartesian_delta_scale` means identity for backward compatibility. |
 | `msg/PromptStamped` | `openral_core.SkillPrompt` (operator) / `openral_core.PerceptionEventMetadata` (perception leg) | Metadata JSON-encoded for transport. On `/openral/perception/<kind>` the discriminator is `kind` (one of `motion` / `objects` / `ocr` / `scene_change`); each kind owns its own ROS topic so new kinds = new topics, not an IDL bump. |
 | `msg/FailureTrigger` | `openral_core.FailureEvidence` (discriminated union) | `kind` ∈ {`KIND_TIMEOUT`=0, `KIND_FORCE`=1, `KIND_WORKSPACE`=2, `KIND_PERCEPTION`=3, `KIND_CRITIC`=4, `KIND_CONTROLLER`=5, `KIND_SELFVERIFY`=6, `KIND_HUMAN`=7, `KIND_WAM`=8, `KIND_REASONER_TIMEOUT`=9, `KIND_SUPPRESSED_SUMMARY`=254}; `severity` ∈ {`SEVERITY_INFO`=0, `WARN`=1, `FAIL`=2, `ABORT`=3}. `evidence_json` decodes via `pydantic.TypeAdapter(FailureEvidence).validate_json(...)`. This hard-breaks the wire format (no migrator, no string-shaped fallback). |
 | `msg/WorldStateStamped` | `openral_core.WorldState` | Translation lives in `openral_world_state_ros.lifecycle_node.build_world_state_stamped_msg` — dicts are flattened to deterministic, sorted parallel arrays. This hard-breaks the wire format (no migrator, no JSON fallback). |

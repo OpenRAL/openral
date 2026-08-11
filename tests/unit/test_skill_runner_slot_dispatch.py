@@ -106,6 +106,26 @@ def test_robocasa_12d_emits_three_typed_actions(runner_mod: ModuleType) -> None:
     assert twist.body_twist == [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
 
 
+def test_cartesian_scale_is_copied_without_changing_policy_bytes(
+    runner_mod: ModuleType,
+) -> None:
+    raw = np.array(
+        [-0.176, 0.095, -0.309, 0.0, 0.013, 0.104, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0],
+        dtype=np.float32,
+    )
+    scale = (0.05, 0.05, 0.05, 0.5, 0.5, 0.5)
+    cart = runner_mod._dispatch_slots(
+        _robocasa_12d_slots(),
+        raw,
+        cartesian_delta_scale=scale,
+    )[0]
+    assert cart.cartesian_delta is not None
+    assert cart.cartesian_delta[0] == pytest.approx(tuple(raw[:6]))
+    assert cart.cartesian_delta_scale == scale
+    grouped = runner_mod._dispatch_slots(_robocasa_12d_slots(), raw, cartesian_delta_scale=scale)
+    assert {action.tick_group_size for action in grouped} == {3}
+
+
 def test_discard_slots_produce_no_action(runner_mod: ModuleType) -> None:
     """Slots marked discard=True emit no Action — bytes are dropped."""
     slots = [
@@ -145,6 +165,23 @@ def test_joint_velocity_routes_to_joint_velocities(runner_mod: ModuleType) -> No
     actions = runner_mod._dispatch_slots(slots, np.array([1.0, 2.0], dtype=np.float32))
     assert actions[0].joint_velocities == [[1.0, 2.0]]
     assert actions[0].joint_targets is None
+
+
+def test_declared_input_bounds_clip_before_joint_velocity_dispatch(
+    runner_mod: ModuleType,
+) -> None:
+    slots = [
+        ActionSlot(
+            range=(0, 2),
+            control_mode=ControlMode.JOINT_VELOCITY,
+            input_bounds=(-1.0, 1.0),
+        )
+    ]
+    actions = runner_mod._dispatch_slots(
+        slots,
+        np.array([1.015625, -1.25, 0.5], dtype=np.float32),
+    )
+    assert actions[0].joint_velocities == [[1.0, -1.0, 0.5]]
 
 
 def test_cartesian_twist_routes_correctly(runner_mod: ModuleType) -> None:

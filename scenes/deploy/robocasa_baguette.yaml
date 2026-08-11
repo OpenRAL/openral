@@ -26,3 +26,7 @@ scene:
     robots: ["PandaMobile"]
     controller: OSC_POSE
     obj_groups: baguette
+
+# Pin the complete kitchen layout / robot start, not only the object group.
+# This is the real episode XR-1 completes in direct sim (197 steps).
+seed: 1

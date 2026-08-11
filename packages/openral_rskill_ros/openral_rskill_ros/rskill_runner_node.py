@@ -184,6 +184,7 @@ if _ROS2_AVAILABLE:
             # 1-based inference-tick index stamped onto every
             # ActionChunk via the HAL's tick_index_getter (0 = no goal running).
             self._current_tick_index: int = 0
+            self._next_tick_index: int = 1
             self._heartbeat: Any = None
             # State-adapter wiring. Populated by
             # ``_init_tf_lookup`` at on_configure; ``None`` until then.
@@ -613,7 +614,7 @@ if _ROS2_AVAILABLE:
             with self._execute_serial:
                 return self._execute_locked(goal_handle)
 
-        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0915, PLR0911  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
@@ -716,6 +717,7 @@ if _ROS2_AVAILABLE:
                 # self-collision wedge). Gate the first tick on a joint state
                 # stamped at/after this instant.
                 reset_wall_ns = time.time_ns()
+                self._hal.begin_goal()
                 if self._apply_starting_pose_or_abort(skill, goal_handle, result):
                     return result
                 self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
@@ -1073,7 +1075,8 @@ if _ROS2_AVAILABLE:
                 # Stamp every slot chunk of THIS tick with the same
                 # 1-based tick index (read by ROSPublishingHAL via its
                 # tick_index_getter) so the dataset recorder groups them.
-                self._current_tick_index = chunk_index + 1
+                self._current_tick_index = self._next_tick_index
+                self._next_tick_index += 1
                 for action in actions:
                     self._hal.send_action(action)
                     self._chunks_published += 1
@@ -1152,7 +1155,11 @@ if _ROS2_AVAILABLE:
                 return f"ROSQuantizationError: {text}"
             return f"{type(exc).__name__}: {text}"
 
-        def _wait_for_post_reset_joint_state(self, skill: Any, reset_wall_ns: int) -> None:
+        def _wait_for_post_reset_joint_state(
+            self,
+            skill: Any,
+            reset_wall_ns: int,
+        ) -> None:
             """Block until the aggregator's joint state is newer than the reset.
 
             Closes the cross-node staleness race after a ``starting_pose`` reset:
@@ -2323,6 +2330,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
     policy_action: Any,
     *,
     description: Any | None = None,
+    cartesian_delta_scale: tuple[float, ...] | None = None,
 ) -> list:
     """Build one typed :class:`Action` per non-discard :class:`ActionSlot`.
 
@@ -2337,9 +2345,13 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         slots: ``manifest.action_contract.slots``, a list of
             :class:`openral_core.ActionSlot`.
         policy_action: The raw 1-D ``np.float32`` policy vector from
-            ``adapter.step()``. Indexed directly per slot range — no
-            permutation / clamp, since per-mode safety bounds live on
-            the supervisor side.
+            ``adapter.step()``. Indexed directly per slot range. A slot
+            with declared ``input_bounds`` is clipped to the native
+            controller's accepted input range before safety and HAL
+            dispatch; physical safety bounds remain supervisor-owned.
+        cartesian_delta_scale: Optional per-axis conversion from the
+            policy's native Cartesian values to physical metres/radians
+            for predictive safety. The raw policy bytes are not changed.
         description: Optional ``RobotDescription`` used to pad
             sub-slot JOINT_* chunks to full-dof (so the
             C++ safety kernel's ``chunk.n_dof == envelope.n_dof``
@@ -2365,6 +2377,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
             continue
         lo, hi = slot.range
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
+        if slot.input_bounds is not None:
+            input_min, input_max = slot.input_bounds
+            sl = [max(input_min, min(input_max, value)) for value in sl]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
@@ -2381,6 +2396,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
                     control_mode=mode,
                     horizon=1,
                     cartesian_delta=[tuple(sl)],
+                    cartesian_delta_scale=cartesian_delta_scale,
                     ee_name=slot.ee,
                     frame_id=slot.frame,
                 )
@@ -2427,6 +2443,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
                 f"range [{lo}, {hi}]. Supported: joint_*, cartesian_delta, "
                 "cartesian_twist, body_twist, gripper_*."
             )
+    group_size = len(out)
+    for action in out:
+        action.tick_group_size = group_size
     return out
 
 
@@ -2928,7 +2947,12 @@ def _make_policy_adapter_skill(
                 # ``description`` is the closure var from
                 # ``_make_policy_adapter_skill``; used to pad sub-slot
                 # JOINT_* chunks to full-dof.
-                return _dispatch_slots(slots, policy_action, description=description)
+                return _dispatch_slots(
+                    slots,
+                    policy_action,
+                    description=description,
+                    cartesian_delta_scale=getattr(ac, "cartesian_delta_scale", None),
+                )
             if joint_limits and robot_action.shape[0] == len(joint_limits):
                 # Strictly INSIDE the envelope — the safety_kernel
                 # validates ``value > limit_max`` / ``value < limit_min``

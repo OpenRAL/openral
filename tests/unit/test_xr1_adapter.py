@@ -72,8 +72,17 @@ def test_vlabench_deltas_become_absolute_targets() -> None:
 
 def test_image_orientation_is_manifest_controlled() -> None:
     image = np.arange(12, dtype=np.uint8).reshape(2, 2, 3)
-    np.testing.assert_array_equal(_preprocess_image(image, flip_180=False), image)
     np.testing.assert_array_equal(
-        _preprocess_image(image, flip_180=True),
+        _preprocess_image(image, flip_180=False, resize=None),
+        image,
+    )
+    np.testing.assert_array_equal(
+        _preprocess_image(image, flip_180=True, resize=None),
         image[::-1, ::-1],
     )
+
+
+def test_image_resize_is_manifest_controlled() -> None:
+    image = np.zeros((4, 6, 3), dtype=np.uint8)
+    resized = _preprocess_image(image, flip_180=False, resize=(3, 2))
+    assert resized.shape == (2, 3, 3)

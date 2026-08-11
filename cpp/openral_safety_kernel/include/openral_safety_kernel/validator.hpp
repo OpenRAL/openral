@@ -36,6 +36,7 @@ enum class ControllerSubKind : std::uint8_t {
   kNanInAction = 2,
   kNdofMismatch = 3,
   kEnvelopeUnconfigured = 4,
+  kInvalidScale = 5,
 };
 
 /// Fixed-size violation record — NO heap allocation. Returned by value
@@ -75,6 +76,8 @@ struct ChunkView {
   std::uint8_t n_dof{0};
   const double* flat_data{nullptr};
   std::size_t flat_size{0};
+  const double* cartesian_delta_scale{nullptr};
+  std::size_t cartesian_delta_scale_size{0};
 };
 
 /// Control-mode constants mirroring ``openral_core.ControlMode``

@@ -263,12 +263,14 @@ class _RoboCasaSim:
     _state_layout: str = "human300_16d"
     _last_image: NDArray[np.uint8] | None = None
     _debug_step: int = 0
+    _continuous: bool = False
     # True iff `_env` is a `gymnasium.Env` (returns (obs, info) on reset
     # and (obs, reward, terminated, truncated, info) on step, AND takes
     # a dict action with `action.<part>` keys). Set for GR1 envs that
     # we build via `gym.make('gr1_unified/...')`. Kitchen / Panda envs
     # stay on the raw `robosuite.make(...)` path with `_is_gymnasium_wrapped=False`.
     _is_gymnasium_wrapped: bool = False
+
     # Names of the robosuite robot compositions loaded into this env.
     # Used to gate panda_mobile-specific obs-dict additions (base
     # velocity, synthetic 2D laser) without affecting GR1 / Panda /
@@ -283,6 +285,10 @@ class _RoboCasaSim:
     _head_render_model: Any = None
     # Cached (height_m, forward_offset_m) from the robot.yaml `head` sensor.
     _head_geom: tuple[float, float] | None = None
+
+    def enable_continuous(self) -> None:
+        """Disable task evaluation/terminal synthesis for ``deploy sim``."""
+        self._continuous = True
 
     def reset(self, seed: int | None = None) -> Observation:
         if seed is not None and hasattr(self._env, "rng"):
@@ -351,17 +357,17 @@ class _RoboCasaSim:
             terminated = bool(terminated_raw)
             truncated = bool(truncated_raw)
 
-        success = self._check_success_fallback(terminated)
+        success = False if self._continuous else self._check_success_fallback(terminated)
         self._debug_step += 1
         self._log_eef_distance(raw, step=self._debug_step, action=action_arr)
         step_info: dict[str, object] = dict(info)
-        if self.task.success_key is not None:
+        if not self._continuous and self.task.success_key is not None:
             step_info[self.task.success_key] = success
         return StepResult(
             observation=self._wrap_obs(raw),
             reward=float(reward) if reward is not None else 0.0,
-            terminated=terminated or success,
-            truncated=truncated and not success,
+            terminated=False if self._continuous else terminated or success,
+            truncated=False if self._continuous else truncated and not success,
             info=step_info,
         )
 

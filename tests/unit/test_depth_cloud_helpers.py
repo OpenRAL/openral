@@ -446,7 +446,12 @@ def test_robot_self_body_ids_matches_prefixes() -> None:
     xml = """
     <mujoco model="self_bodies">
       <worldbody>
-        <body name="robot0_link1"><geom type="box" size="0.1 0.1 0.1"/></body>
+        <body name="robot0_link1">
+          <geom type="box" size="0.1 0.1 0.1"/>
+          <body name="generic_forearm">
+            <geom type="capsule" size="0.03 0.1"/>
+          </body>
+        </body>
         <body name="mobilebase0_base"><geom type="box" size="0.1 0.1 0.1"/></body>
         <body name="counter_top"><geom type="box" size="0.1 0.1 0.1"/></body>
       </worldbody>
@@ -457,6 +462,7 @@ def test_robot_self_body_ids_matches_prefixes() -> None:
     ids = robot_self_body_ids(model, ["robot0_joint1", "mobilebase0_joint_mobile_forward"])
     names = {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) for i in ids}
     assert "robot0_link1" in names
+    assert "generic_forearm" in names
     assert "mobilebase0_base" in names
     assert "counter_top" not in names  # kitchen fixture stays in the world map
     assert robot_self_body_ids(model, []) == frozenset()

@@ -23,6 +23,7 @@ from openral_sim.policies.openvla import (
     _install_tokenization_compat,
     _legacy_openvla_timm_version_guard,
     _postprocess_action_chunk,
+    _require_remote_code_ack,
     _unnormalize_action,
 )
 
@@ -40,6 +41,20 @@ _BRIDGE_Q01 = np.array(
     [-0.02872725, -0.04170350, -0.02609386, -0.08092105, -0.09288700, -0.20718276],
     dtype=np.float32,
 )
+
+
+def test_remote_code_requires_immutable_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_ALLOW_REMOTE_CODE", "1")
+    with pytest.raises(ROSConfigError, match="immutable"):
+        _require_remote_code_ack("owner/model", None)
+
+
+def test_remote_code_requires_explicit_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENRAL_ALLOW_REMOTE_CODE", raising=False)
+    with pytest.raises(ROSConfigError, match="OPENRAL_ALLOW_REMOTE_CODE"):
+        _require_remote_code_ack("owner/model", "a" * 40)
+
+
 _BRIDGE_Q99 = np.array(
     [0.02830968, 0.04085525, 0.04016159, 0.08192048, 0.07792851, 0.20382574],
     dtype=np.float32,

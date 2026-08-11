@@ -163,6 +163,7 @@ scenes:
 # Per-checkpoint action contract (consumed by the dataset bridge
 # to bind the LeRobot v3 `action` feature shape).
 action_contract:
+  cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
   dim: 7
   # LIBERO action space is 6-D OSC end-effector delta + gripper.
   # Declaring the representation makes deploy-sim dispatch cartesian_delta +

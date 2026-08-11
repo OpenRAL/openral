@@ -46,7 +46,7 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a p
 - `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L480) — Tier-2 deploy launch via `openral deploy sim --config <yaml> --no-dashboard`: `Popen` in its own process group, wait `alive_grace_s`, send SIGINT to the group, wait `shutdown_grace_s`, escalate to SIGKILL on timeout. Pass criteria: banner seen in stdout AND returncode in `{0, -SIGINT, 130, -SIGTERM}`.
 - `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L665) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
 - `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L710) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
-- `main(argv) -> int` (L857) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
+- `main(argv) -> int` (L848) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
 
 ### `tools/select_tests.py`
 _Selective test execution — maps a git diff to the minimal pytest targets that can observe it. Backs `just test-changed` / the `test-selective` workflow. See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._

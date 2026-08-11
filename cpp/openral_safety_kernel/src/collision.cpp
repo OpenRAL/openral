@@ -597,10 +597,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
       grid.resolution <= 0.0) {
     return result;
   }
-  // Occupied voxels are treated conservatively as spheres of the voxel
-  // half-diagonal at the cell centre (so a capsule grazing any part of the box
-  // counts), and only voxels inside each capsule's inflated AABB are tested.
-  const double half_diag = grid.resolution * 0.86602540378443864676;  // sqrt(3)/2
+  // Occupied cells are axis-aligned cubes. Use the existing exact
+  // capsule-vs-box / conservative box-vs-box routines rather than replacing
+  // each cube by a circumscribed sphere: the sphere bulges 18.3 mm beyond a
+  // 5 cm voxel face and false-stops close manipulation near voxel corners.
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
   const double inv_res = 1.0 / grid.resolution;
   // Voxel-index span of a base-frame interval, clamped to the grid (shared by
   // the capsule and box passes).
@@ -618,7 +620,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
-    const double reach = r + margin + half_diag;
+    const double reach = r + margin + half_side;
     const auto [ix0, ix1] =
         rng(std::min(p0.x, p1.x) - reach, std::max(p0.x, p1.x) + reach, grid.origin.x, grid.sx);
     const auto [iy0, iy1] =
@@ -635,7 +637,10 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
                             grid.origin.y + (iy + 0.5) * grid.resolution,
                             grid.origin.z + (iz + 0.5) * grid.resolution};
-          const double d = point_segment_distance(center, p0, p1) - r - half_diag;
+          Transform voxel;
+          voxel.t = center;
+          const double d =
+              box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
           if (d < result.min_distance) {
             result.min_distance = d;
           }
@@ -663,7 +668,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
         std::fabs(box_w.r[3]) * he.x + std::fabs(box_w.r[4]) * he.y + std::fabs(box_w.r[5]) * he.z;
     const double ez =
         std::fabs(box_w.r[6]) * he.x + std::fabs(box_w.r[7]) * he.y + std::fabs(box_w.r[8]) * he.z;
-    const double reach = margin + half_diag;
+    const double reach = margin + half_side;
     const auto [ix0, ix1] =
         rng(box_w.t.x - ex - reach, box_w.t.x + ex + reach, grid.origin.x, grid.sx);
     const auto [iy0, iy1] =
@@ -680,7 +685,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           const Vec3 center{grid.origin.x + (ix + 0.5) * grid.resolution,
                             grid.origin.y + (iy + 0.5) * grid.resolution,
                             grid.origin.z + (iz + 0.5) * grid.resolution};
-          const double d = point_aabb_distance(to_box_local(box_w, center), he) - half_diag;
+          Transform voxel;
+          voxel.t = center;
+          const double d = box_box_distance(box_w, he, voxel, voxel_half);
           if (d < result.min_distance) {
             result.min_distance = d;
           }

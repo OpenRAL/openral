@@ -1211,6 +1211,11 @@
       ],
       "default": null
     },
+    "seed": {
+      "default": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
     "composition": {
       "anyOf": [
         {

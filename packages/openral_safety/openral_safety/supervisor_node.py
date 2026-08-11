@@ -45,6 +45,7 @@ Stub for velocity / force / workspace lands when the C++ kernel does.
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from typing import Any
@@ -350,7 +351,12 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
         # ── Cartesian / twist / gripper — per-mode checks ──
         if mode is ControlMode.CARTESIAN_DELTA:
-            return self._envelope_violation_cartesian_delta(flat=flat, n_dof=n_dof)
+            scale = list(getattr(msg, "cartesian_delta_scale", []) or [])
+            return self._envelope_violation_cartesian_delta(
+                flat=flat,
+                n_dof=n_dof,
+                cartesian_delta_scale=scale,
+            )
         if mode is ControlMode.CARTESIAN_TWIST:
             return self._envelope_violation_cartesian_twist(flat=flat, n_dof=n_dof)
         if mode is ControlMode.BODY_TWIST:
@@ -401,7 +407,11 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         return (None, "")
 
     def _envelope_violation_cartesian_delta(
-        self, *, flat: list[float], n_dof: int
+        self,
+        *,
+        flat: list[float],
+        n_dof: int,
+        cartesian_delta_scale: list[float],
     ) -> tuple[str | None, str]:
         """CARTESIAN_DELTA: bound the Euclidean step over (xyz) and (rotvec).
 
@@ -426,6 +436,18 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
                 f"got n_dof={n_dof} flat_len={len(flat)}",
             )
         row0 = flat[:6]
+        if cartesian_delta_scale:
+            if len(cartesian_delta_scale) != 6 or any(
+                not math.isfinite(value) or value <= 0.0 for value in cartesian_delta_scale
+            ):
+                return (
+                    "cartesian_scale",
+                    "cartesian_delta_scale must contain 6 finite positive values",
+                )
+            row0 = [
+                max(-1.0, min(1.0, value)) * scale
+                for value, scale in zip(row0, cartesian_delta_scale, strict=True)
+            ]
         if cart_step_m >= 0.0:
             mag_xyz = (row0[0] ** 2 + row0[1] ** 2 + row0[2] ** 2) ** 0.5
             if mag_xyz > cart_step_m:

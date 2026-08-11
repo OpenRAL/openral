@@ -30,7 +30,7 @@ runtime: "pytorch"
 quantization:
   dtype: "int4"
   backend: "pytorch"
-weights_uri: "hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4"
+weights_uri: "hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4@5e6c1eaac1e40f68cf592bd348ba07cbfc926ce6"
 image_preprocessing:
   flip_180: false
 state_contract:
@@ -58,5 +58,6 @@ actions: ["pick", "place", "open", "close"]
 objects: ["kitchen_object"]
 scenes: ["kitchen"]
 action_contract:
+  cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
   dim: 7
   representation: "delta_ee_6d_plus_gripper"

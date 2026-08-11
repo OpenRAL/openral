@@ -1310,6 +1310,10 @@
       ],
       "default": null
     },
+    "seed": {
+      "title": "Seed",
+      "type": "integer"
+    },
     "composition": {
       "anyOf": [
         {
@@ -1393,10 +1397,6 @@
     "task": {
       "$ref": "#/$defs/TaskSpec"
     },
-    "seed": {
-      "title": "Seed",
-      "type": "integer"
-    },
     "n_episodes": {
       "exclusiveMinimum": 0,
       "title": "N Episodes",
@@ -1425,8 +1425,8 @@
   },
   "required": [
     "scene",
-    "task",
     "seed",
+    "task",
     "n_episodes",
     "metadata"
   ],

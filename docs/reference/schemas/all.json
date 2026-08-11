@@ -4875,7 +4875,7 @@
       "$defs": {
         "ActionContract": {
           "additionalProperties": false,
-          "description": "Per-rSkill action-vector contract.\n\nMirrors :class:`StateContract` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n:class:`RobotDescription` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        :attr:`ActionSpec.representation`). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        :class:`ActionSlot` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed :class:`Action` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.",
+          "description": "Per-rSkill action-vector contract.\n\nMirrors :class:`StateContract` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n:class:`RobotDescription` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        :attr:`ActionSpec.representation`). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        :class:`ActionSlot` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed :class:`Action` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).",
           "properties": {
             "dim": {
               "exclusiveMinimum": 0,
@@ -4907,6 +4907,21 @@
               ],
               "default": null,
               "title": "Slots"
+            },
+            "cartesian_delta_scale": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Cartesian Delta Scale"
             },
             "joint_units": {
               "anyOf": [
@@ -4941,7 +4956,7 @@
         },
         "ActionSlot": {
           "additionalProperties": false,
-          "description": "One contiguous slice of an rSkill's action vector.\n\nThe skill_runner reads ``ActionContract.slots`` and emits one\ntyped :class:`Action` per non-discard slot per step. All actions\ninherit the parent step's ``trace_id`` so the safety supervisor\nand downstream telemetry can join them post-hoc.\n\nAttributes:\n    range: Inclusive ``[start, end]`` indices into the flat policy\n        action vector. ``range[0]`` must be \u2264 ``range[1]``; both\n        must fall within ``[0, ActionContract.dim)``.\n    control_mode: The :class:`ControlMode` the slice is routed to.\n        The HAL whitelist on the target robot must include this\n        mode (the palette filter rejects the rSkill at install\n        time otherwise). ``None`` only when :attr:`discard` is\n        ``True``.\n    discard: When ``True`` the slice is dropped silently \u2014 used\n        for dataset artefacts like RoboCasa365's torso\n        placeholder dim or paired gripper channels. The slot\n        still occupies its range so coverage validation works;\n        no :class:`Action` is emitted.\n    ee: End-effector name from the robot's\n        :attr:`RobotDescription.end_effectors` /\n        :attr:`RobotDescription.joints`. REQUIRED for\n        ``CARTESIAN_*`` modes (the pose is computed in the named\n        EE's frame) and for ``GRIPPER_*`` modes (names the\n        actuator). FORBIDDEN for ``BODY_TWIST`` and\n        ``JOINT_POSITION``.\n    frame: tf2 frame name. REQUIRED for cartesian + body-twist\n        modes (the slice's bytes are expressed in this frame).\n        FORBIDDEN for joint-position and gripper modes.\n    joint_names: Robot joint names this slice targets, in slot\n        order. REQUIRED for ``JOINT_POSITION`` / ``JOINT_VELOCITY``\n        / ``JOINT_TORQUE`` when the slot covers fewer than all\n        robot joints; FORBIDDEN for non-joint modes. Length must\n        equal ``range[1] - range[0] + 1``.",
+          "description": "One contiguous slice of an rSkill's action vector.\n\nThe skill_runner reads ``ActionContract.slots`` and emits one\ntyped :class:`Action` per non-discard slot per step. All actions\ninherit the parent step's ``trace_id`` so the safety supervisor\nand downstream telemetry can join them post-hoc.\n\nAttributes:\n    range: Inclusive ``[start, end]`` indices into the flat policy\n        action vector. ``range[0]`` must be \u2264 ``range[1]``; both\n        must fall within ``[0, ActionContract.dim)``.\n    control_mode: The :class:`ControlMode` the slice is routed to.\n        The HAL whitelist on the target robot must include this\n        mode (the palette filter rejects the rSkill at install\n        time otherwise). ``None`` only when :attr:`discard` is\n        ``True``.\n    discard: When ``True`` the slice is dropped silently \u2014 used\n        for dataset artefacts like RoboCasa365's torso\n        placeholder dim or paired gripper channels. The slot\n        still occupies its range so coverage validation works;\n        no :class:`Action` is emitted.\n    ee: End-effector name from the robot's\n        :attr:`RobotDescription.end_effectors` /\n        :attr:`RobotDescription.joints`. REQUIRED for\n        ``CARTESIAN_*`` modes (the pose is computed in the named\n        EE's frame) and for ``GRIPPER_*`` modes (names the\n        actuator). FORBIDDEN for ``BODY_TWIST`` and\n        ``JOINT_POSITION``.\n    frame: tf2 frame name. REQUIRED for cartesian + body-twist\n        modes (the slice's bytes are expressed in this frame).\n        FORBIDDEN for joint-position and gripper modes.\n    joint_names: Robot joint names this slice targets, in slot\n        order. REQUIRED for ``JOINT_POSITION`` / ``JOINT_VELOCITY``\n        / ``JOINT_TORQUE`` when the slot covers fewer than all\n        robot joints; FORBIDDEN for non-joint modes. Length must\n        equal ``range[1] - range[0] + 1``.\n    input_bounds: Optional inclusive controller-input bounds. The\n        skill runner clips this slot before safety and HAL dispatch,\n        matching native controllers that clip normalized policy\n        outputs before applying physical scaling.",
           "properties": {
             "range": {
               "maxItems": 2,
@@ -5003,6 +5018,28 @@
               },
               "title": "Joint Names",
               "type": "array"
+            },
+            "input_bounds": {
+              "anyOf": [
+                {
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Input Bounds"
             }
           },
           "required": [
@@ -5260,7 +5297,7 @@
         },
         "ImagePreprocessing": {
           "additionalProperties": false,
-          "description": "Per-rSkill image preprocessing contract.\n\nProperties of how the *checkpoint* was trained against image frames,\nsurfaced on the manifest so the sim adapter does not have to learn\nthem from a YAML override. ``vla.extra`` overrides on the eval\nconfig still win \u2014 see ``openral_rskill._vla_core.resolve_image_preprocessing``.\n\nAttributes:\n    flip_180: Apply ``torch.flip(t, dims=[1, 2])`` (H+W reversal) to\n        every camera frame before the policy forward. SmolVLA / pi05\n        LIBERO checkpoints want this on; the RoboCasa checkpoints\n        published by RoMALab / DAVIAN-Robotics want it off.\n    flip_vertical: Apply ``img[::-1, :, :]`` (vertical-only, H-axis\n        reversal) BEFORE any 180\u00b0 rotation. Mirrors\n        ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.process_img``,\n        which the canonical openpi-robocasa eval applies before\n        feeding frames to the policy. Required for\n        ``robocasa/robocasa365_checkpoints/pi05_pretrain_human300``\n        and its lerobot-converted siblings; the RoMALab MG_300\n        checkpoint does NOT want this flip.\n    input_template: Format string used to name image tensors in the\n        policy input batch \u2014 for example ``\"observation.images.{cam}\"``\n        for SmolVLA / pi05 RoMALab vs ``\"observation.image.{cam}\"``\n        for ruiname/pi05-robocasa-10tasks-200k.\n    aliases: Per-checkpoint rename map from the *scene* / *robot* raw\n        camera key (e.g. robosuite's ``robot0_agentview_left_image``)\n        to the *model*'s expected input feature name (e.g.\n        ``agentview``). Empty means pass through unchanged. SmolVLA\n        LIBERO usually wants ``{\"camera1\": \"image\", \"camera2\": \"image2\"}``.\n    norm_tag: Normalization statistics tag for policies that use\n        multiple checkpoints or training distributions (e.g. MolmoAct2\n        with ``norm_tag=\"so100_so101_molmoact2\"`` for SO-100/101\n        finetuned weights). Optional; ``None`` means the adapter's\n        default tag applies. Used by ``predict_action`` methods to\n        select the right norm_stats entry at inference time.\n    image_max_crops: Cap on the number of image tiles a multi-crop\n        image processor (Molmo / MolmoAct2 family) produces per camera\n        frame. Each extra 378px crop adds ~182 pooled image tokens and\n        attention cost is quadratic in the token count, so this is the\n        primary *activation*-memory lever (the NF4 weights are fixed at\n        ~3.5 GiB; what overflows an 8 GiB card is the crop activations).\n        Optional; ``None`` keeps the checkpoint's own default (8 for\n        MolmoAct2). A per-rollout ``vla.extra[\"image_max_crops\"]`` (or\n        the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this\n        per-checkpoint default. Must be ``>= 1`` when set.",
+          "description": "Per-rSkill image preprocessing contract.\n\nProperties of how the *checkpoint* was trained against image frames,\nsurfaced on the manifest so the sim adapter does not have to learn\nthem from a YAML override. ``vla.extra`` overrides on the eval\nconfig still win \u2014 see ``openral_rskill._vla_core.resolve_image_preprocessing``.\n\nAttributes:\n    flip_180: Apply ``torch.flip(t, dims=[1, 2])`` (H+W reversal) to\n        every camera frame before the policy forward. SmolVLA / pi05\n        LIBERO checkpoints want this on; the RoboCasa checkpoints\n        published by RoMALab / DAVIAN-Robotics want it off.\n    flip_vertical: Apply ``img[::-1, :, :]`` (vertical-only, H-axis\n        reversal) BEFORE any 180\u00b0 rotation. Mirrors\n        ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.process_img``,\n        which the canonical openpi-robocasa eval applies before\n        feeding frames to the policy. Required for\n        ``robocasa/robocasa365_checkpoints/pi05_pretrain_human300``\n        and its lerobot-converted siblings; the RoMALab MG_300\n        checkpoint does NOT want this flip.\n    input_template: Format string used to name image tensors in the\n        policy input batch \u2014 for example ``\"observation.images.{cam}\"``\n        for SmolVLA / pi05 RoMALab vs ``\"observation.image.{cam}\"``\n        for ruiname/pi05-robocasa-10tasks-200k.\n    aliases: Per-checkpoint rename map from the *scene* / *robot* raw\n        camera key (e.g. robosuite's ``robot0_agentview_left_image``)\n        to the *model*'s expected input feature name (e.g.\n        ``agentview``). Empty means pass through unchanged. SmolVLA\n        LIBERO usually wants ``{\"camera1\": \"image\", \"camera2\": \"image2\"}``.\n    norm_tag: Normalization statistics tag for policies that use\n        multiple checkpoints or training distributions (e.g. MolmoAct2\n        with ``norm_tag=\"so100_so101_molmoact2\"`` for SO-100/101\n        finetuned weights). Optional; ``None`` means the adapter's\n        default tag applies. Used by ``predict_action`` methods to\n        select the right norm_stats entry at inference time.\n    image_max_crops: Cap on the number of image tiles a multi-crop\n        image processor (Molmo / MolmoAct2 family) produces per camera\n        frame. Each extra 378px crop adds ~182 pooled image tokens and\n        attention cost is quadratic in the token count, so this is the\n        primary *activation*-memory lever (the NF4 weights are fixed at\n        ~3.5 GiB; what overflows an 8 GiB card is the crop activations).\n        Optional; ``None`` keeps the checkpoint's own default (8 for\n        MolmoAct2). A per-rollout ``vla.extra[\"image_max_crops\"]`` (or\n        the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this\n        per-checkpoint default. Must be ``>= 1`` when set.\n    resize_width: Exact checkpoint input width. When set with\n        :attr:`resize_height`, adapters resize the source frame before\n        policy inference. This lets a high-resolution detector feed coexist\n        with a policy trained at a lower native render size.\n    resize_height: Exact checkpoint input height; must be set together\n        with :attr:`resize_width`.",
           "properties": {
             "flip_180": {
               "default": false,
@@ -5308,6 +5345,32 @@
               ],
               "default": null,
               "title": "Image Max Crops"
+            },
+            "resize_width": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Resize Width"
+            },
+            "resize_height": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Resize Height"
             }
           },
           "title": "ImagePreprocessing",
@@ -7670,7 +7733,7 @@
           "type": "object"
         }
       },
-      "description": "A single action step or chunk produced by a Skill.\n\nAttributes:\n    control_mode: Target action space.\n    horizon: Number of steps (1 = single step, H = chunk).\n    joint_targets: Joint position targets, shape ``(H, N)``.\n    joint_velocities: Joint velocity targets, shape ``(H, N)``.\n    joint_torques: Joint torque targets, shape ``(H, N)``.\n    cartesian_pose: EE pose targets.\n    cartesian_delta: EE pose deltas.\n    cartesian_twist: EE velocity targets.\n    body_twist: Base twist targets.\n    foot_placements: Discrete footstep targets.\n    gripper: Gripper commands in [0, 1].\n    dex_hand_joints: Dexterous hand joint targets.\n    confidence: rSkill confidence in [0, 1].\n    stamp_ns: Action timestamp in nanoseconds.\n    ee_name: Target end-effector name.\n    frame_id: Reference frame for Cartesian actions.\n    tick_index: Shared 1-based inference tick for every slot emitted by one\n        policy step. Preserved across the ROS safety wire so a simulation HAL\n        can commit a multi-surface action atomically after every slot passes.\n    safety_overrides: Operator-approved safety override tokens.",
+      "description": "A single action step or chunk produced by a Skill.\n\nAttributes:\n    control_mode: Target action space.\n    horizon: Number of steps (1 = single step, H = chunk).\n    joint_targets: Joint position targets, shape ``(H, N)``.\n    joint_velocities: Joint velocity targets, shape ``(H, N)``.\n    joint_torques: Joint torque targets, shape ``(H, N)``.\n    cartesian_pose: EE pose targets.\n    cartesian_delta: EE pose deltas.\n    cartesian_twist: EE velocity targets.\n    body_twist: Base twist targets.\n    foot_placements: Discrete footstep targets.\n    gripper: Gripper commands in [0, 1].\n    dex_hand_joints: Dexterous hand joint targets.\n    confidence: rSkill confidence in [0, 1].\n    stamp_ns: Action timestamp in nanoseconds.\n    ee_name: Target end-effector name.\n    frame_id: Reference frame for Cartesian actions.\n    cartesian_delta_scale: Per-axis physical range for a native normalized\n        Cartesian-delta controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``; the raw delta remains unchanged for\n        the HAL. ``None`` means the policy already emits physical units.\n    tick_index: Shared 1-based inference tick for every slot emitted by one\n        policy step. Preserved across the ROS safety wire so a simulation HAL\n        can commit a multi-surface action atomically after every slot passes.\n    tick_group_size: Number of non-discard slots emitted for this inference\n        tick. ``1`` keeps single-surface actions unchanged.\n    safety_overrides: Operator-approved safety override tokens.",
       "properties": {
         "control_mode": {
           "$ref": "#/$defs/ControlMode"
@@ -7920,10 +7983,31 @@
           "default": null,
           "title": "Frame Id"
         },
+        "cartesian_delta_scale": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cartesian Delta Scale"
+        },
         "tick_index": {
           "default": 0,
           "minimum": 0,
           "title": "Tick Index",
+          "type": "integer"
+        },
+        "tick_group_size": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Tick Group Size",
           "type": "integer"
         },
         "safety_overrides": {
@@ -10010,6 +10094,11 @@
           ],
           "default": null
         },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
         "composition": {
           "anyOf": [
             {
@@ -11410,6 +11499,11 @@
           ],
           "default": null
         },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
         "composition": {
           "anyOf": [
             {
@@ -11492,11 +11586,6 @@
         },
         "task": {
           "$ref": "#/$defs/TaskSpec"
-        },
-        "seed": {
-          "default": 0,
-          "title": "Seed",
-          "type": "integer"
         },
         "n_episodes": {
           "default": 1,
@@ -12899,6 +12988,10 @@
           ],
           "default": null
         },
+        "seed": {
+          "title": "Seed",
+          "type": "integer"
+        },
         "composition": {
           "anyOf": [
             {
@@ -12982,10 +13075,6 @@
         "task": {
           "$ref": "#/$defs/TaskSpec"
         },
-        "seed": {
-          "title": "Seed",
-          "type": "integer"
-        },
         "n_episodes": {
           "exclusiveMinimum": 0,
           "title": "N Episodes",
@@ -13014,8 +13103,8 @@
       },
       "required": [
         "scene",
-        "task",
         "seed",
+        "task",
         "n_episodes",
         "metadata"
       ],

@@ -139,3 +139,6 @@ scenes:
 # to bind the LeRobot v3 `action` feature shape).
 action_contract:
   dim: 8
+  # Normalized Cartesian controllers must also declare their physical ranges,
+  # e.g. RoboSuite OSC_POSE:
+  # cartesian_delta_scale: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]

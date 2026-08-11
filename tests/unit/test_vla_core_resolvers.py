@@ -140,6 +140,21 @@ class TestResolveImagePreprocessing:
         assert resolve_image_preprocessing(_manifest(), {}).image_max_crops is None
         assert resolve_image_preprocessing(None, {}).image_max_crops is None
 
+    def test_exact_resize_propagates_and_can_be_overridden(self) -> None:
+        manifest = _manifest(
+            image_preprocessing=ImagePreprocessing(
+                resize_width=256,
+                resize_height=256,
+            )
+        )
+        resolved = resolve_image_preprocessing(manifest, {})
+        assert (resolved.resize_width, resolved.resize_height) == (256, 256)
+        overridden = resolve_image_preprocessing(
+            manifest,
+            {"resize_width": 224, "resize_height": 224},
+        )
+        assert (overridden.resize_width, overridden.resize_height) == (224, 224)
+
 
 # ── resolve_state_dim ────────────────────────────────────────────────────────
 

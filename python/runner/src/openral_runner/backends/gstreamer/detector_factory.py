@@ -103,14 +103,23 @@ def weights_source_from_manifest(manifest: RSkillManifest) -> str:
     self-describing prequantized mirror (loaded directly, ~2.3 GB, no on-the-fly
     quantize), for a thin wrapper it is the same upstream repo. Falls back to
     ``source_repo`` (upstream provenance) when ``weights_uri`` is absent or not an
-    ``hf://`` URI (e.g. a ``local://`` ONNX path). Strips the ``hf://`` scheme and
-    any ``@revision`` suffix so the value is a bare ``org/name`` repo id for
-    ``from_pretrained``.
+    ``hf://`` URI (e.g. a ``local://`` ONNX path). Strips only the ``hf://``
+    scheme; immutable ``@revision`` suffixes are preserved for the sidecar.
     """
     weights_uri = manifest.weights_uri
     hf_weights = weights_uri if weights_uri and weights_uri.startswith("hf://") else None
     raw = hf_weights or manifest.source_repo or "nvidia/LocateAnything-3B"
-    return raw.removeprefix("hf://").split("@", 1)[0]
+    source = raw.removeprefix("hf://")
+    trust_remote_code = bool(
+        manifest.quantization is not None
+        and manifest.quantization.extra.get("trust_remote_code") is True
+    )
+    if trust_remote_code and "@" not in source:
+        raise ROSConfigError(
+            f"detector {manifest.name!r} executes checkpoint-supplied code; "
+            "weights_uri must pin an immutable '@<sha>' revision."
+        )
+    return source
 
 
 def build_manifest_detector(

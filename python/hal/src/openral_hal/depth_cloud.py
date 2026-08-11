@@ -110,7 +110,9 @@ def robot_self_body_ids(model: Any, sim_joint_names: Any) -> frozenset[int]:
     flags the arm against itself. Returns every body whose name shares a prefix
     (first ``_``-delimited token) with one of the robot's ``sim_joint_name``s —
     e.g. ``mobilebase0`` / ``robot0`` / ``gripper0`` in a robosuite/robocasa
-    scene — so the synth can drop hits on them.
+    scene — then includes every descendant of those matched roots. Robosuite
+    names some nested arm bodies generically, so prefix matching alone leaves
+    robot geoms in the depth cloud and voxelises the arm into its own world map.
     """
     import mujoco  # reason: defer optional sim dep
 
@@ -121,6 +123,12 @@ def robot_self_body_ids(model: Any, sim_joint_names: Any) -> frozenset[int]:
     for i in range(int(model.nbody)):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
         if name and name.split("_", 1)[0] in prefixes:
+            out.add(i)
+    # MuJoCo body ids are parent-before-child. Include generic / unnamed
+    # descendants below any matched robot root without pulling in sibling
+    # kitchen fixtures.
+    for i in range(1, int(model.nbody)):
+        if int(model.body_parentid[i]) in out:
             out.add(i)
     return frozenset(out)
 

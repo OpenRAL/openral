@@ -144,12 +144,29 @@ def test_build_manifest_detector_dispatches_pytorch_to_sidecar() -> None:
         # weights_uri (the prequantized NF4 mirror this rSkill ships) wins over
         # source_repo (upstream provenance): the sidecar loads the mirror directly
         # via the prequantized path (see _locateanything_server._load).
-        assert weights_source_from_manifest(m) == "OpenRAL/rskill-locateanything_3b-any-general-nf4"
+        assert weights_source_from_manifest(m) == (
+            "OpenRAL/rskill-locateanything_3b-any-general-nf4"
+            "@25a9bec53791029dfcc1badc727bbf80cecac9a1"
+        )
         # The factory threads the manifest's max_side into the backend so the
         # sidecar boots with --max-side 512 (lower grounding VRAM peak).
         assert det._max_side == 512
     finally:
         det.close()
+
+
+def test_custom_code_detector_requires_immutable_revision() -> None:
+    from openral_core.exceptions import ROSConfigError
+    from openral_core.schemas import RSkillManifest
+    from openral_runner.backends.gstreamer.detector_factory import (
+        weights_source_from_manifest,
+    )
+
+    manifest = RSkillManifest.from_yaml(str(_MANIFEST)).model_copy(
+        update={"weights_uri": "hf://OpenRAL/unpinned-custom-code"}
+    )
+    with pytest.raises(ROSConfigError, match="immutable"):
+        weights_source_from_manifest(manifest)
 
 
 def test_locate_in_view_tool_schema_round_trips() -> None:

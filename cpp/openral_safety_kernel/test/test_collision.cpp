@@ -367,6 +367,24 @@ TEST(VoxelCollision, MarginTreatsNearMissAsCollision) {
   EXPECT_TRUE(hit.hit);
 }
 
+TEST(VoxelCollision, CubeCornerDoesNotUseCircumscribedSphere) {
+  const auto m = one_capsule_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity()};
+  const std::vector<std::uint8_t> occ = {1};
+  osk::VoxelGrid grid;
+  grid.origin = {0.09, 0.09, 0.20};  // centre=(0.14,0.14,0.25), side=0.1
+  grid.resolution = 0.1;
+  grid.sx = 1;
+  grid.sy = 1;
+  grid.sz = 1;
+  grid.occupancy = occ.data();
+  const auto hit = osk::check_voxel_collision(m, s, grid, 0.02);
+  EXPECT_FALSE(hit.hit)
+      << "the real voxel cube is >2 cm clear; a circumscribed sphere would false-hit";
+  EXPECT_GT(hit.min_distance, 0.02);
+}
+
 TEST(VoxelCollision, NullGridNeverHits) {
   const auto m = one_capsule_model();
   osk::CollisionScratch s;

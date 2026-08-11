@@ -22,6 +22,7 @@ Per CLAUDE.md §1.11 — no mocks. All Pydantic schemas are real,
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -202,6 +203,25 @@ def test_publish_action_chunk_round_trip() -> None:
         # No active OTel context → empty trace_id (no fabrication).
         assert chunk.trace_id == ""
 
+        received.clear()
+        cartesian = Action(
+            control_mode=ControlMode.CARTESIAN_DELTA,
+            cartesian_delta=[(-0.176, 0.095, -0.309, 0.0, 0.013, 0.104)],
+            cartesian_delta_scale=(0.05, 0.05, 0.05, 0.5, 0.5, 0.5),
+            ee_name="tool0",
+            frame_id="base_link",
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            hal.send_action(cartesian)
+            rclpy.spin_once(host, timeout_sec=0.02)
+            rclpy.spin_once(sub_node, timeout_sec=0.02)
+        assert received, "no scaled Cartesian ActionChunk received within 1 s"
+        assert list(received[0].flat) == pytest.approx(list(cartesian.cartesian_delta[0]))
+        assert list(received[0].cartesian_delta_scale) == pytest.approx(
+            list(cartesian.cartesian_delta_scale)
+        )
+
         hal.disconnect()
     finally:
         if sub_node is not None:
@@ -209,6 +229,64 @@ def test_publish_action_chunk_round_trip() -> None:
         if host is not None:
             host.destroy_node()
         rclpy.shutdown()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_grouped_action_waits_for_real_applied_ack() -> None:
+    """The final slot blocks until an ActionApplied ROS message arrives."""
+    from std_msgs.msg import UInt64
+
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+    )
+    first = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        joint_targets=[[0.0] * 6],
+        tick_index=7,
+        tick_group_size=2,
+    )
+    second = first.model_copy(update={"joint_targets": [[0.1] * 6]})
+    hal._wait_for_group_applied(first)
+
+    def _ack_after_delay() -> None:
+        time.sleep(0.05)
+        ack = UInt64()
+        ack.data = 7
+        hal._on_action_applied(ack)
+
+    ack_thread = threading.Thread(target=_ack_after_delay)
+    ack_thread.start()
+    started = time.monotonic()
+    hal._wait_for_group_applied(second)
+    elapsed = time.monotonic() - started
+    ack_thread.join(timeout=1.0)
+    assert elapsed >= 0.04
+
+    hal.begin_goal()
+    next_first = first.model_copy(update={"tick_index": 8})
+    next_second = second.model_copy(update={"tick_index": 8})
+    hal._wait_for_group_applied(next_first)
+
+    def _ack_next_goal() -> None:
+        time.sleep(0.05)
+        ack = UInt64()
+        ack.data = 8
+        hal._on_action_applied(ack)
+
+    next_ack_thread = threading.Thread(target=_ack_next_goal)
+    next_ack_thread.start()
+    started = time.monotonic()
+    hal._wait_for_group_applied(next_second)
+    elapsed = time.monotonic() - started
+    next_ack_thread.join(timeout=1.0)
+    assert elapsed >= 0.04
 
 
 @pytest.mark.skipif(

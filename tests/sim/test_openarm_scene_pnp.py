@@ -142,8 +142,7 @@ def test_openarm_tabletop_deploy_scene_builds_through_loader() -> None:
     rollout, seed = build_sim_env_from_yaml(
         "scenes/deploy/openarm_tabletop.yaml", robot_id_fallback="openarm"
     )
-    # DeployScene has no ``seed:`` field; the upcast SimScene falls back to
-    # the schema default of 0 (see ``SimScene.seed: int = 0``).
+    # DeployScene defaults seed to 0; the upcast preserves it.
     assert seed == 0
     try:
         obs = rollout.reset(seed=0)

@@ -1310,6 +1310,11 @@
       ],
       "default": null
     },
+    "seed": {
+      "default": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
     "composition": {
       "anyOf": [
         {
@@ -1392,11 +1397,6 @@
     },
     "task": {
       "$ref": "#/$defs/TaskSpec"
-    },
-    "seed": {
-      "default": 0,
-      "title": "Seed",
-      "type": "integer"
     },
     "n_episodes": {
       "default": 1,

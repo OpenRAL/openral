@@ -25,7 +25,7 @@ metadata:
   latency_budget: {per_chunk_ms: 120000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4
+  weights_uri: hf://OpenRAL/rskill-xr1-panda_mobile-robocasa-nf4@5e6c1eaac1e40f68cf592bd348ba07cbfc926ce6
   source_repo: hf://XiaomiRobotics/Xiaomi-Robotics-1-RoboCasa@8550c4915b83bd10ec838214dcfc2d9dc0e3e7ff
   paper_url: https://arxiv.org/abs/2607.15330
 ---

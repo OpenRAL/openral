@@ -26,7 +26,7 @@ metadata:
   latency_budget: {per_chunk_ms: 2000.0}
   license_code: Apache-2.0
   license_weights: apache-2.0
-  weights_uri: hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4
+  weights_uri: hf://OpenRAL/rskill-xr1-franka_panda-vlabench-nf4@b41e564376d57b3edf4be14a5ec439b7bcfbfd28
   source_repo: hf://XiaomiRobotics/Xiaomi-Robotics-1-VLABench@2dfc33b390478f71737eacb4748333e6d8638a06
   paper_url: https://arxiv.org/abs/2607.15330
 ---
