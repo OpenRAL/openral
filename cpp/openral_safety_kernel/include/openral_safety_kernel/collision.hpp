@@ -124,45 +124,67 @@ enum class AttachedShapeKind : std::uint8_t {
   kBox = 3,
 };
 
+/// One convex collision primitive belonging to an attached object, expressed
+/// in the object's frame by `pose_in_object`. A sphere is a capsule with
+/// `half_length == 0`. On each checked configuration the kernel composes it
+/// through FK: `scratch.link_world[attach_link] · object.pose_in_link ·
+/// pose_in_object` into the base frame.
+struct AttachedPrimitive {
+  AttachedShapeKind kind{AttachedShapeKind::kSphere};
+  double radius{0.0};          ///< sphere / capsule radius
+  double half_length{0.0};     ///< capsule half-length (0 for a sphere)
+  Vec3 half_extents{};         ///< box half-extents
+  Transform pose_in_object{};  ///< primitive pose in the owning object's frame
+};
+
 /// One collision object rigidly attached to a robot link (a grasped payload).
-/// The shape is expressed in the attach-link frame by `pose_in_link`; on each
-/// checked configuration the kernel composes it through FK
-/// (`scratch.link_world[attach_link]`) into the base frame. `touch_first` /
+/// The object keeps a single identity, attach link, touch-link set, and an
+/// object pose in the attach-link frame (`pose_in_link`), but may own several
+/// primitives. `prim_first` / `prim_count` index a slice of
+/// `AttachedModel.primitives` (the object's geometry); `touch_first` /
 /// `touch_count` index a slice of `AttachedModel.touch_links` naming the robot
 /// links explicitly allowed to contact this object (the attach link itself is
-/// always allowed). A sphere is a capsule with `half_length == 0`.
+/// always allowed).
 struct AttachedObject {
-  AttachedShapeKind kind{AttachedShapeKind::kSphere};
-  double radius{0.0};        ///< sphere / capsule radius
-  double half_length{0.0};   ///< capsule half-length (0 for a sphere)
-  Vec3 half_extents{};       ///< box half-extents
   Transform pose_in_link{};  ///< object pose in the attach-link frame
   int attach_link{-1};       ///< robot link index the object is attached to
+  int prim_first{0};         ///< offset into AttachedModel.primitives
+  int prim_count{0};         ///< number of primitives owned by this object
   int touch_first{0};        ///< offset into AttachedModel.touch_links
   int touch_count{0};        ///< number of touch-link entries for this object
 };
 
 /// Bounded, fixed-capacity set of attached payloads ingested from the world
-/// state. `objects` and `touch_links` are pre-sized to their configured caps at
-/// configure time; the ingest path fills the first `n_objects` entries and the
-/// hot path never allocates. `n_objects == 0` means nothing is carried.
+/// state. `objects`, `primitives`, and `touch_links` are pre-sized to their
+/// configured caps at configure time; the ingest path fills the first
+/// `n_objects` / `n_primitives` entries and the hot path never allocates.
+/// `n_objects == 0` means nothing is carried.
 struct AttachedModel {
-  std::size_t n_objects{0};             ///< active object count (<= objects.size())
-  std::vector<AttachedObject> objects;  ///< capacity = max attached objects
-  std::vector<int> touch_links;         ///< flattened touch-link indices, capacity = cap
+  std::size_t n_objects{0};                   ///< active object count (<= objects.size())
+  std::size_t n_primitives{0};                ///< active primitive count (<= primitives.size())
+  std::vector<AttachedObject> objects;        ///< capacity = max attached objects
+  std::vector<AttachedPrimitive> primitives;  ///< flattened, capacity = max primitives
+  std::vector<int> touch_links;               ///< flattened touch-link indices, capacity = cap
+};
+
+/// Parsed, still-by-name primitive record produced by the ROS ingest callback
+/// (one entry per wire `AttachedCollisionPrimitive`). Not on the hot path.
+struct AttachedPrimitiveInput {
+  AttachedShapeKind kind{AttachedShapeKind::kSphere};
+  double radius{0.0};
+  double half_length{0.0};
+  Vec3 half_extents{};
+  Transform pose_in_object{};
 };
 
 /// Parsed, still-by-name attached-object record produced by the ROS ingest
 /// callback and handed to `ingest_attached_objects` for capacity + link-name
 /// validation. Not on the hot path (built once per world-state message).
 struct AttachedObjectInput {
-  AttachedShapeKind kind{AttachedShapeKind::kSphere};
-  double radius{0.0};
-  double half_length{0.0};
-  Vec3 half_extents{};
-  Transform pose_in_link{};
+  Transform pose_in_link{};              ///< object pose in the attach-link frame
   std::string attach_link;               ///< attach-link name (resolved against link_names)
   std::vector<std::string> touch_links;  ///< touch-link names (resolved against link_names)
+  std::vector<AttachedPrimitiveInput> primitives;  ///< one or more owned primitives
 };
 
 /// Outcome of an attachment-ingest attempt. Anything other than `kOk` is
@@ -172,7 +194,7 @@ enum class AttachIngestStatus : std::uint8_t {
   kOk = 0,
   kOverflow = 1,     ///< object/primitive/touch-link cap exceeded
   kUnknownLink = 2,  ///< attach_link or a touch_link not in the robot model
-  kMalformed = 3,    ///< bad shape dimensions (non-finite / non-positive radius etc.)
+  kMalformed = 3,    ///< bad primitive dimensions or an object with zero primitives
 };
 
 /// Build a rigid transform from a translation and fixed-axis XYZ Euler angles
@@ -270,15 +292,19 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                                    const VoxelGrid& grid, double margin) noexcept;
 
 /// Validate + resolve parsed attached-object inputs into the fixed-capacity
-/// `out` model. `out.objects` / `out.touch_links` must already be sized to
-/// their configured caps (`max_objects`, `max_touch_links`); this fills the
-/// first N entries and sets `out.n_objects`. Link names are resolved against
-/// `link_names` (the robot collision-link name table). Fail-closed: any cap
-/// overflow, unknown attach/touch link, or malformed shape leaves
-/// `out.n_objects == 0` and returns the offending status — the caller must then
-/// treat the attachment set as unavailable (drop the candidate action). Not on
-/// the hot path (called once per world-state message). Allocation-free with
-/// respect to `out` (only reads/writes the pre-sized buffers).
+/// `out` model. `out.objects` / `out.primitives` / `out.touch_links` must
+/// already be sized to their configured caps (`max_objects`, `max_primitives`,
+/// `max_touch_links`); this fills the first N entries and sets `out.n_objects`
+/// / `out.n_primitives`. Each object's primitives and touch links are appended
+/// to the flattened buffers and referenced by slice. Link names are resolved
+/// against `link_names` (the robot collision-link name table). Fail-closed:
+/// any cap overflow (objects, total primitives, or total touch links), unknown
+/// attach/touch link, malformed primitive shape, or an object carrying zero
+/// primitives leaves `out.n_objects == 0` and returns the offending status —
+/// the caller must then treat the attachment set as unavailable (drop the
+/// candidate action). Not on the hot path (called once per world-state
+/// message). Allocation-free with respect to `out` (only reads/writes the
+/// pre-sized buffers).
 AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
                                            const std::vector<std::string>& link_names,
                                            std::size_t max_objects, std::size_t max_primitives,

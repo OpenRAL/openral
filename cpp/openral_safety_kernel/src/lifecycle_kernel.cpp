@@ -19,6 +19,7 @@
 
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
+#include <openral_msgs/msg/attached_collision_primitive.hpp>
 #include <rclcpp/qos.hpp>
 
 namespace openral_safety_kernel {
@@ -173,13 +174,14 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // the robot's own links except its attach link + explicit touch links). Caps
   // are fixed-capacity: an over-capacity, unknown-link, or malformed attachment
   // set fails closed (the next candidate action is dropped until a clean message
-  // lands). Today each object carries exactly one primitive, so the object and
-  // primitive caps guard the same count; both are enforced.
+  // lands). Each object owns a single identity, attach link, and touch-link set
+  // but may carry several primitives; the object, total-primitive, and
+  // total-touch-link caps are enforced independently and fail closed.
   this->declare_parameter<bool>("attached_collision_enabled", false);
   this->declare_parameter<double>("attached_collision_margin_m", 0.0);
   this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
   this->declare_parameter<std::int64_t>("attached_max_objects", 8);
-  this->declare_parameter<std::int64_t>("attached_max_primitives", 8);
+  this->declare_parameter<std::int64_t>("attached_max_primitives", 16);
   this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
 
   // Measured joint-state seed for non-position collision checks.
@@ -1105,6 +1107,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   attached_overflow_ = false;
   attached_model_ = AttachedModel{};
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
+  attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
   attached_model_.touch_links.assign(attached_max_touch_links_, 0);
   attached_labels_.assign(attached_max_objects_, std::string{});
   attached_ingest_scratch_.clear();
@@ -1312,7 +1315,17 @@ void SafetyKernelLifecycleNode::on_world_state(
     fail_closed();
     return;
   }
-  if (wire.size() > attached_max_objects_ || wire.size() > attached_max_primitives_) {
+  if (wire.size() > attached_max_objects_) {
+    fail_closed();
+    return;
+  }
+  // Total-primitive cap across every attached object (early fail-closed before
+  // the by-name ingest; ingest_attached_objects re-checks incrementally).
+  std::size_t total_primitives = 0;
+  for (const auto& obj : wire) {
+    total_primitives += obj.primitives.size();
+  }
+  if (total_primitives > attached_max_primitives_) {
     fail_closed();
     return;
   }
@@ -1320,46 +1333,58 @@ void SafetyKernelLifecycleNode::on_world_state(
   attached_ingest_scratch_.clear();
   for (const auto& obj : wire) {
     AttachedObjectInput in;
-    const std::size_t n_dims = obj.shape_dimensions.size();
-    // Decode the shape by SHAPE_* tag and required dimension count.
-    if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_SPHERE) {
-      if (n_dims < 1) {
-        fail_closed();
-        return;
-      }
-      in.kind = AttachedShapeKind::kSphere;
-      in.radius = obj.shape_dimensions[0];
-      in.half_length = 0.0;
-    } else if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_CAPSULE) {
-      if (n_dims < 2) {
-        fail_closed();
-        return;
-      }
-      in.kind = AttachedShapeKind::kCapsule;
-      in.radius = obj.shape_dimensions[0];
-      // The wire carries the full central-segment length; the kernel capsule
-      // uses the half-length convention.
-      in.half_length = 0.5 * obj.shape_dimensions[1];
-    } else if (obj.shape_type == openral_msgs::msg::AttachedCollisionObject::SHAPE_BOX) {
-      if (n_dims < 3) {
-        fail_closed();
-        return;
-      }
-      in.kind = AttachedShapeKind::kBox;
-      in.half_extents =
-          Vec3{obj.shape_dimensions[0], obj.shape_dimensions[1], obj.shape_dimensions[2]};
-    } else {
-      // Unknown shape tag → fail closed (an unrecognised payload is not safe to
-      // ignore).
-      fail_closed();
-      return;
-    }
+    // Object pose in the attach-link frame; each primitive composes on top.
     in.pose_in_link = transform_from_translation_quat(
         obj.pose_in_link.position.x, obj.pose_in_link.position.y, obj.pose_in_link.position.z,
         obj.pose_in_link.orientation.x, obj.pose_in_link.orientation.y,
         obj.pose_in_link.orientation.z, obj.pose_in_link.orientation.w);
     in.attach_link = obj.attach_link;
     in.touch_links.assign(obj.touch_links.begin(), obj.touch_links.end());
+    in.primitives.clear();
+    in.primitives.reserve(obj.primitives.size());
+    for (const auto& prim : obj.primitives) {
+      AttachedPrimitiveInput pin;
+      const std::size_t n_dims = prim.shape_dimensions.size();
+      // Decode the shape by SHAPE_* tag and required dimension count.
+      if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_SPHERE) {
+        if (n_dims < 1) {
+          fail_closed();
+          return;
+        }
+        pin.kind = AttachedShapeKind::kSphere;
+        pin.radius = prim.shape_dimensions[0];
+        pin.half_length = 0.0;
+      } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_CAPSULE) {
+        if (n_dims < 2) {
+          fail_closed();
+          return;
+        }
+        pin.kind = AttachedShapeKind::kCapsule;
+        pin.radius = prim.shape_dimensions[0];
+        // The wire carries the full central-segment length; the kernel capsule
+        // uses the half-length convention.
+        pin.half_length = 0.5 * prim.shape_dimensions[1];
+      } else if (prim.shape_type == openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX) {
+        if (n_dims < 3) {
+          fail_closed();
+          return;
+        }
+        pin.kind = AttachedShapeKind::kBox;
+        pin.half_extents =
+            Vec3{prim.shape_dimensions[0], prim.shape_dimensions[1], prim.shape_dimensions[2]};
+      } else {
+        // Unknown shape tag → fail closed (an unrecognised payload is not safe
+        // to ignore).
+        fail_closed();
+        return;
+      }
+      pin.pose_in_object = transform_from_translation_quat(
+          prim.pose_in_object.position.x, prim.pose_in_object.position.y,
+          prim.pose_in_object.position.z, prim.pose_in_object.orientation.x,
+          prim.pose_in_object.orientation.y, prim.pose_in_object.orientation.z,
+          prim.pose_in_object.orientation.w);
+      in.primitives.push_back(pin);
+    }
     attached_ingest_scratch_.push_back(std::move(in));
   }
 
