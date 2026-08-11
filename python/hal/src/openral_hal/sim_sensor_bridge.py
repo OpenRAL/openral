@@ -253,6 +253,7 @@ class SimSensorBridge:
         self._depth_image_pubs: dict[str, Any] = {}
         self._depth_info_pubs: dict[str, Any] = {}
         self._depth_timer: Any = None
+        self._attachment_sub: Any = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
         self._depth_base_body_id: int = -1
@@ -305,6 +306,7 @@ class SimSensorBridge:
         self._setup_cinecam()
         self._setup_viewer()
         self._setup_scan()
+        self._setup_attachment_state()
         self._setup_depth()
 
     def teardown(self) -> None:
@@ -323,6 +325,9 @@ class SimSensorBridge:
         self._image_timer = self._idle_timer = self._camera_tf_timer = None
         self._viewer_timer = self._scan_timer = self._depth_timer = None
         self._cinecam_timer = None
+        if self._attachment_sub is not None:
+            self._node.destroy_subscription(self._attachment_sub)
+            self._attachment_sub = None
         if self._cinecam_renderer is not None:
             with contextlib.suppress(Exception):  # reason: renderer GL ctx may be gone
                 self._cinecam_renderer.close()
@@ -936,6 +941,47 @@ class SimSensorBridge:
         return [float(r) for r in ranges]
 
     # -- Depth PointCloud2 --
+    def _setup_attachment_state(self) -> None:
+        """Subscribe atomic attachment snapshots when the sim HAL supports them."""
+        update = getattr(self._hal, "update_attached_objects", None)
+        if not callable(update):
+            return
+        from openral_msgs.msg import AttachmentState
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        self._attachment_sub = self._node.create_subscription(
+            AttachmentState,
+            "/openral/attachment_state",
+            self._on_attachment_state,
+            qos,
+        )
+
+    def _on_attachment_state(self, msg: object) -> None:
+        """Apply one complete attachment snapshot to the sim perception mask."""
+        from openral_core import AttachedCollisionObject
+        from openral_core.exceptions import ROSConfigError
+
+        update = getattr(self._hal, "update_attached_objects", None)
+        if not callable(update):
+            return
+        try:
+            objects = [
+                AttachedCollisionObject.from_idl(item)
+                for item in msg.objects  # type: ignore[attr-defined]
+            ]
+            update(objects)
+        except (ROSConfigError, ValueError, TypeError) as exc:
+            self._node.get_logger().error(f"attachment state rejected by sim HAL: {exc}")
+
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.
 
