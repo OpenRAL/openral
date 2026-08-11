@@ -71,3 +71,5 @@ string                detected_object_frame
 # Objects carried by robot links. Each object is removed from world occupancy
 # only while the equivalent attached geometry is present here.
 AttachedCollisionObject[] attached_objects
+uint64 attachment_revision
+int64 attachment_stamp_ns
