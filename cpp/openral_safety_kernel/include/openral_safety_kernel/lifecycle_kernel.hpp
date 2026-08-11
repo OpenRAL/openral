@@ -29,6 +29,7 @@
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <rclcpp_lifecycle/lifecycle_publisher.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/u_int64.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 namespace openral_safety_kernel {
@@ -132,6 +133,7 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::ActionChunk>::SharedPtr safe_pub_;
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Empty>::SharedPtr estop_pub_;
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::FailureTrigger>::SharedPtr failure_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr attachment_applied_pub_;
   rclcpp_lifecycle::LifecyclePublisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
       diagnostics_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr estop_reset_srv_;

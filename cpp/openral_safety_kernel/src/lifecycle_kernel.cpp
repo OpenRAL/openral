@@ -388,6 +388,11 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     world_state_sub_ = this->create_subscription<openral_msgs::msg::WorldStateStamped>(
         "/openral/world_state_fast", world_state_qos,
         std::bind(&SafetyKernelLifecycleNode::on_world_state, this, std::placeholders::_1));
+    rclcpp::QoS attachment_ack_qos(rclcpp::KeepLast(1));
+    attachment_ack_qos.reliable();
+    attachment_ack_qos.transient_local();
+    attachment_applied_pub_ = this->create_publisher<std_msgs::msg::UInt64>(
+        "/openral/attachment_state_applied", attachment_ack_qos);
   }
 
   estop_reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
@@ -434,6 +439,7 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   safe_pub_.reset();
   estop_pub_.reset();
   failure_pub_.reset();
+  attachment_applied_pub_.reset();
   diagnostics_pub_.reset();
   envelope_loaded_ = false;
   fault_latch_ = false;
@@ -1375,6 +1381,11 @@ void SafetyKernelLifecycleNode::on_world_state(
   attached_overflow_ = false;
   attached_received_ = true;
   attached_stamp_ = producer_stamp;
+  if (attachment_applied_pub_ != nullptr) {
+    std_msgs::msg::UInt64 applied;
+    applied.data = msg->attachment_revision;
+    attachment_applied_pub_->publish(applied);
+  }
 }
 
 }  // namespace openral_safety_kernel
