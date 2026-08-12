@@ -81,6 +81,12 @@ isolate_globs = [
   # skip; isolated files intentionally permit that partial skip.
   "tests/unit/test_locateanything_detector.py",
   "tests/unit/test_qwen_scene_vlm.py",
+  # Same shape: 15 CPU contract tests plus one real-model e2e needing a local
+  # GPU (omlab/omdet-turbo-swin-tiny-hf, and a CUDA torchvision for its
+  # `batched_nms` post-processing). The batched `omdet` lane only runs when a
+  # PR touches this file, so its strictness stayed latent until one did — the
+  # e2e has always skipped on the GPU-less hosted runner.
+  "tests/unit/test_omdet_turbo_detector.py",
 ]
 
 # Non-code paths (fixtures, manifests, scenes) that no `import openral_*`
