@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-from scipy.spatial.transform import Rotation
 
 from tests.sim.conftest import mujoco_renderer_probe_error
 
@@ -28,6 +27,9 @@ def _robocasa_unavailable() -> str:
 
 _ROBOCASA_ERROR = _robocasa_unavailable()
 _RENDERER_ERROR = mujoco_renderer_probe_error() if not _ROBOCASA_ERROR else ""
+# scipy arrives transitively with robosuite; it is not a declared OpenRAL dependency,
+# so the lean CI env has to skip rather than fail collection.
+_SCIPY_MISSING = importlib.util.find_spec("scipy") is None
 
 pytestmark = [
     pytest.mark.sim,
@@ -36,6 +38,7 @@ pytestmark = [
     pytest.mark.skipif(
         bool(_RENDERER_ERROR), reason=_RENDERER_ERROR or "no MuJoCo offscreen renderer"
     ),
+    pytest.mark.skipif(_SCIPY_MISSING, reason="scipy not installed"),
 ]
 
 
@@ -81,6 +84,7 @@ def test_arm_boxes_enclose_the_real_robocasa_collision_meshes(
     """Every world-collision OBB contains its matching RoboCasa arm mesh."""
     import mujoco
     from openral_core import BoxShape
+    from scipy.spatial.transform import Rotation
 
     model, _data = panda_mobile_hal.mujoco_handles()
     for link_index in range(1, 8):
