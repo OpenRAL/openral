@@ -216,6 +216,11 @@ private:
   bool attached_received_{false};
   bool attached_overflow_{false};
   rclcpp::Time attached_stamp_{};
+  std::uint64_t attached_revision_{0};
+  bool attached_contact_snapshot_pending_{false};
+  bool attached_contact_active_{false};
+  std::vector<std::uint8_t> attached_contact_mask_;
+  std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages
 
   // Measured joint-state seed (Phase 1) + velocity-mode reconstruction

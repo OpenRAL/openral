@@ -102,7 +102,12 @@ struct VoxelGrid {
   int sx{0};               ///< grid dimensions
   int sy{0};
   int sz{0};
-  const std::uint8_t* occupancy{nullptr};  ///< sx*sy*sz cells, non-zero = occupied
+  const std::uint8_t* occupancy{nullptr};              ///< sx*sy*sz cells, non-zero = occupied
+  const std::uint8_t* attached_contact_mask{nullptr};  ///< bit i: object i had attach-time contact
+  const double* attached_contact_distance{nullptr};    ///< object-major baseline distance
+  std::size_t attached_contact_stride{0};              ///< cells per object in baseline buffer
+  double attached_contact_tolerance{0.0};              ///< allowed extra penetration (m)
+  bool attached_contact_allow_new_shallow{false};      ///< reactive contact-phase boundary cells
 };
 
 /// First self-collision hit (and the minimum surface distance observed across
@@ -329,6 +334,18 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& model,
                                             const AttachedModel& attached,
                                             const CollisionScratch& scratch, const VoxelGrid& grid,
                                             double margin) noexcept;
+
+/// Snapshot or refresh the bounded attach-time voxel contacts allowed for each
+/// payload. On `snapshot=true`, occupied cells already intersecting object i
+/// receive bit i and their minimum surface distance is recorded. On refresh,
+/// each bit is cleared permanently once that payload separates from the cell.
+/// The collision check still rejects new cells and any penetration deeper than
+/// the recorded distance plus `grid.attached_contact_tolerance`.
+/// Allocation-free; supports the first eight attached objects (the schema cap).
+bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,
+                                    const VoxelGrid& grid, std::uint8_t* contact_mask,
+                                    double* contact_distance, std::size_t mask_capacity,
+                                    std::size_t distance_capacity, bool snapshot) noexcept;
 
 /// Check every attached payload against the robot's own link geometry
 /// (capsules + boxes), skipping each object's attach link and its explicit

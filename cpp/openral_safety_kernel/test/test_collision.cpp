@@ -627,6 +627,11 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   grid.sy = 8;
   grid.sz = 8;
   grid.occupancy = occ.data();
+  std::vector<std::uint8_t> contact_mask(occ.size(), 0);
+  std::vector<double> contact_distance(occ.size(), std::numeric_limits<double>::infinity());
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
 
   const std::vector<double> qpos = {0.3};
 
@@ -637,9 +642,13 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
     const auto self_hit = osk::check_attached_self_collision(m, att, scratch, 0.0);
     const auto world_hit = osk::check_attached_world_collision(m, att, scratch, world, 0.0);
     const auto voxel_hit = osk::check_attached_voxel_collision(m, att, scratch, grid, 0.0);
+    const bool contacts_active = osk::update_attached_voxel_contacts(
+        att, scratch, grid, contact_mask.data(), contact_distance.data(), contact_mask.size(),
+        contact_distance.size(), false);
     (void)self_hit;
     (void)world_hit;
     (void)voxel_hit;
+    (void)contacts_active;
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
@@ -1035,6 +1044,123 @@ TEST(AttachedVoxelCollision, FreeGridNeverHits) {
   const std::vector<std::uint8_t> occ(125, 0);
   const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
   EXPECT_FALSE(hit.hit);
+}
+
+TEST(AttachedVoxelCollision, ExistingContactAllowsOnlyNonDeepeningMotionUntilSeparation) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.06)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  std::vector<std::uint8_t> contact_mask(125, 0);
+  std::vector<double> contact_distance(125, std::numeric_limits<double>::infinity());
+  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
+  grid.attached_contact_tolerance = 0.001;
+
+  EXPECT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                  contact_distance.data(), contact_mask.size(),
+                                                  contact_distance.size(), true));
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // Move 2 cm deeper into the pre-existing support voxel: the allowance is
+  // bounded by the recorded penetration and must reject this action.
+  att.objects[0].pose_in_link = translate(0.02, 0.0, 0.0);
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  // Once the payload separates, the original voxel is permanently re-armed.
+  att.objects[0].pose_in_link = translate(-0.2, 0.0, 0.0);
+  EXPECT_FALSE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                   contact_distance.data(), contact_mask.size(),
+                                                   contact_distance.size(), false));
+  att.objects[0].pose_in_link = identity();
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(AttachedVoxelCollision, EmbeddedResidueIsAllowedOnlyUntilSeparation) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.1)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  std::vector<std::uint8_t> contact_mask(125, 0);
+  std::vector<double> contact_distance(125, std::numeric_limits<double>::infinity());
+  occ[static_cast<std::size_t>(voxel_index(2, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
+  grid.attached_contact_tolerance = 0.001;
+
+  EXPECT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                  contact_distance.data(), contact_mask.size(),
+                                                  contact_distance.size(), true));
+  att.objects[0].pose_in_link = translate(0.02, 0.0, 0.0);
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  att.objects[0].pose_in_link = translate(0.3, 0.0, 0.0);
+  EXPECT_FALSE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                   contact_distance.data(), contact_mask.size(),
+                                                   contact_distance.size(), false));
+  att.objects[0].pose_in_link = identity();
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(AttachedVoxelCollision, ContactPhaseAllowsOnlyShallowNewBoundaryCells) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.06)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
+  auto grid = make_grid(occ);
+  grid.attached_contact_tolerance = 0.025;
+  grid.attached_contact_allow_new_shallow = true;
+  EXPECT_FALSE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+
+  grid.attached_contact_allow_new_shallow = false;
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+  att.objects[0].pose_in_link = translate(0.04, 0.0, 0.0);
+  grid.attached_contact_allow_new_shallow = true;
+  EXPECT_TRUE(osk::check_attached_voxel_collision(m, att, s, grid, 0.0).hit);
+}
+
+TEST(AttachedVoxelCollision, MultiObjectBaselinesUseDeclaredGridStride) {
+  osk::CollisionModel m = hand_model();
+  osk::CollisionScratch s;
+  s.link_world = {identity(), identity(), identity(), identity()};
+  osk::AttachedModel att;
+  append_object(att, 1, identity(), {sphere_prim(0.06)});
+  append_object(att, 1, translate(0.2, 0.0, 0.0), {sphere_prim(0.06)});
+
+  std::vector<std::uint8_t> occ(125, 0);
+  std::vector<std::uint8_t> contact_mask(125, 0);
+  std::vector<double> contact_distance(250, std::numeric_limits<double>::infinity());
+  const auto first = static_cast<std::size_t>(voxel_index(2, 2, 2));
+  const auto second = static_cast<std::size_t>(voxel_index(4, 2, 2));
+  occ[first] = 1;
+  occ[second] = 1;
+  auto grid = make_grid(occ);
+  grid.attached_contact_mask = contact_mask.data();
+  grid.attached_contact_distance = contact_distance.data();
+  grid.attached_contact_stride = occ.size();
+
+  EXPECT_TRUE(osk::update_attached_voxel_contacts(att, s, grid, contact_mask.data(),
+                                                  contact_distance.data(), contact_mask.size(),
+                                                  contact_distance.size(), true));
+  EXPECT_NE(contact_mask[first] & 0x1U, 0U);
+  EXPECT_NE(contact_mask[second] & 0x2U, 0U);
+  EXPECT_TRUE(std::isfinite(contact_distance[first]));
+  EXPECT_TRUE(std::isfinite(contact_distance[occ.size() + second]));
 }
 
 TEST(AttachedObjects, MultipleObjectsAreAllChecked) {
