@@ -42,13 +42,54 @@ base_model_relation: quantized
 
 ## Why int8 (and not NF4)
 
-π0.5's 3.4 B backbone is **too large to run bf16 on 8 GB** (~13.6 GiB peak → OOM),
-but **NF4 4-bit is too lossy for it** — 4-bit quantization scores **0/5** on
-`libero_spatial` because it destroys the policy. **LLM.int8**
-(bitsandbytes `Linear8bitLt` on every Linear ≥ 4 M weight elements) is the sweet
-spot: it both fits 8 GB *and* preserves competence — **~0.5–0.7 success** on
-`libero_spatial` across 10-episode runs on an RTX 4070 (`eval/scene_libero_spatial.json`
-records 0.5). Quantization runs at load from the bf16 checkpoint (no prequantized pack).
+π0.5's 3.4 B backbone **does not fit bf16 on an 8 GB card** — bf16 peaks at
+**8.06 GB** of device memory, and an 8 GB GPU has less than that free once the
+driver takes its cut. **NF4 4-bit** fits but is too lossy for this backbone: it
+scores **0/5** on `libero_spatial`, destroying the policy outright. **LLM.int8**
+(bitsandbytes `Linear8bitLt` on every Linear ≥ 4 M weight elements) fits at
+**6.35 GB** and keeps the policy working. Quantization runs at load from the
+bf16 checkpoint (no prequantized pack).
+
+### …but int8 is not free — prefer bf16 if it fits
+
+int8 is a *memory* fit. It costs accuracy and speed, and neither cost was
+recorded here before. Measured on a GB10 — `libero_spatial` tasks 0/1/2, seed
+42, `max_steps=220`, **n=50 per task per arm (300 episodes)**, same episodes and
+protocol, the only difference being `quantization.dtype`:
+
+| dtype | task 0 | task 1 | task 2 | **Total** | Mean step latency | Peak device memory |
+|---|---|---|---|---|---|---|
+| **bf16** | 98% | 94% | 94% | **143/150 = 95%** | **9.6 ms** | 8.06 GB |
+| int8 | 76% | **22%** | 82% | 93/150 = 62% | 24.8 ms | **6.35 GB** |
+
+int8 costs **~33 points of task success** (Fisher exact **p = 4e-13**) and runs
+**~2.6× slower per step** — LLM.int8's mixed-precision decomposition is slower
+than a plain bf16 GEMM.
+
+**Read the per-task columns, not just the total.** bf16 is steady (98/94/94);
+int8 swings between 22% and 82%. The damage is *task-dependent*, so a
+single-task spot-check can land on 82% and look acceptable while task 1 is
+nearly non-functional. That variance is the real hazard — more than the average.
+
+What int8 buys is **1.7 GB**, and on an 8 GB card that is decisive: bf16 will
+not load at all, and 62% beats not running.
+
+**On any host with ≳9 GB of VRAM, use bf16.** No manifest edit is needed:
+
+```bash
+openral sim run --config scenes/sim/libero_spatial.yaml \
+    --rskill rskills/pi05-libero-int8 --vla-extra dtype=bf16
+```
+
+Faster still on NVIDIA hardware with TensorRT: an FP8 engine reaches **78.9 ms**
+per policy call against bf16 eager's 190 ms and scores **49/50 — identical to
+bf16**, so FP8 costs no task success at all. See the `openral-pro` TensorRT
+runtime (`OPENRAL_PI05_TRT=1`, `OPENRAL_PI05_TRT_PRECISION=fp8_bf16_attn`).
+
+Scope: one task of LIBERO-Spatial's ten, so treat 98%/76% as a like-for-like
+*comparison* rather than a suite score. The older "0.5–0.7 across 10-episode
+runs" figure is not contradicted so much as too noisy to use — at n=10 the
+binomial SD is ~0.16, wide enough to cover both arms above.
 
 ## Quick start
 
@@ -116,7 +157,15 @@ Full schema: `openral_core.RSkillManifest`.
 
 `eval/scene_libero_spatial.json` holds the locally-reproduced result:
 **`libero_spatial` = 0.50 (5/10 episodes)**, int8, RTX 4070 8 GB (a separate
-10-episode run scored 0.70; the policy sits around 0.5–0.7). Re-run with:
+10-episode run scored 0.70; the policy sits around 0.5–0.7).
+
+⚠️ **n=10 is too small to compare anything with.** Its binomial SD is ~0.16, so
+that 0.50 and the 0.76 measured at n=50 above are the same result, not a
+regression or an improvement. Prefer the n=50 numbers in [Why int8](#why-int8-and-not-nf4)
+when deciding a dtype, and treat the recorded 0.50 as provenance for the
+committed eval artifact rather than as this policy's success rate.
+
+Re-run with:
 
 ```bash
 PYTORCH_ALLOC_CONF=expandable_segments:True OPENRAL_ALLOW_NONCOMMERCIAL=1 \

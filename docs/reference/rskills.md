@@ -49,7 +49,7 @@ All entries are published under `OpenRAL/rskill-*` on HuggingFace Hub and exerci
 | [`act-so101-pen`](https://github.com/OpenRAL/openral/tree/master/rskills/act-so101-pen/) | ACT pen checkpoint | `so101_follower` | Apache-2.0 |
 | [`molmoact2-libero-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/molmoact2-libero-nf4/) | MolmoAct2 NF4 (Molmo2-ER VLM + flow-matching, ~5.5 B) | `franka_panda` | Apache-2.0 |
 | [`molmoact2-so101-nf4`](https://github.com/OpenRAL/openral/tree/master/rskills/molmoact2-so101-nf4/) | MolmoAct2 NF4 SO-101 checkpoint | `so101_follower` | Apache-2.0 |
-| [`pi05-libero-int8`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-libero-int8/) | π0.5 NF4 | `franka_panda` | Permissive research (weights non-Apache) |
+| [`pi05-libero-int8`](https://github.com/OpenRAL/openral/tree/master/rskills/pi05-libero-int8/) | π0.5 LLM.int8 — fits 8 GB, but costs task success vs bf16 (see the rSkill README) | `franka_panda` | Permissive research (weights non-Apache) |
 | [`act-aloha`](https://github.com/OpenRAL/openral/tree/master/rskills/act-aloha/) | ACT (Action Chunking Transformer) | `aloha_bimanual` | MIT |
 | [`act-aloha-insertion`](https://github.com/OpenRAL/openral/tree/master/rskills/act-aloha-insertion/) | ACT insertion checkpoint — *custom example* | `aloha_bimanual` | MIT |
 | [`diffusion-pusht`](https://github.com/OpenRAL/openral/tree/master/rskills/diffusion-pusht/) | Diffusion Policy | `pusht_2d` | Apache-2.0 |
