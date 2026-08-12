@@ -259,6 +259,7 @@ class TestQuantPresets:
         "fp4_nvfp4",
         "onnx_int8",
         "trt_int8",
+        "trt_fp8",
     }
 
     def test_all_keys_present(self) -> None:

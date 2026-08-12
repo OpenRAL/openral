@@ -607,12 +607,13 @@
       "type": "object"
     },
     "QuantizationDtype": {
-      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Hopper+; highest throughput).\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'",
+      "description": "Numeric format used to represent model weights and activations.\n\nAttributes:\n    FP32: 32-bit float (full precision, reference).\n    FP16: 16-bit float (GPU-native, common default).\n    BF16: Brain-float16 (Ampere+ GPUs, TPUs; better dynamic range than FP16).\n    INT8: 8-bit integer (CPU/GPU; good accuracy/speed trade-off).\n    FP8: 8-bit float, E4M3 (Ada/Hopper+; keeps floating-point dynamic\n        range at INT8's memory cost, which matters for transformer\n        activations that INT8's fixed scale clips). Carried in a TensorRT\n        engine as explicit ``QuantizeLinear``/``DequantizeLinear`` node\n        pairs in the ONNX graph, not as a builder precision flag.\n    INT4: 4-bit integer (edge / memory-constrained; some accuracy loss).\n    FP4_NVFP4: NVIDIA FP4 format (Blackwell; highest throughput). Block\n        size 16 with an FP32/FP16/BF16 scale \u2014 distinct from the MX\n        formats, which scale per 32 elements with an E8M0 exponent.\n\nExample:\n    >>> QuantizationDtype.INT8.value\n    'int8'\n    >>> QuantizationDtype.FP8.value\n    'fp8'",
       "enum": [
         "fp32",
         "fp16",
         "bf16",
         "int8",
+        "fp8",
         "int4",
         "fp4_nvfp4"
       ],
