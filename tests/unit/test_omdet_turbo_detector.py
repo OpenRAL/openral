@@ -286,11 +286,47 @@ def _omdet_runtime_present() -> bool:
     return all(importlib.util.find_spec(mod) is not None for mod in mods)
 
 
+def _torchvision_cuda_nms_present() -> bool:
+    # pyproject.toml pins torchvision to the `pytorch-cu128` index on
+    # aarch64-linux specifically because the plain PyPI aarch64 wheel is
+    # CPU-only: its `_C.so` never registers a CUDA kernel for
+    # `torchvision::nms`, so the (CPU-registered, CUDA-absent) op raises
+    # `NotImplementedError` the moment OmDet-Turbo's post-processing calls
+    # `batched_nms` on GPU boxes. Both wheels report the same `0.24.1` version
+    # string (no `+cu128` local tag), so an aarch64 venv provisioned *before*
+    # this pin landed satisfies `uv sync` without reinstalling torchvision —
+    # `uv sync --frozen --reinstall-package torchvision` is required to pick up
+    # the CUDA build (see docs/reference/aarch64-support.md). Detect that stale
+    # state directly rather than let the e2e test crash on it: skip only when
+    # the installed torchvision genuinely cannot run CUDA nms.
+    if importlib.util.find_spec("torchvision") is None:
+        return True  # handled by _omdet_runtime_present's import gate instead
+    import torch
+    from torchvision.ops import nms
+
+    if not torch.cuda.is_available():
+        return True  # CPU path never needs the CUDA kernel
+    boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0]], device="cuda")
+    scores = torch.tensor([0.9], device="cuda")
+    try:
+        nms(boxes, scores, 0.5)
+    except NotImplementedError:
+        return False
+    return True
+
+
 @pytest.mark.skipif(
     not (_gpu_present() and _omdet_runtime_present()),
     reason="needs a local GPU + the `omdet` group (torch/transformers/timm) to "
     "load omlab/omdet-turbo-swin-tiny-hf; run `just sync --group omdet` "
     "(the legitimate CI skip path, CLAUDE.md §12).",
+)
+@pytest.mark.skipif(
+    not _torchvision_cuda_nms_present(),
+    reason="installed torchvision has no CUDA `nms` kernel (CPU-only aarch64 "
+    "wheel, satisfying the `0.24.1` version pin without the `+cu128` build); "
+    "run `uv sync --frozen --reinstall-package torchvision` "
+    "(docs/reference/aarch64-support.md).",
 )
 def test_e2e_detects_indoor_objects_on_coco_sample() -> None:
     # coco_sample.jpg is the canonical COCO image of two cats and two remotes on
