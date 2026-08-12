@@ -43,6 +43,7 @@ from openral_rskill._vla_core import (
     resolve_state_dim,
     to_numpy_action,
 )
+from openral_rskill.backend_registry import maybe_attach_pro_hooks
 
 # π0.5 nf4 quantization + prequantized state load both live in the
 # adapter-agnostic helper module so smolvla / xvla / future-pi06 can
@@ -951,6 +952,19 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     state_dim = resolve_state_dim(manifest, spec.extra)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
+
+    # Opt-in TensorRT runtime: swaps sample_actions for the split-ONNX TRT
+    # engines, exactly as SmolVLA and ACT do (see openral_sim.policies.smolvla).
+    # The hook itself ships in the private openral-pro-trt package and is
+    # looked up by name — a host without it falls straight through to the
+    # torch path unwired above. No torch.compile fallback to skip here: π0.5's
+    # `compile_model` is already forced off (see the comment at
+    # `pi05_cfg.compile_model = False` above), independent of whether TRT
+    # attaches.
+    if maybe_attach_pro_hooks(
+        "pi05", policy, repo_id=repo_id, device=device, n_cameras=len(cam_keys)
+    ):
+        _log.info("pi05.runtime_tensorrt", repo_id=repo_id, n_cameras=len(cam_keys))
 
     adapter = _PI05Adapter(
         spec=spec,
