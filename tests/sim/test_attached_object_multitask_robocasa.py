@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 from openral_core import (
     AttachedCollisionObject,
     AttachedCollisionPrimitive,
@@ -156,27 +158,27 @@ def test_two_unknown_payloads_mask_and_restore_across_tasks(task_name: str) -> N
             [joint.sim_joint_name for joint in hal.description.joints],
         )
 
-        def count_points() -> int:
+        def read_points() -> NDArray[np.float32]:
             excluded = robot_ids | hal.read_attached_body_ids()
-            return int(
-                synthesize_depth_pointcloud(
-                    model=model,
-                    data=data,
-                    stride=4,
-                    exclude_body_ids=excluded,
-                    **kwargs,
-                ).shape[0]
+            return synthesize_depth_pointcloud(
+                model=model,
+                data=data,
+                stride=4,
+                exclude_body_ids=excluded,
+                **kwargs,
             )
 
-        baseline = count_points()
+        baseline = read_points()
         attachments = [
             _attachment(f"{task_name}:payload:{index}", body_name)
             for index, body_name in enumerate(object_bodies[:2])
         ]
         assert all(len(obj.primitives) == 2 for obj in attachments)
         hal.update_attached_objects(attachments)
-        masked = count_points()
-        assert masked < baseline
+        transparent = read_points()
+        assert transparent.shape == baseline.shape
+        assert not np.allclose(transparent, baseline)
+        assert np.count_nonzero(transparent[:, 2] > baseline[:, 2] + 1e-4) > 0
 
         masked_body_ids = hal.read_attached_body_ids()
         assert {
@@ -185,7 +187,7 @@ def test_two_unknown_payloads_mask_and_restore_across_tasks(task_name: str) -> N
         } <= masked_body_ids
 
         hal.update_attached_objects([])
-        assert count_points() == baseline
+        assert np.allclose(read_points(), baseline)
 
 
 @pytest.mark.parametrize(

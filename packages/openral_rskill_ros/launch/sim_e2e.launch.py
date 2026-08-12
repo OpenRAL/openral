@@ -128,6 +128,21 @@ def _octomap_occupancy_threshold(hal_mode: str) -> float:
     return 0.8 if hal_mode == "sim" else 0.6
 
 
+def _octomap_clamping_max(hal_mode: str) -> float:
+    """Let one exact simulated clearing ray remove a confirmed hit."""
+    return 0.85 if hal_mode == "sim" else 0.97
+
+
+def _octomap_resolution(hal_mode: str) -> float:
+    """Use manipulation-scale voxels in sim without changing real maps."""
+    return 0.025 if hal_mode == "sim" else 0.05
+
+
+def _octomap_box_size(hal_mode: str) -> float:
+    """Keep the finer sim grid within the kernel's fixed 262,144-cell cap."""
+    return 1.6 if hal_mode == "sim" else 2.0
+
+
 def _attached_collision_enabled(hal_mode: str) -> bool:
     """Enable payload collision only where the sim attachment manager exists."""
     return hal_mode == "sim"
@@ -786,6 +801,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "attached_collision_enabled": True,
             "attached_collision_margin_m": 0.0,
             "attached_collision_deadline_ms": 5000.0,
+            "attached_contact_tolerance_m": _octomap_resolution(hal_mode),
             "attached_max_objects": 8,
             "attached_max_primitives": 16,
             "attached_max_touch_links": 32,
@@ -1006,6 +1022,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
+                # One grouped action may synchronously attach a payload, then
+                # wait for a transparent depth frame + the next OctoMap raster
+                # before acknowledging application. Real HALs keep the 5 s
+                # transport watchdog; sim gets a bounded 8 s transaction.
+                "action_applied_timeout_s": 8.0 if hal_mode == "sim" else 5.0,
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
@@ -1419,7 +1440,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             namespace="",
             parameters=[
                 {
-                    "resolution": 0.05,
+                    "resolution": _octomap_resolution(hal_mode),
                     "frame_id": "odom",
                     "base_frame_id": "base_link",
                     "sensor_model.max_range": 4.0,
@@ -1434,6 +1455,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # become a safety voxel until a second frame confirms it.
                     "occupancy_thres": _octomap_occupancy_threshold(hal_mode),
                     "sensor_model.miss": 0.4,
+                    # Exact sim depth makes robot/attached bodies transparent,
+                    # so a background return is a trustworthy miss through the
+                    # old object cell. Real maps keep OctoMap's 0.97 saturation
+                    # because sensor masking/completion remains uncertain.
+                    "sensor_model.max": _octomap_clamping_max(hal_mode),
                     "filter_speckles": True,
                     # Graph-wide clock domain (see _resolve_clock_origin). With no
                     # /clock publisher this is wall-clock: use_sim_time=True
@@ -1460,7 +1486,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "base_frame": "base_link",
                     "octomap_topic": "/octomap_binary",
                     "output_topic": "/openral/world_voxels",
-                    "resolution": 0.05,
+                    "resolution": _octomap_resolution(hal_mode),
+                    "box_size_x": _octomap_box_size(hal_mode),
+                    "box_size_y": _octomap_box_size(hal_mode),
+                    "box_size_z": _octomap_box_size(hal_mode),
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,

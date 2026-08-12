@@ -403,6 +403,7 @@ if _ROS2_AVAILABLE:
             self._safe_action_sub: Any = None
             self._action_applied_pub: Any = None
             self._last_action_applied_tick: int = 0
+            self._deferred_action_applied_tick: int = 0
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
             self._estop_sub: Any = None
@@ -1005,6 +1006,20 @@ if _ROS2_AVAILABLE:
                 complete = self._safe_group_count == group_size
             if not complete:
                 return
+            bridge = getattr(self, "_bridge", None)
+            ack_ready = getattr(bridge, "attachment_action_ack_ready", None)
+            if callable(ack_ready) and not ack_ready():
+                self._deferred_action_applied_tick = tick
+                self.get_logger().info(
+                    f"deferring action_applied tick={tick} for attachment perception"
+                )
+                return
+            self._publish_action_applied_tick(tick)
+
+        def _publish_action_applied_tick(self, tick: int) -> None:
+            """Publish one completed tick and reset grouped-action bookkeeping."""
+            if self._action_applied_pub is None or tick <= self._last_action_applied_tick:
+                return
             from std_msgs.msg import UInt64
 
             msg = UInt64()
@@ -1013,6 +1028,16 @@ if _ROS2_AVAILABLE:
             self._last_action_applied_tick = tick
             self._safe_group_tick = None
             self._safe_group_count = 0
+            self._deferred_action_applied_tick = 0
+
+        def _on_attachment_perception_ready(self) -> None:
+            """Release the grouped tick held while attached depth clears the map."""
+            if self._deferred_action_applied_tick > 0:
+                self.get_logger().info(
+                    "attachment perception ready; releasing action_applied "
+                    f"tick={self._deferred_action_applied_tick}"
+                )
+                self._publish_action_applied_tick(self._deferred_action_applied_tick)
 
         def _send_action_traced(self, action: Any, *, source: str) -> bool:  # noqa: ANN401  # reason: action shape is HAL-adapter-specific (numpy ndarray / dict / typed namedtuple)
             """Forward ``action`` to ``self._hal.send_action`` inside a ``hal.send_action`` span.
@@ -1521,6 +1546,7 @@ if _ROS2_AVAILABLE:
                 # Refresh the proprio snapshot after each idle step,
                 # so odom/joint_state stay fresh while the scene idles.
                 on_step=self._capture_proprio,
+                on_attachment_perception_ready=self._on_attachment_perception_ready,
             )
             self._bridge.setup()
 

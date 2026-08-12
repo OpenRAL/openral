@@ -12,6 +12,7 @@ module stays import-safe in pure-Python CI.
 from __future__ import annotations
 
 import contextlib
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -181,6 +182,7 @@ class SimSensorBridge:
         depth_pixel_stride: int = 4,
         idle_hold_ms: float = 2000.0,
         on_step: Any = None,
+        on_attachment_perception_ready: Any = None,
     ) -> None:
         """Bind the node + HAL + manifest; opens no publishers until :meth:`setup`.
 
@@ -206,6 +208,7 @@ class SimSensorBridge:
         """
         self._node = node
         self._on_step = on_step
+        self._on_attachment_perception_ready = on_attachment_perception_ready
         self._hal = hal
         self._description = description
         self._viewer_enabled = viewer_enabled
@@ -255,6 +258,8 @@ class SimSensorBridge:
         self._depth_timer: Any = None
         self._attachment_sub: Any = None
         self._attachment_ack_sub: Any = None
+        self._attachment_voxel_sub: Any = None
+        self._attachment_estop_sub: Any = None
         self._attachment_pub: Any = None
         self._attachment_timer: Any = None
         self._attachment_revision: int = 0
@@ -262,6 +267,10 @@ class SimSensorBridge:
         self._attachment_desired: list[Any] = []
         self._attachment_pending: list[Any] | None = None
         self._attachment_tracker: Any = None
+        self._attachment_depth_frames_remaining: int = 0
+        self._attachment_voxel_updates_remaining: int = 0
+        self._attachment_expect_voxel_update: bool = False
+        self._attachment_transparent_depth_stamp_ns: int | None = None
         self._depth_disabled: set[str] = set()
         self._depth_base_body: str | None = None
         self._depth_base_body_id: int = -1
@@ -317,7 +326,7 @@ class SimSensorBridge:
         self._setup_attachment_state()
         self._setup_depth()
 
-    def teardown(self) -> None:
+    def teardown(self) -> None:  # noqa: PLR0915  # reason: one symmetric resource cleanup
         """Cancel timers, destroy publishers, and close the viewer (idempotent)."""
         for t in (
             self._image_timer,
@@ -341,6 +350,12 @@ class SimSensorBridge:
         if self._attachment_ack_sub is not None:
             self._node.destroy_subscription(self._attachment_ack_sub)
             self._attachment_ack_sub = None
+        if self._attachment_voxel_sub is not None:
+            self._node.destroy_subscription(self._attachment_voxel_sub)
+            self._attachment_voxel_sub = None
+        if self._attachment_estop_sub is not None:
+            self._node.destroy_subscription(self._attachment_estop_sub)
+            self._attachment_estop_sub = None
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
             self._attachment_pub = None
@@ -981,13 +996,37 @@ class SimSensorBridge:
             self._on_attachment_state,
             qos,
         )
-        from std_msgs.msg import UInt64
+        from std_msgs.msg import Empty, UInt64
 
         self._attachment_ack_sub = self._node.create_subscription(
             UInt64,
             "/openral/attachment_state_applied",
             self._on_attachment_state_applied,
             qos,
+        )
+        estop_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        self._attachment_estop_sub = self._node.create_subscription(
+            Empty,
+            "/openral/estop",
+            self._on_attachment_estop,
+            estop_qos,
+        )
+        from openral_msgs.msg import OccupancyVoxels
+
+        voxel_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        )
+        self._attachment_voxel_sub = self._node.create_subscription(
+            OccupancyVoxels,
+            "/openral/world_voxels",
+            self._on_attachment_world_voxels,
+            voxel_qos,
         )
         self._attachment_pub = self._node.create_publisher(
             AttachmentState,
@@ -1080,9 +1119,24 @@ class SimSensorBridge:
         from openral_core.exceptions import ROSConfigError
 
         try:
+            current_ids = {
+                obj.object_id for obj in getattr(self._hal, "read_attached_objects", lambda: [])()
+            }
+            added = any(obj.object_id not in current_ids for obj in self._attachment_pending)
             update(self._attachment_pending)
             self._attachment_applied_revision = revision
             self._attachment_pending = None
+            if added:
+                self._attachment_depth_frames_remaining = 1 if self._depth_pubs else 0
+                self._attachment_expect_voxel_update = (
+                    self._node.count_publishers("/openral/world_voxels") > 0
+                )
+                self._node.get_logger().info(
+                    "attachment perception barrier waiting for "
+                    f"{self._attachment_depth_frames_remaining} transparent depth frames"
+                )
+                if self._attachment_depth_frames_remaining == 0:
+                    self._notify_attachment_perception_ready()
         except ROSConfigError as exc:
             self._node.get_logger().error(
                 f"kernel accepted attachment revision {revision}, but sim mask update failed: {exc}"
@@ -1276,7 +1330,7 @@ class SimSensorBridge:
                     return (w, h)
         return None
 
-    def _publish_depth_clouds(self) -> None:
+    def _publish_depth_clouds(self) -> None:  # noqa: PLR0915  # reason: one atomic per-camera publish transaction
         """Ray-cast + publish a PointCloud2 (+ depth image) per camera, and its TF.
 
         The deploy-sim source for octomap_server. Each depth ``SensorSpec`` is
@@ -1370,6 +1424,15 @@ class SimSensorBridge:
                 points = points_from_depth_grid(depth_grid, **intr)
                 cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
                 pub.publish(cloud)
+                if self._attachment_depth_frames_remaining > 0:
+                    # One transparent cloud has now gone out: the attachment
+                    # perception barrier can count this frame.
+                    self._record_attachment_depth_frame(
+                        stamp_ns=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+                    )
+                # Dense 32FC1 depth image + CameraInfo for nvblox, from that same
+                # single raster (the barrier used to skip this publish only to
+                # avoid a second cast, which no longer exists).
                 self._depth_image_pubs[name].publish(
                     depth_image_from_grid(depth_grid, frame_id=spec.frame_id, stamp=stamp)
                 )
@@ -1407,6 +1470,100 @@ class SimSensorBridge:
                     f"depth camera {name!r} disabled: {exc}; "
                     "check the SensorSpec's mjcf_camera metadata."
                 )
+
+    def attachment_action_ack_ready(self) -> bool:
+        """Return whether attachment geometry and transparent depth are settled."""
+        pending_addition = self._attachment_pending is not None and bool(self._attachment_pending)
+        return (
+            not pending_addition
+            and self._attachment_depth_frames_remaining == 0
+            and self._attachment_voxel_updates_remaining == 0
+        )
+
+    def _notify_attachment_perception_ready(self) -> None:
+        """Release a deferred action acknowledgement after map-clearing frames."""
+        callback = self._on_attachment_perception_ready
+        if callable(callback):
+            callback()
+
+    def _record_attachment_depth_frame(self, *, stamp_ns: int) -> None:
+        """Count one transparent depth frame toward attachment-map readiness."""
+        if self._attachment_depth_frames_remaining <= 0:
+            return
+        self._attachment_depth_frames_remaining -= 1
+        self._node.get_logger().info(
+            "attachment perception barrier depth frame; "
+            f"remaining={self._attachment_depth_frames_remaining}"
+        )
+        if self._attachment_depth_frames_remaining == 0:
+            self._attachment_transparent_depth_stamp_ns = stamp_ns
+            if self._attachment_expect_voxel_update:
+                self._attachment_voxel_updates_remaining = 1
+            else:
+                self._notify_attachment_perception_ready()
+
+    def _on_attachment_world_voxels(self, msg: object) -> None:
+        """Wait for post-depth OctoMap rasterizations before releasing motion."""
+        if self._attachment_voxel_updates_remaining <= 0:
+            return
+        header = msg.header  # type: ignore[attr-defined]  # reason: ROS subscription type
+        source_stamp_ns = int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+        transparent_stamp_ns = self._attachment_transparent_depth_stamp_ns
+        if transparent_stamp_ns is None or source_stamp_ns <= transparent_stamp_ns:
+            return
+        self._attachment_voxel_updates_remaining -= 1
+        if self._attachment_voxel_updates_remaining == 0:
+            self._attachment_expect_voxel_update = False
+            self._attachment_transparent_depth_stamp_ns = None
+            self._notify_attachment_perception_ready()
+
+    def _on_attachment_estop(self, _msg: object) -> None:
+        """Log exact sim payload contact evidence at a safety stop."""
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return
+        body_ids = sorted(self._depth_excluded_body_ids() - self._depth_self_bodies)
+        if not body_ids:
+            return
+
+        import mujoco
+
+        model, data = handles
+        body_set = set(body_ids)
+        bodies = [
+            {
+                "id": body_id,
+                "name": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id),
+                "world_xyz": [round(float(value), 6) for value in data.xpos[body_id]],
+            }
+            for body_id in body_ids
+        ]
+        contacts: list[dict[str, object]] = []
+        for index in range(int(data.ncon)):
+            contact = data.contact[index]
+            geom_a, geom_b = int(contact.geom1), int(contact.geom2)
+            body_a = int(model.geom_bodyid[geom_a])
+            body_b = int(model.geom_bodyid[geom_b])
+            if (body_a in body_set) == (body_b in body_set):
+                continue
+            contacts.append(
+                {
+                    "distance_m": round(float(contact.dist), 6),
+                    "geom_a": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_a),
+                    "geom_b": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_b),
+                }
+            )
+        self._node.get_logger().error(
+            "sim.attached_payload_estop_snapshot "
+            + json.dumps(
+                {
+                    "attachment_revision": self._attachment_revision,
+                    "attached_bodies": bodies,
+                    "payload_contacts": contacts,
+                },
+                sort_keys=True,
+            )
+        )
 
     def _depth_excluded_body_ids(self) -> frozenset[int]:
         """Robot and attached-payload bodies excluded from world perception."""

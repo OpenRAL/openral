@@ -166,6 +166,7 @@ class ROSPublishingHAL:
         candidate_action_topic: str = "/openral/candidate_action",
         action_applied_topic: str = "/openral/action_applied",
         safety_abort_getter: Callable[[], str | None] = lambda: None,
+        action_applied_timeout_s: float = 5.0,
     ) -> None:
         """Store references; opens no ROS resources until :meth:`connect`."""
         self._node = node
@@ -179,6 +180,9 @@ class ROSPublishingHAL:
         self._candidate_action_topic = candidate_action_topic
         self._action_applied_topic = action_applied_topic
         self._safety_abort_getter = safety_abort_getter
+        if action_applied_timeout_s <= 0.0:
+            raise ROSConfigError("ROSPublishingHAL: action_applied_timeout_s must be positive")
+        self._action_applied_timeout_s = action_applied_timeout_s
         self._publisher: Any = None
         self._subscription: Any = None
         self._applied_subscription: Any = None
@@ -339,7 +343,7 @@ class ROSPublishingHAL:
             )
         self._published_group_tick = None
         self._published_group_count = 0
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + self._action_applied_timeout_s
         with self._applied_condition:
             while self._last_applied_tick < tick:
                 safety_reason = self._safety_abort_getter()
@@ -357,7 +361,8 @@ class ROSPublishingHAL:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
                     raise ROSRuntimeError(
-                        f"ROSPublishingHAL: action group tick {tick} was not applied within 5.0 s"
+                        f"ROSPublishingHAL: action group tick {tick} was not applied within "
+                        f"{self._action_applied_timeout_s:g} s"
                     )
                 self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
 

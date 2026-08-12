@@ -35,6 +35,8 @@ that are equal by construction (``openral_hal.sim_sensor_bridge`` publishes the
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -44,6 +46,50 @@ from numpy.typing import NDArray
 # also reports the struck geom id (>= 0). We require both to accept a point.
 
 _GEOMGROUP_ALL = np.ones(6, dtype=np.uint8)
+
+
+@contextmanager
+def _transparent_body_geoms(
+    model: Any,  # reason: optional MuJoCo pybind type
+    body_ids: frozenset[int] | None,
+) -> Iterator[NDArray[np.uint8]]:
+    """Temporarily hide selected bodies from MuJoCo rays, then restore them."""
+    from openral_core.exceptions import ROSConfigError
+
+    if not body_ids:
+        yield _GEOMGROUP_ALL
+        return
+    geom_body_ids = np.asarray(model.geom_bodyid)
+    transparent_geom_ids = np.flatnonzero(
+        np.isin(geom_body_ids, np.fromiter(body_ids, dtype=np.int64))
+    )
+    if transparent_geom_ids.size == 0:
+        yield _GEOMGROUP_ALL
+        return
+    geom_groups = np.asarray(model.geom_group)
+    opaque_groups = set(
+        int(group)
+        for group in geom_groups[
+            ~np.isin(
+                np.arange(int(model.ngeom)),
+                transparent_geom_ids,
+            )
+        ]
+    )
+    hidden_group = next((group for group in range(6) if group not in opaque_groups), None)
+    if hidden_group is None:
+        raise ROSConfigError(
+            "Depth self-filter cannot make bodies transparent: all six MuJoCo geom groups "
+            "are used by non-filtered geometry."
+        )
+    original_groups = geom_groups[transparent_geom_ids].copy()
+    ray_groups = _GEOMGROUP_ALL.copy()
+    ray_groups[hidden_group] = 0
+    try:
+        model.geom_group[transparent_geom_ids] = hidden_group
+        yield ray_groups
+    finally:
+        model.geom_group[transparent_geom_ids] = original_groups
 
 
 def _cast_depth_rays(
@@ -62,7 +108,14 @@ def _cast_depth_rays(
     stride: int,
     exclude_body_id: int | None,
     exclude_body_ids: frozenset[int] | None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.bool_], int, int]:
+) -> tuple[
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.bool_],
+    NDArray[np.bool_],
+    int,
+    int,
+]:
     """Shared pinhole MuJoCo ray-cast behind the cloud + image synths.
 
     Casts one ray per (strided) pixel ``(u, v)`` — ``u in range(0, width,
@@ -70,7 +123,7 @@ def _cast_depth_rays(
     returns the per-ray geometry both public synths derive their output from.
 
     Returns:
-        ``(dir_opt, distances, hit, n_cols, n_rows)``:
+        ``(dir_opt, distances, hit, clearing, n_cols, n_rows)``:
 
         * ``dir_opt`` — ``(R, 3)`` float64 unit ray directions in the camera
           optical frame (REP-103).
@@ -79,6 +132,9 @@ def _cast_depth_rays(
           ``hit``, not cleared here).
         * ``hit`` — ``(R,)`` bool accept mask (genuine hit, in ``[min, max]``
           range, not a self-filtered body).
+        * ``clearing`` — rays that originally struck a transparent body and
+          found no farther surface; point clouds emit a max-range endpoint so
+          OctoMap clears the ray without adding an occupied cell.
         * ``n_cols`` / ``n_rows`` — the strided pixel-grid width / height, so a
           dense raster reshapes as ``ray_index = row * n_cols + col``.
 
@@ -124,6 +180,7 @@ def _cast_depth_rays(
     n_rays = dir_world.shape[0]
     geomids = np.full(n_rays, -1, dtype=np.int32)
     distances = np.full(n_rays, -1.0, dtype=np.float64)
+    transparent_hits: NDArray[np.bool_] = np.zeros(n_rays, dtype=np.bool_)
 
     # One `mj_ray` per pixel, NOT the batched `mj_multiRay`. `mj_multiRay`
     # culls whole bodies against the bounding sphere of the body's BVH root
@@ -143,26 +200,42 @@ def _cast_depth_rays(
     # surface is worse than a slower one.
     geomid_out = np.zeros(1, dtype=np.int32)
     bodyexclude = -1 if exclude_body_id is None else int(exclude_body_id)
-    for i in range(n_rays):
-        geomid_out[0] = -1
-        distances[i] = mujoco.mj_ray(
-            model, data, origin, dir_world[i], _GEOMGROUP_ALL, 1, bodyexclude, geomid_out
+
+    if exclude_body_ids:
+        # First pass, everything visible: which rays land on a body we are
+        # about to make transparent? Those are the ones whose second-pass
+        # result is "the world behind the payload" rather than a real return,
+        # so they clear their ray in OctoMap instead of marking a cell.
+        initial_geomids = np.full(n_rays, -1, dtype=np.int32)
+        initial_distances = np.full(n_rays, -1.0, dtype=np.float64)
+        for i in range(n_rays):
+            geomid_out[0] = -1
+            initial_distances[i] = mujoco.mj_ray(
+                model, data, origin, dir_world[i], _GEOMGROUP_ALL, 1, bodyexclude, geomid_out
+            )
+            initial_geomids[i] = geomid_out[0]
+        safe_geom = np.where(initial_geomids >= 0, initial_geomids, 0)
+        initial_bodies = np.asarray(model.geom_bodyid)[safe_geom]
+        transparent_hits = (
+            (initial_geomids >= 0)
+            & (initial_distances <= max_range_m)
+            & np.isin(initial_bodies, np.fromiter(exclude_body_ids, dtype=np.int64))
         )
-        geomids[i] = geomid_out[0]
+
+    with _transparent_body_geoms(model, exclude_body_ids) as geom_groups:
+        for i in range(n_rays):
+            geomid_out[0] = -1
+            distances[i] = mujoco.mj_ray(
+                model, data, origin, dir_world[i], geom_groups, 1, bodyexclude, geomid_out
+            )
+            geomids[i] = geomid_out[0]
 
     # Accept only genuine hits within [min_range, max_range]. `mj_ray` has no
     # range cutoff at all — it always reports the true nearest visible
     # surface — so the max-range clamp is this mask, not a caster argument.
     hit = (geomids >= 0) & (distances >= min_range_m) & (distances <= max_range_m)
-    if exclude_body_ids:
-        # Drop rays that struck one of the robot's own bodies (self-filter), so
-        # the robot isn't voxelised into its own world map. geom_bodyid[-1] is
-        # invalid, so index only the genuine hits.
-        safe_geom = np.where(geomids >= 0, geomids, 0)
-        hit_body = np.asarray(model.geom_bodyid)[safe_geom]
-        excluded = np.isin(hit_body, np.fromiter(exclude_body_ids, dtype=np.int64))
-        hit &= ~excluded
-    return dir_opt, distances, hit, int(us.size), int(vs.size)
+    clearing = transparent_hits & ~hit
+    return dir_opt, distances, hit, clearing, int(us.size), int(vs.size)
 
 
 def synthesize_depth_pointcloud(
@@ -209,11 +282,10 @@ def synthesize_depth_pointcloud(
         exclude_body_id: Single MuJoCo body id passed to ``mj_ray``'s
             ``bodyexclude`` (so rays don't immediately strike the camera's own
             mount body at range ~0); ``None`` excludes nothing.
-        exclude_body_ids: Body ids whose hits are dropped after casting — the
-            robot's own links/gripper, so a base-mounted depth camera that sees
-            the arm does NOT voxelise the robot into the world map (which would
-            make the kernel's world-collision check flag the arm against
-            itself). ``None``/empty drops nothing.
+        exclude_body_ids: Body ids made transparent to the ray-cast — the
+            robot's own links and acknowledged attached payloads. Rays continue
+            to the next world surface so OctoMap receives clearing rays instead
+            of permanent holes where a carried object used to be.
 
     Returns:
         ``(N, 3)`` float32 array of hit points in the camera optical frame
@@ -229,7 +301,7 @@ def synthesize_depth_pointcloud(
         >>> #     width=64, height=48, fx=40, fy=40, cx=32, cy=24,
         >>> #     max_range_m=5.0, stride=2)
     """
-    dir_opt, distances, hit, _, _ = _cast_depth_rays(
+    dir_opt, distances, hit, clearing, _, _ = _cast_depth_rays(
         model=model,
         data=data,
         camera_name=camera_name,
@@ -245,10 +317,13 @@ def synthesize_depth_pointcloud(
         exclude_body_id=exclude_body_id,
         exclude_body_ids=exclude_body_ids,
     )
-    if not np.any(hit):
+    accepted = hit | clearing
+    if not np.any(accepted):
         return np.zeros((0, 3), dtype=np.float32)
 
-    points = distances[hit, None] * dir_opt[hit]
+    ranges = distances.copy()
+    ranges[clearing] = max_range_m
+    points = ranges[accepted, None] * dir_opt[accepted]
     return points.astype(np.float32)
 
 
@@ -301,7 +376,8 @@ def synthesize_depth_image(
         stride: Pixel subsample step. ``stride=2`` rasterises a quarter of the
             pixels (the ``CameraInfo`` intrinsics scale to match).
         exclude_body_id: ``mj_ray`` ``bodyexclude`` (camera's own mount).
-        exclude_body_ids: Body ids whose hits read ``0.0`` (robot self-filter).
+        exclude_body_ids: Body ids made transparent so the next world surface
+            supplies depth (robot/attached-object self-filter).
 
     Returns:
         ``(n_rows, n_cols)`` float32 depth raster in metres (optical-Z), ``0.0``
@@ -316,7 +392,7 @@ def synthesize_depth_image(
         >>> #     width=128, height=128, fx=92, fy=92, cx=64, cy=64,
         >>> #     max_range_m=8.0)  # -> (128, 128) float32, metres
     """
-    dir_opt, distances, hit, n_cols, n_rows = _cast_depth_rays(
+    dir_opt, distances, hit, _clearing, n_cols, n_rows = _cast_depth_rays(
         model=model,
         data=data,
         camera_name=camera_name,
