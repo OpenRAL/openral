@@ -155,6 +155,7 @@ if _ROS2_AVAILABLE:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
             self.declare_parameter("rate_hz", 30.0)
+            self.declare_parameter("action_applied_timeout_s", 5.0)
             self.declare_parameter("estop_topic", "/openral/estop")
             # Optional HAL service that snaps qpos to a manifest's
             # ``starting_pose`` before the first inference tick.
@@ -287,6 +288,9 @@ if _ROS2_AVAILABLE:
                 # subscription and no new layer edge: the fact is already
                 # here, it just never reached the blocking wait.
                 safety_abort_getter=self._safety_abort_reason,
+                action_applied_timeout_s=float(
+                    self.get_parameter("action_applied_timeout_s").value
+                ),
             )
             try:
                 self._hal.connect()

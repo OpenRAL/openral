@@ -174,6 +174,17 @@ _SELF_FILTER_MJCF = """
 </mujoco>
 """
 
+_SELF_FILTER_NO_BACKGROUND_MJCF = """
+<mujoco model="depth_self_filter_no_background">
+  <worldbody>
+    <camera name="depth0" pos="0 0 0"/>
+    <body name="robot_arm" pos="0 0 -1.0">
+      <geom name="arm" type="box" size="0.3 0.3 0.05"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
 
 def test_depth_cloud_excludes_robot_body_hits() -> None:
     """exclude_body_ids drops hits on the robot's own bodies (self-filter).
@@ -207,6 +218,33 @@ def test_depth_cloud_excludes_robot_body_hits() -> None:
     # ...with the arm excluded every ray passes through to the wall (~1.9 m),
     # and no return is closer than the wall.
     assert float(withf[:, 2].min()) == pytest.approx(1.9, abs=0.05)
+    assert withf.shape == (_W * _H, 3)
+    arm_geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "arm")
+    assert int(model.geom_group[arm_geom]) == 0
+
+
+def test_depth_cloud_emits_max_range_clearing_rays_behind_transparent_body() -> None:
+    model = mujoco.MjModel.from_xml_string(_SELF_FILTER_NO_BACKGROUND_MJCF)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    arm_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "robot_arm")
+
+    points = synthesize_depth_pointcloud(
+        model=model,
+        data=data,
+        camera_name="depth0",
+        width=_W,
+        height=_H,
+        fx=_FX,
+        fy=_FY,
+        cx=_CX,
+        cy=_CY,
+        max_range_m=5.0,
+        exclude_body_ids=frozenset({arm_body}),
+    )
+
+    assert points.shape[0] > 0
+    assert np.linalg.norm(points, axis=1).max() == pytest.approx(5.0, abs=1e-5)
 
 
 def test_depth_cloud_unknown_camera_raises() -> None:

@@ -30,7 +30,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 pytest.importorskip("openral_sim")
 pytest.importorskip("mujoco")
@@ -175,7 +177,7 @@ def test_bridge_advertises_only_renderable_cameras(
 def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
     """Two carried RoboCasa bodies leave depth atomically and detach independently."""
     from openral_hal.depth_cloud import depth_synth_kwargs
-    from openral_msgs.msg import AttachmentState
+    from openral_msgs.msg import AttachmentState, OccupancyVoxels
     from openral_sim.backends.depth_camera import synthesize_depth_pointcloud
     from openral_world_state_ros.lifecycle_node import build_world_state_stamped_msg
     from std_msgs.msg import UInt64
@@ -196,19 +198,20 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
     bridge = SimSensorBridge(node=node, hal=hal, description=desc, viewer_enabled=False)
     try:
         bridge._resolve_depth_base_body(model)
+        perception_ready: list[bool] = []
+        bridge._on_attachment_perception_ready = lambda: perception_ready.append(True)
+        bridge._depth_pubs["front_depth"] = object()
 
-        def point_count() -> int:
-            return int(
-                synthesize_depth_pointcloud(
-                    model=model,
-                    data=data,
-                    stride=4,
-                    exclude_body_ids=bridge._depth_excluded_body_ids(),
-                    **kwargs,
-                ).shape[0]
+        def read_points() -> NDArray[np.float32]:
+            return synthesize_depth_pointcloud(
+                model=model,
+                data=data,
+                stride=4,
+                exclude_body_ids=bridge._depth_excluded_body_ids(),
+                **kwargs,
             )
 
-        baseline = point_count()
+        baseline = read_points()
         baguette = _attachment("baguette_seed1", "obj_main")
         distractor = _attachment("counter_distractor_seed1", "distr_counter_main")
 
@@ -238,21 +241,44 @@ def test_bridge_masks_multiple_attached_objects_without_reset(hal: Any) -> None:
             return revision
 
         attached_revision = publish_attachment_state([baguette, distractor])
-        assert point_count() == baseline  # additions wait for kernel acknowledgement
+        assert not bridge.attachment_action_ack_ready()
+        assert np.allclose(read_points(), baseline)  # additions wait for kernel acknowledgement
         bridge._on_attachment_state_applied(UInt64(data=attached_revision))
-        both_masked = point_count()
-        assert both_masked < baseline
+        assert not bridge.attachment_action_ack_ready()
+        bridge._record_attachment_depth_frame(stamp_ns=1)
+        assert bridge.attachment_action_ack_ready()
+        assert perception_ready == [True]
+        both_transparent = read_points()
+        assert not np.allclose(both_transparent, baseline)
 
         detached_revision = publish_attachment_state([baguette])
-        baguette_only = point_count()
-        assert both_masked < baguette_only < baseline
+        baguette_only = read_points()
+        assert not np.allclose(baguette_only, both_transparent)
+        assert not np.allclose(baguette_only, baseline)
         bridge._on_attachment_state_applied(UInt64(data=detached_revision))
-        assert point_count() == baguette_only
+        assert np.allclose(read_points(), baguette_only)
 
         empty_revision = publish_attachment_state([])
-        assert point_count() == baseline
+        assert bridge.attachment_action_ack_ready()
+        assert np.allclose(read_points(), baseline)
         bridge._on_attachment_state_applied(UInt64(data=empty_revision))
-        assert point_count() == baseline
+        assert np.allclose(read_points(), baseline)
+
+        # A voxel update queued before the transparent cloud must not release
+        # the action barrier: it can still contain the just-attached object.
+        bridge._attachment_depth_frames_remaining = 1
+        bridge._attachment_expect_voxel_update = True
+        bridge._record_attachment_depth_frame(stamp_ns=100)
+        stale_grid = OccupancyVoxels()
+        stale_grid.header.stamp.sec = 0
+        stale_grid.header.stamp.nanosec = 100
+        bridge._on_attachment_world_voxels(stale_grid)
+        assert not bridge.attachment_action_ack_ready()
+        fresh_grid = OccupancyVoxels()
+        fresh_grid.header.stamp.sec = 0
+        fresh_grid.header.stamp.nanosec = 101
+        bridge._on_attachment_world_voxels(fresh_grid)
+        assert bridge.attachment_action_ack_ready()
     finally:
         node.destroy_node()
         rclpy.shutdown()
