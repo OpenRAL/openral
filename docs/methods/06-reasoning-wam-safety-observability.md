@@ -175,6 +175,11 @@ _Lifecycle node skeleton; reserves the supervisor node name and topic surface fo
 - `SAFETY_STATUS_TOPIC: str` — `/openral/safety_status`, the ADR-0096 latched current-safety-state topic this node publishes `openral_msgs/SafetyStatus` on (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes. (L78)
 - `SAFETY_STATUS_HEARTBEAT_S: float` — 1.0 s liveness refresh for that topic. Hazard-log HZ-0096-1 mitigation 2: a durable value is only trustworthy alongside evidence it is current, so `header.stamp` is re-stamped at this cadence even when nothing changed. (L85)
 
+### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
+_Allocation-free attached-payload contact handling._
+
+- `update_attached_voxel_contacts(attached, scratch, grid, contact_mask, contact_distance, mask_capacity, distance_capacity, snapshot) -> bool` — Snapshot the occupied voxel contacts present at attachment and refresh them against the measured payload pose. Existing shallow support contact may not deepen beyond the configured tolerance; deeply embedded residue is allowed only until separation; bits are never added after the snapshot. The lifecycle kernel uses the reactive floor during contact-constrained Cartesian motion and restores predictive payload-vs-voxel checking after separation.
+
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._
 

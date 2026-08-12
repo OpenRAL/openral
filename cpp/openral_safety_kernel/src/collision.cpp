@@ -173,15 +173,6 @@ double segment_segment_dist2(const Vec3& p1, const Vec3& q1, const Vec3& p2,
   return dot(diff, diff);
 }
 
-// Distance from a point to the segment [a, b].
-double point_segment_distance(const Vec3& p, const Vec3& a, const Vec3& b) noexcept {
-  const Vec3 ab = sub(b, a);
-  const double denom = dot(ab, ab);
-  const double t = denom > 1e-12 ? clamp01(dot(sub(p, a), ab) / denom) : 0.0;
-  const Vec3 diff = sub(p, add(a, scale(ab, t)));
-  return std::sqrt(dot(diff, diff));
-}
-
 int clamp_index(int v, int lo, int hi) noexcept { return v < lo ? lo : (v > hi ? hi : v); }
 
 // The two endpoints of a capsule's central segment, given its frame.
@@ -770,6 +761,24 @@ double attached_primitive_capsule_distance(const AttachedPrimitive& prim, const 
                           cap_half_length);
 }
 
+double attached_object_voxel_distance(const AttachedModel& attached, const AttachedObject& object,
+                                      const Transform& object_xf, const Transform& voxel,
+                                      const Vec3& voxel_half) noexcept {
+  double minimum = std::numeric_limits<double>::infinity();
+  for (int p = 0; p < object.prim_count; ++p) {
+    const AttachedPrimitive& primitive =
+        attached.primitives[static_cast<std::size_t>(object.prim_first + p)];
+    const Transform primitive_xf = compose(object_xf, primitive.pose_in_object);
+    const double distance =
+        primitive.kind == AttachedShapeKind::kBox
+            ? box_box_distance(primitive_xf, primitive.half_extents, voxel, voxel_half)
+            : box_capsule_distance(voxel, voxel_half, primitive_xf, primitive.radius,
+                                   primitive.half_length);
+    minimum = std::min(minimum, distance);
+  }
+  return minimum;
+}
+
 }  // namespace
 
 AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput>& inputs,
@@ -982,6 +991,21 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
               result.min_distance = d;
             }
             if (d <= margin && !result.hit) {
+              const bool has_baseline = i < 8 && grid.attached_contact_mask != nullptr &&
+                                        grid.attached_contact_distance != nullptr &&
+                                        grid.attached_contact_stride > idx &&
+                                        (grid.attached_contact_mask[idx] & (1U << i)) != 0;
+              if (has_baseline) {
+                const double baseline =
+                    grid.attached_contact_distance[i * grid.attached_contact_stride + idx];
+                const bool embedded_residue = baseline <= -0.5 * grid.resolution;
+                if (embedded_residue || d + grid.attached_contact_tolerance >= baseline) {
+                  continue;
+                }
+              } else if (grid.attached_contact_allow_new_shallow &&
+                         d + grid.attached_contact_tolerance >= 0.0) {
+                continue;
+              }
               result.hit = true;
               result.link_a = static_cast<int>(i);
               result.link_b = static_cast<int>(idx);
@@ -992,6 +1016,66 @@ CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,
     }
   }
   return result;
+}
+
+bool update_attached_voxel_contacts(const AttachedModel& attached, const CollisionScratch& scratch,
+                                    const VoxelGrid& grid, std::uint8_t* contact_mask,
+                                    double* contact_distance, std::size_t mask_capacity,
+                                    std::size_t distance_capacity, bool snapshot) noexcept {
+  const std::size_t cells = static_cast<std::size_t>(grid.sx) * static_cast<std::size_t>(grid.sy) *
+                            static_cast<std::size_t>(grid.sz);
+  const std::size_t objects = std::min<std::size_t>(attached.n_objects, 8);
+  if (contact_mask == nullptr || contact_distance == nullptr || grid.occupancy == nullptr ||
+      cells == 0 || mask_capacity < cells || grid.attached_contact_stride < cells ||
+      distance_capacity < grid.attached_contact_stride * objects || grid.resolution <= 0.0) {
+    return false;
+  }
+  if (snapshot) {
+    std::fill(contact_mask, contact_mask + cells, static_cast<std::uint8_t>(0));
+    std::fill(contact_distance, contact_distance + distance_capacity,
+              std::numeric_limits<double>::infinity());
+  }
+  const double half_side = grid.resolution * 0.5;
+  const Vec3 voxel_half{half_side, half_side, half_side};
+  bool active = false;
+  for (std::size_t idx = 0; idx < cells; ++idx) {
+    if (grid.occupancy[idx] == 0) {
+      contact_mask[idx] = 0;
+      continue;
+    }
+    const int ix = static_cast<int>(idx % static_cast<std::size_t>(grid.sx));
+    const std::size_t yz = idx / static_cast<std::size_t>(grid.sx);
+    const int iy = static_cast<int>(yz % static_cast<std::size_t>(grid.sy));
+    const int iz = static_cast<int>(yz / static_cast<std::size_t>(grid.sy));
+    Transform voxel;
+    voxel.t = Vec3{grid.origin.x + (ix + 0.5) * grid.resolution,
+                   grid.origin.y + (iy + 0.5) * grid.resolution,
+                   grid.origin.z + (iz + 0.5) * grid.resolution};
+    for (std::size_t object_index = 0; object_index < objects; ++object_index) {
+      const std::uint8_t bit = static_cast<std::uint8_t>(1U << object_index);
+      if (!snapshot && (contact_mask[idx] & bit) == 0) {
+        continue;
+      }
+      const AttachedObject& object = attached.objects[object_index];
+      const Transform object_xf = attached_object_transform(object, scratch);
+      const double distance =
+          attached_object_voxel_distance(attached, object, object_xf, voxel, voxel_half);
+      const std::size_t distance_index = object_index * grid.attached_contact_stride + idx;
+      if (snapshot) {
+        if (distance <= 0.0) {
+          contact_mask[idx] |= bit;
+          contact_distance[distance_index] = distance;
+          active = true;
+        }
+      } else if (distance > 0.0) {
+        contact_mask[idx] &= static_cast<std::uint8_t>(~bit);
+        contact_distance[distance_index] = std::numeric_limits<double>::infinity();
+      } else {
+        active = true;
+      }
+    }
+  }
+  return active;
 }
 
 CollisionHit check_attached_self_collision(const CollisionModel& model,
