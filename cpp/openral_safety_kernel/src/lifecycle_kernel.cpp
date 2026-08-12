@@ -180,6 +180,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("attached_collision_enabled", false);
   this->declare_parameter<double>("attached_collision_margin_m", 0.0);
   this->declare_parameter<double>("attached_collision_deadline_ms", 500.0);
+  this->declare_parameter<double>("attached_contact_tolerance_m", 0.001);
   this->declare_parameter<std::int64_t>("attached_max_objects", 8);
   this->declare_parameter<std::int64_t>("attached_max_primitives", 16);
   this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
@@ -603,6 +604,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           unavailable(attached_overflow_ ? "attached_overflow" : "attached_unavailable");
           return;
         }
+        if ((attached_contact_snapshot_pending_ || attached_contact_active_) &&
+            !measured_state_fresh()) {
+          unavailable("state_unavailable");
+          return;
+        }
       }
 
       const auto link_name = [this](int idx) -> std::string {
@@ -663,6 +669,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         forward_kinematics(collision_model_, q_fk_.data(), robot_ndof, collision_scratch_);
       };
+      if (attached_contact_snapshot_pending_ || attached_contact_active_) {
+        fk_config(q_meas_.data());
+        attached_contact_active_ = update_attached_voxel_contacts(
+            attached_model_, collision_scratch_, voxel_grid_, attached_contact_mask_.data(),
+            attached_contact_distance_.data(), attached_contact_mask_.size(),
+            attached_contact_distance_.size(), attached_contact_snapshot_pending_);
+        attached_contact_snapshot_pending_ = false;
+      }
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -710,9 +724,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
               return true;
             }
           }
-          if (world_voxel_enabled_) {
+          const bool contact_constrained_prediction =
+              is_cartesian && attached_contact_active_ && step >= 0;
+          if (world_voxel_enabled_ && !contact_constrained_prediction) {
+            voxel_grid_.attached_contact_allow_new_shallow =
+                is_cartesian && attached_contact_active_ && step < 0;
             const auto hit = check_attached_voxel_collision(
                 collision_model_, attached_model_, collision_scratch_, voxel_grid_, amargin);
+            voxel_grid_.attached_contact_allow_new_shallow = false;
             if (hit.hit) {
               report("world", attached_label(hit.link_a),
                      std::string("voxel_") + std::to_string(hit.link_b), step, hit.min_distance);
@@ -1105,6 +1124,17 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
       static_cast<std::size_t>(this->get_parameter("attached_max_touch_links").as_int());
   attached_received_ = false;
   attached_overflow_ = false;
+  attached_revision_ = 0;
+  attached_contact_snapshot_pending_ = false;
+  attached_contact_active_ = false;
+  attached_contact_mask_.assign(world_voxel_max_cells_, 0);
+  attached_contact_distance_.assign(attached_max_objects_ * world_voxel_max_cells_,
+                                    std::numeric_limits<double>::infinity());
+  voxel_grid_.attached_contact_mask = attached_contact_mask_.data();
+  voxel_grid_.attached_contact_distance = attached_contact_distance_.data();
+  voxel_grid_.attached_contact_stride = world_voxel_max_cells_;
+  voxel_grid_.attached_contact_tolerance =
+      this->get_parameter("attached_contact_tolerance_m").as_double();
   attached_model_ = AttachedModel{};
   attached_model_.objects.assign(attached_max_objects_, AttachedObject{});
   attached_model_.primitives.assign(attached_max_primitives_, AttachedPrimitive{});
@@ -1308,6 +1338,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     attached_overflow_ = true;
     attached_received_ = true;
     attached_stamp_ = producer_stamp;
+    attached_contact_snapshot_pending_ = false;
+    attached_contact_active_ = false;
+    std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
   };
 
   const auto& wire = msg->attached_objects;
@@ -1406,6 +1439,19 @@ void SafetyKernelLifecycleNode::on_world_state(
   attached_overflow_ = false;
   attached_received_ = true;
   attached_stamp_ = producer_stamp;
+  if (msg->attachment_revision != attached_revision_) {
+    attached_revision_ = msg->attachment_revision;
+    if (attached_model_.n_objects == 0) {
+      attached_contact_snapshot_pending_ = false;
+      attached_contact_active_ = false;
+      std::fill(attached_contact_mask_.begin(), attached_contact_mask_.end(), 0);
+      std::fill(attached_contact_distance_.begin(), attached_contact_distance_.end(),
+                std::numeric_limits<double>::infinity());
+    } else {
+      attached_contact_snapshot_pending_ = true;
+      attached_contact_active_ = false;
+    }
+  }
   if (attachment_applied_pub_ != nullptr) {
     std_msgs::msg::UInt64 applied;
     applied.data = msg->attachment_revision;

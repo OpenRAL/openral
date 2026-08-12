@@ -173,6 +173,11 @@ _Lifecycle node skeleton; reserves the supervisor node name and topic surface fo
   - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L263)
 - `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L641)
 
+### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
+_Allocation-free attached-payload contact handling._
+
+- `update_attached_voxel_contacts(attached, scratch, grid, contact_mask, contact_distance, mask_capacity, distance_capacity, snapshot) -> bool` — Snapshot the occupied voxel contacts present at attachment and refresh them against the measured payload pose. Existing shallow support contact may not deepen beyond the configured tolerance; deeply embedded residue is allowed only until separation; bits are never added after the snapshot. The lifecycle kernel uses the reactive floor during contact-constrained Cartesian motion and restores predictive payload-vs-voxel checking after separation.
+
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._
 
