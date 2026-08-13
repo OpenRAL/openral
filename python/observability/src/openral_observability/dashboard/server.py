@@ -122,6 +122,27 @@ def run_dashboard(  # noqa: PLR0915, PLR0912  # reason: linear bootstrap (app + 
     except Exception as exc:  # never gate the dashboard on the e-stop publisher
         _LOG.warning("dashboard.estop_publisher_start_failed error=%s", exc)
 
+    # ADR-0096 — the latched /openral/safety_status subscriber. Read-only: it
+    # feeds the Safety Status card with the graph's authoritative current
+    # safety state, which the span-inferred latch cannot supply once a latched
+    # kernel stops the chunk flow the inference rides on. Created here so the
+    # TRANSIENT_LOCAL sample lands at launch. Inert + harmless without ROS.
+    try:
+        from openral_observability.dashboard.safety_status_subscriber import (
+            SafetyStatusSubscriber,
+        )
+
+        app.state.safety_status = SafetyStatusSubscriber(app.state.store)
+        if app.state.safety_status.available:
+            _LOG.info("dashboard.safety_status_subscriber ready (latched safety state)")
+        else:
+            _LOG.warning(
+                "dashboard.safety_status_subscriber inert (no ROS) — "
+                "the Safety Status card stays 'waiting'"
+            )
+    except Exception as exc:  # never gate the dashboard on the safety subscriber
+        _LOG.warning("dashboard.safety_status_subscriber_start_failed error=%s", exc)
+
     discovery = None
     try:
         from openral_observability.dashboard.discovery import Discovery

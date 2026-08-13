@@ -395,3 +395,161 @@ def test_envelope_violation_emits_safety_check_span_with_violation_severity(
     assert attrs.get("safety.severity") == "violation"
     assert attrs.get("safety.kernel") == "passthrough"
     assert attrs.get("safety.drop_reason") == "n_dof"
+
+
+# ── ADR-0096: latched /openral/safety_status parity with the C++ kernel ──────
+#
+# Before this, a fail-closed drop or e-stop from THIS node had no typed
+# observability signal at all — it never constructed a FailureTrigger, so the
+# only wire evidence was a bare std_msgs/Empty on /openral/estop. These pin
+# the same publication contract the C++ kernel's gtests pin, so the node the
+# kernel replaces "behind the same topic surface" really does expose the same
+# surface.
+
+
+def _status_qos() -> Any:
+    """The publisher's QoS — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1.
+
+    A subscriber with mismatched durability silently never matches, so the
+    test would pass vacuously if this drifted from the publisher.
+    """
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    return QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        depth=1,
+    )
+
+
+def test_activation_publishes_clear_safety_status(ros_context: None) -> None:
+    """Every activation publishes a fresh SafetyStatus (HZ-0096-1 mitigation 1)."""
+    from openral_msgs.msg import SafetyStatus
+
+    node = SafetyPassthroughNode(node_name="openral_safety_test_status_activate")
+    helper = rclpy.create_node("openral_safety_test_status_activate_helper")
+    received: list[Any] = []
+    helper.create_subscription(
+        SafetyStatus, "/openral/safety_status", received.append, _status_qos()
+    )
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(helper)
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        assert _spin_until(executor, lambda: len(received) >= 1)
+        assert received[-1].latched is False
+        assert received[-1].drop_reason == SafetyStatus.DROP_NONE, (
+            "DROP_NONE must be explicit; a default-initialised 0 reads as KIND_TIMEOUT"
+        )
+        # header.stamp is load-bearing for the HZ-0096-1 liveness rule.
+        stamp = received[-1].header.stamp
+        assert stamp.sec > 0 or stamp.nanosec > 0
+    finally:
+        executor.remove_node(node)
+        executor.remove_node(helper)
+        node.destroy_node()
+        helper.destroy_node()
+
+
+def test_violation_latches_safety_status_and_reset_clears_it(ros_context: None) -> None:
+    """An envelope violation latches the status; the reset clears it."""
+    from openral_msgs.msg import SafetyStatus
+    from rclpy.parameter import Parameter
+
+    node = SafetyPassthroughNode(node_name="openral_safety_test_status_violation")
+    helper = rclpy.create_node("openral_safety_test_status_violation_helper")
+    received: list[Any] = []
+    helper.create_subscription(
+        SafetyStatus, "/openral/safety_status", received.append, _status_qos()
+    )
+    pub = helper.create_publisher(ActionChunk, "/openral/candidate_action", 10)
+    client = helper.create_client(Trigger, "/openral/estop_reset")
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(helper)
+    try:
+        node.set_parameters(
+            [
+                Parameter("n_dof", Parameter.Type.INTEGER, 6),
+                Parameter("estop_reset_cooldown_s", Parameter.Type.DOUBLE, 0.05),
+            ]
+        )
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        executor.spin_once(timeout_sec=0.1)
+
+        pub.publish(_make_chunk(n_dof=3))  # n_dof mismatch → violation + latch
+        assert _spin_until(executor, lambda: any(m.latched for m in received))
+        latched = [m for m in received if m.latched][-1]
+        # n_dof is a shape/configuration error, not a bound on a commanded
+        # value — CONTROLLER, the same family the C++ kernel reports it in.
+        assert latched.drop_reason == SafetyStatus.KIND_CONTROLLER
+        assert "n_dof" in latched.detail
+        assert latched.rskill_id == "openral/rskill-test-skill"
+
+        assert client.wait_for_service(timeout_sec=1.0)
+        time.sleep(0.1)  # past the cooldown
+        future = client.call_async(Trigger.Request())
+        deadline = time.time() + 2.0
+        while time.time() < deadline and not future.done():
+            executor.spin_once(timeout_sec=0.02)
+        assert future.done()
+        resp = future.result()
+        assert resp is not None and resp.success is True
+        assert _spin_until(executor, lambda: received[-1].latched is False)
+        assert received[-1].drop_reason == SafetyStatus.DROP_NONE, (
+            "the clear transition must reach the latched topic, or a late "
+            "joiner reads a cleared node as latched forever"
+        )
+    finally:
+        executor.remove_node(node)
+        executor.remove_node(helper)
+        node.destroy_node()
+        helper.destroy_node()
+
+
+def test_late_subscriber_receives_latched_safety_status(ros_context: None) -> None:
+    """A subscriber that connects AFTER the latch still sees it (TRANSIENT_LOCAL)."""
+    from openral_msgs.msg import SafetyStatus
+
+    node = SafetyPassthroughNode(node_name="openral_safety_test_status_late")
+    early = rclpy.create_node("openral_safety_test_status_late_early")
+    estop_pub = early.create_publisher(Empty, "/openral/estop", 10)
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(early)
+    late = None
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        executor.spin_once(timeout_sec=0.1)
+        estop_pub.publish(Empty())
+        assert _spin_until(executor, lambda: node._estopped is True)
+
+        # Only now does the consumer appear — a dashboard opened mid-mission.
+        late = rclpy.create_node("openral_safety_test_status_late_joiner")
+        received: list[Any] = []
+        late.create_subscription(
+            SafetyStatus, "/openral/safety_status", received.append, _status_qos()
+        )
+        executor.add_node(late)
+        assert _spin_until(executor, lambda: len(received) >= 1, timeout_s=3.0), (
+            "a late subscriber must receive the durable value it never witnessed"
+        )
+        assert received[0].latched is True, (
+            "the FIRST sample a late joiner gets must already say we are latched"
+        )
+        assert received[0].drop_reason == SafetyStatus.DROP_EXTERNAL_ESTOP
+    finally:
+        if late is not None:
+            executor.remove_node(late)
+            late.destroy_node()
+        executor.remove_node(node)
+        executor.remove_node(early)
+        node.destroy_node()
+        early.destroy_node()

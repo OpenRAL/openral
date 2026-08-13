@@ -222,6 +222,22 @@
         <div class="gauges" id="gauges"></div>
       </div>
 
+      <!--
+        Safety · current state (ADR-0096). Fed by the LATCHED
+        /openral/safety_status topic through the dashboard's rclpy
+        subscriber, not by OTel spans: the span-inferred latch below only
+        moves while chunks flow, and a latched kernel stops the chunk flow.
+        This card is what an operator opening the page mid-mission reads.
+      -->
+      <div class="card accent-safety" id="card-safety-status">
+        <div class="hd">
+          <span class="title">Safety · current state</span>
+          <span class="age" id="safety-status-age">—</span>
+        </div>
+        <div class="primary" id="safety-status-primary">—</div>
+        <div class="attrs" id="safety-status-attrs"></div>
+      </div>
+
       <!-- Safety check ledger (per-check pass/fail) -->
       <div class="card accent-ledger ledger" id="card-safety-ledger">
         <div class="hd"><span class="title">Safety check ledger</span><span class="age" id="ledger-age">—</span></div>

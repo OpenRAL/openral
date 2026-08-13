@@ -51,8 +51,24 @@ at `cpp/openral_safety_kernel/`.
 | sub | `/openral/candidate_action` | `openral_msgs/ActionChunk` | RELIABLE · VOLATILE · KL=1 |
 | pub | `/openral/safe_action` | `openral_msgs/ActionChunk` | RELIABLE · VOLATILE · KL=1 |
 | pub | `/openral/estop` | `std_msgs/Empty` | RELIABLE · VOLATILE · KL=10 |
+| pub | `/openral/safety_status` | `openral_msgs/SafetyStatus` | RELIABLE · **TRANSIENT_LOCAL** · KL=1 |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` (1 Hz) | RELIABLE · VOLATILE · KL=10 |
 | srv | `/openral/estop_reset` | `std_srvs/Trigger` | — |
+
+`/openral/safety_status` (ADR-0096) is the only **latched** topic here:
+current safety state (`latched`, `drop_reason`, `detail`, `rskill_id`,
+`trace_id`, `header.stamp`) rather than an event, so a dashboard opened
+mid-mission or a runner reconnecting after a crash reads the truth
+immediately. Published on every latch transition, every clear/recovery
+transition, on **every activation** (hazard-log HZ-0096-1 mitigation 1
+— a restarted node must overwrite the stale durable sample a still
+connected consumer holds), and re-stamped at 1 Hz so `header.stamp` is
+evidence the publisher is alive. The C++ kernel publishes the identical
+contract, so this node keeps replacing/being replaced behind the same
+topic surface. Before it, this node had no typed failure output at all
+— it never constructed a `FailureTrigger` — so a fail-closed drop or
+e-stop from here was a bare `std_msgs/Empty` and nothing else.
+Observability only: no enforcement path changed.
 
 `/openral/estop` is subscribed by **both** the HAL and the
 skill_runner (defense in depth, CLAUDE.md §1.5).

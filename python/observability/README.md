@@ -47,6 +47,30 @@ The vendored browser assets and their versions/licenses are documented in
 [`static/vendor/vad/NOTICE.md`](src/openral_observability/dashboard/static/vendor/vad/NOTICE.md),
 which also records the `npm pack` command to refresh them.
 
+## Safety · current state (latched `/openral/safety_status`)
+
+ADR-0096. Every other card on the dashboard is fed by OTel over the embedded
+OTLP receiver. This one is not: `SafetyStatusSubscriber` opens a real rclpy
+subscription to the **latched** `/openral/safety_status`
+(`openral_msgs/SafetyStatus`, RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) that
+the C++ safety kernel and `SafetyPassthroughNode` both publish, and writes
+each status into the store via `TelemetryStore.set_safety_status`.
+
+Why a topic and not a span: the `safety.check` span path can only *infer* a
+latch from chunk flow, and a latched kernel is exactly the state in which the
+chunk flow stops. Durability closes the other half — a dashboard opened
+mid-mission receives the current value on connect, instead of showing
+"unknown" until the next fault.
+
+The card renders `latched` / `clear` / `stale`, the typed `drop_reason`, the
+publisher's `detail`, the `rskill` in flight, and the age of the last
+transition. Publishers re-stamp at 1 Hz, so an age past ~3 s flips the card to
+`stale`, meaning **unknown, not safe** — the publisher may be gone (hazard-log
+HZ-0096-1). Without rclpy or the `openral_msgs` overlay the subscriber stays
+inert and the card reads *waiting*; it never renders "clear" from an absence
+of data. Read-only: it holds no publisher, no service client, and no
+authority over the robot.
+
 ## Live camera video (MJPEG stream)
 
 The camera cards in the dashboard now show live video instead of a static

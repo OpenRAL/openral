@@ -100,10 +100,26 @@ draining (no `Connection refused` retries on the way down).
   forward-pass latency); the redundant one-line `Safety` live-signal card was
   removed (Safety has its own zone above). Card border turns red on
   `Status.ERROR`.
-- **Safety** — running counters of `safety_violation`, `estop_requested`,
-  `deadline_missed`, `sensor_stale`, and `skill_failure` span events,
-  alongside the **Safety check ledger** (per-check pass/fail from
-  `safety.check` spans). The **skill failures** counter
+- **Safety** — the **Safety · current state** card, running counters of
+  `safety_violation`, `estop_requested`, `deadline_missed`, `sensor_stale`,
+  and `skill_failure` span events, and the **Safety check ledger** (per-check
+  pass/fail from `safety.check` spans).
+
+  *Safety · current state* (ADR-0096) is the only card on the page that is
+  **not** fed by OTel: it subscribes the latched `/openral/safety_status`
+  topic (`openral_msgs/SafetyStatus`, RELIABLE + TRANSIENT_LOCAL +
+  KEEP_LAST=1) that the C++ safety kernel and `SafetyPassthroughNode` both
+  publish. It shows `latched` / `clear` / `stale`, the typed `drop_reason`
+  (e.g. `kind_collision`, `drop_envelope_unconfigured`), the publisher's
+  `detail`, the `rskill` in flight, and the **age of the last transition**.
+  Because the topic is durable, a dashboard opened *mid-mission* shows the
+  correct state immediately instead of "unknown until the next fault" — the
+  span-inferred latch under it can only move while command chunks are
+  flowing, and a latched kernel is exactly the state in which they stop.
+  The age matters: publishers re-stamp at 1 Hz, so an age past ~3 s renders
+  the card `stale` and the state is to be read as **unknown, not safe**
+  (the safety publisher may be gone). With no ROS workspace sourced the card
+  reads *waiting* — never a fabricated "clear". The **skill failures** counter
   tallies every Reasoner-published `/openral/failure/rskill` event
   (mirrored onto the OTLP `openral.event.skill_failure` span event) and
   shows the latest failure state under it (e.g. `latest: vram_insufficient`).

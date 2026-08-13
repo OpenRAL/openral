@@ -64,16 +64,80 @@ _KERNEL_LABEL_PASSTHROUGH = "passthrough"
 
 __all__ = [
     "DEFAULT_ESTOP_RESET_COOLDOWN_S",
+    "SAFETY_STATUS_HEARTBEAT_S",
+    "SAFETY_STATUS_TOPIC",
     "SafetyPassthroughNode",
     "SafetySupervisorNode",
     "main",
 ]
+
+# ADR-0096 — the latched current-safety-state topic this node publishes
+# alongside (never instead of) ``/openral/estop``. The C++ kernel that
+# replaces this node behind the same topic surface publishes the identical
+# contract, so a consumer cannot tell which implementation is running.
+SAFETY_STATUS_TOPIC = "/openral/safety_status"
+
+# Liveness refresh cadence for the latched status. Hazard-log HZ-0096-1
+# mitigation 2: a durable value is only trustworthy alongside evidence that
+# it is current rather than a dead publisher's leftover, so ``header.stamp``
+# is re-stamped at this cadence even when nothing changed. Matches the C++
+# kernel's 1 Hz /diagnostics heartbeat.
+SAFETY_STATUS_HEARTBEAT_S = 1.0
 
 # Default cooldown between an estop publish and the first successful
 # ``/openral/estop_reset`` call. Configurable per-launch via the
 # ``estop_reset_cooldown_s`` parameter — tests use a larger value to
 # avoid races, production keeps the 500 ms default.
 DEFAULT_ESTOP_RESET_COOLDOWN_S = 0.5
+
+
+# ADR-0096 — map this node's free-text violation ``kind`` onto the numeric
+# ``SafetyStatus.drop_reason``, whose KIND_* values are FailureTrigger's. The
+# grouping mirrors how the C++ kernel's validator classifies the same
+# families: a bound on a *commanded position* is WORKSPACE, a bound on a
+# *rate* (speed / per-step delta) is FORCE — the kernel routes speed
+# violations through ViolationKind::kForce for the same reason — and every
+# shape / dof / configuration error is CONTROLLER. Anything unmapped falls to
+# CONTROLLER rather than guessing.
+_WORKSPACE_VIOLATION_KINDS = frozenset({"workspace", "gripper_range"})
+_RATE_VIOLATION_KINDS = frozenset(
+    {
+        "cartesian_step",
+        "cartesian_step_rot",
+        "ee_linear_speed",
+        "ee_angular_speed",
+        "base_linear_speed",
+        "base_angular_speed",
+    }
+)
+
+
+def _violation_kind_constant(kind: str, status_cls: Any) -> int:
+    """Return the ``SafetyStatus.drop_reason`` for a violation ``kind`` string.
+
+    Args:
+        kind: The violation kind returned by ``_envelope_violation``.
+        status_cls: The ``openral_msgs.msg.SafetyStatus`` class (imported
+            lazily at configure time, like every other message class here).
+
+    Returns:
+        The matching ``KIND_*`` constant.
+
+    Example:
+        >>> class _S:  # the constants SafetyStatus.msg declares
+        ...     KIND_FORCE, KIND_WORKSPACE, KIND_CONTROLLER = 1, 2, 5
+        >>> _violation_kind_constant("workspace", _S)
+        2
+        >>> _violation_kind_constant("ee_linear_speed", _S)
+        1
+        >>> _violation_kind_constant("n_dof", _S)
+        5
+    """
+    if kind in _WORKSPACE_VIOLATION_KINDS:
+        return int(status_cls.KIND_WORKSPACE)
+    if kind in _RATE_VIOLATION_KINDS:
+        return int(status_cls.KIND_FORCE)
+    return int(status_cls.KIND_CONTROLLER)
 
 
 class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
@@ -137,6 +201,10 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         self._estop_sub: Any = None
         self._reset_srv: Any = None
         self._heartbeat: Any = None
+        # ADR-0096 — latched SafetyStatus publisher + its liveness timer.
+        self._status_pub: Any = None
+        self._status_timer: Any = None
+        self._status_msg_cls: Any = None
 
         # State.
         self._estopped: bool = False
@@ -144,6 +212,15 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         self._chunks_passed: int = 0
         self._chunks_dropped: int = 0
         self._last_drop_reason: str = ""
+        # Current /openral/safety_status value. ``_status_drop_reason`` starts
+        # at ``None`` rather than a constant so the first publication — the
+        # activation one — can never be swallowed by the transition gate
+        # (HZ-0096-1 mitigation 1).
+        self._status_latched: bool = False
+        self._status_drop_reason: int | None = None
+        self._status_detail: str = ""
+        self._status_rskill_id: str = ""
+        self._status_trace_id: str = ""
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -151,12 +228,13 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         """Open publishers, subscribers, service, and diagnostics heartbeat."""
         del state
         from diagnostic_msgs.msg import DiagnosticArray  # noqa: F401  # ensure available
-        from openral_msgs.msg import ActionChunk
+        from openral_msgs.msg import ActionChunk, SafetyStatus
         from openral_observability import DiagnosticsHeartbeat, Level
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from std_msgs.msg import Empty
         from std_srvs.srv import Trigger
 
+        self._status_msg_cls = SafetyStatus
         chunk_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
@@ -168,8 +246,22 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             depth=10,
         )
 
+        # ADR-0096 — the LATCHED status topic. RELIABLE + TRANSIENT_LOCAL +
+        # KEEP_LAST=1 is CLAUDE.md §2's "description/static" QoS class,
+        # deliberately not the "safety/e-stop" class ``estop_qos`` above uses:
+        # this topic answers "what is true right now", which a late-joining
+        # dashboard or a reconnecting runner has to read without having
+        # witnessed the transition. Purely additive — it gates nothing, and
+        # ``/openral/estop`` keeps every duty it had.
+        status_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+
         self._safe_pub = self.create_publisher(ActionChunk, "/openral/safe_action", chunk_qos)
         self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+        self._status_pub = self.create_publisher(SafetyStatus, SAFETY_STATUS_TOPIC, status_qos)
         self._candidate_sub = self.create_subscription(
             ActionChunk,
             "/openral/candidate_action",
@@ -223,10 +315,34 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Start the diagnostics heartbeat."""
+        """Start the diagnostics heartbeat and publish the current SafetyStatus.
+
+        The activation publish is hazard-log HZ-0096-1 mitigation 1: because
+        ``/openral/safety_status`` is TRANSIENT_LOCAL, a consumer that was
+        already connected before this node restarted keeps trusting the value
+        the *previous* process left behind. Publishing on every activation
+        overwrites that stale sample within one activation cycle instead of
+        waiting for the next real fault. A latch that survived a
+        deactivate→activate cycle is reported as it stands — activation never
+        implies recovery.
+        """
         del state
         if self._heartbeat is not None:
             self._heartbeat.start()
+        if not self._estopped:
+            self._status_latched = False
+            self._status_drop_reason = self._status_msg_cls.DROP_NONE
+            self._status_detail = "supervisor activated"
+            self._status_rskill_id = ""
+            self._status_trace_id = ""
+        self._publish_safety_status_now()
+        # Liveness refresh (HZ-0096-1 mitigation 2) — re-stamp the durable
+        # value at 1 Hz so a consumer can distinguish a live latch from a dead
+        # publisher's leftover sample. Started here, not at configure, so an
+        # inactive node publishes nothing.
+        self._status_timer = self.create_timer(
+            SAFETY_STATUS_HEARTBEAT_S, self._publish_safety_status_now
+        )
         self.get_logger().info("openral_safety activated.")
         return TransitionCallbackReturn.SUCCESS
 
@@ -235,6 +351,9 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         del state
         if self._heartbeat is not None:
             self._heartbeat.stop()
+        if self._status_timer is not None:
+            self.destroy_timer(self._status_timer)
+            self._status_timer = None
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -258,6 +377,15 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         if self._estop_pub is not None:
             self.destroy_publisher(self._estop_pub)
             self._estop_pub = None
+        if self._status_timer is not None:
+            self.destroy_timer(self._status_timer)
+            self._status_timer = None
+        if self._status_pub is not None:
+            self.destroy_publisher(self._status_pub)
+            self._status_pub = None
+        # Forget the published status so the next activation's publish can
+        # never be suppressed by the transition gate (HZ-0096-1 mitigation 1).
+        self._status_drop_reason = None
         return TransitionCallbackReturn.SUCCESS
 
     def on_shutdown(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -312,6 +440,16 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             assert self._safe_pub is not None  # invariant on active state
             self._safe_pub.publish(msg)
             self._chunks_passed += 1
+            # ADR-0096 recovery transition. No-op unless a drop reason was
+            # actually in effect, so the pass-through path stays two
+            # comparisons and no publication.
+            self._set_safety_status(
+                latched=False,
+                drop_reason=self._status_msg_cls.DROP_NONE,
+                detail="chunk accepted",
+                rskill_id=msg.rskill_id,
+                trace_id=msg.trace_id,
+            )
 
     def _envelope_violation(  # noqa: PLR0911  # reason: dispatches over control-mode families; each mode is a single early return
         self, msg: object
@@ -584,6 +722,16 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
         self._last_estop_ns = time.time_ns()
         assert self._estop_pub is not None  # invariant on active state
         self._estop_pub.publish(Empty())
+        # ADR-0096 — the same latch, now also as durable typed current state.
+        # This node never had a FailureTrigger producer at all, so before this
+        # every drop and e-stop it made was untyped: a bare std_msgs/Empty.
+        self._set_safety_status(
+            latched=True,
+            drop_reason=_violation_kind_constant(kind, self._status_msg_cls),
+            detail=f"{kind}: {reason}",
+            rskill_id=str(getattr(msg, "rskill_id", "") or ""),
+            trace_id=str(getattr(msg, "trace_id", "") or ""),
+        )
         # Log structured for the query-time correlator.
         self.get_logger().error(
             "safety.envelope_violation "
@@ -605,6 +753,17 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             self._estopped = True
             self._last_estop_ns = time.time_ns()
             self._last_drop_reason = "external_estop"
+            # ADR-0096 — ``/openral/estop`` is a bare std_msgs/Empty, so the
+            # publisher is unknowable from the wire. DROP_EXTERNAL_ESTOP names
+            # the topic that latched us rather than claiming a violation kind
+            # nobody reported (CLAUDE.md §1.2).
+            self._set_safety_status(
+                latched=True,
+                drop_reason=self._status_msg_cls.DROP_EXTERNAL_ESTOP,
+                detail="external /openral/estop publication latched the node",
+                rskill_id="",
+                trace_id="",
+            )
             self.get_logger().warning("safety.external_estop_received: latching node")
 
     # ── /openral/estop_reset ─────────────────────────────────────────────────
@@ -628,10 +787,68 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
         self._estopped = False
         self._last_drop_reason = ""
+        # ADR-0096 clear transition — the durable value must follow recovery,
+        # or a late-joining consumer reads a cleared node as latched forever.
+        self._set_safety_status(
+            latched=False,
+            drop_reason=self._status_msg_cls.DROP_NONE,
+            detail="estop cleared via /openral/estop_reset",
+            rskill_id="",
+            trace_id="",
+        )
         self.get_logger().info("safety.estop_reset succeeded")
         response.success = True
         response.message = "estop cleared"
         return response
+
+    # ── ADR-0096: latched SafetyStatus ───────────────────────────────────────
+
+    def _set_safety_status(
+        self,
+        *,
+        latched: bool,
+        drop_reason: int,
+        detail: str,
+        rskill_id: str,
+        trace_id: str,
+    ) -> None:
+        """Record the current safety state and publish it if it changed.
+
+        Transition-gated on the ``(latched, drop_reason)`` pair: this is
+        called from the chunk callback, and republishing per chunk would put a
+        publication on the chunk-rate path for no new information. The 1 Hz
+        liveness refresh keeps ``header.stamp`` current instead
+        (hazard-log HZ-0096-1).
+        """
+        if self._status_latched == latched and self._status_drop_reason == drop_reason:
+            return
+        self._status_latched = latched
+        self._status_drop_reason = drop_reason
+        self._status_detail = detail
+        self._status_rskill_id = rskill_id
+        self._status_trace_id = trace_id
+        self._publish_safety_status_now()
+
+    def _publish_safety_status_now(self) -> None:
+        """Stamp and publish the current status, transition or not.
+
+        Used for the activation publish and the 1 Hz liveness refresh. No-op
+        before ``on_configure`` opens the publisher.
+        """
+        if self._status_pub is None or self._status_msg_cls is None:
+            return
+        msg = self._status_msg_cls()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.latched = self._status_latched
+        msg.drop_reason = (
+            self._status_msg_cls.DROP_NONE
+            if self._status_drop_reason is None
+            else self._status_drop_reason
+        )
+        msg.detail = self._status_detail
+        msg.rskill_id = self._status_rskill_id
+        msg.trace_id = self._status_trace_id
+        self._status_pub.publish(msg)
 
 
 # Back-compat alias — the original skeleton class name still imports.

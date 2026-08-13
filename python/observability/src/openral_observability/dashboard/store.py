@@ -440,6 +440,12 @@ class TelemetryStore:
             # ``estopped`` tracks the kernel's e-stop latch so the UI shows an
             # E-STOP control while running and Reset e-stop while latched.
             "safety": {"checks": {}, "estopped": False},  # check_name -> {..., severity, ts}
+            # ADR-0096 — the latched /openral/safety_status, fed by
+            # ``SafetyStatusSubscriber`` (live rclpy, not OTel). Empty until a
+            # status arrives, which is also what a dashboard with no ROS
+            # workspace sourced shows forever; the card renders "waiting", never
+            # a fabricated "clear".
+            "safety_status": {},
             "system": {},  # populated by metrics ingest (gpu/cpu/ram)
             # Live 2D SLAM occupancy map from slam_toolbox (and any
             # future Reasoner-managed mapping service). Populated by
@@ -585,6 +591,59 @@ class TelemetryStore:
         """
         with self._lock:
             self._topics["safety"]["estopped"] = bool(value)
+            payload = self._snapshot_locked()
+        self._publish(payload)
+
+    def set_safety_status(
+        self,
+        *,
+        latched: bool,
+        drop_reason: int,
+        drop_reason_label: str,
+        detail: str,
+        rskill_id: str,
+        trace_id: str,
+        stamp_unix: float,
+    ) -> None:
+        """Record one `openral_msgs/SafetyStatus` from the latched topic.
+
+        ADR-0096. Called from ``SafetyStatusSubscriber``'s rclpy spin thread,
+        so the whole mutation happens under the store lock and the SSE fan-out
+        happens outside it (``_publish`` hops to each subscriber's loop via
+        ``call_soon_threadsafe``), same as every ingest path.
+
+        This is the only *authoritative* safety state the dashboard has: the
+        `safety.check` span path infers a latch from chunk flow, which stops
+        the moment a kernel latches. Both are kept — the ledger for per-check
+        history, this for "what is true right now".
+
+        Args:
+            latched: Whether a fault is latched (recovery needs an explicit
+                ``/openral/estop_reset``).
+            drop_reason: The raw ``drop_reason`` enum value from the wire.
+            drop_reason_label: Its name (see
+                ``safety_status_subscriber.drop_reason_label``).
+            detail: The publisher's free-text elaboration.
+            rskill_id: The skill in flight at the transition, if any.
+            trace_id: W3C traceparent for correlation, if any.
+            stamp_unix: ``header.stamp`` as Unix seconds. Load-bearing, not
+                decorative: the publishers re-stamp at 1 Hz, so the UI shows
+                the age and an operator can tell a live latch from a dead
+                publisher's leftover durable value (hazard-log HZ-0096-1).
+        """
+        with self._lock:
+            self._topics["safety_status"] = {
+                "latched": bool(latched),
+                "drop_reason": int(drop_reason),
+                "drop_reason_label": str(drop_reason_label),
+                "detail": str(detail),
+                "rskill_id": str(rskill_id),
+                "trace_id": str(trace_id),
+                "stamp_unix": float(stamp_unix),
+                # When the dashboard received it, on the same clock the rest of
+                # the snapshot uses — the publisher's stamp can be sim-time.
+                "ts_unix": time.time(),
+            }
             payload = self._snapshot_locked()
         self._publish(payload)
 

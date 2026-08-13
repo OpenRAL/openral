@@ -66,6 +66,7 @@ on:
       - tests/integration/test_reasoner_*.py
       - tests/integration/test_critic_producer_node.py
       - tests/integration/test_sim_sensor_bridge_tf_guard.py
+      - tests/integration/test_safety_status_latched_topic.py
 
 permissions:
   contents: read

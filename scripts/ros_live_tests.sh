@@ -35,6 +35,7 @@ TARGETS=(
     tests/integration/test_reasoner_palette_primes_vram_gate.py
     tests/integration/test_critic_producer_node.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
+    tests/integration/test_safety_status_latched_topic.py
     # ROS_DISTRO-gated rather than OPENRAL_TEST_ROS_LIVE-gated: the composed
     # runner/world-state/safety action-protocol suite needs the colcon
     # openral_msgs overlay, which only this image has — without this entry it
