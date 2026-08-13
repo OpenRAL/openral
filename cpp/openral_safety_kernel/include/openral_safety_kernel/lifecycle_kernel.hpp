@@ -23,6 +23,7 @@
 #include <openral_msgs/msg/action_chunk.hpp>
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
+#include <openral_msgs/msg/safety_status.hpp>
 #include <openral_msgs/msg/world_collision.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -84,6 +85,31 @@ private:
   void publish_failure_trigger(const openral_msgs::msg::ActionChunk& chunk,
                                const Violation& violation);
 
+  // ADR-0096 — record the CURRENT safety state and, when it changed,
+  // publish it on the latched /openral/safety_status.
+  //
+  // Transition-gated on the (latched, drop_reason) pair: a fail-closed drop
+  // repeats for every chunk while its cause persists (the envelope is still
+  // unconfigured, the world model is still stale), and this is called from
+  // the chunk callback — republishing per chunk would put a publish on the
+  // 30-200 Hz path for no new information. `publish_safety_status_now`
+  // refreshes header.stamp at the 1 Hz diagnostics cadence instead, which is
+  // what lets a consumer tell a live latch from a dead publisher's leftover
+  // durable sample (hazard-log HZ-0096-1).
+  //
+  // The member message is reused across calls so a transition assigns into
+  // already-owned string capacity rather than building a fresh message; the
+  // pass-through path returns on the two integer comparisons without
+  // touching a string at all.
+  void set_safety_status(bool latched, std::uint8_t drop_reason, const char* detail,
+                         const std::string& rskill_id, const std::string& trace_id);
+
+  // Stamp and publish `status_msg_` as-is (no transition gate). Used for the
+  // activation publish (HZ-0096-1 mitigation 1 — a restarted publisher must
+  // overwrite any stale durable value within one activation cycle) and the
+  // 1 Hz liveness refresh. No-op while the publisher is deactivated.
+  void publish_safety_status_now();
+
   // Load the self-collision model from ROS parameters (configure
   // time; allocation OK). Returns false with `error` set on a malformed model.
   bool load_collision_model(std::string& error);
@@ -122,6 +148,7 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::ActionChunk>::SharedPtr safe_pub_;
   rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Empty>::SharedPtr estop_pub_;
   rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::FailureTrigger>::SharedPtr failure_pub_;
+  rclcpp_lifecycle::LifecyclePublisher<openral_msgs::msg::SafetyStatus>::SharedPtr status_pub_;
   rclcpp_lifecycle::LifecyclePublisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr
       diagnostics_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr estop_reset_srv_;
@@ -202,6 +229,13 @@ private:
   std::uint64_t chunks_passed_{0};
   std::uint64_t chunks_dropped_{0};
   std::string last_drop_reason_;
+
+  // ADR-0096 — the current /openral/safety_status value, kept as a reusable
+  // member so transitions do not build a message from scratch. Default
+  // `drop_reason` is 0 (== KIND_TIMEOUT) which is never a state this kernel
+  // reports; the activation publish overwrites it with DROP_NONE before any
+  // consumer can read it.
+  openral_msgs::msg::SafetyStatus status_msg_;
 };
 
 }  // namespace openral_safety_kernel

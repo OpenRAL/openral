@@ -14,8 +14,51 @@
 | pub | `/openral/safe_action` | `openral_msgs/ActionChunk` | RELIABLE, VOLATILE, KL=1 |
 | pub | `/openral/estop` | `std_msgs/Empty` | RELIABLE, VOLATILE, KL=10 |
 | pub | `/openral/failure/safety` | `openral_msgs/FailureTrigger` | RELIABLE, VOLATILE, KL=50 |
+| pub | `/openral/safety_status` | `openral_msgs/SafetyStatus` | RELIABLE, **TRANSIENT_LOCAL**, KL=1 |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray`, 1 Hz | default |
 | srv | `/openral/estop_reset` | `std_srvs/Trigger` | — |
+
+### `/openral/safety_status` — current state, not events (ADR-0096)
+
+The only **latched** topic here. `/openral/estop` and
+`/openral/failure/safety` are `VOLATILE` by design: they are event
+streams, so a subscriber that connects after the fact sees nothing and
+neither carries a notion of *current* state. `SafetyStatus` carries
+exactly that — `latched`, `drop_reason`, `detail`, `rskill_id`,
+`trace_id`, `header.stamp` — on the "description/static" QoS class, so a
+dashboard opened mid-mission or a runner reconnecting after a crash
+reads the truth immediately.
+
+Published on **every transition**:
+
+| Path | `latched` | `drop_reason` |
+| --- | --- | --- |
+| lifecycle activation | current latch | `DROP_NONE` when clear |
+| envelope violation | `true` | `KIND_FORCE` / `KIND_WORKSPACE` / `KIND_CONTROLLER` |
+| geometric collision | `true` | `KIND_COLLISION` |
+| external `/openral/estop` | `true` | `DROP_EXTERNAL_ESTOP` |
+| `envelope_unconfigured` drop | `false` | `DROP_ENVELOPE_UNCONFIGURED` |
+| world/voxel/state unavailable or overflow | `false` | `DROP_{WORLD,VOXEL,STATE}_UNAVAILABLE`, `DROP_{WORLD,VOXEL}_OVERFLOW` |
+| chunk accepted after a drop | `false` | `DROP_NONE` |
+| `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |
+
+Two rules make the durable value trustworthy (hazard-log HZ-0096-1):
+
+1. **Publish on every activation**, not only on the next fault — a
+   restarted kernel must overwrite the stale sample a still-connected
+   consumer is holding within one activation cycle.
+2. **Re-stamp at 1 Hz** on the `/diagnostics` heartbeat, so
+   `header.stamp` is standing evidence the publisher is alive.
+   Consumers treat a status older than their liveness window as
+   *unknown, not safe*.
+
+The publication is transition-gated on the `(latched, drop_reason)`
+pair, so a drop that repeats for every chunk (an unconfigured envelope,
+a stale world model) publishes once and is refreshed by the heartbeat,
+never per chunk on the 30-200 Hz path.
+
+This is observability only: it adds a publisher, and changes no
+enforcement decision anywhere in the kernel.
 
 ## Quickstart
 
@@ -56,7 +99,9 @@ On envelope violation OR external `/openral/estop`:
    `severity=SEVERITY_ABORT`, `evidence_json` (Pydantic-deserialisable),
    `rskill_id` and `trace_id` from the chunk.
 3. Publish `std_msgs/Empty` on `/openral/estop`.
-4. Set `fault_latch=true`. All further candidates drop with reason
+4. Publish the latched `SafetyStatus` (`latched=true`, the same numeric
+   kind the `FailureTrigger` carries) on `/openral/safety_status`.
+5. Set `fault_latch=true`. All further candidates drop with reason
    `estop_latched`.
 
 Recovery is manual: `ros2 service call /openral/estop_reset

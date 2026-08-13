@@ -20,6 +20,7 @@
 #include <openral_msgs/msg/action_chunk.hpp>
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
+#include <openral_msgs/msg/safety_status.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -1066,4 +1067,378 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   // Print the captured payload so the Python-side fixture can be refreshed
   // verbatim from a real kernel run rather than hand-written.
   RecordProperty("reactive_collision_evidence_json", evidence);
+
+  // ADR-0096 — the same collision latch must also reach the latched status
+  // topic, with the FailureTrigger's KIND_COLLISION number. Subscribed only
+  // now, AFTER the latch: TRANSIENT_LOCAL still delivers the current value.
+  rclcpp::QoS status_qos(rclcpp::KeepLast(1));
+  status_qos.reliable();
+  status_qos.transient_local();
+  rclcpp::Node late("reactive_evidence_status_late");
+  openral_msgs::msg::SafetyStatus status;
+  bool got_status = false;
+  auto status_sub = late.create_subscription<openral_msgs::msg::SafetyStatus>(
+      "/openral/safety_status", status_qos,
+      [&status, &got_status](const openral_msgs::msg::SafetyStatus::SharedPtr m) {
+        status = *m;
+        got_status = true;
+      });
+  exec.add_node(late.get_node_base_interface());
+  const auto status_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+  while (!got_status && std::chrono::steady_clock::now() < status_deadline) {
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(got_status) << "the collision latch must be visible to a late subscriber";
+  EXPECT_TRUE(status.latched);
+  EXPECT_EQ(status.drop_reason, openral_msgs::msg::SafetyStatus::KIND_COLLISION);
+  EXPECT_EQ(status.rskill_id, "reactive_evidence_skill");
+}
+
+// ── ADR-0096: /openral/safety_status per-transition coverage ────────────────
+//
+// One test per transition CLASS the ADR names: activation, the (previously
+// end-to-end silent) envelope_unconfigured drop, a non-latching upstream
+// unavailability drop and its recovery, an envelope-violation latch, an
+// external e-stop latch and the operator's reset clear. Plus the property
+// the whole topic exists for: a subscriber that connects AFTER a transition
+// still receives the current value, which VOLATILE cannot deliver.
+
+namespace {
+
+/// Collects every SafetyStatus published on the latched topic. Subscribes
+/// with the publisher's QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a
+/// mismatched durability would silently never match the publisher.
+class StatusSpy {
+public:
+  explicit StatusSpy(rclcpp::Node& node) {
+    rclcpp::QoS qos(rclcpp::KeepLast(1));
+    qos.reliable();
+    qos.transient_local();
+    sub_ = node.create_subscription<openral_msgs::msg::SafetyStatus>(
+        "/openral/safety_status", qos,
+        [this](const openral_msgs::msg::SafetyStatus::SharedPtr m) { received_.push_back(*m); });
+  }
+
+  const std::vector<openral_msgs::msg::SafetyStatus>& all() const { return received_; }
+  bool empty() const { return received_.empty(); }
+  std::size_t size() const { return received_.size(); }
+  const openral_msgs::msg::SafetyStatus& latest() const { return received_.back(); }
+
+  /// True once a status matching (latched, drop_reason) has arrived.
+  bool saw(bool latched, std::uint8_t drop_reason) const {
+    for (const auto& m : received_) {
+      if (m.latched == latched && m.drop_reason == drop_reason) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+private:
+  rclcpp::Subscription<openral_msgs::msg::SafetyStatus>::SharedPtr sub_;
+  std::vector<openral_msgs::msg::SafetyStatus> received_;
+};
+
+/// Spin the executor until `done()` returns true or the timeout expires.
+template <typename Fn>
+void spin_until(rclcpp::executors::SingleThreadedExecutor& exec, Fn done,
+                std::chrono::milliseconds timeout = std::chrono::milliseconds(1500)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!done() && std::chrono::steady_clock::now() < deadline) {
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+}
+
+}  // namespace
+
+// HZ-0096-1 mitigation 1: every lifecycle activation publishes a fresh
+// SafetyStatus, so a restarted publisher overwrites any stale durable value
+// within one activation cycle rather than waiting for the next real fault.
+TEST_F(LifecycleKernelTest, ActivationPublishesClearSafetyStatus) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(minimal_envelope_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_activate", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("status_activate_helper");
+  StatusSpy spy(helper);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  spin_until(exec, [&] { return !spy.empty(); });
+
+  ASSERT_FALSE(spy.empty()) << "activation must publish a SafetyStatus";
+  EXPECT_FALSE(spy.latest().latched);
+  EXPECT_EQ(spy.latest().drop_reason, openral_msgs::msg::SafetyStatus::DROP_NONE)
+      << "DROP_NONE must be explicit; a default-initialised 0 would read as KIND_TIMEOUT";
+  EXPECT_GT(rclcpp::Time(spy.latest().header.stamp).nanoseconds(), 0)
+      << "header.stamp is load-bearing for the HZ-0096-1 liveness rule";
+
+  // A deactivate→activate cycle must put a fresh value back on the wire. The
+  // transition gate must never suppress that (it is the whole mitigation).
+  // Either the activation publish or the 1 Hz liveness refresh satisfies
+  // this — both are the mitigation; a gate that swallowed the activation
+  // publish AND a heartbeat that never republished would fail here.
+  ASSERT_EQ(node->on_deactivate(
+                rclcpp_lifecycle::State(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac")),
+            osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  const std::size_t after_deactivate = spy.size();
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  spin_until(exec, [&] { return spy.size() > after_deactivate; }, std::chrono::milliseconds(2000));
+  EXPECT_GT(spy.size(), after_deactivate) << "re-activation must put the value back on the wire";
+}
+
+// The envelope_unconfigured drop was the one path that was silent END TO END
+// before ADR-0096: no /openral/safe_action, no /openral/estop, no
+// FailureTrigger — only a span attribute and a /diagnostics key-value.
+TEST_F(LifecycleKernelTest, EnvelopeUnconfiguredDropPublishesSafetyStatus) {
+  // Reaching the branch the honest way: configure + activate with a real
+  // envelope, then re-configure with n_dof=0. The envelope load fails
+  // (kUnconfigured) and on_configure returns FAILURE having already cleared
+  // envelope_loaded_, while the topic surface from the first configure is
+  // still up and activated. That is precisely the misboot state the drop
+  // path exists to fail closed on.
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(minimal_envelope_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_unconf", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("status_unconf_helper");
+  StatusSpy spy(helper);
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  std::atomic<int> safe_count{0};
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", chunk_qos,
+      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  node->set_parameter(rclcpp::Parameter("n_dof", std::int64_t{0}));
+  ASSERT_EQ(node->on_configure(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
+
+  openral_msgs::msg::ActionChunk chunk;
+  chunk.rskill_id = "rskills/rskill-smolvla-so100";
+  chunk.control_mode = 0;
+  chunk.horizon = 1;
+  chunk.n_dof = 3;
+  chunk.flat = {0.0, 0.0, 0.0};
+  const std::uint64_t dropped_before = node->chunks_dropped();
+  spin_until(exec, [&] {
+    cand_pub->publish(chunk);
+    return spy.saw(false, openral_msgs::msg::SafetyStatus::DROP_ENVELOPE_UNCONFIGURED);
+  });
+
+  EXPECT_GT(node->chunks_dropped(), dropped_before);
+  EXPECT_EQ(safe_count.load(), 0) << "an un-armed kernel must forward nothing";
+  ASSERT_TRUE(spy.saw(false, openral_msgs::msg::SafetyStatus::DROP_ENVELOPE_UNCONFIGURED))
+      << "the previously-silent drop must now be observable";
+  EXPECT_FALSE(spy.latest().latched) << "an unconfigured envelope drops; it does not latch";
+  EXPECT_FALSE(spy.latest().detail.empty());
+  EXPECT_EQ(spy.latest().rskill_id, "rskills/rskill-smolvla-so100");
+}
+
+// An envelope VIOLATION latches, and the latched status carries the same
+// numeric kind the FailureTrigger on /openral/failure/safety carries.
+TEST_F(LifecycleKernelTest, EnvelopeViolationPublishesLatchedSafetyStatus) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(minimal_envelope_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_violation", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("status_violation_helper");
+  StatusSpy spy(helper);
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS fail_qos(rclcpp::KeepLast(50));
+  fail_qos.reliable();
+  fail_qos.durability_volatile();
+  std::vector<std::uint8_t> trigger_kinds;
+  auto fail_sub = helper.create_subscription<openral_msgs::msg::FailureTrigger>(
+      "/openral/failure/safety", fail_qos,
+      [&trigger_kinds](const openral_msgs::msg::FailureTrigger::SharedPtr m) {
+        trigger_kinds.push_back(m->kind);
+      });
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::ActionChunk bad;
+  bad.rskill_id = "rskills/rskill-smolvla-so100";
+  bad.control_mode = 0;  // JOINT_POSITION
+  bad.horizon = 1;
+  bad.n_dof = 3;
+  bad.flat = {5.0, 0.0, 0.0};  // joint 0 well past joint_position_max=1.0
+  spin_until(exec, [&] {
+    cand_pub->publish(bad);
+    return node->fault_latched() && !trigger_kinds.empty() &&
+           spy.saw(true, openral_msgs::msg::SafetyStatus::KIND_WORKSPACE);
+  });
+
+  ASSERT_TRUE(node->fault_latched());
+  ASSERT_FALSE(trigger_kinds.empty());
+  ASSERT_TRUE(spy.saw(true, openral_msgs::msg::SafetyStatus::KIND_WORKSPACE))
+      << "a joint-position violation must latch with the WORKSPACE kind";
+  // The two topics must agree on the number, or "one number, one meaning"
+  // is not true and a consumer switching on drop_reason switches wrong.
+  EXPECT_EQ(spy.latest().drop_reason, trigger_kinds.front());
+  EXPECT_TRUE(spy.latest().latched);
+  EXPECT_EQ(spy.latest().rskill_id, "rskills/rskill-smolvla-so100");
+}
+
+// An external /openral/estop latches the kernel; the status names the topic
+// that latched it (the Empty carries no reason and no publisher identity).
+// The operator's reset then clears the durable value.
+TEST_F(LifecycleKernelTest, ExternalEstopLatchesStatusAndResetClearsIt) {
+  rclcpp::NodeOptions opts;
+  auto overrides = minimal_envelope_params();
+  overrides.emplace_back("estop_reset_cooldown_s", 0.05);
+  opts.parameter_overrides(overrides);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_estop", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("status_estop_helper");
+  StatusSpy spy(helper);
+  auto estop_pub = helper.create_publisher<std_msgs::msg::Empty>("/openral/estop", 10);
+  auto client = helper.create_client<std_srvs::srv::Trigger>("/openral/estop_reset");
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  estop_pub->publish(std_msgs::msg::Empty{});
+  spin_until(exec, [&] {
+    return node->fault_latched() &&
+           spy.saw(true, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP);
+  });
+  ASSERT_TRUE(node->fault_latched());
+  ASSERT_TRUE(spy.saw(true, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP));
+  EXPECT_TRUE(spy.latest().latched);
+
+  // Recovery: the reset service's clear must move the durable value too, or a
+  // late-joining consumer reads a cleared kernel as latched forever.
+  ASSERT_TRUE(client->wait_for_service(std::chrono::seconds(2)));
+  std::this_thread::sleep_for(std::chrono::milliseconds(120));  // past the cooldown
+  auto fut = client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+  spin_until(
+      exec, [&] { return fut.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; },
+      std::chrono::milliseconds(2000));
+  ASSERT_EQ(fut.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+  ASSERT_TRUE(fut.get()->success);
+  spin_until(exec, [&] { return !spy.latest().latched; });
+  EXPECT_FALSE(node->fault_latched());
+  EXPECT_FALSE(spy.latest().latched) << "the clear transition must reach the latched topic";
+  EXPECT_EQ(spy.latest().drop_reason, openral_msgs::msg::SafetyStatus::DROP_NONE);
+}
+
+// A non-latching upstream-unavailability drop reports a DROP_* code (NOT a
+// latch), and the recovery back to accepting chunks clears it.
+TEST_F(LifecycleKernelTest, StateUnavailableDropAndRecoveryPublishSafetyStatus) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(velocity_capable_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_unavail", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("status_unavail_helper");
+  StatusSpy spy(helper);
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY — needs the measured seed
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.05, 0.05};
+  // No /joint_states yet → the seed gate drops fail-closed, without latching.
+  spin_until(exec, [&] {
+    cand_pub->publish(vel);
+    return spy.saw(false, openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+  });
+  ASSERT_TRUE(spy.saw(false, openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE));
+  EXPECT_FALSE(spy.latest().latched)
+      << "an unavailable upstream input drops the chunk; it must not read as a latch";
+  EXPECT_FALSE(node->fault_latched());
+
+  // Seed the state and re-send: the chunk now passes, and the recovery
+  // transition must clear the drop reason on the latched topic.
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0", "j1"};
+  js.position = {0.0, 0.0};
+  spin_until(
+      exec,
+      [&] {
+        js_pub->publish(js);
+        cand_pub->publish(vel);
+        return spy.latest().drop_reason == openral_msgs::msg::SafetyStatus::DROP_NONE;
+      },
+      std::chrono::milliseconds(3000));
+  EXPECT_EQ(spy.latest().drop_reason, openral_msgs::msg::SafetyStatus::DROP_NONE)
+      << "recovery must clear the drop reason, not leave it stuck on the last drop";
+  EXPECT_FALSE(spy.latest().latched);
+  EXPECT_GT(node->chunks_passed(), 0U);
+}
+
+// The property the whole topic exists for (ADR-0096, Decision): a subscriber
+// that connects AFTER the transition still receives the current value. This
+// is what TRANSIENT_LOCAL buys and what /openral/estop and
+// /openral/failure/safety (both VOLATILE) cannot deliver by construction.
+TEST_F(LifecycleKernelTest, LateSubscriberReceivesTheLatchedSafetyStatus) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(minimal_envelope_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_status_late", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node early("status_late_early");
+  auto estop_pub = early.create_publisher<std_msgs::msg::Empty>("/openral/estop", 10);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(early.get_node_base_interface());
+
+  estop_pub->publish(std_msgs::msg::Empty{});
+  spin_until(exec, [&] { return node->fault_latched(); });
+  ASSERT_TRUE(node->fault_latched()) << "precondition: the kernel is latched";
+
+  // Only NOW does the consumer show up — a dashboard tab opened mid-mission,
+  // or a runner reconnecting after a crash.
+  rclcpp::Node late("status_late_joiner");
+  StatusSpy spy(late);
+  exec.add_node(late.get_node_base_interface());
+  spin_until(exec, [&] { return !spy.empty(); }, std::chrono::milliseconds(3000));
+
+  ASSERT_FALSE(spy.empty())
+      << "a late subscriber must receive the durable latched value it never witnessed";
+  EXPECT_TRUE(spy.all().front().latched)
+      << "the FIRST sample a late joiner gets must already say the kernel is latched";
+  EXPECT_EQ(spy.all().front().drop_reason, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP);
 }

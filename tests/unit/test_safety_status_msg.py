@@ -24,10 +24,7 @@ import pytest
 
 pytest.importorskip("openral_msgs")
 
-from openral_msgs.msg import (  # noqa: E402  # reason: import follows the overlay gate
-    FailureTrigger,
-    SafetyStatus,
-)
+from openral_msgs.msg import FailureTrigger, SafetyStatus
 
 # Every FailureTrigger kind SafetyStatus redeclares. KIND_SUPPRESSED_SUMMARY
 # (254) is deliberately absent: it is a rate-limiter roll-up marker on the

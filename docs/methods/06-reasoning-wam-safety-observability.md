@@ -164,14 +164,16 @@ _Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a p
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 6, §7.7). No enforcement logic._
 
-- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L638)
-  - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L100)
-  - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L150)
-  - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L225)
-  - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L233)
-  - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L240)
-  - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L263)
-- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L641)
+- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L855)
+  - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L164)
+  - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L227)
+  - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L317)
+  - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L349)
+  - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L359)
+  - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L391)
+- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L858)
+- `SAFETY_STATUS_TOPIC: str` — `/openral/safety_status`, the ADR-0096 latched current-safety-state topic this node publishes `openral_msgs/SafetyStatus` on (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes. (L78)
+- `SAFETY_STATUS_HEARTBEAT_S: float` — 1.0 s liveness refresh for that topic. Hazard-log HZ-0096-1 mitigation 2: a durable value is only trustworthy alongside evidence it is current, so `header.stamp` is re-stamped at this cadence even when nothing changed. (L85)
 
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._

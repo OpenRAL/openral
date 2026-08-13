@@ -55,6 +55,25 @@ rclcpp::QoS failure_qos() {
   return q;
 }
 
+rclcpp::QoS safety_status_qos() {
+  // ADR-0096 — the LATCHED status topic. RELIABLE + TRANSIENT_LOCAL +
+  // KEEP_LAST=1 is CLAUDE.md §2's "description/static" profile, deliberately
+  // NOT the "safety/e-stop" profile estop_qos()/failure_qos() use above:
+  // /openral/safety_status answers "what is true right now", which a
+  // late-joining subscriber (a dashboard opened mid-mission, a runner
+  // reconnecting after a crash) must be able to read without having
+  // witnessed the transition. VOLATILE cannot deliver that by construction.
+  rclcpp::QoS q(rclcpp::KeepLast(1));
+  q.reliable();
+  q.transient_local();
+  return q;
+}
+
+// Correlation ids for transitions with no chunk behind them (activation,
+// external e-stop, operator reset). Named rather than a bare temporary so the
+// intent — "we genuinely do not know which skill" — is on the page.
+const std::string kNoCorrelationId;  // NOLINT(cert-err58-cpp)
+
 const char* violation_kind_field(ViolationKind k) {
   switch (k) {
   case ViolationKind::kForce:
@@ -323,6 +342,11 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   estop_pub_ = this->create_publisher<std_msgs::msg::Empty>("/openral/estop", estop_qos());
   failure_pub_ = this->create_publisher<openral_msgs::msg::FailureTrigger>(
       "/openral/failure/safety", failure_qos());
+  // ADR-0096 — additive observability publisher. It gates nothing: every
+  // enforcement decision below is taken exactly as it was before, and this
+  // only reports the decision that was already made.
+  status_pub_ = this->create_publisher<openral_msgs::msg::SafetyStatus>("/openral/safety_status",
+                                                                        safety_status_qos());
   diagnostics_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/diagnostics", rclcpp::QoS(rclcpp::KeepLast(1)));
 
@@ -380,6 +404,23 @@ SafetyKernelLifecycleNode::on_activate(const rclcpp_lifecycle::State& state) {
   estop_pub_->on_activate();
   failure_pub_->on_activate();
   diagnostics_pub_->on_activate();
+  status_pub_->on_activate();
+  // Hazard-log HZ-0096-1 mitigation 1 — publish a fresh SafetyStatus on
+  // EVERY activation, not only on the next fault. TRANSIENT_LOCAL means a
+  // consumer that was already connected before this process restarted keeps
+  // trusting the value the *previous* publisher left behind; an
+  // activation-time publish overwrites that stale sample within one
+  // activation cycle instead of waiting for the next real event. A latch
+  // that survived a deactivate→activate cycle is reported as it stands —
+  // recovery is never implied by activation.
+  status_msg_.latched = fault_latch_;
+  if (!fault_latch_) {
+    status_msg_.drop_reason = openral_msgs::msg::SafetyStatus::DROP_NONE;
+    status_msg_.detail = "kernel activated";
+    status_msg_.rskill_id.clear();
+    status_msg_.trace_id.clear();
+  }
+  publish_safety_status_now();
   return rclcpp_lifecycle::LifecycleNode::on_activate(state);
 }
 
@@ -389,6 +430,7 @@ SafetyKernelLifecycleNode::on_deactivate(const rclcpp_lifecycle::State& state) {
   estop_pub_->on_deactivate();
   failure_pub_->on_deactivate();
   diagnostics_pub_->on_deactivate();
+  status_pub_->on_deactivate();
   return rclcpp_lifecycle::LifecycleNode::on_deactivate(state);
 }
 
@@ -405,12 +447,16 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   safe_pub_.reset();
   estop_pub_.reset();
   failure_pub_.reset();
+  status_pub_.reset();
   diagnostics_pub_.reset();
   envelope_loaded_ = false;
   fault_latch_ = false;
   chunks_passed_ = 0;
   chunks_dropped_ = 0;
   last_drop_reason_.clear();
+  // Drop the remembered status so the next activation's publish is never
+  // suppressed by the transition gate (HZ-0096-1 mitigation 1).
+  status_msg_ = openral_msgs::msg::SafetyStatus{};
   // Drain the BatchSpanProcessor before we release the node — anything
   // emitted during the final tick must reach the collector or the
   // dashboard's Safety ledger will show stale state on the next launch.
@@ -468,6 +514,12 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // operator needs to know the kernel is not yet armed.
     ++chunks_dropped_;
     last_drop_reason_ = "envelope_unconfigured";
+    // ADR-0096 — this path was silent end to end before: no
+    // /openral/safe_action, no /openral/estop, no FailureTrigger, only a span
+    // attribute and a /diagnostics key-value. The operator now sees WHY
+    // nothing is moving.
+    set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_ENVELOPE_UNCONFIGURED,
+                      "no envelope loaded; the kernel is not armed", msg->rskill_id, msg->trace_id);
     span->SetAttribute("safety.severity", "warn");
     span->SetAttribute("safety.drop_reason", "envelope_unconfigured");
     span->End();
@@ -519,13 +571,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // world model — or, for a seed-requiring mode, a fresh+complete measured
       // state — is dropped (fail-closed) but NOT latched; motion resumes once a
       // fresh input lands.
-      const auto unavailable = [&](const char* reason) {
+      const auto unavailable = [&](const char* reason, std::uint8_t drop_code) {
         ++chunks_dropped_;
         last_drop_reason_ = reason;
         Violation v;
         v.kind = ViolationKind::kController;
         v.set_field(reason);
         publish_failure_trigger(*msg, v);
+        // ADR-0096 — the FailureTrigger above is VOLATILE, so a subscriber
+        // that connects after the fact misses it entirely and it carries no
+        // notion of current state. The latched status carries both, and its
+        // DROP_* code says "an upstream input is unavailable", not "the
+        // kernel is fault-latched" (it is not: no latch is set here).
+        set_safety_status(false, drop_code, reason, msg->rskill_id, msg->trace_id);
         RCLCPP_WARN(this->get_logger(), "safety.world_unavailable reason=%s rskill_id=%s", reason,
                     msg->rskill_id.c_str());
         span->SetAttribute("safety.severity", "warn");
@@ -535,14 +593,16 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // Velocity/Cartesian reconstruction needs a fresh, complete
       // measured seed; fail-closed otherwise.
       if ((is_velocity || is_cartesian) && !measured_state_fresh()) {
-        unavailable("state_unavailable");
+        unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
         return;
       }
       if (world_collision_enabled_) {
         const bool fresh = world_received_ && !world_overflow_ &&
                            (this->now() - world_stamp_).seconds() <= world_collision_deadline_s_;
         if (!fresh) {
-          unavailable(world_overflow_ ? "world_overflow" : "world_unavailable");
+          unavailable(world_overflow_ ? "world_overflow" : "world_unavailable",
+                      world_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_WORLD_OVERFLOW
+                                      : openral_msgs::msg::SafetyStatus::DROP_WORLD_UNAVAILABLE);
           return;
         }
       }
@@ -550,7 +610,9 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         const bool fresh = voxel_received_ && !voxel_overflow_ &&
                            (this->now() - voxel_stamp_).seconds() <= world_voxel_deadline_s_;
         if (!fresh) {
-          unavailable(voxel_overflow_ ? "voxel_overflow" : "voxel_unavailable");
+          unavailable(voxel_overflow_ ? "voxel_overflow" : "voxel_unavailable",
+                      voxel_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW
+                                      : openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
           return;
         }
       }
@@ -575,6 +637,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         fault_latch_ = true;
         last_estop_at_ = std::chrono::steady_clock::now();
         publish_collision_failure(*msg, kind, a, b, step, dist);
+        set_safety_status(true, openral_msgs::msg::SafetyStatus::KIND_COLLISION, kind,
+                          msg->rskill_id, msg->trace_id);
         std_msgs::msg::Empty estop_msg;
         estop_pub_->publish(estop_msg);
         RCLCPP_ERROR(this->get_logger(),
@@ -728,6 +792,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       }
     }
 
+    // ADR-0096 recovery transition — a chunk that cleared every check ends
+    // whatever non-latching fail-closed drop was in effect, so the latched
+    // status must say so rather than staying on the last drop reason
+    // forever. Cost on the pass-through hot path when nothing changed (the
+    // overwhelmingly common case) is two integer comparisons inside
+    // set_safety_status, no string touched, no publish, no allocation.
+    set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE, "chunk accepted",
+                      msg->rskill_id, msg->trace_id);
     safe_pub_->publish(*msg);
     ++chunks_passed_;
     span->SetAttribute("safety.severity", "info");
@@ -743,6 +815,10 @@ void SafetyKernelLifecycleNode::on_candidate_action(
   last_estop_at_ = std::chrono::steady_clock::now();
 
   publish_failure_trigger(*msg, v);
+  // ADR-0096 — same fault, now also as durable current state. The numeric
+  // drop_reason is the FailureTrigger KIND_* the trigger above carries, so
+  // one number means the same fault on both topics.
+  set_safety_status(true, violation_kind_constant(v.kind), v.field, msg->rskill_id, msg->trace_id);
 
   std_msgs::msg::Empty estop_msg;
   estop_pub_->publish(estop_msg);
@@ -815,6 +891,14 @@ void SafetyKernelLifecycleNode::on_external_estop(const std_msgs::msg::Empty::Sh
     fault_latch_ = true;
     last_estop_at_ = std::chrono::steady_clock::now();
     last_drop_reason_ = "external_estop";
+    // ADR-0096 — /openral/estop is a bare std_msgs/Empty, so the publisher
+    // (deadman watchdog, hardware pendant, dashboard button, the passthrough
+    // node) is unknowable from the wire. DROP_EXTERNAL_ESTOP names the topic
+    // that latched us rather than claiming a violation kind nobody reported
+    // (CLAUDE.md §1.2).
+    set_safety_status(true, openral_msgs::msg::SafetyStatus::DROP_EXTERNAL_ESTOP,
+                      "external /openral/estop publication latched the kernel", kNoCorrelationId,
+                      kNoCorrelationId);
     RCLCPP_WARN(this->get_logger(), "safety.external_estop_received: latching kernel");
   }
 }
@@ -841,6 +925,10 @@ void SafetyKernelLifecycleNode::on_estop_reset(
   }
   fault_latch_ = false;
   last_drop_reason_.clear();
+  // ADR-0096 clear transition — the durable value must follow recovery, or a
+  // late-joining consumer would read a cleared kernel as still latched.
+  set_safety_status(false, openral_msgs::msg::SafetyStatus::DROP_NONE,
+                    "estop cleared via /openral/estop_reset", kNoCorrelationId, kNoCorrelationId);
   response->success = true;
   response->message = "estop cleared";
   RCLCPP_INFO(this->get_logger(), "safety.estop_reset succeeded");
@@ -868,6 +956,37 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
   add_kv("n_dof", std::to_string(envelope_.n_dof));
   arr.status.push_back(status);
   diagnostics_pub_->publish(arr);
+  // ADR-0096 / HZ-0096-1 mitigation 2 — refresh the latched status at the
+  // same 1 Hz cadence so `header.stamp` is standing evidence the publisher is
+  // alive. Without it a consumer applying the staleness rule could not tell a
+  // genuinely-latched kernel from a dead publisher's leftover durable sample.
+  // The value itself is unchanged; only the stamp moves.
+  publish_safety_status_now();
+}
+
+void SafetyKernelLifecycleNode::set_safety_status(bool latched, std::uint8_t drop_reason,
+                                                  const char* detail, const std::string& rskill_id,
+                                                  const std::string& trace_id) {
+  if (status_msg_.latched == latched && status_msg_.drop_reason == drop_reason) {
+    return;  // not a transition — see the header comment for why this gates
+  }
+  status_msg_.latched = latched;
+  status_msg_.drop_reason = drop_reason;
+  status_msg_.detail = detail;
+  status_msg_.rskill_id = rskill_id;
+  status_msg_.trace_id = trace_id;
+  publish_safety_status_now();
+}
+
+void SafetyKernelLifecycleNode::publish_safety_status_now() {
+  if (status_pub_ == nullptr || !status_pub_->is_activated()) {
+    // Not activated: the transition is still recorded in status_msg_ and goes
+    // out with the activation publish. Skipping keeps the deactivated-publish
+    // warning off the 1 Hz timer.
+    return;
+  }
+  status_msg_.header.stamp = this->now();
+  status_pub_->publish(status_msg_);
 }
 
 void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg::ActionChunk& chunk,
