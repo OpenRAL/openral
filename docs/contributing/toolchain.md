@@ -215,6 +215,28 @@ just install-cli
 
 The wrapper sources the ROS 2 distro overlay and the colcon workspace overlay before delegating to `.venv/bin/openral`, so ROS 2 node/topic/action commands work transparently. Pure-Python commands (`openral doctor`, `openral detect`, etc.) still work even if ROS 2 is not yet built.
 
+### Which checkout does `openral` run? (`OPENRAL_REPO_ROOT`)
+
+The wrapper bakes in the checkout that generated it. That is the right default for a single clone, but it is a **provenance hazard** the moment you have two — a git worktree used for validation, say. Without an override the wrapper would exec the *generating* checkout's venv, colcon overlay and `robots/` manifests no matter where you invoked it from, so a run could be attributed to the wrong branch with nothing in the log to show it (this happened for real on a DGX Spark).
+
+`OPENRAL_REPO_ROOT` is the escape hatch, and the behaviour is:
+
+| Situation | What runs | What you see |
+| --- | --- | --- |
+| `OPENRAL_REPO_ROOT` unset, cwd anywhere in one checkout | the baked-in checkout | nothing (unchanged) |
+| `OPENRAL_REPO_ROOT=/path/to/checkout` | that checkout | `openral: repo root /path/to/checkout (OPENRAL_REPO_ROOT override; installed default …)` on stderr |
+| `OPENRAL_REPO_ROOT` points at a tree with no executable `.venv/bin/openral` | nothing — exit 1 | an error naming the tree; it never falls back to the baked one |
+| `OPENRAL_REPO_ROOT` unset, but cwd is inside a *different* checkout that has its own `.venv/bin/openral` | still the baked-in checkout | `WARNING: cwd is inside the OpenRAL checkout …, but this launcher is baked to …` on stderr |
+
+So when you validate from a worktree, either export the override:
+
+```bash
+export OPENRAL_REPO_ROOT=$(git rev-parse --show-toplevel)
+openral deploy sim --config …          # stderr records the root that ran
+```
+
+…or re-run `just install-cli` from that worktree to re-bake the default. The stderr line is deliberate: it means a captured run log always names the tree that produced it.
+
 Bare `openral` (no args) drops into an interactive REPL where subcommands run without the prefix (`sim run --config …`); pass a subcommand for one-shot mode in scripts/CI.
 
 ```bash
@@ -238,6 +260,7 @@ openral sim run --config FILE    # run a SimScene YAML end-to-end
 ## Tooling self-help
 
 - **`openral` prints `AMENT_TRACE_SETUP_FILES: unbound variable` and exits?** Your `~/.local/bin/openral` predates the fix that sources the (not-`set -u`-safe) ROS 2 overlays with nounset disabled. Re-run `just install-cli` to regenerate it.
+- **`openral` seems to run the wrong branch / wrong `robots/` manifests?** You are almost certainly in a second checkout while `~/.local/bin/openral` is baked to the first. Recent wrappers print a `WARNING: cwd is inside the OpenRAL checkout …` line for exactly this; fix it with `export OPENRAL_REPO_ROOT=$(git rev-parse --show-toplevel)` or by re-running `just install-cli` from the checkout you mean. If you see no warning at all, your wrapper predates the fix — regenerate it with `just install-cli`.
 - **Python import unclear?** `uv run python -c 'import openral_<pkg>; print(openral_<pkg>.__file__)'`.
 - **ROS 2 topic missing?** `ros2 topic list -t` in a `source install/setup.bash`-ed shell.
 - **Schema diff?** `just schema-export` and check `git diff python/openral_core/schemas/`.
